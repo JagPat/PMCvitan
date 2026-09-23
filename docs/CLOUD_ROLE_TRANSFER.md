@@ -201,62 +201,135 @@ conclusion that disagrees with the evidence it carries is rejected. Every consum
 remains a separate, later, atomically reviewed unit (§"Pending activation" #4); a non-authoritative
 consumer improvement does not activate the role transfer.
 
-### Activation-readiness contract (not activation)
+### Activation evidence reader (trusted, read-only, non-activating)
 
-`scripts/role-activation.mjs` is the pure, mutation-free contract that gates the atomic switch
-described in §"Pending activation" #4. It touches no live gate and starts nothing: it reads
-evidence and returns a verdict. `roleTransferActivationVerdict(evidence)` binds ONE correction cycle on
-EVERY identity dimension: every record must name the SAME cycle identity — the correction request, PR,
-branch, the **base SHA** the cycle is reviewed against, and the pre-correction (reviewed) head — so
-evidence from a different PR/branch/request, a different base (a retarget or an advancing `main`), or
-supplied out of order cannot be recombined into a false `activate`. The proofs, in the order the cycle
-occurs:
+The activation verdict cannot trust records its caller assembles: "the latest CI attempt", "no push
+since the corrective push" and "the live head" are facts about GitHub at decision time. After the #619
+convergence stop, the operator approved an additive split. `scripts/role-activation-evidence.mjs` is the
+trusted side. For one repository, one PR and one GitHub-generated correction-request comment,
+`readRoleActivationEvidence(client, { pullRequest, requestCommentId })` reads the cycle and returns
+normalized evidence (`ROLE_ACTIVATION_EVIDENCE_SCHEMA`). Every record carries the identity it was read
+under and its milestone's server timestamp. It reuses the existing trusted adapters:
 
-0a. **Initial full CI green** on the reviewed head, at the cycle base.
-0b. **The initial Claude finding** on that head that TRIGGERED this correction request (a
-   `changes_required` shadow review bound to the request id, at the cycle base) — the full-cycle
-   contract's "Claude findings" leg, not just the final clear.
-1. **GitHub-generated Codex task acceptance** for this request — an automated GitHub event started a
-   hosted Codex task that CAUSED exactly the corrective head; a human `@codex` mention is not proof.
-2. **Same-branch corrective push** for this request — a NON-FORCED fast-forward advancing the tip from
-   the reviewed head (`before === originalHead`) to the corrective head (`after === correctiveHead`),
-   with the reviewed head a server-verified ancestor of the corrective head (`forced === false &&
-   originalIsAncestor === true`). before/after tips alone are insufficient (a force push can carry any
-   tips), so ancestry is proven, not assumed — while still admitting a task that pushed more than one
-   commit (no direct-parent requirement).
-3. **Full CI green** on the corrective head, at the cycle base, for this request, run AFTER the push.
-4. **A bound independent Claude clear re-review** on that exact corrective head, at the cycle base, for
-   this request, run AFTER the push — a `shadow_clear` from the (still non-authoritative) consumer.
-   Binding the request and the after-push order defeats replay of a prior clear on a restored SHA.
+- **Request.** The comment's server `issue_url` binds the repository and PR. Its single `codex-fix-probe`
+  marker names the reviewed head and the triggering finding. The author and edit state are reported.
+  A comment that is fetched but rejected (another PR or repository, no single marker, a marker naming
+  another PR, no readable time) is diagnosed with its reason, never a silent `null`.
+- **Acceptance.** The earliest Codex-connector 👀 reaction on that exact request comment. This is an
+  observed-behaviour assumption and fails closed.
+- **Findings and reviews.** `classifyClaudeShadowReview` with `verifyClaudeShadowProducer`. A finding's
+  identity is its verified check run's own URL. The initial finding is the run the request's marker
+  names, not merely the newest review. Later reviews of the reviewed head are listed beside it.
+- **CI.** `resolveRequiredChecks`, the gate's newest-evidence rule, which includes cancelled attempts. A
+  CI record is dated by, and names, the run that decided each required name (`deciders`). A superseded
+  straggler never dates it. The initial CI is evaluated as of the triggering finding.
+- **Corrective push.** The Activity API's branch push log, giving server before/after/type/actor/time;
+  ancestry comes from the compare API. The corrective push is the first branch update after the
+  request. Every later update is listed, so an away-and-back to the same SHA still shows two updates.
+  The log counts only when it reaches back to an update at or before the request. The reader widens the
+  API's trailing `time_period` (a day by default) until it does. If it never does, the log is reported
+  as uncovered, not guessed.
+- **Freshness.** Opening reads decide only what to read: the request, the live PR and the push log.
+  Then the freshness point is taken. Every mutable source is then read in the closing pass: the
+  request again (it must be unchanged), its acceptance, the live PR (head, base ref and repositories),
+  both heads' check runs, the push log again, and last the lifecycle event log below. Each closing read
+  starts after the freshness point. So an edit, a push or a retarget (either even away-and-back), a
+  later review or a newer CI attempt before that point is visible. A corrective push that lands during
+  the pass is reported as a diagnostic, never silently absent. A consumer that acts must re-read and
+  bind to the reported decider runs.
 
-Retirement of `codex-current-head` is a separate, repository-bound and ordered proof: the replacement
-gate must be installed as required FOR THIS REPOSITORY and, at a strictly later time, observed passing
-in role on a real head under an identified trusted-controller observation.
+The reader decides nothing across records. Identity equality with the caller's expected repository and
+PR, the full milestone order, causation and freshness are the pure verdict's rules (#619). An unreadable
+or unauthenticated source yields `null` plus a diagnostic, never a partial record. The reader issues
+only reads and is wired to no workflow, gate or routing. It does not observe a replacement-gate
+installation (none exists), so it never supplies the separate retirement proof. `codex-fix-probe` keys
+a request only to a Codex review comment, so a Claude-finding → Codex-correction cycle cannot bind its
+triggering finding until a later probe variant can key a request to a Claude shadow finding. Until
+then the verdict holds, fail closed.
 
-**Boundary — pure shape/consistency vs. trusted-consumer authentication.** This module verifies that
-every required field is PRESENT and INTERNALLY CONSISTENT (one cycle identity on every record, the
-correct SHAs, non-forced fast-forward with an agreeing ancestry flag, and monotonic run ordering). It
-does not and cannot AUTHENTICATE evidence against GitHub: producing and server-verifying these fields —
-the repository match to the installation, the ancestry/fast-forward comparison, and the authenticated
-run, observation and installation identities — is the trusted consumer's responsibility, exactly as the
-shadow path delegates producer authentication to `verifyClaudeShadowProducer`.
+### Pull request lifecycle event log (trusted, read-only, non-activating)
 
-Anything missing → `{ state: 'hold', keepCodexCurrentHead: true, missing: [...] }`: the existing
-`codex-current-head` required gate stays in force. When every cycle proof holds, activation is
-permitted in TWO phases so no interval is ever left with neither independent-review gate:
+A snapshot of a pull request shows what its base, state and head ref are at one read. It cannot show
+that they did not change and change back between two reads. A retarget `main → release → main` inside a
+window leaves both snapshots equal, while the merge result under test (and the CI it launched) moved.
+The #620 evidence reader hit this at its third-head stop (finding 4081030214). Its head freshness already
+rests on an append-only history, the branch push log. `scripts/pull-request-event-log.mjs` is the
+matching history for base and state.
 
-- `activate` — INSTALL the replacement gate and switch routing while KEEPING `codex-current-head`
-  required. `keepCodexCurrentHead` stays `true`. The replacement gate is `ACTIVATION_INSTALL.addRequired`
-  = a **distinct trusted-controller status** (`CLAUDE_STATUS_CONTEXT`, `claude-current-head`) the
-  controller publishes only from ADAPTER-VERIFIED shadow evidence — **not** the raw
-  `claude-independent-review` producer check name, whose promotion would let a PR-emitted check of that
-  name satisfy branch protection without a verified review.
-- `retire` — only once a SEPARATE proof (`replacementGateInstalledObserved`) shows that replacement
-  gate installed as required AND observed in that role does the verdict retire `codex-current-head`
-  (`ACTIVATION_RETIRE.retire`), setting `keepCodexCurrentHead: false`.
+`readPullRequestEventLog(client, { pullRequest, sinceMs })` reads one pull request's **issue events** and
+returns every lifecycle event at or after the anchor, each with its server time, id and actor. Lifecycle
+events are base changes (including automatic ones), close, reopen and merge, draft transitions, and
+head-ref deletion, restoration and force-push.
 
-`ACTIVATION_SWITCH` is the whole switch as DATA (`ACTIVATION_INSTALL` + `ACTIVATION_RETIRE`). This unit
-APPLIES none of it: it adds nothing to `REQUIRED_CHECKS` (neither the raw shadow check nor the trusted
-replacement status), changes no routing, and makes nothing a merge gate. It declares Codex neither
-awakenable nor activated; the observed cloud cycle and the operator-authorized atomic switch remain the
-separate, later step this contract exists to gate.
+- **Why issue events, not the timeline.** The timeline mixes in comments, which users can delete. Paging
+  through a list with deletions can shift an item across a page boundary and skip it, and repeating the
+  read does not prove it untorn. Issue events are system records users cannot delete, so the list only
+  grows at its end: a paged read cannot skip an event that existed when it began (`coveredFromMs`).
+- **Complete or nothing.** Pages are read to a short page. A log over the page cap, a non-list page, a
+  failed read, or ids that do not strictly increase give `covered: false` and `events: null` plus a
+  diagnostic, never a partial list.
+- **Fail-closed boundaries.** GitHub stamps events to whole seconds, so the anchor is compared at that
+  precision and an event in the anchor's own second is reported. An undated lifecycle event is kept.
+
+The log decides nothing. Which events disqualify a cycle, and from which anchor, is its consumer's rule.
+It issues only GET requests, writes nothing, and is wired to no workflow, gate or routing.
+`codex-current-head` stays required.
+
+**Consumed by the reader.** The evidence reader reads this log last in its closing pass, anchored at the
+cycle's earliest milestone (the earlier of the triggering finding and the request). Its freshness record
+carries `lifecycleEvents` (with `lifecycleSinceMs`, `eventLogCoveredFromMs` and `eventLogReadAtMs`), so a
+retarget or close/reopen away and back is listed even when both live-PR snapshots agree. An incomplete log
+is `null` with an `event-log:` diagnostic. The verdict (next section) decides which events disqualify
+the cycle.
+
+### Activation-readiness verdict (not activation)
+
+`scripts/role-activation.mjs` is the pure, mutation-free verdict that gates the atomic switch in
+§"Pending activation" #4. It touches no live gate and starts nothing. It went through four reviewed
+heads on #619, and each fix drew the next identity/ordering/freshness dimension. At the third-head stop
+the operator approved an additive split: the verdict now consumes only the trusted reader's normalized
+output (the two sections above), and the reader performs every live read.
+
+`roleTransferActivationVerdict(evidence, expected)` takes the reader's `{ schema, cycle, records }` and
+the caller's expected `{ repository, pullRequest }`. It never takes the cycle's identity from the
+evidence alone. Every proof is required, and any gap holds with that gap named:
+
+- **Identity.** The schema matches. The cycle names the expected repository and PR, a branch, the base,
+  the reviewed and corrective heads (which must differ), and the correction-request id. Every record
+  names the expected repository; PR-scoped records also name the PR; CI and review records also name
+  the base.
+- **Initial legs.** CI on the reviewed head is green as of the finding. The producer-verified
+  `changes_required` review of that head, the one the request names, exists, and no later review of
+  that head follows it.
+- **Request.** The GitHub-generated request (bot author, not human, unedited) is on this PR, for the
+  reviewed head, and names that exact finding (`findingRef === reviewRef`).
+- **Acceptance.** The Codex connector accepted that same request.
+- **Corrective push.** The first branch update after the request is a non-forced push by the Codex
+  connector from the reviewed head to the corrective head. The reviewed head is a server-verified
+  ancestor (compare `ahead`, `behind 0`). A multi-commit fast-forward is admitted.
+- **Final legs.** The latest applicable CI on the corrective head is green, with a named successful
+  deciding run for each required check. The verdict returns those run ids so an installer binds to that
+  exact attempt. The newest producer-verified review of that head is clear.
+- **Freshness.** Read after the review. The open same-repository PR targets `main` at the cycle base,
+  both at the start and at the end (ref, SHA and both repositories). Its head is the corrective head at
+  both reads. No branch update follows the corrective push; an away-and-back to the same SHA is two
+  updates. The lifecycle event log, anchored no later than the triggering finding, is complete and
+  empty: any base change, close, reopen, merge, draft or head-ref event since then holds, so a retarget
+  away and back cannot pass between two agreeing snapshots. Every mutable source (request, acceptance,
+  live PR, both heads' reviews and CI, push log, event log) was read after the freshness point, which
+  follows the pass's opening.
+- **Order.** Strictly: initial CI < finding < request < acceptance < corrective push < final CI <
+  review < freshness window.
+
+Activation has two phases, so there is never an interval with neither independent-review gate:
+
+- `activate` **installs** the distinct trusted-controller status `CLAUDE_STATUS_CONTEXT`
+  (`claude-current-head`) and switches routing, **keeping** `codex-current-head`. The status is
+  published from adapter-verified shadow evidence, never from the raw `claude-independent-review` check
+  name.
+- `retire` needs a **separate** proof. The replacement must be installed as required for this
+  repository after the cycle was proven (after its last closing read), then observed in role at a
+  strictly later time, on a real head, under an identified trusted-controller observation.
+
+`ACTIVATION_SWITCH` is that switch expressed as data; nothing applies it. Nothing is added to
+`REQUIRED_CHECKS`, no routing changes, and Codex is declared neither awakenable nor activated.
