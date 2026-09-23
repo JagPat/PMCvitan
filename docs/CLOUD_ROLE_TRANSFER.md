@@ -218,13 +218,28 @@ occurs:
    contract's "Claude findings" leg, not just the final clear.
 1. **GitHub-generated Codex task acceptance** for this request — an automated GitHub event started a
    hosted Codex task that CAUSED exactly the corrective head; a human `@codex` mention is not proof.
-2. **Same-branch corrective push** for this request — the branch update advanced the tip from the
-   reviewed head (`before === originalHead`) to the corrective head (`after === correctiveHead`).
-   Ancestry is proven by the push event's before/after tips, so a task that pushes more than one commit
-   is admitted (the reviewed head need not be the final commit's direct parent).
-3. **Full CI green** on that corrective head, at the cycle base.
-4. **A bound independent Claude clear re-review** on that exact corrective head, at the cycle base — a
-   server-verified `shadow_clear` from the (still non-authoritative) consumer.
+2. **Same-branch corrective push** for this request — a NON-FORCED fast-forward advancing the tip from
+   the reviewed head (`before === originalHead`) to the corrective head (`after === correctiveHead`),
+   with the reviewed head a server-verified ancestor of the corrective head (`forced === false &&
+   originalIsAncestor === true`). before/after tips alone are insufficient (a force push can carry any
+   tips), so ancestry is proven, not assumed — while still admitting a task that pushed more than one
+   commit (no direct-parent requirement).
+3. **Full CI green** on the corrective head, at the cycle base, for this request, run AFTER the push.
+4. **A bound independent Claude clear re-review** on that exact corrective head, at the cycle base, for
+   this request, run AFTER the push — a `shadow_clear` from the (still non-authoritative) consumer.
+   Binding the request and the after-push order defeats replay of a prior clear on a restored SHA.
+
+Retirement of `codex-current-head` is a separate, repository-bound and ordered proof: the replacement
+gate must be installed as required FOR THIS REPOSITORY and, at a strictly later time, observed passing
+in role on a real head under an identified trusted-controller observation.
+
+**Boundary — pure shape/consistency vs. trusted-consumer authentication.** This module verifies that
+every required field is PRESENT and INTERNALLY CONSISTENT (one cycle identity on every record, the
+correct SHAs, non-forced fast-forward with an agreeing ancestry flag, and monotonic run ordering). It
+does not and cannot AUTHENTICATE evidence against GitHub: producing and server-verifying these fields —
+the repository match to the installation, the ancestry/fast-forward comparison, and the authenticated
+run, observation and installation identities — is the trusted consumer's responsibility, exactly as the
+shadow path delegates producer authentication to `verifyClaudeShadowProducer`.
 
 Anything missing → `{ state: 'hold', keepCodexCurrentHead: true, missing: [...] }`: the existing
 `codex-current-head` required gate stays in force. When every cycle proof holds, activation is
