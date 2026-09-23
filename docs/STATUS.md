@@ -14,36 +14,43 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-shadow-consumer-broadening
-reviewed_merge: b2490c2a
-open_pr: 618
+work_item: cloud-role-transfer-pr-event-log
+reviewed_merge: e0908622
+open_pr: 621
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-22
+updated: 2026-09-23
 ```
 
-### Now — 4d-i-b U3 merged; the current unit is the cloud-role-transfer shadow-consumer broadening (#618)
+### Now — cloud role transfer: unit (a0) pull request lifecycle event log (#621); #620 and #619 held open
 
-**U3 merged** to `main` at `b2490c2a` (#617): the pairing flip and all its claimants,
-with the R1 corrections (NULL-actor claimants, the platform-owned qualified-event
-primitive, the outbox reseal docs) folded on the same head. Phase 6 task 4d unit
-4d-i-b is complete; the U1/U2/U3 additive redesign below is now history.
+The cloud role transfer continues from fresh `main` (`e0908622`, #618 merged), with one writer and one
+channel. #619 (the activation-readiness verdict) reached its third-head stop and was split additively
+(#619 comments 5790993532 and 5791317874). Unit (a), #620, the trusted evidence reader, then reached its
+own third-head stop: Codex P1s on `b84f0d89`, `8becf01c` and `dacfd365` in
+`scripts/role-activation-evidence.mjs`, recorded at #620 comment 5792574988 (coordination on #482,
+comment 5792575745). The shared root cause: freshness proven by comparing snapshots. The pull request's
+base and state were the last dimensions with no append-only history (open finding 4081030214, an
+away-and-back retarget).
 
-Per the owner disposition at the protected #617 boundary (issue #482, 2026-09-22),
-the next selected bounded work is the already-approved **cloud role transfer** from
-fresh `main`, NOT the next phase-6 product unit and NOT the deferred #614/#615.
-`open_pr: 618` (`work_item: cloud-role-transfer-shadow-consumer-broadening`, branch
-`claude/role-transfer-shadow-consumer`) lands the consumer-side broadening
-`docs/CLOUD_ROLE_TRANSFER.md` deferred to "the later unit": trusted-`main` lineage
-(`workflowExecutionRef`/`head_branch` = `main`), acceptance of an earlier trusted
-`main` workflow SHA (base-equality pin moved onto the server-side producer proof
-bound to the publisher's deterministic success/failure form), and full producer-
-verified finding admission — with the shadow consumer kept **non-authoritative**
-(`authoritative: false` on every path, no merge/gate/ownership/correction-owner
-change, `claude-independent-review` still out of the required checks). It claims no
-role activation; the authoritative-gate flip stays a separate, later, atomically
-reviewed unit. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
+- **Unit (a0), `open_pr: 621`** (`work_item: cloud-role-transfer-pr-event-log`, branch
+  `claude/role-activation-pr-event-log`). `scripts/pull-request-event-log.mjs` is a trusted, read-only
+  history of one pull request's lifecycle events (base, state, draft, head-ref) from its issue timeline.
+  It is complete or nothing, read twice with a prefix check, and wired to nothing.
+- **Unit (a), #620 (kept open, findings preserved).** After (a0) merges, it consumes the log so base and
+  state freshness rest on history. That answers 4081030214; the P2 4081030220 folds into the same head.
+- **Unit (b), #619 (kept open).** It follows (a), re-scoped to a pure verdict over (a)'s schema.
+
+Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
+deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
 stays untouched at `b2490c2a`.
+
+### History — the cloud-role-transfer shadow-consumer broadening (#618, merged at e0908622)
+
+`open_pr: 618` (`work_item: cloud-role-transfer-shadow-consumer-broadening`, branch
+`claude/role-transfer-shadow-consumer`) landed the consumer-side broadening: trusted-`main` lineage,
+acceptance of an earlier trusted `main` workflow SHA, and full producer-verified finding admission, with
+the shadow consumer kept non-authoritative. It claimed no role activation.
 
 ### History — 4d-i-b as the additive U1/U2/U3 redesign; all three merged (U3 = #617 → b2490c2a)
 
