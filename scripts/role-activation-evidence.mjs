@@ -350,8 +350,9 @@ export async function readRoleActivationEvidence(
   const observedAtMs = now();
 
   // Closing: the request again. It must still be the one the pass was planned from; an edit shows as
-  // `edited`, and a deleted or re-pointed request is no request.
-  let request = await readRequest('request-recheck');
+  // `edited`, and a deleted or re-pointed request is no request. Without an opening read there is nothing
+  // it was planned from, so it is not read at all (never a request without its cycle).
+  let request = opening ? await readRequest('request-recheck') : null;
   if (request) request.readAtMs = now();
   if (opening && request && (request.headSha !== opening.headSha || request.findingRef !== opening.findingRef
     || request.atMs !== opening.atMs)) {

@@ -364,6 +364,15 @@ test('the request is re-read after the freshness point: an edit, a re-pointing o
   });
   assert.equal(stripped.evidence.records.request, null);
   assert.ok(stripped.evidence.problems.includes("request-recheck: the request is no longer readable as this cycle's request"));
+  // Unreadable at the opening read but readable later: nothing was planned from it, so no request at all.
+  const late = await readWorld((w) => {
+    const comment = w.comment;
+    w.comment = null;
+    w.after = { comment: { 1: (world) => { world.comment = comment; } } };
+  });
+  assert.equal(late.evidence.records.request, null);
+  assert.equal(late.evidence.cycle.originalHeadSha, null);
+  assert.ok(late.evidence.problems.some((problem) => problem.startsWith('request: Not Found')));
   // Deleted: no request, and a diagnostic.
   const deleted = await readWorld((w) => { w.after = { comment: { 1: (world) => { world.comment = null; } } }; });
   assert.equal(deleted.evidence.records.request, null);
