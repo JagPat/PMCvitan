@@ -213,6 +213,8 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
 
 - **Request.** The comment's server `issue_url` binds the repository and PR. Its single `codex-fix-probe`
   marker names the reviewed head and the triggering finding. The author and edit state are reported.
+  A comment that is fetched but rejected (another PR or repository, no single marker, a marker naming
+  another PR, no readable time) is diagnosed with its reason, never a silent `null`.
 - **Acceptance.** The earliest Codex-connector 👀 reaction on that exact request comment. This is an
   observed-behaviour assumption and fails closed.
 - **Findings and reviews.** `classifyClaudeShadowReview` with `verifyClaudeShadowProducer`. A finding's
@@ -230,9 +232,9 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
 - **Freshness.** Opening reads decide only what to read: the request, the live PR and the push log.
   Then the freshness point is taken. Every mutable source is then read in the closing pass: the
   request again (it must be unchanged), its acceptance, the live PR (head, base ref and repositories),
-  both heads' check runs, and last the push log again. Each closing read starts after the freshness
-  point. So an edit, a push (even away-and-back), a retarget, a later review or a newer CI attempt
-  before that point is visible. A corrective push that lands during the pass is reported as a
+  both heads' check runs, the push log again, and last the lifecycle event log below. Each closing read
+  starts after the freshness point. So an edit, a push or a retarget (either even away-and-back), a
+  later review or a newer CI attempt before that point is visible. A corrective push that lands during the pass is reported as a
   diagnostic, never silently absent. A consumer that acts must re-read and bind to the reported
   decider runs.
 
@@ -270,5 +272,11 @@ head-ref deletion, restoration and force-push.
   precision and an event in the anchor's own second is reported. An undated lifecycle event is kept.
 
 The log decides nothing. Which events disqualify a cycle, and from which anchor, is its consumer's rule.
+
+**Consumed by the reader.** The evidence reader reads this log last in its closing pass, anchored at the
+cycle's earliest milestone (the earlier of the triggering finding and the request). Its freshness record
+carries `lifecycleEvents` (with `lifecycleSinceMs`, `eventLogCoveredFromMs` and `eventLogReadAtMs`), so a
+retarget or close/reopen away and back is listed even when both live-PR snapshots agree. An incomplete log
+is `null` with an `event-log:` diagnostic. The verdict (#619) decides which events disqualify the cycle.
 It issues only GET requests, writes nothing, and is wired to no workflow, gate or routing.
 `codex-current-head` stays required.
