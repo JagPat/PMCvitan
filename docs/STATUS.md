@@ -39,8 +39,9 @@ history.
   nothing consumes the gap yet.
 - **Unit (a0), `open_pr: 621`** (`work_item: cloud-role-transfer-pr-event-log`, branch
   `claude/role-activation-pr-event-log`). `scripts/pull-request-event-log.mjs` is a trusted, read-only
-  history of one pull request's lifecycle events (base, state, draft, head-ref) from its issue timeline.
-  It is complete or nothing, read twice with a prefix check, and wired to nothing.
+  history of one pull request's lifecycle events (base, state, draft, head-ref) from its append-only
+  issue events. It is complete or nothing, compares the anchor at whole-second precision, and is wired
+  to nothing.
 - **Next, an integration unit from `main`.** After (a0) merges, the reader's closing pass consumes the
   event log so base and state freshness rest on history (answers 4081030214), and a rejected request
   gets its diagnostic (answers 4081030220).
