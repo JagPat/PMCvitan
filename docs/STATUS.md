@@ -14,36 +14,34 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-shadow-consumer-broadening
-reviewed_merge: b2490c2a
-open_pr: 618
+work_item: cloud-role-transfer-activation-readiness
+reviewed_merge: e0908622
+open_pr: 619
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-22
+updated: 2026-09-23
 ```
 
-### Now — 4d-i-b U3 merged; the current unit is the cloud-role-transfer shadow-consumer broadening (#618)
+### Now — cloud-role-transfer activation-readiness contract (#619); consumer broadening (#618) merged
 
-**U3 merged** to `main` at `b2490c2a` (#617): the pairing flip and all its claimants,
-with the R1 corrections (NULL-actor claimants, the platform-owned qualified-event
-primitive, the outbox reseal docs) folded on the same head. Phase 6 task 4d unit
-4d-i-b is complete; the U1/U2/U3 additive redesign below is now history.
+The cloud role transfer continues from fresh `main` (`e0908622`, #618 merged), one writer /
+one channel. `open_pr: 619` (`work_item: cloud-role-transfer-activation-readiness`, branch
+`claude/role-transfer-activation-readiness`) adds `scripts/role-activation.mjs`: the pure,
+mutation-free contract that gates the atomic switch. `roleTransferActivationVerdict` permits
+activation ONLY when all four proofs hold for the SAME corrective head — GitHub-generated
+Codex task acceptance, same-branch corrective push, full CI green, and a bound independent
+Claude `shadow_clear` re-review on that exact head — otherwise it HOLDS and keeps
+`codex-current-head` required. It applies no switch: nothing is added to `REQUIRED_CHECKS`, no
+routing changes, `claude-independent-review` stays out of the required checks, and Codex is
+declared neither awakenable nor activated. The observed cloud cycle and the operator-authorized
+atomic switch remain the separate, later step this contract exists to gate.
 
-Per the owner disposition at the protected #617 boundary (issue #482, 2026-09-22),
-the next selected bounded work is the already-approved **cloud role transfer** from
-fresh `main`, NOT the next phase-6 product unit and NOT the deferred #614/#615.
-`open_pr: 618` (`work_item: cloud-role-transfer-shadow-consumer-broadening`, branch
-`claude/role-transfer-shadow-consumer`) lands the consumer-side broadening
-`docs/CLOUD_ROLE_TRANSFER.md` deferred to "the later unit": trusted-`main` lineage
-(`workflowExecutionRef`/`head_branch` = `main`), acceptance of an earlier trusted
-`main` workflow SHA (base-equality pin moved onto the server-side producer proof
-bound to the publisher's deterministic success/failure form), and full producer-
-verified finding admission — with the shadow consumer kept **non-authoritative**
-(`authoritative: false` on every path, no merge/gate/ownership/correction-owner
-change, `claude-independent-review` still out of the required checks). It claims no
-role activation; the authoritative-gate flip stays a separate, later, atomically
-reviewed unit. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
-stays untouched at `b2490c2a`.
+**Merged in the role-transfer lane:** #618 (`e0908622`) — the shadow-consumer broadening
+(trusted-`main` lineage; earlier-trusted-`main`-SHA acceptance via the server-side producer
+proof; producer-verified full finding admission), non-authoritative on every path. #617
+(`b2490c2a`) — Phase 6 task 4d unit 4d-i-b U3 (the pairing flip + claimants). The deferred
+#614/#615 stay untouched; the preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
+stays at `b2490c2a`.
 
 ### History — 4d-i-b as the additive U1/U2/U3 redesign; all three merged (U3 = #617 → b2490c2a)
 
