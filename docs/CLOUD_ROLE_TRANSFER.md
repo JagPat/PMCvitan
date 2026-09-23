@@ -244,3 +244,31 @@ installation (none exists), so it never supplies the separate retirement proof. 
 a request only to a Codex review comment, so a Claude-finding → Codex-correction cycle cannot bind its
 triggering finding until a later probe variant can key a request to a Claude shadow finding. Until
 then the verdict holds, fail closed.
+
+### Pull request lifecycle event log (trusted, read-only, non-activating)
+
+A snapshot of a pull request shows what its base, state and head ref are at one read. It cannot show
+that they did not change and change back between two reads. A retarget `main → release → main` inside a
+window leaves both snapshots equal, while the merge result under test (and the CI it launched) moved.
+The #620 evidence reader hit this at its third-head stop (finding 4081030214). Its head freshness already
+rests on an append-only history, the branch push log. `scripts/pull-request-event-log.mjs` is the
+matching history for base and state.
+
+`readPullRequestEventLog(client, { pullRequest, sinceMs })` reads one pull request's **issue events** and
+returns every lifecycle event at or after the anchor, each with its server time, id and actor. Lifecycle
+events are base changes (including automatic ones), close, reopen and merge, draft transitions, and
+head-ref deletion, restoration and force-push.
+
+- **Why issue events, not the timeline.** The timeline mixes in comments, which users can delete. Paging
+  through a list with deletions can shift an item across a page boundary and skip it, and repeating the
+  read does not prove it untorn. Issue events are system records users cannot delete, so the list only
+  grows at its end: a paged read cannot skip an event that existed when it began (`coveredFromMs`).
+- **Complete or nothing.** Pages are read to a short page. A log over the page cap, a non-list page, a
+  failed read, or ids that do not strictly increase give `covered: false` and `events: null` plus a
+  diagnostic, never a partial list.
+- **Fail-closed boundaries.** GitHub stamps events to whole seconds, so the anchor is compared at that
+  precision and an event in the anchor's own second is reported. An undated lifecycle event is kept.
+
+The log decides nothing. Which events disqualify a cycle, and from which anchor, is its consumer's rule.
+It issues only GET requests, writes nothing, and is wired to no workflow, gate or routing.
+`codex-current-head` stays required.

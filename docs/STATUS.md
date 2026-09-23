@@ -14,39 +14,53 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-activation-evidence-reader
-reviewed_merge: e0908622
-open_pr: 620
+work_item: cloud-role-transfer-pr-event-log
+reviewed_merge: 7f2cbbef
+open_pr: 621
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-23
 ```
 
-### Now — cloud role transfer: unit (a) activation evidence reader (#620); #619 held open as unit (b)
+### Now — cloud role transfer: unit (a0) pull request lifecycle event log (#621); #620 merged; #619 held open
 
-The cloud role transfer continues from fresh `main` (`e0908622`, #618 merged), with one writer and one
-channel. #619, the activation-readiness verdict, reached the policy's third-head stop: 3 → 4 → 3 → 6
-P1s on `scripts/role-activation.mjs`, all in the identity/ordering/freshness class (stop recorded at
-#619 comment 5790993532). The operator approved the recommended **additive split** (#619 comment
-5791317874; coordination on #482 comment 5791318564):
+The cloud role transfer continues with one writer and one channel. #619 (the activation-readiness
+verdict) reached its third-head stop and was split additively (#619 comments 5790993532 and
+5791317874). Unit (a), #620, the trusted evidence reader, then reached its own third-head stop: Codex P1s
+on `b84f0d89`, `8becf01c` and `dacfd365` in `scripts/role-activation-evidence.mjs`, recorded at #620
+comment 5792574988 (coordination on #482, comment 5792575745). The shared root cause: freshness proven
+by comparing snapshots. The pull request's base and state were the last dimensions with no append-only
+history.
 
-- **Unit (a), `open_pr: 620`** (`work_item: cloud-role-transfer-activation-evidence-reader`, branch
-  `claude/role-activation-evidence-reader`). `scripts/role-activation-evidence.mjs` is a trusted,
-  read-only reader that authenticates one correction cycle from GitHub: request, acceptance, findings
-  and reviews, newest-evidence CI, push log with ancestry, and live-head freshness. It returns
-  normalized records. It decides nothing across records, writes nothing and activates nothing.
-- **Unit (b), #619 (kept open, not replaced).** After (a) merges, #619 merges `main` and re-scopes the
-  pure verdict to consume (a)'s schema against a caller-supplied expected repository and PR. It carries
-  all six current-head obligations (repository on every record, the full milestone order,
-  install-after-cycle, the triggering finding through request and acceptance, live-head/push-log
-  freshness, and the latest applicable CI) plus every earlier finding.
+- **Unit (a), #620, merged at `7f2cbbef`.** Codex cleared `5a4e20c2`, and the controller resolved its
+  threads and merged it. Two findings remain owed in code (recorded at #620 comment 5793241285):
+  4081030214 (P1, an away-and-back base retarget is invisible) and 4081030220 (P2, a request that GETs
+  but fails normalization carries no diagnostic). The reader is read-only and wired to nothing, so
+  nothing consumes the gap yet.
+- **Unit (a0), `open_pr: 621`** (`work_item: cloud-role-transfer-pr-event-log`, branch
+  `claude/role-activation-pr-event-log`). `scripts/pull-request-event-log.mjs` is a trusted, read-only
+  history of one pull request's lifecycle events (base, state, draft, head-ref) from its append-only
+  issue events. It is complete or nothing, compares the anchor at whole-second precision, and is wired
+  to nothing.
+- **Next, an integration unit from `main`.** After (a0) merges, the reader's closing pass consumes the
+  event log so base and state freshness rest on history (answers 4081030214), and a rejected request
+  gets its diagnostic (answers 4081030220).
+- **Unit (b), #619 (kept open).** It follows, re-scoped to a pure verdict over the reader's schema.
 
-Nothing activates: `codex-current-head` stays required, no gate or routing changes, and Codex is
-neither awakenable nor activated. #614/#615 stay untouched, and the preserved merged branch
-`claude/pmcvitan-mobile-places-n3fxup` stays at `b2490c2a`.
+Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
+deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
+stays untouched at `b2490c2a`.
 
-**Merged in the role-transfer lane:** #618 (`e0908622`), the shadow-consumer broadening
-(non-authoritative). #617 (`b2490c2a`), Phase 6 task 4d unit 4d-i-b U3.
+**Merged in the role-transfer lane:** #620 (`7f2cbbef`), the activation evidence reader. #618
+(`e0908622`), the shadow-consumer broadening (non-authoritative). #617 (`b2490c2a`), Phase 6 task 4d
+unit 4d-i-b U3.
+
+### History — the cloud-role-transfer shadow-consumer broadening (#618, merged at e0908622)
+
+`open_pr: 618` (`work_item: cloud-role-transfer-shadow-consumer-broadening`, branch
+`claude/role-transfer-shadow-consumer`) landed the consumer-side broadening: trusted-`main` lineage,
+acceptance of an earlier trusted `main` workflow SHA, and full producer-verified finding admission, with
+the shadow consumer kept non-authoritative. It claimed no role activation.
 
 ### History — 4d-i-b as the additive U1/U2/U3 redesign; all three merged (U3 = #617 → b2490c2a)
 
