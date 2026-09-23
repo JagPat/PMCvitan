@@ -200,3 +200,38 @@ conclusion that disagrees with the evidence it carries is rejected. Every consum
 `claude-independent-review` stays absent from the required checks. Flipping the authoritative gate
 remains a separate, later, atomically reviewed unit (§"Pending activation" #4); a non-authoritative
 consumer improvement does not activate the role transfer.
+
+### Activation evidence reader (trusted, read-only, non-activating)
+
+The activation verdict cannot trust records its caller assembles: "the latest CI attempt", "no push
+since the corrective push" and "the live head" are facts about GitHub at decision time. After the #619
+convergence stop, the operator approved an additive split. `scripts/role-activation-evidence.mjs` is the
+trusted side. For one repository, one PR and one GitHub-generated correction-request comment,
+`readRoleActivationEvidence(client, { pullRequest, requestCommentId })` reads the cycle and returns
+normalized evidence (`ROLE_ACTIVATION_EVIDENCE_SCHEMA`). Every record carries the identity it was read
+under and its milestone's server timestamp. It reuses the existing trusted adapters:
+
+- **Request.** The comment's server `issue_url` binds the repository and PR. Its single `codex-fix-probe`
+  marker names the reviewed head and the triggering finding. The author and edit state are reported.
+- **Acceptance.** The earliest Codex-connector 👀 reaction on that exact request comment. This is an
+  observed-behaviour assumption and fails closed.
+- **Findings and reviews.** `classifyClaudeShadowReview` with `verifyClaudeShadowProducer`. A finding's
+  identity is its verified check run's own URL.
+- **CI.** `summarizeRequiredChecks`, the gate's newest-evidence rule, which includes cancelled attempts.
+  The initial CI is evaluated as of the triggering finding. The final CI is read fresh, so a newer
+  failed or cancelled attempt governs.
+- **Corrective push.** The Activity API's branch push log, giving server before/after/type/actor/time;
+  ancestry comes from the compare API. The corrective push is the first branch update after the
+  request. Every later update is listed, so an away-and-back to the same SHA still shows two updates.
+  A push-log page that does not reach back to the request is reported as truncated, not guessed.
+- **Freshness.** The live PR is read before and after the fresh reads, and the window's times are
+  recorded.
+
+The reader decides nothing across records. Identity equality with the caller's expected repository and
+PR, the full milestone order, causation and freshness are the pure verdict's rules (#619). An unreadable
+or unauthenticated source yields `null` plus a diagnostic, never a partial record. The reader issues
+only reads and is wired to no workflow, gate or routing. It does not observe a replacement-gate
+installation (none exists), so it never supplies the separate retirement proof. `codex-fix-probe` keys
+a request only to a Codex review comment, so a Claude-finding → Codex-correction cycle cannot bind its
+triggering finding until a later probe variant can key a request to a Claude shadow finding. Until
+then the verdict holds, fail closed.
