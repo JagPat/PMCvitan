@@ -3,8 +3,15 @@ import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { parseCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
 import { authorizeExactHeadMerge, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
-import { roleTransferActivationVerdict, ACTIVATION_SWITCH, ACTIVATION_REQUIRED_PROOFS } from './role-activation.mjs';
-import { STATUS_CONTEXT, CLAUDE_SHADOW_CONTEXT } from './review-policy.mjs';
+import {
+  roleTransferActivationVerdict,
+  ACTIVATION_SWITCH,
+  ACTIVATION_INSTALL,
+  ACTIVATION_RETIRE,
+  ACTIVATION_REQUIRED_PROOFS,
+  ACTIVATION_RETIRE_PROOF,
+} from './role-activation.mjs';
+import { STATUS_CONTEXT, CLAUDE_SHADOW_CONTEXT, CLAUDE_STATUS_CONTEXT } from './review-policy.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -162,52 +169,102 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   }
 });
 
-test('role-transfer activation readiness holds until the full observed proof sequence, and switches nothing itself', () => {
-  const corrective = 'a'.repeat(40);
-  const fullProof = () => ({
+test('role-transfer activation readiness binds one verified cycle, installs before retiring, and switches nothing itself', () => {
+  const original = 'a'.repeat(40); // the reviewed (pre-correction) head
+  const corrective = 'c'.repeat(40); // the head the corrective push produced
+  const requestId = 'correction-request-42';
+  const cycle = () => ({ pullRequest: 619, branch: 'claude/x', originalHeadSha: original, correctionRequestId: requestId });
+  // The full cycle bound to ONE identity, replacement gate NOT yet observed.
+  const fullCycle = () => ({
+    cycle: cycle(),
     correctiveHeadSha: corrective,
-    codexTaskAcceptance: { githubGenerated: true, humanAuthored: false },
-    correctivePush: { sameBranch: true, headSha: corrective },
-    ci: { headSha: corrective, green: true },
-    claudeReReview: { headSha: corrective, state: 'shadow_clear', authoritative: false },
+    initialCi: { pullRequest: 619, branch: 'claude/x', headSha: original, green: true },
+    initialClaudeFinding: { pullRequest: 619, branch: 'claude/x', headSha: original, state: 'changes_required', correctionRequestId: requestId },
+    codexTaskAcceptance: { pullRequest: 619, branch: 'claude/x', githubGenerated: true, humanAuthored: false, correctionRequestId: requestId, causedHeadSha: corrective },
+    correctivePush: { pullRequest: 619, branch: 'claude/x', sameBranch: true, parentSha: original, headSha: corrective, correctionRequestId: requestId },
+    ci: { pullRequest: 619, branch: 'claude/x', headSha: corrective, green: true },
+    claudeReReview: { pullRequest: 619, branch: 'claude/x', headSha: corrective, state: 'shadow_clear', authoritative: false },
   });
 
-  // All four proofs present for the SAME corrective head → activation permitted.
-  const activated = roleTransferActivationVerdict(fullProof());
-  assert.equal(activated.state, 'activate');
-  assert.equal(activated.activate, true);
-  assert.equal(activated.keepCodexCurrentHead, false);
-  assert.equal(activated.correctiveHeadSha, corrective);
+  // Full cycle, replacement gate not yet observed → INSTALL the replacement, but KEEP codex-current-head.
+  const installed = roleTransferActivationVerdict(fullCycle());
+  assert.equal(installed.state, 'activate');
+  assert.equal(installed.activate, true);
+  assert.equal(installed.keepCodexCurrentHead, true); // NOT retired on the first successful verdict
+  assert.equal(installed.retireCodexCurrentHead, false);
+  assert.equal(installed.correctiveHeadSha, corrective);
+  assert.equal(installed.install.addRequired, CLAUDE_STATUS_CONTEXT); // the trusted-controller status, not the raw shadow check
+  assert.deepEqual(installed.missingForRetire, [ACTIVATION_RETIRE_PROOF]);
 
-  // Default / empty evidence → HOLD, keep codex-current-head; every proof is reported missing.
+  // Only once the replacement gate is installed as required AND observed in role → RETIRE codex-current-head.
+  const retired = roleTransferActivationVerdict({
+    ...fullCycle(),
+    replacementGate: { context: CLAUDE_STATUS_CONTEXT, installedRequired: true, observedInRole: true },
+  });
+  assert.equal(retired.state, 'retire');
+  assert.equal(retired.keepCodexCurrentHead, false);
+  assert.equal(retired.retireCodexCurrentHead, true);
+  assert.equal(retired.retire.retire, STATUS_CONTEXT);
+  // A replacement-gate record that is not installed/observed, or names the wrong context, does NOT retire.
+  for (const bad of [
+    { context: CLAUDE_STATUS_CONTEXT, installedRequired: true, observedInRole: false },
+    { context: CLAUDE_STATUS_CONTEXT, installedRequired: false, observedInRole: true },
+    { context: CLAUDE_SHADOW_CONTEXT, installedRequired: true, observedInRole: true }, // raw producer check name is not the gate
+  ]) {
+    const v = roleTransferActivationVerdict({ ...fullCycle(), replacementGate: bad });
+    assert.equal(v.state, 'activate');
+    assert.equal(v.keepCodexCurrentHead, true);
+  }
+
+  // Default / empty evidence → HOLD, keep codex-current-head; every cycle proof is reported missing.
   const held = roleTransferActivationVerdict();
   assert.equal(held.state, 'hold');
   assert.equal(held.activate, false);
   assert.equal(held.keepCodexCurrentHead, true);
-  assert.deepEqual(held.missing.filter((m) => m !== 'correctiveHeadSha').sort(), [...ACTIVATION_REQUIRED_PROOFS].sort());
+  assert.deepEqual([...held.missing].sort(), [...ACTIVATION_REQUIRED_PROOFS].sort());
 
   // Each single missing/failed proof holds and names exactly that gap.
-  const drop = (mut) => { const e = fullProof(); mut(e); return roleTransferActivationVerdict(e); };
-  const acc = drop((e) => { e.codexTaskAcceptance = { githubGenerated: true, humanAuthored: true }; }); // human @codex is not proof
+  const drop = (mut) => { const e = fullCycle(); mut(e); return roleTransferActivationVerdict(e); };
+  const acc = drop((e) => { e.codexTaskAcceptance.humanAuthored = true; }); // human @codex is not proof
   assert.equal(acc.state, 'hold');
   assert.deepEqual(acc.missing, ['codexTaskAcceptanceGitHubGenerated']);
-  assert.deepEqual(drop((e) => { e.codexTaskAcceptance = { githubGenerated: false }; }).missing, ['codexTaskAcceptanceGitHubGenerated']);
-  assert.deepEqual(drop((e) => { e.correctivePush = { sameBranch: false, headSha: corrective }; }).missing, ['codexCorrectiveSameBranchPush']);
-  assert.deepEqual(drop((e) => { e.ci = { headSha: corrective, green: false }; }).missing, ['fullCiGreen']);
-  assert.deepEqual(drop((e) => { e.claudeReReview = { headSha: corrective, state: 'changes_required' }; }).missing, ['boundClaudeClearReReview']);
+  assert.deepEqual(drop((e) => { e.codexTaskAcceptance.githubGenerated = false; }).missing, ['codexTaskAcceptanceGitHubGenerated']);
+  assert.deepEqual(drop((e) => { e.initialCi.green = false; }).missing, ['initialFullCiGreen']);
+  assert.deepEqual(drop((e) => { e.initialClaudeFinding.state = 'shadow_clear'; }).missing, ['initialClaudeFinding']);
+  assert.deepEqual(drop((e) => { e.correctivePush.sameBranch = false; }).missing, ['codexCorrectiveSameBranchPush']);
+  assert.deepEqual(drop((e) => { e.ci.green = false; }).missing, ['fullCiGreen']);
+  assert.deepEqual(drop((e) => { e.claudeReReview.state = 'changes_required'; }).missing, ['boundClaudeClearReReview']);
 
-  // A proof bound to a DIFFERENT head does not count — CI/review must be on the corrective head.
-  const otherHead = 'b'.repeat(40);
-  assert.deepEqual(drop((e) => { e.ci = { headSha: otherHead, green: true }; }).missing, ['fullCiGreen']);
-  assert.deepEqual(drop((e) => { e.claudeReReview = { headSha: otherHead, state: 'shadow_clear' }; }).missing, ['boundClaudeClearReReview']);
-  assert.deepEqual(drop((e) => { e.correctivePush = { sameBranch: true, headSha: otherHead }; }).missing, ['codexCorrectiveSameBranchPush']);
+  // Causation: the accepted task must have caused THIS head, and the push must descend from the reviewed head.
+  assert.deepEqual(drop((e) => { e.codexTaskAcceptance.causedHeadSha = 'd'.repeat(40); }).missing, ['codexTaskAcceptanceGitHubGenerated']);
+  assert.deepEqual(drop((e) => { e.correctivePush.parentSha = 'd'.repeat(40); }).missing, ['codexCorrectiveSameBranchPush']);
 
-  // The switch is DATA the contract describes, not something it applies: it names the replacement
-  // gate to add and the codex-current-head status to retire only afterward, and the role swap.
-  assert.equal(ACTIVATION_SWITCH.addRequired, CLAUDE_SHADOW_CONTEXT);
+  // Cross-cycle recombination is refused: a record naming a different PR/branch/request does not count,
+  // even though its own head SHAs line up — the loophole that let PR A's task pair with PR B's push.
+  assert.deepEqual(drop((e) => { e.codexTaskAcceptance.pullRequest = 620; }).missing, ['codexTaskAcceptanceGitHubGenerated']);
+  assert.deepEqual(drop((e) => { e.claudeReReview.branch = 'other/branch'; }).missing, ['boundClaudeClearReReview']);
+  assert.deepEqual(drop((e) => { e.correctivePush.correctionRequestId = 'other-request'; }).missing, ['codexCorrectiveSameBranchPush']);
+  assert.deepEqual(drop((e) => { e.initialClaudeFinding.correctionRequestId = 'other-request'; }).missing, ['initialClaudeFinding']);
+
+  // A malformed cycle identity (or a corrective head equal to the reviewed head) holds on cycleIdentity.
+  assert.ok(roleTransferActivationVerdict({ ...fullCycle(), correctiveHeadSha: original }).missing.includes('cycleIdentity'));
+  assert.ok(roleTransferActivationVerdict({ ...fullCycle(), cycle: { ...cycle(), correctionRequestId: '' } }).missing.includes('cycleIdentity'));
+
+  // A CI/review proof bound to a DIFFERENT head does not count — it must be on the corrective head.
+  const otherHead = 'e'.repeat(40);
+  assert.deepEqual(drop((e) => { e.ci.headSha = otherHead; }).missing, ['fullCiGreen']);
+  assert.deepEqual(drop((e) => { e.claudeReReview.headSha = otherHead; }).missing, ['boundClaudeClearReReview']);
+
+  // The switch is DATA the contract describes, not something it applies. INSTALL adds the trusted-
+  // controller status and swaps routing; RETIRE (a later, observed step) drops codex-current-head.
+  assert.equal(ACTIVATION_INSTALL.addRequired, CLAUDE_STATUS_CONTEXT);
+  assert.equal(ACTIVATION_RETIRE.retire, STATUS_CONTEXT);
+  assert.equal(ACTIVATION_SWITCH.addRequired, CLAUDE_STATUS_CONTEXT);
   assert.equal(ACTIVATION_SWITCH.retire, STATUS_CONTEXT);
   assert.equal(ACTIVATION_SWITCH.codingOwner, 'codex');
   assert.equal(ACTIVATION_SWITCH.reviewer, 'claude');
-  // codex-current-head remains the live required gate: this unit does not add the shadow context to it.
+  // codex-current-head remains the live required gate: this unit adds NEITHER the raw shadow producer
+  // check NOR the trusted replacement status to the required checks.
   assert.ok(!REQUIRED_CHECKS.includes(CLAUDE_SHADOW_CONTEXT));
+  assert.ok(!REQUIRED_CHECKS.includes(CLAUDE_STATUS_CONTEXT));
 });

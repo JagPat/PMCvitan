@@ -92,6 +92,13 @@ export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
 export const REQUIRED_CHECKS = [...GATE_CHECKS, ...PRODUCT_CHECKS];
 export const STATUS_CONTEXT = 'codex-current-head';
 export const CLAUDE_SHADOW_CONTEXT = 'claude-independent-review';
+// The trusted-controller status that WOULD replace `codex-current-head` when the role transfer activates.
+// Like `codex-current-head`, it is published only by the trusted controller from ADAPTER-VERIFIED shadow
+// evidence (a `shadow_clear` from `classifyClaudeShadowReview` after `verifyClaudeShadowProducer`), never
+// the raw `claude-independent-review` producer check name — so a PR-emitted check of that name cannot
+// satisfy it. No consumer sets or requires it yet; the activation-readiness contract only names it as the
+// gate a later, operator-authorized switch would install.
+export const CLAUDE_STATUS_CONTEXT = 'claude-current-head';
 export const ROOT_CAUSE_ADVISORY_AFTER_FINDING_HEADS = 2;
 
 export function requiredChecksForPullRequest(pullRequestNumber) {

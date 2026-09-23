@@ -205,23 +205,39 @@ consumer improvement does not activate the role transfer.
 
 `scripts/role-activation.mjs` is the pure, mutation-free contract that gates the atomic switch
 described in §"Pending activation" #4. It touches no live gate and starts nothing: it reads
-evidence and returns a verdict. `roleTransferActivationVerdict(evidence)` permits activation ONLY when
-all four proofs hold for the SAME corrective head, in the order the sequence must occur:
+evidence and returns a verdict. `roleTransferActivationVerdict(evidence)` binds ONE correction cycle:
+every record must name the SAME cycle identity — the correction request, PR, branch, and the
+pre-correction (reviewed) head — so evidence from a different PR/branch/request, or supplied out of
+order, cannot be recombined into a false `activate`. The proofs, in the order the cycle occurs:
 
-1. **GitHub-generated Codex task acceptance** — an automated GitHub event started a hosted Codex task;
-   a human `@codex` mention is explicitly not proof.
-2. **Same-branch corrective push** — that task pushed a new head on the same branch (the corrective
-   head SHA).
+0a. **Initial full CI green** on the reviewed head.
+0b. **The initial Claude finding** on that head that TRIGGERED this correction request (a
+   `changes_required` shadow review bound to the request id) — the full-cycle contract's "Claude
+   findings" leg, not just the final clear.
+1. **GitHub-generated Codex task acceptance** for this request — an automated GitHub event started a
+   hosted Codex task that CAUSED exactly the corrective head; a human `@codex` mention is not proof.
+2. **Same-branch corrective push** for this request — a descendant of the reviewed head
+   (`parent === originalHead`) producing the corrective head SHA.
 3. **Full CI green** on that corrective head.
-4. **A bound independent Claude finding/clear re-review** on that exact head — a server-verified
-   `shadow_clear` from the (still non-authoritative) consumer, bound to the corrective head SHA.
+4. **A bound independent Claude clear re-review** on that exact corrective head — a server-verified
+   `shadow_clear` from the (still non-authoritative) consumer.
 
 Anything missing → `{ state: 'hold', keepCodexCurrentHead: true, missing: [...] }`: the existing
-`codex-current-head` required gate stays in force. Only when every proof is present does the verdict
-become `activate`, carrying `ACTIVATION_SWITCH` as DATA — the replacement gate to add
-(`claude-independent-review`), the `codex-current-head` status to retire only AFTER that replacement is
-installed and observed, and the routing swap (Codex codes, Claude reviews). This unit APPLIES none of
-it: it adds nothing to `REQUIRED_CHECKS`, changes no routing, and does not make
-`claude-independent-review` a merge gate. It declares Codex neither awakenable nor activated; the
-observed cloud cycle and the operator-authorized atomic switch remain the separate, later step this
-contract exists to gate.
+`codex-current-head` required gate stays in force. When every cycle proof holds, activation is
+permitted in TWO phases so no interval is ever left with neither independent-review gate:
+
+- `activate` — INSTALL the replacement gate and switch routing while KEEPING `codex-current-head`
+  required. `keepCodexCurrentHead` stays `true`. The replacement gate is `ACTIVATION_INSTALL.addRequired`
+  = a **distinct trusted-controller status** (`CLAUDE_STATUS_CONTEXT`, `claude-current-head`) the
+  controller publishes only from ADAPTER-VERIFIED shadow evidence — **not** the raw
+  `claude-independent-review` producer check name, whose promotion would let a PR-emitted check of that
+  name satisfy branch protection without a verified review.
+- `retire` — only once a SEPARATE proof (`replacementGateInstalledObserved`) shows that replacement
+  gate installed as required AND observed in that role does the verdict retire `codex-current-head`
+  (`ACTIVATION_RETIRE.retire`), setting `keepCodexCurrentHead: false`.
+
+`ACTIVATION_SWITCH` is the whole switch as DATA (`ACTIVATION_INSTALL` + `ACTIVATION_RETIRE`). This unit
+APPLIES none of it: it adds nothing to `REQUIRED_CHECKS` (neither the raw shadow check nor the trusted
+replacement status), changes no routing, and makes nothing a merge gate. It declares Codex neither
+awakenable nor activated; the observed cloud cycle and the operator-authorized atomic switch remain the
+separate, later step this contract exists to gate.
