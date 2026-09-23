@@ -49,8 +49,9 @@ import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs'
  *                                   branch at the cycle base at the start AND at the end (ref, SHA and both
  *                                   repositories), its head was the corrective head at both reads, no branch
  *                                   update follows the corrective push (an away-and-back is two updates), the
- *                                   complete lifecycle event log from no later than the initial CI's
- *                                   earliest decider start lists only
+ *                                   complete lifecycle event log from no later than the update that
+ *                                   brought the branch to the reviewed head (before every workflow for it,
+ *                                   and before the initial CI's deciders started) lists only
  *                                   draft transitions (a retarget away and back is two base changes), and
  *                                   every mutable source (request, acceptance, live PR, both heads' reviews
  *                                   and CI, push log, event log) was read after the freshness point, which
@@ -233,12 +234,17 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && freshness.baseShaAtEnd === baseSha
     && Array.isArray(freshness.pushesAfterCorrective)
     && freshness.pushesAfterCorrective.length === 0
-    // The lifecycle event log covers the cycle from no later than the initial CI's earliest decider start (a
-    // retarget after it moves the base those runs were launched on), is complete, and lists only
-    // cycle-neutral events (an undated event is listed, so its kind still decides).
-    && finite(freshness.lifecycleSinceMs)
+    // The lifecycle event log covers the cycle from no later than the update that brought the branch to the
+    // reviewed head: every workflow for that head (queued or running) was created after it, and the initial
+    // CI's deciders must have started after it too (a decider from an earlier arrival of the same SHA could
+    // predate the coverage). It is complete and lists only cycle-neutral events (an undated or unknown event
+    // is listed, so its kind still decides).
+    && freshness.reviewedHeadArrival?.afterSha === originalHeadSha
+    && finite(freshness.reviewedHeadArrival?.atMs)
     && finite(initialCi?.startedAtMs)
-    && freshness.lifecycleSinceMs <= initialCi.startedAtMs
+    && freshness.reviewedHeadArrival.atMs <= initialCi.startedAtMs
+    && finite(freshness.lifecycleSinceMs)
+    && freshness.lifecycleSinceMs <= freshness.reviewedHeadArrival.atMs
     && Array.isArray(freshness.lifecycleEvents)
     && freshness.lifecycleEvents.every((entry) => CYCLE_NEUTRAL_LIFECYCLE_EVENTS.includes(entry?.event))
     && finite(freshness.startedAtMs)

@@ -259,8 +259,10 @@ matching history for base and state.
 
 `readPullRequestEventLog(client, { pullRequest, sinceMs })` reads one pull request's **issue events** and
 returns every lifecycle event at or after the anchor, each with its server time, id and actor. Lifecycle
-events are base changes (including automatic ones), close, reopen and merge, draft transitions, and
-head-ref deletion, restoration and force-push.
+events are base changes (including automatic ones and base-branch deletion), close, reopen and merge,
+draft transitions, and head-ref deletion, restoration and force-push. Any event not on the known-neutral
+list (labels, assignment, mentions, review requests, auto-merge toggles and the like) is reported too, so
+an unknown mutation is surfaced rather than dropped.
 
 - **Why issue events, not the timeline.** The timeline mixes in comments, which users can delete. Paging
   through a list with deletions can shift an item across a page boundary and skip it, and repeating the
@@ -277,8 +279,9 @@ It issues only GET requests, writes nothing, and is wired to no workflow, gate o
 `codex-current-head` stays required.
 
 **Consumed by the reader.** The evidence reader reads this log last in its closing pass, anchored at the
-cycle's earliest milestone (the initial CI's earliest decider start, the finding or the request, whichever
-is first; a retarget after CI started moves the base those runs were launched on). Its freshness record
+cycle's earliest milestone: the push-log update that brought the branch to the reviewed head (every
+workflow for that head, queued or running, was created after it), else the initial CI's earliest decider
+start, the finding or the request, whichever is first. Its freshness record
 carries `lifecycleEvents` (with `lifecycleSinceMs`, `eventLogCoveredFromMs` and `eventLogReadAtMs`), so a
 retarget or close/reopen away and back is listed even when both live-PR snapshots agree. An incomplete log
 is `null` with an `event-log:` diagnostic. The verdict (next section) decides which events disqualify
@@ -322,10 +325,12 @@ is always `hold` (see **Causation**):
 - **Freshness.** Read after the review. The open same-repository PR targets `main` at the cycle base,
   both at the start and at the end (ref, SHA and both repositories). Its head is the corrective head at
   both reads. No branch update follows the corrective push; an away-and-back to the same SHA is two
-  updates. The lifecycle event log, anchored no later than the initial CI's earliest decider start, is
-  complete and lists only draft transitions (the controller toggles them to request a review; they move
-  neither the base nor the code). Any base change, close, reopen, merge, head-ref or unknown event holds,
-  so a retarget away and back cannot pass between two agreeing snapshots. Every mutable source (request, acceptance,
+  updates. The lifecycle event log is anchored no later than the update that brought the branch to the
+  reviewed head, and the initial CI's deciders started after that update (a decider from an earlier
+  arrival of the same SHA holds). The log is complete and lists only draft transitions (the controller
+  toggles them to request a review; they move neither the base nor the code). Any base change or
+  deletion, close, reopen, merge, head-ref or unknown event holds, so a retarget away and back cannot pass
+  between two agreeing snapshots. Every mutable source (request, acceptance,
   live PR, both heads' reviews and CI, push log, event log) was read after the freshness point, which
   follows the pass's opening.
 - **Order.** Strictly: initial CI < finding < request < acceptance < corrective push < final CI <

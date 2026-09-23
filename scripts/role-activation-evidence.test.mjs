@@ -64,10 +64,12 @@ test('the reader normalizes a full correction cycle with identity and server tim
     { headRepositoryAtEnd: REPO, baseRefAtEnd: 'main', baseRepositoryAtEnd: REPO },
   );
   assert.deepEqual(initialFinding.laterReviewRunIds, []);
-  // The lifecycle event log covers the cycle from its earliest milestone (the initial CI's earliest decider
-  // start, before the finding and the request); the retarget and label before it are not the cycle's.
+  // The lifecycle event log covers the cycle from its earliest milestone: the update that brought the branch
+  // to the reviewed head (09:00; every workflow for that head was created after it), before the initial CI
+  // started, the finding and the request. The retarget before it is not the cycle's.
+  assert.deepEqual(freshness.reviewedHeadArrival, { activityId: 800, afterSha: ORIGINAL, atMs: ms('09:00') });
   assert.equal(initialCi.startedAtMs, ms('10:00'));
-  assert.equal(freshness.lifecycleSinceMs, ms('10:00'));
+  assert.equal(freshness.lifecycleSinceMs, ms('09:00'));
   assert.deepEqual(freshness.lifecycleEvents, []);
   // The final CI names the one run that decided each required name.
   assert.deepEqual(finalCi.deciders.map((decider) => decider.name).sort(), [...REQUIRED_CHECKS].sort());
@@ -462,20 +464,31 @@ test('the event log is anchored at the cycle\'s earliest milestone; without a fi
   });
   assert.equal(staggered.evidence.records.initialCi.startedAtMs, ms('09:50'));
   assert.deepEqual(staggered.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [71]);
-  // Without a finding identity there is no finding time: the anchor is the request.
+  // Finding 4086243264: a workflow can be created (and queued) before its first job starts. The head's
+  // arrival bounds every workflow for it, so a retarget between the arrival (09:00) and the first job start
+  // (10:00) is the cycle's.
+  const queued = await readWorld((w) => { w.events.push(issueEvent(72, 'base_ref_changed', '09:10')); });
+  assert.deepEqual(queued.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [72]);
+  // The arrival is the LATEST update at or before the request, not an older one.
+  const older = await readWorld((w) => { w.activities.push(activity(700, BASE, OTHER, '08:00', { actor: 'JagPat' })); });
+  assert.deepEqual(older.evidence.records.freshness.reviewedHeadArrival, { activityId: 800, afterSha: ORIGINAL, atMs: ms('09:00') });
+  // The anchor is the earliest of every milestone: when deciders started before the recorded arrival (the
+  // same head arrived earlier too), the CI start moves it earlier still.
+  const reArrived = await readWorld((w) => {
+    w.activities[1] = { ...w.activities[1], timestamp: at('10:10') };
+    w.events.push(issueEvent(73, 'base_ref_changed', '10:05'));
+  });
+  assert.equal(reArrived.evidence.records.freshness.reviewedHeadArrival.atMs, ms('10:10'));
+  assert.equal(reArrived.evidence.records.freshness.lifecycleSinceMs, ms('10:00'));
+  assert.deepEqual(reArrived.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [73]);
+  // With no arrival, no finding time and no CI, the anchor is the request.
   const unverified = await readWorld((w) => {
     w.verify = false;
+    w.activities = w.activities.map((entry) => (entry.id === 800 ? { ...entry, timestamp: at('10:30') } : entry));
     w.events.push(issueEvent(70, 'base_ref_changed', '10:25'), issueEvent(71, 'base_ref_changed', '10:40'));
   });
   assert.equal(unverified.evidence.records.freshness.lifecycleSinceMs, ms('10:30'));
   assert.deepEqual(unverified.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [71]);
-  // The earlier of the two, whichever it is: a finding stamped after the request does not move the anchor.
-  const late = await readWorld((w) => {
-    w.runs[ORIGINAL] = [...ciRuns(ORIGINAL, { start: '10:32', end: '10:35' }), shadowRun(ORIGINAL, { id: INITIAL_FINDING_RUN, completed: at('10:40'), state: 'changes_required' })];
-    w.events.push(issueEvent(70, 'base_ref_changed', '10:35'));
-  });
-  assert.equal(late.evidence.records.freshness.lifecycleSinceMs, ms('10:30'));
-  assert.deepEqual(late.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [70]);
   // No request, no cycle: the log is not read at all.
   const none = await readWorld((w) => { w.comment = null; });
   assert.ok(!none.calls.some((path) => path.includes('/events?')));

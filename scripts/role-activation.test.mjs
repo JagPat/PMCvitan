@@ -262,6 +262,30 @@ test('finding 4080104397: fresh live-head evidence after the review; any interve
   holds(roleTransferActivationVerdict(afterCi, expected), 'liveHeadFreshness');
   holds(await verdictWith((e) => { e.records.freshness.lifecycleSinceMs = e.records.initialCi.startedAtMs + 1; }), 'liveHeadFreshness');
   holds(await verdictWith((e) => { e.records.initialCi.startedAtMs = null; }), 'liveHeadFreshness');
+  // Finding 4086243264: a workflow is created (and may queue) when the reviewed head arrives, before its
+  // first job starts. A retarget away and back in that queued window holds, end to end.
+  const queued = await evidenceFor((w) => {
+    w.events.push(issueEvent(52, 'base_ref_changed', '09:10'), issueEvent(53, 'base_ref_changed', '09:11'));
+  });
+  holds(roleTransferActivationVerdict(queued, expected), 'liveHeadFreshness');
+  // Deciders that started before the recorded arrival (the SHA arrived earlier too) are not covered: hold.
+  const reArrived = await evidenceFor((w) => { w.activities[1] = { ...w.activities[1], timestamp: at('10:10') }; });
+  holds(roleTransferActivationVerdict(reArrived, expected), 'liveHeadFreshness');
+  holds(await verdictWith((e) => { e.records.freshness.reviewedHeadArrival.afterSha = OTHER; }), 'liveHeadFreshness');
+  holds(await verdictWith((e) => { e.records.freshness.reviewedHeadArrival = null; }), 'liveHeadFreshness');
+  holds(await verdictWith((e) => { e.records.freshness.lifecycleSinceMs = e.records.freshness.reviewedHeadArrival.atMs + 1; }), 'liveHeadFreshness');
+  // Finding 4086243273: the base branch deleted (and recreated at the same SHA) holds, and so does any event
+  // the event log does not know to be neutral, end to end.
+  for (const name of ['base_ref_deleted', 'some_future_mutation']) {
+    const evidence = await evidenceFor((w) => { w.events.push(issueEvent(54, name, '11:00')); });
+    assert.deepEqual(evidence.records.freshness.baseRefAtEnd, 'main');
+    holds(roleTransferActivationVerdict(evidence, expected), 'liveHeadFreshness');
+  }
+  // Neutral events (labels, review requests, auto-merge toggles) change nothing.
+  const neutral = await evidenceFor((w) => {
+    w.events.push(issueEvent(55, 'labeled', '11:00'), issueEvent(56, 'review_requested', '11:01'), issueEvent(57, 'auto_merge_disabled', '11:02'));
+  });
+  allButCausation(roleTransferActivationVerdict(neutral, expected));
   holds(await verdictWith((e) => { e.records.freshness.lifecycleSinceMs = null; }), 'liveHeadFreshness');
   // End to end: a request edited during the pass holds.
   const edited = await evidenceFor((w) => {

@@ -123,7 +123,7 @@ export function world() {
     comparison: { status: 'ahead', ahead_by: 2, behind_by: 0, merge_base_commit: { sha: ORIGINAL } },
     pulls: [pull(), pull()],
     // the pull request's issue events, oldest first, as GitHub returns them
-    events: [issueEvent(40, 'labeled', '09:30'), issueEvent(41, 'base_ref_changed', '09:40')],
+    events: [issueEvent(40, 'labeled', '09:30'), issueEvent(41, 'base_ref_changed', '08:40')],
     verify: true,
   };
 }
