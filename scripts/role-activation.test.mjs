@@ -281,6 +281,29 @@ test('finding 4080104397: fresh live-head evidence after the review; any interve
     assert.deepEqual(evidence.records.freshness.baseRefAtEnd, 'main');
     holds(roleTransferActivationVerdict(evidence, expected), 'liveHeadFreshness');
   }
+  // Finding 4087443171: a deleted comment could be the correction request itself, so it is not neutral.
+  const commentDeleted = await evidenceFor((w) => { w.events.push(issueEvent(58, 'comment_deleted', '11:30')); });
+  assert.deepEqual(commentDeleted.records.freshness.lifecycleEvents.map((entry) => entry.event), ['comment_deleted']);
+  holds(roleTransferActivationVerdict(commentDeleted, expected), 'liveHeadFreshness');
+  // Finding 4087443162: main fast-forwards after the closing live-PR read, even after the event log. The
+  // final live-PR read, after every other closing read, sees the new base SHA: hold, end to end.
+  const fastForwarded = await evidenceFor((w) => {
+    w.after = { events: { 1: (world) => world.pulls.push(pull(CORRECTIVE, { base: { ref: 'main', sha: OTHER, repo: { full_name: REPO } } })) } };
+  });
+  assert.equal(fastForwarded.records.freshness.baseShaAtEnd, BASE);
+  assert.equal(fastForwarded.records.freshness.baseShaAtClose, OTHER);
+  holds(roleTransferActivationVerdict(fastForwarded, expected), 'liveHeadFreshness');
+  for (const mutate of [
+    (e) => { e.records.freshness.baseShaAtClose = OTHER; },
+    (e) => { e.records.freshness.baseRefAtClose = 'release'; },
+    (e) => { e.records.freshness.baseRepositoryAtClose = UNRELATED; },
+    (e) => { e.records.freshness.liveHeadAtClose = OTHER; },
+    (e) => { e.records.freshness.prStateAtClose = 'closed'; },
+    (e) => { e.records.freshness.pullFinalReadAtMs = null; },
+    (e) => { e.records.freshness.pullFinalReadAtMs = e.records.freshness.eventLogReadAtMs; },
+  ]) {
+    holds(await verdictWith(mutate), 'liveHeadFreshness');
+  }
   // Neutral events (labels, review requests, auto-merge toggles) change nothing.
   const neutral = await evidenceFor((w) => {
     w.events.push(issueEvent(55, 'labeled', '11:00'), issueEvent(56, 'review_requested', '11:01'), issueEvent(57, 'auto_merge_disabled', '11:02'));

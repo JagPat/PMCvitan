@@ -232,6 +232,15 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && freshness.baseRepositoryAtEnd === repository
     && freshness.baseRefAtEnd === LINEAGE_BASE_REF
     && freshness.baseShaAtEnd === baseSha
+    // The final live-PR read, after every other closing read (the event log included): an ordinary
+    // fast-forward of the base branch appends no PR event, so the base must still be the cycle's here.
+    && freshness.prStateAtClose === 'open'
+    && freshness.liveHeadAtClose === correctiveHeadSha
+    && freshness.baseRefAtClose === LINEAGE_BASE_REF
+    && freshness.baseShaAtClose === baseSha
+    && freshness.baseRepositoryAtClose === repository
+    && finite(freshness.pullFinalReadAtMs)
+    && closingReads.every((time) => finite(time) && time < freshness.pullFinalReadAtMs)
     && Array.isArray(freshness.pushesAfterCorrective)
     && freshness.pushesAfterCorrective.length === 0
     // The lifecycle event log covers the cycle from no later than the update that brought the branch to the

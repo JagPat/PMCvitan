@@ -233,7 +233,8 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
 - **Freshness.** Opening reads decide only what to read: the request, the live PR and the push log.
   Then the freshness point is taken. Every mutable source is then read in the closing pass: the
   request again (it must be unchanged), its acceptance, the live PR (head, base ref and repositories),
-  both heads' check runs, the push log again, and last the lifecycle event log below. Each closing read
+  both heads' check runs, the push log again, the lifecycle event log below, and last the live PR once
+  more (an ordinary fast-forward of the base branch appends no PR event). Each closing read
   starts after the freshness point. So an edit, a push or a retarget (either even away-and-back), a
   later review or a newer CI attempt before that point is visible. A corrective push that lands during
   the pass is reported as a diagnostic, never silently absent. A consumer that acts must re-read and
@@ -262,7 +263,8 @@ returns every lifecycle event at or after the anchor, each with its server time,
 events are base changes (including automatic ones and base-branch deletion), close, reopen and merge,
 draft transitions, and head-ref deletion, restoration and force-push. Any event not on the known-neutral
 list (labels, assignment, mentions, review requests, auto-merge toggles and the like) is reported too, so
-an unknown mutation is surfaced rather than dropped.
+an unknown mutation is surfaced rather than dropped. A comment deletion is not neutral: the deleted
+comment could be the correction request.
 
 - **Why issue events, not the timeline.** The timeline mixes in comments, which users can delete. Paging
   through a list with deletions can shift an item across a page boundary and skip it, and repeating the
@@ -330,7 +332,9 @@ is always `hold` (see **Causation**):
   arrival of the same SHA holds). The log is complete and lists only draft transitions (the controller
   toggles them to request a review; they move neither the base nor the code). Any base change or
   deletion, close, reopen, merge, head-ref or unknown event holds, so a retarget away and back cannot pass
-  between two agreeing snapshots. Every mutable source (request, acceptance,
+  between two agreeing snapshots. The final live-PR read, after every other closing read, still shows the
+  open PR at the corrective head on `main` at the cycle base, so a base fast-forward during the pass
+  holds. Every mutable source (request, acceptance,
   live PR, both heads' reviews and CI, push log, event log) was read after the freshness point, which
   follows the pass's opening.
 - **Order.** Strictly: initial CI < finding < request < acceptance < corrective push < final CI <

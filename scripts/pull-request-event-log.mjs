@@ -78,7 +78,6 @@ export const PULL_REQUEST_NEUTRAL_EVENTS = Object.freeze([
   'review_requested',
   'review_request_removed',
   'review_dismissed',
-  'comment_deleted',
   'marked_as_duplicate',
   'unmarked_as_duplicate',
   'auto_merge_enabled',

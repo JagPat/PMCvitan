@@ -76,6 +76,12 @@ test('the reader normalizes a full correction cycle with identity and server tim
   assert.ok(finalCi.deciders.every((decider) => decider.conclusion === 'success' && decider.completedAtMs === ms('11:00')));
   // Every closing read starts after the freshness point, which follows the pass's opening.
   assert.ok(freshness.startedAtMs < freshness.observedAtMs);
+  // The final live-PR read is the very last read of the pass, after the event log.
+  assert.ok(freshness.eventLogReadAtMs < freshness.pullFinalReadAtMs);
+  assert.deepEqual(
+    [freshness.prStateAtClose, freshness.liveHeadAtClose, freshness.baseRefAtClose, freshness.baseShaAtClose, freshness.baseRepositoryAtClose],
+    ['open', CORRECTIVE, 'main', BASE, REPO],
+  );
   // Every mutable source is read after the freshness point.
   for (const readAt of [request.readAtMs, acceptance.readAtMs, initialFinding.readAtMs, initialCi.readAtMs,
     freshness.pullReadAtMs, freshness.pushLogReadAtMs, finalCi.readAtMs, finalReview.readAtMs,

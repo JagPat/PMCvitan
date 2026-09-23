@@ -508,6 +508,11 @@ export async function readRoleActivationEvidence(
       coveredFromMs: eventLog.coveredFromMs, readAtMs: eventLog.readAtMs };
   }
 
+  // Closing, very last: the live PR once more. An ordinary fast-forward of the base branch appends no PR
+  // event, so the base SHA (and head, state, refs) must still be the cycle's after every other closing read.
+  const pullAtClose = opening ? await read('pull-final', () => client.pullRequest(pullRequest)) : null;
+  const pullFinalReadAtMs = pullAtClose ? now() : null;
+
   const freshness = pullAtStart && pullAtEnd
     ? {
       repository,
@@ -525,6 +530,11 @@ export async function readRoleActivationEvidence(
       baseRefAtEnd: pullAtEnd.base?.ref ?? null,
       baseRepositoryAtEnd: pullAtEnd.base?.repo?.full_name ?? null,
       baseShaAtEnd: pullAtEnd.base?.sha ?? null,
+      prStateAtClose: pullAtClose?.state ?? null,
+      liveHeadAtClose: pullAtClose?.head?.sha ?? null,
+      baseRefAtClose: pullAtClose?.base?.ref ?? null,
+      baseShaAtClose: pullAtClose?.base?.sha ?? null,
+      baseRepositoryAtClose: pullAtClose?.base?.repo?.full_name ?? null,
       pushesAfterCorrective,
       // An immutable historical entry of the append-only push log, read in the opening pass.
       reviewedHeadArrival: log.headArrival,
@@ -536,6 +546,7 @@ export async function readRoleActivationEvidence(
       observedAtMs,
       pullReadAtMs,
       pushLogReadAtMs,
+      pullFinalReadAtMs,
     }
     : null;
 
