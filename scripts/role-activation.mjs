@@ -2,18 +2,17 @@ import {
   CLAUDE_STATUS_CONTEXT,
   CODEX_LOGIN,
   LINEAGE_BASE_REF,
-  STATUS_CONTEXT,
 } from './review-policy.mjs';
 import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs';
 
 /**
  * Role-transfer ACTIVATION-READINESS verdict (pure, mutation-free).
  *
- * The cloud role transfer (Codex codes, Claude independently reviews) is activated — atomically adding a
+ * The cloud role transfer (Codex codes, Claude independently reviews) may be activated — atomically adding a
  * Claude exact-head required gate and switching correction routing — ONLY after one real, OBSERVED
- * correction cycle, and `codex-current-head` is retired ONLY after the replacement gate is installed and
- * later observed in that role. This module performs NO switch and touches NO live gate: it reads evidence
- * and returns a verdict. Until the verdict is `activate`, `codex-current-head` (`STATUS_CONTEXT`) stays the
+ * correction cycle is proven. This module performs NO switch and touches NO live gate: it reads evidence and
+ * reports which proofs hold and which are missing. In this version the verdict is ALWAYS `hold`: one proof,
+ * `codexTaskCausation`, has no trusted evidence yet (below). `codex-current-head` (`STATUS_CONTEXT`) stays the
  * required gate and `claude-independent-review` stays non-authoritative and out of the required checks.
  * Nothing here declares Codex awakenable.
  *
@@ -37,9 +36,14 @@ import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs'
  *   codexCorrectivePush           — the first branch update after the request: a non-forced push by the
  *                                   Codex connector from the reviewed head to the corrective head, with the
  *                                   reviewed head a server-verified ancestor (compare `ahead`, `behind 0`).
+ *   codexTaskCausation            — that push was made by the task accepted for THIS request. Every Codex
+ *                                   task pushes as the same connector bot, and no GitHub record the trusted
+ *                                   reader can read (schema v1) ties a push to a request, so actor and time
+ *                                   cannot prove it. This proof is ALWAYS missing until a trusted reader
+ *                                   supplies an authenticated binding: the verdict holds, fail closed.
  *   fullCiGreen                   — the latest applicable CI on the corrective head, at the base, green, with
- *                                   the successful run that decided each required name (returned, so an
- *                                   installer binds to that exact attempt).
+ *                                   a named, successful run deciding each required name (the reader names
+ *                                   them, so a later installer can bind to that exact attempt).
  *   boundClaudeClearReReview      — the newest producer-verified review of the corrective head is clear.
  *   liveHeadFreshness             — read after the review: the open same-repository PR targets the base
  *                                   branch at the cycle base at the start AND at the end (ref, SHA and both
@@ -51,15 +55,16 @@ import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs'
  *                                   and CI, push log, event log) was read after the freshness point, which
  *                                   follows the pass's opening.
  *   milestoneOrder                — strictly: initial CI < finding < request < acceptance < corrective push
- *                                   < final CI < review < freshness window.
+ *                                   < final CI < review < freshness window. GitHub stamps whole seconds, so a
+ *                                   tie is admitted only where the records themselves prove the order: the
+ *                                   request names the finding, and the acceptance is a reaction ON the request.
  *
- * Two phases, so no interval ever has neither independent-review gate:
- *   `activate` — INSTALL the replacement (a distinct trusted-controller status, `CLAUDE_STATUS_CONTEXT`,
- *                published from ADAPTER-VERIFIED shadow evidence, never the raw producer check name) and
- *                switch routing, KEEPING `codex-current-head`.
- *   `retire`   — only with a SEPARATE proof that the replacement was installed as required for THIS
- *                repository AFTER the cycle was proven, and observed in role at a strictly LATER time on a
- *                real head under an identified trusted-controller observation.
+ * `activate` is not reachable yet. When a trusted binding makes `codexTaskCausation` provable, a later unit adds
+ * it: INSTALL the replacement (`ACTIVATION_INSTALL`: a distinct trusted-controller status,
+ * `CLAUDE_STATUS_CONTEXT`, published from ADAPTER-VERIFIED shadow evidence, never the raw producer check name)
+ * and switch routing, KEEPING `codex-current-head`. Retiring `codex-current-head` needs a trusted observation
+ * of the installed gate in role, which cannot exist before installation and has no reader; it is a later,
+ * separate unit. This verdict never retires anything: `keepCodexCurrentHead` is always true.
  */
 
 export const ACTIVATION_REQUIRED_PROOFS = Object.freeze([
@@ -69,27 +74,20 @@ export const ACTIVATION_REQUIRED_PROOFS = Object.freeze([
   'correctionRequest',
   'codexTaskAcceptance',
   'codexCorrectivePush',
+  'codexTaskCausation',
   'fullCiGreen',
   'boundClaudeClearReReview',
   'liveHeadFreshness',
   'milestoneOrder',
 ]);
 
-export const ACTIVATION_RETIRE_PROOF = 'replacementGateInstalledObserved';
-
-// The INSTALL half, applied in the `activate` phase. `addRequired` is the trusted-controller status, NOT the
+// The INSTALL switch, as data; this module applies none of it. `addRequired` is the trusted-controller status, NOT the
 // raw `claude-independent-review` check name, which a PR-emitted check of that name could otherwise satisfy.
 export const ACTIVATION_INSTALL = Object.freeze({
   addRequired: CLAUDE_STATUS_CONTEXT,
   codingOwner: 'codex',
   reviewer: 'claude',
 });
-
-// The RETIRE half, applied ONLY in the `retire` phase.
-export const ACTIVATION_RETIRE = Object.freeze({ retire: STATUS_CONTEXT });
-
-// The whole switch, as data. This module APPLIES none of it.
-export const ACTIVATION_SWITCH = Object.freeze({ ...ACTIVATION_INSTALL, ...ACTIVATION_RETIRE });
 
 // The only lifecycle events a proven cycle may contain: draft transitions, which change neither the merge
 // target nor the code under test (the controller toggles them to request a review). Every other event — a
@@ -101,16 +99,18 @@ const SHA = /^[0-9a-f]{40}$/u;
 const isSha = (value) => typeof value === 'string' && SHA.test(value);
 const nonEmpty = (value) => typeof value === 'string' && value.length > 0;
 const finite = (value) => Number.isFinite(value);
-const strictlyIncreasing = (times) =>
-  times.every(finite) && times.every((time, index) => index === 0 || times[index - 1] < time);
+// Adjacent milestones in order. GitHub stamps whole seconds, so a pair may tie only when `tieProvenBy` names
+// the record binding that proves its order (e.g. a reaction attached to the comment it follows).
+const ordered = (chain) => chain.every(({ atMs }) => finite(atMs))
+  && chain.every(({ atMs, tieProvenBy }, index) => index === 0
+    || chain[index - 1].atMs < atMs
+    || (tieProvenBy === true && chain[index - 1].atMs === atMs));
 
 /**
- * @param {object} evidence  the reader's normalized output (`{ schema, cycle, records }`); `records` may also
- *                           carry the separate `replacementGate` retirement proof.
+ * @param {object} evidence  the reader's normalized output (`{ schema, cycle, records }`).
  * @param {{repository: string, pullRequest: number}} expected  the identity the CALLER expects.
- * @returns {{state:'hold'|'activate'|'retire', activate:boolean, keepCodexCurrentHead:boolean,
- *            retireCodexCurrentHead:boolean, missing?:string[], missingForRetire?:string[],
- *            correctiveHeadSha?:string, ciDeciderRunIds?:number[], install?:object, retire?:object, switch?:object}}
+ * @returns {{state:'hold', activate:false, keepCodexCurrentHead:true, retireCodexCurrentHead:false,
+ *            proven:string[], missing:string[]}}  every required proof, in order, is in exactly one list.
  */
 export function roleTransferActivationVerdict(evidence, expected) {
   const cycle = evidence?.cycle ?? null;
@@ -124,7 +124,6 @@ export function roleTransferActivationVerdict(evidence, expected) {
     finalCi = null,
     finalReview = null,
     freshness = null,
-    replacementGate = null,
   } = records;
 
   const repository = expected?.repository;
@@ -192,6 +191,12 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && correctivePush.ancestry?.behindBy === 0
     && correctivePush.ancestry?.mergeBaseSha === originalHeadSha);
 
+  // No trusted record ties a connector push to the task accepted for THIS request: every Codex task pushes as
+  // the same bot, and schema v1 carries no request or task identity on the push. Actor and time cannot prove
+  // causation (another Codex task on the same branch could push first), so this proof holds until a trusted
+  // reader supplies an authenticated binding.
+  prove('codexTaskCausation', false);
+
   const ciDeciderRunIds = Array.isArray(finalCi?.deciders) ? finalCi.deciders.map((run) => run?.checkRunId) : [];
   prove('fullCiGreen', atBase(finalCi)
     && finalCi.headSha === correctiveHeadSha
@@ -211,7 +216,6 @@ export function roleTransferActivationVerdict(evidence, expected) {
     freshness?.pullReadAtMs, freshness?.pushLogReadAtMs, finalCi?.readAtMs, finalReview?.readAtMs,
     freshness?.eventLogCoveredFromMs, freshness?.eventLogReadAtMs,
   ];
-  const closedAtMs = closingReads.every(finite) ? Math.max(...closingReads) : null;
   prove('liveHeadFreshness', inPullRequest(freshness)
     && freshness.branch === branch
     && freshness.baseSha === baseSha
@@ -240,53 +244,31 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && freshness.startedAtMs < freshness.observedAtMs
     && closingReads.every((time) => finite(time) && time > freshness.observedAtMs));
 
-  prove('milestoneOrder', strictlyIncreasing([
-    initialCi?.atMs,
-    initialFinding?.atMs,
-    request?.atMs,
-    acceptance?.atMs,
-    correctivePush?.atMs,
-    finalCi?.atMs,
-    finalReview?.atMs,
-    freshness?.startedAtMs,
+  prove('milestoneOrder', ordered([
+    { atMs: initialCi?.atMs },
+    // The request names this finding (`findingRef === reviewRef`, proven above), so it follows it.
+    { atMs: initialFinding?.atMs },
+    {
+      atMs: request?.atMs,
+      tieProvenBy: nonEmpty(request?.findingRef) && request.findingRef === initialFinding?.reviewRef,
+    },
+    // The acceptance is a reaction ON the request comment, so it follows it.
+    {
+      atMs: acceptance?.atMs,
+      tieProvenBy: Number.isInteger(acceptance?.requestId) && acceptance.requestId === request?.requestId,
+    },
+    { atMs: correctivePush?.atMs },
+    { atMs: finalCi?.atMs },
+    { atMs: finalReview?.atMs },
+    { atMs: freshness?.startedAtMs },
   ]));
 
-  if (missing.length > 0) {
-    return { state: 'hold', activate: false, keepCodexCurrentHead: true, retireCodexCurrentHead: false, missing };
-  }
-
-  // Retirement is a SEPARATE proof: the replacement was installed as required for THIS repository after the
-  // cycle was proven (after its last closing read), then observed passing in role strictly later on
-  // a real head under an identified trusted-controller observation.
-  const retireProven = inRepository(replacementGate)
-    && replacementGate.context === CLAUDE_STATUS_CONTEXT
-    && replacementGate.installedRequired === true
-    && replacementGate.observedInRole === true
-    && isSha(replacementGate.observedHeadSha)
-    && nonEmpty(replacementGate.observationId)
-    && strictlyIncreasing([closedAtMs, replacementGate.installedAtMs, replacementGate.observedAtMs]);
-
-  if (!retireProven) {
-    return {
-      state: 'activate',
-      activate: true,
-      keepCodexCurrentHead: true,
-      retireCodexCurrentHead: false,
-      correctiveHeadSha,
-      ciDeciderRunIds,
-      install: ACTIVATION_INSTALL,
-      missingForRetire: [ACTIVATION_RETIRE_PROOF],
-    };
-  }
   return {
-    state: 'retire',
-    activate: true,
-    keepCodexCurrentHead: false,
-    retireCodexCurrentHead: true,
-    correctiveHeadSha,
-    ciDeciderRunIds,
-    install: ACTIVATION_INSTALL,
-    retire: ACTIVATION_RETIRE,
-    switch: ACTIVATION_SWITCH,
+    state: 'hold',
+    activate: false,
+    keepCodexCurrentHead: true,
+    retireCodexCurrentHead: false,
+    proven: ACTIVATION_REQUIRED_PROOFS.filter((proof) => !missing.includes(proof)),
+    missing,
   };
 }

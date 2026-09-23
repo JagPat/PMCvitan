@@ -292,7 +292,8 @@ output (the two sections above), and the reader performs every live read.
 
 `roleTransferActivationVerdict(evidence, expected)` takes the reader's `{ schema, cycle, records }` and
 the caller's expected `{ repository, pullRequest }`. It never takes the cycle's identity from the
-evidence alone. Every proof is required, and any gap holds with that gap named:
+evidence alone. It reports every required proof as `proven` or `missing`, and in this version its state
+is always `hold` (see **Causation**):
 
 - **Identity.** The schema matches. The cycle names the expected repository and PR, a branch, the base,
   the reviewed and corrective heads (which must differ), and the correction-request id. Every record
@@ -307,29 +308,39 @@ evidence alone. Every proof is required, and any gap holds with that gap named:
 - **Corrective push.** The first branch update after the request is a non-forced push by the Codex
   connector from the reviewed head to the corrective head. The reviewed head is a server-verified
   ancestor (compare `ahead`, `behind 0`). A multi-commit fast-forward is admitted.
+- **Causation.** That push was made by the task accepted for this request. Every Codex task pushes as
+  the same connector bot, and no record the trusted reader can read ties a push to a request, so actor
+  and time cannot prove it: another Codex task on the same branch could push first. `codexTaskCausation`
+  is therefore always missing until a trusted reader supplies an authenticated binding (for example, a
+  request-id trailer the request asks Codex to put in its commit, read through the compare API; that
+  changes `codex-fix-probe`, which is frozen review machinery, so it needs a requested maintenance PR).
 - **Final legs.** The latest applicable CI on the corrective head is green, with a named successful
-  deciding run for each required check. The verdict returns those run ids so an installer binds to that
-  exact attempt. The newest producer-verified review of that head is clear.
+  deciding run for each required check (the reader names them, so a later installer can bind to that exact
+  attempt). The newest producer-verified review of that head is clear.
 - **Freshness.** Read after the review. The open same-repository PR targets `main` at the cycle base,
   both at the start and at the end (ref, SHA and both repositories). Its head is the corrective head at
   both reads. No branch update follows the corrective push; an away-and-back to the same SHA is two
-  updates. The lifecycle event log, anchored no later than the triggering finding, is complete and
-  empty: any base change, close, reopen, merge, draft or head-ref event since then holds, so a retarget
-  away and back cannot pass between two agreeing snapshots. Every mutable source (request, acceptance,
+  updates. The lifecycle event log, anchored no later than the triggering finding, is complete and lists
+  only draft transitions (the controller toggles them to request a review; they move neither the base nor
+  the code). Any base change, close, reopen, merge, head-ref or unknown event holds, so a retarget away
+  and back cannot pass between two agreeing snapshots. Every mutable source (request, acceptance,
   live PR, both heads' reviews and CI, push log, event log) was read after the freshness point, which
   follows the pass's opening.
 - **Order.** Strictly: initial CI < finding < request < acceptance < corrective push < final CI <
-  review < freshness window.
+  review < freshness window. GitHub stamps whole seconds, so a tie is admitted only where the records
+  prove the order: the request names the finding, and the acceptance is a reaction on the request.
 
-Activation has two phases, so there is never an interval with neither independent-review gate:
+When causation becomes provable, a later unit adds `activate`, which **installs** the distinct
+trusted-controller status `CLAUDE_STATUS_CONTEXT` (`claude-current-head`, published from adapter-verified
+shadow evidence, never from the raw `claude-independent-review` check name) and switches routing while
+**keeping** `codex-current-head`. This verdict never retires `codex-current-head`: that needs a trusted
+observation of the installed gate in role, which cannot exist before installation and has no reader. It is
+a separate, later unit. `ACTIVATION_INSTALL` is the install switch expressed as data; nothing applies it.
+Nothing is added to `REQUIRED_CHECKS`, no routing changes, and Codex is declared neither awakenable nor
+activated.
 
-- `activate` **installs** the distinct trusted-controller status `CLAUDE_STATUS_CONTEXT`
-  (`claude-current-head`) and switches routing, **keeping** `codex-current-head`. The status is
-  published from adapter-verified shadow evidence, never from the raw `claude-independent-review` check
-  name.
-- `retire` needs a **separate** proof. The replacement must be installed as required for this
-  repository after the cycle was proven (after its last closing read), then observed in role at a
-  strictly later time, on a real head, under an identified trusted-controller observation.
+**Convergence stop.** The re-scoped verdict (`e3a0ece1`) drew three findings: an unauthenticated
+retirement record, task → push causation, and same-second ties. Together with the controller's fifth
+finding-bearing head, that is the stop recorded at #619 comment 5795929840. The narrowing above is its
+additive redesign: this unit keeps only what trusted evidence can prove.
 
-`ACTIVATION_SWITCH` is that switch expressed as data; nothing applies it. Nothing is added to
-`REQUIRED_CHECKS`, no routing changes, and Codex is declared neither awakenable nor activated.

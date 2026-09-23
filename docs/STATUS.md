@@ -42,6 +42,11 @@ proven by comparing snapshots. Every mutable dimension now rests on an append-on
   later observation (4080104384), the triggering finding bound through the request to the accepted task
   (4080104390), fresh live-head, push-log and lifecycle-event evidence after the final review
   (4080104397), and the latest applicable CI attempt with its deciding runs (4080104403).
+  At its convergence stop (#619 comment 5795929840, after findings 4083067610/17/23 on `e3a0ece1`) the
+  verdict was narrowed to what trusted evidence can prove. It never retires `codex-current-head`, and it
+  always holds on `codexTaskCausation` until a trusted task → push binding exists (a later unit; it needs
+  a requested maintenance PR to `codex-fix-probe`). It admits a same-second tie only where the records
+  prove the order.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`

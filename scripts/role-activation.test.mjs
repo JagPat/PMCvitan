@@ -4,14 +4,11 @@ import test from 'node:test';
 import {
   ACTIVATION_INSTALL,
   ACTIVATION_REQUIRED_PROOFS,
-  ACTIVATION_RETIRE,
-  ACTIVATION_RETIRE_PROOF,
-  ACTIVATION_SWITCH,
   CYCLE_NEUTRAL_LIFECYCLE_EVENTS,
   roleTransferActivationVerdict,
 } from './role-activation.mjs';
 import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs';
-import { CLAUDE_SHADOW_CONTEXT, CLAUDE_STATUS_CONTEXT, REQUIRED_CHECKS, STATUS_CONTEXT } from './review-policy.mjs';
+import { CLAUDE_SHADOW_CONTEXT, CLAUDE_STATUS_CONTEXT, CODEX_LOGIN, REQUIRED_CHECKS, STATUS_CONTEXT } from './review-policy.mjs';
 import {
   BASE, CORRECTIVE, ORIGINAL, OTHER, PR, REPO, activity, at, issueEvent, pull, readWorld, shadowRun,
 } from './role-activation-test-fixtures.mjs';
@@ -31,31 +28,33 @@ async function verdictWith(mutate) {
   mutate(evidence);
   return roleTransferActivationVerdict(evidence, expected);
 }
-const deciderIds = (evidence) => evidence.records.finalCi.deciders.map((run) => run.checkRunId);
+// Every proof the trusted reader's evidence can carry holds; only task -> push causation, which no trusted
+// source records yet, is missing.
+const allButCausation = (verdict) => {
+  assert.equal(verdict.state, 'hold');
+  assert.deepEqual(verdict.missing, ['codexTaskCausation']);
+};
 const CLOSING_READS = [
   ['request', 'readAtMs'], ['acceptance', 'readAtMs'], ['initialFinding', 'readAtMs'], ['initialCi', 'readAtMs'],
   ['freshness', 'pullReadAtMs'], ['freshness', 'pushLogReadAtMs'], ['finalCi', 'readAtMs'], ['finalReview', 'readAtMs'],
   ['freshness', 'eventLogCoveredFromMs'], ['freshness', 'eventLogReadAtMs'],
 ];
-const closedAt = ({ records }) => Math.max(...CLOSING_READS.map(([record, field]) => records[record][field]));
 const holds = (verdict, proof) => {
   assert.equal(verdict.state, 'hold', `${proof}: expected hold`);
   assert.equal(verdict.keepCodexCurrentHead, true);
   assert.ok(verdict.missing.includes(proof), `${proof} not in ${verdict.missing}`);
 };
 
-test('a full cycle read by the trusted reader activates the INSTALL phase only, keeping codex-current-head', async () => {
+test('a full cycle read by the trusted reader proves every observable proof, and still holds on causation', async () => {
   const evidence = await evidenceFor();
   const verdict = roleTransferActivationVerdict(evidence, expected);
   assert.deepEqual(verdict, {
-    state: 'activate',
-    activate: true,
+    state: 'hold',
+    activate: false,
     keepCodexCurrentHead: true,
     retireCodexCurrentHead: false,
-    correctiveHeadSha: CORRECTIVE,
-    ciDeciderRunIds: deciderIds(evidence),
-    install: ACTIVATION_INSTALL,
-    missingForRetire: [ACTIVATION_RETIRE_PROOF],
+    proven: ACTIVATION_REQUIRED_PROOFS.filter((proof) => proof !== 'codexTaskCausation'),
+    missing: ['codexTaskCausation'],
   });
 });
 
@@ -106,53 +105,67 @@ test('finding 4080104377: the full milestone chain is strictly ordered', async (
   // The operator's probes: each review timed before its own CI.
   holds(await verdictWith((e) => { e.records.initialFinding.atMs = e.records.initialCi.atMs - 1; }), 'milestoneOrder');
   holds(await verdictWith((e) => { e.records.finalReview.atMs = e.records.finalCi.atMs - 1; }), 'milestoneOrder');
-  // Every adjacent pair of the chain, swapped or tied.
+  // Every adjacent pair of the chain, swapped or tied. A tie is admitted only where the records prove the
+  // order (request after the finding it names, acceptance a reaction on the request; finding 4083067623).
   const chain = [
-    ['initialCi', 'atMs'], ['initialFinding', 'atMs'], ['request', 'atMs'], ['acceptance', 'atMs'],
+    ['initialCi', 'atMs'], ['initialFinding', 'atMs'], ['request', 'atMs', 'tie'], ['acceptance', 'atMs', 'tie'],
     ['correctivePush', 'atMs'], ['finalCi', 'atMs'], ['finalReview', 'atMs'], ['freshness', 'startedAtMs'],
   ];
   for (let index = 1; index < chain.length; index += 1) {
     const [earlier, earlierField] = chain[index - 1];
-    const [later, laterField] = chain[index];
-    holds(await verdictWith((e) => { e.records[later][laterField] = e.records[earlier][earlierField]; }), 'milestoneOrder');
+    const [later, laterField, tie] = chain[index];
+    const tied = await verdictWith((e) => { e.records[later][laterField] = e.records[earlier][earlierField]; });
+    if (tie) allButCausation(tied);
+    else holds(tied, 'milestoneOrder');
     holds(await verdictWith((e) => { e.records[later][laterField] = e.records[earlier][earlierField] - 1; }), 'milestoneOrder');
   }
   holds(await verdictWith((e) => { e.records.acceptance.atMs = null; }), 'milestoneOrder');
 });
 
-test('finding 4080104384: retirement needs an installation after the proven cycle, then a later observation', async () => {
+test('finding 4083067610 (and 4080104384): the verdict never retires; a caller-built gate record is ignored', async () => {
   const evidence = await evidenceFor();
-  const closed = closedAt(evidence);
-  const good = () => ({
+  const gate = {
     context: CLAUDE_STATUS_CONTEXT, repository: REPO, installedRequired: true, observedInRole: true,
-    installedAtMs: closed + 60_000,
-    observedAtMs: closed + 120_000,
+    installedAtMs: Date.now() + 60_000, observedAtMs: Date.now() + 120_000,
     observedHeadSha: 'd'.repeat(40), observationId: 'status-run-777',
-  });
-  const retire = (gate) => roleTransferActivationVerdict({ ...evidence, records: { ...evidence.records, replacementGate: gate } }, expected);
-  assert.deepEqual(retire(good()), {
-    state: 'retire', activate: true, keepCodexCurrentHead: false, retireCodexCurrentHead: true,
-    correctiveHeadSha: CORRECTIVE, ciDeciderRunIds: deciderIds(evidence),
-    install: ACTIVATION_INSTALL, retire: ACTIVATION_RETIRE, switch: ACTIVATION_SWITCH,
-  });
-  for (const bad of [
-    { ...good(), installedAtMs: 100, observedAtMs: 200 }, // the operator's probe: a historical installation
-    { ...good(), installedAtMs: closed }, // not strictly after the cycle's last closing read
-    { ...good(), installedAtMs: evidence.records.freshness.observedAtMs + 1 }, // before the closing reads ended
-    { ...good(), observedAtMs: good().installedAtMs }, // observed not strictly after installation
-    { ...good(), observedAtMs: good().installedAtMs - 1 },
-    { ...good(), repository: UNRELATED },
-    { ...good(), context: CLAUDE_SHADOW_CONTEXT }, // the raw producer check name is not the gate
-    { ...good(), installedRequired: false },
-    { ...good(), observedInRole: false },
-    { ...good(), observedHeadSha: 'not-a-sha' },
-    { ...good(), observationId: '' },
-    { context: CLAUDE_STATUS_CONTEXT, installedRequired: true, observedInRole: true },
-  ]) {
-    const verdict = retire(bad);
-    assert.equal(verdict.state, 'activate');
-    assert.equal(verdict.keepCodexCurrentHead, true);
-  }
+  };
+  const verdict = roleTransferActivationVerdict({ ...evidence, records: { ...evidence.records, replacementGate: gate } }, expected);
+  assert.deepEqual(verdict, roleTransferActivationVerdict(evidence, expected));
+  assert.equal(verdict.keepCodexCurrentHead, true);
+  assert.equal(verdict.retireCodexCurrentHead, false);
+});
+
+test('finding 4083067617: task -> push causation is unproven by any trusted record, so the verdict holds', async () => {
+  // The reader's corrective push is the Codex connector's, but nothing ties it to THIS request's task.
+  const evidence = await evidenceFor();
+  assert.equal(evidence.records.correctivePush.actorLogin, CODEX_LOGIN);
+  holds(roleTransferActivationVerdict(evidence, expected), 'codexTaskCausation');
+  // A caller cannot supply the binding: fields the reader does not produce change nothing.
+  holds(await verdictWith((e) => { Object.assign(e.records.correctivePush, { requestId: e.cycle.correctionRequestId, taskId: 't-1' }); }), 'codexTaskCausation');
+  assert.ok(ACTIVATION_REQUIRED_PROOFS.includes('codexTaskCausation'));
+});
+
+test('finding 4083067623: a same-second tie is admitted only where the records prove the order', async () => {
+  // The acceptance is a reaction ON the request, and the request names the finding: a tie proves nothing wrong.
+  allButCausation(await verdictWith((e) => { e.records.acceptance.atMs = e.records.request.atMs; }));
+  allButCausation(await verdictWith((e) => { e.records.request.atMs = e.records.initialFinding.atMs; }));
+  // Without that binding the same tie holds.
+  holds(await verdictWith((e) => {
+    e.records.acceptance.atMs = e.records.request.atMs;
+    e.records.acceptance.requestId += 1;
+  }), 'milestoneOrder');
+  holds(await verdictWith((e) => {
+    e.records.request.atMs = e.records.initialFinding.atMs;
+    e.records.request.findingRef = 'https://github.com/JagPat/PMCvitan/runs/1';
+  }), 'milestoneOrder');
+  holds(await verdictWith((e) => {
+    e.records.request.atMs = e.records.initialFinding.atMs;
+    delete e.records.request.findingRef;
+    delete e.records.initialFinding.reviewRef;
+  }), 'milestoneOrder');
+  // Every other adjacent tie holds (the chain test below also swaps each pair).
+  holds(await verdictWith((e) => { e.records.correctivePush.atMs = e.records.acceptance.atMs; }), 'milestoneOrder');
+  holds(await verdictWith((e) => { e.records.finalCi.atMs = e.records.correctivePush.atMs; }), 'milestoneOrder');
 });
 
 test('finding 4080104390: the triggering finding binds through the GitHub-generated request to the accepted task', async () => {
@@ -234,7 +247,7 @@ test('finding 4080104397: fresh live-head evidence after the review; any interve
     w.events.push(issueEvent(50, 'convert_to_draft', '10:52'), issueEvent(51, 'ready_for_review', '11:01'));
   });
   assert.deepEqual(toggled.records.freshness.lifecycleEvents.map((entry) => entry.event), ['convert_to_draft', 'ready_for_review']);
-  assert.equal(roleTransferActivationVerdict(toggled, expected).state, 'activate');
+  allButCausation(roleTransferActivationVerdict(toggled, expected));
   assert.deepEqual(CYCLE_NEUTRAL_LIFECYCLE_EVENTS, ['convert_to_draft', 'converted_to_draft', 'ready_for_review']);
   // An incomplete log, or one anchored after the triggering finding, proves nothing about the cycle.
   const unreadable = await evidenceFor((w) => { w.eventsError = 'boom'; });
@@ -280,7 +293,7 @@ test('the corrective push is a non-forced Codex fast-forward from the reviewed h
   holds(await verdictWith((e) => { e.records.correctivePush.branch = 'other/branch'; }), 'codexCorrectivePush');
   // A task that pushed three commits in one fast-forward update still proves the cycle.
   const multiCommit = await evidenceFor((w) => { w.comparison = { status: 'ahead', ahead_by: 3, behind_by: 0, merge_base_commit: { sha: ORIGINAL } }; });
-  assert.equal(roleTransferActivationVerdict(multiCommit, expected).state, 'activate');
+  allButCausation(roleTransferActivationVerdict(multiCommit, expected));
 });
 
 test('reviews are producer-verified shadow results of the exact heads', async () => {
@@ -296,10 +309,9 @@ test('reviews are producer-verified shadow results of the exact heads', async ()
   holds(await verdictWith((e) => { e.records.finalCi.headSha = OTHER; }), 'fullCiGreen');
 });
 
-test('the switch is data the verdict describes, never applies; the live required gate is unchanged', () => {
-  assert.equal(ACTIVATION_INSTALL.addRequired, CLAUDE_STATUS_CONTEXT);
-  assert.equal(ACTIVATION_RETIRE.retire, STATUS_CONTEXT);
-  assert.deepEqual(ACTIVATION_SWITCH, { addRequired: CLAUDE_STATUS_CONTEXT, codingOwner: 'codex', reviewer: 'claude', retire: STATUS_CONTEXT });
+test('the install switch is data the verdict never applies; the live required gate is unchanged', () => {
+  assert.deepEqual(ACTIVATION_INSTALL, { addRequired: CLAUDE_STATUS_CONTEXT, codingOwner: 'codex', reviewer: 'claude' });
+  assert.notEqual(ACTIVATION_INSTALL.addRequired, STATUS_CONTEXT);
   assert.ok(!REQUIRED_CHECKS.includes(CLAUDE_SHADOW_CONTEXT));
   assert.ok(!REQUIRED_CHECKS.includes(CLAUDE_STATUS_CONTEXT));
 });
