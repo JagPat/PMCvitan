@@ -185,8 +185,8 @@ export function client(w) {
     async checkRuns(sha) {
       return [...(w.runs[sha] ?? [])];
     },
-    async verifyClaudeShadowProducer() {
-      return w.verify;
+    async verifyClaudeShadowProducer(run) {
+      return typeof w.verify === 'function' ? w.verify(run) : w.verify;
     },
   };
   return { fake, calls };

@@ -49,7 +49,8 @@ import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs'
  *                                   branch at the cycle base at the start AND at the end (ref, SHA and both
  *                                   repositories), its head was the corrective head at both reads, no branch
  *                                   update follows the corrective push (an away-and-back is two updates), the
- *                                   complete lifecycle event log from no later than the finding lists only
+ *                                   complete lifecycle event log from no later than the initial CI's
+ *                                   earliest decider start lists only
  *                                   draft transitions (a retarget away and back is two base changes), and
  *                                   every mutable source (request, acceptance, live PR, both heads' reviews
  *                                   and CI, push log, event log) was read after the freshness point, which
@@ -232,11 +233,12 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && freshness.baseShaAtEnd === baseSha
     && Array.isArray(freshness.pushesAfterCorrective)
     && freshness.pushesAfterCorrective.length === 0
-    // The lifecycle event log covers the cycle from no later than the triggering finding, is complete, and
-    // lists only cycle-neutral events (an undated event is listed, so its kind still decides).
+    // The lifecycle event log covers the cycle from no later than the initial CI's earliest decider start (a
+    // retarget after it moves the base those runs were launched on), is complete, and lists only
+    // cycle-neutral events (an undated event is listed, so its kind still decides).
     && finite(freshness.lifecycleSinceMs)
-    && finite(initialFinding?.atMs)
-    && freshness.lifecycleSinceMs <= initialFinding.atMs
+    && finite(initialCi?.startedAtMs)
+    && freshness.lifecycleSinceMs <= initialCi.startedAtMs
     && Array.isArray(freshness.lifecycleEvents)
     && freshness.lifecycleEvents.every((entry) => CYCLE_NEUTRAL_LIFECYCLE_EVENTS.includes(entry?.event))
     && finite(freshness.startedAtMs)

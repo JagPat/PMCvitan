@@ -265,9 +265,11 @@ export function normalizeCi(checkRuns, { repository, pullRequest, headSha, baseS
     name: run.name,
     checkRunId: run.id,
     conclusion: run.conclusion,
+    startedAtMs: timeMs(run.started_at),
     completedAtMs: timeMs(run.completed_at),
   }));
   const completions = deciders.map((decider) => decider.completedAtMs);
+  const starts = deciders.map((decider) => decider.startedAtMs);
   return {
     repository,
     pullRequest,
@@ -278,6 +280,8 @@ export function normalizeCi(checkRuns, { repository, pullRequest, headSha, baseS
     pending: summary.pending,
     failed: summary.failed,
     deciders,
+    // The earliest decider start: a retarget after it can move the base the deciding runs were launched on.
+    startedAtMs: starts.length > 0 && starts.every(Number.isFinite) ? Math.min(...starts) : null,
     atMs: completions.length > 0 && completions.every(Number.isFinite) ? Math.max(...completions) : null,
     readAtMs,
   };
@@ -416,11 +420,20 @@ export async function readRoleActivationEvidence(
       initialFinding = normalizeShadowReview(await review(named, originalHeadSha, baseSha), named);
       if (initialFinding) initialFinding.readAtMs = readAtMs;
       if (Number.isInteger(initialFinding?.checkRunId)) {
-        initialFinding.laterReviewRunIds = originalRuns
+        // A later review counts only when it is producer-verified like the finding itself: a check run that
+        // merely carries the shadow name is not provenance. Unverified candidates are reported apart.
+        const others = originalRuns.filter((run) => run?.name !== CLAUDE_SHADOW_CONTEXT);
+        const candidates = originalRuns
           .filter((run) => run?.name === CLAUDE_SHADOW_CONTEXT && run?.head_sha === originalHeadSha
             && Number.isInteger(run.id) && run.id > initialFinding.checkRunId)
-          .map((run) => run.id)
-          .sort((a, b) => a - b);
+          .sort((a, b) => a.id - b.id);
+        initialFinding.laterReviewRunIds = [];
+        initialFinding.unverifiedLaterRunIds = [];
+        for (const run of candidates) {
+          const verified = normalizeShadowReview(await review([...others, run], originalHeadSha, baseSha), [run]);
+          (verified?.checkRunId === run.id ? initialFinding.laterReviewRunIds : initialFinding.unverifiedLaterRunIds)
+            .push(run.id);
+        }
       }
       if (Number.isFinite(initialFinding?.atMs)) {
         initialCi = normalizeCi(originalRuns, {
@@ -473,13 +486,13 @@ export async function readRoleActivationEvidence(
   }
 
   // Closing, last: the pull request's lifecycle event log (scripts/pull-request-event-log.mjs), from the
-  // cycle's earliest milestone. The two live-PR reads are snapshots, so a base retarget away and back
+  // cycle's earliest milestone (the initial CI's earliest decider start, the finding, or the request). The two live-PR reads are snapshots, so a base retarget away and back
   // (`main → release → main`) leaves them equal; the append-only issue events list both changes. It is read
   // after the freshness point, so an event before that point is listed; an incomplete log is `null` with a
   // diagnostic, never "no events". Which events disqualify the cycle is the verdict's rule.
   let lifecycle = null;
   if (opening) {
-    const sinceMs = Math.min(opening.atMs, initialFinding?.atMs ?? Infinity);
+    const sinceMs = Math.min(opening.atMs, initialFinding?.atMs ?? Infinity, initialCi?.startedAtMs ?? Infinity);
     const log = await readPullRequestEventLog(client, { pullRequest, sinceMs, now });
     problems.push(...log.problems.map((problem) => `event-log: ${problem}`));
     lifecycle = { sinceMs, events: log.covered ? log.events : null,

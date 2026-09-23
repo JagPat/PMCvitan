@@ -64,9 +64,10 @@ test('the reader normalizes a full correction cycle with identity and server tim
     { headRepositoryAtEnd: REPO, baseRefAtEnd: 'main', baseRepositoryAtEnd: REPO },
   );
   assert.deepEqual(initialFinding.laterReviewRunIds, []);
-  // The lifecycle event log covers the cycle from its earliest milestone (the finding, before the request);
-  // the retarget and label before it are not the cycle's.
-  assert.equal(freshness.lifecycleSinceMs, ms('10:20'));
+  // The lifecycle event log covers the cycle from its earliest milestone (the initial CI's earliest decider
+  // start, before the finding and the request); the retarget and label before it are not the cycle's.
+  assert.equal(initialCi.startedAtMs, ms('10:00'));
+  assert.equal(freshness.lifecycleSinceMs, ms('10:00'));
   assert.deepEqual(freshness.lifecycleEvents, []);
   // The final CI names the one run that decided each required name.
   assert.deepEqual(finalCi.deciders.map((decider) => decider.name).sort(), [...REQUIRED_CHECKS].sort());
@@ -258,6 +259,18 @@ test('the ending base ref and repositories are recorded, so a retarget to a same
   assert.equal(freshness.baseRepositoryAtEnd, 'fork/PMCvitan');
 });
 
+test('a later review counts only when producer-verified; a same-named unverified run is reported apart', async () => {
+  const { evidence } = await readWorld((w) => {
+    w.runs[ORIGINAL].push(
+      shadowRun(ORIGINAL, { id: 7500, completed: at('10:40'), state: 'clear' }),
+      shadowRun(ORIGINAL, { id: 7600, completed: at('10:45'), state: 'clear' }),
+    );
+    w.verify = (run) => run.id !== 7600; // 7600 carries the shadow name but fails producer verification
+  });
+  assert.deepEqual(evidence.records.initialFinding.laterReviewRunIds, [7500]);
+  assert.deepEqual(evidence.records.initialFinding.unverifiedLaterRunIds, [7600]);
+});
+
 test('the initial finding is the run the request names; a later review of the same head is reported beside it', async () => {
   const { evidence } = await readWorld((w) => {
     w.runs[ORIGINAL].push(shadowRun(ORIGINAL, { id: 7500, completed: at('10:40'), state: 'clear' }));
@@ -438,6 +451,17 @@ test('the event log is anchored at the cycle\'s earliest milestone; without a fi
   // A retarget between the finding (10:20) and the request (10:30) is the cycle's.
   const between = await readWorld((w) => { w.events.push(issueEvent(70, 'base_ref_changed', '10:25')); });
   assert.deepEqual(between.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [70]);
+  // So is one after the initial CI started (10:00) but before the finding: it moves the base the deciding
+  // runs were launched on.
+  const afterCi = await readWorld((w) => { w.events.push(issueEvent(70, 'base_ref_changed', '10:10')); });
+  assert.deepEqual(afterCi.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [70]);
+  // The anchor is the EARLIEST decider start: one required check started at 09:50 moves it there.
+  const staggered = await readWorld((w) => {
+    w.runs[ORIGINAL][0] = { ...w.runs[ORIGINAL][0], started_at: at('09:50') };
+    w.events.push(issueEvent(71, 'base_ref_changed', '09:55'));
+  });
+  assert.equal(staggered.evidence.records.initialCi.startedAtMs, ms('09:50'));
+  assert.deepEqual(staggered.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [71]);
   // Without a finding identity there is no finding time: the anchor is the request.
   const unverified = await readWorld((w) => {
     w.verify = false;
@@ -447,7 +471,7 @@ test('the event log is anchored at the cycle\'s earliest milestone; without a fi
   assert.deepEqual(unverified.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [71]);
   // The earlier of the two, whichever it is: a finding stamped after the request does not move the anchor.
   const late = await readWorld((w) => {
-    w.runs[ORIGINAL] = [...ciRuns(ORIGINAL), shadowRun(ORIGINAL, { id: INITIAL_FINDING_RUN, completed: at('10:40'), state: 'changes_required' })];
+    w.runs[ORIGINAL] = [...ciRuns(ORIGINAL, { start: '10:32', end: '10:35' }), shadowRun(ORIGINAL, { id: INITIAL_FINDING_RUN, completed: at('10:40'), state: 'changes_required' })];
     w.events.push(issueEvent(70, 'base_ref_changed', '10:35'));
   });
   assert.equal(late.evidence.records.freshness.lifecycleSinceMs, ms('10:30'));

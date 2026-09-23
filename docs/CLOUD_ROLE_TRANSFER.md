@@ -219,7 +219,8 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
   observed-behaviour assumption and fails closed.
 - **Findings and reviews.** `classifyClaudeShadowReview` with `verifyClaudeShadowProducer`. A finding's
   identity is its verified check run's own URL. The initial finding is the run the request's marker
-  names, not merely the newest review. Later reviews of the reviewed head are listed beside it.
+  names, not merely the newest review. Later reviews of the reviewed head are listed beside it only when
+  producer-verified; a run that merely carries the shadow name is listed apart and counts for nothing.
 - **CI.** `resolveRequiredChecks`, the gate's newest-evidence rule, which includes cancelled attempts. A
   CI record is dated by, and names, the run that decided each required name (`deciders`). A superseded
   straggler never dates it. The initial CI is evaluated as of the triggering finding.
@@ -276,7 +277,8 @@ It issues only GET requests, writes nothing, and is wired to no workflow, gate o
 `codex-current-head` stays required.
 
 **Consumed by the reader.** The evidence reader reads this log last in its closing pass, anchored at the
-cycle's earliest milestone (the earlier of the triggering finding and the request). Its freshness record
+cycle's earliest milestone (the initial CI's earliest decider start, the finding or the request, whichever
+is first; a retarget after CI started moves the base those runs were launched on). Its freshness record
 carries `lifecycleEvents` (with `lifecycleSinceMs`, `eventLogCoveredFromMs` and `eventLogReadAtMs`), so a
 retarget or close/reopen away and back is listed even when both live-PR snapshots agree. An incomplete log
 is `null` with an `event-log:` diagnostic. The verdict (next section) decides which events disqualify
@@ -320,10 +322,10 @@ is always `hold` (see **Causation**):
 - **Freshness.** Read after the review. The open same-repository PR targets `main` at the cycle base,
   both at the start and at the end (ref, SHA and both repositories). Its head is the corrective head at
   both reads. No branch update follows the corrective push; an away-and-back to the same SHA is two
-  updates. The lifecycle event log, anchored no later than the triggering finding, is complete and lists
-  only draft transitions (the controller toggles them to request a review; they move neither the base nor
-  the code). Any base change, close, reopen, merge, head-ref or unknown event holds, so a retarget away
-  and back cannot pass between two agreeing snapshots. Every mutable source (request, acceptance,
+  updates. The lifecycle event log, anchored no later than the initial CI's earliest decider start, is
+  complete and lists only draft transitions (the controller toggles them to request a review; they move
+  neither the base nor the code). Any base change, close, reopen, merge, head-ref or unknown event holds,
+  so a retarget away and back cannot pass between two agreeing snapshots. Every mutable source (request, acceptance,
   live PR, both heads' reviews and CI, push log, event log) was read after the freshness point, which
   follows the pass's opening.
 - **Order.** Strictly: initial CI < finding < request < acceptance < corrective push < final CI <

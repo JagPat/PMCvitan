@@ -254,6 +254,14 @@ test('finding 4080104397: fresh live-head evidence after the review; any interve
   assert.equal(unreadable.records.freshness.lifecycleEvents, null);
   holds(roleTransferActivationVerdict(unreadable, expected), 'liveHeadFreshness');
   holds(await verdictWith((e) => { e.records.freshness.lifecycleSinceMs = e.records.initialFinding.atMs + 1; }), 'liveHeadFreshness');
+  // Finding 4085733131: coverage must reach back to the initial CI's earliest decider start, not merely the
+  // finding. A retarget away and back after CI started but before the finding holds, end to end.
+  const afterCi = await evidenceFor((w) => {
+    w.events.push(issueEvent(50, 'base_ref_changed', '10:10'), issueEvent(51, 'base_ref_changed', '10:11'));
+  });
+  holds(roleTransferActivationVerdict(afterCi, expected), 'liveHeadFreshness');
+  holds(await verdictWith((e) => { e.records.freshness.lifecycleSinceMs = e.records.initialCi.startedAtMs + 1; }), 'liveHeadFreshness');
+  holds(await verdictWith((e) => { e.records.initialCi.startedAtMs = null; }), 'liveHeadFreshness');
   holds(await verdictWith((e) => { e.records.freshness.lifecycleSinceMs = null; }), 'liveHeadFreshness');
   // End to end: a request edited during the pass holds.
   const edited = await evidenceFor((w) => {
@@ -302,6 +310,14 @@ test('reviews are producer-verified shadow results of the exact heads', async ()
   // A later review of the reviewed head after the named finding holds; so does an unreported one.
   const reReviewed = await evidenceFor((w) => { w.runs[ORIGINAL].push(shadowRun(ORIGINAL, { id: 7500, completed: at('10:40'), state: 'clear' })); });
   holds(roleTransferActivationVerdict(reReviewed, expected), 'initialClaudeFinding');
+  // Finding 4085733140: a later run that only carries the shadow name (fails producer verification) is not a
+  // review, so it cannot deny readiness.
+  const impostor = await evidenceFor((w) => {
+    w.runs[ORIGINAL].push(shadowRun(ORIGINAL, { id: 7600, completed: at('10:40'), state: 'clear' }));
+    w.verify = (run) => run.id !== 7600;
+  });
+  assert.deepEqual(impostor.records.initialFinding.unverifiedLaterRunIds, [7600]);
+  allButCausation(roleTransferActivationVerdict(impostor, expected));
   holds(await verdictWith((e) => { delete e.records.initialFinding.laterReviewRunIds; }), 'initialClaudeFinding');
   holds(await verdictWith((e) => { e.records.finalReview.state = 'changes_required'; }), 'boundClaudeClearReReview');
   holds(await verdictWith((e) => { e.records.finalReview.headSha = OTHER; }), 'boundClaudeClearReReview');
