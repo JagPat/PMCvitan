@@ -1,0 +1,50 @@
+name: Role-transfer observer (manual, read-only)
+
+# workflow_dispatch only: this never runs on its own. The operator names ONE pull request and the
+# codex-fix-probe request comment that started a correction cycle; the job reads that cycle with the trusted
+# evidence reader, judges it with the pure activation verdict, and writes the result to the job summary. It
+# is read-only and non-activating: it writes no status, comment, label, branch, setting or merge, and an
+# `activate` verdict is only a readiness decision for the separate, operator-authorized installer.
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: The pull request of the correction cycle
+        required: true
+        type: number
+      request_comment_id:
+        description: The id of the codex-fix-probe request comment that started the cycle
+        required: true
+        type: string
+
+# No permissions by default; the single job reads only.
+permissions: {}
+
+concurrency:
+  group: role-activation-observe-pr-${{ github.event.inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    # Trusted default branch only: a dispatch from any other ref is refused.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Check out trusted observer code from this workflow's commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Read and judge the correction cycle
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OBSERVE_PR_NUMBER: ${{ inputs.pr_number }}
+          OBSERVE_REQUEST_COMMENT_ID: ${{ inputs.request_comment_id }}
+        run: node scripts/role-activation-observe.mjs

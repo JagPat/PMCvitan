@@ -459,3 +459,38 @@ one comment at most per PR/head, and every input read again and re-authorized im
 
 Nothing here activates anything. It makes the observed cycle possible; the verdict and every other gate
 are unchanged.
+
+### Observer and the observed-cycle runbook (manual, read-only, non-activating)
+
+`.github/workflows/role-activation-observe.yml` (`scripts/role-activation-observe.mjs`) runs the trusted
+evidence reader over one correction cycle and judges it with the pure verdict. The operator dispatches it
+from `main` with the PR number and the id of the `codex-fix-probe` request comment that started the cycle.
+The job's token is read-only (`actions`, `checks`, `contents`, `issues`, `pull-requests`: read), and it
+writes the verdict, every proof, the reader's diagnostics, any install binding and the normalized evidence to
+the job summary. It writes nothing to GitHub and applies nothing: an `activate` verdict is a readiness
+decision for the separate, operator-authorized installer.
+
+**The observed cycle.** One real Claude-finding → Codex-correction cycle, run once by the owner:
+
+1. **Pick the PR.** An open, same-repository PR targeting `main` whose current head (the *reviewed head*) has
+   green CI and a Claude shadow review (`claude-independent-review`) in state `changes_required`, the newest
+   verified review of that head. Its title, description, comments and reviews must hold no Codex mention
+   except Codex's own, and no one but Codex and trusted workflows may have left a GitHub review on it.
+2. **Keep the cycle quiet** from the moment the reviewed head was pushed until the observer runs: nobody
+   comments on, reviews, edits or pushes to the PR (a Claude session acting through the owner's account
+   counts as the owner), the PR is not retargeted, closed, reopened or merged, and nothing is merged into
+   `main` (the cycle's base must not move between the reviewed head's shadow review and the observation).
+3. **Dispatch the probe** (`Codex correction-boundary probe`, on `main`): `pr_number`, `head_sha` = the
+   reviewed head, `shadow_run_id` = that shadow check run's id, `finding_comment_id` left empty, and
+   `authorization` = `arm-pr-<pr_number>-head-<head_sha>`. The job's output names the request `comment_id`.
+4. **Let Codex correct it.** Expected, and observed rather than assumed: a Codex-connector 👀 on the request,
+   then a non-forced push by the connector from the reviewed head, every commit carrying the request's
+   `Codex-Fix-Probe` trailer; then green CI and a `clear` shadow review on the corrective head. A Codex
+   head carries no `Correction-Owner: claude` trailer, so the controller should hold it rather than merge.
+5. **Observe.** Once the corrective head's CI and shadow review are complete, dispatch `Role-transfer
+   observer` on `main` with `pr_number` and `request_comment_id`. The job summary shows `activate`, or `hold`
+   with each missing proof and the reader's diagnostics.
+
+A `hold` is a result, not a failure: it names what the cycle lacked (for example, Codex not accepting a
+bot-authored request, or a missing trailer). Only an `activate` observation leads to the installer, which
+needs the operator's authorization and keeps `codex-current-head` required.
