@@ -43,8 +43,9 @@ import { GITHUB_ACTIONS_LOGIN, ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-ac
  *                                   (`CODEX_TASK_ATTESTATION`) plus two reader-backed checks: the complete
  *                                   commit list, ending at the corrective head, carries exactly this
  *                                   request's trailer on every commit; and the PR's complete conversation
- *                                   has no other `@codex` mention ever, and nothing from anyone but Codex
- *                                   and trusted workflows since the branch reached the reviewed head.
+ *                                   has no other current `@codex` mention, no review from anyone but Codex
+ *                                   and trusted workflows, and no such comment posted or edited since the
+ *                                   branch reached the reviewed head.
  *   fullCiGreen                   — the latest applicable CI on the corrective head, at the base, green, with
  *                                   a named, successful run deciding each required name (the reader names
  *                                   them, so a later installer can bind to that exact attempt).
@@ -104,7 +105,8 @@ export const CYCLE_NEUTRAL_LIFECYCLE_EVENTS = Object.freeze(['convert_to_draft',
 // `codexTaskCausation` rests on; the reader checks the rest). Codex tasks that can push to this repository's
 // branches are started only by the owner or by the trusted `codex-fix-probe` request (automatic Codex reviews
 // do not push), and during a correction cycle the owner starts none except by a comment that stays visible in
-// the pull request's conversation. Tasks started any other way leave no GitHub record, hence the attestation.
+// the pull request's conversation: a mention, once posted, is never edited away. Tasks started any other way
+// (another surface, a deleted or since-edited mention) leave no complete GitHub record, hence the attestation.
 export const CODEX_TASK_ATTESTATION = Object.freeze({
   repository: 'JagPat/PMCvitan',
   owner: 'JagPat',
@@ -211,10 +213,12 @@ export function roleTransferActivationVerdict(evidence, expected) {
   // copy, so neither proves causation alone. Under the owner's attestation, a second task could only come
   // from something visible in this PR's conversation, so: (1) the complete commit list of the corrective push,
   // ending at the corrective head, carries exactly this request's trailer on every commit; and (2) the
-  // complete conversation (the PR's own title and description included) holds no `@codex` mention but the
-  // request's and Codex's own, EVER (a task started earlier could still push), and no comment or review from
-  // anyone but Codex and trusted workflows since the update that brought the branch to the reviewed head (an
-  // undated item counts as recent).
+  // complete conversation (the PR's own title and description included) currently holds no `@codex` mention
+  // but the request's and Codex's own, however old (a task started earlier could still push); no comment from
+  // anyone but Codex and trusted workflows was posted or edited since the update that brought the branch to
+  // the reviewed head (an undated one counts as recent); and no such author's review exists at all, because a
+  // review's edits are undated (Claude shadow finding on #624). The description's edits are undated too; a
+  // mention edited away there, or anywhere before the window, is what the attestation rules out.
   const expectedTrailer = nonEmpty(request?.findingRef) && isSha(originalHeadSha)
     ? probeTrailerValue({ pullRequest, headSha: originalHeadSha, findingRef: request.findingRef })
     : null;
@@ -229,6 +233,7 @@ export function roleTransferActivationVerdict(evidence, expected) {
     // The PR's own description starts a task only by mentioning `@codex`; its edits are undated.
     if (item?.kind === 'pull_request') return true;
     if (item?.authorLogin === GITHUB_ACTIONS_LOGIN) return true;
+    if (item?.kind === 'review') return false;
     return finite(item?.createdAtMs) && finite(item?.updatedAtMs)
       && Math.max(item.createdAtMs, item.updatedAtMs) < sinceMs;
   };

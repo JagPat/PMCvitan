@@ -179,6 +179,9 @@ test('finding 4089074927: the trailer is not enough; anyone else who could have 
     (w) => { w.conversation.issue_comment.push(conversationItem(70, 'JagPat', '10:40', 'copy that trailer')); },
     (w) => { w.conversation.review_comment.push(conversationItem(70, 'JagPat', '09:00', 'nit')); }, // at the arrival
     (w) => { w.conversation.review.push(conversationItem(70, 'someone', '10:40', 'lgtm')); },
+    // A review's edits are undated: a mention added and removed later leaves only its old submission date, so
+    // another author's review holds whenever it was submitted (Claude shadow finding on #624).
+    (w) => { w.conversation.review.push(conversationItem(70, 'someone', '08:00', 'lgtm')); },
     (w) => { w.conversation.issue_comment[0].updated_at = at('10:35'); }, // an older comment edited in the window
     (w) => { w.conversation.issue_comment.push({ id: 70, user: { login: 'someone' }, body: 'x' }); },
     (w) => { w.conversation.pull_request.body = 'Codex: @codex fix the finding'; }, // the PR's own description
@@ -187,13 +190,13 @@ test('finding 4089074927: the trailer is not enough; anyone else who could have 
     holds(roleTransferActivationVerdict(await evidenceFor(mutate), expected), 'codexTaskCausation');
   }
   // Codex's own items (its boilerplate mentions @codex), the request itself, trusted-workflow items without
-  // @codex (dated or not), and other authors' items without @codex from before the window are quiet.
+  // @codex (dated or not), and other authors' comments without @codex from before the window are quiet.
   allProven(roleTransferActivationVerdict(await evidenceFor((w) => {
     w.conversation.issue_comment.push(conversationItem(71, 'JagPat', '08:59', 'lgtm'));
     w.conversation.issue_comment.push(conversationItem(72, GITHUB_ACTIONS_LOGIN, '10:40', 'state: review_pending'));
     w.conversation.issue_comment.push({ id: 75, user: { login: GITHUB_ACTIONS_LOGIN }, body: 'state' });
     w.conversation.review.push(conversationItem(73, CODEX_LOGIN, '10:40', '@codex fix it'));
-    w.conversation.review.push(conversationItem(74, 'JagPat', '08:00', 'lgtm'));
+    w.conversation.review.push(conversationItem(74, GITHUB_ACTIONS_LOGIN, '10:40', 'lgtm'));
   }), expected));
   // The request is quiet only as itself: the same id as a review comment, or another issue comment, is not.
   holds(await verdictWith((e) => { e.records.conversation.items.find((item) => item.id === REQUEST_ID).kind = 'review_comment'; }), 'codexTaskCausation');

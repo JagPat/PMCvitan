@@ -392,24 +392,27 @@ After #623 the repository owner chose how causation is proven: an attested assum
 PR. `CODEX_TASK_ATTESTATION` (in `scripts/role-activation.mjs`, repository `JagPat/PMCvitan`, owner
 `JagPat`) records it. Codex tasks that can push to this repository's branches are started only by the owner
 or by the trusted `codex-fix-probe` request; automatic Codex reviews do not push. During a correction cycle
-the owner starts none except by a comment that stays visible in the pull request's conversation. A task
-started any other way (the Codex web UI, a deleted comment) leaves no GitHub record, which is why this part
-is attested, not checked.
+the owner starts none except by a comment that stays visible in the pull request's conversation: a mention,
+once posted, is never edited away. A task started any other way (the Codex web UI, a deleted or since-edited
+mention) leaves no complete GitHub record, which is why this part is attested, not checked.
 
 The verdict checks the rest, from the reader's evidence:
 
 - **Commits.** The corrective push's commit list is complete and ends at the corrective head. Every commit
   carries exactly one `Codex-Fix-Probe` trailer, equal to the value derived from this cycle's own PR,
   reviewed head and finding (never taken from the evidence).
-- **Conversation.** The PR's complete conversation, its own title and description included, has no
-  `@codex` mention except the request's (as that issue comment) and the Codex connector's own, whenever
-  posted: a task started earlier could still push. (The Codex connector does answer a mention in a PR
+- **Conversation.** The PR's complete conversation, its own title and description included, currently has
+  no `@codex` mention except the request's (as that issue comment) and the Codex connector's own, however
+  old: a task started earlier could still push. (The Codex connector does answer a mention in a PR
   description; it replied to one on #624.)
   A mention the reader could not determine counts as one. And from the update that brought the branch to
   the reviewed head onwards, nothing at all comes from anyone but the Codex connector and trusted workflows
-  (`github-actions[bot]`): another author's comment or review in that window holds whatever its text, and
-  so do an older comment edited in it and an undated item. The description starts a task only by a mention,
-  so without one it is quiet whenever the PR was opened; the conversation must carry exactly one.
+  (`github-actions[bot]`): another author's comment in that window holds whatever its text, and so do an
+  older comment edited in it and an undated one. A review's edits are undated (a mention added and then
+  removed leaves only the old submission date), so another author's review holds whenever it was submitted
+  (Claude shadow finding on #624). The description starts a task only by a mention, so without one it is
+  quiet whenever the PR was opened; its edits are undated too, and a mention edited away there, or anywhere
+  before the window, is what the attestation rules out. The conversation must carry exactly one description.
 
 A cycle that proves every proof still holds: the `activate` install phase is the next unit, and nothing is
 activated, installed or routed here.
