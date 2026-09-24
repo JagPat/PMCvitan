@@ -75,6 +75,9 @@ export const CODEX_ACCEPTANCE_REACTION = 'eyes';
 // UNCOVERED (reported, not guessed): the corrective push cannot be identified without the whole window.
 export const PUSH_LOG_PAGE_SIZE = 100;
 export const CONVERSATION_PAGE_SIZE = 100;
+// Like the event log's page bound: a source still full on its last allowed page is not read to its end, so it
+// is no conversation (fail closed), never an unbounded read.
+export const CONVERSATION_MAX_PAGES = 10;
 // Any `@codex` anywhere counts as a mention: over-matching only holds more cycles.
 const CODEX_MENTION = /@codex/iu;
 const CONVERSATION_SOURCES = Object.freeze([
@@ -489,6 +492,10 @@ export async function readRoleActivationEvidence(
         }
         items.push(...batch.map((item) => normalizeConversationItem(kind, item)));
         if (batch.length < CONVERSATION_PAGE_SIZE) break;
+        if (page >= CONVERSATION_MAX_PAGES) {
+          problems.push(`conversation ${kind}: ${CONVERSATION_MAX_PAGES} full pages without an end (uncovered)`);
+          return null;
+        }
       }
     }
     return items;

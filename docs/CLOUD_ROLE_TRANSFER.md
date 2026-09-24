@@ -220,7 +220,8 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
 - **Conversation.** The PR's own title and description, then every issue comment, review comment and
   review on it, read to the last page. Each item carries its server author, its dates and whether its text
   mentions `@codex`. A review has only its submission date and the description only its creation date:
-  their edits are undated. A failed or malformed read leaves no conversation, with a diagnostic.
+  their edits are undated. A failed or malformed read, or a source still full after 10 pages (the event
+  log's bound), leaves no conversation, with a diagnostic.
 - **Findings and reviews.** `classifyClaudeShadowReview` with `verifyClaudeShadowProducer`. A finding's
   identity is its verified check run's own URL. The initial finding is the run the request's marker
   names, not merely the newest review. Later reviews of the reviewed head are listed beside it only when

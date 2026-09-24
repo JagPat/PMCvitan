@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  CONVERSATION_MAX_PAGES,
   CONVERSATION_PAGE_SIZE,
   GITHUB_ACTIONS_LOGIN,
   PUSH_LOG_PAGE_SIZE,
@@ -579,6 +580,18 @@ test('the conversation lists every issue comment, review comment and review, wit
   });
   assert.equal(paged.evidence.records.conversation.items.filter((item) => item.kind === 'review_comment').length, CONVERSATION_PAGE_SIZE + 1);
   assert.equal(paged.calls.filter((path) => path.includes('/pulls/619/comments?')).length, 2);
+  // Bounded like the event log: a source that ends on its last allowed page is read; one still full there is
+  // uncovered, fail closed (Claude shadow finding on #624).
+  const atLimit = await readWorld((w) => {
+    w.conversation.review = Array.from({ length: CONVERSATION_MAX_PAGES * CONVERSATION_PAGE_SIZE - 1 }, (_, index) => conversationItem(2000 + index, CODEX_LOGIN, '11:25'));
+  });
+  assert.equal(atLimit.evidence.records.conversation.items.filter((item) => item.kind === 'review').length, CONVERSATION_MAX_PAGES * CONVERSATION_PAGE_SIZE - 1);
+  const overLimit = await readWorld((w) => {
+    w.conversation.review = Array.from({ length: CONVERSATION_MAX_PAGES * CONVERSATION_PAGE_SIZE }, (_, index) => conversationItem(2000 + index, CODEX_LOGIN, '11:25'));
+  });
+  assert.equal(overLimit.evidence.records.conversation, null);
+  assert.deepEqual(overLimit.evidence.problems, [`conversation review: ${CONVERSATION_MAX_PAGES} full pages without an end (uncovered)`]);
+  assert.equal(overLimit.calls.filter((path) => path.includes('/pulls/619/reviews?')).length, CONVERSATION_MAX_PAGES);
   // A failed or malformed page leaves no conversation, with a diagnostic (never a partial list).
   const failed = await readWorld((w) => { w.conversationError = { review: 'boom' }; });
   assert.equal(failed.evidence.records.conversation, null);
