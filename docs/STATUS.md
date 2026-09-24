@@ -14,45 +14,37 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-activation-readiness
-reviewed_merge: 0a712d93
-open_pr: 619
+work_item: cloud-role-transfer-task-binding
+reviewed_merge: 1273465
+open_pr: 623
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-23
+updated: 2026-09-24
 ```
 
-### Now — cloud role transfer: unit (b), the activation-readiness verdict (#619); #622, #621 and #620 merged
+### Now — cloud role transfer: the task → push binding (maintenance); #619, #622, #621 and #620 merged
 
-The cloud role transfer continues with one writer and one channel. #619 (the activation-readiness
-verdict) reached its third-head stop and was split additively (#619 comments 5790993532 and
-5791317874). Unit (a), #620, the trusted evidence reader, then reached its own third-head stop, recorded
-at #620 comment 5792574988 (coordination on #482, comment 5792575745). The shared root cause: freshness
-proven by comparing snapshots. Every mutable dimension now rests on an append-only history.
+The cloud role transfer continues with one writer and one channel. The additive split is merged: #620
+(evidence reader, `7f2cbbef`), #621 (lifecycle event log, `2a1f0f46`), #622 (integration, `0a712d93`)
+and #619 (the activation-readiness verdict, `1273465`). The verdict is hold-only: it never retires
+`codex-current-head`, and `codexTaskCausation` stays missing because every Codex task pushes as the same
+connector bot.
 
-- **Unit (a), #620, merged at `7f2cbbef`:** the trusted, read-only evidence reader.
-- **Unit (a0), #621, merged at `2a1f0f46`:** the pull request lifecycle event log.
-- **Integration, #622, merged at `0a712d93`:** the reader reads the event log last in its closing pass
-  and diagnoses a rejected request. It answered #620 findings 4081030214 and 4081030220.
-- **Now, unit (b), `open_pr: 619`** (`work_item: cloud-role-transfer-activation-readiness`, branch
-  `claude/role-transfer-activation-readiness`, with `main` at `0a712d93` merged in). The verdict,
-  `scripts/role-activation.mjs`, is re-scoped to a pure judgement over the reader's normalized schema
-  and the caller's expected repository and PR. It answers #619's six open findings: repository on every
-  record (4080104371), the full milestone order (4080104377), installation after the proven cycle and a
-  later observation (4080104384), the triggering finding bound through the request to the accepted task
-  (4080104390), fresh live-head, push-log and lifecycle-event evidence after the final review
-  (4080104397), and the latest applicable CI attempt with its deciding runs (4080104403).
-  At its convergence stop (#619 comment 5795929840, after findings 4083067610/17/23 on `e3a0ece1`) the
-  verdict was narrowed to what trusted evidence can prove. It never retires `codex-current-head`, and it
-  always holds on `codexTaskCausation` until a trusted task → push binding exists (a later unit; it needs
-  a requested maintenance PR to `codex-fix-probe`). It admits a same-second tie only where the records
-  prove the order.
+- **Now, the binding unit, `open_pr: 623`** (`work_item: cloud-role-transfer-task-binding`, branch
+  `claude/role-activation-task-binding`, from `main` at `1273465`). A maintenance change the repository
+  owner requested to the frozen `codex-fix-probe`: the correction request asks Codex to end every commit
+  with a `Codex-Fix-Probe` trailer repeating the request's identity. The reader reports each corrective
+  commit's trailers and whether the commit list is complete. Evidence only; the verdict is unchanged.
+- **Next:** the verdict consumes the binding (every commit carries exactly this request's trailer) and
+  gains the `activate` install phase; then a probe variant that keys a request to a Claude shadow finding;
+  then one real observed cycle; then the operator-authorized switch; retirement is a later unit.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
 stays untouched at `b2490c2a`.
 
-**Merged in the role-transfer lane:** #621 (`2a1f0f46`), the pull request lifecycle event log. #620
+**Merged in the role-transfer lane:** #619 (`1273465`), the activation-readiness verdict. #622
+(`0a712d93`), the reader/event-log integration. #621 (`2a1f0f46`), the pull request lifecycle event log. #620
 (`7f2cbbef`), the activation evidence reader. #618
 (`e0908622`), the shadow-consumer broadening (non-authoritative). #617 (`b2490c2a`), Phase 6 task 4d
 unit 4d-i-b U3.
