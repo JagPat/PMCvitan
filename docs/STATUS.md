@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-shadow-probe
-reviewed_merge: 96208ae
-open_pr: 626
+work_item: cloud-role-transfer-observer
+reviewed_merge: 149dfe4
+open_pr: 627
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-24
@@ -31,7 +31,7 @@ and #619 (the activation-readiness verdict, `1273465`). #623 (`b9d31da`) added t
 attestation, #625 (`96208ae`) gave the verdict its `activate` readiness state, and #626 (`149dfe4`) let
 `codex-fix-probe` key its request to a verified Claude shadow finding.
 
-- **Now, the observer unit** (`work_item: cloud-role-transfer-observer`, branch
+- **Now, the observer unit, `open_pr: 627`** (`work_item: cloud-role-transfer-observer`, branch
   `claude/role-activation-observer`, from `main` at `149dfe4`). A manual, main-only, read-only workflow
   runs the evidence reader and the verdict over one cycle and writes the result to the job summary. It
   writes nothing to GitHub and applies nothing. `docs/CLOUD_ROLE_TRANSFER.md` carries the observed-cycle
