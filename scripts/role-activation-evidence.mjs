@@ -1,7 +1,7 @@
 import { CLAUDE_SHADOW_CONTEXT, CODEX_LOGIN, requiredChecksForPullRequest } from './review-policy.mjs';
 import { resolveRequiredChecks } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { PROBE_MARKER_PREFIX } from './codex-fix-probe.mjs';
+import { PROBE_MARKER_PREFIX, probeTrailersIn } from './codex-fix-probe.mjs';
 import { readPullRequestEventLog } from './pull-request-event-log.mjs';
 
 /**
@@ -203,14 +203,30 @@ export function normalizePushLog(activities, { repository, pullRequest, branch, 
   };
 }
 
-/** Server-computed ancestry of the corrective head relative to the reviewed head. */
+/**
+ * Server-computed ancestry of the corrective head relative to the reviewed head, with the commits it adds.
+ * Each commit reports its `Codex-Fix-Probe` trailers (the binding the correction request asks for); the
+ * reader only reports them, and the list counts as complete only when the server returned every commit
+ * (`total_commits`, which the compare API caps per page, equals both the list and `ahead_by`).
+ */
 export function normalizeAncestry(comparison) {
   if (!comparison || typeof comparison.status !== 'string') return null;
+  const aheadBy = Number.isInteger(comparison.ahead_by) ? comparison.ahead_by : null;
+  const commits = Array.isArray(comparison.commits)
+    ? comparison.commits.map((commit) => ({
+      sha: typeof commit?.sha === 'string' ? commit.sha : null,
+      authorLogin: commit?.author?.login ?? null,
+      probeTrailers: probeTrailersIn(commit?.commit?.message),
+    }))
+    : null;
   return {
     status: comparison.status,
-    aheadBy: Number.isInteger(comparison.ahead_by) ? comparison.ahead_by : null,
+    aheadBy,
     behindBy: Number.isInteger(comparison.behind_by) ? comparison.behind_by : null,
     mergeBaseSha: comparison.merge_base_commit?.sha ?? null,
+    commits,
+    commitsComplete: commits !== null && Number.isInteger(comparison.total_commits)
+      && commits.length === comparison.total_commits && comparison.total_commits === aheadBy,
   };
 }
 

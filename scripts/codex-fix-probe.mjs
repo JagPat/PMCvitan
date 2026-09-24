@@ -37,6 +37,25 @@ export function probeMarker({ pullRequest, headSha, findingRef }) {
   return `${dedupPrefix({ pullRequest, headSha })}finding-${findingRef} -->`;
 }
 
+/**
+ * The commit trailer a corrective task must put on every commit it pushes. It repeats the request's own
+ * identity (PR, reviewed head, finding), so a push can be bound to THIS request: every Codex task pushes
+ * as the same connector bot, and a different task on the same branch carries a different trailer. The
+ * reader only reports trailers; a missing or mismatched trailer means the push is not bound (fail closed).
+ */
+export const PROBE_TRAILER_KEY = 'Codex-Fix-Probe';
+export function probeTrailerValue({ pullRequest, headSha, findingRef }) {
+  return `pr-${pullRequest}:head-${headSha}:finding-${findingRef}`;
+}
+export function probeTrailer(identity) {
+  return `${PROBE_TRAILER_KEY}: ${probeTrailerValue(identity)}`;
+}
+/** Every `Codex-Fix-Probe:` trailer value in a commit message, in order (none → `[]`). */
+export function probeTrailersIn(message) {
+  if (typeof message !== 'string') return [];
+  return [...message.matchAll(/^Codex-Fix-Probe:[ \t]*(\S.*?)[ \t]*$/gmu)].map((match) => match[1]);
+}
+
 /** The operator must type this exact value to arm ONE PR at ONE head — a careless dispatch, or a
  * dispatch whose head has since moved, cannot match it. */
 export function expectedAuthorization({ pullRequest, headSha }) {
@@ -133,6 +152,13 @@ export function codexFixComment({ pullRequestNumber, headSha, sourceBranch, find
     'Requirements: push the corrective commit to that source branch (do not open a new PR); '
       + 'preserve every other open finding and do not resolve, overwrite, or hide them; do not touch '
       + 'branch protection, required statuses, or unrelated code.',
+    '',
+    'End the message of EVERY commit you push for this request with this exact trailer line, on its own '
+      + 'line, unchanged (it binds your commits to this request):',
+    '',
+    '```',
+    probeTrailer({ pullRequest: pullRequestNumber, headSha, findingRef }),
+    '```',
     '',
     'This is a one-time, bounded correction-boundary probe. It is dispatch evidence only — no review '
       + 'clearance is implied, and the shadow review remains non-authoritative.',

@@ -4,11 +4,15 @@ import test from 'node:test';
 
 import {
   authorizeCodexFixDispatch,
+  PROBE_TRAILER_KEY,
   codexFixComment,
   dedupPrefix,
   expectedAuthorization,
   isGenuineUnresolvedFinding,
   probeMarker,
+  probeTrailer,
+  probeTrailerValue,
+  probeTrailersIn,
   pullNumberFromUrl,
   runDispatch,
 } from './codex-fix-probe.mjs';
@@ -126,6 +130,23 @@ test('the posted request is a single @codex fix naming head/branch/finding, requ
   assert.match(body, /preserve every other open finding/u);
   assert.match(body, /do not open a new PR/u);
   assert.doesNotMatch(body, /codex-current-head/u);
+  // The request asks for the binding trailer, verbatim, on every commit.
+  assert.ok(body.includes(`\n${probeTrailer({ pullRequest: 597, headSha, findingRef })}\n`));
+  assert.match(body, /EVERY commit you push for this request/u);
+});
+
+test('the binding trailer repeats the request identity and is parsed back exactly', () => {
+  const identity = { pullRequest: 597, headSha, findingRef };
+  const value = probeTrailerValue(identity);
+  assert.equal(value, `pr-597:head-${headSha}:finding-${findingRef}`);
+  assert.equal(probeTrailer(identity), `${PROBE_TRAILER_KEY}: ${value}`);
+  // A trailer on its own line is read back; one per line, in order; trailing spaces trimmed.
+  assert.deepEqual(probeTrailersIn(`fix: x\n\nBody.\n\n${probeTrailer(identity)}  \nCo-Authored-By: a`), [value]);
+  assert.deepEqual(probeTrailersIn(`x\n\nCodex-Fix-Probe: a\nCodex-Fix-Probe: b`), ['a', 'b']);
+  // Not a trailer: mid-line, differently cased, empty value, or no message at all.
+  for (const message of [`x see Codex-Fix-Probe: ${value}`, `x\n\ncodex-fix-probe: ${value}`, 'x\n\nCodex-Fix-Probe:   ', null, undefined, 42]) {
+    assert.deepEqual(probeTrailersIn(message), [], String(message));
+  }
 });
 
 test('runDispatch refuses an untrusted ref and a non-dispatch event before any API call', async () => {

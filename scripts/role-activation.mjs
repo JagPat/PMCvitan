@@ -37,10 +37,11 @@ import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs'
  *                                   Codex connector from the reviewed head to the corrective head, with the
  *                                   reviewed head a server-verified ancestor (compare `ahead`, `behind 0`).
  *   codexTaskCausation            — that push was made by the task accepted for THIS request. Every Codex
- *                                   task pushes as the same connector bot, and no GitHub record the trusted
- *                                   reader can read (schema v1) ties a push to a request, so actor and time
- *                                   cannot prove it. This proof is ALWAYS missing until a trusted reader
- *                                   supplies an authenticated binding: the verdict holds, fail closed.
+ *                                   task pushes as the same connector bot, so actor and time cannot prove
+ *                                   it. The request now asks for a `Codex-Fix-Probe` trailer on every commit
+ *                                   and the reader reports each commit's trailers, but this verdict does not
+ *                                   consume them yet: the proof is ALWAYS missing (a later unit binds it),
+ *                                   so the verdict holds, fail closed.
  *   fullCiGreen                   — the latest applicable CI on the corrective head, at the base, green, with
  *                                   a named, successful run deciding each required name (the reader names
  *                                   them, so a later installer can bind to that exact attempt).
@@ -193,10 +194,9 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && correctivePush.ancestry?.behindBy === 0
     && correctivePush.ancestry?.mergeBaseSha === originalHeadSha);
 
-  // No trusted record ties a connector push to the task accepted for THIS request: every Codex task pushes as
-  // the same bot, and schema v1 carries no request or task identity on the push. Actor and time cannot prove
-  // causation (another Codex task on the same branch could push first), so this proof holds until a trusted
-  // reader supplies an authenticated binding.
+  // Every Codex task pushes as the same bot, so actor and time cannot prove causation (another Codex task on
+  // the same branch could push first). The reader now reports each corrective commit's `Codex-Fix-Probe`
+  // trailers (the binding the request asks for); consuming them is a later unit, so this proof stays missing.
   prove('codexTaskCausation', false);
 
   const ciDeciderRunIds = Array.isArray(finalCi?.deciders) ? finalCi.deciders.map((run) => run?.checkRunId) : [];
