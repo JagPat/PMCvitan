@@ -241,6 +241,11 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [candidatePull, candidatePull] }), candidatePull, head)).state, 'ownership_not_eligible');
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [candidatePull, candidatePull] }), candidatePull, head,
     { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).state, 'ownership_not_eligible');
+  // Codex finding 4098699869: a candidate marker that appears between the first and the final read
+  // (the PR the merge acts on) still holds.
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, candidatePull] }), pull, head)).state, 'ownership_not_eligible');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, candidatePull] }), pull, head,
+    { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).state, 'ownership_not_eligible');
   // A caller that pre-parsed the eligible verdict authorizes without a second commit read.
   assert.equal((await authorizeExactHeadMerge({ ...makeClient(), async commit() { throw new Error('must not re-read when verdict is carried'); } }, pull, head, { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).allowed, true);
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [{ ...pull, draft: true }] }), pull, head)).state, 'draft');

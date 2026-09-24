@@ -1296,6 +1296,11 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
     return { allowed: false, state: 'changed_during_validation' };
   }
+  // The body is mutable: a candidate marker that appears between the first read and this one still holds
+  // (Codex finding 4098699869 on #628). The PR this returns, and the merge acts on, is the one checked.
+  if (candidateBodyHold(finalLive, mergeVerdict)) {
+    return { allowed: false, state: 'ownership_not_eligible' };
+  }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
 
