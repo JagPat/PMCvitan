@@ -81,8 +81,13 @@ test('a full cycle read by the trusted reader proves every proof: activate, with
   assert.ok(Object.isFrozen(verdict.install) && Object.isFrozen(verdict.install.cycle));
   assert.ok(Object.isFrozen(verdict.install.cycle.ciDeciderRunIds));
   assert.ok(!REQUIRED_CHECKS.includes(CLAUDE_STATUS_CONTEXT));
-  // The install binds to the verified clear review's own run: without it, there is no bound re-review.
-  holds(await verdictWith((e) => { e.records.finalReview.checkRunId = null; }), 'boundClaudeClearReReview');
+  // The install binds to the verified clear review's own run: without it, there is no bound re-review. Every
+  // id it binds must be a real GitHub id (a positive integer) a later installer can re-read (Codex finding on #625).
+  for (const id of [null, 0, -7002, 1.5]) {
+    holds(await verdictWith((e) => { e.records.finalReview.checkRunId = id; }), 'boundClaudeClearReReview');
+    holds(await verdictWith((e) => { e.records.finalCi.deciders[0].checkRunId = id; }), 'fullCiGreen');
+    holds(await verdictWith((e) => { e.cycle.correctionRequestId = id; }), 'cycleIdentity');
+  }
   // Any single missing proof holds with no install at all (every hold case below asserts it too).
   holds(await verdictWith((e) => { e.records.conversation = null; }), 'codexTaskCausation');
 });

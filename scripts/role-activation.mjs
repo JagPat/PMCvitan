@@ -118,6 +118,8 @@ const SHA = /^[0-9a-f]{40}$/u;
 const isSha = (value) => typeof value === 'string' && SHA.test(value);
 const nonEmpty = (value) => typeof value === 'string' && value.length > 0;
 const finite = (value) => Number.isFinite(value);
+// A GitHub id: a positive integer. Every id `install.cycle` binds must be one a later installer can re-read.
+const githubId = (value) => Number.isInteger(value) && value > 0;
 // Adjacent milestones in order. GitHub stamps whole seconds, so a pair may tie only when `tieProvenBy` names
 // the record binding that proves its order (e.g. a reaction attached to the comment it follows).
 const ordered = (chain) => chain.every(({ atMs }) => finite(atMs))
@@ -165,7 +167,7 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && isSha(originalHeadSha)
     && isSha(correctiveHeadSha)
     && correctiveHeadSha !== originalHeadSha
-    && Number.isInteger(requestId);
+    && githubId(requestId);
 
   // Identity scopes. Every record names the EXPECTED repository; PR-scoped records also the expected PR;
   // base-bound records (CI and reviews) also the cycle base.
@@ -265,12 +267,12 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && finalCi.headSha === correctiveHeadSha
     && finalCi.state === 'success'
     && ciDeciderRunIds.length > 0
-    && ciDeciderRunIds.every(Number.isInteger)
+    && ciDeciderRunIds.every(githubId)
     && finalCi.deciders.every((run) => run.conclusion === 'success'));
 
   prove('boundClaudeClearReReview', atBase(finalReview)
     && finalReview.headSha === correctiveHeadSha
-    && Number.isInteger(finalReview.checkRunId)
+    && githubId(finalReview.checkRunId)
     && finalReview.state === 'shadow_clear');
 
   // Every mutable source is a closing read: each starts after the freshness point, so each covers the cycle
