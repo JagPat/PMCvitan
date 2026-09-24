@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  CONVERSATION_PAGE_SIZE,
+  GITHUB_ACTIONS_LOGIN,
   PUSH_LOG_PAGE_SIZE,
   ROLE_ACTIVATION_EVIDENCE_SCHEMA,
+  normalizeConversationItem,
   parseProbeMarker,
   readRoleActivationEvidence,
 } from './role-activation-evidence.mjs';
@@ -12,7 +15,7 @@ import { CODEX_LOGIN, REQUIRED_CHECKS } from './review-policy.mjs';
 import { EVENT_LOG_PAGE_SIZE } from './pull-request-event-log.mjs';
 import {
   BASE, BRANCH, CORRECTIVE, FINDING_REF, INITIAL_FINDING_RUN, ORIGINAL, OTHER, PR, REPO, REQUEST_ID, correctiveCommit,
-  activity, at, ciRuns, client, clock, issueEvent, ms, pull, readWorld, requestComment, shadowRun, world,
+  activity, at, ciRuns, client, clock, conversationItem, issueEvent, ms, pull, readWorld, requestComment, shadowRun, world,
 } from './role-activation-test-fixtures.mjs';
 
 const BINDING_VALUE = probeTrailerValue({ pullRequest: PR, headSha: ORIGINAL, findingRef: FINDING_REF });
@@ -25,9 +28,9 @@ test('the reader normalizes a full correction cycle with identity and server tim
     repository: REPO, pullRequest: PR, branch: BRANCH, baseSha: BASE,
     originalHeadSha: ORIGINAL, correctiveHeadSha: CORRECTIVE, correctionRequestId: REQUEST_ID,
   });
-  const { initialCi, initialFinding, request, acceptance, correctivePush, finalCi, finalReview, freshness } = evidence.records;
+  const { initialCi, initialFinding, request, acceptance, correctivePush, finalCi, finalReview, freshness, conversation } = evidence.records;
   // Every record names the repository it was read under.
-  for (const record of [initialCi, initialFinding, request, acceptance, correctivePush, finalCi, finalReview, freshness]) {
+  for (const record of [initialCi, initialFinding, request, acceptance, correctivePush, finalCi, finalReview, freshness, conversation]) {
     assert.equal(record.repository, REPO);
   }
   assert.deepEqual(
@@ -91,13 +94,13 @@ test('the reader normalizes a full correction cycle with identity and server tim
     ['open', CORRECTIVE, 'main', BASE, REPO],
   );
   // Every mutable source is read after the freshness point.
-  for (const readAt of [request.readAtMs, acceptance.readAtMs, initialFinding.readAtMs, initialCi.readAtMs,
+  for (const readAt of [request.readAtMs, acceptance.readAtMs, conversation.readAtMs, initialFinding.readAtMs, initialCi.readAtMs,
     freshness.pullReadAtMs, freshness.pushLogReadAtMs, finalCi.readAtMs, finalReview.readAtMs,
     freshness.eventLogCoveredFromMs, freshness.eventLogReadAtMs]) {
     assert.ok(freshness.observedAtMs < readAt);
   }
   // Read-only: GETs only (the fake refuses writes), and only the documented read endpoints.
-  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619\/events\?|activity\?|compare\/)/u.test(path)));
+  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619\/(events|comments)\?|pulls\/619\/(comments|reviews)\?|activity\?|compare\/)/u.test(path)));
   // The push log names its period; this cycle is inside a day.
   assert.ok(calls.filter((path) => path.includes('/activity?')).every((path) => path.endsWith('&time_period=day')));
 });
@@ -547,4 +550,40 @@ test('the corrective push reports each commit\'s binding trailers, and whether t
     const partial = await readWorld((w) => { Object.assign(w.comparison, change); });
     assert.equal(partial.evidence.records.correctivePush.ancestry.commitsComplete, false, JSON.stringify(change));
   }
+});
+
+test('the conversation lists every issue comment, review comment and review, with author, dates and @codex mentions', async () => {
+  const { evidence } = await readWorld();
+  const { conversation } = evidence.records;
+  assert.equal(conversation.pullRequest, PR);
+  assert.deepEqual(conversation.items.map((item) => [item.kind, item.id, item.authorLogin, item.mentionsCodex]), [
+    ['issue_comment', 61, 'JagPat', false],
+    ['issue_comment', 62, GITHUB_ACTIONS_LOGIN, false],
+    ['issue_comment', REQUEST_ID, GITHUB_ACTIONS_LOGIN, true],
+    ['review_comment', 63, CODEX_LOGIN, false],
+    ['review', 64, CODEX_LOGIN, true],
+  ]);
+  assert.deepEqual([conversation.items[1].createdAtMs, conversation.items[1].updatedAtMs], [ms('08:50'), ms('11:30')]);
+  // A review is dated by its submission; an undated item keeps null dates; any `@codex` counts as a mention.
+  assert.deepEqual(normalizeConversationItem('review', { id: 1, user: { login: 'x' }, submitted_at: at('10:00'), updated_at: at('11:00'), body: 'Hey @Codex, fix it' }),
+    { kind: 'review', id: 1, authorLogin: 'x', createdAtMs: ms('10:00'), updatedAtMs: ms('10:00'), mentionsCodex: true });
+  assert.deepEqual(normalizeConversationItem('issue_comment', { id: 2, user: { login: 'x' } }),
+    { kind: 'issue_comment', id: 2, authorLogin: 'x', createdAtMs: null, updatedAtMs: null, mentionsCodex: false });
+  // Read to its end across pages.
+  const paged = await readWorld((w) => {
+    w.conversation.review_comment = Array.from({ length: CONVERSATION_PAGE_SIZE + 1 }, (_, index) => conversationItem(1000 + index, CODEX_LOGIN, '11:25'));
+  });
+  assert.equal(paged.evidence.records.conversation.items.filter((item) => item.kind === 'review_comment').length, CONVERSATION_PAGE_SIZE + 1);
+  assert.equal(paged.calls.filter((path) => path.includes('/pulls/619/comments?')).length, 2);
+  // A failed or malformed page leaves no conversation, with a diagnostic (never a partial list).
+  const failed = await readWorld((w) => { w.conversationError = { review: 'boom' }; });
+  assert.equal(failed.evidence.records.conversation, null);
+  assert.deepEqual(failed.evidence.problems, ['conversation review page 1: boom']);
+  const malformed = await readWorld((w) => { w.conversation.issue_comment = { not: 'a list' }; });
+  assert.equal(malformed.evidence.records.conversation, null);
+  assert.deepEqual(malformed.evidence.problems, ['conversation issue_comment page 1: not a list']);
+  // Without a request there is no cycle, so the conversation is not read at all.
+  const noRequest = await readWorld((w) => { w.comment = null; });
+  assert.equal(noRequest.evidence.records.conversation, null);
+  assert.ok(!noRequest.calls.some((path) => /\/(comments|reviews)\?/u.test(path)));
 });

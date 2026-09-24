@@ -4,13 +4,15 @@ import test from 'node:test';
 import {
   ACTIVATION_INSTALL,
   ACTIVATION_REQUIRED_PROOFS,
+  CODEX_TASK_ATTESTATION,
   CYCLE_NEUTRAL_LIFECYCLE_EVENTS,
   roleTransferActivationVerdict,
 } from './role-activation.mjs';
-import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs';
+import { GITHUB_ACTIONS_LOGIN, ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs';
 import { CLAUDE_SHADOW_CONTEXT, CLAUDE_STATUS_CONTEXT, CODEX_LOGIN, REQUIRED_CHECKS, STATUS_CONTEXT } from './review-policy.mjs';
 import {
-  BASE, CORRECTIVE, FINDING_REF, ORIGINAL, OTHER, PR, REPO, activity, at, issueEvent, pull, readWorld, shadowRun,
+  BASE, CORRECTIVE, FINDING_REF, ORIGINAL, OTHER, PR, REPO, REQUEST_ID, activity, at, conversationItem, correctiveCommit,
+  issueEvent, ms, pull, readWorld, shadowRun,
 } from './role-activation-test-fixtures.mjs';
 import { probeTrailerValue } from './codex-fix-probe.mjs';
 
@@ -21,7 +23,7 @@ const BINDING_VALUE = probeTrailerValue({ pullRequest: PR, headSha: ORIGINAL, fi
 // normalized field to prove each cross-record rule holds.
 const expected = { repository: REPO, pullRequest: PR };
 const UNRELATED = 'someone/PMCvitan';
-const RECORDS = ['initialCi', 'initialFinding', 'request', 'acceptance', 'correctivePush', 'finalCi', 'finalReview', 'freshness'];
+const RECORDS = ['initialCi', 'initialFinding', 'request', 'acceptance', 'correctivePush', 'finalCi', 'finalReview', 'freshness', 'conversation'];
 
 async function evidenceFor(mutateWorld) {
   return (await readWorld(mutateWorld)).evidence;
@@ -31,14 +33,14 @@ async function verdictWith(mutate) {
   mutate(evidence);
   return roleTransferActivationVerdict(evidence, expected);
 }
-// Every proof the trusted reader's evidence can carry holds; only task -> push causation, which no trusted
-// source records yet, is missing.
-const allButCausation = (verdict) => {
+// Every proof holds, and the verdict still holds: the `activate` install phase is a later unit.
+const allProven = (verdict) => {
   assert.equal(verdict.state, 'hold');
-  assert.deepEqual(verdict.missing, ['codexTaskCausation']);
+  assert.equal(verdict.activate, false);
+  assert.deepEqual(verdict.missing, []);
 };
 const CLOSING_READS = [
-  ['request', 'readAtMs'], ['acceptance', 'readAtMs'], ['initialFinding', 'readAtMs'], ['initialCi', 'readAtMs'],
+  ['request', 'readAtMs'], ['acceptance', 'readAtMs'], ['conversation', 'readAtMs'], ['initialFinding', 'readAtMs'], ['initialCi', 'readAtMs'],
   ['freshness', 'pullReadAtMs'], ['freshness', 'pushLogReadAtMs'], ['finalCi', 'readAtMs'], ['finalReview', 'readAtMs'],
   ['freshness', 'eventLogCoveredFromMs'], ['freshness', 'eventLogReadAtMs'],
 ];
@@ -48,7 +50,7 @@ const holds = (verdict, proof) => {
   assert.ok(verdict.missing.includes(proof), `${proof} not in ${verdict.missing}`);
 };
 
-test('a full cycle read by the trusted reader proves every observable proof, and still holds on causation', async () => {
+test('a full cycle read by the trusted reader proves every proof, and still holds: activate is a later unit', async () => {
   const evidence = await evidenceFor();
   const verdict = roleTransferActivationVerdict(evidence, expected);
   assert.deepEqual(verdict, {
@@ -56,8 +58,8 @@ test('a full cycle read by the trusted reader proves every observable proof, and
     activate: false,
     keepCodexCurrentHead: true,
     retireCodexCurrentHead: false,
-    proven: ACTIVATION_REQUIRED_PROOFS.filter((proof) => proof !== 'codexTaskCausation'),
-    missing: ['codexTaskCausation'],
+    proven: [...ACTIVATION_REQUIRED_PROOFS],
+    missing: [],
   });
 });
 
@@ -86,6 +88,7 @@ test('finding 4080104371: every record must name the expected repository', async
     finalCi: 'fullCiGreen',
     finalReview: 'boundClaudeClearReReview',
     freshness: 'liveHeadFreshness',
+    conversation: 'codexTaskCausation',
   };
   for (const record of RECORDS) {
     holds(await verdictWith((e) => { e.records[record].repository = UNRELATED; }), proofFor[record]);
@@ -118,7 +121,7 @@ test('finding 4080104377: the full milestone chain is strictly ordered', async (
     const [earlier, earlierField] = chain[index - 1];
     const [later, laterField, tie] = chain[index];
     const tied = await verdictWith((e) => { e.records[later][laterField] = e.records[earlier][earlierField]; });
-    if (tie) allButCausation(tied);
+    if (tie) allProven(tied);
     else holds(tied, 'milestoneOrder');
     holds(await verdictWith((e) => { e.records[later][laterField] = e.records[earlier][earlierField] - 1; }), 'milestoneOrder');
   }
@@ -138,31 +141,75 @@ test('finding 4083067610 (and 4080104384): the verdict never retires; a caller-b
   assert.equal(verdict.retireCodexCurrentHead, false);
 });
 
-test('finding 4083067617: task -> push causation is unproven by any trusted record, so the verdict holds', async () => {
-  // The reader's corrective push is the Codex connector's, but nothing ties it to THIS request's task.
-  const evidence = await evidenceFor();
-  assert.equal(evidence.records.correctivePush.actorLogin, CODEX_LOGIN);
-  holds(roleTransferActivationVerdict(evidence, expected), 'codexTaskCausation');
-  // A caller cannot supply the binding: fields the reader does not produce change nothing.
-  holds(await verdictWith((e) => { Object.assign(e.records.correctivePush, { requestId: e.cycle.correctionRequestId, taskId: 't-1' }); }), 'codexTaskCausation');
+test('finding 4083067617: task -> push causation needs the exact trailer on a complete commit list', async () => {
+  // The full cycle proves it; the attestation names this repository.
+  assert.deepEqual(CODEX_TASK_ATTESTATION, { repository: REPO, owner: 'JagPat' });
+  allProven(roleTransferActivationVerdict(await evidenceFor(), expected));
+  const trailer = (value) => `fix: x\n\nCodex-Fix-Probe: ${value}`;
+  for (const commits of [
+    [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE, 'fix: no trailer')], // one commit lacks it
+    [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE, `${trailer(BINDING_VALUE)}\nCodex-Fix-Probe: ${BINDING_VALUE}`)], // twice
+    [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE, trailer(`${BINDING_VALUE}x`))], // another request's
+    [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE, `fix: x\n\n\`\`\`\nCodex-Fix-Probe: ${BINDING_VALUE}\n\`\`\`\n`)], // quoted
+    [correctiveCommit(CORRECTIVE), correctiveCommit('1'.repeat(40))], // the list does not end at the corrective head
+    [correctiveCommit(CORRECTIVE)], // a truncated list (total_commits 2)
+  ]) {
+    holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.comparison.commits = commits; }), expected), 'codexTaskCausation');
+  }
+  holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commitsComplete = false; }), 'codexTaskCausation');
+  holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits = []; }), 'codexTaskCausation');
+  holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].probeTrailers = null; }), 'codexTaskCausation');
+  // The expected trailer is derived from the request the cycle proves, never supplied by the evidence.
+  holds(await verdictWith((e) => { e.records.request.findingRef = `${FINDING_REF}9`; }), 'codexTaskCausation');
+  // Another repository has no attestation: its otherwise complete cycle proves everything but causation.
+  const elsewhere = JSON.parse(JSON.stringify(await evidenceFor()).replaceAll(`"${REPO}"`, `"${UNRELATED}"`));
+  assert.deepEqual(roleTransferActivationVerdict(elsewhere, { repository: UNRELATED, pullRequest: PR }).missing, ['codexTaskCausation']);
   assert.ok(ACTIVATION_REQUIRED_PROOFS.includes('codexTaskCausation'));
 });
 
-test('finding 4089074927: a push whose every commit carries the exact request trailer is still not causation', async () => {
-  // The trailer is public request text: a second Codex task could be told to copy it. The reader's full
-  // cycle already carries it on every commit of a complete list, and the verdict still holds on causation.
-  const evidence = await evidenceFor();
-  const { ancestry } = evidence.records.correctivePush;
-  assert.equal(ancestry.commitsComplete, true);
-  assert.ok(ancestry.commits.length > 0);
-  for (const commit of ancestry.commits) assert.deepEqual(commit.probeTrailers, [BINDING_VALUE]);
-  holds(roleTransferActivationVerdict(evidence, expected), 'codexTaskCausation');
+test('finding 4089074927: the trailer is not enough; anyone else who could have started a Codex task holds', async () => {
+  // Any other @codex mention, whenever posted (a task started earlier could still push), holds; so does
+  // anything from anyone but Codex and trusted workflows since the branch reached the reviewed head (09:00),
+  // whatever its text, including an older comment edited then and an undated item.
+  for (const mutate of [
+    (w) => { w.conversation.issue_comment.push(conversationItem(70, 'JagPat', '08:00', '@codex fix this')); },
+    (w) => { w.conversation.review.push(conversationItem(70, 'JagPat', '08:00', 'please @codex review')); },
+    (w) => { w.conversation.issue_comment.push(conversationItem(70, GITHUB_ACTIONS_LOGIN, '08:00', '@codex fix')); }, // an earlier request
+    (w) => { w.conversation.issue_comment.push(conversationItem(70, GITHUB_ACTIONS_LOGIN, '10:40', '@codex fix')); },
+    (w) => { w.conversation.issue_comment.push(conversationItem(70, 'JagPat', '10:40', 'copy that trailer')); },
+    (w) => { w.conversation.review_comment.push(conversationItem(70, 'JagPat', '09:00', 'nit')); }, // at the arrival
+    (w) => { w.conversation.review.push(conversationItem(70, 'someone', '10:40', 'lgtm')); },
+    (w) => { w.conversation.issue_comment[0].updated_at = at('10:35'); }, // an older comment edited in the window
+    (w) => { w.conversation.issue_comment.push({ id: 70, user: { login: 'someone' }, body: 'x' }); },
+  ]) {
+    holds(roleTransferActivationVerdict(await evidenceFor(mutate), expected), 'codexTaskCausation');
+  }
+  // Codex's own items (its boilerplate mentions @codex), the request itself, trusted-workflow items without
+  // @codex (dated or not), and other authors' items without @codex from before the window are quiet.
+  allProven(roleTransferActivationVerdict(await evidenceFor((w) => {
+    w.conversation.issue_comment.push(conversationItem(71, 'JagPat', '08:59', 'lgtm'));
+    w.conversation.issue_comment.push(conversationItem(72, GITHUB_ACTIONS_LOGIN, '10:40', 'state: review_pending'));
+    w.conversation.issue_comment.push({ id: 75, user: { login: GITHUB_ACTIONS_LOGIN }, body: 'state' });
+    w.conversation.review.push(conversationItem(73, CODEX_LOGIN, '10:40', '@codex fix it'));
+    w.conversation.review.push(conversationItem(74, 'JagPat', '08:00', 'lgtm'));
+  }), expected));
+  // The request is quiet only as itself: the same id as a review comment, or another issue comment, is not.
+  holds(await verdictWith((e) => { e.records.conversation.items.find((item) => item.id === REQUEST_ID).kind = 'review_comment'; }), 'codexTaskCausation');
+  // The window starts where the branch reached the reviewed head; without that anchor, nothing is quiet.
+  holds(await verdictWith((e) => { e.records.freshness.reviewedHeadArrival.afterSha = OTHER; }), 'codexTaskCausation');
+  holds(await verdictWith((e) => { e.records.freshness.reviewedHeadArrival.atMs = ms('08:00'); }), 'codexTaskCausation');
+  // A mention the reader could not determine counts as one (fail closed), even from a trusted workflow.
+  holds(await verdictWith((e) => { delete e.records.conversation.items.find((item) => item.id === 62).mentionsCodex; }), 'codexTaskCausation');
+  // An unread or unscoped conversation holds.
+  holds(await verdictWith((e) => { e.records.conversation = null; }), 'codexTaskCausation');
+  holds(await verdictWith((e) => { e.records.conversation.items = null; }), 'codexTaskCausation');
+  holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.conversationError = { review: 'boom' }; }), expected), 'codexTaskCausation');
 });
 
 test('finding 4083067623: a same-second tie is admitted only where the records prove the order', async () => {
   // The acceptance is a reaction ON the request, and the request names the finding: a tie proves nothing wrong.
-  allButCausation(await verdictWith((e) => { e.records.acceptance.atMs = e.records.request.atMs; }));
-  allButCausation(await verdictWith((e) => { e.records.request.atMs = e.records.initialFinding.atMs; }));
+  allProven(await verdictWith((e) => { e.records.acceptance.atMs = e.records.request.atMs; }));
+  allProven(await verdictWith((e) => { e.records.request.atMs = e.records.initialFinding.atMs; }));
   // Without that binding the same tie holds.
   holds(await verdictWith((e) => {
     e.records.acceptance.atMs = e.records.request.atMs;
@@ -261,7 +308,7 @@ test('finding 4080104397: fresh live-head evidence after the review; any interve
     w.events.push(issueEvent(50, 'convert_to_draft', '10:52'), issueEvent(51, 'ready_for_review', '11:01'));
   });
   assert.deepEqual(toggled.records.freshness.lifecycleEvents.map((entry) => entry.event), ['convert_to_draft', 'ready_for_review']);
-  allButCausation(roleTransferActivationVerdict(toggled, expected));
+  allProven(roleTransferActivationVerdict(toggled, expected));
   assert.deepEqual(CYCLE_NEUTRAL_LIFECYCLE_EVENTS, ['convert_to_draft', 'converted_to_draft', 'ready_for_review']);
   // An incomplete log, or one anchored after the triggering finding, proves nothing about the cycle.
   const unreadable = await evidenceFor((w) => { w.eventsError = 'boom'; });
@@ -322,7 +369,7 @@ test('finding 4080104397: fresh live-head evidence after the review; any interve
   const neutral = await evidenceFor((w) => {
     w.events.push(issueEvent(55, 'labeled', '11:00'), issueEvent(56, 'review_requested', '11:01'), issueEvent(57, 'auto_merge_disabled', '11:02'));
   });
-  allButCausation(roleTransferActivationVerdict(neutral, expected));
+  allProven(roleTransferActivationVerdict(neutral, expected));
   holds(await verdictWith((e) => { e.records.freshness.lifecycleSinceMs = null; }), 'liveHeadFreshness');
   // End to end: a request edited during the pass holds.
   const edited = await evidenceFor((w) => {
@@ -361,8 +408,11 @@ test('the corrective push is a non-forced Codex fast-forward from the reviewed h
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry = null; }), 'codexCorrectivePush');
   holds(await verdictWith((e) => { e.records.correctivePush.branch = 'other/branch'; }), 'codexCorrectivePush');
   // A task that pushed three commits in one fast-forward update still proves the cycle.
-  const multiCommit = await evidenceFor((w) => { w.comparison = { status: 'ahead', ahead_by: 3, behind_by: 0, merge_base_commit: { sha: ORIGINAL } }; });
-  allButCausation(roleTransferActivationVerdict(multiCommit, expected));
+  const multiCommit = await evidenceFor((w) => {
+    w.comparison = { status: 'ahead', ahead_by: 3, behind_by: 0, merge_base_commit: { sha: ORIGINAL }, total_commits: 3,
+      commits: [correctiveCommit('1'.repeat(40)), correctiveCommit('2'.repeat(40)), correctiveCommit(CORRECTIVE)] };
+  });
+  allProven(roleTransferActivationVerdict(multiCommit, expected));
 });
 
 test('reviews are producer-verified shadow results of the exact heads', async () => {
@@ -378,7 +428,7 @@ test('reviews are producer-verified shadow results of the exact heads', async ()
     w.verify = (run) => run.id !== 7600;
   });
   assert.deepEqual(impostor.records.initialFinding.unverifiedLaterRunIds, [7600]);
-  allButCausation(roleTransferActivationVerdict(impostor, expected));
+  allProven(roleTransferActivationVerdict(impostor, expected));
   holds(await verdictWith((e) => { delete e.records.initialFinding.laterReviewRunIds; }), 'initialClaudeFinding');
   holds(await verdictWith((e) => { e.records.finalReview.state = 'changes_required'; }), 'boundClaudeClearReReview');
   holds(await verdictWith((e) => { e.records.finalReview.headSha = OTHER; }), 'boundClaudeClearReReview');

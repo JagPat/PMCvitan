@@ -22,6 +22,9 @@ import { readPullRequestEventLog } from './pull-request-event-log.mjs';
  *                           triggering finding; the author/type say whether a bot or a human posted it. A
  *                           comment that is fetched but rejected is diagnosed with the reason.
  *   - task acceptance     — a Codex-connector 👀 reaction on THAT request comment.
+ *   - conversation        — every issue comment, review comment and review on the PR, read to its end, each
+ *                           with its server author, its dates and whether it mentions `@codex` (who could
+ *                           have started another Codex task during the cycle).
  *   - findings / reviews  — `classifyClaudeShadowReview` + `GitHubClient.verifyClaudeShadowProducer`
  *                           (server-associated publisher run, trusted workflow path, artifact digest); the
  *                           finding's identity is the verified check run's own URL. The initial finding is
@@ -41,7 +44,7 @@ import { readPullRequestEventLog } from './pull-request-event-log.mjs';
  *                           time), the live PR (branch, base) and the push log (corrective head). Then the
  *                           freshness point `observedAtMs` is taken. Then every mutable source is read in the
  *                           CLOSING pass: the request again (it must still be the one planned from), its
- *                           acceptance, the live PR (head, base ref, repositories), both heads' check runs
+ *                           acceptance, the PR's conversation, the live PR (head, base ref, repositories), both heads' check runs
  *                           (findings, reviews, CI), the push log again (it must confirm the same corrective
  *                           push; one that landed during the pass is a diagnostic), and last the pull
  *                           request's lifecycle event log (scripts/pull-request-event-log.mjs: base changes,
@@ -71,6 +74,12 @@ export const CODEX_ACCEPTANCE_REACTION = 'eyes';
 // One page of the branch push log. A log that does not reach back to an update at or before the request is
 // UNCOVERED (reported, not guessed): the corrective push cannot be identified without the whole window.
 export const PUSH_LOG_PAGE_SIZE = 100;
+export const CONVERSATION_PAGE_SIZE = 100;
+// Any `@codex` anywhere counts as a mention: over-matching only holds more cycles.
+const CODEX_MENTION = /@codex/iu;
+const CONVERSATION_SOURCES = Object.freeze([
+  ['issue_comment', 'issues'], ['review_comment', 'pulls'], ['review', 'pulls'],
+]);
 // The Activity API filters by a trailing `time_period` (a day unless given). Each period with a LOWER bound of
 // its length in days; the reader tries the shortest that spans the request, then wider ones, until the log
 // reaches back past the request or a page fills. Older than a year is uncovered.
@@ -139,6 +148,23 @@ export function normalizeCorrectionRequest(comment, { repository, pullRequest })
     headSha: marker.headSha,
     findingRef: marker.findingRef,
     atMs,
+  };
+}
+
+/**
+ * One item of the PR's conversation: its kind, id, server author, dates and whether its current body mentions
+ * `@codex`. A review has only a submission date (its edits are undated); an undated item keeps `null` dates.
+ */
+export function normalizeConversationItem(kind, item) {
+  const createdAtMs = Date.parse(kind === 'review' ? item?.submitted_at : item?.created_at);
+  const updatedAtMs = kind === 'review' ? createdAtMs : Date.parse(item?.updated_at);
+  return {
+    kind,
+    id: Number.isInteger(item?.id) ? item.id : null,
+    authorLogin: item?.user?.login ?? null,
+    createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : null,
+    updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : null,
+    mentionsCodex: CODEX_MENTION.test(String(item?.body ?? '')),
   };
 }
 
@@ -330,7 +356,7 @@ export async function readRoleActivationEvidence(
   };
   const repository = client?.repository;
   const empty = { initialCi: null, initialFinding: null, request: null, acceptance: null,
-    correctivePush: null, finalCi: null, finalReview: null, freshness: null };
+    correctivePush: null, finalCi: null, finalReview: null, freshness: null, conversation: null };
   if (typeof repository !== 'string' || !Number.isInteger(pullRequest) || pullRequest <= 0
     || !Number.isInteger(requestCommentId)) {
     return { schema: ROLE_ACTIVATION_EVIDENCE_SCHEMA, cycle: null, records: empty, problems: ['invalid reader input'] };
@@ -426,6 +452,36 @@ export async function readRoleActivationEvidence(
     : null;
   const acceptance = normalizeAcceptance(reactions, request);
   if (acceptance) acceptance.readAtMs = now();
+
+  // Closing: the PR's whole conversation (issue comments, review comments, reviews), every page to its end.
+  // Whether anything in it could have started another Codex task is the verdict's rule; a failed or
+  // malformed page leaves no conversation (never a partial list that could pass).
+  const readConversation = async () => {
+    const items = [];
+    for (const [kind, resource] of CONVERSATION_SOURCES) {
+      const path = `/repos/${repository}/${resource}/${pullRequest}/${kind === 'review' ? 'reviews' : 'comments'}`;
+      for (let page = 1; ; page += 1) {
+        let batch;
+        try {
+          batch = await client.request(`${path}?per_page=${CONVERSATION_PAGE_SIZE}&page=${page}`);
+        } catch (error) {
+          problems.push(`conversation ${kind} page ${page}: ${error?.message ?? String(error)}`);
+          return null;
+        }
+        if (!Array.isArray(batch)) {
+          problems.push(`conversation ${kind} page ${page}: not a list`);
+          return null;
+        }
+        items.push(...batch.map((item) => normalizeConversationItem(kind, item)));
+        if (batch.length < CONVERSATION_PAGE_SIZE) break;
+      }
+    }
+    return items;
+  };
+  const conversationItems = request ? await readConversation() : null;
+  const conversation = conversationItems
+    ? { repository, pullRequest, items: conversationItems, readAtMs: now() }
+    : null;
 
   // Closing: the live PR — head, base ref and both repositories, as they now stand.
   const pullAtEnd = await read('pull-recheck', () => client.pullRequest(pullRequest));
@@ -578,7 +634,8 @@ export async function readRoleActivationEvidence(
       correctiveHeadSha,
       correctionRequestId: request?.requestId ?? null,
     },
-    records: { initialCi, initialFinding, request, acceptance, correctivePush, finalCi, finalReview, freshness },
+    records: { initialCi, initialFinding, request, acceptance, correctivePush, finalCi, finalReview, freshness,
+      conversation },
     problems,
   };
 }

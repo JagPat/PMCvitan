@@ -22,25 +22,21 @@ blocking_directive: none
 updated: 2026-09-24
 ```
 
-### Now — cloud role transfer: the task → push binding (maintenance); #619, #622, #621 and #620 merged
+### Now — cloud role transfer: task → push causation (the owner's attestation); #623 merged
 
 The cloud role transfer continues with one writer and one channel. The additive split is merged: #620
 (evidence reader, `7f2cbbef`), #621 (lifecycle event log, `2a1f0f46`), #622 (integration, `0a712d93`)
-and #619 (the activation-readiness verdict, `1273465`). The verdict is hold-only: it never retires
-`codex-current-head`, and `codexTaskCausation` stays missing because every Codex task pushes as the same
-connector bot.
+and #619 (the activation-readiness verdict, `1273465`). #623 (`b9d31da`) added the request's
+`Codex-Fix-Probe` trailer as evidence: public request text, so necessary but never sufficient. The owner
+then chose how causation is proven: an attested assumption plus a check of the PR.
 
-- **Now, the binding unit, `open_pr: 623`** (`work_item: cloud-role-transfer-task-binding`, branch
-  `claude/role-activation-task-binding`, from `main` at `1273465`). A maintenance change the repository
-  owner requested to the frozen `codex-fix-probe`: the correction request asks Codex to end every commit
-  with a `Codex-Fix-Probe` trailer repeating the request's identity. The reader reports each corrective
-  commit's terminal-block trailers (read as git reads them) and whether the commit list is complete.
-  Evidence only; the verdict is unchanged. The trailer is public request text another Codex task could
-  copy, so it is necessary, never sufficient: `codexTaskCausation` stays missing.
-- **Next:** an owner decision. Causation needs a task-specific, server-verifiable record that GitHub does
-  not provide today, so no unit may prove it from the trailer alone. Only after that decision: the verdict's
-  `activate` install phase; a probe variant that keys a request to a Claude shadow finding; one real
-  observed cycle; the operator-authorized switch. Retirement is a later unit.
+- **Now, the causation unit** (`work_item: cloud-role-transfer-task-causation`, branch
+  `claude/role-activation-codex-causation`, from `main` at `b9d31da`). `CODEX_TASK_ATTESTATION` records the
+  owner's attestation; the reader reads the PR's whole conversation; the verdict proves
+  `codexTaskCausation` from the attestation, the exact trailer on a complete commit list, and a
+  conversation that shows no one else who could have started a Codex task. The verdict still always holds.
+- **Next:** the verdict's `activate` install phase; a probe variant that keys a request to a Claude shadow
+  finding; one real observed cycle; the operator-authorized switch. Retirement is a later unit.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`

@@ -115,6 +115,11 @@ export function correctiveCommit(sha, message = `fix: correct the finding\n\n${B
   return { sha, author: { login: CODEX_LOGIN }, commit: { message } };
 }
 
+// An item of the PR's conversation, as the issue-comment, review-comment or review API returns it.
+export function conversationItem(id, login, hhmm, body = 'ok', { updated = hhmm } = {}) {
+  return { id, user: { login }, created_at: at(hhmm), updated_at: at(updated), submitted_at: at(hhmm), body };
+}
+
 // A full, valid cycle as GitHub would serve it.
 export function world() {
   return {
@@ -133,6 +138,18 @@ export function world() {
     pulls: [pull(), pull()],
     // the pull request's issue events, oldest first, as GitHub returns them
     events: [issueEvent(40, 'labeled', '09:30'), issueEvent(41, 'base_ref_changed', '08:40')],
+    // The PR's conversation: the owner's comment BEFORE the branch reached the reviewed head (09:00), the
+    // controller's state comment (edited through the cycle, no @codex), the request itself, and Codex's own
+    // review with its "@codex review" boilerplate.
+    conversation: {
+      issue_comment: [
+        conversationItem(61, 'JagPat', '08:30', 'Looks good so far.'),
+        conversationItem(62, GITHUB_ACTIONS_LOGIN, '08:50', '<!-- autonomous-review-state --> waiting for Codex', { updated: '11:30' }),
+        conversationItem(REQUEST_ID, GITHUB_ACTIONS_LOGIN, '10:30', '@codex fix'),
+      ],
+      review_comment: [conversationItem(63, CODEX_LOGIN, '11:25', 'P2: nit')],
+      review: [conversationItem(64, CODEX_LOGIN, '11:25', 'Comment "@codex review".')],
+    },
     verify: true,
   };
 }
@@ -175,6 +192,14 @@ export function client(w) {
         return page;
       }
       if (path.startsWith(`/repos/${REPO}/compare/`)) return w.comparison;
+      const talk = /^\/repos\/JagPat\/PMCvitan\/(?:issues|pulls)\/619\/(comments|reviews)\?per_page=(\d+)&page=(\d+)$/u.exec(path);
+      if (talk) {
+        const kind = talk[1] === 'reviews' ? 'review' : path.includes('/issues/') ? 'issue_comment' : 'review_comment';
+        if (w.conversationError?.[kind]) throw new Error(w.conversationError[kind]);
+        const [size, page] = [Number(talk[2]), Number(talk[3])];
+        const items = w.conversation[kind];
+        return Array.isArray(items) ? items.slice((page - 1) * size, page * size) : items;
+      }
       const events = /^\/repos\/JagPat\/PMCvitan\/issues\/619\/events\?per_page=(\d+)&page=(\d+)$/u.exec(path);
       if (events) {
         if (w.eventsError) throw new Error(w.eventsError);
