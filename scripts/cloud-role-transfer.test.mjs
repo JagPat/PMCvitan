@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { parseCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
 import { authorizeExactHeadMerge, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
 import { assessCorrectionLease, correctionReasonFor } from './correction-lease.mjs';
 import { assessReviewScope } from './review-efficiency.mjs';
-import { CORRECTION_STALLED, OWNERSHIP_CANDIDATE_HELD, STATUS_CONTEXT } from './review-policy.mjs';
+import {
+  CANDIDATE_CORRECTION_OWNERS, CORRECTION_OWNERS, CORRECTION_STALLED, OWNERSHIP_CANDIDATE_HELD, STATUS_CONTEXT,
+} from './review-policy.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -59,6 +62,19 @@ test('review-scope admits a declared or candidate owner and refuses every other 
     assert.equal(result.allowed, false, `${markers} on ${ref}`);
     assert.match(result.detail, detail);
   }
+});
+
+test('the written owner contract names every marker review-scope admits (finding 4093756711)', () => {
+  // POLICY is the canonical contract: its marker sentence must not forbid the codex candidate that the
+  // executable scope gate now admits, and it must still say the candidate is held.
+  const contract = readFileSync(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
+  const markerRule = contract.slice(contract.indexOf('Every PR declares exactly one correction owner'),
+    contract.indexOf('A `claude/**` branch must declare Claude.'));
+  for (const owner of [...CORRECTION_OWNERS, ...CANDIDATE_CORRECTION_OWNERS]) {
+    assert.match(markerRule, new RegExp(owner, 'u'), `the marker rule names ${owner}`);
+  }
+  assert.match(markerRule, /held codex candidate/u);
+  assert.match(contract, /Codex is a recognised CANDIDATE owner: scope admits its marker off `claude\/\*\*`/u);
 });
 
 test('an admitted candidate PR still opens no autonomous correction writer', () => {

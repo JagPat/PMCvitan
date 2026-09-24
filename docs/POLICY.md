@@ -26,7 +26,7 @@ statement, invariant matrix and review packet required by the active plan. A tas
 not complete until its focused tests and required `pnpm check` pass.
 
 Every PR declares exactly one correction owner in its leading marker block:
-`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`.
+`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`, or the held codex candidate below.
 A `claude/**` branch must declare Claude. The marker selects an agent type,
 not a unique session: coordinate one producer on each branch before editing.
 Only the declared owner handles normal correction handoff; do not start a competing
