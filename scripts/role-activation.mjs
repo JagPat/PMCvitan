@@ -2,6 +2,7 @@ import {
   CLAUDE_STATUS_CONTEXT,
   CODEX_LOGIN,
   LINEAGE_BASE_REF,
+  requiredChecksForPullRequest,
 } from './review-policy.mjs';
 import { probeTrailerValue } from './codex-fix-probe.mjs';
 import { GITHUB_ACTIONS_LOGIN, ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs';
@@ -12,10 +13,12 @@ import { GITHUB_ACTIONS_LOGIN, ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-ac
  * The cloud role transfer (Codex codes, Claude independently reviews) may be activated — atomically adding a
  * Claude exact-head required gate and switching correction routing — ONLY after one real, OBSERVED
  * correction cycle is proven. This module performs NO switch and touches NO live gate: it reads evidence and
- * reports which proofs hold and which are missing. In this version the verdict is ALWAYS `hold`, even when
- * every proof is proven: the `activate` install phase is a later unit. `codex-current-head` (`STATUS_CONTEXT`) stays the
- * required gate and `claude-independent-review` stays non-authoritative and out of the required checks.
- * Nothing here declares Codex awakenable.
+ * reports which proofs hold and which are missing. Only when EVERY proof is proven is the verdict `activate`,
+ * and then it returns the install as DATA bound to that exact cycle; nothing here applies it. `activate` is a
+ * readiness decision, not an activation: a later installer must re-read the cycle, bind to the returned
+ * identity and require the operator's authorization. `codex-current-head` (`STATUS_CONTEXT`) stays the required
+ * gate and `claude-independent-review` stays non-authoritative and out of the required checks. Nothing here
+ * declares Codex awakenable.
  *
  * BOUNDARY. The evidence is the normalized output of the trusted, read-only reader
  * (`scripts/role-activation-evidence.mjs`, `ROLE_ACTIVATION_EVIDENCE_SCHEMA`). The READER authenticates each
@@ -66,9 +69,9 @@ import { GITHUB_ACTIONS_LOGIN, ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-ac
  *                                   tie is admitted only where the records themselves prove the order: the
  *                                   request names the finding, and the acceptance is a reaction ON the request.
  *
- * `activate` is not reachable yet: even a fully proven cycle holds. A later unit adds it: INSTALL the replacement (`ACTIVATION_INSTALL`: a distinct trusted-controller status,
- * `CLAUDE_STATUS_CONTEXT`, published from ADAPTER-VERIFIED shadow evidence, never the raw producer check name)
- * and switch routing, KEEPING `codex-current-head`. Retiring `codex-current-head` needs a trusted observation
+ * `activate` describes, and never performs: INSTALL the replacement (`ACTIVATION_INSTALL`: a distinct
+ * trusted-controller status, `CLAUDE_STATUS_CONTEXT`, published from ADAPTER-VERIFIED shadow evidence, never the
+ * raw producer check name) and switch routing, KEEPING `codex-current-head`. Retiring `codex-current-head` needs a trusted observation
  * of the installed gate in role, which cannot exist before installation and has no reader; it is a later,
  * separate unit. This verdict never retires anything: `keepCodexCurrentHead` is always true.
  */
@@ -116,6 +119,8 @@ const SHA = /^[0-9a-f]{40}$/u;
 const isSha = (value) => typeof value === 'string' && SHA.test(value);
 const nonEmpty = (value) => typeof value === 'string' && value.length > 0;
 const finite = (value) => Number.isFinite(value);
+// A GitHub id: a positive integer. Every id `install.cycle` binds must be one a later installer can re-read.
+const githubId = (value) => Number.isInteger(value) && value > 0;
 // Adjacent milestones in order. GitHub stamps whole seconds, so a pair may tie only when `tieProvenBy` names
 // the record binding that proves its order (e.g. a reaction attached to the comment it follows).
 const ordered = (chain) => chain.every(({ atMs }) => finite(atMs))
@@ -126,8 +131,9 @@ const ordered = (chain) => chain.every(({ atMs }) => finite(atMs))
 /**
  * @param {object} evidence  the reader's normalized output (`{ schema, cycle, records }`).
  * @param {{repository: string, pullRequest: number}} expected  the identity the CALLER expects.
- * @returns {{state:'hold', activate:false, keepCodexCurrentHead:true, retireCodexCurrentHead:false,
- *            proven:string[], missing:string[]}}  every required proof, in order, is in exactly one list.
+ * @returns {{state:'hold'|'activate', activate:boolean, keepCodexCurrentHead:true, retireCodexCurrentHead:false,
+ *            install:object|null, proven:string[], missing:string[]}}  every required proof, in order, is in
+ *            exactly one list; `activate` (with a non-null `install`) only when `missing` is empty.
  */
 export function roleTransferActivationVerdict(evidence, expected) {
   const cycle = evidence?.cycle ?? null;
@@ -162,7 +168,7 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && isSha(originalHeadSha)
     && isSha(correctiveHeadSha)
     && correctiveHeadSha !== originalHeadSha
-    && Number.isInteger(requestId);
+    && githubId(requestId);
 
   // Identity scopes. Every record names the EXPECTED repository; PR-scoped records also the expected PR;
   // base-bound records (CI and reviews) also the cycle base.
@@ -257,16 +263,24 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && finite(sinceMs)
     && conversation.items.every(quiet));
 
+  // Exactly one successful deciding run for EACH required check of this PR, each a distinct real run: the
+  // install binds these ids, so a partial set could let an installer act on CI that omitted a required check
+  // (Codex finding on #625).
   const ciDeciderRunIds = Array.isArray(finalCi?.deciders) ? finalCi.deciders.map((run) => run?.checkRunId) : [];
+  const requiredCheckNames = requiredChecksForPullRequest(pullRequest);
+  const deciderNames = Array.isArray(finalCi?.deciders) ? finalCi.deciders.map((run) => run?.name) : [];
   prove('fullCiGreen', atBase(finalCi)
     && finalCi.headSha === correctiveHeadSha
     && finalCi.state === 'success'
-    && ciDeciderRunIds.length > 0
-    && ciDeciderRunIds.every(Number.isInteger)
+    && deciderNames.length === requiredCheckNames.length
+    && requiredCheckNames.every((name) => deciderNames.filter((decider) => decider === name).length === 1)
+    && ciDeciderRunIds.every(githubId)
+    && new Set(ciDeciderRunIds).size === ciDeciderRunIds.length
     && finalCi.deciders.every((run) => run.conclusion === 'success'));
 
   prove('boundClaudeClearReReview', atBase(finalReview)
     && finalReview.headSha === correctiveHeadSha
+    && githubId(finalReview.checkRunId)
     && finalReview.state === 'shadow_clear');
 
   // Every mutable source is a closing read: each starts after the freshness point, so each covers the cycle
@@ -338,11 +352,32 @@ export function roleTransferActivationVerdict(evidence, expected) {
     { atMs: freshness?.startedAtMs },
   ]));
 
+  // Every proof proven: the install, as frozen data bound to this exact cycle (its identity, the CI runs that
+  // decided it and the verified clear review), for a later installer that re-reads the cycle and binds to it.
+  // Nothing here applies it, and it never retires `codex-current-head`.
+  const ready = missing.length === 0;
+  const install = ready
+    ? Object.freeze({
+      ...ACTIVATION_INSTALL,
+      cycle: Object.freeze({
+        repository,
+        pullRequest,
+        branch,
+        baseSha,
+        originalHeadSha,
+        correctiveHeadSha,
+        correctionRequestId: requestId,
+        ciDeciderRunIds: Object.freeze([...ciDeciderRunIds]),
+        reviewCheckRunId: finalReview.checkRunId,
+      }),
+    })
+    : null;
   return {
-    state: 'hold',
-    activate: false,
+    state: ready ? 'activate' : 'hold',
+    activate: ready,
     keepCodexCurrentHead: true,
     retireCodexCurrentHead: false,
+    install,
     proven: ACTIVATION_REQUIRED_PROOFS.filter((proof) => !missing.includes(proof)),
     missing,
   };

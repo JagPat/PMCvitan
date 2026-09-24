@@ -11,7 +11,7 @@ import {
 import { GITHUB_ACTIONS_LOGIN, ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs';
 import { CLAUDE_SHADOW_CONTEXT, CLAUDE_STATUS_CONTEXT, CODEX_LOGIN, REQUIRED_CHECKS, STATUS_CONTEXT } from './review-policy.mjs';
 import {
-  BASE, CORRECTIVE, FINDING_REF, ORIGINAL, OTHER, PR, REPO, REQUEST_ID, activity, at, conversationItem, correctiveCommit,
+  BASE, BRANCH, CORRECTIVE, FINDING_REF, ORIGINAL, OTHER, PR, REPO, REQUEST_ID, activity, at, conversationItem, correctiveCommit,
   issueEvent, ms, pull, readWorld, shadowRun,
 } from './role-activation-test-fixtures.mjs';
 import { probeTrailerValue } from './codex-fix-probe.mjs';
@@ -33,11 +33,14 @@ async function verdictWith(mutate) {
   mutate(evidence);
   return roleTransferActivationVerdict(evidence, expected);
 }
-// Every proof holds, and the verdict still holds: the `activate` install phase is a later unit.
+// Every proof holds: the verdict is `activate`, with the install as data (nothing applies it).
 const allProven = (verdict) => {
-  assert.equal(verdict.state, 'hold');
-  assert.equal(verdict.activate, false);
+  assert.equal(verdict.state, 'activate');
+  assert.equal(verdict.activate, true);
+  assert.equal(verdict.keepCodexCurrentHead, true);
+  assert.equal(verdict.retireCodexCurrentHead, false);
   assert.deepEqual(verdict.missing, []);
+  assert.ok(verdict.install);
 };
 const CLOSING_READS = [
   ['request', 'readAtMs'], ['acceptance', 'readAtMs'], ['conversation', 'readAtMs'], ['initialFinding', 'readAtMs'], ['initialCi', 'readAtMs'],
@@ -46,21 +49,58 @@ const CLOSING_READS = [
 ];
 const holds = (verdict, proof) => {
   assert.equal(verdict.state, 'hold', `${proof}: expected hold`);
+  assert.equal(verdict.activate, false);
+  assert.equal(verdict.install, null);
   assert.equal(verdict.keepCodexCurrentHead, true);
   assert.ok(verdict.missing.includes(proof), `${proof} not in ${verdict.missing}`);
 };
 
-test('a full cycle read by the trusted reader proves every proof, and still holds: activate is a later unit', async () => {
+test('a full cycle read by the trusted reader proves every proof: activate, with the install bound to that cycle as data', async () => {
   const evidence = await evidenceFor();
   const verdict = roleTransferActivationVerdict(evidence, expected);
+  const ciDeciderRunIds = evidence.records.finalCi.deciders.map((run) => run.checkRunId);
+  assert.equal(ciDeciderRunIds.length, REQUIRED_CHECKS.length);
   assert.deepEqual(verdict, {
-    state: 'hold',
-    activate: false,
+    state: 'activate',
+    activate: true,
     keepCodexCurrentHead: true,
     retireCodexCurrentHead: false,
+    install: {
+      addRequired: CLAUDE_STATUS_CONTEXT,
+      codingOwner: 'codex',
+      reviewer: 'claude',
+      cycle: {
+        repository: REPO, pullRequest: PR, branch: BRANCH, baseSha: BASE, originalHeadSha: ORIGINAL,
+        correctiveHeadSha: CORRECTIVE, correctionRequestId: REQUEST_ID, ciDeciderRunIds, reviewCheckRunId: 7002,
+      },
+    },
     proven: [...ACTIVATION_REQUIRED_PROOFS],
     missing: [],
   });
+  // Data only: frozen, so no consumer can rebind it to another cycle in place; the live gate is unchanged.
+  assert.ok(Object.isFrozen(verdict.install) && Object.isFrozen(verdict.install.cycle));
+  assert.ok(Object.isFrozen(verdict.install.cycle.ciDeciderRunIds));
+  assert.ok(!REQUIRED_CHECKS.includes(CLAUDE_STATUS_CONTEXT));
+  // The install binds to the verified clear review's own run: without it, there is no bound re-review. Every
+  // id it binds must be a real GitHub id (a positive integer) a later installer can re-read (Codex finding on #625).
+  // Exactly one successful decider per required check of the PR, each a distinct run (Codex finding on #625).
+  for (const mutate of [
+    (e) => { e.records.finalCi.deciders.pop(); }, // a required check with no decider
+    (e) => { e.records.finalCi.deciders = [e.records.finalCi.deciders[0]]; }, // only one
+    (e) => { e.records.finalCi.deciders[1].name = e.records.finalCi.deciders[0].name; }, // a name twice, one missing
+    (e) => { e.records.finalCi.deciders.push({ ...e.records.finalCi.deciders[0], name: 'extra', checkRunId: 999_999 }); },
+    (e) => { e.records.finalCi.deciders[1].checkRunId = e.records.finalCi.deciders[0].checkRunId; }, // a run twice
+    (e) => { e.records.finalCi.deciders = []; },
+  ]) {
+    holds(await verdictWith(mutate), 'fullCiGreen');
+  }
+  for (const id of [null, 0, -7002, 1.5]) {
+    holds(await verdictWith((e) => { e.records.finalReview.checkRunId = id; }), 'boundClaudeClearReReview');
+    holds(await verdictWith((e) => { e.records.finalCi.deciders[0].checkRunId = id; }), 'fullCiGreen');
+    holds(await verdictWith((e) => { e.cycle.correctionRequestId = id; }), 'cycleIdentity');
+  }
+  // Any single missing proof holds with no install at all (every hold case below asserts it too).
+  holds(await verdictWith((e) => { e.records.conversation = null; }), 'codexTaskCausation');
 });
 
 test('fail-closed defaults: no evidence, no expected identity, a foreign schema or a mismatched cycle all hold', async () => {

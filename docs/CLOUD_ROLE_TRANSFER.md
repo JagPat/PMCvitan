@@ -307,8 +307,8 @@ output (the two sections above), and the reader performs every live read.
 
 `roleTransferActivationVerdict(evidence, expected)` takes the reader's `{ schema, cycle, records }` and
 the caller's expected `{ repository, pullRequest }`. It never takes the cycle's identity from the
-evidence alone. It reports every required proof as `proven` or `missing`, and in this version its state
-is always `hold`, even when every proof is proven: the `activate` install phase is a later unit.
+evidence alone. It reports every required proof as `proven` or `missing`. Its state is `hold` while any
+proof is missing, and `activate` only when every proof is proven (see **The activate phase** below).
 
 - **Identity.** The schema matches. The cycle names the expected repository and PR, a branch, the base,
   the reviewed and corrective heads (which must differ), and the correction-request id. Every record
@@ -349,14 +349,26 @@ is always `hold`, even when every proof is proven: the `activate` install phase 
   review < freshness window. GitHub stamps whole seconds, so a tie is admitted only where the records
   prove the order: the request names the finding, and the acceptance is a reaction on the request.
 
-A later unit adds `activate`, which **installs** the distinct
-trusted-controller status `CLAUDE_STATUS_CONTEXT` (`claude-current-head`, published from adapter-verified
-shadow evidence, never from the raw `claude-independent-review` check name) and switches routing while
-**keeping** `codex-current-head`. This verdict never retires `codex-current-head`: that needs a trusted
-observation of the installed gate in role, which cannot exist before installation and has no reader. It is
-a separate, later unit. `ACTIVATION_INSTALL` is the install switch expressed as data; nothing applies it.
-Nothing is added to `REQUIRED_CHECKS`, no routing changes, and Codex is declared neither awakenable nor
-activated.
+**The activate phase (a readiness decision, not an activation).** When every proof is proven, the verdict
+returns `state: 'activate'`, `activate: true` and `install`: the install switch as frozen data, bound to that
+exact cycle. The switch **installs** the distinct trusted-controller status `CLAUDE_STATUS_CONTEXT`
+(`claude-current-head`, published from adapter-verified shadow evidence, never from the raw
+`claude-independent-review` check name) and switches routing (Codex codes, Claude reviews) while
+**keeping** `codex-current-head`. The binding is `install.cycle`: repository, PR, branch, base, reviewed and
+corrective heads, the correction-request id, the CI runs that decided each required check, and the
+verified clear review's own check run (so `boundClaudeClearReReview` now also requires that run's id).
+`fullCiGreen` requires exactly one successful deciding run for each required check of the PR, each a
+distinct run, and every bound id must be a real GitHub id (a positive integer).
+While any proof is missing the state is `hold` and `install` is `null`.
+
+Nothing applies `install`. A later installer must re-read the cycle, bind to `install.cycle`, and require
+the operator's authorization: this verdict is necessary, never sufficient. It never retires
+`codex-current-head` (`keepCodexCurrentHead` is always true, `retireCodexCurrentHead` always false); that
+needs a trusted observation of the installed gate in role, which cannot exist before installation and has
+no reader, so it is a separate, later unit. Nothing is added to `REQUIRED_CHECKS`, no routing changes, and
+Codex is declared neither awakenable nor activated. In practice the state cannot be reached yet:
+`codex-fix-probe` keys a request only to a Codex review comment, so no real cycle can name a Claude finding
+until the probe variant exists.
 
 **Convergence stop.** The re-scoped verdict (`e3a0ece1`) drew three findings: an unauthenticated
 retirement record, task → push causation, and same-second ties. Together with the controller's fifth
@@ -418,5 +430,5 @@ The verdict checks the rest, from the reader's evidence:
   quiet whenever the PR was opened; its edits are undated too, and a mention edited away there, or anywhere
   before the window, is what the attestation rules out. The conversation must carry exactly one description.
 
-A cycle that proves every proof still holds: the `activate` install phase is the next unit, and nothing is
-activated, installed or routed here.
+A cycle that proves every proof reaches the `activate` readiness state above; nothing is activated,
+installed or routed by it.
