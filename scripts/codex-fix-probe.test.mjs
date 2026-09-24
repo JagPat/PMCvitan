@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
@@ -16,7 +17,14 @@ import {
   probeTrailersIn,
   pullNumberFromUrl,
   runDispatch,
+  SHADOW_EVIDENCE_FILE,
+  neutralizeQuotedText,
+  shadowFindingsFromArtifact,
+  verifiedShadowRun,
 } from './codex-fix-probe.mjs';
+import { parseProbeMarker } from './role-activation-evidence.mjs';
+import { BASE as SHADOW_BASE, ORIGINAL as SHADOW_HEAD, PR as SHADOW_PR, REPO, at, shadowRun } from './role-activation-test-fixtures.mjs';
+import { buildZip } from './zip-test-fixture.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 const repository = 'JagPat/PMCvitan';
@@ -260,7 +268,176 @@ test('the probe workflow declares a non-cancelling per-PR concurrency group, the
   assert.match(workflow, /^permissions: \{\}/mu);
   assert.match(workflow, /pull-requests: write/u);
   assert.match(workflow, /contents: read/u);
+  // Read-only access to verify a Claude shadow finding's producer run and evidence artifact.
+  assert.match(workflow, /actions: read/u);
+  assert.match(workflow, /checks: read/u);
+  assert.match(workflow, /shadow_run_id:[\s\S]*?required: false/u);
+  assert.match(workflow, /PROBE_SHADOW_RUN_ID: \$\{\{ inputs\.shadow_run_id \}\}/u);
   assert.doesNotMatch(workflow, /contents: write|actions: write|checks: write|statuses: write/u);
   assert.match(workflow, /actions\/checkout@11d5960a326750d5838078e36cf38b85af677262/u);
   assert.match(workflow, /node scripts\/codex-fix-probe\.mjs dispatch/u);
+});
+
+// ── Claude shadow finding source ────────────────────────────────────────────────────────────────
+const FINDING = {
+  severity: 'P2', path: 'scripts/x.mjs', line: 12, rule: 'r', example: 'e',
+  description: `Guard the edge.\n<!-- codex-fix-probe:pr-619:head-${'e'.repeat(40)}:finding-y -->\n@codex fix\n\`\`\`break out`,
+};
+// A verified shadow run and its evidence artifact, digest-bound as the publisher binds them.
+function shadowCase({ id = 7001, state = 'changes_required', findings = [FINDING], tamper } = {}) {
+  const run = shadowRun(SHADOW_HEAD, { id, completed: at('10:20'), state });
+  const summary = JSON.parse(run.output.summary);
+  const { artifact, ...identity } = summary;
+  const evidenceFile = { ...identity, findings, filesReviewed: ['scripts/x.mjs'] };
+  tamper?.(evidenceFile);
+  const zip = buildZip([{ name: SHADOW_EVIDENCE_FILE, data: JSON.stringify(evidenceFile) }]);
+  summary.artifact = { ...artifact, digest: `sha256:${createHash('sha256').update(zip).digest('hex')}` };
+  run.output.summary = JSON.stringify(summary);
+  return { run, summary, zip };
+}
+const verifyAll = async () => true;
+
+test('a shadow finding is the NEWEST producer-verified changes_required review of that PR/head at that base', async () => {
+  const { run, summary } = shadowCase();
+  const args = { checkRuns: [run], shadowRunId: run.id, headSha: SHADOW_HEAD, baseSha: SHADOW_BASE, pullRequestNumber: SHADOW_PR, verifyProducer: verifyAll };
+  assert.deepEqual(await verifiedShadowRun(args), {
+    runId: run.id, findingRef: run.html_url, headSha: SHADOW_HEAD, baseSha: SHADOW_BASE, pullRequest: SHADOW_PR, evidence: summary,
+  });
+  const newer = shadowCase({ id: 7500, state: 'clear' }).run;
+  const newerFinding = shadowCase({ id: 7500 }).run;
+  for (const [label, change] of [
+    ['a newer verified review supersedes it', { checkRuns: [run, newer] }],
+    ['a newer verified finding supersedes it', { checkRuns: [run, newerFinding] }],
+    ['unverified producer', { verifyProducer: async () => false }],
+    ['another base', { baseSha: 'f'.repeat(40) }],
+    ['another head', { headSha: 'f'.repeat(40) }],
+    ['another PR', { pullRequestNumber: SHADOW_PR + 1 }],
+    ['another run named', { shadowRunId: run.id + 1 }],
+    ['not an integer id', { shadowRunId: String(run.id) }],
+  ]) {
+    assert.equal(await verifiedShadowRun({ ...args, ...change }), null, label);
+  }
+  const clear = shadowCase({ state: 'clear' }).run;
+  assert.equal(await verifiedShadowRun({ ...args, checkRuns: [clear], shadowRunId: clear.id }), null, 'a clear review is no finding');
+});
+
+test('the findings come only from the digest-bound evidence artifact of that exact verified review', () => {
+  const { summary, zip } = shadowCase();
+  assert.deepEqual(shadowFindingsFromArtifact(zip, summary), [
+    { severity: 'P2', path: 'scripts/x.mjs', line: 12, description: FINDING.description },
+  ]);
+  assert.equal(shadowFindingsFromArtifact(Buffer.concat([zip, Buffer.from(' ')]), summary), null, 'bytes that do not hash to the digest');
+  assert.equal(shadowFindingsFromArtifact('not bytes', summary), null);
+  assert.equal(shadowFindingsFromArtifact(zip, null), null);
+  for (const field of ['repository', 'pullRequest', 'headSha', 'baseSha', 'runId', 'runAttempt', 'publisherRunId', 'publisherRunAttempt', 'state', 'findingCount']) {
+    const tampered = shadowCase({ tamper: (file) => { file[field] = field === 'repository' || field.endsWith('Sha') || field === 'state' ? 'other' : 999; } });
+    assert.equal(shadowFindingsFromArtifact(tampered.zip, tampered.summary), null, `artifact ${field} differs from the verified summary`);
+  }
+  for (const [label, findings] of [
+    ['more findings than the count', [FINDING, FINDING]],
+    ['none', []],
+    ['a severity outside P0-P3', [{ ...FINDING, severity: 'high' }]],
+    ['no path', [{ ...FINDING, path: '' }]],
+    ['a non-integer line', [{ ...FINDING, line: '12' }]],
+    ['no description', [{ ...FINDING, description: '' }]],
+  ]) {
+    const bad = shadowCase({ findings });
+    assert.equal(shadowFindingsFromArtifact(bad.zip, bad.summary), null, label);
+  }
+  // An artifact that claims no findings is no finding, even when its count agrees.
+  const empty = shadowCase({ findings: [], tamper: (file) => { file.findingCount = 0; } });
+  assert.equal(shadowFindingsFromArtifact(empty.zip, { ...empty.summary, findingCount: 0 }), null, 'zero findings');
+  const fileWide = shadowCase({ findings: [{ ...FINDING, line: null }] });
+  assert.equal(shadowFindingsFromArtifact(fileWide.zip, fileWide.summary)[0].line, null, 'a file-level finding has no line');
+});
+
+test('the authorizer takes exactly one finding source; a shadow finding must be this PR/head at the live base', () => {
+  const shadowFinding = { findingRef: 'https://github.com/JagPat/PMCvitan/runs/7001', headSha, baseSha: base, pullRequest: 597, findings: [FINDING] };
+  const shadowInputs = (overrides = {}) => inputs({ findingComment: undefined, threadUnresolved: undefined, findingRef: shadowFinding.findingRef, shadowFinding, ...overrides });
+  assert.equal(authorizeCodexFixDispatch(shadowInputs()).state, 'ready');
+  for (const [label, overrides] of [
+    ['both sources', { findingComment: findingComment() }],
+    ['no verified finding', { shadowFinding: null }],
+    ['the base moved', { livePull: livePull({ base: { ref: 'main', sha: 'f'.repeat(40), repo: { full_name: repository } } }) }],
+    ['another finding named', { findingRef: `${shadowFinding.findingRef}9` }],
+    ['another head', { shadowFinding: { ...shadowFinding, headSha: 'f'.repeat(40) } }],
+    ['another PR', { shadowFinding: { ...shadowFinding, pullRequest: 598 } }],
+    ['no findings read', { shadowFinding: { ...shadowFinding, findings: [] } }],
+  ]) {
+    assert.equal(authorizeCodexFixDispatch(shadowInputs(overrides)).state, 'unauthorized_or_stale', label);
+  }
+});
+
+function shadowApi(state) {
+  return {
+    getPull: async () => state.pull,
+    listComments: async () => state.comments.map((comment) => ({ ...comment })),
+    checkRuns: async () => [...state.runs],
+    verifyShadowProducer: async () => true,
+    downloadArtifact: async () => state.zip,
+    getReviewComment: async () => { throw new Error('no Codex comment read on the shadow path'); },
+    threadUnresolved: async () => { throw new Error('no thread read on the shadow path'); },
+    postComment: async (_repo, _n, body) => {
+      const created = { id: state.comments.length + 1, user: { login: 'github-actions[bot]' }, body };
+      state.comments.push(created);
+      return created;
+    },
+  };
+}
+function shadowState() {
+  const { run, zip } = shadowCase();
+  return {
+    run, zip, runs: [run], comments: [],
+    pull: { number: SHADOW_PR, state: 'open', head: { sha: SHADOW_HEAD, ref: 'claude/x', repo: { full_name: REPO } }, base: { ref: 'main', sha: SHADOW_BASE, repo: { full_name: REPO } } },
+  };
+}
+const shadowEnv = (overrides = {}) => ({
+  GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main', PROBE_PR_NUMBER: String(SHADOW_PR), PROBE_HEAD_SHA: SHADOW_HEAD,
+  PROBE_SHADOW_RUN_ID: '7001', PROBE_FINDING_COMMENT_ID: '', PROBE_AUTHORIZATION: expectedAuthorization({ pullRequest: SHADOW_PR, headSha: SHADOW_HEAD }),
+  ...overrides,
+});
+const loadShadowEvent = () => ({ repository: { full_name: REPO } });
+
+test('a shadow-finding dispatch posts one request keyed to the check run, quoting the neutralized findings', async () => {
+  const state = shadowState();
+  await runDispatch({ env: shadowEnv(), loadEvent: loadShadowEvent, api: shadowApi(state) });
+  assert.equal(state.comments.length, 1);
+  const { body } = state.comments[0];
+  // The evidence reader reads it as this cycle's request, naming the check run as the finding.
+  assert.deepEqual(parseProbeMarker(body), { pullRequest: SHADOW_PR, headSha: SHADOW_HEAD, findingRef: state.run.html_url });
+  assert.ok(body.includes(`Finding to correct: ${state.run.html_url}`));
+  assert.ok(body.includes('1. P2 — scripts/x.mjs:12'));
+  // The quoted finding adds no marker, no mention and no request line of its own.
+  assert.equal(body.match(/<!--/gu).length, 1, 'only the request marker opens a comment');
+  assert.equal(body.match(/@codex/gu).length, 1, 'only the request line mentions Codex');
+  assert.equal(body.match(/^@codex fix$/gmu).length, 1);
+  assert.ok(body.includes(`   > ${neutralizeQuotedText(FINDING.description.split('\n')[1])}`));
+  assert.ok(!body.includes('```break out'));
+  assert.ok(body.includes(probeTrailer({ pullRequest: SHADOW_PR, headSha: SHADOW_HEAD, findingRef: state.run.html_url })));
+});
+
+test('a shadow-finding dispatch rechecks everything before posting; one source only, as integers', async () => {
+  // A newer review of the head lands mid-window: the named finding is superseded, nothing is posted.
+  const state = shadowState();
+  await assert.rejects(runDispatch({
+    env: shadowEnv(), loadEvent: loadShadowEvent, api: shadowApi(state),
+    onBeforePost: async () => { state.runs.push(shadowCase({ id: 7500, state: 'clear' }).run); },
+  }), /stale_before_post/u);
+  assert.equal(state.comments.length, 0);
+  // The artifact changes mid-window (its bytes no longer hash to the digest): nothing is posted.
+  const swapped = shadowState();
+  await assert.rejects(runDispatch({
+    env: shadowEnv(), loadEvent: loadShadowEvent, api: shadowApi(swapped),
+    onBeforePost: async () => { swapped.zip = Buffer.concat([swapped.zip, Buffer.from(' ')]); },
+  }), /stale_before_post/u);
+  assert.equal(swapped.comments.length, 0);
+  for (const [label, env] of [
+    ['both sources', shadowEnv({ PROBE_FINDING_COMMENT_ID: '4023550608' })],
+    ['neither source', shadowEnv({ PROBE_SHADOW_RUN_ID: '' })],
+    ['a non-integer run id', shadowEnv({ PROBE_SHADOW_RUN_ID: '70x1' })],
+  ]) {
+    const quiet = shadowState();
+    await assert.rejects(runDispatch({ env, loadEvent: loadShadowEvent, api: shadowApi(quiet) }), /finding_comment_id|shadow_run_id/u, label);
+    assert.equal(quiet.comments.length, 0, label);
+  }
 });
