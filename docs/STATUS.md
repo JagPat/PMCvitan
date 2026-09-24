@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-activate-phase
-reviewed_merge: 89a4268
-open_pr: 625
+work_item: cloud-role-transfer-shadow-probe
+reviewed_merge: 96208ae
+open_pr: 626
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-24
@@ -31,7 +31,7 @@ and #619 (the activation-readiness verdict, `1273465`). #623 (`b9d31da`) added t
 attestation, and #625 (`96208ae`) gave the verdict its `activate` readiness state with the install bound
 to the proven cycle as data (nothing applies it).
 
-- **Now, the probe unit** (`work_item: cloud-role-transfer-shadow-probe`, branch
+- **Now, the probe unit, `open_pr: 626`** (`work_item: cloud-role-transfer-shadow-probe`, branch
   `claude/role-activation-shadow-probe`, from `main` at `96208ae`). `codex-fix-probe` can key its one
   request to a verified Claude shadow finding (`shadow_run_id`): the newest producer-verified
   `changes_required` review of that PR/head at the live base, with its findings read from the digest-bound
