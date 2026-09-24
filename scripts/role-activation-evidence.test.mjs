@@ -602,6 +602,20 @@ test('the conversation lists every issue comment, review comment and review, wit
   const listIssue = await readWorld((w) => { w.conversation.pull_request = []; });
   assert.equal(listIssue.evidence.records.conversation, null);
   assert.deepEqual(listIssue.evidence.problems, ['conversation pull_request: not a record']);
+  // A partial or foreign record is unread, never a blank description (Codex finding on #624). A null body (a PR
+  // without a description) is whole.
+  for (const change of [
+    (issue) => { for (const key of Object.keys(issue)) delete issue[key]; }, // {}
+    (issue) => { issue.number = PR + 1; }, (issue) => { delete issue.pull_request; }, (issue) => { issue.id = null; },
+    (issue) => { issue.user = null; }, (issue) => { issue.user.login = ''; }, (issue) => { issue.created_at = null; },
+    (issue) => { delete issue.title; }, (issue) => { delete issue.body; }, (issue) => { issue.body = 42; },
+  ]) {
+    const partial = await readWorld((w) => { change(w.conversation.pull_request); });
+    assert.equal(partial.evidence.records.conversation, null, String(change));
+    assert.deepEqual(partial.evidence.problems, ['conversation pull_request: malformed record'], String(change));
+  }
+  const noBody = await readWorld((w) => { w.conversation.pull_request.body = null; });
+  assert.equal(noBody.evidence.records.conversation.items[0].mentionsCodex, false);
   const malformed = await readWorld((w) => { w.conversation.issue_comment = { not: 'a list' }; });
   assert.equal(malformed.evidence.records.conversation, null);
   assert.deepEqual(malformed.evidence.problems, ['conversation issue_comment page 1: not a list']);

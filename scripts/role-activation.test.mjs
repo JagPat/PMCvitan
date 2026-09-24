@@ -208,6 +208,10 @@ test('finding 4089074927: the trailer is not enough; anyone else who could have 
   allProven(roleTransferActivationVerdict(await evidenceFor((w) => { w.conversation.pull_request.created_at = at('11:50'); }), expected));
   holds(await verdictWith((e) => { e.records.conversation.items = e.records.conversation.items.filter((item) => item.kind !== 'pull_request'); }), 'codexTaskCausation');
   holds(await verdictWith((e) => { e.records.conversation.items.push({ ...e.records.conversation.items[0] }); }), 'codexTaskCausation');
+  // A placeholder description (no id, author or creation time) is not a read description (Codex finding on #624).
+  for (const field of ['id', 'authorLogin', 'createdAtMs']) {
+    holds(await verdictWith((e) => { e.records.conversation.items[0][field] = null; }), 'codexTaskCausation');
+  }
   // A mention the reader could not determine counts as one (fail closed), even from a trusted workflow.
   holds(await verdictWith((e) => { delete e.records.conversation.items.find((item) => item.id === 62).mentionsCodex; }), 'codexTaskCausation');
   // An unread or unscoped conversation holds.

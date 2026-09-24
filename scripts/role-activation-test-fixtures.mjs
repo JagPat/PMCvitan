@@ -142,7 +142,8 @@ export function world() {
     // controller's state comment (edited through the cycle, no @codex), the request itself, and Codex's own
     // review with its "@codex review" boilerplate.
     conversation: {
-      pull_request: { id: 9619, user: { login: 'JagPat' }, created_at: at('09:30'), updated_at: at('11:40'),
+      pull_request: { id: 9619, number: PR, pull_request: { url: `https://api.github.com/repos/${REPO}/pulls/${PR}` },
+        user: { login: 'JagPat' }, created_at: at('09:30'), updated_at: at('11:40'),
         title: 'Fix the finding', body: 'Codex codes; Claude reviews.' },
       issue_comment: [
         conversationItem(61, 'JagPat', '08:30', 'Looks good so far.'),

@@ -471,8 +471,17 @@ export async function readRoleActivationEvidence(
       problems.push(`conversation pull_request: ${error?.message ?? String(error)}`);
       return null;
     }
+    // The description is read only from a whole record of THIS pull request: its number, id, author, creation
+    // time and title (a PR's body may be null, never absent). A partial record is unread, never blank text.
     if (!issue || typeof issue !== 'object' || Array.isArray(issue)) {
       problems.push('conversation pull_request: not a record');
+      return null;
+    }
+    if (issue.number !== pullRequest || !issue.pull_request || !Number.isInteger(issue.id)
+      || typeof issue.user?.login !== 'string' || issue.user.login.length === 0
+      || !Number.isFinite(Date.parse(issue.created_at)) || typeof issue.title !== 'string'
+      || !(typeof issue.body === 'string' || issue.body === null)) {
+      problems.push('conversation pull_request: malformed record');
       return null;
     }
     const items = [normalizeConversationItem('pull_request', issue)];

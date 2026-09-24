@@ -230,8 +230,11 @@ export function roleTransferActivationVerdict(evidence, expected) {
     if (item?.authorLogin === CODEX_LOGIN) return true;
     if (item?.kind === 'issue_comment' && item.id === requestId) return true;
     if (item?.mentionsCodex !== false) return false;
-    // The PR's own description starts a task only by mentioning `@codex`; its edits are undated.
-    if (item?.kind === 'pull_request') return true;
+    // The PR's own description starts a task only by mentioning `@codex`; its edits are undated. It must be a
+    // whole record (id, author, creation time), never a placeholder (Codex finding on #624).
+    if (item?.kind === 'pull_request') {
+      return Number.isInteger(item.id) && nonEmpty(item.authorLogin) && finite(item.createdAtMs);
+    }
     if (item?.authorLogin === GITHUB_ACTIONS_LOGIN) return true;
     if (item?.kind === 'review') return false;
     return finite(item?.createdAtMs) && finite(item?.updatedAtMs)
