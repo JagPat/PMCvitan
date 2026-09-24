@@ -142,8 +142,8 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   }
 
   // A CANDIDATE (e.g. codex) is a first-class state distinct from `declared`: recognised in-flight but
-  // never merge-eligible and never awakenable. Every existing consumer checks `=== 'declared'`, so a
-  // candidate is treated as non-declared (scope refuses, routing stalls) until a later unit admits it.
+  // never merge-eligible and never awakenable. The scope gate admits it (`correctionOwnerProblem`), so its
+  // head gets CI and review; routing still stalls and its reviewed head is held, never merged.
   if (CANDIDATE_CORRECTION_OWNERS.includes(owner)) {
     return {
       state: 'candidate',
@@ -483,10 +483,18 @@ export function correctionOwnerDeclaration(pullRequest) {
  * other PR in that range, so the carve-out protected nothing and contradicted
  * the contract it was written beside: a PR inside it could pass `review-scope`
  * with no owner and then route to nobody on its first finding.
+ *
+ * Admits a routable `declared` owner or a recognised `candidate` (codex, on a
+ * branch that permits it), so a candidate head gets CI and review. Admission is
+ * scope only: the candidate head is still never merge-eligible
+ * (`shaMergeAuthority`), its reviewed head is held with `OWNERSHIP_CANDIDATE_HELD`
+ * (which opens no correction lease), and routing names nobody to wake. Missing,
+ * invalid and contradictory declarations — codex on `claude/**` included — are
+ * refused as before.
  */
 export function correctionOwnerProblem(pullRequest) {
   const declaration = correctionOwnerDeclaration(pullRequest);
-  return declaration.state === 'declared' ? null : declaration.detail;
+  return declaration.state === 'declared' || declaration.state === 'candidate' ? null : declaration.detail;
 }
 
 function ownerLabel(owner) {

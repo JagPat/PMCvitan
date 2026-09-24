@@ -3,6 +3,9 @@ import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { parseCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
 import { authorizeExactHeadMerge, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
+import { assessCorrectionLease, correctionReasonFor } from './correction-lease.mjs';
+import { assessReviewScope } from './review-efficiency.mjs';
+import { CORRECTION_STALLED, OWNERSHIP_CANDIDATE_HELD, STATUS_CONTEXT } from './review-policy.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -10,19 +13,67 @@ const base = 'b'.repeat(40);
 test('Codex implementation ownership is recognised as an in-flight candidate but never routed or merged', () => {
   // Codex is a recognised CANDIDATE owner: the body parse names it as a first-class `candidate` state on a
   // branch that permits it, and as `contradictory` on a `claude/**` branch it cannot claim. Neither is
-  // `declared`, so scope still refuses and routing still stalls — a candidate is tracked, never merge-eligible
-  // and never awakenable, until a later unit's promotion hold admits-and-holds it.
+  // `declared`. The scope gate admits the candidate (so its head gets CI and review) and still refuses the
+  // contradiction; routing stalls for both — a candidate is tracked, never merge-eligible and never awakenable.
   const expectedState = { 'codex/maintenance': 'candidate', 'claude/product': 'contradictory' };
   for (const ref of ['codex/maintenance', 'claude/product']) {
     const body = '<!-- correction-owner: codex -->\n<!-- correction-transfer: claude->codex -->';
     const declaration = parseCorrectionOwner(body, { headRef: ref });
     assert.equal(declaration.state, expectedState[ref]);
     assert.notEqual(declaration.state, 'declared');
-    assert.ok(correctionOwnerProblem({ body, head: { ref } }));
+    const problem = correctionOwnerProblem({ body, head: { ref } });
+    if (ref === 'claude/product') assert.match(problem ?? '', /reserved for Claude-authored work/u);
+    else assert.equal(problem, null);
     const route = correctionRouting({ declaration, head });
     assert.equal(route.owner, null);
     assert.equal(route.awakenable, false);
   }
+});
+
+test('review-scope admits a declared or candidate owner and refuses every other declaration', () => {
+  const KEYS = ['concurrency-serialization', 'old-release-migration-compatibility', 'trigger-alternate-writers',
+    'authorization-tenancy', 'ci-reproduce-first'];
+  const body = (markers) => ['<!-- review-size: standard -->', '<!-- migration-scope: n/a -->', ...markers,
+    'Replaces: none', '', '## Pre-review checklist', ...KEYS.map((key) => `- [x] \`${key}\` — checked`), '',
+    '- Migration/service seam: n/a'].join('\n');
+  const scope = (markers, ref) => assessReviewScope({
+    number: 700, additions: 20, deletions: 0, changed_files: 2, body: body(markers),
+    base: { ref: 'main' }, head: { ref },
+  });
+  const owner = (name) => `<!-- correction-owner: ${name} -->`;
+  // Admitted: the routable owners, and codex as a candidate on a branch that permits it.
+  for (const [markers, ref] of [[[owner('claude')], 'claude/x'], [[owner('cursor')], 'codex/x'],
+    [[owner('codex')], 'codex/observation-seed']]) {
+    assert.equal(scope(markers, ref).allowed, true, `${markers} on ${ref}`);
+  }
+  // Refused, each on its own owner fault: codex on a Claude branch, no marker, an unknown owner, two
+  // conflicting owners, one owner declared twice.
+  for (const [markers, ref, detail] of [
+    [[owner('codex')], 'claude/x', /reserved for Claude-authored work/u],
+    [[], 'codex/x', /must declare its correction owner/u],
+    [[owner('devin')], 'codex/x', /"devin" is not a correction owner/u],
+    [[owner('codex'), owner('claude')], 'codex/x', /conflicting correction owners/u],
+    [[owner('codex'), owner('codex')], 'codex/x', /declared 2 times/u],
+  ]) {
+    const result = scope(markers, ref);
+    assert.equal(result.allowed, false, `${markers} on ${ref}`);
+    assert.match(result.detail, detail);
+  }
+});
+
+test('an admitted candidate PR still opens no autonomous correction writer', () => {
+  // Scope admission changes no routing: a finding on a candidate PR names nobody and wakes nobody, and
+  // the candidate hold on its reviewed head owes no correction at all.
+  const pullRequest = { number: 700, head: { sha: head, ref: 'codex/observation-seed' },
+    body: '<!-- correction-owner: codex -->' };
+  for (const [reason, detail] of [['review', '1 current-head Codex finding'], ['ci', 'api failed']]) {
+    const lease = assessCorrectionLease({ pullRequest, head, reason, detail,
+      findingObservedAt: '2026-09-24T00:00:00Z', now: '2026-09-24T12:00:00Z', comments: [] });
+    assert.equal(lease.owner, 'undeclared', reason);
+    assert.equal(lease.reportedState, CORRECTION_STALLED, reason);
+    assert.doesNotMatch(lease.body ?? '', /@[A-Za-z]/u, reason);
+  }
+  assert.equal(correctionReasonFor({ context: STATUS_CONTEXT, state: 'failure', description: OWNERSHIP_CANDIDATE_HELD }), null);
 });
 function cleanRun(overrides = {}) {
   const artifact = { id: 789, digest: `sha256:${'d'.repeat(64)}`, name: `claude-shadow-v1-repo-${Buffer.from('JagPat/PMCvitan').toString('base64url')}-pr-600-base-${base}-head-${head}-ci-123-2-publisher-456-1-state-clear-findings-0` };

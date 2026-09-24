@@ -1667,6 +1667,58 @@ test('the SHA merge-authority verdict gates final admission (unit 2B2)', async (
   );
 });
 
+test('a candidate-owned PR passes scope but its reviewed head is held, never succeeded or merged', async () => {
+  // The scope gate admits a truthful codex marker on a branch that permits it, so the PR reaches review
+  // (it used to stop at `scope_required`). Admission is scope only: the exact head's candidate trailer is
+  // still merge-ineligible, final admission holds it, and the hold owes no correction.
+  const head = 'e'.repeat(40);
+  const candidatePull = () => ({
+    number: 253,
+    additions: 1,
+    deletions: 0,
+    changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: codex -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/253',
+    head: { sha: head, ref: 'codex/observation-seed', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const statusWrites = [];
+  const client = {
+    async pullRequest() { return candidatePull(); },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus(h, state, description) { statusWrites.push({ state, description }); },
+    async updateStickyComment() {},
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async markReplacementRequired() {},
+    async commit() { return { commit: { message: 'fix: x\n\nCorrection-Owner: codex\n' }, files: [] }; },
+    async mergeExactHead() { throw new Error('must not merge a candidate head'); },
+    async enableAutoMerge() { throw new Error('must not queue a candidate head'); },
+  };
+  const final = await reviewGate.revalidateFinalReviewPolicy(client, 253, head);
+  assert.equal(final.allowed, false);
+  assert.equal(final.state, 'ownership_withheld', 'scope admitted it; the SHA verdict holds it');
+  assert.equal(final.ownershipReason, OWNERSHIP_CANDIDATE_HELD);
+  assert.equal(final.verdict.mergeEligible, false);
+  assert.ok(!statusWrites.some((write) => write.state === 'success'));
+  assert.ok(!statusWrites.some((write) => write.description?.startsWith('scope: ')), 'no scope refusal');
+  assert.equal(
+    correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: final.ownershipReason }),
+    null,
+  );
+
+  // Recovery of a stale green status on the same head publishes the held failure, never success or merge.
+  const cleanStatus = {
+    id: 402, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head',
+  };
+  assert.equal(await reviewGate.ensureTerminalReviewState(client, candidatePull(), head, cleanStatus, [cleanStatus]), true);
+  assert.equal(statusWrites.at(-1).state, 'failure');
+  assert.equal(statusWrites.at(-1).description, OWNERSHIP_CANDIDATE_HELD);
+  assert.ok(!statusWrites.some((write) => write.state === 'success'));
+});
+
 test('recovery does not republish success when the SHA verdict is no longer eligible (unit 2B2)', async () => {
   const head = 'f'.repeat(40);
   const cleanStatus = {

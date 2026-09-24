@@ -58,6 +58,16 @@ export function probeTrailer(identity) {
   return `${PROBE_TRAILER_KEY}: ${probeTrailerValue(identity)}`;
 }
 /**
+ * The terminal trailer block every corrective commit must end with: the request's probe trailer and a
+ * truthful `Correction-Owner: codex`. Codex authors the commit, so it declares Codex — never Claude — and
+ * the head stays a merge-ineligible CANDIDATE (`shaMergeAuthority`) whose reviewed head is held, not
+ * merged. Containment only, never causation: both lines are public request text.
+ */
+export const CORRECTIVE_OWNER_TRAILER = 'Correction-Owner: codex';
+export function correctiveTrailerBlock(identity) {
+  return `${probeTrailer(identity)}\n${CORRECTIVE_OWNER_TRAILER}`;
+}
+/**
  * The `Codex-Fix-Probe` values in a commit message's TERMINAL trailer block, in order, read as
  * `git interpret-trailers --parse --unfold` reads them (extraction delegated to git, like the
  * `Correction-Owner` trailer). A value quoted in prose or a code fence, or anywhere but the terminal
@@ -297,13 +307,15 @@ export function codexFixComment({ pullRequestNumber, headSha, sourceBranch, find
     '',
     'Requirements: push the corrective commit to that source branch (do not open a new PR); '
       + 'preserve every other open finding and do not resolve, overwrite, or hide them; do not touch '
-      + 'branch protection, required statuses, or unrelated code.',
+      + 'branch protection, required statuses, or unrelated code; do not edit the PR description or its '
+      + 'correction-owner marker.',
     '',
-    'End the message of EVERY commit you push for this request with this exact trailer line, on its own '
-      + 'line in the final trailer block, unchanged (it identifies this request on your commits):',
+    'End the message of EVERY commit you push for this request with these two exact trailer lines, '
+      + 'unchanged, together as its final trailer block (the first identifies this request; the second '
+      + 'truthfully declares Codex as the author, so the commit is held and never merged automatically):',
     '',
     '```',
-    probeTrailer({ pullRequest: pullRequestNumber, headSha, findingRef }),
+    correctiveTrailerBlock({ pullRequest: pullRequestNumber, headSha, findingRef }),
     '```',
     '',
     'This is a one-time, bounded correction-boundary probe. It is dispatch evidence only — no review '

@@ -41,10 +41,9 @@ export const CORRECTION_OWNERS = ['claude', 'cursor'];
 // Recognised in-flight CANDIDATE owners: a corrective HEAD may declare one and the ownership verdict
 // tracks it, but it is never merge-eligible and never awakenable, and it is NOT admitted to the routable
 // set above — so admitting a candidate here does not, by itself, let any consumer route, wake, or merge
-// it. A later unit teaches the promotion hold to admit-and-hold it; until then a candidate declaration
-// is reported as non-`declared` by the parsers (scope refuses, routing stalls), which is unchanged
-// consumer behaviour. Task and reviewer share the Codex bot identity, so it stays held pending
-// independent reviewer activation.
+// it. A candidate declaration is reported as non-`declared` by the parsers: the scope gate admits it (so
+// its head gets CI and review), routing stalls, and the promotion hold holds its reviewed head. Task and
+// reviewer share the Codex bot identity, so it stays held pending independent reviewer activation.
 export const CANDIDATE_CORRECTION_OWNERS = ['codex'];
 // Wake integrations enabled in this repository, not a product capability inventory.
 export const AWAKENABLE_FROM_GITHUB = new Set(['claude']);

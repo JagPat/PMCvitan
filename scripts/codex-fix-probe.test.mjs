@@ -7,7 +7,9 @@ import test from 'node:test';
 import {
   authorizeCodexFixDispatch,
   PROBE_TRAILER_KEY,
+  CORRECTIVE_OWNER_TRAILER,
   codexFixComment,
+  correctiveTrailerBlock,
   dedupPrefix,
   expectedAuthorization,
   isGenuineUnresolvedFinding,
@@ -22,6 +24,7 @@ import {
   shadowFindingsFromArtifact,
   verifiedShadowRun,
 } from './codex-fix-probe.mjs';
+import { shaMergeAuthority } from './correction-owner.mjs';
 import { parseProbeMarker } from './role-activation-evidence.mjs';
 import { BASE as SHADOW_BASE, ORIGINAL as SHADOW_HEAD, PR as SHADOW_PR, REPO, at, shadowRun } from './role-activation-test-fixtures.mjs';
 import { buildZip } from './zip-test-fixture.mjs';
@@ -139,9 +142,33 @@ test('the posted request is a single @codex fix naming head/branch/finding, requ
   assert.match(body, /preserve every other open finding/u);
   assert.match(body, /do not open a new PR/u);
   assert.doesNotMatch(body, /codex-current-head/u);
-  // The request asks for the binding trailer, verbatim, on every commit.
-  assert.ok(body.includes(`\n${probeTrailer({ pullRequest: 597, headSha, findingRef })}\n`));
+  // The request asks for the binding trailer AND a truthful Codex owner, verbatim and adjacent, as one
+  // terminal block on every commit; it never asks Codex to declare another owner or edit the owner marker.
+  const block = `${probeTrailer({ pullRequest: 597, headSha, findingRef })}\n${CORRECTIVE_OWNER_TRAILER}`;
+  assert.equal(correctiveTrailerBlock({ pullRequest: 597, headSha, findingRef }), block);
+  assert.equal(CORRECTIVE_OWNER_TRAILER, 'Correction-Owner: codex');
+  assert.ok(body.includes(`\n\`\`\`\n${block}\n\`\`\`\n`));
   assert.match(body, /EVERY commit you push for this request/u);
+  assert.match(body, /together as its final trailer block/u);
+  assert.match(body, /do not edit the PR description or its correction-owner marker/u);
+  assert.doesNotMatch(body, /Correction-Owner:\s*(claude|cursor)/iu);
+});
+
+test('a corrective commit that follows the request is a held candidate; one that drops the owner is not eligible either', () => {
+  const identity = { pullRequest: 597, headSha, findingRef };
+  const followed = `fix: clamp negatives\n\nBody.\n\n${correctiveTrailerBlock(identity)}\n`;
+  // Both lines land in ONE terminal block, as real git reads it.
+  const git = execFileSync('git', ['-c', 'trailer.separators=:', 'interpret-trailers', '--parse', '--unfold'], {
+    input: followed, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+  });
+  assert.equal(git, `${correctiveTrailerBlock(identity)}\n`);
+  assert.deepEqual(probeTrailersIn(followed), [probeTrailerValue(identity)]);
+  assert.deepEqual(shaMergeAuthority(followed),
+    { outcome: 'candidate', mergeEligible: false, owner: 'codex', trailerState: 'candidate' });
+  // Ignoring the owner line leaves the head unauthenticated: invalid, never merge-eligible.
+  const probeOnly = `fix: clamp negatives\n\n${probeTrailer(identity)}\n`;
+  assert.equal(shaMergeAuthority(probeOnly).mergeEligible, false);
+  assert.equal(shaMergeAuthority(probeOnly).outcome, 'invalid');
 });
 
 test('the binding trailer repeats the request identity and is parsed back exactly', () => {

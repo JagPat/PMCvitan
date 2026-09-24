@@ -37,10 +37,10 @@ The exact head's Correction-Owner trailer, the PR body marker and the branch res
 one pure PR-scoped verdict — a three-valued read (eligible; readable-but-inconsistent, cleared by a body
 edit or, when the trailer is unusable or the branch forbids it, a new head; or temporarily unreadable and
 retryable) in one canonical status vocabulary — which governs promotion routing and diagnostics, not merge.
-Codex is a recognised CANDIDATE owner it tracks in-flight but never merges nor wakes, pending independent-
-reviewer activation (tasks and reviews share its bot identity); a transfer marker cannot promote it. Merge
-authority is instead SHA-scoped: the required status is shared by every PR on that commit, so only a verdict
-read from that commit's trailer alone releases it — never the mutable body, branch or PR; alone it mutates nothing.
+Codex is a recognised CANDIDATE owner: scope admits its marker off `claude/**` so its head gets CI and review,
+but it is never merged nor woken, pending independent-reviewer activation (tasks and reviews share its bot
+identity); a transfer marker cannot promote it. Merge authority is instead SHA-scoped: the required status is
+shared by every PR on that commit, so only that commit's trailer releases it — never the body, branch or PR.
 
 This repository currently enables only the Claude correction wake integration.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
