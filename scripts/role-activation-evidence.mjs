@@ -164,15 +164,25 @@ export function normalizeConversationItem(kind, item) {
   const undatedEdits = kind === 'review' || kind === 'pull_request';
   const createdAtMs = Date.parse(kind === 'review' ? item?.submitted_at : item?.created_at);
   const updatedAtMs = undatedEdits ? createdAtMs : Date.parse(item?.updated_at);
-  const text = kind === 'pull_request' ? `${item?.title ?? ''}\n${item?.body ?? ''}` : String(item?.body ?? '');
+  // A body that is not text (or null, no text) is unknown, never "no mention" (Codex finding on #624).
+  const text = kind === 'pull_request' ? `${item?.title ?? ''}\n${item?.body ?? ''}` : item?.body;
   return {
     kind,
     id: Number.isInteger(item?.id) ? item.id : null,
     authorLogin: item?.user?.login ?? null,
     createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : null,
     updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : null,
-    mentionsCodex: CODEX_MENTION.test(text),
+    mentionsCodex: typeof text === 'string' ? CODEX_MENTION.test(text) : text === null ? false : null,
   };
+}
+
+/** Whether a listed comment or review is a whole record: id, author, body (text or null) and its dates. */
+export function wholeConversationItem(kind, item) {
+  const dated = (value) => Number.isFinite(Date.parse(value));
+  return Number.isInteger(item?.id)
+    && typeof item.user?.login === 'string' && item.user.login.length > 0
+    && (typeof item.body === 'string' || item.body === null)
+    && (kind === 'review' ? dated(item.submitted_at) : dated(item.created_at) && dated(item.updated_at));
 }
 
 /** The earliest Codex-connector acceptance reaction on the request comment itself. */
@@ -497,6 +507,11 @@ export async function readRoleActivationEvidence(
         }
         if (!Array.isArray(batch)) {
           problems.push(`conversation ${kind} page ${page}: not a list`);
+          return null;
+        }
+        // A partial item is unread, never a blank non-mention (Codex finding on #624).
+        if (!batch.every((item) => wholeConversationItem(kind, item))) {
+          problems.push(`conversation ${kind} page ${page}: malformed item`);
           return null;
         }
         items.push(...batch.map((item) => normalizeConversationItem(kind, item)));

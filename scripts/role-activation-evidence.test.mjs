@@ -573,7 +573,23 @@ test('the conversation lists every issue comment, review comment and review, wit
   assert.deepEqual(normalizeConversationItem('review', { id: 1, user: { login: 'x' }, submitted_at: at('10:00'), updated_at: at('11:00'), body: 'Hey @Codex, fix it' }),
     { kind: 'review', id: 1, authorLogin: 'x', createdAtMs: ms('10:00'), updatedAtMs: ms('10:00'), mentionsCodex: true });
   assert.deepEqual(normalizeConversationItem('issue_comment', { id: 2, user: { login: 'x' } }),
-    { kind: 'issue_comment', id: 2, authorLogin: 'x', createdAtMs: null, updatedAtMs: null, mentionsCodex: false });
+    { kind: 'issue_comment', id: 2, authorLogin: 'x', createdAtMs: null, updatedAtMs: null, mentionsCodex: null });
+  assert.equal(normalizeConversationItem('review', { id: 3, body: null }).mentionsCodex, false);
+  // A partial comment or review is unread, never a blank non-mention (Codex finding on #624). A null body is
+  // no text; a review is dated by its submission only.
+  for (const [kind, change] of [
+    ['issue_comment', (item) => { delete item.body; }], ['issue_comment', (item) => { item.body = 7; }],
+    ['issue_comment', (item) => { item.id = '62'; }], ['issue_comment', (item) => { item.user = {}; }],
+    ['issue_comment', (item) => { delete item.created_at; }], ['issue_comment', (item) => { item.updated_at = 'x'; }],
+    ['review_comment', (item) => { delete item.body; }], ['review', (item) => { delete item.submitted_at; }],
+    ['review', (item) => { item.user.login = ''; }],
+  ]) {
+    const partial = await readWorld((w) => { change(w.conversation[kind].at(-1)); });
+    assert.equal(partial.evidence.records.conversation, null, `${kind} ${change}`);
+    assert.deepEqual(partial.evidence.problems, [`conversation ${kind} page 1: malformed item`], `${kind} ${change}`);
+  }
+  const nullBody = await readWorld((w) => { w.conversation.issue_comment[1].body = null; delete w.conversation.review[0].updated_at; });
+  assert.equal(nullBody.evidence.records.conversation.items[2].mentionsCodex, false);
   // Read to its end across pages.
   const paged = await readWorld((w) => {
     w.conversation.review_comment = Array.from({ length: CONVERSATION_PAGE_SIZE + 1 }, (_, index) => conversationItem(1000 + index, CODEX_LOGIN, '11:25'));

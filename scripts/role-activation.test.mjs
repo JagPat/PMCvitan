@@ -190,11 +190,10 @@ test('finding 4089074927: the trailer is not enough; anyone else who could have 
     holds(roleTransferActivationVerdict(await evidenceFor(mutate), expected), 'codexTaskCausation');
   }
   // Codex's own items (its boilerplate mentions @codex), the request itself, trusted-workflow items without
-  // @codex (dated or not), and other authors' comments without @codex from before the window are quiet.
+  // @codex, and other authors' comments without @codex from before the window are quiet.
   allProven(roleTransferActivationVerdict(await evidenceFor((w) => {
     w.conversation.issue_comment.push(conversationItem(71, 'JagPat', '08:59', 'lgtm'));
     w.conversation.issue_comment.push(conversationItem(72, GITHUB_ACTIONS_LOGIN, '10:40', 'state: review_pending'));
-    w.conversation.issue_comment.push({ id: 75, user: { login: GITHUB_ACTIONS_LOGIN }, body: 'state' });
     w.conversation.review.push(conversationItem(73, CODEX_LOGIN, '10:40', '@codex fix it'));
     w.conversation.review.push(conversationItem(74, GITHUB_ACTIONS_LOGIN, '10:40', 'lgtm'));
   }), expected));
@@ -211,6 +210,10 @@ test('finding 4089074927: the trailer is not enough; anyone else who could have 
   // A placeholder description (no id, author or creation time) is not a read description (Codex finding on #624).
   for (const field of ['id', 'authorLogin', 'createdAtMs']) {
     holds(await verdictWith((e) => { e.records.conversation.items[0][field] = null; }), 'codexTaskCausation');
+  }
+  // A trusted-workflow item must still be whole: an undated or id-less one holds (Codex finding on #624).
+  for (const field of ['id', 'createdAtMs', 'updatedAtMs']) {
+    holds(await verdictWith((e) => { e.records.conversation.items.find((item) => item.id === 62)[field] = null; }), 'codexTaskCausation');
   }
   // A mention the reader could not determine counts as one (fail closed), even from a trusted workflow.
   holds(await verdictWith((e) => { delete e.records.conversation.items.find((item) => item.id === 62).mentionsCodex; }), 'codexTaskCausation');

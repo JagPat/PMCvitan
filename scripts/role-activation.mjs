@@ -235,10 +235,10 @@ export function roleTransferActivationVerdict(evidence, expected) {
     if (item?.kind === 'pull_request') {
       return Number.isInteger(item.id) && nonEmpty(item.authorLogin) && finite(item.createdAtMs);
     }
-    if (item?.authorLogin === GITHUB_ACTIONS_LOGIN) return true;
+    const dated = Number.isInteger(item?.id) && finite(item?.createdAtMs) && finite(item?.updatedAtMs);
+    if (item?.authorLogin === GITHUB_ACTIONS_LOGIN) return dated;
     if (item?.kind === 'review') return false;
-    return finite(item?.createdAtMs) && finite(item?.updatedAtMs)
-      && Math.max(item.createdAtMs, item.updatedAtMs) < sinceMs;
+    return dated && Math.max(item.createdAtMs, item.updatedAtMs) < sinceMs;
   };
   prove('codexTaskCausation', CODEX_TASK_ATTESTATION.repository === repository
     && expectedTrailer !== null

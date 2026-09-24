@@ -221,9 +221,10 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
   review on it, read to the last page. Each item carries its server author, its dates and whether its text
   mentions `@codex`. A review has only its submission date and the description only its creation date:
   their edits are undated. The description is read only from a whole record of this PR (number, id,
-  author, creation time and title; a null body is a PR without one). A failed or malformed read, a partial
-  description record, or a source still full after 10 pages (the event log's bound), leaves no
-  conversation, with a diagnostic.
+  author, creation time and title; a null body is a PR without one), and each comment or review only from a
+  whole record (id, author, a text or null body, and its dates). A failed or malformed read, a partial
+  record, or a source still full after 10 pages (the event log's bound), leaves no conversation, with a
+  diagnostic: an unread body is never a "no mention".
 - **Findings and reviews.** `classifyClaudeShadowReview` with `verifyClaudeShadowProducer`. A finding's
   identity is its verified check run's own URL. The initial finding is the run the request's marker
   names, not merely the newest review. Later reviews of the reviewed head are listed beside it only when
