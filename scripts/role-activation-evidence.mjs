@@ -2,6 +2,7 @@ import { CLAUDE_SHADOW_CONTEXT, CODEX_LOGIN, requiredChecksForPullRequest } from
 import { resolveRequiredChecks } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { PROBE_MARKER_PREFIX, probeTrailersIn } from './codex-fix-probe.mjs';
+import { shaMergeAuthority } from './correction-owner.mjs';
 import { readPullRequestEventLog } from './pull-request-event-log.mjs';
 
 /**
@@ -248,11 +249,18 @@ export function normalizePushLog(activities, { repository, pullRequest, branch, 
 
 /**
  * Server-computed ancestry of the corrective head relative to the reviewed head, with the commits it adds.
- * Each commit reports the `Codex-Fix-Probe` values of its terminal trailer block (`null` when unreadable).
- * The trailer is public request text, so it is necessary, never sufficient, for causation; the reader only
- * reports it. The list counts as complete only when the server returned every commit (`total_commits`,
+ * Each commit reports the `Codex-Fix-Probe` values of its terminal trailer block (`null` when unreadable),
+ * and its `Correction-Owner` read exactly as the controller reads a head (`shaMergeAuthority`: outcome and
+ * owner; `null` when there is no message). The trailers are public request text, so they are necessary,
+ * never sufficient, for causation; the reader only reports them. The list counts as complete only when the server returned every commit (`total_commits`,
  * which the compare API caps per page, equals both the list and `ahead_by`).
  */
+function commitCorrectionOwner(message) {
+  if (typeof message !== 'string') return null;
+  const { outcome, owner } = shaMergeAuthority(message);
+  return { outcome, owner };
+}
+
 export function normalizeAncestry(comparison) {
   if (!comparison || typeof comparison.status !== 'string') return null;
   const aheadBy = Number.isInteger(comparison.ahead_by) ? comparison.ahead_by : null;
@@ -261,6 +269,7 @@ export function normalizeAncestry(comparison) {
       sha: typeof commit?.sha === 'string' ? commit.sha : null,
       authorLogin: commit?.author?.login ?? null,
       probeTrailers: probeTrailersIn(commit?.commit?.message),
+      correctionOwner: commitCorrectionOwner(commit?.commit?.message),
     }))
     : null;
   return {

@@ -6,7 +6,7 @@ import {
   GITHUB_ACTIONS_LOGIN,
   readRoleActivationEvidence,
 } from './role-activation-evidence.mjs';
-import { codexFixComment, probeMarker, probeTrailer } from './codex-fix-probe.mjs';
+import { CORRECTIVE_OWNER_TRAILER, codexFixComment, probeMarker, probeTrailer } from './codex-fix-probe.mjs';
 import { evidenceArtifactName } from './claude-shadow-review.mjs';
 import { CODEX_LOGIN, REQUIRED_CHECKS } from './review-policy.mjs';
 
@@ -111,7 +111,7 @@ export function activity(id, before, after, hhmm, { type = 'push', actor = CODEX
 
 // A commit of the corrective push, as the compare API returns it, carrying the request's binding trailer.
 export const BINDING_TRAILER = probeTrailer({ pullRequest: PR, headSha: ORIGINAL, findingRef: FINDING_REF });
-export function correctiveCommit(sha, message = `fix: correct the finding\n\n${BINDING_TRAILER}`) {
+export function correctiveCommit(sha, message = `fix: correct the finding\n\n${BINDING_TRAILER}\n${CORRECTIVE_OWNER_TRAILER}`) {
   return { sha, author: { login: CODEX_LOGIN }, commit: { message } };
 }
 

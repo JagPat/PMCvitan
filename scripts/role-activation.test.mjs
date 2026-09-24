@@ -199,6 +199,19 @@ test('finding 4083067617: task -> push causation needs the exact trailer on a co
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commitsComplete = false; }), 'codexTaskCausation');
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits = []; }), 'codexTaskCausation');
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].probeTrailers = null; }), 'codexTaskCausation');
+  // Codex finding 4094243346 on #628: every corrective commit must also declare Codex as a held candidate
+  // (containment). A commit with the probe trailer but no owner, a Claude owner, or two owners holds.
+  const probeOnly = trailer(BINDING_VALUE);
+  for (const commits of [
+    [correctiveCommit('1'.repeat(40), probeOnly), correctiveCommit(CORRECTIVE)],
+    [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE, probeOnly)],
+    [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE, `${probeOnly}\nCorrection-Owner: claude`)],
+    [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE,
+      `${probeOnly}\nCorrection-Owner: codex\nCorrection-Owner: claude`)],
+  ]) {
+    holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.comparison.commits = commits; }), expected), 'codexTaskCausation');
+  }
+  holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].correctionOwner = null; }), 'codexTaskCausation');
   // Every entry must be a whole, distinct commit: a SHA-less (partial) or repeated entry holds (root-cause
   // audit of the partial-record findings on #624).
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].sha = null; }), 'codexTaskCausation');

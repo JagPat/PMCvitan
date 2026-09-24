@@ -421,7 +421,10 @@ The verdict checks the rest, from the reader's evidence:
 
 - **Commits.** The corrective push's commit list is complete, ends at the corrective head, and lists whole,
   distinct commits (each with its own SHA). Every commit carries exactly one `Codex-Fix-Probe` trailer, equal to the value derived from this cycle's own PR,
-  reviewed head and finding (never taken from the evidence).
+  reviewed head and finding (never taken from the evidence). Every commit also declares exactly one
+  `Correction-Owner: codex`, read as the controller reads a head (`shaMergeAuthority` → a held
+  `candidate`). That is containment, not causation: a commit without it would leave an invalid head the
+  controller cannot hold as a candidate, so the cycle holds.
 - **Conversation.** The PR's complete conversation, its own title and description included, currently has
   no `@codex` mention except the request's (as that issue comment) and the Codex connector's own, however
   old: a task started earlier could still push. (The Codex connector does answer a mention in a PR

@@ -257,6 +257,11 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && commits.every((commit) => Array.isArray(commit?.probeTrailers)
       && commit.probeTrailers.length === 1
       && commit.probeTrailers[0] === expectedTrailer)
+    // Containment, not causation: the request requires every corrective commit to declare Codex, so the
+    // corrective head is a held, merge-ineligible candidate. A commit without it (an invalid head the
+    // controller cannot hold as a candidate) holds the cycle (Codex finding 4094243346 on #628).
+    && commits.every((commit) => commit?.correctionOwner?.outcome === 'candidate'
+      && commit.correctionOwner.owner === 'codex')
     && inPullRequest(conversation)
     && Array.isArray(conversation.items)
     && conversation.items.filter((item) => item?.kind === 'pull_request').length === 1
