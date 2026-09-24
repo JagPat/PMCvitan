@@ -12,10 +12,12 @@ import { GITHUB_ACTIONS_LOGIN, ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-ac
  * The cloud role transfer (Codex codes, Claude independently reviews) may be activated — atomically adding a
  * Claude exact-head required gate and switching correction routing — ONLY after one real, OBSERVED
  * correction cycle is proven. This module performs NO switch and touches NO live gate: it reads evidence and
- * reports which proofs hold and which are missing. In this version the verdict is ALWAYS `hold`, even when
- * every proof is proven: the `activate` install phase is a later unit. `codex-current-head` (`STATUS_CONTEXT`) stays the
- * required gate and `claude-independent-review` stays non-authoritative and out of the required checks.
- * Nothing here declares Codex awakenable.
+ * reports which proofs hold and which are missing. Only when EVERY proof is proven is the verdict `activate`,
+ * and then it returns the install as DATA bound to that exact cycle; nothing here applies it. `activate` is a
+ * readiness decision, not an activation: a later installer must re-read the cycle, bind to the returned
+ * identity and require the operator's authorization. `codex-current-head` (`STATUS_CONTEXT`) stays the required
+ * gate and `claude-independent-review` stays non-authoritative and out of the required checks. Nothing here
+ * declares Codex awakenable.
  *
  * BOUNDARY. The evidence is the normalized output of the trusted, read-only reader
  * (`scripts/role-activation-evidence.mjs`, `ROLE_ACTIVATION_EVIDENCE_SCHEMA`). The READER authenticates each
@@ -66,9 +68,9 @@ import { GITHUB_ACTIONS_LOGIN, ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-ac
  *                                   tie is admitted only where the records themselves prove the order: the
  *                                   request names the finding, and the acceptance is a reaction ON the request.
  *
- * `activate` is not reachable yet: even a fully proven cycle holds. A later unit adds it: INSTALL the replacement (`ACTIVATION_INSTALL`: a distinct trusted-controller status,
- * `CLAUDE_STATUS_CONTEXT`, published from ADAPTER-VERIFIED shadow evidence, never the raw producer check name)
- * and switch routing, KEEPING `codex-current-head`. Retiring `codex-current-head` needs a trusted observation
+ * `activate` describes, and never performs: INSTALL the replacement (`ACTIVATION_INSTALL`: a distinct
+ * trusted-controller status, `CLAUDE_STATUS_CONTEXT`, published from ADAPTER-VERIFIED shadow evidence, never the
+ * raw producer check name) and switch routing, KEEPING `codex-current-head`. Retiring `codex-current-head` needs a trusted observation
  * of the installed gate in role, which cannot exist before installation and has no reader; it is a later,
  * separate unit. This verdict never retires anything: `keepCodexCurrentHead` is always true.
  */
@@ -126,8 +128,9 @@ const ordered = (chain) => chain.every(({ atMs }) => finite(atMs))
 /**
  * @param {object} evidence  the reader's normalized output (`{ schema, cycle, records }`).
  * @param {{repository: string, pullRequest: number}} expected  the identity the CALLER expects.
- * @returns {{state:'hold', activate:false, keepCodexCurrentHead:true, retireCodexCurrentHead:false,
- *            proven:string[], missing:string[]}}  every required proof, in order, is in exactly one list.
+ * @returns {{state:'hold'|'activate', activate:boolean, keepCodexCurrentHead:true, retireCodexCurrentHead:false,
+ *            install:object|null, proven:string[], missing:string[]}}  every required proof, in order, is in
+ *            exactly one list; `activate` (with a non-null `install`) only when `missing` is empty.
  */
 export function roleTransferActivationVerdict(evidence, expected) {
   const cycle = evidence?.cycle ?? null;
@@ -267,6 +270,7 @@ export function roleTransferActivationVerdict(evidence, expected) {
 
   prove('boundClaudeClearReReview', atBase(finalReview)
     && finalReview.headSha === correctiveHeadSha
+    && Number.isInteger(finalReview.checkRunId)
     && finalReview.state === 'shadow_clear');
 
   // Every mutable source is a closing read: each starts after the freshness point, so each covers the cycle
@@ -338,11 +342,32 @@ export function roleTransferActivationVerdict(evidence, expected) {
     { atMs: freshness?.startedAtMs },
   ]));
 
+  // Every proof proven: the install, as frozen data bound to this exact cycle (its identity, the CI runs that
+  // decided it and the verified clear review), for a later installer that re-reads the cycle and binds to it.
+  // Nothing here applies it, and it never retires `codex-current-head`.
+  const ready = missing.length === 0;
+  const install = ready
+    ? Object.freeze({
+      ...ACTIVATION_INSTALL,
+      cycle: Object.freeze({
+        repository,
+        pullRequest,
+        branch,
+        baseSha,
+        originalHeadSha,
+        correctiveHeadSha,
+        correctionRequestId: requestId,
+        ciDeciderRunIds: Object.freeze([...ciDeciderRunIds]),
+        reviewCheckRunId: finalReview.checkRunId,
+      }),
+    })
+    : null;
   return {
-    state: 'hold',
-    activate: false,
+    state: ready ? 'activate' : 'hold',
+    activate: ready,
     keepCodexCurrentHead: true,
     retireCodexCurrentHead: false,
+    install,
     proven: ACTIVATION_REQUIRED_PROOFS.filter((proof) => !missing.includes(proof)),
     missing,
   };

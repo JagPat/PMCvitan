@@ -22,21 +22,21 @@ blocking_directive: none
 updated: 2026-09-24
 ```
 
-### Now — cloud role transfer: task → push causation (the owner's attestation); #623 merged
+### Now — cloud role transfer: the activate readiness phase; #624 merged
 
 The cloud role transfer continues with one writer and one channel. The additive split is merged: #620
 (evidence reader, `7f2cbbef`), #621 (lifecycle event log, `2a1f0f46`), #622 (integration, `0a712d93`)
 and #619 (the activation-readiness verdict, `1273465`). #623 (`b9d31da`) added the request's
-`Codex-Fix-Probe` trailer as evidence: public request text, so necessary but never sufficient. The owner
-then chose how causation is proven: an attested assumption plus a check of the PR.
+`Codex-Fix-Probe` trailer, and #624 (`89a4268`) made `codexTaskCausation` provable from the owner's
+attestation, the exact trailer on a complete commit list, and a quiet PR conversation.
 
-- **Now, the causation unit, `open_pr: 624`** (`work_item: cloud-role-transfer-task-causation`, branch
-  `claude/role-activation-codex-causation`, from `main` at `b9d31da`). `CODEX_TASK_ATTESTATION` records the
-  owner's attestation; the reader reads the PR's whole conversation; the verdict proves
-  `codexTaskCausation` from the attestation, the exact trailer on a complete commit list, and a
-  conversation that shows no one else who could have started a Codex task. The verdict still always holds.
-- **Next:** the verdict's `activate` install phase; a probe variant that keys a request to a Claude shadow
-  finding; one real observed cycle; the operator-authorized switch. Retirement is a later unit.
+- **Now, the activate unit** (`work_item: cloud-role-transfer-activate-phase`, branch
+  `claude/role-activation-activate-phase`, from `main` at `89a4268`). When every proof is proven the
+  verdict returns `activate` with the install switch as frozen data bound to that exact cycle. It is a
+  readiness decision: nothing applies it, `codex-current-head` is kept and never retired, and a later
+  installer must re-read the cycle and require the operator's authorization.
+- **Next:** a probe variant that keys a request to a Claude shadow finding; one real observed cycle; the
+  operator-authorized switch (the installer). Retirement is a later unit.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
