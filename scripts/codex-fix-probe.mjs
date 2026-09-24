@@ -3,7 +3,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 
 import { GitHubClient } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { asciiTrim, gitParsedTrailers } from './correction-owner.mjs';
+import { asciiTrim, correctionOwnerDeclaration, gitParsedTrailers } from './correction-owner.mjs';
 import { CODEX_LOGIN, LINEAGE_BASE_REF } from './review-policy.mjs';
 import { readZipEntry } from './zip-entry.mjs';
 
@@ -63,7 +63,8 @@ export function probeTrailer(identity) {
  * the head stays a merge-ineligible CANDIDATE (`shaMergeAuthority`) whose reviewed head is held, not
  * merged. Containment only, never causation: both lines are public request text.
  */
-export const CORRECTIVE_OWNER_TRAILER = 'Correction-Owner: codex';
+const CORRECTIVE_OWNER = 'codex';
+export const CORRECTIVE_OWNER_TRAILER = `Correction-Owner: ${CORRECTIVE_OWNER}`;
 export function correctiveTrailerBlock(identity) {
   return `${probeTrailer(identity)}\n${CORRECTIVE_OWNER_TRAILER}`;
 }
@@ -244,6 +245,14 @@ export function authorizeCodexFixDispatch({
     || !genuine
   ) {
     return { allowed: false, state: 'unauthorized_or_stale' };
+  }
+  // The request asks every corrective commit for `Correction-Owner: codex` and forbids editing the owner
+  // marker, so only a truthful codex CANDIDATE seed (codex marker, a branch that permits it) keeps the
+  // corrective head a held candidate. On any other PR the Codex trailer would read as inconsistent
+  // ownership, so no request is posted.
+  const declaration = correctionOwnerDeclaration(livePull);
+  if (declaration.state !== 'candidate' || declaration.owner !== CORRECTIVE_OWNER) {
+    return { allowed: false, state: 'not_candidate_seed' };
   }
   const prefix = dedupPrefix({ pullRequest: pullRequestNumber, headSha });
   if (existingComments.some((comment) => typeof comment?.body === 'string' && comment.body.includes(prefix))) {

@@ -553,6 +553,15 @@ function declaredInstruction(owner, { reason, detail }) {
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
 function undeclaredInstruction(declaration) {
+  // An admitted CANDIDATE is not an ownership fault: the marker is truthful and the scope gate admits
+  // it, so "replace the marker" would be false and would steer the PR away from its held workflow.
+  // It is still routed to nobody and woken by nothing; only the bounded probe requests a correction.
+  if (declaration.state === 'candidate') {
+    return `"${declaration.owner}" is the admitted candidate correction owner of this PR: tracked in-flight, `
+      + 'never merged automatically and never woken from GitHub, held pending independent reviewer '
+      + 'activation. No agent is routed and no correction is in flight. Keep the marker as it is; a '
+      + 'correction is requested only through the bounded codex-fix-probe.';
+  }
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `
     + 'No agent is routed and no correction is in flight.';
   // ADD only when the block is empty. Told to a body that already carries a

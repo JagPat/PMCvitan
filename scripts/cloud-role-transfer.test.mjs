@@ -33,6 +33,25 @@ test('Codex implementation ownership is recognised as an in-flight candidate but
   }
 });
 
+test('finding 4094243334: an admitted candidate gets a held diagnostic, never an undeclared-owner remedy', () => {
+  // The candidate marker is truthful and admitted, so telling the reader ownership is not established and
+  // to replace the marker would be false. It is still routed to nobody, stalled and not awakenable.
+  const declaration = parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'codex/observation-seed' });
+  for (const reason of ['review', 'ci', 'scope']) {
+    const route = correctionRouting({ declaration, head, reason, detail: 'x' });
+    assert.equal(route.owner, null, reason);
+    assert.equal(route.state, CORRECTION_STALLED, reason);
+    assert.equal(route.awakenable, false, reason);
+    assert.match(route.instruction, /admitted candidate correction owner/u, reason);
+    assert.match(route.instruction, /Keep the marker as it is/u, reason);
+    assert.doesNotMatch(route.instruction, /not established|replace the correction-owner marker|@/u, reason);
+  }
+  // A real ownership fault keeps its remedy.
+  const contradictory = parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'claude/x' });
+  assert.match(correctionRouting({ declaration: contradictory, head }).instruction,
+    /not established[\s\S]*replace the correction-owner marker/u);
+});
+
 test('review-scope admits a declared or candidate owner and refuses every other declaration', () => {
   const KEYS = ['concurrency-serialization', 'old-release-migration-compatibility', 'trigger-alternate-writers',
     'authorization-tenancy', 'ci-reproduce-first'];
