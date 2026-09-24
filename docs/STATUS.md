@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-task-causation
-reviewed_merge: b9d31da
-open_pr: 624
+work_item: cloud-role-transfer-activate-phase
+reviewed_merge: 89a4268
+open_pr: 625
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-24
@@ -30,7 +30,7 @@ and #619 (the activation-readiness verdict, `1273465`). #623 (`b9d31da`) added t
 `Codex-Fix-Probe` trailer, and #624 (`89a4268`) made `codexTaskCausation` provable from the owner's
 attestation, the exact trailer on a complete commit list, and a quiet PR conversation.
 
-- **Now, the activate unit** (`work_item: cloud-role-transfer-activate-phase`, branch
+- **Now, the activate unit, `open_pr: 625`** (`work_item: cloud-role-transfer-activate-phase`, branch
   `claude/role-activation-activate-phase`, from `main` at `89a4268`). When every proof is proven the
   verdict returns `activate` with the install switch as frozen data bound to that exact cycle. It is a
   readiness decision: nothing applies it, `codex-current-head` is kept and never retired, and a later
