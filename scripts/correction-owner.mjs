@@ -173,13 +173,13 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
 // treat as no merge authority.
 const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
 // Strip only git's ASCII horizontal padding (never Unicode whitespace, which git preserves in the value).
-const asciiTrim = (value) => value.replace(/^[ \t]+|[ \t]+$/gu, '');
+export const asciiTrim = (value) => value.replace(/^[ \t]+|[ \t]+$/gu, '');
 
 // The terminal trailers of a commit message, exactly as `git interpret-trailers --parse --unfold` emits
 // them: `Key: value` lines with folded continuations already joined. The message is fed on STDIN, never as
 // an argument, so no content can be read as a flag. Returns null when git cannot be run at all (binary
 // missing or non-zero exit), so the caller fails closed rather than reading an unreadable commit as owning
-// nothing.
+// nothing. Exported so other terminal-trailer readers (the `Codex-Fix-Probe` binding) share git's reading.
 // A single empty directory pointed at by `GIT_DIR`, so git uses it AS the repository and never discovers
 // the ambient one from the working directory. It stays empty (`--parse` reads config, writes nothing), so
 // it holds no local config; created lazily and reused. Discovery matters because a repository's local
@@ -211,7 +211,7 @@ function isolatedGitEnv() {
   return env;
 }
 
-function gitParsedTrailers(commitMessage) {
+export function gitParsedTrailers(commitMessage) {
   let out;
   try {
     // Pin the two config keys that still shape `--parse` output under the isolated environment above:

@@ -317,8 +317,9 @@ is always `hold` (see **Causation**):
   ancestor (compare `ahead`, `behind 0`). A multi-commit fast-forward is admitted.
 - **Causation.** That push was made by the task accepted for this request. Every Codex task pushes as
   the same connector bot, so actor and time cannot prove it: another Codex task on the same branch could
-  push first. The binding now exists as evidence (next section) but is not yet consumed here, so
-  `codexTaskCausation` is still always missing and the verdict holds.
+  push first. The request's trailer (next section) is public text such a task could be told to copy, so it
+  is necessary but never sufficient. No trusted, task-specific record exists, so `codexTaskCausation` is
+  always missing and the verdict holds.
 - **Final legs.** The latest applicable CI on the corrective head is green, with a named successful
   deciding run for each required check (the reader names them, so a later installer can bind to that exact
   attempt). The newest producer-verified review of that head is clear.
@@ -363,12 +364,22 @@ repeats the request's own identity:
 Codex-Fix-Probe: pr-<number>:head-<reviewed head SHA>:finding-<finding reference>
 ```
 
-`probeTrailer`/`probeTrailerValue` build it and `probeTrailersIn` reads it back (line-anchored and
-case-sensitive; one value per line). The evidence reader lists the corrective push's commits from the
+`probeTrailer`/`probeTrailerValue` build it. `probeTrailersIn` reads it back from the commit message's
+terminal trailer block only, as `git interpret-trailers --parse --unfold` reads it (extraction delegated to
+git, like the `Correction-Owner` trailer): a value quoted in prose or a code fence is not a trailer, and a
+folded continuation joins its value, so it no longer matches. A missing message, or a git that cannot run,
+is unreadable (`null`), never "none". The evidence reader lists the corrective push's commits from the
 compare API it already reads for ancestry, with each commit's SHA, author and `Codex-Fix-Probe` trailers
 (`ancestry.commits`). `ancestry.commitsComplete` is true only when the server returned every commit (the
 list's length equals `total_commits`, which equals `ahead_by`), because the compare API returns at most one
 page. The reader decides nothing: a missing, mismatched or extra trailer, or an incomplete list, is for the
-verdict to judge. A later unit makes the verdict require every commit to carry exactly this request's
-trailer, and only then can `codexTaskCausation` be proven. Whether Codex actually writes the trailer is
-observed on a real cycle, not assumed; if it doesn't, the cycle holds.
+verdict to judge.
+
+**The trailer is not causation.** Its value is printed in the public request comment, so it identifies
+the request, not the task: a second Codex task started on the same head could be told to copy it, and it
+pushes as the same connector bot (Codex finding on #623). A commit without the exact trailer is not this
+request's, but a fully-trailered push is not thereby proven to be. A verdict may require the trailer; it
+may never prove `codexTaskCausation` from it. That needs a task-specific, server-verifiable record, which
+GitHub does not provide today. It is an open question for the repository owner before any unit consumes
+the trailer. Whether Codex actually writes the trailer is observed on a real cycle, not assumed; if it
+doesn't, the cycle holds.

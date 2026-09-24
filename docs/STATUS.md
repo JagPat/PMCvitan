@@ -34,10 +34,13 @@ connector bot.
   `claude/role-activation-task-binding`, from `main` at `1273465`). A maintenance change the repository
   owner requested to the frozen `codex-fix-probe`: the correction request asks Codex to end every commit
   with a `Codex-Fix-Probe` trailer repeating the request's identity. The reader reports each corrective
-  commit's trailers and whether the commit list is complete. Evidence only; the verdict is unchanged.
-- **Next:** the verdict consumes the binding (every commit carries exactly this request's trailer) and
-  gains the `activate` install phase; then a probe variant that keys a request to a Claude shadow finding;
-  then one real observed cycle; then the operator-authorized switch; retirement is a later unit.
+  commit's terminal-block trailers (read as git reads them) and whether the commit list is complete.
+  Evidence only; the verdict is unchanged. The trailer is public request text another Codex task could
+  copy, so it is necessary, never sufficient: `codexTaskCausation` stays missing.
+- **Next:** an owner decision. Causation needs a task-specific, server-verifiable record that GitHub does
+  not provide today, so no unit may prove it from the trailer alone. Only after that decision: the verdict's
+  `activate` install phase; a probe variant that keys a request to a Claude shadow finding; one real
+  observed cycle; the operator-authorized switch. Retirement is a later unit.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`

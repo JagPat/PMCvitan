@@ -531,9 +531,13 @@ test('the corrective push reports each commit\'s binding trailers, and whether t
     w.comparison.commits = [
       correctiveCommit('1'.repeat(40), 'fix: no trailer here'),
       correctiveCommit(CORRECTIVE, `fix: two\n\nCodex-Fix-Probe: other-request\nCodex-Fix-Probe: ${BINDING_VALUE}`),
+      // Quoted in a code fence, not a terminal trailer; and a commit with no message is unreadable.
+      correctiveCommit('2'.repeat(40), `fix: fenced\n\n\`\`\`\nCodex-Fix-Probe: ${BINDING_VALUE}\n\`\`\`\n`),
+      { sha: '3'.repeat(40), author: { login: CODEX_LOGIN }, commit: {} },
     ];
   });
-  assert.deepEqual(evidence.records.correctivePush.ancestry.commits.map((commit) => commit.probeTrailers), [[], ['other-request', BINDING_VALUE]]);
+  assert.deepEqual(evidence.records.correctivePush.ancestry.commits.map((commit) => commit.probeTrailers),
+    [[], ['other-request', BINDING_VALUE], [], null]);
   // The compare API returns at most one page of commits: a list shorter than total_commits, or a
   // total_commits that differs from ahead_by, is incomplete; so is a response without a commit list.
   for (const change of [

@@ -10,8 +10,11 @@ import {
 import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs';
 import { CLAUDE_SHADOW_CONTEXT, CLAUDE_STATUS_CONTEXT, CODEX_LOGIN, REQUIRED_CHECKS, STATUS_CONTEXT } from './review-policy.mjs';
 import {
-  BASE, CORRECTIVE, ORIGINAL, OTHER, PR, REPO, activity, at, issueEvent, pull, readWorld, shadowRun,
+  BASE, CORRECTIVE, FINDING_REF, ORIGINAL, OTHER, PR, REPO, activity, at, issueEvent, pull, readWorld, shadowRun,
 } from './role-activation-test-fixtures.mjs';
+import { probeTrailerValue } from './codex-fix-probe.mjs';
+
+const BINDING_VALUE = probeTrailerValue({ pullRequest: PR, headSha: ORIGINAL, findingRef: FINDING_REF });
 
 // The verdict consumes the trusted reader's normalized output. These tests drive the REAL reader over a
 // fake GitHub (role-activation-test-fixtures.mjs), then either judge its output directly or mutate one
@@ -143,6 +146,17 @@ test('finding 4083067617: task -> push causation is unproven by any trusted reco
   // A caller cannot supply the binding: fields the reader does not produce change nothing.
   holds(await verdictWith((e) => { Object.assign(e.records.correctivePush, { requestId: e.cycle.correctionRequestId, taskId: 't-1' }); }), 'codexTaskCausation');
   assert.ok(ACTIVATION_REQUIRED_PROOFS.includes('codexTaskCausation'));
+});
+
+test('finding 4089074927: a push whose every commit carries the exact request trailer is still not causation', async () => {
+  // The trailer is public request text: a second Codex task could be told to copy it. The reader's full
+  // cycle already carries it on every commit of a complete list, and the verdict still holds on causation.
+  const evidence = await evidenceFor();
+  const { ancestry } = evidence.records.correctivePush;
+  assert.equal(ancestry.commitsComplete, true);
+  assert.ok(ancestry.commits.length > 0);
+  for (const commit of ancestry.commits) assert.deepEqual(commit.probeTrailers, [BINDING_VALUE]);
+  holds(roleTransferActivationVerdict(evidence, expected), 'codexTaskCausation');
 });
 
 test('finding 4083067623: a same-second tie is admitted only where the records prove the order', async () => {

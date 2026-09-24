@@ -205,9 +205,10 @@ export function normalizePushLog(activities, { repository, pullRequest, branch, 
 
 /**
  * Server-computed ancestry of the corrective head relative to the reviewed head, with the commits it adds.
- * Each commit reports its `Codex-Fix-Probe` trailers (the binding the correction request asks for); the
- * reader only reports them, and the list counts as complete only when the server returned every commit
- * (`total_commits`, which the compare API caps per page, equals both the list and `ahead_by`).
+ * Each commit reports the `Codex-Fix-Probe` values of its terminal trailer block (`null` when unreadable).
+ * The trailer is public request text, so it is necessary, never sufficient, for causation; the reader only
+ * reports it. The list counts as complete only when the server returned every commit (`total_commits`,
+ * which the compare API caps per page, equals both the list and `ahead_by`).
  */
 export function normalizeAncestry(comparison) {
   if (!comparison || typeof comparison.status !== 'string') return null;
