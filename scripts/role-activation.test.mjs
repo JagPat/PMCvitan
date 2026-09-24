@@ -83,6 +83,17 @@ test('a full cycle read by the trusted reader proves every proof: activate, with
   assert.ok(!REQUIRED_CHECKS.includes(CLAUDE_STATUS_CONTEXT));
   // The install binds to the verified clear review's own run: without it, there is no bound re-review. Every
   // id it binds must be a real GitHub id (a positive integer) a later installer can re-read (Codex finding on #625).
+  // Exactly one successful decider per required check of the PR, each a distinct run (Codex finding on #625).
+  for (const mutate of [
+    (e) => { e.records.finalCi.deciders.pop(); }, // a required check with no decider
+    (e) => { e.records.finalCi.deciders = [e.records.finalCi.deciders[0]]; }, // only one
+    (e) => { e.records.finalCi.deciders[1].name = e.records.finalCi.deciders[0].name; }, // a name twice, one missing
+    (e) => { e.records.finalCi.deciders.push({ ...e.records.finalCi.deciders[0], name: 'extra', checkRunId: 999_999 }); },
+    (e) => { e.records.finalCi.deciders[1].checkRunId = e.records.finalCi.deciders[0].checkRunId; }, // a run twice
+    (e) => { e.records.finalCi.deciders = []; },
+  ]) {
+    holds(await verdictWith(mutate), 'fullCiGreen');
+  }
   for (const id of [null, 0, -7002, 1.5]) {
     holds(await verdictWith((e) => { e.records.finalReview.checkRunId = id; }), 'boundClaudeClearReReview');
     holds(await verdictWith((e) => { e.records.finalCi.deciders[0].checkRunId = id; }), 'fullCiGreen');

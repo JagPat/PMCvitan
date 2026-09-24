@@ -2,6 +2,7 @@ import {
   CLAUDE_STATUS_CONTEXT,
   CODEX_LOGIN,
   LINEAGE_BASE_REF,
+  requiredChecksForPullRequest,
 } from './review-policy.mjs';
 import { probeTrailerValue } from './codex-fix-probe.mjs';
 import { GITHUB_ACTIONS_LOGIN, ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs';
@@ -262,12 +263,19 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && finite(sinceMs)
     && conversation.items.every(quiet));
 
+  // Exactly one successful deciding run for EACH required check of this PR, each a distinct real run: the
+  // install binds these ids, so a partial set could let an installer act on CI that omitted a required check
+  // (Codex finding on #625).
   const ciDeciderRunIds = Array.isArray(finalCi?.deciders) ? finalCi.deciders.map((run) => run?.checkRunId) : [];
+  const requiredCheckNames = requiredChecksForPullRequest(pullRequest);
+  const deciderNames = Array.isArray(finalCi?.deciders) ? finalCi.deciders.map((run) => run?.name) : [];
   prove('fullCiGreen', atBase(finalCi)
     && finalCi.headSha === correctiveHeadSha
     && finalCi.state === 'success'
-    && ciDeciderRunIds.length > 0
+    && deciderNames.length === requiredCheckNames.length
+    && requiredCheckNames.every((name) => deciderNames.filter((decider) => decider === name).length === 1)
     && ciDeciderRunIds.every(githubId)
+    && new Set(ciDeciderRunIds).size === ciDeciderRunIds.length
     && finalCi.deciders.every((run) => run.conclusion === 'success'));
 
   prove('boundClaudeClearReReview', atBase(finalReview)

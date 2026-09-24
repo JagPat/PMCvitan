@@ -357,6 +357,8 @@ exact cycle. The switch **installs** the distinct trusted-controller status `CLA
 **keeping** `codex-current-head`. The binding is `install.cycle`: repository, PR, branch, base, reviewed and
 corrective heads, the correction-request id, the CI runs that decided each required check, and the
 verified clear review's own check run (so `boundClaudeClearReReview` now also requires that run's id).
+`fullCiGreen` requires exactly one successful deciding run for each required check of the PR, each a
+distinct run, and every bound id must be a real GitHub id (a positive integer).
 While any proof is missing the state is `hold` and `install` is `null`.
 
 Nothing applies `install`. A later installer must re-read the cycle, bind to `install.cycle`, and require
