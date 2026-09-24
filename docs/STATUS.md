@@ -22,22 +22,22 @@ blocking_directive: none
 updated: 2026-09-24
 ```
 
-### Now — cloud role transfer: the Claude-finding probe source; #625 merged
+### Now — cloud role transfer: the observer; #626 merged
 
 The cloud role transfer continues with one writer and one channel. The additive split is merged: #620
 (evidence reader, `7f2cbbef`), #621 (lifecycle event log, `2a1f0f46`), #622 (integration, `0a712d93`)
 and #619 (the activation-readiness verdict, `1273465`). #623 (`b9d31da`) added the request's
 `Codex-Fix-Probe` trailer, #624 (`89a4268`) made `codexTaskCausation` provable from the owner's
-attestation, and #625 (`96208ae`) gave the verdict its `activate` readiness state with the install bound
-to the proven cycle as data (nothing applies it).
+attestation, #625 (`96208ae`) gave the verdict its `activate` readiness state, and #626 (`149dfe4`) let
+`codex-fix-probe` key its request to a verified Claude shadow finding.
 
-- **Now, the probe unit, `open_pr: 626`** (`work_item: cloud-role-transfer-shadow-probe`, branch
-  `claude/role-activation-shadow-probe`, from `main` at `96208ae`). `codex-fix-probe` can key its one
-  request to a verified Claude shadow finding (`shadow_run_id`): the newest producer-verified
-  `changes_required` review of that PR/head at the live base, with its findings read from the digest-bound
-  evidence artifact and quoted, neutralized, as data. Manual and non-activating.
-- **Next:** one real observed cycle (the owner dispatches the probe once on a PR with a Claude finding);
-  then the operator-authorized switch (the installer). Retirement is a later unit.
+- **Now, the observer unit** (`work_item: cloud-role-transfer-observer`, branch
+  `claude/role-activation-observer`, from `main` at `149dfe4`). A manual, main-only, read-only workflow
+  runs the evidence reader and the verdict over one cycle and writes the result to the job summary. It
+  writes nothing to GitHub and applies nothing. `docs/CLOUD_ROLE_TRANSFER.md` carries the observed-cycle
+  runbook.
+- **Next:** the owner runs one real observed cycle (runbook); then the operator-authorized switch (the
+  installer). Retirement is a later unit.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
