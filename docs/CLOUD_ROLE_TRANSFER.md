@@ -402,8 +402,8 @@ mention) leaves no complete GitHub record, which is why this part is attested, n
 
 The verdict checks the rest, from the reader's evidence:
 
-- **Commits.** The corrective push's commit list is complete and ends at the corrective head. Every commit
-  carries exactly one `Codex-Fix-Probe` trailer, equal to the value derived from this cycle's own PR,
+- **Commits.** The corrective push's commit list is complete, ends at the corrective head, and lists whole,
+  distinct commits (each with its own SHA). Every commit carries exactly one `Codex-Fix-Probe` trailer, equal to the value derived from this cycle's own PR,
   reviewed head and finding (never taken from the evidence).
 - **Conversation.** The PR's complete conversation, its own title and description included, currently has
   no `@codex` mention except the request's (as that issue comment) and the Codex connector's own, however

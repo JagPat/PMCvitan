@@ -159,6 +159,10 @@ test('finding 4083067617: task -> push causation needs the exact trailer on a co
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commitsComplete = false; }), 'codexTaskCausation');
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits = []; }), 'codexTaskCausation');
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].probeTrailers = null; }), 'codexTaskCausation');
+  // Every entry must be a whole, distinct commit: a SHA-less (partial) or repeated entry holds (root-cause
+  // audit of the partial-record findings on #624).
+  holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].sha = null; }), 'codexTaskCausation');
+  holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].sha = CORRECTIVE; }), 'codexTaskCausation');
   // The expected trailer is derived from the request the cycle proves, never supplied by the evidence.
   holds(await verdictWith((e) => { e.records.request.findingRef = `${FINDING_REF}9`; }), 'codexTaskCausation');
   // Another repository has no attestation: its otherwise complete cycle proves everything but causation.

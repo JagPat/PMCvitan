@@ -245,6 +245,9 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && correctivePush?.ancestry?.commitsComplete === true
     && Array.isArray(commits)
     && commits.at(-1)?.sha === correctiveHeadSha
+    // Every entry is a whole, distinct commit (a partial compare record is not a commit that was read).
+    && commits.every((commit) => isSha(commit?.sha))
+    && new Set(commits.map((commit) => commit.sha)).size === commits.length
     && commits.every((commit) => Array.isArray(commit?.probeTrailers)
       && commit.probeTrailers.length === 1
       && commit.probeTrailers[0] === expectedTrailer)
