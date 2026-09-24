@@ -559,8 +559,9 @@ function undeclaredInstruction(declaration) {
   if (declaration.state === 'candidate') {
     return `"${declaration.owner}" is the admitted candidate correction owner of this PR: tracked in-flight, `
       + 'never merged automatically and never woken from GitHub, held pending independent reviewer '
-      + 'activation. No agent is routed and no correction is in flight. Keep the marker as it is; a '
-      + 'correction is requested only through the bounded codex-fix-probe.';
+      + 'activation. This loop routes no agent and has requested no correction; it cannot observe whether '
+      + 'one is already running. Keep the marker as it is; the loop requests a correction only through '
+      + 'the bounded codex-fix-probe.';
   }
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `
     + 'No agent is routed and no correction is in flight.';

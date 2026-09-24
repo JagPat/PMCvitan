@@ -1213,6 +1213,14 @@ export function ownershipReasonForVerdict(verdict) {
   }
 }
 
+// When the PR body declares an admitted CANDIDATE owner, the verdict to hold under (the candidate, never
+// merge-eligible), else null. Withhold-only: it never makes an ineligible head eligible.
+export function candidateBodyHold(pullRequest, verdict) {
+  const declaration = correctionOwnerDeclaration(pullRequest);
+  if (declaration.state !== 'candidate') return null;
+  return { ...verdict, outcome: 'candidate', mergeEligible: false, owner: declaration.owner };
+}
+
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
@@ -1279,7 +1287,7 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   // SHA-eligible trailer authorizes the merge — the SHA-shared status alone is not sufficient, so a
   // green status left on a head whose trailer is candidate/invalid/unreadable never merges.
   const mergeVerdict = verdict ?? await readShaMergeVerdict(client, expectedHead);
-  if (!mergeVerdict?.mergeEligible) {
+  if (!mergeVerdict?.mergeEligible || candidateBodyHold(live, mergeVerdict)) {
     return { allowed: false, state: 'ownership_not_eligible' };
   }
   // Re-read after remote evidence. A push, base update, retarget or draft
@@ -1534,6 +1542,14 @@ export async function revalidateFinalReviewPolicy(
   const ownershipReason = ownershipReasonForVerdict(verdict);
   if (ownershipReason) {
     return { state: 'ownership_withheld', allowed: false, ownershipReason, verdict, pullRequest };
+  }
+  // A PR whose body declares a CANDIDATE owner is held even when its head trailer is eligible (Codex
+  // finding 4098329036 on #628): scope admits the candidate marker, so without this an unchanged
+  // `Correction-Owner: claude` head would publish success and merge the supposed candidate. The body can
+  // only WITHHOLD here, never release, so the SHA-scoped merge authority is unchanged.
+  const bodyHold = candidateBodyHold(pullRequest, verdict);
+  if (bodyHold) {
+    return { state: 'ownership_withheld', allowed: false, ownershipReason: OWNERSHIP_CANDIDATE_HELD, verdict: bodyHold, pullRequest };
   }
 
   return { state: 'allowed', allowed: true, pullRequest, verdict };

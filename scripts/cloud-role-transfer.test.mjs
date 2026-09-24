@@ -44,6 +44,10 @@ test('finding 4094243334: an admitted candidate gets a held diagnostic, never an
     assert.equal(route.awakenable, false, reason);
     assert.match(route.instruction, /admitted candidate correction owner/u, reason);
     assert.match(route.instruction, /Keep the marker as it is/u, reason);
+    // Codex finding 4098329042: an unrouted result proves only that this loop requested nothing, never
+    // that no correction is running.
+    assert.match(route.instruction, /has requested no correction; it cannot observe whether one is already running/u, reason);
+    assert.doesNotMatch(route.instruction, /no correction is in flight/u, reason);
     assert.doesNotMatch(route.instruction, /not established|replace the correction-owner marker|@/u, reason);
   }
   // A real ownership fault keeps its remedy.
@@ -231,6 +235,12 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: 'x\n\nCorrection-Owner: codex\n' } } }), pull, head)).state, 'ownership_not_eligible');
   assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: 'no trailer here' } } }), pull, head)).state, 'ownership_not_eligible');
   assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: '' } } }), pull, head)).state, 'ownership_not_eligible');
+  // Codex finding 4098329036 on #628: a PR whose body declares the codex candidate never merges, even
+  // when its unchanged head carries an eligible `Correction-Owner: claude` trailer (read or carried).
+  const candidatePull = { ...pull, body: '<!-- correction-owner: codex -->', head: { ...pull.head, ref: 'codex/observation-seed' } };
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [candidatePull, candidatePull] }), candidatePull, head)).state, 'ownership_not_eligible');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [candidatePull, candidatePull] }), candidatePull, head,
+    { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).state, 'ownership_not_eligible');
   // A caller that pre-parsed the eligible verdict authorizes without a second commit read.
   assert.equal((await authorizeExactHeadMerge({ ...makeClient(), async commit() { throw new Error('must not re-read when verdict is carried'); } }, pull, head, { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).allowed, true);
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [{ ...pull, draft: true }] }), pull, head)).state, 'draft');
