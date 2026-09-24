@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-task-binding
-reviewed_merge: 1273465
-open_pr: 623
+work_item: cloud-role-transfer-task-causation
+reviewed_merge: b9d31da
+open_pr: 624
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-24
@@ -30,7 +30,7 @@ and #619 (the activation-readiness verdict, `1273465`). #623 (`b9d31da`) added t
 `Codex-Fix-Probe` trailer as evidence: public request text, so necessary but never sufficient. The owner
 then chose how causation is proven: an attested assumption plus a check of the PR.
 
-- **Now, the causation unit** (`work_item: cloud-role-transfer-task-causation`, branch
+- **Now, the causation unit, `open_pr: 624`** (`work_item: cloud-role-transfer-task-causation`, branch
   `claude/role-activation-codex-causation`, from `main` at `b9d31da`). `CODEX_TASK_ATTESTATION` records the
   owner's attestation; the reader reads the PR's whole conversation; the verdict proves
   `codexTaskCausation` from the attestation, the exact trailer on a complete commit list, and a
