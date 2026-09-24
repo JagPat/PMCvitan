@@ -252,10 +252,10 @@ The reader decides nothing across records. Identity equality with the caller's e
 PR, the full milestone order, causation and freshness are the pure verdict's rules (#619). An unreadable
 or unauthenticated source yields `null` plus a diagnostic, never a partial record. The reader issues
 only reads and is wired to no workflow, gate or routing. It does not observe a replacement-gate
-installation (none exists), so it never supplies the separate retirement proof. `codex-fix-probe` keys
-a request only to a Codex review comment, so a Claude-finding → Codex-correction cycle cannot bind its
-triggering finding until a later probe variant can key a request to a Claude shadow finding. Until
-then the verdict holds, fail closed.
+installation (none exists), so it never supplies the separate retirement proof. A Claude-finding →
+Codex-correction cycle binds its triggering finding through `codex-fix-probe`'s shadow-finding source
+(**Claude shadow finding as the probe's source**, below): the request names the shadow check run, which
+is exactly the verified finding's `reviewRef`.
 
 ### Pull request lifecycle event log (trusted, read-only, non-activating)
 
@@ -366,9 +366,8 @@ the operator's authorization: this verdict is necessary, never sufficient. It ne
 `codex-current-head` (`keepCodexCurrentHead` is always true, `retireCodexCurrentHead` always false); that
 needs a trusted observation of the installed gate in role, which cannot exist before installation and has
 no reader, so it is a separate, later unit. Nothing is added to `REQUIRED_CHECKS`, no routing changes, and
-Codex is declared neither awakenable nor activated. In practice the state cannot be reached yet:
-`codex-fix-probe` keys a request only to a Codex review comment, so no real cycle can name a Claude finding
-until the probe variant exists.
+Codex is declared neither awakenable nor activated. The state becomes reachable once a real cycle is
+dispatched through the probe's shadow-finding source (below) and observed end to end.
 
 **Convergence stop.** The re-scoped verdict (`e3a0ece1`) drew three findings: an unauthenticated
 retirement record, task → push causation, and same-second ties. Together with the controller's fifth
@@ -432,3 +431,31 @@ The verdict checks the rest, from the reader's evidence:
 
 A cycle that proves every proof reaches the `activate` readiness state above; nothing is activated,
 installed or routed by it.
+
+### Claude shadow finding as the probe's source (manual, non-activating)
+
+`codex-fix-probe` can now key its single `@codex fix` request to a **Claude shadow finding** instead of a
+Codex review comment: the operator dispatches it with `shadow_run_id` (the `claude-independent-review` check
+run) in place of `finding_comment_id`. Exactly one of the two is accepted. The rest of the probe is
+unchanged: `workflow_dispatch` only, from `main` only, armed by `arm-pr-<n>-head-<sha>` for one PR and head,
+one comment at most per PR/head, and every input read again and re-authorized immediately before the post.
+
+- **The finding.** The named run must be the NEWEST producer-verified shadow review of this PR and head at
+  the PR's live base (`classifyClaudeShadowReview` with `GitHubClient.verifyClaudeShadowProducer`), in
+  state `changes_required`. A newer review of the head, clear or not, supersedes it; a moved base or an
+  unverified producer refuses. The request names the check run's own URL, which is exactly the verified
+  finding's `reviewRef` in the activation evidence reader, so the cycle's request and finding bind.
+- **What Codex reads.** The shadow check carries identity only; its findings are in the evidence artifact.
+  The probe downloads that ZIP, requires its SHA-256 to equal the published digest, reads the single
+  `claude-shadow-evidence.json` from it (`scripts/zip-entry.mjs`: central directory, stored or deflated,
+  CRC-32 and size checked, fail closed), requires the file's identity to equal the verified summary field
+  for field, and requires exactly `findingCount` (at least one) well-formed findings (`P0`–`P3`, a path,
+  an optional integer line, a description).
+- **Quoting.** Findings are review output over adversarial candidate content. They are quoted as data:
+  at most 20, each description at most 1500 characters, and neutralized so they cannot add a second
+  probe marker, mention anyone (no `@codex fix` line of their own), or break out of their quote.
+- **Permissions.** The probe job adds `actions: read` and `checks: read`, to verify the producer run and
+  read the artifact; it still writes only the one PR comment.
+
+Nothing here activates anything. It makes the observed cycle possible; the verdict and every other gate
+are unchanged.

@@ -3,7 +3,9 @@ name: Codex correction-boundary probe (manual, disabled by default)
 # workflow_dispatch only: this never runs on its own. An operator arms it for ONE chosen PR/head
 # by supplying the exact head and an authorization string bound to that PR/head. It posts exactly
 # one `@codex fix` request as github-actions[bot], to test whether that starts a Codex cloud task
-# that pushes a corrective commit. It is dispatch evidence only and holds no merge or status power.
+# that pushes a corrective commit. The finding is either a Codex review comment or a verified Claude
+# shadow review (the role transfer's source), whose findings are quoted from its evidence artifact.
+# It is dispatch evidence only and holds no merge or status power.
 on:
   workflow_dispatch:
     inputs:
@@ -16,8 +18,12 @@ on:
         required: true
         type: string
       finding_comment_id:
-        description: Codex review-comment id of the genuine unresolved finding on that head
-        required: true
+        description: Codex review-comment id of the genuine unresolved finding on that head (or leave empty and give shadow_run_id)
+        required: false
+        type: string
+      shadow_run_id:
+        description: Claude shadow check-run id of the verified changes_required review of that head (or leave empty and give finding_comment_id)
+        required: false
         type: string
       authorization:
         description: Must equal arm-pr-<pr_number>-head-<head_sha> to confirm this single PR/head
@@ -39,7 +45,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # actions/checks read: a Claude shadow finding is verified against its producer run and evidence artifact.
     permissions:
+      actions: read
+      checks: read
       contents: read
       pull-requests: write
     steps:
@@ -54,5 +63,6 @@ jobs:
           PROBE_PR_NUMBER: ${{ inputs.pr_number }}
           PROBE_HEAD_SHA: ${{ inputs.head_sha }}
           PROBE_FINDING_COMMENT_ID: ${{ inputs.finding_comment_id }}
+          PROBE_SHADOW_RUN_ID: ${{ inputs.shadow_run_id }}
           PROBE_AUTHORIZATION: ${{ inputs.authorization }}
         run: node scripts/codex-fix-probe.mjs dispatch
