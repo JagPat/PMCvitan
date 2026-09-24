@@ -22,6 +22,9 @@ import { readPullRequestEventLog } from './pull-request-event-log.mjs';
  *                           triggering finding; the author/type say whether a bot or a human posted it. A
  *                           comment that is fetched but rejected is diagnosed with the reason.
  *   - task acceptance     — a Codex-connector 👀 reaction on THAT request comment.
+ *   - conversation        — the PR's own title and description, and every issue comment, review comment and
+ *                           review on it, read to its end, each with its server author, its dates and whether
+ *                           it mentions `@codex` (who could have started another Codex task during the cycle).
  *   - findings / reviews  — `classifyClaudeShadowReview` + `GitHubClient.verifyClaudeShadowProducer`
  *                           (server-associated publisher run, trusted workflow path, artifact digest); the
  *                           finding's identity is the verified check run's own URL. The initial finding is
@@ -41,7 +44,7 @@ import { readPullRequestEventLog } from './pull-request-event-log.mjs';
  *                           time), the live PR (branch, base) and the push log (corrective head). Then the
  *                           freshness point `observedAtMs` is taken. Then every mutable source is read in the
  *                           CLOSING pass: the request again (it must still be the one planned from), its
- *                           acceptance, the live PR (head, base ref, repositories), both heads' check runs
+ *                           acceptance, the PR's conversation, the live PR (head, base ref, repositories), both heads' check runs
  *                           (findings, reviews, CI), the push log again (it must confirm the same corrective
  *                           push; one that landed during the pass is a diagnostic), and last the pull
  *                           request's lifecycle event log (scripts/pull-request-event-log.mjs: base changes,
@@ -71,6 +74,15 @@ export const CODEX_ACCEPTANCE_REACTION = 'eyes';
 // One page of the branch push log. A log that does not reach back to an update at or before the request is
 // UNCOVERED (reported, not guessed): the corrective push cannot be identified without the whole window.
 export const PUSH_LOG_PAGE_SIZE = 100;
+export const CONVERSATION_PAGE_SIZE = 100;
+// Like the event log's page bound: a source still full on its last allowed page is not read to its end, so it
+// is no conversation (fail closed), never an unbounded read.
+export const CONVERSATION_MAX_PAGES = 10;
+// Any `@codex` anywhere counts as a mention: over-matching only holds more cycles.
+const CODEX_MENTION = /@codex/iu;
+const CONVERSATION_SOURCES = Object.freeze([
+  ['issue_comment', 'issues'], ['review_comment', 'pulls'], ['review', 'pulls'],
+]);
 // The Activity API filters by a trailing `time_period` (a day unless given). Each period with a LOWER bound of
 // its length in days; the reader tries the shortest that spans the request, then wider ones, until the log
 // reaches back past the request or a page fills. Older than a year is uncovered.
@@ -140,6 +152,37 @@ export function normalizeCorrectionRequest(comment, { repository, pullRequest })
     findingRef: marker.findingRef,
     atMs,
   };
+}
+
+/**
+ * One item of the PR's conversation: its kind, id, server author, dates and whether its current text mentions
+ * `@codex`. A review has only a submission date, and the PR's own description (`pull_request`, title and body)
+ * only its creation date: their edits are undated (the issue's `updated_at` is any activity, not an edit). An
+ * undated item keeps `null` dates.
+ */
+export function normalizeConversationItem(kind, item) {
+  const undatedEdits = kind === 'review' || kind === 'pull_request';
+  const createdAtMs = Date.parse(kind === 'review' ? item?.submitted_at : item?.created_at);
+  const updatedAtMs = undatedEdits ? createdAtMs : Date.parse(item?.updated_at);
+  // A body that is not text (or null, no text) is unknown, never "no mention" (Codex finding on #624).
+  const text = kind === 'pull_request' ? `${item?.title ?? ''}\n${item?.body ?? ''}` : item?.body;
+  return {
+    kind,
+    id: Number.isInteger(item?.id) ? item.id : null,
+    authorLogin: item?.user?.login ?? null,
+    createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : null,
+    updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : null,
+    mentionsCodex: typeof text === 'string' ? CODEX_MENTION.test(text) : text === null ? false : null,
+  };
+}
+
+/** Whether a listed comment or review is a whole record: id, author, body (text or null) and its dates. */
+export function wholeConversationItem(kind, item) {
+  const dated = (value) => Number.isFinite(Date.parse(value));
+  return Number.isInteger(item?.id)
+    && typeof item.user?.login === 'string' && item.user.login.length > 0
+    && (typeof item.body === 'string' || item.body === null)
+    && (kind === 'review' ? dated(item.submitted_at) : dated(item.created_at) && dated(item.updated_at));
 }
 
 /** The earliest Codex-connector acceptance reaction on the request comment itself. */
@@ -330,7 +373,7 @@ export async function readRoleActivationEvidence(
   };
   const repository = client?.repository;
   const empty = { initialCi: null, initialFinding: null, request: null, acceptance: null,
-    correctivePush: null, finalCi: null, finalReview: null, freshness: null };
+    correctivePush: null, finalCi: null, finalReview: null, freshness: null, conversation: null };
   if (typeof repository !== 'string' || !Number.isInteger(pullRequest) || pullRequest <= 0
     || !Number.isInteger(requestCommentId)) {
     return { schema: ROLE_ACTIVATION_EVIDENCE_SCHEMA, cycle: null, records: empty, problems: ['invalid reader input'] };
@@ -426,6 +469,65 @@ export async function readRoleActivationEvidence(
     : null;
   const acceptance = normalizeAcceptance(reactions, request);
   if (acceptance) acceptance.readAtMs = now();
+
+  // Closing: the PR's whole conversation (its own title and description, then issue comments, review comments
+  // and reviews, every page to its end). Whether anything in it could have started another Codex task is the
+  // verdict's rule; a failed or malformed read leaves no conversation (never a partial list that could pass).
+  const readConversation = async () => {
+    let issue;
+    try {
+      issue = await client.request(`/repos/${repository}/issues/${pullRequest}`);
+    } catch (error) {
+      problems.push(`conversation pull_request: ${error?.message ?? String(error)}`);
+      return null;
+    }
+    // The description is read only from a whole record of THIS pull request: its number, id, author, creation
+    // time and title (a PR's body may be null, never absent). A partial record is unread, never blank text.
+    if (!issue || typeof issue !== 'object' || Array.isArray(issue)) {
+      problems.push('conversation pull_request: not a record');
+      return null;
+    }
+    if (issue.number !== pullRequest || !issue.pull_request || !Number.isInteger(issue.id)
+      || typeof issue.user?.login !== 'string' || issue.user.login.length === 0
+      || !Number.isFinite(Date.parse(issue.created_at)) || typeof issue.title !== 'string'
+      || !(typeof issue.body === 'string' || issue.body === null)) {
+      problems.push('conversation pull_request: malformed record');
+      return null;
+    }
+    const items = [normalizeConversationItem('pull_request', issue)];
+    for (const [kind, resource] of CONVERSATION_SOURCES) {
+      const path = `/repos/${repository}/${resource}/${pullRequest}/${kind === 'review' ? 'reviews' : 'comments'}`;
+      for (let page = 1; ; page += 1) {
+        let batch;
+        try {
+          batch = await client.request(`${path}?per_page=${CONVERSATION_PAGE_SIZE}&page=${page}`);
+        } catch (error) {
+          problems.push(`conversation ${kind} page ${page}: ${error?.message ?? String(error)}`);
+          return null;
+        }
+        if (!Array.isArray(batch)) {
+          problems.push(`conversation ${kind} page ${page}: not a list`);
+          return null;
+        }
+        // A partial item is unread, never a blank non-mention (Codex finding on #624).
+        if (!batch.every((item) => wholeConversationItem(kind, item))) {
+          problems.push(`conversation ${kind} page ${page}: malformed item`);
+          return null;
+        }
+        items.push(...batch.map((item) => normalizeConversationItem(kind, item)));
+        if (batch.length < CONVERSATION_PAGE_SIZE) break;
+        if (page >= CONVERSATION_MAX_PAGES) {
+          problems.push(`conversation ${kind}: ${CONVERSATION_MAX_PAGES} full pages without an end (uncovered)`);
+          return null;
+        }
+      }
+    }
+    return items;
+  };
+  const conversationItems = request ? await readConversation() : null;
+  const conversation = conversationItems
+    ? { repository, pullRequest, items: conversationItems, readAtMs: now() }
+    : null;
 
   // Closing: the live PR — head, base ref and both repositories, as they now stand.
   const pullAtEnd = await read('pull-recheck', () => client.pullRequest(pullRequest));
@@ -578,7 +680,8 @@ export async function readRoleActivationEvidence(
       correctiveHeadSha,
       correctionRequestId: request?.requestId ?? null,
     },
-    records: { initialCi, initialFinding, request, acceptance, correctivePush, finalCi, finalReview, freshness },
+    records: { initialCi, initialFinding, request, acceptance, correctivePush, finalCi, finalReview, freshness,
+      conversation },
     problems,
   };
 }

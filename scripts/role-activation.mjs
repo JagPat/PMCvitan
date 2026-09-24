@@ -3,7 +3,8 @@ import {
   CODEX_LOGIN,
   LINEAGE_BASE_REF,
 } from './review-policy.mjs';
-import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs';
+import { probeTrailerValue } from './codex-fix-probe.mjs';
+import { GITHUB_ACTIONS_LOGIN, ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs';
 
 /**
  * Role-transfer ACTIVATION-READINESS verdict (pure, mutation-free).
@@ -11,8 +12,8 @@ import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs'
  * The cloud role transfer (Codex codes, Claude independently reviews) may be activated — atomically adding a
  * Claude exact-head required gate and switching correction routing — ONLY after one real, OBSERVED
  * correction cycle is proven. This module performs NO switch and touches NO live gate: it reads evidence and
- * reports which proofs hold and which are missing. In this version the verdict is ALWAYS `hold`: one proof,
- * `codexTaskCausation`, has no trusted evidence yet (below). `codex-current-head` (`STATUS_CONTEXT`) stays the
+ * reports which proofs hold and which are missing. In this version the verdict is ALWAYS `hold`, even when
+ * every proof is proven: the `activate` install phase is a later unit. `codex-current-head` (`STATUS_CONTEXT`) stays the
  * required gate and `claude-independent-review` stays non-authoritative and out of the required checks.
  * Nothing here declares Codex awakenable.
  *
@@ -37,12 +38,14 @@ import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs'
  *                                   Codex connector from the reviewed head to the corrective head, with the
  *                                   reviewed head a server-verified ancestor (compare `ahead`, `behind 0`).
  *   codexTaskCausation            — that push was made by the task accepted for THIS request. Every Codex
- *                                   task pushes as the same connector bot, so actor and time cannot prove
- *                                   it. The request asks for a `Codex-Fix-Probe` trailer on every commit and
- *                                   the reader reports each commit's trailers, but the trailer is public
- *                                   request text another Codex task could be told to copy: necessary, never
- *                                   sufficient. No trusted, task-specific record exists, so the proof is
- *                                   ALWAYS missing and the verdict holds, fail closed.
+ *                                   task pushes as the same connector bot and the request's trailer is public
+ *                                   text, so neither proves it alone. It rests on the owner's attestation
+ *                                   (`CODEX_TASK_ATTESTATION`) plus two reader-backed checks: the complete
+ *                                   commit list, ending at the corrective head, carries exactly this
+ *                                   request's trailer on every commit; and the PR's complete conversation
+ *                                   has no other current `@codex` mention, no review from anyone but Codex
+ *                                   and trusted workflows, and no such comment posted or edited since the
+ *                                   branch reached the reviewed head.
  *   fullCiGreen                   — the latest applicable CI on the corrective head, at the base, green, with
  *                                   a named, successful run deciding each required name (the reader names
  *                                   them, so a later installer can bind to that exact attempt).
@@ -55,7 +58,7 @@ import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs'
  *                                   brought the branch to the reviewed head (before every workflow for it,
  *                                   and before the initial CI's deciders started) lists only
  *                                   draft transitions (a retarget away and back is two base changes), and
- *                                   every mutable source (request, acceptance, live PR, both heads' reviews
+ *                                   every mutable source (request, acceptance, conversation, live PR, both heads' reviews
  *                                   and CI, push log, event log) was read after the freshness point, which
  *                                   follows the pass's opening.
  *   milestoneOrder                — strictly: initial CI < finding < request < acceptance < corrective push
@@ -63,8 +66,7 @@ import { ROLE_ACTIVATION_EVIDENCE_SCHEMA } from './role-activation-evidence.mjs'
  *                                   tie is admitted only where the records themselves prove the order: the
  *                                   request names the finding, and the acceptance is a reaction ON the request.
  *
- * `activate` is not reachable yet. When a trusted binding makes `codexTaskCausation` provable, a later unit adds
- * it: INSTALL the replacement (`ACTIVATION_INSTALL`: a distinct trusted-controller status,
+ * `activate` is not reachable yet: even a fully proven cycle holds. A later unit adds it: INSTALL the replacement (`ACTIVATION_INSTALL`: a distinct trusted-controller status,
  * `CLAUDE_STATUS_CONTEXT`, published from ADAPTER-VERIFIED shadow evidence, never the raw producer check name)
  * and switch routing, KEEPING `codex-current-head`. Retiring `codex-current-head` needs a trusted observation
  * of the installed gate in role, which cannot exist before installation and has no reader; it is a later,
@@ -99,6 +101,17 @@ export const ACTIVATION_INSTALL = Object.freeze({
 // know — holds, so the rule fails closed.
 export const CYCLE_NEUTRAL_LIFECYCLE_EVENTS = Object.freeze(['convert_to_draft', 'converted_to_draft', 'ready_for_review']);
 
+// The repository owner's attestation, recorded at the owner's decision after #623 (the one assumption
+// `codexTaskCausation` rests on; the reader checks the rest). Codex tasks that can push to this repository's
+// branches are started only by the owner or by the trusted `codex-fix-probe` request (automatic Codex reviews
+// do not push), and during a correction cycle the owner starts none except by a comment that stays visible in
+// the pull request's conversation: a mention, once posted, is never edited away. Tasks started any other way
+// (another surface, a deleted or since-edited mention) leave no complete GitHub record, hence the attestation.
+export const CODEX_TASK_ATTESTATION = Object.freeze({
+  repository: 'JagPat/PMCvitan',
+  owner: 'JagPat',
+});
+
 const SHA = /^[0-9a-f]{40}$/u;
 const isSha = (value) => typeof value === 'string' && SHA.test(value);
 const nonEmpty = (value) => typeof value === 'string' && value.length > 0;
@@ -128,6 +141,7 @@ export function roleTransferActivationVerdict(evidence, expected) {
     finalCi = null,
     finalReview = null,
     freshness = null,
+    conversation = null,
   } = records;
 
   const repository = expected?.repository;
@@ -195,11 +209,53 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && correctivePush.ancestry?.behindBy === 0
     && correctivePush.ancestry?.mergeBaseSha === originalHeadSha);
 
-  // Every Codex task pushes as the same bot, so actor and time cannot prove causation (another Codex task on
-  // the same branch could push first). The reader reports each corrective commit's `Codex-Fix-Probe`
-  // trailers, but they repeat public request text a second task could copy, so even a fully-trailered push
-  // does not prove it: this proof stays missing until a task-specific, server-verifiable record exists.
-  prove('codexTaskCausation', false);
+  // Every Codex task pushes as the same bot, and the request's trailer is public text a second task could
+  // copy, so neither proves causation alone. Under the owner's attestation, a second task could only come
+  // from something visible in this PR's conversation, so: (1) the complete commit list of the corrective push,
+  // ending at the corrective head, carries exactly this request's trailer on every commit; and (2) the
+  // complete conversation (the PR's own title and description included) currently holds no `@codex` mention
+  // but the request's and Codex's own, however old (a task started earlier could still push); no comment from
+  // anyone but Codex and trusted workflows was posted or edited since the update that brought the branch to
+  // the reviewed head (an undated one counts as recent); and no such author's review exists at all, because a
+  // review's edits are undated (Claude shadow finding on #624). The description's edits are undated too; a
+  // mention edited away there, or anywhere before the window, is what the attestation rules out.
+  const expectedTrailer = nonEmpty(request?.findingRef) && isSha(originalHeadSha)
+    ? probeTrailerValue({ pullRequest, headSha: originalHeadSha, findingRef: request.findingRef })
+    : null;
+  const commits = correctivePush?.ancestry?.commits;
+  const sinceMs = isSha(originalHeadSha) && freshness?.reviewedHeadArrival?.afterSha === originalHeadSha
+    ? freshness.reviewedHeadArrival.atMs
+    : undefined;
+  const quiet = (item) => {
+    if (item?.authorLogin === CODEX_LOGIN) return true;
+    if (item?.kind === 'issue_comment' && item.id === requestId) return true;
+    if (item?.mentionsCodex !== false) return false;
+    // The PR's own description starts a task only by mentioning `@codex`; its edits are undated. It must be a
+    // whole record (id, author, creation time), never a placeholder (Codex finding on #624).
+    if (item?.kind === 'pull_request') {
+      return Number.isInteger(item.id) && nonEmpty(item.authorLogin) && finite(item.createdAtMs);
+    }
+    const dated = Number.isInteger(item?.id) && finite(item?.createdAtMs) && finite(item?.updatedAtMs);
+    if (item?.authorLogin === GITHUB_ACTIONS_LOGIN) return dated;
+    if (item?.kind === 'review') return false;
+    return dated && Math.max(item.createdAtMs, item.updatedAtMs) < sinceMs;
+  };
+  prove('codexTaskCausation', CODEX_TASK_ATTESTATION.repository === repository
+    && expectedTrailer !== null
+    && correctivePush?.ancestry?.commitsComplete === true
+    && Array.isArray(commits)
+    && commits.at(-1)?.sha === correctiveHeadSha
+    // Every entry is a whole, distinct commit (a partial compare record is not a commit that was read).
+    && commits.every((commit) => isSha(commit?.sha))
+    && new Set(commits.map((commit) => commit.sha)).size === commits.length
+    && commits.every((commit) => Array.isArray(commit?.probeTrailers)
+      && commit.probeTrailers.length === 1
+      && commit.probeTrailers[0] === expectedTrailer)
+    && inPullRequest(conversation)
+    && Array.isArray(conversation.items)
+    && conversation.items.filter((item) => item?.kind === 'pull_request').length === 1
+    && finite(sinceMs)
+    && conversation.items.every(quiet));
 
   const ciDeciderRunIds = Array.isArray(finalCi?.deciders) ? finalCi.deciders.map((run) => run?.checkRunId) : [];
   prove('fullCiGreen', atBase(finalCi)
@@ -216,7 +272,7 @@ export function roleTransferActivationVerdict(evidence, expected) {
   // Every mutable source is a closing read: each starts after the freshness point, so each covers the cycle
   // up to it.
   const closingReads = [
-    request?.readAtMs, acceptance?.readAtMs, initialFinding?.readAtMs, initialCi?.readAtMs,
+    request?.readAtMs, acceptance?.readAtMs, conversation?.readAtMs, initialFinding?.readAtMs, initialCi?.readAtMs,
     freshness?.pullReadAtMs, freshness?.pushLogReadAtMs, finalCi?.readAtMs, finalReview?.readAtMs,
     freshness?.eventLogCoveredFromMs, freshness?.eventLogReadAtMs,
   ];

@@ -217,6 +217,14 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
   another PR, no readable time) is diagnosed with its reason, never a silent `null`.
 - **Acceptance.** The earliest Codex-connector 👀 reaction on that exact request comment. This is an
   observed-behaviour assumption and fails closed.
+- **Conversation.** The PR's own title and description, then every issue comment, review comment and
+  review on it, read to the last page. Each item carries its server author, its dates and whether its text
+  mentions `@codex`. A review has only its submission date and the description only its creation date:
+  their edits are undated. The description is read only from a whole record of this PR (number, id,
+  author, creation time and title; a null body is a PR without one), and each comment or review only from a
+  whole record (id, author, a text or null body, and its dates). A failed or malformed read, a partial
+  record, or a source still full after 10 pages (the event log's bound), leaves no conversation, with a
+  diagnostic: an unread body is never a "no mention".
 - **Findings and reviews.** `classifyClaudeShadowReview` with `verifyClaudeShadowProducer`. A finding's
   identity is its verified check run's own URL. The initial finding is the run the request's marker
   names, not merely the newest review. Later reviews of the reviewed head are listed beside it only when
@@ -232,7 +240,7 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
   as uncovered, not guessed.
 - **Freshness.** Opening reads decide only what to read: the request, the live PR and the push log.
   Then the freshness point is taken. Every mutable source is then read in the closing pass: the
-  request again (it must be unchanged), its acceptance, the live PR (head, base ref and repositories),
+  request again (it must be unchanged), its acceptance, the PR's conversation, the live PR (head, base ref and repositories),
   both heads' check runs, the push log again, the lifecycle event log below, and last the live PR once
   more (an ordinary fast-forward of the base branch appends no PR event). Each closing read
   starts after the freshness point. So an edit, a push or a retarget (either even away-and-back), a
@@ -300,7 +308,7 @@ output (the two sections above), and the reader performs every live read.
 `roleTransferActivationVerdict(evidence, expected)` takes the reader's `{ schema, cycle, records }` and
 the caller's expected `{ repository, pullRequest }`. It never takes the cycle's identity from the
 evidence alone. It reports every required proof as `proven` or `missing`, and in this version its state
-is always `hold` (see **Causation**):
+is always `hold`, even when every proof is proven: the `activate` install phase is a later unit.
 
 - **Identity.** The schema matches. The cycle names the expected repository and PR, a branch, the base,
   the reviewed and corrective heads (which must differ), and the correction-request id. Every record
@@ -316,10 +324,11 @@ is always `hold` (see **Causation**):
   connector from the reviewed head to the corrective head. The reviewed head is a server-verified
   ancestor (compare `ahead`, `behind 0`). A multi-commit fast-forward is admitted.
 - **Causation.** That push was made by the task accepted for this request. Every Codex task pushes as
-  the same connector bot, so actor and time cannot prove it: another Codex task on the same branch could
-  push first. The request's trailer (next section) is public text such a task could be told to copy, so it
-  is necessary but never sufficient. No trusted, task-specific record exists, so `codexTaskCausation` is
-  always missing and the verdict holds.
+  the same connector bot, and the request's trailer (below) is public text a second task could be told to
+  copy, so neither proves it alone. It rests on the owner's attestation (`CODEX_TASK_ATTESTATION`, next
+  section) plus two checks: the complete commit list of the corrective push, ending at the corrective head,
+  carries exactly this request's trailer on every commit; and the PR's complete conversation shows no one
+  else who could have started a Codex task (next section).
 - **Final legs.** The latest applicable CI on the corrective head is green, with a named successful
   deciding run for each required check (the reader names them, so a later installer can bind to that exact
   attempt). The newest producer-verified review of that head is clear.
@@ -340,7 +349,7 @@ is always `hold` (see **Causation**):
   review < freshness window. GitHub stamps whole seconds, so a tie is admitted only where the records
   prove the order: the request names the finding, and the acceptance is a reaction on the request.
 
-When causation becomes provable, a later unit adds `activate`, which **installs** the distinct
+A later unit adds `activate`, which **installs** the distinct
 trusted-controller status `CLAUDE_STATUS_CONTEXT` (`claude-current-head`, published from adapter-verified
 shadow evidence, never from the raw `claude-independent-review` check name) and switches routing while
 **keeping** `codex-current-head`. This verdict never retires `codex-current-head`: that needs a trusted
@@ -378,8 +387,36 @@ verdict to judge.
 **The trailer is not causation.** Its value is printed in the public request comment, so it identifies
 the request, not the task: a second Codex task started on the same head could be told to copy it, and it
 pushes as the same connector bot (Codex finding on #623). A commit without the exact trailer is not this
-request's, but a fully-trailered push is not thereby proven to be. A verdict may require the trailer; it
-may never prove `codexTaskCausation` from it. That needs a task-specific, server-verifiable record, which
-GitHub does not provide today. It is an open question for the repository owner before any unit consumes
-the trailer. Whether Codex actually writes the trailer is observed on a real cycle, not assumed; if it
-doesn't, the cycle holds.
+request's, but a fully-trailered push is not thereby proven to be. Whether Codex actually writes the
+trailer is observed on a real cycle, not assumed; if it doesn't, the cycle holds.
+
+### Task → push causation (the owner's attestation, non-activating)
+
+After #623 the repository owner chose how causation is proven: an attested assumption plus a check of the
+PR. `CODEX_TASK_ATTESTATION` (in `scripts/role-activation.mjs`, repository `JagPat/PMCvitan`, owner
+`JagPat`) records it. Codex tasks that can push to this repository's branches are started only by the owner
+or by the trusted `codex-fix-probe` request; automatic Codex reviews do not push. During a correction cycle
+the owner starts none except by a comment that stays visible in the pull request's conversation: a mention,
+once posted, is never edited away. A task started any other way (the Codex web UI, a deleted or since-edited
+mention) leaves no complete GitHub record, which is why this part is attested, not checked.
+
+The verdict checks the rest, from the reader's evidence:
+
+- **Commits.** The corrective push's commit list is complete, ends at the corrective head, and lists whole,
+  distinct commits (each with its own SHA). Every commit carries exactly one `Codex-Fix-Probe` trailer, equal to the value derived from this cycle's own PR,
+  reviewed head and finding (never taken from the evidence).
+- **Conversation.** The PR's complete conversation, its own title and description included, currently has
+  no `@codex` mention except the request's (as that issue comment) and the Codex connector's own, however
+  old: a task started earlier could still push. (The Codex connector does answer a mention in a PR
+  description; it replied to one on #624.)
+  A mention the reader could not determine counts as one. And from the update that brought the branch to
+  the reviewed head onwards, nothing at all comes from anyone but the Codex connector and trusted workflows
+  (`github-actions[bot]`): another author's comment in that window holds whatever its text, and so do an
+  older comment edited in it and an undated one. A review's edits are undated (a mention added and then
+  removed leaves only the old submission date), so another author's review holds whenever it was submitted
+  (Claude shadow finding on #624). The description starts a task only by a mention, so without one it is
+  quiet whenever the PR was opened; its edits are undated too, and a mention edited away there, or anywhere
+  before the window, is what the attestation rules out. The conversation must carry exactly one description.
+
+A cycle that proves every proof still holds: the `activate` install phase is the next unit, and nothing is
+activated, installed or routed here.
