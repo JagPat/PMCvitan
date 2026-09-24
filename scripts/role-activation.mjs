@@ -211,9 +211,10 @@ export function roleTransferActivationVerdict(evidence, expected) {
   // copy, so neither proves causation alone. Under the owner's attestation, a second task could only come
   // from something visible in this PR's conversation, so: (1) the complete commit list of the corrective push,
   // ending at the corrective head, carries exactly this request's trailer on every commit; and (2) the
-  // complete conversation holds no `@codex` mention but the request's and Codex's own, EVER (a task started
-  // earlier could still push), and nothing at all from anyone but Codex and trusted workflows since the
-  // update that brought the branch to the reviewed head (an undated item counts as recent).
+  // complete conversation (the PR's own title and description included) holds no `@codex` mention but the
+  // request's and Codex's own, EVER (a task started earlier could still push), and no comment or review from
+  // anyone but Codex and trusted workflows since the update that brought the branch to the reviewed head (an
+  // undated item counts as recent).
   const expectedTrailer = nonEmpty(request?.findingRef) && isSha(originalHeadSha)
     ? probeTrailerValue({ pullRequest, headSha: originalHeadSha, findingRef: request.findingRef })
     : null;
@@ -225,6 +226,8 @@ export function roleTransferActivationVerdict(evidence, expected) {
     if (item?.authorLogin === CODEX_LOGIN) return true;
     if (item?.kind === 'issue_comment' && item.id === requestId) return true;
     if (item?.mentionsCodex !== false) return false;
+    // The PR's own description starts a task only by mentioning `@codex`; its edits are undated.
+    if (item?.kind === 'pull_request') return true;
     if (item?.authorLogin === GITHUB_ACTIONS_LOGIN) return true;
     return finite(item?.createdAtMs) && finite(item?.updatedAtMs)
       && Math.max(item.createdAtMs, item.updatedAtMs) < sinceMs;
@@ -239,6 +242,7 @@ export function roleTransferActivationVerdict(evidence, expected) {
       && commit.probeTrailers[0] === expectedTrailer)
     && inPullRequest(conversation)
     && Array.isArray(conversation.items)
+    && conversation.items.filter((item) => item?.kind === 'pull_request').length === 1
     && finite(sinceMs)
     && conversation.items.every(quiet));
 

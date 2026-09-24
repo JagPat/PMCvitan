@@ -100,7 +100,7 @@ test('the reader normalizes a full correction cycle with identity and server tim
     assert.ok(freshness.observedAtMs < readAt);
   }
   // Read-only: GETs only (the fake refuses writes), and only the documented read endpoints.
-  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619\/(events|comments)\?|pulls\/619\/(comments|reviews)\?|activity\?|compare\/)/u.test(path)));
+  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619$|issues\/619\/(events|comments)\?|pulls\/619\/(comments|reviews)\?|activity\?|compare\/)/u.test(path)));
   // The push log names its period; this cycle is inside a day.
   assert.ok(calls.filter((path) => path.includes('/activity?')).every((path) => path.endsWith('&time_period=day')));
 });
@@ -557,13 +557,17 @@ test('the conversation lists every issue comment, review comment and review, wit
   const { conversation } = evidence.records;
   assert.equal(conversation.pullRequest, PR);
   assert.deepEqual(conversation.items.map((item) => [item.kind, item.id, item.authorLogin, item.mentionsCodex]), [
+    ['pull_request', 9619, 'JagPat', false],
     ['issue_comment', 61, 'JagPat', false],
     ['issue_comment', 62, GITHUB_ACTIONS_LOGIN, false],
     ['issue_comment', REQUEST_ID, GITHUB_ACTIONS_LOGIN, true],
     ['review_comment', 63, CODEX_LOGIN, false],
     ['review', 64, CODEX_LOGIN, true],
   ]);
-  assert.deepEqual([conversation.items[1].createdAtMs, conversation.items[1].updatedAtMs], [ms('08:50'), ms('11:30')]);
+  assert.deepEqual([conversation.items[2].createdAtMs, conversation.items[2].updatedAtMs], [ms('08:50'), ms('11:30')]);
+  // The description is dated by its creation only (the issue's updated_at is any activity), and its title counts.
+  assert.deepEqual([conversation.items[0].createdAtMs, conversation.items[0].updatedAtMs], [ms('09:30'), ms('09:30')]);
+  assert.equal(normalizeConversationItem('pull_request', { id: 3, title: 'ask @codex', body: null }).mentionsCodex, true);
   // A review is dated by its submission; an undated item keeps null dates; any `@codex` counts as a mention.
   assert.deepEqual(normalizeConversationItem('review', { id: 1, user: { login: 'x' }, submitted_at: at('10:00'), updated_at: at('11:00'), body: 'Hey @Codex, fix it' }),
     { kind: 'review', id: 1, authorLogin: 'x', createdAtMs: ms('10:00'), updatedAtMs: ms('10:00'), mentionsCodex: true });
@@ -579,11 +583,17 @@ test('the conversation lists every issue comment, review comment and review, wit
   const failed = await readWorld((w) => { w.conversationError = { review: 'boom' }; });
   assert.equal(failed.evidence.records.conversation, null);
   assert.deepEqual(failed.evidence.problems, ['conversation review page 1: boom']);
+  const noIssue = await readWorld((w) => { w.conversationError = { pull_request: 'gone' }; });
+  assert.equal(noIssue.evidence.records.conversation, null);
+  assert.deepEqual(noIssue.evidence.problems, ['conversation pull_request: gone']);
+  const listIssue = await readWorld((w) => { w.conversation.pull_request = []; });
+  assert.equal(listIssue.evidence.records.conversation, null);
+  assert.deepEqual(listIssue.evidence.problems, ['conversation pull_request: not a record']);
   const malformed = await readWorld((w) => { w.conversation.issue_comment = { not: 'a list' }; });
   assert.equal(malformed.evidence.records.conversation, null);
   assert.deepEqual(malformed.evidence.problems, ['conversation issue_comment page 1: not a list']);
   // Without a request there is no cycle, so the conversation is not read at all.
   const noRequest = await readWorld((w) => { w.comment = null; });
   assert.equal(noRequest.evidence.records.conversation, null);
-  assert.ok(!noRequest.calls.some((path) => /\/(comments|reviews)\?/u.test(path)));
+  assert.ok(!noRequest.calls.some((path) => /\/(comments|reviews)\?|\/issues\/619$/u.test(path)));
 });

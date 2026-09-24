@@ -181,6 +181,8 @@ test('finding 4089074927: the trailer is not enough; anyone else who could have 
     (w) => { w.conversation.review.push(conversationItem(70, 'someone', '10:40', 'lgtm')); },
     (w) => { w.conversation.issue_comment[0].updated_at = at('10:35'); }, // an older comment edited in the window
     (w) => { w.conversation.issue_comment.push({ id: 70, user: { login: 'someone' }, body: 'x' }); },
+    (w) => { w.conversation.pull_request.body = 'Codex: @codex fix the finding'; }, // the PR's own description
+    (w) => { w.conversation.pull_request.title = '@codex please'; },
   ]) {
     holds(roleTransferActivationVerdict(await evidenceFor(mutate), expected), 'codexTaskCausation');
   }
@@ -198,6 +200,11 @@ test('finding 4089074927: the trailer is not enough; anyone else who could have 
   // The window starts where the branch reached the reviewed head; without that anchor, nothing is quiet.
   holds(await verdictWith((e) => { e.records.freshness.reviewedHeadArrival.afterSha = OTHER; }), 'codexTaskCausation');
   holds(await verdictWith((e) => { e.records.freshness.reviewedHeadArrival.atMs = ms('08:00'); }), 'codexTaskCausation');
+  // The description is quiet without a mention, whenever the PR was opened or last active (its edits are
+  // undated); the conversation must carry exactly one description.
+  allProven(roleTransferActivationVerdict(await evidenceFor((w) => { w.conversation.pull_request.created_at = at('11:50'); }), expected));
+  holds(await verdictWith((e) => { e.records.conversation.items = e.records.conversation.items.filter((item) => item.kind !== 'pull_request'); }), 'codexTaskCausation');
+  holds(await verdictWith((e) => { e.records.conversation.items.push({ ...e.records.conversation.items[0] }); }), 'codexTaskCausation');
   // A mention the reader could not determine counts as one (fail closed), even from a trusted workflow.
   holds(await verdictWith((e) => { delete e.records.conversation.items.find((item) => item.id === 62).mentionsCodex; }), 'codexTaskCausation');
   // An unread or unscoped conversation holds.

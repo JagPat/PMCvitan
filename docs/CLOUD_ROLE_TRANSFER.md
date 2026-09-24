@@ -217,9 +217,10 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
   another PR, no readable time) is diagnosed with its reason, never a silent `null`.
 - **Acceptance.** The earliest Codex-connector 👀 reaction on that exact request comment. This is an
   observed-behaviour assumption and fails closed.
-- **Conversation.** Every issue comment, review comment and review on the PR, read to the last page,
-  each with its server author, its dates (a review has only its submission date) and whether its body
-  mentions `@codex`. A failed or malformed page leaves no conversation, with a diagnostic.
+- **Conversation.** The PR's own title and description, then every issue comment, review comment and
+  review on it, read to the last page. Each item carries its server author, its dates and whether its text
+  mentions `@codex`. A review has only its submission date and the description only its creation date:
+  their edits are undated. A failed or malformed read leaves no conversation, with a diagnostic.
 - **Findings and reviews.** `classifyClaudeShadowReview` with `verifyClaudeShadowProducer`. A finding's
   identity is its verified check run's own URL. The initial finding is the run the request's marker
   names, not merely the newest review. Later reviews of the reviewed head are listed beside it only when
@@ -400,12 +401,15 @@ The verdict checks the rest, from the reader's evidence:
 - **Commits.** The corrective push's commit list is complete and ends at the corrective head. Every commit
   carries exactly one `Codex-Fix-Probe` trailer, equal to the value derived from this cycle's own PR,
   reviewed head and finding (never taken from the evidence).
-- **Conversation.** The PR's complete conversation has no `@codex` mention except the request's (as that
-  issue comment) and the Codex connector's own, whenever posted: a task started earlier could still push.
+- **Conversation.** The PR's complete conversation, its own title and description included, has no
+  `@codex` mention except the request's (as that issue comment) and the Codex connector's own, whenever
+  posted: a task started earlier could still push. (The Codex connector does answer a mention in a PR
+  description; it replied to one on #624.)
   A mention the reader could not determine counts as one. And from the update that brought the branch to
   the reviewed head onwards, nothing at all comes from anyone but the Codex connector and trusted workflows
   (`github-actions[bot]`): another author's comment or review in that window holds whatever its text, and
-  so do an older comment edited in it and an undated item.
+  so do an older comment edited in it and an undated item. The description starts a task only by a mention,
+  so without one it is quiet whenever the PR was opened; the conversation must carry exactly one.
 
 A cycle that proves every proof still holds: the `activate` install phase is the next unit, and nothing is
 activated, installed or routed here.

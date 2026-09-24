@@ -142,6 +142,8 @@ export function world() {
     // controller's state comment (edited through the cycle, no @codex), the request itself, and Codex's own
     // review with its "@codex review" boilerplate.
     conversation: {
+      pull_request: { id: 9619, user: { login: 'JagPat' }, created_at: at('09:30'), updated_at: at('11:40'),
+        title: 'Fix the finding', body: 'Codex codes; Claude reviews.' },
       issue_comment: [
         conversationItem(61, 'JagPat', '08:30', 'Looks good so far.'),
         conversationItem(62, GITHUB_ACTIONS_LOGIN, '08:50', '<!-- autonomous-review-state --> waiting for Codex', { updated: '11:30' }),
@@ -192,6 +194,10 @@ export function client(w) {
         return page;
       }
       if (path.startsWith(`/repos/${REPO}/compare/`)) return w.comparison;
+      if (path === `/repos/${REPO}/issues/${PR}`) {
+        if (w.conversationError?.pull_request) throw new Error(w.conversationError.pull_request);
+        return w.conversation.pull_request;
+      }
       const talk = /^\/repos\/JagPat\/PMCvitan\/(?:issues|pulls)\/619\/(comments|reviews)\?per_page=(\d+)&page=(\d+)$/u.exec(path);
       if (talk) {
         const kind = talk[1] === 'reviews' ? 'review' : path.includes('/issues/') ? 'issue_comment' : 'review_comment';

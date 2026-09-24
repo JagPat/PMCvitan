@@ -22,9 +22,9 @@ import { readPullRequestEventLog } from './pull-request-event-log.mjs';
  *                           triggering finding; the author/type say whether a bot or a human posted it. A
  *                           comment that is fetched but rejected is diagnosed with the reason.
  *   - task acceptance     — a Codex-connector 👀 reaction on THAT request comment.
- *   - conversation        — every issue comment, review comment and review on the PR, read to its end, each
- *                           with its server author, its dates and whether it mentions `@codex` (who could
- *                           have started another Codex task during the cycle).
+ *   - conversation        — the PR's own title and description, and every issue comment, review comment and
+ *                           review on it, read to its end, each with its server author, its dates and whether
+ *                           it mentions `@codex` (who could have started another Codex task during the cycle).
  *   - findings / reviews  — `classifyClaudeShadowReview` + `GitHubClient.verifyClaudeShadowProducer`
  *                           (server-associated publisher run, trusted workflow path, artifact digest); the
  *                           finding's identity is the verified check run's own URL. The initial finding is
@@ -152,19 +152,23 @@ export function normalizeCorrectionRequest(comment, { repository, pullRequest })
 }
 
 /**
- * One item of the PR's conversation: its kind, id, server author, dates and whether its current body mentions
- * `@codex`. A review has only a submission date (its edits are undated); an undated item keeps `null` dates.
+ * One item of the PR's conversation: its kind, id, server author, dates and whether its current text mentions
+ * `@codex`. A review has only a submission date, and the PR's own description (`pull_request`, title and body)
+ * only its creation date: their edits are undated (the issue's `updated_at` is any activity, not an edit). An
+ * undated item keeps `null` dates.
  */
 export function normalizeConversationItem(kind, item) {
+  const undatedEdits = kind === 'review' || kind === 'pull_request';
   const createdAtMs = Date.parse(kind === 'review' ? item?.submitted_at : item?.created_at);
-  const updatedAtMs = kind === 'review' ? createdAtMs : Date.parse(item?.updated_at);
+  const updatedAtMs = undatedEdits ? createdAtMs : Date.parse(item?.updated_at);
+  const text = kind === 'pull_request' ? `${item?.title ?? ''}\n${item?.body ?? ''}` : String(item?.body ?? '');
   return {
     kind,
     id: Number.isInteger(item?.id) ? item.id : null,
     authorLogin: item?.user?.login ?? null,
     createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : null,
     updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : null,
-    mentionsCodex: CODEX_MENTION.test(String(item?.body ?? '')),
+    mentionsCodex: CODEX_MENTION.test(text),
   };
 }
 
@@ -453,11 +457,22 @@ export async function readRoleActivationEvidence(
   const acceptance = normalizeAcceptance(reactions, request);
   if (acceptance) acceptance.readAtMs = now();
 
-  // Closing: the PR's whole conversation (issue comments, review comments, reviews), every page to its end.
-  // Whether anything in it could have started another Codex task is the verdict's rule; a failed or
-  // malformed page leaves no conversation (never a partial list that could pass).
+  // Closing: the PR's whole conversation (its own title and description, then issue comments, review comments
+  // and reviews, every page to its end). Whether anything in it could have started another Codex task is the
+  // verdict's rule; a failed or malformed read leaves no conversation (never a partial list that could pass).
   const readConversation = async () => {
-    const items = [];
+    let issue;
+    try {
+      issue = await client.request(`/repos/${repository}/issues/${pullRequest}`);
+    } catch (error) {
+      problems.push(`conversation pull_request: ${error?.message ?? String(error)}`);
+      return null;
+    }
+    if (!issue || typeof issue !== 'object' || Array.isArray(issue)) {
+      problems.push('conversation pull_request: not a record');
+      return null;
+    }
+    const items = [normalizeConversationItem('pull_request', issue)];
     for (const [kind, resource] of CONVERSATION_SOURCES) {
       const path = `/repos/${repository}/${resource}/${pullRequest}/${kind === 'review' ? 'reviews' : 'comments'}`;
       for (let page = 1; ; page += 1) {
