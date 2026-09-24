@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
   authorizeCodexFixDispatch,
+  PROBE_TRAILER_KEY,
   codexFixComment,
   dedupPrefix,
   expectedAuthorization,
   isGenuineUnresolvedFinding,
   probeMarker,
+  probeTrailer,
+  probeTrailerValue,
+  probeTrailersIn,
   pullNumberFromUrl,
   runDispatch,
 } from './codex-fix-probe.mjs';
@@ -126,6 +131,57 @@ test('the posted request is a single @codex fix naming head/branch/finding, requ
   assert.match(body, /preserve every other open finding/u);
   assert.match(body, /do not open a new PR/u);
   assert.doesNotMatch(body, /codex-current-head/u);
+  // The request asks for the binding trailer, verbatim, on every commit.
+  assert.ok(body.includes(`\n${probeTrailer({ pullRequest: 597, headSha, findingRef })}\n`));
+  assert.match(body, /EVERY commit you push for this request/u);
+});
+
+test('the binding trailer repeats the request identity and is parsed back exactly', () => {
+  const identity = { pullRequest: 597, headSha, findingRef };
+  const value = probeTrailerValue(identity);
+  assert.equal(value, `pr-597:head-${headSha}:finding-${findingRef}`);
+  assert.equal(probeTrailer(identity), `${PROBE_TRAILER_KEY}: ${value}`);
+  // A trailer in the terminal block is read back; one per line, in order; trailing spaces trimmed.
+  assert.deepEqual(probeTrailersIn(`fix: x\n\nBody.\n\n${probeTrailer(identity)}  \nCo-Authored-By: a`), [value]);
+  assert.deepEqual(probeTrailersIn('x\n\nCodex-Fix-Probe: a\nCodex-Fix-Probe: b\n'), ['a', 'b']);
+  // Keys match case-insensitively, as git's do, so a differently-cased trailer is still reported.
+  assert.deepEqual(probeTrailersIn(`x\n\ncodex-fix-probe: ${value}`), [value]);
+  // An empty value is reported as empty (it cannot equal the requested value), never dropped.
+  assert.deepEqual(probeTrailersIn('x\n\nCodex-Fix-Probe:\n'), ['']);
+  // A missing message is unreadable, never "none".
+  for (const message of [null, undefined, 42]) assert.equal(probeTrailersIn(message), null, String(message));
+});
+
+test('finding 4089074932: only the terminal trailer block counts; a quoted, fenced, mid-body or folded value does not', () => {
+  const trailer = probeTrailer({ pullRequest: 597, headSha, findingRef });
+  const value = probeTrailerValue({ pullRequest: 597, headSha, findingRef });
+  for (const message of [
+    `x see ${trailer}`, // mid-line
+    trailer, // the subject alone is never a trailer block
+    `x\n\n${trailer}\n\nFollowed by ordinary prose.\n`, // not the terminal paragraph
+    `x\n\n\`\`\`\n${trailer}\n\`\`\`\n`, // quoted in a code fence
+    `x\n\nThe request said:\n${trailer}\n`, // prose in the block, no recognized trailer
+  ]) {
+    assert.deepEqual(probeTrailersIn(message), [], JSON.stringify(message));
+  }
+  // A folded continuation is joined into the value, so it no longer equals the requested one.
+  assert.deepEqual(probeTrailersIn(`x\n\n${trailer}\n continuation\n`), [`${value} continuation`]);
+});
+
+test('probeTrailersIn agrees with real `git interpret-trailers --parse --unfold`', () => {
+  for (const message of [
+    'x\n\nCodex-Fix-Probe: a\n',
+    'x\n\nCodex-Fix-Probe: a\n continued\nOther: b\n',
+    'x\n\nprose\nCodex-Fix-Probe: a\n',
+    'x\n\nprose\nSigned-off-by: s <s@x>\nCodex-Fix-Probe: a\n',
+    'x\n\nCodex-Fix-Probe: a\n\nprose\n',
+    'x\r\n\r\nCodex-Fix-Probe: a\r\n',
+  ]) {
+    const git = execFileSync('git', ['-c', 'trailer.separators=:', 'interpret-trailers', '--parse', '--unfold'], {
+      input: message, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    }).split('\n').filter((line) => /^codex-fix-probe:/iu.test(line)).map((line) => line.slice(line.indexOf(':') + 1).trim());
+    assert.deepEqual(probeTrailersIn(message), git, JSON.stringify(message));
+  }
 });
 
 test('runDispatch refuses an untrusted ref and a non-dispatch event before any API call', async () => {

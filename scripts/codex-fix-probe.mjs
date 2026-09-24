@@ -1,5 +1,6 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 
+import { asciiTrim, gitParsedTrailers } from './correction-owner.mjs';
 import { CODEX_LOGIN, LINEAGE_BASE_REF } from './review-policy.mjs';
 
 /**
@@ -35,6 +36,39 @@ export function dedupPrefix({ pullRequest, headSha }) {
 }
 export function probeMarker({ pullRequest, headSha, findingRef }) {
   return `${dedupPrefix({ pullRequest, headSha })}finding-${findingRef} -->`;
+}
+
+/**
+ * The commit trailer the correction request asks a corrective task to put on every commit it pushes. It
+ * repeats the request's own identity (PR, reviewed head, finding). It is NOT a task identifier: it is printed
+ * in the public request comment, so another Codex task started on the same head could be told to copy it,
+ * and every Codex task pushes as the same connector bot. It is therefore necessary, never sufficient, for
+ * task -> push causation: a commit without it is not this request's, but a commit with it is not thereby
+ * proven to be. Nothing may prove `codexTaskCausation` from it alone; the reader only reports it.
+ */
+export const PROBE_TRAILER_KEY = 'Codex-Fix-Probe';
+export function probeTrailerValue({ pullRequest, headSha, findingRef }) {
+  return `pr-${pullRequest}:head-${headSha}:finding-${findingRef}`;
+}
+export function probeTrailer(identity) {
+  return `${PROBE_TRAILER_KEY}: ${probeTrailerValue(identity)}`;
+}
+/**
+ * The `Codex-Fix-Probe` values in a commit message's TERMINAL trailer block, in order, read as
+ * `git interpret-trailers --parse --unfold` reads them (extraction delegated to git, like the
+ * `Correction-Owner` trailer). A value quoted in prose or a code fence, or anywhere but the terminal
+ * block, is not a trailer; a folded continuation is joined into its value, so the value no longer equals
+ * the requested one. Keys match case-insensitively, as git's do, so a differently-cased trailer is still
+ * reported. `[]` when there is none; `null` when the message is missing or git cannot run (unreadable,
+ * never "none").
+ */
+export function probeTrailersIn(message) {
+  if (typeof message !== 'string') return null;
+  const trailers = gitParsedTrailers(message);
+  if (trailers === null) return null;
+  return trailers
+    .filter((trailer) => trailer.key.toLowerCase() === PROBE_TRAILER_KEY.toLowerCase())
+    .map((trailer) => asciiTrim(trailer.value));
 }
 
 /** The operator must type this exact value to arm ONE PR at ONE head — a careless dispatch, or a
@@ -133,6 +167,13 @@ export function codexFixComment({ pullRequestNumber, headSha, sourceBranch, find
     'Requirements: push the corrective commit to that source branch (do not open a new PR); '
       + 'preserve every other open finding and do not resolve, overwrite, or hide them; do not touch '
       + 'branch protection, required statuses, or unrelated code.',
+    '',
+    'End the message of EVERY commit you push for this request with this exact trailer line, on its own '
+      + 'line in the final trailer block, unchanged (it identifies this request on your commits):',
+    '',
+    '```',
+    probeTrailer({ pullRequest: pullRequestNumber, headSha, findingRef }),
+    '```',
     '',
     'This is a one-time, bounded correction-boundary probe. It is dispatch evidence only — no review '
       + 'clearance is implied, and the shadow review remains non-authoritative.',

@@ -6,7 +6,7 @@ import {
   GITHUB_ACTIONS_LOGIN,
   readRoleActivationEvidence,
 } from './role-activation-evidence.mjs';
-import { codexFixComment, probeMarker } from './codex-fix-probe.mjs';
+import { codexFixComment, probeMarker, probeTrailer } from './codex-fix-probe.mjs';
 import { evidenceArtifactName } from './claude-shadow-review.mjs';
 import { CODEX_LOGIN, REQUIRED_CHECKS } from './review-policy.mjs';
 
@@ -109,6 +109,12 @@ export function activity(id, before, after, hhmm, { type = 'push', actor = CODEX
   return { id, before, after, ref: `refs/heads/${BRANCH}`, timestamp: at(hhmm), activity_type: type, actor: { login: actor } };
 }
 
+// A commit of the corrective push, as the compare API returns it, carrying the request's binding trailer.
+export const BINDING_TRAILER = probeTrailer({ pullRequest: PR, headSha: ORIGINAL, findingRef: FINDING_REF });
+export function correctiveCommit(sha, message = `fix: correct the finding\n\n${BINDING_TRAILER}`) {
+  return { sha, author: { login: CODEX_LOGIN }, commit: { message } };
+}
+
 // A full, valid cycle as GitHub would serve it.
 export function world() {
   return {
@@ -120,7 +126,10 @@ export function world() {
     },
     // newest first, as the Activity API returns it
     activities: [activity(900, ORIGINAL, CORRECTIVE, '10:50'), activity(800, OTHER, ORIGINAL, '09:00', { actor: 'JagPat' })],
-    comparison: { status: 'ahead', ahead_by: 2, behind_by: 0, merge_base_commit: { sha: ORIGINAL } },
+    comparison: {
+      status: 'ahead', ahead_by: 2, behind_by: 0, merge_base_commit: { sha: ORIGINAL }, total_commits: 2,
+      commits: [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE)],
+    },
     pulls: [pull(), pull()],
     // the pull request's issue events, oldest first, as GitHub returns them
     events: [issueEvent(40, 'labeled', '09:30'), issueEvent(41, 'base_ref_changed', '08:40')],

@@ -7,13 +7,15 @@ import {
   parseProbeMarker,
   readRoleActivationEvidence,
 } from './role-activation-evidence.mjs';
-import { probeMarker } from './codex-fix-probe.mjs';
+import { probeMarker, probeTrailerValue } from './codex-fix-probe.mjs';
 import { CODEX_LOGIN, REQUIRED_CHECKS } from './review-policy.mjs';
 import { EVENT_LOG_PAGE_SIZE } from './pull-request-event-log.mjs';
 import {
-  BASE, BRANCH, CORRECTIVE, FINDING_REF, INITIAL_FINDING_RUN, ORIGINAL, OTHER, PR, REPO, REQUEST_ID,
+  BASE, BRANCH, CORRECTIVE, FINDING_REF, INITIAL_FINDING_RUN, ORIGINAL, OTHER, PR, REPO, REQUEST_ID, correctiveCommit,
   activity, at, ciRuns, client, clock, issueEvent, ms, pull, readWorld, requestComment, shadowRun, world,
 } from './role-activation-test-fixtures.mjs';
+
+const BINDING_VALUE = probeTrailerValue({ pullRequest: PR, headSha: ORIGINAL, findingRef: FINDING_REF });
 
 test('the reader normalizes a full correction cycle with identity and server timestamps on every record', async () => {
   const { evidence, calls } = await readWorld();
@@ -45,7 +47,13 @@ test('the reader normalizes a full correction cycle with identity and server tim
   assert.deepEqual(correctivePush, {
     repository: REPO, pullRequest: PR, branch: BRANCH, activityId: 900, activityType: 'push', actorLogin: CODEX_LOGIN,
     beforeSha: ORIGINAL, afterSha: CORRECTIVE, atMs: ms('10:50'),
-    ancestry: { status: 'ahead', aheadBy: 2, behindBy: 0, mergeBaseSha: ORIGINAL },
+    ancestry: {
+      status: 'ahead', aheadBy: 2, behindBy: 0, mergeBaseSha: ORIGINAL, commitsComplete: true,
+      commits: [
+        { sha: '1'.repeat(40), authorLogin: CODEX_LOGIN, probeTrailers: [BINDING_VALUE] },
+        { sha: CORRECTIVE, authorLogin: CODEX_LOGIN, probeTrailers: [BINDING_VALUE] },
+      ],
+    },
   });
   assert.deepEqual(
     { state: finalCi.state, headSha: finalCi.headSha, atMs: finalCi.atMs },
@@ -306,7 +314,8 @@ test('the corrective push is the first update after the request, with its server
     w.comparison = { status: 'diverged', ahead_by: 1, behind_by: 1, merge_base_commit: { sha: OTHER } };
   });
   assert.equal(forced.evidence.records.correctivePush.activityType, 'force_push');
-  assert.deepEqual(forced.evidence.records.correctivePush.ancestry, { status: 'diverged', aheadBy: 1, behindBy: 1, mergeBaseSha: OTHER });
+  assert.deepEqual(forced.evidence.records.correctivePush.ancestry,
+    { status: 'diverged', aheadBy: 1, behindBy: 1, mergeBaseSha: OTHER, commits: null, commitsComplete: false });
   // A human push that lands first after the request IS the first update: its actor is reported, and the
   // Codex push that follows is a later update.
   const human = await readWorld((w) => {
@@ -515,4 +524,27 @@ test('an incomplete event log is unknown with a diagnostic, never "no events"', 
   });
   assert.deepEqual(paged.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [2000]);
   assert.equal(paged.calls.filter((path) => path.includes('/events?')).length, 2);
+});
+
+test('the corrective push reports each commit\'s binding trailers, and whether the commit list is complete', async () => {
+  const { evidence } = await readWorld((w) => {
+    w.comparison.commits = [
+      correctiveCommit('1'.repeat(40), 'fix: no trailer here'),
+      correctiveCommit(CORRECTIVE, `fix: two\n\nCodex-Fix-Probe: other-request\nCodex-Fix-Probe: ${BINDING_VALUE}`),
+      // Quoted in a code fence, not a terminal trailer; and a commit with no message is unreadable.
+      correctiveCommit('2'.repeat(40), `fix: fenced\n\n\`\`\`\nCodex-Fix-Probe: ${BINDING_VALUE}\n\`\`\`\n`),
+      { sha: '3'.repeat(40), author: { login: CODEX_LOGIN }, commit: {} },
+    ];
+  });
+  assert.deepEqual(evidence.records.correctivePush.ancestry.commits.map((commit) => commit.probeTrailers),
+    [[], ['other-request', BINDING_VALUE], [], null]);
+  // The compare API returns at most one page of commits: a list shorter than total_commits, or a
+  // total_commits that differs from ahead_by, is incomplete; so is a response without a commit list.
+  for (const change of [
+    { total_commits: 3 }, { total_commits: 2, ahead_by: 3 }, { commits: undefined }, { total_commits: undefined },
+    { commits: [correctiveCommit(CORRECTIVE)] }, // a truncated page: total_commits and ahead_by still 2
+  ]) {
+    const partial = await readWorld((w) => { Object.assign(w.comparison, change); });
+    assert.equal(partial.evidence.records.correctivePush.ancestry.commitsComplete, false, JSON.stringify(change));
+  }
 });
