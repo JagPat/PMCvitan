@@ -11,8 +11,8 @@ Do not recreate policy lists here or treat historical chronology as a current or
 
 ## Review guidelines
 
-A review checkout is usually a merge commit (`refs/pull/<n>/merge`, or one made locally), and its message
-carries no trailers. Before reporting a missing or invalid `Correction-Owner` trailer, read the PR's head
-commit (`head.sha`): `git log -1 --format=%B <head.sha>`, or `HEAD^2` on a merge checkout. Report it only
-when that exact commit lacks the trailer, and name that commit. Never report it from a merge commit or from a
-commit outside the PR. How ownership is enforced is in docs/POLICY.md.
+Do not report findings about a commit's `Correction-Owner` trailer. The controller reads the PR's exact
+head commit itself and holds a head without a valid trailer. A review checkout does not reliably show that
+commit's message: past reviews reported missing trailers on commits outside the PR and on heads whose
+trailer was valid. Findings about the PR body's `correction-owner` marker remain in scope. How ownership is
+enforced is in docs/POLICY.md.

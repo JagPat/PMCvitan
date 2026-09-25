@@ -49,23 +49,29 @@ test('all agent entrypoints require the canonical contract instead of embedding 
   assert.match(contract, /scripts\/review-policy\.mjs/u);
 });
 
-test('AGENTS.md review guidelines scope ownership findings to the exact PR head commit', async () => {
-  // Codex reviews a merge checkout and kept reporting a missing `Correction-Owner` trailer on merge
-  // commits that are not in the PR (#629; #630 on cdda658, 02b9392 and ed7c2cc). The note must name the
-  // one commit the gate reads, and the gate must still read exactly that commit.
+test('AGENTS.md leaves Correction-Owner trailers to the controller, which still holds an untrailered head', async () => {
+  // Codex kept reporting a missing `Correction-Owner` trailer on commits outside the PR and on heads whose
+  // trailer was valid (#629; #630 on cdda658, 02b9392 and ed7c2cc; #631 on b38df0a). Each such finding
+  // blocked a valid head. The controller enforces the trailer on the exact head itself, so reviewers do not
+  // report on it; this test keeps that enforcement real.
   const agents = await readFile(new URL('../AGENTS.md', import.meta.url), 'utf8');
-  const guidelines = agents.slice(agents.indexOf('## Review guidelines'));
   assert.ok(agents.includes('## Review guidelines'));
-  for (const rule of [/head\s+commit \(`head\.sha`\)/u, /refs\/pull\/<n>\/merge/u, /`HEAD\^2` on a merge checkout/u, /docs\/POLICY\.md/u]) {
-    assert.match(guidelines, rule);
-  }
-  // An entrypoint procedure, not a policy copy: it states no rule about which check reads what.
+  const guidelines = agents.slice(agents.indexOf('## Review guidelines'));
+  assert.match(guidelines, /Do not report findings about a commit's `Correction-Owner` trailer/u);
+  assert.match(guidelines, /`correction-owner` marker remain in scope/u);
+  assert.match(guidelines, /docs\/POLICY\.md/u);
+  // An entrypoint note, not a policy copy: it states no rule about which check reads what.
   assert.doesNotMatch(guidelines, /review-scope|shaMergeAuthority|merge gate/u);
-  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
-  assert.match(gate, /readShaMergeVerdict\(client, expectedHead\)/u);
-  const owner = await import('./correction-owner.mjs');
-  assert.equal(owner.shaMergeAuthority('Merge 02b9392 into 816e414').mergeEligible, false);
-  assert.equal(owner.shaMergeAuthority('fix\n\nCorrection-Owner: claude\n').owner, 'claude');
+
+  const gate = await import('./autonomous-review-gate.mjs');
+  const source = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  assert.match(source, /readShaMergeVerdict\(client, expectedHead\)/u);
+  const { shaMergeAuthority } = await import('./correction-owner.mjs');
+  // An untrailered or merge-commit message is held (a non-null failure reason); a trailered head is not.
+  for (const message of ['Merge 02b9392 into 816e414', 'fix: no trailer', '']) {
+    assert.notEqual(gate.ownershipReasonForVerdict(shaMergeAuthority(message)), null, JSON.stringify(message));
+  }
+  assert.equal(gate.ownershipReasonForVerdict(shaMergeAuthority('fix\n\nCorrection-Owner: claude\n')), null);
 });
 
 test('the rubric and POLICY stay within their line budgets and name the executable probes', async () => {
