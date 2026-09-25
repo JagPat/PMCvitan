@@ -241,16 +241,21 @@ export function shouldRetryCiFailure(context, existingStatus, failedChecks = [],
 // so the one bounded failed-job retry re-runs the same head with no new head or PR edit. While the head is
 // still unreadable the PR is not drafted either, so a later green run on the same head proceeds. A readable
 // head that does not declare the candidate never reaches here: scope refuses it first (fail closed).
-// `draft` applies only when no retry is taken (the controller returns after requesting one).
+// `draft` applies only when no retry is taken (the controller returns after requesting one). `reason` routes
+// the notice: when the controller's own read ADMITS the candidate, the failed job is a CI failure, not a
+// scope refusal, so it must not say "Scope refused this head" or ask for a new head (shadow finding on #630).
 export function ciFailureDisposition(context, existingStatus, failedChecks = [], { pullRequest, scope } = {}) {
   const candidateScope = failedChecks.includes('review-scope')
     && correctionOwnerDeclaration(pullRequest).state === 'candidate'
     && Boolean(scope?.allowed || scope?.retryable);
   const unreadable = candidateScope && scope?.retryable === true;
+  const scopeAdmitted = candidateScope && scope?.allowed === true;
   return {
     retry: Boolean(shouldRetryCiFailure(context, existingStatus, failedChecks, { candidateScope })),
     draft: !unreadable && shouldDraftForCiFailure(existingStatus),
     unreadable,
+    scopeAdmitted,
+    reason: failedChecks.includes('review-scope') && !scopeAdmitted ? 'scope' : 'ci',
   };
 }
 
@@ -2003,16 +2008,20 @@ export async function run() {
       );
       throw new Error(`${ciDetail}; ${scope.detail}`);
     }
+    const noticeDetail = disposition.scopeAdmitted
+      ? `${ciDetail}; the controller's own scope check admits this exact head, so the failed review-scope `
+        + 'job is a CI failure, not an ownership refusal'
+      : ciDetail;
     const ciNotice = correctionNotice(pullRequest, {
-      detail: ciDetail,
-      reason: ciSummary.failed.includes('review-scope') ? 'scope' : 'ci',
+      detail: noticeDetail,
+      reason: disposition.reason,
     });
     await client.updateStickyComment(
       pullRequest.number,
       statusBody({
         state: 'blocked',
         head: expectedHead,
-        detail: ciDetail,
+        detail: noticeDetail,
         attempt: 0,
         owner: ciNotice.owner ?? 'undeclared',
         correctionState: noticeState(ciNotice),

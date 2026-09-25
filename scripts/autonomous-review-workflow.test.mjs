@@ -10,6 +10,7 @@ import {
   ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 import { correctionReasonFor } from './correction-lease.mjs';
+import { correctionRouting, parseCorrectionOwner } from './correction-owner.mjs';
 
 const {
   hasTerminalReviewFailureAfterPending,
@@ -1826,9 +1827,9 @@ test('finding 4101926931 on #630: an exhausted candidate-head read recovers on t
   assert.equal(commitReads.length, 3);
   // The failed CI run is retried once on this head, and the PR is never drafted while the head is unread.
   assert.deepEqual(reviewGate.ciFailureDisposition(ciFailure(1), null, ['review-scope'], { pullRequest: pull(), scope: unreadScope }),
-    { retry: true, draft: false, unreadable: true });
+    { retry: true, draft: false, unreadable: true, scopeAdmitted: false, reason: 'scope' });
   assert.deepEqual(reviewGate.ciFailureDisposition(ciFailure(2), null, ['review-scope'], { pullRequest: pull(), scope: unreadScope }),
-    { retry: false, draft: false, unreadable: true });
+    { retry: false, draft: false, unreadable: true, scopeAdmitted: false, reason: 'scope' });
   // Final admission keeps the retryable meaning — `OWNERSHIP_READ_RETRY`, never `scope_required` — and it owes
   // no correction, so no lease can open.
   const unreadFinal = await reviewGate.revalidateFinalReviewPolicy(client, 255, head);
@@ -1853,7 +1854,15 @@ test('finding 4101926931 on #630: an exhausted candidate-head read recovers on t
   // A failed CI run whose scope failure was only the transient read is re-run once on this head (the
   // controller returns after requesting it; `draft` applies only if no retry is taken).
   assert.deepEqual(reviewGate.ciFailureDisposition(ciFailure(1), null, ['review-scope'], { pullRequest: pull(), scope: admitted }),
-    { retry: true, draft: true, unreadable: false });
+    { retry: true, draft: true, unreadable: false, scopeAdmitted: true, reason: 'ci' });
+  // Shadow finding on #630: once the bounded retry is spent, a review-scope failure the controller's own read
+  // admits is reported as a CI failure. The notice keeps the admitted-candidate diagnostic and never says
+  // scope refused the head or asks for a new head.
+  const spent = reviewGate.ciFailureDisposition(ciFailure(2), null, ['review-scope'], { pullRequest: pull(), scope: admitted });
+  assert.deepEqual(spent, { retry: false, draft: true, unreadable: false, scopeAdmitted: true, reason: 'ci' });
+  const notice = correctionRouting({ declaration: parseCorrectionOwner(body, { headRef: 'codex/observation-seed' }), head, reason: spent.reason, detail: 'Failed checks: review-scope' });
+  assert.doesNotMatch(notice.instruction, /Scope refused this head|one new head/u);
+  assert.match(notice.instruction, /admitted candidate correction owner/u);
   const held = await reviewGate.revalidateFinalReviewPolicy(client, 255, head);
   assert.equal(held.state, 'ownership_withheld');
   assert.equal(held.ownershipReason, OWNERSHIP_CANDIDATE_HELD);
@@ -1906,8 +1915,10 @@ test('finding 4101926931 on #630: a readable ownership fault still fails closed,
     assert.match(statusWrites.at(-1).description, /^scope: /u, label);
     const final = await reviewGate.revalidateFinalReviewPolicy(client, 256, head);
     assert.equal(final.state, 'scope_required', label);
-    // A non-candidate or readable refusal never unlocks the review-scope retry.
-    assert.equal(reviewGate.ciFailureDisposition(ciFailure, null, ['review-scope'], { pullRequest: live, scope }).retry, false, label);
+    // A non-candidate or readable refusal never unlocks the review-scope retry, and stays a scope notice.
+    const disposition = reviewGate.ciFailureDisposition(ciFailure, null, ['review-scope'], { pullRequest: live, scope });
+    assert.equal(disposition.retry, false, label);
+    assert.equal(disposition.reason, 'scope', label);
   }
   // An ordinary declared owner's review-scope failure is still never retried.
   assert.equal(reviewGate.ciFailureDisposition(ciFailure, null, ['review-scope'],
