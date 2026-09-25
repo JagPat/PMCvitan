@@ -142,8 +142,8 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   }
 
   // A CANDIDATE (e.g. codex) is a first-class state distinct from `declared`: recognised in-flight but
-  // never merge-eligible and never awakenable. Every existing consumer checks `=== 'declared'`, so a
-  // candidate is treated as non-declared (scope refuses, routing stalls) until a later unit admits it.
+  // never merge-eligible and never awakenable. The scope gate admits it (`correctionOwnerProblem`), so its
+  // head gets CI and review; routing still stalls and its reviewed head is held, never merged.
   if (CANDIDATE_CORRECTION_OWNERS.includes(owner)) {
     return {
       state: 'candidate',
@@ -483,10 +483,28 @@ export function correctionOwnerDeclaration(pullRequest) {
  * other PR in that range, so the carve-out protected nothing and contradicted
  * the contract it was written beside: a PR inside it could pass `review-scope`
  * with no owner and then route to nobody on its first finding.
+ *
+ * Admits a routable `declared` owner, or a recognised `candidate` (codex, on a
+ * branch that permits it) ONLY when the exact head commit declares the same
+ * candidate (`headCommitMessage`): a truthful body AND head. Such a head is never
+ * merge-eligible (`shaMergeAuthority`), so it never carries a green required
+ * status a queued auto-merge could act on, and its reviewed head is held with
+ * `OWNERSHIP_CANDIDATE_HELD` (no correction lease, nobody woken). A candidate
+ * body over any other head — an eligible `Correction-Owner: claude` head, one
+ * with no owner, or an unread head — is refused, so a body edit can never turn
+ * a mergeable head into a candidate-scoped one (Codex findings on #628). Missing,
+ * invalid and contradictory declarations — codex on `claude/**` included — are
+ * refused as before.
  */
-export function correctionOwnerProblem(pullRequest) {
+export function correctionOwnerProblem(pullRequest, { headCommitMessage } = {}) {
   const declaration = correctionOwnerDeclaration(pullRequest);
-  return declaration.state === 'declared' ? null : declaration.detail;
+  if (declaration.state === 'declared') return null;
+  if (declaration.state !== 'candidate') return declaration.detail;
+  const head = typeof headCommitMessage === 'string' ? shaMergeAuthority(headCommitMessage) : null;
+  if (head?.outcome === 'candidate' && head.owner === declaration.owner) return null;
+  return `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
+    + `${head ? 'does not declare it' : 'could not be read'}: every commit of a candidate PR must end with `
+    + `a single \`Correction-Owner: ${declaration.owner}\` trailer (a new head is required)`;
 }
 
 function ownerLabel(owner) {
@@ -545,6 +563,16 @@ function declaredInstruction(owner, { reason, detail }) {
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
 function undeclaredInstruction(declaration) {
+  // An admitted CANDIDATE is not an ownership fault: the marker is truthful and the scope gate admits
+  // it, so "replace the marker" would be false and would steer the PR away from its held workflow.
+  // It is still routed to nobody and woken by nothing; only the bounded probe requests a correction.
+  if (declaration.state === 'candidate') {
+    return `"${declaration.owner}" is the admitted candidate correction owner of this PR: tracked in-flight, `
+      + 'never merged automatically and never woken from GitHub, held pending independent reviewer '
+      + 'activation. This loop routes no agent and has requested no correction; it cannot observe whether '
+      + 'one is already running. Keep the marker as it is; the loop requests a correction only through '
+      + 'the bounded codex-fix-probe.';
+  }
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `
     + 'No agent is routed and no correction is in flight.';
   // ADD only when the block is empty. Told to a body that already carries a

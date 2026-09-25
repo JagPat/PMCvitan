@@ -492,8 +492,11 @@ decision for the separate, operator-authorized installer.
    `<!-- correction-owner: codex -->` on a branch outside `claude/**`, and every commit (the reviewed head
    included) ends with `Correction-Owner: codex`. The probe refuses any other PR (`not_candidate_seed`), and
    the observer's verdict holds unless the reviewed head and the PR both still declare the codex candidate.
-   Until candidate scope admission lands (the next unit), `review-scope` refuses a codex marker, so no such
-   seed gets CI yet and no cycle can run. Its title, description, comments and reviews must hold no Codex mention
+   `review-scope` admits a codex marker only over a head whose own trailer declares codex, so the seed gets
+   CI and review while its head is never merge-eligible: no green required status or queued auto-merge can
+   act on it, and the controller holds its reviewed heads (`OWNERSHIP_CANDIDATE_HELD`, no correction lease,
+   nobody woken). Push the seed as ONE push: a second push can let a stale CI completion cancel the head's
+   shadow review. Its title, description, comments and reviews must hold no Codex mention
    except Codex's own, and no one but Codex and trusted workflows may have left a GitHub review on it.
 2. **Keep the cycle quiet** from the moment the reviewed head was pushed until the observer runs: nobody
    comments on, reviews, edits or pushes to the PR (a Claude session acting through the owner's account
