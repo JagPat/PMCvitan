@@ -3,7 +3,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 
 import { GitHubClient } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { asciiTrim, gitParsedTrailers } from './correction-owner.mjs';
+import { asciiTrim, correctionOwnerDeclaration, gitParsedTrailers } from './correction-owner.mjs';
 import { CODEX_LOGIN, LINEAGE_BASE_REF } from './review-policy.mjs';
 import { readZipEntry } from './zip-entry.mjs';
 
@@ -56,6 +56,17 @@ export function probeTrailerValue({ pullRequest, headSha, findingRef }) {
 }
 export function probeTrailer(identity) {
   return `${PROBE_TRAILER_KEY}: ${probeTrailerValue(identity)}`;
+}
+/**
+ * The terminal trailer block every corrective commit must end with: the request's probe trailer and a
+ * truthful `Correction-Owner: codex`. Codex authors the commit, so it declares Codex — never Claude — and
+ * the head stays a merge-ineligible CANDIDATE (`shaMergeAuthority`) whose reviewed head is held, not
+ * merged. Containment only, never causation: both lines are public request text.
+ */
+const CORRECTIVE_OWNER = 'codex';
+export const CORRECTIVE_OWNER_TRAILER = `Correction-Owner: ${CORRECTIVE_OWNER}`;
+export function correctiveTrailerBlock(identity) {
+  return `${probeTrailer(identity)}\n${CORRECTIVE_OWNER_TRAILER}`;
 }
 /**
  * The `Codex-Fix-Probe` values in a commit message's TERMINAL trailer block, in order, read as
@@ -235,6 +246,14 @@ export function authorizeCodexFixDispatch({
   ) {
     return { allowed: false, state: 'unauthorized_or_stale' };
   }
+  // The request asks every corrective commit for `Correction-Owner: codex` and forbids editing the owner
+  // marker, so only a truthful codex CANDIDATE seed (codex marker, a branch that permits it) keeps the
+  // corrective head a held candidate. On any other PR the Codex trailer would read as inconsistent
+  // ownership, so no request is posted.
+  const declaration = correctionOwnerDeclaration(livePull);
+  if (declaration.state !== 'candidate' || declaration.owner !== CORRECTIVE_OWNER) {
+    return { allowed: false, state: 'not_candidate_seed' };
+  }
   const prefix = dedupPrefix({ pullRequest: pullRequestNumber, headSha });
   if (existingComments.some((comment) => typeof comment?.body === 'string' && comment.body.includes(prefix))) {
     return { allowed: false, state: 'duplicate' };
@@ -297,13 +316,15 @@ export function codexFixComment({ pullRequestNumber, headSha, sourceBranch, find
     '',
     'Requirements: push the corrective commit to that source branch (do not open a new PR); '
       + 'preserve every other open finding and do not resolve, overwrite, or hide them; do not touch '
-      + 'branch protection, required statuses, or unrelated code.',
+      + 'branch protection, required statuses, or unrelated code; do not edit the PR description or its '
+      + 'correction-owner marker.',
     '',
-    'End the message of EVERY commit you push for this request with this exact trailer line, on its own '
-      + 'line in the final trailer block, unchanged (it identifies this request on your commits):',
+    'End the message of EVERY commit you push for this request with these two exact trailer lines, '
+      + 'unchanged, together as its final trailer block (the first identifies this request; the second '
+      + 'truthfully declares Codex as the author, so the commit is held and never merged automatically):',
     '',
     '```',
-    probeTrailer({ pullRequest: pullRequestNumber, headSha, findingRef }),
+    correctiveTrailerBlock({ pullRequest: pullRequestNumber, headSha, findingRef }),
     '```',
     '',
     'This is a one-time, bounded correction-boundary probe. It is dispatch evidence only — no review '

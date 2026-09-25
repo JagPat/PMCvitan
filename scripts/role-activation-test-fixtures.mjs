@@ -6,7 +6,7 @@ import {
   GITHUB_ACTIONS_LOGIN,
   readRoleActivationEvidence,
 } from './role-activation-evidence.mjs';
-import { codexFixComment, probeMarker, probeTrailer } from './codex-fix-probe.mjs';
+import { CORRECTIVE_OWNER_TRAILER, codexFixComment, probeMarker, probeTrailer } from './codex-fix-probe.mjs';
 import { evidenceArtifactName } from './claude-shadow-review.mjs';
 import { CODEX_LOGIN, REQUIRED_CHECKS } from './review-policy.mjs';
 
@@ -16,7 +16,9 @@ import { CODEX_LOGIN, REQUIRED_CHECKS } from './review-policy.mjs';
 
 export const REPO = 'JagPat/PMCvitan';
 export const PR = 619;
-export const BRANCH = 'claude/x';
+export const BRANCH = 'codex/observation-seed';
+// A truthful codex candidate seed's description: the only PR a cycle can be observed on.
+export const SEED_BODY = '<!-- correction-owner: codex -->\nCodex codes; Claude reviews.';
 export const BASE = 'b'.repeat(40);
 export const ORIGINAL = 'a'.repeat(40);
 export const CORRECTIVE = 'c'.repeat(40);
@@ -99,6 +101,7 @@ export function pull(headSha = CORRECTIVE, overrides = {}) {
   return {
     number: PR,
     state: 'open',
+    body: SEED_BODY,
     head: { ref: BRANCH, sha: headSha, repo: { full_name: REPO } },
     base: { ref: 'main', sha: BASE, repo: { full_name: REPO } },
     ...overrides,
@@ -111,7 +114,7 @@ export function activity(id, before, after, hhmm, { type = 'push', actor = CODEX
 
 // A commit of the corrective push, as the compare API returns it, carrying the request's binding trailer.
 export const BINDING_TRAILER = probeTrailer({ pullRequest: PR, headSha: ORIGINAL, findingRef: FINDING_REF });
-export function correctiveCommit(sha, message = `fix: correct the finding\n\n${BINDING_TRAILER}`) {
+export function correctiveCommit(sha, message = `fix: correct the finding\n\n${BINDING_TRAILER}\n${CORRECTIVE_OWNER_TRAILER}`) {
   return { sha, author: { login: CODEX_LOGIN }, commit: { message } };
 }
 
@@ -136,6 +139,8 @@ export function world() {
       commits: [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE)],
     },
     pulls: [pull(), pull()],
+    // The reviewed head commit: a truthful codex candidate seed head.
+    originalHead: { sha: ORIGINAL, commit: { message: `seed: a candidate change\n\n${CORRECTIVE_OWNER_TRAILER}\n` } },
     // the pull request's issue events, oldest first, as GitHub returns them
     events: [issueEvent(40, 'labeled', '09:30'), issueEvent(41, 'base_ref_changed', '08:40')],
     // The PR's conversation: the owner's comment BEFORE the branch reached the reviewed head (09:00), the
@@ -144,7 +149,7 @@ export function world() {
     conversation: {
       pull_request: { id: 9619, number: PR, pull_request: { url: `https://api.github.com/repos/${REPO}/pulls/${PR}` },
         user: { login: 'JagPat' }, created_at: at('09:30'), updated_at: at('11:40'),
-        title: 'Fix the finding', body: 'Codex codes; Claude reviews.' },
+        title: 'Fix the finding', body: SEED_BODY },
       issue_comment: [
         conversationItem(61, 'JagPat', '08:30', 'Looks good so far.'),
         conversationItem(62, GITHUB_ACTIONS_LOGIN, '08:50', '<!-- autonomous-review-state --> waiting for Codex', { updated: '11:30' }),
@@ -195,6 +200,10 @@ export function client(w) {
         return page;
       }
       if (path.startsWith(`/repos/${REPO}/compare/`)) return w.comparison;
+      if (path === `/repos/${REPO}/commits/${ORIGINAL}`) {
+        if (w.originalHeadError) throw new Error(w.originalHeadError);
+        return w.originalHead;
+      }
       if (path === `/repos/${REPO}/issues/${PR}`) {
         if (w.conversationError?.pull_request) throw new Error(w.conversationError.pull_request);
         return w.conversation.pull_request;

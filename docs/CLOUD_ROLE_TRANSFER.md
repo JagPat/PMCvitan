@@ -377,12 +377,18 @@ additive redesign: this unit keeps only what trusted evidence can prove.
 ### Task → push binding (evidence only, non-activating)
 
 Requested as a maintenance change to the frozen `codex-fix-probe` (the repository owner asked for it after
-#619). The correction request now asks Codex to end every commit it pushes with one trailer line that
-repeats the request's own identity:
+#619). The correction request now asks Codex to end every commit it pushes with one terminal trailer block:
+a line that repeats the request's own identity, and a truthful owner declaration (`correctiveTrailerBlock`):
 
 ```
 Codex-Fix-Probe: pr-<number>:head-<reviewed head SHA>:finding-<finding reference>
+Correction-Owner: codex
 ```
+
+The owner line is containment, not evidence: Codex authored the commit, so it declares Codex (never Claude),
+and the corrective head is a merge-ineligible candidate the controller holds (`OWNERSHIP_CANDIDATE_HELD`,
+which opens no correction lease). A commit that drops it is invalid, which is also never merge-eligible.
+The request also tells Codex not to edit the PR description or its correction-owner marker.
 
 `probeTrailer`/`probeTrailerValue` build it. `probeTrailersIn` reads it back from the commit message's
 terminal trailer block only, as `git interpret-trailers --parse --unfold` reads it (extraction delegated to
@@ -415,7 +421,13 @@ The verdict checks the rest, from the reader's evidence:
 
 - **Commits.** The corrective push's commit list is complete, ends at the corrective head, and lists whole,
   distinct commits (each with its own SHA). Every commit carries exactly one `Codex-Fix-Probe` trailer, equal to the value derived from this cycle's own PR,
-  reviewed head and finding (never taken from the evidence).
+  reviewed head and finding (never taken from the evidence). Every commit also declares exactly one
+  `Correction-Owner: codex`, read as the controller reads a head (`shaMergeAuthority` → a held
+  `candidate`). That is containment, not causation: a commit without it would leave an invalid head the
+  controller cannot hold as a candidate, so the cycle holds.
+- **Seed.** The cycle ran on a truthful codex candidate seed: the reviewed head commit itself (read once, by
+  SHA) declares `Correction-Owner: codex`, and the PR still declares `<!-- correction-owner: codex -->` on a
+  branch outside `claude/**` at both closing PR reads. A Claude-owned head relabelled only in the body holds.
 - **Conversation.** The PR's complete conversation, its own title and description included, currently has
   no `@codex` mention except the request's (as that issue comment) and the Codex connector's own, however
   old: a task started earlier could still push. (The Codex connector does answer a mention in a PR
@@ -474,7 +486,12 @@ decision for the separate, operator-authorized installer.
 
 1. **Pick the PR.** An open, same-repository PR targeting `main` whose current head (the *reviewed head*) has
    green CI and a Claude shadow review (`claude-independent-review`) in state `changes_required`, the newest
-   verified review of that head. Its title, description, comments and reviews must hold no Codex mention
+   verified review of that head. It must be a truthful Codex candidate seed: its body declares
+   `<!-- correction-owner: codex -->` on a branch outside `claude/**`, and every commit (the reviewed head
+   included) ends with `Correction-Owner: codex`. The probe refuses any other PR (`not_candidate_seed`), and
+   the observer's verdict holds unless the reviewed head and the PR both still declare the codex candidate.
+   Until candidate scope admission lands (the next unit), `review-scope` refuses a codex marker, so no such
+   seed gets CI yet and no cycle can run. Its title, description, comments and reviews must hold no Codex mention
    except Codex's own, and no one but Codex and trusted workflows may have left a GitHub review on it.
 2. **Keep the cycle quiet** from the moment the reviewed head was pushed until the observer runs: nobody
    comments on, reviews, edits or pushes to the PR (a Claude session acting through the owner's account
@@ -484,9 +501,10 @@ decision for the separate, operator-authorized installer.
    reviewed head, `shadow_run_id` = that shadow check run's id, `finding_comment_id` left empty, and
    `authorization` = `arm-pr-<pr_number>-head-<head_sha>`. The job's output names the request `comment_id`.
 4. **Let Codex correct it.** Expected, and observed rather than assumed: a Codex-connector 👀 on the request,
-   then a non-forced push by the connector from the reviewed head, every commit carrying the request's
-   `Codex-Fix-Probe` trailer; then green CI and a `clear` shadow review on the corrective head. A Codex
-   head carries no `Correction-Owner: claude` trailer, so the controller should hold it rather than merge.
+   then a non-forced push by the connector from the reviewed head, every commit ending with the request's
+   `Codex-Fix-Probe` trailer and `Correction-Owner: codex`; then green CI and a `clear` shadow review on
+   the corrective head. A Codex head is a candidate (or, without the owner line, invalid), never
+   merge-eligible, so the controller holds it rather than merge.
 5. **Observe.** Once the corrective head's CI and shadow review are complete, dispatch `Role-transfer
    observer` on `main` with `pr_number` and `request_comment_id`. The job summary shows `activate`, or `hold`
    with each missing proof and the reader's diagnostics.

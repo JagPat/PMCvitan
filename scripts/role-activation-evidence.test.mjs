@@ -20,6 +20,7 @@ import {
 } from './role-activation-test-fixtures.mjs';
 
 const BINDING_VALUE = probeTrailerValue({ pullRequest: PR, headSha: ORIGINAL, findingRef: FINDING_REF });
+const HELD_CODEX = { outcome: 'candidate', owner: 'codex' };
 
 test('the reader normalizes a full correction cycle with identity and server timestamps on every record', async () => {
   const { evidence, calls } = await readWorld();
@@ -54,8 +55,8 @@ test('the reader normalizes a full correction cycle with identity and server tim
     ancestry: {
       status: 'ahead', aheadBy: 2, behindBy: 0, mergeBaseSha: ORIGINAL, commitsComplete: true,
       commits: [
-        { sha: '1'.repeat(40), authorLogin: CODEX_LOGIN, probeTrailers: [BINDING_VALUE] },
-        { sha: CORRECTIVE, authorLogin: CODEX_LOGIN, probeTrailers: [BINDING_VALUE] },
+        { sha: '1'.repeat(40), authorLogin: CODEX_LOGIN, probeTrailers: [BINDING_VALUE], correctionOwner: HELD_CODEX },
+        { sha: CORRECTIVE, authorLogin: CODEX_LOGIN, probeTrailers: [BINDING_VALUE], correctionOwner: HELD_CODEX },
       ],
     },
   });
@@ -101,7 +102,10 @@ test('the reader normalizes a full correction cycle with identity and server tim
     assert.ok(freshness.observedAtMs < readAt);
   }
   // Read-only: GETs only (the fake refuses writes), and only the documented read endpoints.
-  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619$|issues\/619\/(events|comments)\?|pulls\/619\/(comments|reviews)\?|activity\?|compare\/)/u.test(path)));
+  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619$|issues\/619\/(events|comments)\?|pulls\/619\/(comments|reviews)\?|activity\?|compare\/|commits\/[0-9a-f]{40}$)/u.test(path)));
+  // The reviewed head commit is read once (immutable) and its owner reported as the controller reads it.
+  assert.equal(calls.filter((path) => path === `/repos/${REPO}/commits/${ORIGINAL}`).length, 1);
+  assert.deepEqual(evidence.records.originalHead, { sha: ORIGINAL, correctionOwner: HELD_CODEX });
   // The push log names its period; this cycle is inside a day.
   assert.ok(calls.filter((path) => path.includes('/activity?')).every((path) => path.endsWith('&time_period=day')));
 });
@@ -542,6 +546,9 @@ test('the corrective push reports each commit\'s binding trailers, and whether t
   });
   assert.deepEqual(evidence.records.correctivePush.ancestry.commits.map((commit) => commit.probeTrailers),
     [[], ['other-request', BINDING_VALUE], [], null]);
+  // The owner is read exactly as the controller reads a head: none of these declares a held Codex candidate.
+  assert.deepEqual(evidence.records.correctivePush.ancestry.commits.map((commit) => commit.correctionOwner),
+    [{ outcome: 'invalid', owner: null }, { outcome: 'invalid', owner: null }, { outcome: 'invalid', owner: null }, null]);
   // The compare API returns at most one page of commits: a list shorter than total_commits, or a
   // total_commits that differs from ahead_by, is incomplete; so is a response without a commit list.
   for (const change of [
