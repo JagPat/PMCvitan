@@ -248,7 +248,10 @@ export function ciFailureDisposition(context, existingStatus, failedChecks = [],
   const candidateScope = failedChecks.includes('review-scope')
     && correctionOwnerDeclaration(pullRequest).state === 'candidate'
     && Boolean(scope?.allowed || scope?.retryable);
-  const unreadable = candidateScope && scope?.retryable === true;
+  // Held as retryable only when review-scope is the SOLE failed check: another failure is real and needs
+  // its ordinary draft and correction, which the unread head must not hide.
+  const unreadable = candidateScope && scope?.retryable === true
+    && failedChecks.every((name) => name === 'review-scope');
   const scopeAdmitted = candidateScope && scope?.allowed === true;
   return {
     retry: Boolean(shouldRetryCiFailure(context, existingStatus, failedChecks, { candidateScope })),
@@ -1554,6 +1557,153 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
   return result;
 }
 
+// The failed-CI path for one exact head, moved out of `run()` so it is testable. Returns 'retried',
+// 'unreadable' or 'superseded', or throws the CI failure after drafting the PR and publishing the failure.
+export async function handleCiFailure(
+  client,
+  context,
+  pullRequest,
+  expectedHead,
+  { existingStatus = null, existingStatuses = [], scope = { allowed: true } } = {},
+) {
+  const ciSummary = summarizeRequiredChecks(
+    await client.checkRuns(expectedHead),
+    requiredChecksForPullRequest(pullRequest.number),
+  );
+  const disposition = ciFailureDisposition(context, existingStatus, ciSummary.failed, { pullRequest, scope });
+  if (disposition.retry) {
+    try {
+      await client.rerunFailedJobs(context.ciRunId);
+      await client.updateStickyComment(
+        pullRequest.number,
+        statusBody({
+          state: 'ci_retry',
+          head: expectedHead,
+          detail: `CI workflow concluded ${context.ciConclusion}`,
+          attempt: 0,
+          next: 'GitHub is retrying failed CI jobs once before requiring a code change.',
+        }),
+      );
+      console.log(`Requested one failed-job retry for CI run ${context.ciRunId}.`);
+      return 'retried';
+    } catch (error) {
+      console.warn(
+        `Could not request the bounded CI retry; failing closed: ${error.message}`,
+      );
+    }
+  }
+  pullRequest = disposition.draft
+    ? await setDraftForCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+        true,
+      )
+    : await refreshCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+      );
+  if (!pullRequest) return 'superseded';
+  if (disposition.unreadable) {
+    // Still unreadable after the bounded retry: publish the retryable status, never a `ci:` failure, which
+    // the watchdog routes as an owed scope correction (Codex finding 4103259698 on #630). No draft.
+    await holdUnreadableCandidateHead(client, pullRequest, expectedHead, scope, existingStatuses);
+    return 'unreadable';
+  }
+  const ciDetail = ciSummary.failed.length > 0
+    ? `Failed checks: ${ciSummary.failed.join(', ')}`
+    : `CI workflow concluded ${context.ciConclusion}`;
+  if (!isTerminalReviewStatus(existingStatus)) {
+    await client.setStatus(
+      expectedHead,
+      'failure',
+      `ci: ${ciDetail}`,
+      pullRequest.html_url,
+    );
+  }
+  const noticeDetail = disposition.scopeAdmitted
+    ? `${ciDetail}; the controller's own scope check admits this exact head, so the failed review-scope `
+      + 'job is a CI failure, not an ownership refusal'
+    : ciDetail;
+  const ciNotice = correctionNotice(pullRequest, {
+    detail: noticeDetail,
+    reason: disposition.reason,
+  });
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'blocked',
+      head: expectedHead,
+      detail: noticeDetail,
+      attempt: 0,
+      owner: ciNotice.owner ?? 'undeclared',
+      correctionState: noticeState(ciNotice),
+        next: ciNotice.instruction,
+    }),
+  );
+  throw new Error(ciDetail);
+}
+
+// An exact candidate head that could not be read: publish the retryable `OWNERSHIP_READ_RETRY` with the
+// hold sticky — no draft, no `scope:` hold, no correction owed — and settle any pending recovery request,
+// so the watchdog can request a fresh same-SHA recovery of this newer status (Codex findings 4101926931
+// and 4103259698 on #630).
+export async function holdUnreadableCandidateHead(client, pullRequest, expectedHead, scope, existingStatuses = []) {
+  await client.setStatus(expectedHead, 'failure', OWNERSHIP_READ_RETRY, pullRequest.html_url);
+  await settleRecoveryRequest(
+    client, expectedHead, pullRequest, pendingRecoveryRequest(existingStatuses), 'unreadable candidate head',
+  );
+  const stillCurrent = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (stillCurrent) {
+    await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
+      ownershipReason: OWNERSHIP_READ_RETRY,
+      verdict: scope?.verdict ?? UNREADABLE_VERDICT,
+    });
+  }
+}
+
+// The workflow run id of the run that decided the required check `name`, from its Actions URL, or null.
+export function decidingRunId(checkRuns, name, requiredChecks = REQUIRED_CHECKS) {
+  const decider = resolveRequiredChecks(checkRuns, requiredChecks).deciders.find((run) => run.name === name);
+  for (const url of [decider?.html_url, decider?.details_url]) {
+    const match = /\/actions\/runs\/(\d+)\//u.exec(typeof url === 'string' ? url : '');
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+// Same-SHA recovery once the bounded retry is spent (Codex finding 4103259698 on #630): a recovery run
+// re-read the candidate head and now admits it, but CI's `review-scope` still carries the failed read.
+// Re-run that failed CI run on this same head instead of drafting the PR. Only a candidate body whose scope
+// the controller admits qualifies, and only on a run that reaches the check wait with a failed check (a
+// recovery run), so recovery requests pace it. Returns whether the re-run was requested.
+export async function rerunAdmittedCandidateScope(client, pullRequest, expectedHead, failedChecks, scope) {
+  if (!failedChecks?.includes('review-scope') || scope?.allowed !== true) return false;
+  if (correctionOwnerDeclaration(pullRequest).state !== 'candidate') return false;
+  const runId = decidingRunId(
+    await client.checkRuns(expectedHead), 'review-scope', requiredChecksForPullRequest(pullRequest.number),
+  );
+  if (!runId) return false;
+  try {
+    await client.rerunFailedJobs(runId);
+  } catch (error) {
+    console.warn(`Could not re-run the failed review-scope job; failing closed: ${error.message}`);
+    return false;
+  }
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'ci_retry',
+      head: expectedHead,
+      detail: 'review-scope failed while this exact head could not be read; the controller now reads and admits it',
+      attempt: 0,
+      next: 'GitHub is re-running the failed CI jobs on this same head.',
+    }),
+  );
+  return true;
+}
+
 export async function revalidateFinalReviewPolicy(
   client,
   number,
@@ -1924,111 +2074,15 @@ export async function run() {
   if (!scope.allowed && !scope.retryable) throw new Error(scope.detail);
   const ciFailed = Boolean(context.ciConclusion && context.ciConclusion !== 'success');
   if (scope.retryable && !ciFailed) {
-    // The exact candidate head could not be read (Codex finding 4101926931 on #630): publish the retryable
-    // `OWNERSHIP_READ_RETRY` — no draft, no `scope:` hold, no correction — so the supported exact-head
-    // recovery re-reads this same SHA and proceeds.
-    await client.setStatus(expectedHead, 'failure', OWNERSHIP_READ_RETRY, pullRequest.html_url);
-    const stillCurrent = await refreshCurrentHead(client, pullRequest.number, expectedHead);
-    if (stillCurrent) {
-      await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
-        ownershipReason: OWNERSHIP_READ_RETRY,
-        verdict: scope.verdict,
-      });
-    }
+    // The exact candidate head could not be read (Codex finding 4101926931 on #630): retryable on this SHA.
+    await holdUnreadableCandidateHead(client, pullRequest, expectedHead, scope, existingStatuses);
     console.log(`Exact candidate head is unreadable; retryable on this same head: ${scope.detail}`);
     return;
   }
 
   if (ciFailed) {
-    const ciSummary = summarizeRequiredChecks(
-      await client.checkRuns(expectedHead),
-      requiredChecksForPullRequest(pullRequest.number),
-    );
-    const disposition = ciFailureDisposition(context, existingStatus, ciSummary.failed, { pullRequest, scope });
-    if (disposition.retry) {
-      try {
-        await client.rerunFailedJobs(context.ciRunId);
-        await client.updateStickyComment(
-          pullRequest.number,
-          statusBody({
-            state: 'ci_retry',
-            head: expectedHead,
-            detail: `CI workflow concluded ${context.ciConclusion}`,
-            attempt: 0,
-            next: 'GitHub is retrying failed CI jobs once before requiring a code change.',
-          }),
-        );
-        console.log(`Requested one failed-job retry for CI run ${context.ciRunId}.`);
-        return;
-      } catch (error) {
-        console.warn(
-          `Could not request the bounded CI retry; failing closed: ${error.message}`,
-        );
-      }
-    }
-    pullRequest = disposition.draft
-      ? await setDraftForCurrentHead(
-          client,
-          pullRequest.number,
-          expectedHead,
-          true,
-        )
-      : await refreshCurrentHead(
-          client,
-          pullRequest.number,
-          expectedHead,
-        );
-    if (!pullRequest) return;
-    const ciDetail = ciSummary.failed.length > 0
-      ? `Failed checks: ${ciSummary.failed.join(', ')}`
-      : `CI workflow concluded ${context.ciConclusion}`;
-    if (!isTerminalReviewStatus(existingStatus)) {
-      await client.setStatus(
-        expectedHead,
-        'failure',
-        `ci: ${ciDetail}`,
-        pullRequest.html_url,
-      );
-    }
-    if (disposition.unreadable) {
-      // Still unreadable after the bounded retry: stay ready and name the same-head remedy, not a new head.
-      const hold = ownershipHoldNotice(scope.verdict);
-      await client.updateStickyComment(
-        pullRequest.number,
-        statusBody({
-          state: 'blocked',
-          head: expectedHead,
-          detail: `${ciDetail}; ${scope.detail}`,
-          attempt: 0,
-          owner: hold.owner,
-          correctionState: hold.correctionState,
-          next: 'Retryable: re-run the failed CI jobs on this same head once it can be read; no new head '
-            + 'or PR edit is needed.',
-        }),
-      );
-      throw new Error(`${ciDetail}; ${scope.detail}`);
-    }
-    const noticeDetail = disposition.scopeAdmitted
-      ? `${ciDetail}; the controller's own scope check admits this exact head, so the failed review-scope `
-        + 'job is a CI failure, not an ownership refusal'
-      : ciDetail;
-    const ciNotice = correctionNotice(pullRequest, {
-      detail: noticeDetail,
-      reason: disposition.reason,
-    });
-    await client.updateStickyComment(
-      pullRequest.number,
-      statusBody({
-        state: 'blocked',
-        head: expectedHead,
-        detail: noticeDetail,
-        attempt: 0,
-        owner: ciNotice.owner ?? 'undeclared',
-        correctionState: noticeState(ciNotice),
-          next: ciNotice.instruction,
-      }),
-    );
-    throw new Error(ciDetail);
+    await handleCiFailure(client, context, pullRequest, expectedHead, { existingStatus, existingStatuses, scope });
+    return;
   }
 
   const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
@@ -2088,6 +2142,7 @@ export async function run() {
   const checks = await waitForRequiredChecks(client, pullRequest, expectedHead);
   if (checks.state === 'superseded') return;
   if (checks.state !== 'success') {
+    if (await rerunAdmittedCandidateScope(client, pullRequest, expectedHead, checks.failed, scope)) return;
     pullRequest = await setDraftForCurrentHead(
       client,
       pullRequest.number,

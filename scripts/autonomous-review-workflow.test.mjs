@@ -1879,6 +1879,94 @@ test('finding 4101926931 on #630: an exhausted candidate-head read recovers on t
   assert.equal(pull().body, body);
 });
 
+test('finding 4103259698 on #630: a spent retry on an unread candidate head stays retryable, and recovery re-runs CI', async () => {
+  const head = 'a'.repeat(40);
+  const body = '<!-- review-size: standard -->\n<!-- correction-owner: codex -->';
+  const pull = (marker = body) => ({
+    number: 257, additions: 1, deletions: 0, changed_files: 1, body: marker,
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/257',
+    head: { sha: head, ref: 'codex/observation-seed', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const job = (name, conclusion, runId) => ({
+    name, status: 'completed', conclusion, completed_at: '2026-09-25T09:00:00Z',
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  const failedScopeRuns = [job('review-scope', 'failure', '4242'), job('battery-plan', 'success', '4242')];
+  const harness = (live = pull()) => {
+    const log = { statuses: [], drafts: [], reruns: [], stickies: [] };
+    const client = {
+      async pullRequest() { return live; },
+      async setDraft(pr, draft) { log.drafts.push(draft); return { ...pr, draft }; },
+      async setStatus(sha, state, description, url, context = 'codex-current-head') {
+        log.statuses.push({ sha, state, description, context });
+      },
+      async updateStickyComment(number, text) { log.stickies.push(text); },
+      async checkRuns() { return failedScopeRuns; },
+      async rerunFailedJobs(runId) { log.reruns.push(runId); },
+    };
+    return { client, log };
+  };
+  const unread = { allowed: false, retryable: true, verdict: { outcome: 'unreadable', mergeEligible: false, owner: null } };
+  const ci = (ciRunAttempt) => ({ trigger: 'ci', ciConclusion: 'failure', ciRunId: 4242, ciRunAttempt });
+  const pendingRequest = {
+    id: 9, context: 'codex-recovery-request/501', state: 'pending', description: 'recovery: requested terminal status 501',
+  };
+
+  // Attempt 1: the one bounded retry re-runs the same CI run; nothing is published or drafted.
+  const first = harness();
+  assert.equal(await reviewGate.handleCiFailure(first.client, ci(1), pull(), head, { scope: unread }), 'retried');
+  assert.deepEqual(first.log.reruns, [4242]);
+  assert.deepEqual(first.log.statuses, []);
+  assert.deepEqual(first.log.drafts, []);
+
+  // Attempt 2, still unread: the retryable status, never `ci:` (which the watchdog routes as an owed scope
+  // correction). No draft, and the pending recovery request is settled so a fresh one can follow.
+  const spent = harness();
+  assert.equal(await reviewGate.handleCiFailure(spent.client, ci(2), pull(), head,
+    { scope: unread, existingStatuses: [pendingRequest] }), 'unreadable');
+  const published = spent.log.statuses.filter((write) => write.context === 'codex-current-head');
+  assert.deepEqual(published.map((write) => write.description), [OWNERSHIP_READ_RETRY]);
+  assert.equal(correctionReasonFor({ context: 'codex-current-head', ...published[0] }), null);
+  assert.ok(reviewGate.isRetryableTerminalReviewFailure({ context: 'codex-current-head', ...published[0] }));
+  assert.ok(spent.log.statuses.some((write) => write.context === pendingRequest.context && write.state === 'success'));
+  assert.deepEqual(spent.log.drafts, []);
+  assert.deepEqual(spent.log.reruns, []);
+  assert.doesNotMatch(spent.log.stickies.at(-1), /Scope refused|new head/u);
+  // Another failed required check is real: it is not hidden behind the retryable hold.
+  assert.equal(reviewGate.ciFailureDisposition(ci(2), null, ['review-scope', 'automation'],
+    { pullRequest: pull(), scope: unread }).unreadable, false);
+
+  // The recovery run re-reads the same head, which now admits the candidate: it re-runs the failed CI run
+  // (the deciding review-scope run) on this same head instead of drafting it.
+  assert.equal(reviewGate.decidingRunId(failedScopeRuns, 'review-scope'), 4242);
+  const recovery = harness();
+  assert.equal(await reviewGate.rerunAdmittedCandidateScope(recovery.client, pull(), head, ['review-scope'], { allowed: true }), true);
+  assert.deepEqual(recovery.log.reruns, [4242]);
+  assert.deepEqual(recovery.log.drafts, []);
+  assert.deepEqual(recovery.log.statuses, []);
+
+  // Never for a head the controller does not admit, a non-candidate body, or a different failed check.
+  for (const [label, live, failed, scope] of [
+    ['an unread head', pull(), ['review-scope'], unread],
+    ['a refused head', pull(), ['review-scope'], { allowed: false }],
+    ['a declared owner', pull('<!-- correction-owner: claude -->'), ['review-scope'], { allowed: true }],
+    ['a product failure', pull(), ['api'], { allowed: true }],
+  ]) {
+    const other = harness(live);
+    assert.equal(await reviewGate.rerunAdmittedCandidateScope(other.client, live, head, failed, scope), false, label);
+    assert.deepEqual(other.log.reruns, [], label);
+  }
+
+  // A declared owner's review-scope failure still drafts and fails as before.
+  const declared = harness(pull('<!-- correction-owner: claude -->'));
+  await assert.rejects(reviewGate.handleCiFailure(declared.client, ci(1), pull('<!-- correction-owner: claude -->'), head,
+    { scope: { allowed: true } }), /Failed checks: review-scope/u);
+  assert.deepEqual(declared.log.drafts, [true]);
+  assert.deepEqual(declared.log.reruns, []);
+  assert.match(declared.log.statuses.at(-1).description, /^ci: Failed checks: review-scope/u);
+});
+
 test('finding 4101926931 on #630: a readable ownership fault still fails closed, and review-scope stays unretried', async () => {
   const head = 'b'.repeat(40);
   const pull = (marker = 'codex', ref = 'codex/observation-seed') => ({
@@ -2468,7 +2556,14 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
     liveFindingGuard >= 0 && liveFindingGuard < terminalRecovery,
     'live Codex evidence must be checked before recovered success can return',
   );
-  assert.match(runBody, /if \(!isTerminalReviewStatus\(existingStatus\)\)[\s\S]*`ci:/);
+  // The failed-CI path lives in `handleCiFailure`, which `run()` calls before any terminal recovery.
+  const ciHandler = runBody.indexOf('await handleCiFailure(');
+  assert.ok(ciHandler >= 0 && ciHandler < terminalRecovery);
+  const ciHelper = gate.slice(
+    gate.indexOf('export async function handleCiFailure'),
+    gate.indexOf('export async function holdUnreadableCandidateHead'),
+  );
+  assert.match(ciHelper, /if \(!isTerminalReviewStatus\(existingStatus\)\)[\s\S]*`ci:/);
 });
 
 test('workflow has no AI action or AI credential dependency', async () => {
