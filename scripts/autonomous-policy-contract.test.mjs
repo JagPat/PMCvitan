@@ -49,6 +49,23 @@ test('all agent entrypoints require the canonical contract instead of embedding 
   assert.match(contract, /scripts\/review-policy\.mjs/u);
 });
 
+test('AGENTS.md review guidelines scope ownership findings to the exact PR head commit', async () => {
+  // Codex reviews a merge checkout and kept reporting a missing `Correction-Owner` trailer on merge
+  // commits that are not in the PR (#629; #630 on cdda658, 02b9392 and ed7c2cc). The note must name the
+  // one commit the gate reads, and the gate must still read exactly that commit.
+  const agents = await readFile(new URL('../AGENTS.md', import.meta.url), 'utf8');
+  const guidelines = agents.slice(agents.indexOf('## Review guidelines'));
+  assert.ok(agents.includes('## Review guidelines'));
+  for (const rule of [/head commit \(`head\.sha`\)/u, /shaMergeAuthority/u, /refs\/pull\/<n>\/merge/u, /`HEAD\^2` on a merge checkout/u]) {
+    assert.match(guidelines, rule);
+  }
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  assert.match(gate, /readShaMergeVerdict\(client, expectedHead\)/u);
+  const owner = await import('./correction-owner.mjs');
+  assert.equal(owner.shaMergeAuthority('Merge 02b9392 into 816e414').mergeEligible, false);
+  assert.equal(owner.shaMergeAuthority('fix\n\nCorrection-Owner: claude\n').owner, 'claude');
+});
+
 test('the rubric and POLICY stay within their line budgets and name the executable probes', async () => {
   const lines = (text) => text.replace(/\n$/u, '').split('\n').length;
   const rubric = await readFile(new URL('../docs/REVIEW_RUBRIC.md', import.meta.url), 'utf8');
