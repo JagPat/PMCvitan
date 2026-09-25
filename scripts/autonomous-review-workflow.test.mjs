@@ -1927,6 +1927,13 @@ test('finding 4103259698 on #630: a spent retry on an unread candidate head stay
   assert.deepEqual(first.log.reruns, [4242]);
   assert.deepEqual(first.log.statuses, []);
   assert.deepEqual(first.log.drafts, []);
+  // Codex finding 4104805621: a push during the head reads makes this head obsolete. Its retry neither re-runs
+  // the old workflow nor replaces the sticky of the newer head.
+  const pushed = harness({ ...pull(), head: { ...pull().head, sha: 'b'.repeat(40) } });
+  assert.equal(await reviewGate.handleCiFailure(pushed.client, ci(1), pull(), head, { scope: unread }), 'superseded');
+  assert.deepEqual(pushed.log.reruns, []);
+  assert.deepEqual(pushed.log.stickies, []);
+  assert.deepEqual(pushed.log.statuses, []);
 
   // Attempt 2, still unread: the retryable status, never `ci:` (which the watchdog routes as an owed scope
   // correction). No draft, and the pending recovery request is settled so a fresh one can follow.

@@ -522,21 +522,36 @@ export async function readHeadCommitMessage(readOnce, { sleep = pauseFor } = {})
  * refused as before.
  */
 export function correctionOwnerProblem(pullRequest, { headCommitMessage } = {}) {
+  return assessCorrectionOwner(pullRequest, { headCommitMessage }).problem;
+}
+
+/**
+ * The owner verdict for the scope gate, with the head's trailers parsed ONCE: `problem` (the refusal detail,
+ * or null) and `unread` (the refusal is only an unread candidate head, so it is retryable). Parsing once means
+ * a transient git failure cannot make the two disagree (Codex finding 4104805631).
+ */
+export function assessCorrectionOwner(pullRequest, { headCommitMessage } = {}) {
   const declaration = correctionOwnerDeclaration(pullRequest);
-  if (declaration.state === 'declared') return null;
-  if (declaration.state !== 'candidate') return declaration.detail;
+  if (declaration.state === 'declared') return { problem: null, unread: false };
+  if (declaration.state !== 'candidate') return { problem: declaration.detail, unread: false };
   // A message that was read but whose trailers could not be parsed (`shaMergeAuthority` → `unreadable`, git
   // could not run) is as unread as a failed fetch: retryable on the same SHA (Codex finding 4104384946).
   const head = typeof headCommitMessage === 'string' ? shaMergeAuthority(headCommitMessage) : null;
   if (!head || head.outcome === 'unreadable') {
-    return `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
-      + `could not be read after ${HEAD_READ_DELAYS_MS.length + 1} attempts: retryable on this same head `
-      + '(re-run the check; no new head or PR edit is needed)';
+    return {
+      problem: `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
+        + `could not be read after ${HEAD_READ_DELAYS_MS.length + 1} attempts: retryable on this same head `
+        + '(re-run the check; no new head or PR edit is needed)',
+      unread: true,
+    };
   }
-  if (head.outcome === 'candidate' && head.owner === declaration.owner) return null;
-  return `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
-    + 'does not declare it: the exact head commit\'s message must end with '
-    + `a single \`Correction-Owner: ${declaration.owner}\` trailer (a new head is required)`;
+  if (head.outcome === 'candidate' && head.owner === declaration.owner) return { problem: null, unread: false };
+  return {
+    problem: `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
+      + 'does not declare it: the exact head commit\'s message must end with '
+      + `a single \`Correction-Owner: ${declaration.owner}\` trailer (a new head is required)`,
+    unread: false,
+  };
 }
 
 /**
@@ -547,8 +562,7 @@ export function correctionOwnerProblem(pullRequest, { headCommitMessage } = {}) 
  * invalid or contradictory owner still fails closed.
  */
 export function candidateHeadUnread(pullRequest, { headCommitMessage } = {}) {
-  return correctionOwnerDeclaration(pullRequest).state === 'candidate'
-    && (typeof headCommitMessage !== 'string' || shaMergeAuthority(headCommitMessage).outcome === 'unreadable');
+  return assessCorrectionOwner(pullRequest, { headCommitMessage }).unread;
 }
 
 function ownerLabel(owner) {

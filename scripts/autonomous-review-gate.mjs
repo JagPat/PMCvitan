@@ -1576,8 +1576,13 @@ export async function handleCiFailure(
     pullRequest, scope, skipped: skippedRequiredChecks(checkRuns, requiredChecks),
   });
   if (disposition.retry) {
+    // Re-check the head before re-running and before replacing the singleton sticky: a push during the
+    // bounded head reads makes this head obsolete, and its re-run or sticky must not overwrite the newer
+    // head's state (Codex finding 4104805621).
+    if (!await refreshCurrentHead(client, pullRequest.number, expectedHead)) return 'superseded';
     try {
       await client.rerunFailedJobs(context.ciRunId);
+      if (!await refreshCurrentHead(client, pullRequest.number, expectedHead)) return 'superseded';
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({

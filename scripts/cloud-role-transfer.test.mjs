@@ -138,6 +138,11 @@ test('review-scope admits a declared or candidate owner and refuses every other 
   } finally {
     process.env.PATH = savedPath;
   }
+  // Codex finding 4104805631: the scope gate parses the head's trailers ONCE, so the refusal and its
+  // retryability cannot disagree after a transient git failure between two parses.
+  const efficiency = readFileSync(new URL('./review-efficiency.mjs', import.meta.url), 'utf8');
+  assert.equal(efficiency.match(/assessCorrectionOwner\(/gu)?.length, 1);
+  assert.doesNotMatch(efficiency, /correctionOwnerProblem\(|candidateHeadUnread\(|shaMergeAuthority\(/u);
   // A missing, invalid or contradictory declaration is never retryable, whatever the head.
   for (const markers of [[], [owner('devin')], [owner('codex'), owner('claude')]]) {
     assert.notEqual(scope(markers, 'codex/x', undefined).retryable, true, `${markers}`);
