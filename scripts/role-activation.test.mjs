@@ -199,6 +199,53 @@ test('finding 4083067617: task -> push causation needs the exact trailer on a co
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commitsComplete = false; }), 'codexTaskCausation');
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits = []; }), 'codexTaskCausation');
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].probeTrailers = null; }), 'codexTaskCausation');
+  // Codex finding 4094243346 on #628: every corrective commit must also declare Codex as a held candidate
+  // (containment). A commit with the probe trailer but no owner, a Claude owner, or two owners holds.
+  const probeOnly = trailer(BINDING_VALUE);
+  for (const commits of [
+    [correctiveCommit('1'.repeat(40), probeOnly), correctiveCommit(CORRECTIVE)],
+    [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE, probeOnly)],
+    [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE, `${probeOnly}\nCorrection-Owner: claude`)],
+    [correctiveCommit('1'.repeat(40)), correctiveCommit(CORRECTIVE,
+      `${probeOnly}\nCorrection-Owner: codex\nCorrection-Owner: claude`)],
+  ]) {
+    holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.comparison.commits = commits; }), expected), 'codexTaskCausation');
+  }
+  holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].correctionOwner = null; }), 'codexTaskCausation');
+  // Codex finding 4099077984 on #628: the cycle must run on a truthful codex candidate seed. The reader
+  // records the declaration at both closing reads; a Claude-owned, undeclared or unread seed holds.
+  const claudeSeed = pull(CORRECTIVE, { body: '<!-- correction-owner: claude -->' });
+  holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.pulls = [claudeSeed, claudeSeed, claudeSeed]; }), expected),
+    'codexTaskCausation');
+  for (const declaration of [{ state: 'declared', owner: 'claude' }, { state: 'missing', owner: null },
+    { state: 'contradictory', owner: null }, null]) {
+    holds(await verdictWith((e) => { e.records.freshness.ownerDeclarationAtEnd = declaration; }), 'codexTaskCausation');
+    holds(await verdictWith((e) => { e.records.freshness.ownerDeclarationAtClose = declaration; }), 'codexTaskCausation');
+  }
+  // Codex finding 4100230315 on #628: the reviewed head itself must declare the codex candidate. A Claude
+  // head relabelled only in the body, a head with no owner, an unread head or another commit holds.
+  for (const message of ['seed\n\nCorrection-Owner: claude\n', 'seed with no owner', 'seed\n\nCorrection-Owner: codex\nCorrection-Owner: claude\n']) {
+    holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.originalHead = { sha: ORIGINAL, commit: { message } }; }), expected),
+      'codexTaskCausation');
+  }
+  holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.originalHeadError = 'Not Found'; }), expected), 'codexTaskCausation');
+  holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.originalHead = { sha: OTHER, commit: w.originalHead.commit }; }), expected),
+    'codexTaskCausation');
+  holds(await verdictWith((e) => { e.records.originalHead = null; }), 'codexTaskCausation');
+  // Codex finding 4100509814 on #629: a request from before containment (same marker, only the probe line)
+  // is not proof of it.
+  holds(roleTransferActivationVerdict(await evidenceFor((w) => {
+    w.comment = { ...w.comment, body: w.comment.body.replace('\nCorrection-Owner: codex\n```', '\n```') };
+  }), expected), 'codexTaskCausation');
+  holds(await verdictWith((e) => { e.records.request.ownerContainment = false; }), 'codexTaskCausation');
+  // Codex finding 4100509817 on #629: a closing PR read with no (or another) head ref cannot show the branch
+  // permits the codex marker.
+  for (const head of [{ sha: CORRECTIVE, repo: { full_name: REPO } }, { sha: CORRECTIVE, ref: 'claude/x', repo: { full_name: REPO } }]) {
+    holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.pulls = [pull(), pull(), pull(CORRECTIVE, { head })]; }), expected),
+      'codexTaskCausation');
+    holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.pulls = [pull(), pull(CORRECTIVE, { head }), pull()]; }), expected),
+      'codexTaskCausation');
+  }
   // Every entry must be a whole, distinct commit: a SHA-less (partial) or repeated entry holds (root-cause
   // audit of the partial-record findings on #624).
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].sha = null; }), 'codexTaskCausation');

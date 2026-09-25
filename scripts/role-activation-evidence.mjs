@@ -1,7 +1,8 @@
 import { CLAUDE_SHADOW_CONTEXT, CODEX_LOGIN, requiredChecksForPullRequest } from './review-policy.mjs';
 import { resolveRequiredChecks } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { PROBE_MARKER_PREFIX, probeTrailersIn } from './codex-fix-probe.mjs';
+import { PROBE_MARKER_PREFIX, correctiveTrailerBlock, probeTrailersIn } from './codex-fix-probe.mjs';
+import { correctionOwnerDeclaration, shaMergeAuthority } from './correction-owner.mjs';
 import { readPullRequestEventLog } from './pull-request-event-log.mjs';
 
 /**
@@ -150,6 +151,12 @@ export function normalizeCorrectionRequest(comment, { repository, pullRequest })
     edited: comment.updated_at !== comment.created_at,
     headSha: marker.headSha,
     findingRef: marker.findingRef,
+    // Whether the request carries the exact corrective trailer block (probe line + `Correction-Owner: codex`)
+    // for its own identity, as the containment-era probe posts it. A request posted before containment has
+    // the same marker but not this block, and must not count as proof of it (Codex finding 4100509814).
+    ownerContainment: typeof comment.body === 'string' && comment.body.includes(
+      `\n\`\`\`\n${correctiveTrailerBlock({ pullRequest, headSha: marker.headSha, findingRef: marker.findingRef })}\n\`\`\`\n`,
+    ),
     atMs,
   };
 }
@@ -248,11 +255,28 @@ export function normalizePushLog(activities, { repository, pullRequest, branch, 
 
 /**
  * Server-computed ancestry of the corrective head relative to the reviewed head, with the commits it adds.
- * Each commit reports the `Codex-Fix-Probe` values of its terminal trailer block (`null` when unreadable).
- * The trailer is public request text, so it is necessary, never sufficient, for causation; the reader only
- * reports it. The list counts as complete only when the server returned every commit (`total_commits`,
+ * Each commit reports the `Codex-Fix-Probe` values of its terminal trailer block (`null` when unreadable),
+ * and its `Correction-Owner` read exactly as the controller reads a head (`shaMergeAuthority`: outcome and
+ * owner; `null` when there is no message). The trailers are public request text, so they are necessary,
+ * never sufficient, for causation; the reader only reports them. The list counts as complete only when the server returned every commit (`total_commits`,
  * which the compare API caps per page, equals both the list and `ahead_by`).
  */
+// The seed PR's owner declaration from one live read, only when that read is whole for it: a body (text or
+// null) and the cycle's own branch as its head ref. A read missing its head ref cannot show the branch
+// permits the marker, so it is no declaration (Codex finding 4100509817).
+function seedDeclaration(pull, branch) {
+  if (!pull || typeof pull !== 'object' || !(typeof pull.body === 'string' || pull.body === null)) return null;
+  if (typeof branch !== 'string' || branch.length === 0 || pull.head?.ref !== branch) return null;
+  const { state, owner } = correctionOwnerDeclaration(pull);
+  return { state, owner };
+}
+
+function commitCorrectionOwner(message) {
+  if (typeof message !== 'string') return null;
+  const { outcome, owner } = shaMergeAuthority(message);
+  return { outcome, owner };
+}
+
 export function normalizeAncestry(comparison) {
   if (!comparison || typeof comparison.status !== 'string') return null;
   const aheadBy = Number.isInteger(comparison.ahead_by) ? comparison.ahead_by : null;
@@ -261,6 +285,7 @@ export function normalizeAncestry(comparison) {
       sha: typeof commit?.sha === 'string' ? commit.sha : null,
       authorLogin: commit?.author?.login ?? null,
       probeTrailers: probeTrailersIn(commit?.commit?.message),
+      correctionOwner: commitCorrectionOwner(commit?.commit?.message),
     }))
     : null;
   return {
@@ -442,6 +467,15 @@ export async function readRoleActivationEvidence(
     // Ancestry between two fixed SHAs is immutable, so it needs no re-read.
     correctivePush.ancestry = normalizeAncestry(await read('ancestry', () =>
       client.request(`/repos/${repository}/compare/${originalHeadSha}...${correctiveHeadSha}`)));
+  }
+  // The reviewed head commit itself, whose `Correction-Owner` shows whether the seed was a candidate head
+  // before any corrective commit (Codex finding 4100230315 on #628). A commit is immutable: one read.
+  let originalHead = null;
+  if (originalHeadSha) {
+    const commit = await read('original-head', () => client.request(`/repos/${repository}/commits/${originalHeadSha}`));
+    originalHead = commit?.sha === originalHeadSha
+      ? { sha: originalHeadSha, correctionOwner: commitCorrectionOwner(commit?.commit?.message) }
+      : null;
   }
 
   // The freshness point. Every CLOSING read below starts after it, so each covers the cycle up to at least
@@ -654,6 +688,10 @@ export async function readRoleActivationEvidence(
       baseRefAtClose: pullAtClose?.base?.ref ?? null,
       baseShaAtClose: pullAtClose?.base?.sha ?? null,
       baseRepositoryAtClose: pullAtClose?.base?.repo?.full_name ?? null,
+      // The seed PR's correction-owner declaration (body marker + branch reservation), read at both closing
+      // PR reads, so the verdict can require the cycle to have run on a truthful codex candidate seed.
+      ownerDeclarationAtEnd: seedDeclaration(pullAtEnd, branch),
+      ownerDeclarationAtClose: seedDeclaration(pullAtClose, branch),
       pushesAfterCorrective,
       // An immutable historical entry of the append-only push log, read in the opening pass.
       reviewedHeadArrival: log.headArrival,
@@ -681,7 +719,7 @@ export async function readRoleActivationEvidence(
       correctionRequestId: request?.requestId ?? null,
     },
     records: { initialCi, initialFinding, request, acceptance, correctivePush, finalCi, finalReview, freshness,
-      conversation },
+      conversation, originalHead },
     problems,
   };
 }

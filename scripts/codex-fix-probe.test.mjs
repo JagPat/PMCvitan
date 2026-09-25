@@ -7,7 +7,9 @@ import test from 'node:test';
 import {
   authorizeCodexFixDispatch,
   PROBE_TRAILER_KEY,
+  CORRECTIVE_OWNER_TRAILER,
   codexFixComment,
+  correctiveTrailerBlock,
   dedupPrefix,
   expectedAuthorization,
   isGenuineUnresolvedFinding,
@@ -22,6 +24,7 @@ import {
   shadowFindingsFromArtifact,
   verifiedShadowRun,
 } from './codex-fix-probe.mjs';
+import { shaMergeAuthority } from './correction-owner.mjs';
 import { parseProbeMarker } from './role-activation-evidence.mjs';
 import { BASE as SHADOW_BASE, ORIGINAL as SHADOW_HEAD, PR as SHADOW_PR, REPO, at, shadowRun } from './role-activation-test-fixtures.mjs';
 import { buildZip } from './zip-test-fixture.mjs';
@@ -32,10 +35,13 @@ const headSha = 'a'.repeat(40);
 const base = 'b'.repeat(40);
 const findingRef = 'https://github.com/JagPat/PMCvitan/pull/597#discussion_r1';
 
+// A truthful Codex candidate seed: the only PR the probe posts a request to.
+const CANDIDATE_SEED_BODY = '<!-- review-size: standard -->\n<!-- correction-owner: codex -->\n\nSeed.';
 function livePull(overrides = {}) {
   return {
     number: 597,
     state: 'open',
+    body: CANDIDATE_SEED_BODY,
     head: { sha: headSha, ref: 'codex/feature', repo: { full_name: repository } },
     base: { ref: 'main', sha: base, repo: { full_name: repository } },
     ...overrides,
@@ -139,9 +145,55 @@ test('the posted request is a single @codex fix naming head/branch/finding, requ
   assert.match(body, /preserve every other open finding/u);
   assert.match(body, /do not open a new PR/u);
   assert.doesNotMatch(body, /codex-current-head/u);
-  // The request asks for the binding trailer, verbatim, on every commit.
-  assert.ok(body.includes(`\n${probeTrailer({ pullRequest: 597, headSha, findingRef })}\n`));
+  // The request asks for the binding trailer AND a truthful Codex owner, verbatim and adjacent, as one
+  // terminal block on every commit; it never asks Codex to declare another owner or edit the owner marker.
+  const block = `${probeTrailer({ pullRequest: 597, headSha, findingRef })}\n${CORRECTIVE_OWNER_TRAILER}`;
+  assert.equal(correctiveTrailerBlock({ pullRequest: 597, headSha, findingRef }), block);
+  assert.equal(CORRECTIVE_OWNER_TRAILER, 'Correction-Owner: codex');
+  assert.ok(body.includes(`\n\`\`\`\n${block}\n\`\`\`\n`));
   assert.match(body, /EVERY commit you push for this request/u);
+  assert.match(body, /together as its final trailer block/u);
+  assert.match(body, /do not edit the PR description or its correction-owner marker/u);
+  assert.doesNotMatch(body, /Correction-Owner:\s*(claude|cursor)/iu);
+});
+
+test('a corrective commit that follows the request is a held candidate; one that drops the owner is not eligible either', () => {
+  const identity = { pullRequest: 597, headSha, findingRef };
+  const followed = `fix: clamp negatives\n\nBody.\n\n${correctiveTrailerBlock(identity)}\n`;
+  // Both lines land in ONE terminal block, as real git reads it.
+  const git = execFileSync('git', ['-c', 'trailer.separators=:', 'interpret-trailers', '--parse', '--unfold'], {
+    input: followed, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+  });
+  assert.equal(git, `${correctiveTrailerBlock(identity)}\n`);
+  assert.deepEqual(probeTrailersIn(followed), [probeTrailerValue(identity)]);
+  assert.deepEqual(shaMergeAuthority(followed),
+    { outcome: 'candidate', mergeEligible: false, owner: 'codex', trailerState: 'candidate' });
+  // Ignoring the owner line leaves the head unauthenticated: invalid, never merge-eligible.
+  const probeOnly = `fix: clamp negatives\n\n${probeTrailer(identity)}\n`;
+  assert.equal(shaMergeAuthority(probeOnly).mergeEligible, false);
+  assert.equal(shaMergeAuthority(probeOnly).outcome, 'invalid');
+});
+
+test('finding 4094243357: only a truthful codex candidate seed gets a request', () => {
+  // Every corrective commit must declare Codex and the marker may not be edited, so on any other PR the
+  // Codex trailer would read as inconsistent ownership rather than a held candidate: refuse before posting.
+  const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
+  for (const [label, body, ref] of [
+    ['a Claude-owned PR', marker('claude'), 'claude/feature'],
+    ['a Claude marker off claude/**', marker('claude'), 'codex/feature'],
+    ['a Cursor-owned PR', marker('cursor'), 'codex/feature'],
+    ['codex on a Claude branch (contradictory)', marker('codex'), 'claude/feature'],
+    ['no marker', 'Seed.', 'codex/feature'],
+    ['two owners', `${marker('codex')}\n${marker('claude')}`, 'codex/feature'],
+    ['no body', undefined, 'codex/feature'],
+  ]) {
+    const result = authorizeCodexFixDispatch(inputs({
+      livePull: livePull({ body, head: { sha: headSha, ref, repo: { full_name: repository } } }),
+    }));
+    assert.equal(result.allowed, false, label);
+    assert.equal(result.state, 'not_candidate_seed', label);
+  }
+  assert.equal(authorizeCodexFixDispatch(inputs()).state, 'ready');
 });
 
 test('the binding trailer repeats the request identity and is parsed back exactly', () => {
@@ -388,7 +440,7 @@ function shadowState() {
   const { run, zip } = shadowCase();
   return {
     run, zip, runs: [run], comments: [],
-    pull: { number: SHADOW_PR, state: 'open', head: { sha: SHADOW_HEAD, ref: 'claude/x', repo: { full_name: REPO } }, base: { ref: 'main', sha: SHADOW_BASE, repo: { full_name: REPO } } },
+    pull: { number: SHADOW_PR, state: 'open', body: CANDIDATE_SEED_BODY, head: { sha: SHADOW_HEAD, ref: 'codex/observation-seed', repo: { full_name: REPO } }, base: { ref: 'main', sha: SHADOW_BASE, repo: { full_name: REPO } } },
   };
 }
 const shadowEnv = (overrides = {}) => ({

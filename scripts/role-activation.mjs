@@ -148,6 +148,7 @@ export function roleTransferActivationVerdict(evidence, expected) {
     finalReview = null,
     freshness = null,
     conversation = null,
+    originalHead = null,
   } = records;
 
   const repository = expected?.repository;
@@ -257,6 +258,24 @@ export function roleTransferActivationVerdict(evidence, expected) {
     && commits.every((commit) => Array.isArray(commit?.probeTrailers)
       && commit.probeTrailers.length === 1
       && commit.probeTrailers[0] === expectedTrailer)
+    // Containment, not causation: the request requires every corrective commit to declare Codex, so the
+    // corrective head is a held, merge-ineligible candidate. A commit without it (an invalid head the
+    // controller cannot hold as a candidate) holds the cycle (Codex finding 4094243346 on #628).
+    && commits.every((commit) => commit?.correctionOwner?.outcome === 'candidate'
+      && commit.correctionOwner.owner === 'codex')
+    // ...and the cycle ran on a truthful codex candidate seed: the PR's body declares the codex candidate on
+    // a branch that permits it, at both closing reads (Codex finding 4099077984 on #628). A Claude-owned or
+    // undeclared PR never demonstrated candidate-scope admission, so it holds.
+    && [freshness?.ownerDeclarationAtEnd, freshness?.ownerDeclarationAtClose]
+      .every((declaration) => declaration?.state === 'candidate' && declaration.owner === 'codex')
+    // ...whose reviewed head itself declared the codex candidate before any corrective commit, so a
+    // previously Claude-owned head relabelled only in the body holds (Codex finding 4100230315 on #628).
+    // ...and the request itself asked for that containment: the exact corrective trailer block for its own
+    // identity. A request from before containment (same marker, no owner line) holds (finding 4100509814).
+    && request?.ownerContainment === true
+    && originalHead?.sha === originalHeadSha
+    && originalHead.correctionOwner?.outcome === 'candidate'
+    && originalHead.correctionOwner.owner === 'codex'
     && inPullRequest(conversation)
     && Array.isArray(conversation.items)
     && conversation.items.filter((item) => item?.kind === 'pull_request').length === 1
