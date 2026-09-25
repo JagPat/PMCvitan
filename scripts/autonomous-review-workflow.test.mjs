@@ -1892,7 +1892,14 @@ test('finding 4103259698 on #630: a spent retry on an unread candidate head stay
     name, status: 'completed', conclusion, completed_at: '2026-09-25T09:00:00Z',
     html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
   });
-  const failedScopeRuns = [job('review-scope', 'failure', '4242'), job('battery-plan', 'success', '4242')];
+  // The real shape of a failed scope gate (Codex finding 4103993627 on #630): every job that needs it is
+  // skipped, and the summary counts those skips as failed.
+  const failedScopeRuns = [
+    job('review-scope', 'failure', '4242'),
+    ...['battery-plan', 'web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'].map((name) => job(name, 'skipped', '4242')),
+  ];
+  assert.deepEqual(reviewGate.summarizeRequiredChecks(failedScopeRuns).failed,
+    ['review-scope', 'battery-plan', 'web', 'api', 'e2e', 'api-e2e', 'upgrade-proof']);
   const harness = (live = pull()) => {
     const log = { statuses: [], drafts: [], reruns: [], stickies: [] };
     const client = {
@@ -1936,6 +1943,12 @@ test('finding 4103259698 on #630: a spent retry on an unread candidate head stay
   // Another failed required check is real: it is not hidden behind the retryable hold.
   assert.equal(reviewGate.ciFailureDisposition(ci(2), null, ['review-scope', 'automation'],
     { pullRequest: pull(), scope: unread }).unreadable, false);
+  const independent = harness();
+  independent.client.checkRuns = async () => [job('review-scope', 'failure', '4242'), job('battery-plan', 'failure', '4242'),
+    ...['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'].map((name) => job(name, 'skipped', '4242'))];
+  await assert.rejects(reviewGate.handleCiFailure(independent.client, ci(2), pull(), head, { scope: unread }),
+    /Failed checks: review-scope, battery-plan/u);
+  assert.deepEqual(independent.log.drafts, [true]);
 
   // The recovery run re-reads the same head, which now admits the candidate: it re-runs the failed CI run
   // (the deciding review-scope run) on this same head instead of drafting it.

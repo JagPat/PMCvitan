@@ -244,14 +244,16 @@ export function shouldRetryCiFailure(context, existingStatus, failedChecks = [],
 // `draft` applies only when no retry is taken (the controller returns after requesting one). `reason` routes
 // the notice: when the controller's own read ADMITS the candidate, the failed job is a CI failure, not a
 // scope refusal, so it must not say "Scope refused this head" or ask for a new head (shadow finding on #630).
-export function ciFailureDisposition(context, existingStatus, failedChecks = [], { pullRequest, scope } = {}) {
+export function ciFailureDisposition(context, existingStatus, failedChecks = [], { pullRequest, scope, skipped = [] } = {}) {
   const candidateScope = failedChecks.includes('review-scope')
     && correctionOwnerDeclaration(pullRequest).state === 'candidate'
     && Boolean(scope?.allowed || scope?.retryable);
-  // Held as retryable only when review-scope is the SOLE failed check: another failure is real and needs
-  // its ordinary draft and correction, which the unread head must not hide.
+  // Held as retryable only when review-scope is the sole INDEPENDENT failure. The jobs that need it are
+  // skipped when it fails, and the summary counts those skips as failed (Codex finding 4103993627 on #630),
+  // so a required check whose deciding run was skipped is its consequence, not a separate failure. Any
+  // other failure is real and keeps its ordinary draft and correction; the unread head must not hide it.
   const unreadable = candidateScope && scope?.retryable === true
-    && failedChecks.every((name) => name === 'review-scope');
+    && failedChecks.every((name) => name === 'review-scope' || skipped.includes(name));
   const scopeAdmitted = candidateScope && scope?.allowed === true;
   return {
     retry: Boolean(shouldRetryCiFailure(context, existingStatus, failedChecks, { candidateScope })),
@@ -1566,11 +1568,12 @@ export async function handleCiFailure(
   expectedHead,
   { existingStatus = null, existingStatuses = [], scope = { allowed: true } } = {},
 ) {
-  const ciSummary = summarizeRequiredChecks(
-    await client.checkRuns(expectedHead),
-    requiredChecksForPullRequest(pullRequest.number),
-  );
-  const disposition = ciFailureDisposition(context, existingStatus, ciSummary.failed, { pullRequest, scope });
+  const checkRuns = await client.checkRuns(expectedHead);
+  const requiredChecks = requiredChecksForPullRequest(pullRequest.number);
+  const ciSummary = summarizeRequiredChecks(checkRuns, requiredChecks);
+  const disposition = ciFailureDisposition(context, existingStatus, ciSummary.failed, {
+    pullRequest, scope, skipped: skippedRequiredChecks(checkRuns, requiredChecks),
+  });
   if (disposition.retry) {
     try {
       await client.rerunFailedJobs(context.ciRunId);
@@ -1661,6 +1664,14 @@ export async function holdUnreadableCandidateHead(client, pullRequest, expectedH
       verdict: scope?.verdict ?? UNREADABLE_VERDICT,
     });
   }
+}
+
+// The required checks whose deciding run was SKIPPED. In an attempt a failed gate aborted, the summary counts
+// such a skip as failed, but it is that gate's consequence, not an independent failure.
+export function skippedRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
+  return resolveRequiredChecks(checkRuns, requiredChecks).deciders
+    .filter((run) => run.conclusion === 'skipped')
+    .map((run) => run.name);
 }
 
 // The workflow run id of the run that decided the required check `name`, from its Actions URL, or null.
