@@ -427,7 +427,9 @@ The verdict checks the rest, from the reader's evidence:
   controller cannot hold as a candidate, so the cycle holds.
 - **Seed.** The cycle ran on a truthful codex candidate seed: the reviewed head commit itself (read once, by
   SHA) declares `Correction-Owner: codex`, and the PR still declares `<!-- correction-owner: codex -->` on a
-  branch outside `claude/**` at both closing PR reads. A Claude-owned head relabelled only in the body holds.
+  branch outside `claude/**` at both closing PR reads (each read must name the cycle's branch as its head
+  ref). A Claude-owned head relabelled only in the body holds. The request itself must carry the exact
+  corrective trailer block for its own identity, so a request posted before containment holds.
 - **Conversation.** The PR's complete conversation, its own title and description included, currently has
   no `@codex` mention except the request's (as that issue comment) and the Codex connector's own, however
   old: a task started earlier could still push. (The Codex connector does answer a mention in a PR

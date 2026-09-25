@@ -270,6 +270,9 @@ export function roleTransferActivationVerdict(evidence, expected) {
       .every((declaration) => declaration?.state === 'candidate' && declaration.owner === 'codex')
     // ...whose reviewed head itself declared the codex candidate before any corrective commit, so a
     // previously Claude-owned head relabelled only in the body holds (Codex finding 4100230315 on #628).
+    // ...and the request itself asked for that containment: the exact corrective trailer block for its own
+    // identity. A request from before containment (same marker, no owner line) holds (finding 4100509814).
+    && request?.ownerContainment === true
     && originalHead?.sha === originalHeadSha
     && originalHead.correctionOwner?.outcome === 'candidate'
     && originalHead.correctionOwner.owner === 'codex'

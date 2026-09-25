@@ -1,7 +1,7 @@
 import { CLAUDE_SHADOW_CONTEXT, CODEX_LOGIN, requiredChecksForPullRequest } from './review-policy.mjs';
 import { resolveRequiredChecks } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { PROBE_MARKER_PREFIX, probeTrailersIn } from './codex-fix-probe.mjs';
+import { PROBE_MARKER_PREFIX, correctiveTrailerBlock, probeTrailersIn } from './codex-fix-probe.mjs';
 import { correctionOwnerDeclaration, shaMergeAuthority } from './correction-owner.mjs';
 import { readPullRequestEventLog } from './pull-request-event-log.mjs';
 
@@ -151,6 +151,12 @@ export function normalizeCorrectionRequest(comment, { repository, pullRequest })
     edited: comment.updated_at !== comment.created_at,
     headSha: marker.headSha,
     findingRef: marker.findingRef,
+    // Whether the request carries the exact corrective trailer block (probe line + `Correction-Owner: codex`)
+    // for its own identity, as the containment-era probe posts it. A request posted before containment has
+    // the same marker but not this block, and must not count as proof of it (Codex finding 4100509814).
+    ownerContainment: typeof comment.body === 'string' && comment.body.includes(
+      `\n\`\`\`\n${correctiveTrailerBlock({ pullRequest, headSha: marker.headSha, findingRef: marker.findingRef })}\n\`\`\`\n`,
+    ),
     atMs,
   };
 }
@@ -255,8 +261,12 @@ export function normalizePushLog(activities, { repository, pullRequest, branch, 
  * never sufficient, for causation; the reader only reports them. The list counts as complete only when the server returned every commit (`total_commits`,
  * which the compare API caps per page, equals both the list and `ahead_by`).
  */
-function seedDeclaration(pull) {
+// The seed PR's owner declaration from one live read, only when that read is whole for it: a body (text or
+// null) and the cycle's own branch as its head ref. A read missing its head ref cannot show the branch
+// permits the marker, so it is no declaration (Codex finding 4100509817).
+function seedDeclaration(pull, branch) {
   if (!pull || typeof pull !== 'object' || !(typeof pull.body === 'string' || pull.body === null)) return null;
+  if (typeof branch !== 'string' || branch.length === 0 || pull.head?.ref !== branch) return null;
   const { state, owner } = correctionOwnerDeclaration(pull);
   return { state, owner };
 }
@@ -680,8 +690,8 @@ export async function readRoleActivationEvidence(
       baseRepositoryAtClose: pullAtClose?.base?.repo?.full_name ?? null,
       // The seed PR's correction-owner declaration (body marker + branch reservation), read at both closing
       // PR reads, so the verdict can require the cycle to have run on a truthful codex candidate seed.
-      ownerDeclarationAtEnd: seedDeclaration(pullAtEnd),
-      ownerDeclarationAtClose: seedDeclaration(pullAtClose),
+      ownerDeclarationAtEnd: seedDeclaration(pullAtEnd, branch),
+      ownerDeclarationAtClose: seedDeclaration(pullAtClose, branch),
       pushesAfterCorrective,
       // An immutable historical entry of the append-only push log, read in the opening pass.
       reviewedHeadArrival: log.headArrival,

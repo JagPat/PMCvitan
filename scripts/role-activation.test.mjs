@@ -232,6 +232,20 @@ test('finding 4083067617: task -> push causation needs the exact trailer on a co
   holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.originalHead = { sha: OTHER, commit: w.originalHead.commit }; }), expected),
     'codexTaskCausation');
   holds(await verdictWith((e) => { e.records.originalHead = null; }), 'codexTaskCausation');
+  // Codex finding 4100509814 on #629: a request from before containment (same marker, only the probe line)
+  // is not proof of it.
+  holds(roleTransferActivationVerdict(await evidenceFor((w) => {
+    w.comment = { ...w.comment, body: w.comment.body.replace('\nCorrection-Owner: codex\n```', '\n```') };
+  }), expected), 'codexTaskCausation');
+  holds(await verdictWith((e) => { e.records.request.ownerContainment = false; }), 'codexTaskCausation');
+  // Codex finding 4100509817 on #629: a closing PR read with no (or another) head ref cannot show the branch
+  // permits the codex marker.
+  for (const head of [{ sha: CORRECTIVE, repo: { full_name: REPO } }, { sha: CORRECTIVE, ref: 'claude/x', repo: { full_name: REPO } }]) {
+    holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.pulls = [pull(), pull(), pull(CORRECTIVE, { head })]; }), expected),
+      'codexTaskCausation');
+    holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.pulls = [pull(), pull(CORRECTIVE, { head }), pull()]; }), expected),
+      'codexTaskCausation');
+  }
   // Every entry must be a whole, distinct commit: a SHA-less (partial) or repeated entry holds (root-cause
   // audit of the partial-record findings on #624).
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].sha = null; }), 'codexTaskCausation');
