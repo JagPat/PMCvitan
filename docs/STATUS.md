@@ -14,34 +14,34 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-probe-containment
-reviewed_merge: 6496a98
-open_pr: 629
+work_item: cloud-role-transfer-candidate-admission
+reviewed_merge: 816e414
+open_pr: 630
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-24
+updated: 2026-09-25
 ```
 
-### Now — cloud role transfer: probe and observer containment (#628 redesign, unit 1); #627 merged
+### Now — cloud role transfer: candidate scope admission (#628 redesign, unit 2); #629 merged
 
 The cloud role transfer continues with one writer and one channel. The additive split is merged: #620
 (evidence reader, `7f2cbbef`), #621 (lifecycle event log, `2a1f0f46`), #622 (integration, `0a712d93`)
 and #619 (the activation-readiness verdict, `1273465`). #623 (`b9d31da`) added the request's
 `Codex-Fix-Probe` trailer, #624 (`89a4268`) made `codexTaskCausation` provable from the owner's
 attestation, #625 (`96208ae`) gave the verdict its `activate` readiness state, #626 (`149dfe4`) let
-`codex-fix-probe` key its request to a verified Claude shadow finding, and #627 (`6496a98`) added the
-manual, read-only observer and the observed-cycle runbook.
+`codex-fix-probe` key its request to a verified Claude shadow finding, #627 (`6496a98`) added the manual,
+read-only observer and the observed-cycle runbook, and #629 (`816e414`, unit 1 of the #628 redesign) added
+probe and observer containment for a Codex candidate seed.
 
-- **Now, unit 1 of the #628 redesign, `open_pr: 629`** (`work_item: cloud-role-transfer-probe-containment`,
-  branch `claude/role-transfer-probe-containment`, from `main` at `6496a98`). #628 (the repair Delivery
-  selected in #482 comment 5813153709) reached POLICY's third-P1-head stop in `correction-owner.mjs`; the
-  owner chose two smaller units, containment first. This unit: the probe's request requires
-  `Correction-Owner: codex` beside its `Codex-Fix-Probe` trailer and posts only to a codex candidate seed;
-  the observer's verdict holds unless the corrective commits, the seed PR and its reviewed head all declare
-  the codex candidate. No scope, gate or controller change.
-- **Next:** unit 2, candidate scope admission over a head that declares the candidate (with #628's merge-path
-  holds and diagnostic); then the one bounded, non-activating trial on a genuinely Codex-created seed; then
-  the operator-authorized switch (the installer). Retirement is a later unit.
+- **Now, unit 2 of the #628 redesign, `open_pr: 630`** (`work_item: cloud-role-transfer-candidate-admission`,
+  branch `claude/role-transfer-candidate-admission`, from `main` at `816e414`). #628 (the repair Delivery
+  selected in #482 comment 5813153709) reached POLICY's third-P1-head stop and was split into two units.
+  This unit: `review-scope` admits a codex candidate body only over a head that declares the candidate, so a
+  truthful seed gets CI and review while its head is never merge-eligible; final admission and the merge
+  authorizer also hold a candidate-marked PR; the candidate gets a held diagnostic. #628's disputed
+  queued-auto-merge finding stays open (identical window on `main`; needs a frozen controller capability).
+- **Next:** the one bounded, non-activating trial on a genuinely Codex-created seed (runbook, one push);
+  then the operator-authorized switch (the installer). Retirement is a later unit.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`

@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { parseCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
+import {
+  HEAD_READ_DELAYS_MS, parseCorrectionOwner, correctionRouting, correctionOwnerProblem, readHeadCommitMessage,
+} from './correction-owner.mjs';
 import { authorizeExactHeadMerge, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
+import { assessCorrectionLease, correctionReasonFor } from './correction-lease.mjs';
+import { assessReviewScope } from './review-efficiency.mjs';
+import {
+  CANDIDATE_CORRECTION_OWNERS, CORRECTION_OWNERS, CORRECTION_STALLED, OWNERSHIP_CANDIDATE_HELD, STATUS_CONTEXT,
+} from './review-policy.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -10,19 +18,192 @@ const base = 'b'.repeat(40);
 test('Codex implementation ownership is recognised as an in-flight candidate but never routed or merged', () => {
   // Codex is a recognised CANDIDATE owner: the body parse names it as a first-class `candidate` state on a
   // branch that permits it, and as `contradictory` on a `claude/**` branch it cannot claim. Neither is
-  // `declared`, so scope still refuses and routing still stalls — a candidate is tracked, never merge-eligible
-  // and never awakenable, until a later unit's promotion hold admits-and-holds it.
+  // `declared`. The scope gate admits the candidate (so its head gets CI and review) and still refuses the
+  // contradiction; routing stalls for both — a candidate is tracked, never merge-eligible and never awakenable.
   const expectedState = { 'codex/maintenance': 'candidate', 'claude/product': 'contradictory' };
   for (const ref of ['codex/maintenance', 'claude/product']) {
     const body = '<!-- correction-owner: codex -->\n<!-- correction-transfer: claude->codex -->';
     const declaration = parseCorrectionOwner(body, { headRef: ref });
     assert.equal(declaration.state, expectedState[ref]);
     assert.notEqual(declaration.state, 'declared');
-    assert.ok(correctionOwnerProblem({ body, head: { ref } }));
+    const problem = correctionOwnerProblem({ body, head: { ref } }, { headCommitMessage: 'fix\n\nCorrection-Owner: codex\n' });
+    if (ref === 'claude/product') assert.match(problem ?? '', /reserved for Claude-authored work/u);
+    else assert.equal(problem, null);
     const route = correctionRouting({ declaration, head });
     assert.equal(route.owner, null);
     assert.equal(route.awakenable, false);
   }
+});
+
+test('finding 4094243334: an admitted candidate gets a held diagnostic, never an undeclared-owner remedy', () => {
+  // The candidate marker is truthful and admitted, so telling the reader ownership is not established and
+  // to replace the marker would be false. It is still routed to nobody, stalled and not awakenable.
+  const declaration = parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'codex/observation-seed' });
+  for (const reason of ['review', 'ci']) {
+    const route = correctionRouting({ declaration, head, reason, detail: 'x' });
+    assert.equal(route.owner, null, reason);
+    assert.equal(route.state, CORRECTION_STALLED, reason);
+    assert.equal(route.awakenable, false, reason);
+    assert.match(route.instruction, /admitted candidate correction owner/u, reason);
+    assert.match(route.instruction, /Keep the marker as it is/u, reason);
+    // Codex finding 4098329042: an unrouted result proves only that this loop requested nothing, never
+    // that no correction is running.
+    assert.match(route.instruction, /has requested no correction; it cannot observe whether one is already running/u, reason);
+    assert.doesNotMatch(route.instruction, /no correction is in flight/u, reason);
+    assert.doesNotMatch(route.instruction, /not established|replace the correction-owner marker|@/u, reason);
+  }
+  // Codex finding 4101018333 on #630: when scope refused the head (a candidate body over a head that does
+  // not declare it, or any other scope rule), the notice names the refusal and its remedy, never "admitted"
+  // or "keep the marker". Still routed to nobody, stalled and not awakenable.
+  const refusal = 'the PR body declares candidate correction owner "codex", but its head commit does not declare it';
+  const refused = correctionRouting({ declaration, head, reason: 'scope', detail: refusal });
+  assert.equal(refused.owner, null);
+  assert.equal(refused.state, CORRECTION_STALLED);
+  assert.equal(refused.awakenable, false);
+  assert.ok(refused.instruction.startsWith(`Scope refused this head: ${refusal}.`));
+  assert.match(refused.instruction, /Resume action: clear the refusal above/u);
+  // Codex finding 4101298577: scope reads only the exact head, so the remedy names that head, not every commit.
+  assert.match(refused.instruction, /one new head whose own message ends with `Correction-Owner: codex`/u);
+  assert.doesNotMatch(refused.instruction, /every commit/u);
+  assert.doesNotMatch(refused.instruction, /admitted candidate correction owner of this PR|Keep the marker as it is|@/u);
+  // A real ownership fault keeps its remedy.
+  const contradictory = parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'claude/x' });
+  assert.match(correctionRouting({ declaration: contradictory, head }).instruction,
+    /not established[\s\S]*replace the correction-owner marker/u);
+});
+
+test('review-scope admits a declared or candidate owner and refuses every other declaration', () => {
+  const KEYS = ['concurrency-serialization', 'old-release-migration-compatibility', 'trigger-alternate-writers',
+    'authorization-tenancy', 'ci-reproduce-first'];
+  const body = (markers) => ['<!-- review-size: standard -->', '<!-- migration-scope: n/a -->', ...markers,
+    'Replaces: none', '', '## Pre-review checklist', ...KEYS.map((key) => `- [x] \`${key}\` — checked`), '',
+    '- Migration/service seam: n/a'].join('\n');
+  const codexHead = 'seed\n\nCorrection-Owner: codex\n';
+  // The head message defaults to a codex head only when the argument is omitted, never for an explicit undefined.
+  const scope = (markers, ref, ...head) => assessReviewScope({
+    number: 700, additions: 20, deletions: 0, changed_files: 2, body: body(markers),
+    base: { ref: 'main' }, head: { ref },
+  }, { headCommitMessage: head.length > 0 ? head[0] : codexHead });
+  const owner = (name) => `<!-- correction-owner: ${name} -->`;
+  // Admitted: the routable owners, and codex as a candidate on a branch that permits it.
+  for (const [markers, ref] of [[[owner('claude')], 'claude/x'], [[owner('cursor')], 'codex/x'],
+    [[owner('codex')], 'codex/observation-seed']]) {
+    assert.equal(scope(markers, ref).allowed, true, `${markers} on ${ref}`);
+  }
+  // Refused, each on its own owner fault: codex on a Claude branch, no marker, an unknown owner, two
+  // conflicting owners, one owner declared twice.
+  for (const [markers, ref, detail] of [
+    [[owner('codex')], 'claude/x', /reserved for Claude-authored work/u],
+    [[], 'codex/x', /must declare its correction owner/u],
+    [[owner('devin')], 'codex/x', /"devin" is not a correction owner/u],
+    [[owner('codex'), owner('claude')], 'codex/x', /conflicting correction owners/u],
+    [[owner('codex'), owner('codex')], 'codex/x', /declared 2 times/u],
+  ]) {
+    const result = scope(markers, ref);
+    assert.equal(result.allowed, false, `${markers} on ${ref}`);
+    assert.match(result.detail, detail);
+  }
+  // Codex findings on #628: a candidate body is admitted only over a head that declares the same candidate.
+  // A mergeable Claude head, a head with no owner, a conflicting head, or an unread head is refused, so a
+  // body edit can never put a merge-eligible head (or a queued auto-merge) into candidate scope.
+  for (const [label, headCommitMessage, detail] of [
+    ['an eligible Claude head', 'fix\n\nCorrection-Owner: claude\n', /head commit does not declare it/u],
+    ['a head with no owner', 'fix: no trailer', /head commit does not declare it/u],
+    ['a conflicting head', 'fix\n\nCorrection-Owner: codex\nCorrection-Owner: claude\n', /head commit does not declare it/u],
+  ]) {
+    const result = scope([owner('codex')], 'codex/observation-seed', headCommitMessage);
+    assert.equal(result.allowed, false, label);
+    assert.notEqual(result.retryable, true, `${label}: a readable refusal fails closed, never retryably`);
+    assert.match(result.detail, detail, label);
+    assert.match(result.detail, /the exact head commit's message must end with a single `Correction-Owner: codex`/u, label);
+    assert.doesNotMatch(result.detail, /every commit/u, label);
+  }
+  // Codex finding 4101926931 on #630: an unread head is refused RETRYABLY — the same head and body can be
+  // assessed by a later read — and never told to push a new head.
+  const unread = scope([owner('codex')], 'codex/observation-seed', undefined);
+  assert.equal(unread.allowed, false);
+  assert.equal(unread.retryable, true);
+  assert.equal(unread.state, 'owner_head_unreadable');
+  assert.match(unread.detail, /head commit could not be read after 3 attempts: retryable on this same head/u);
+  assert.doesNotMatch(unread.detail, /a new head is required/u);
+  // Codex finding 4104384946: a head that WAS fetched but whose trailers git could not parse is as unread as a
+  // failed fetch — retryable on the same SHA, never a new-head refusal.
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = '/nonexistent-for-this-test';
+    const unparsed = scope([owner('codex')], 'codex/observation-seed', 'seed\n\nCorrection-Owner: codex\n');
+    assert.equal(unparsed.allowed, false);
+    assert.equal(unparsed.retryable, true);
+    assert.doesNotMatch(unparsed.detail, /a new head is required/u);
+  } finally {
+    process.env.PATH = savedPath;
+  }
+  // Codex finding 4104805631: the scope gate parses the head's trailers ONCE, so the refusal and its
+  // retryability cannot disagree after a transient git failure between two parses.
+  const efficiency = readFileSync(new URL('./review-efficiency.mjs', import.meta.url), 'utf8');
+  assert.equal(efficiency.match(/assessCorrectionOwner\(/gu)?.length, 1);
+  assert.doesNotMatch(efficiency, /correctionOwnerProblem\(|candidateHeadUnread\(|shaMergeAuthority\(/u);
+  // A missing, invalid or contradictory declaration is never retryable, whatever the head.
+  for (const markers of [[], [owner('devin')], [owner('codex'), owner('claude')]]) {
+    assert.notEqual(scope(markers, 'codex/x', undefined).retryable, true, `${markers}`);
+  }
+  // The head is consulted only for a candidate body: a declared owner never needs it.
+  assert.equal(scope([owner('claude')], 'claude/x', undefined).allowed, true);
+});
+
+test('the written owner contract names every marker review-scope admits (finding 4093756711)', () => {
+  // POLICY is the canonical contract: its marker sentence must not forbid the codex candidate that the
+  // executable scope gate now admits, and it must still say the candidate is held.
+  const contract = readFileSync(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
+  const markerRule = contract.slice(contract.indexOf('Every PR declares exactly one correction owner'),
+    contract.indexOf('A `claude/**` branch must declare Claude.'));
+  for (const owner of [...CORRECTION_OWNERS, ...CANDIDATE_CORRECTION_OWNERS]) {
+    assert.match(markerRule, new RegExp(owner, 'u'), `the marker rule names ${owner}`);
+  }
+  assert.match(markerRule, /held codex candidate/u);
+  assert.match(contract, /Codex is a recognised CANDIDATE owner: scope admits its marker off `claude\/\*\*`/u);
+});
+
+test('shadow finding on #630: one shared bounded head re-read for the CLI and the controller', async () => {
+  // Two copies of the retry bound could drift and give the review-scope job and the controller different
+  // verdicts for the same head. The loop and its bound live once, in correction-owner.mjs.
+  for (const file of ['review-scope.mjs', 'autonomous-review-gate.mjs']) {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /HEAD_READ_DELAYS_MS\s*=/u, `${file} defines no retry bound of its own`);
+    assert.match(source, /readHeadCommitMessage\(/u, `${file} uses the shared re-read`);
+  }
+  assert.deepEqual([...HEAD_READ_DELAYS_MS], [1_000, 3_000]);
+  assert.ok(Object.isFrozen(HEAD_READ_DELAYS_MS));
+  const pauses = [];
+  const sleep = async (ms) => { pauses.push(ms); };
+  const reader = (answers) => async () => {
+    const answer = answers.shift();
+    if (answer instanceof Error) throw answer;
+    return answer;
+  };
+  assert.equal(await readHeadCommitMessage(reader([new Error('502'), undefined, 'seed']), { sleep }), 'seed');
+  assert.deepEqual(pauses, [1_000, 3_000]);
+  pauses.length = 0;
+  assert.equal(await readHeadCommitMessage(reader([new Error('502'), new Error('502'), new Error('502'), 'late']), { sleep }), undefined);
+  assert.deepEqual(pauses, [1_000, 3_000], 'exactly three reads, then fail closed');
+  pauses.length = 0;
+  assert.equal(await readHeadCommitMessage(reader(['first']), { sleep }), 'first');
+  assert.deepEqual(pauses, [], 'no pause when the first read succeeds');
+});
+
+test('an admitted candidate PR still opens no autonomous correction writer', () => {
+  // Scope admission changes no routing: a finding on a candidate PR names nobody and wakes nobody, and
+  // the candidate hold on its reviewed head owes no correction at all.
+  const pullRequest = { number: 700, head: { sha: head, ref: 'codex/observation-seed' },
+    body: '<!-- correction-owner: codex -->' };
+  for (const [reason, detail] of [['review', '1 current-head Codex finding'], ['ci', 'api failed']]) {
+    const lease = assessCorrectionLease({ pullRequest, head, reason, detail,
+      findingObservedAt: '2026-09-24T00:00:00Z', now: '2026-09-24T12:00:00Z', comments: [] });
+    assert.equal(lease.owner, 'undeclared', reason);
+    assert.equal(lease.reportedState, CORRECTION_STALLED, reason);
+    assert.doesNotMatch(lease.body ?? '', /@[A-Za-z]/u, reason);
+  }
+  assert.equal(correctionReasonFor({ context: STATUS_CONTEXT, state: 'failure', description: OWNERSHIP_CANDIDATE_HELD }), null);
 });
 function cleanRun(overrides = {}) {
   const artifact = { id: 789, digest: `sha256:${'d'.repeat(64)}`, name: `claude-shadow-v1-repo-${Buffer.from('JagPat/PMCvitan').toString('base64url')}-pr-600-base-${base}-head-${head}-ci-123-2-publisher-456-1-state-clear-findings-0` };
@@ -145,6 +326,17 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: 'x\n\nCorrection-Owner: codex\n' } } }), pull, head)).state, 'ownership_not_eligible');
   assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: 'no trailer here' } } }), pull, head)).state, 'ownership_not_eligible');
   assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: '' } } }), pull, head)).state, 'ownership_not_eligible');
+  // Codex finding 4098329036 on #628: a PR whose body declares the codex candidate never merges, even
+  // when its unchanged head carries an eligible `Correction-Owner: claude` trailer (read or carried).
+  const candidatePull = { ...pull, body: '<!-- correction-owner: codex -->', head: { ...pull.head, ref: 'codex/observation-seed' } };
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [candidatePull, candidatePull] }), candidatePull, head)).state, 'ownership_not_eligible');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [candidatePull, candidatePull] }), candidatePull, head,
+    { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).state, 'ownership_not_eligible');
+  // Codex finding 4098699869: a candidate marker that appears between the first and the final read
+  // (the PR the merge acts on) still holds.
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, candidatePull] }), pull, head)).state, 'ownership_not_eligible');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, candidatePull] }), pull, head,
+    { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).state, 'ownership_not_eligible');
   // A caller that pre-parsed the eligible verdict authorizes without a second commit read.
   assert.equal((await authorizeExactHeadMerge({ ...makeClient(), async commit() { throw new Error('must not re-read when verdict is carried'); } }, pull, head, { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).allowed, true);
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [{ ...pull, draft: true }] }), pull, head)).state, 'draft');

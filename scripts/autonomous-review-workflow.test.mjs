@@ -7,9 +7,11 @@ import * as reviewGate from './autonomous-review-gate.mjs';
 import {
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
+  CI_SCOPE_ADMITTED,
   ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 import { correctionReasonFor } from './correction-lease.mjs';
+import { correctionRouting, parseCorrectionOwner } from './correction-owner.mjs';
 
 const {
   hasTerminalReviewFailureAfterPending,
@@ -1667,6 +1669,414 @@ test('the SHA merge-authority verdict gates final admission (unit 2B2)', async (
   );
 });
 
+test('a candidate-owned PR passes scope but its reviewed head is held, never succeeded or merged', async () => {
+  // The scope gate admits a truthful codex marker on a branch that permits it, so the PR reaches review
+  // (it used to stop at `scope_required`). Admission is scope only: the exact head's candidate trailer is
+  // still merge-ineligible, final admission holds it, and the hold owes no correction.
+  const head = 'e'.repeat(40);
+  const candidatePull = () => ({
+    number: 253,
+    additions: 1,
+    deletions: 0,
+    changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: codex -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/253',
+    head: { sha: head, ref: 'codex/observation-seed', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  // Codex findings on #628: scope admits a candidate body only over a head that declares the same candidate;
+  // over an eligible `Correction-Owner: claude` head (or no owner) it is a scope refusal, never success.
+  for (const trailer of ['Correction-Owner: codex', 'Correction-Owner: claude', 'no owner']) {
+    const statusWrites = [];
+    const stickies = [];
+    const client = {
+      async pullRequest() { return candidatePull(); },
+      async setDraft(live, draft) { return { ...live, draft }; },
+      async setStatus(h, state, description) { statusWrites.push({ state, description }); },
+      async updateStickyComment(number, body) { stickies.push(body); },
+      async reviewComments() { return []; },
+      async reviews() { return []; },
+      async markReplacementRequired() {},
+      async commit() { return { commit: { message: trailer === 'no owner' ? 'fix: x' : `fix: x\n\n${trailer}\n` }, files: [] }; },
+      async mergeExactHead() { throw new Error('must not merge a candidate head'); },
+      async enableAutoMerge() { throw new Error('must not queue a candidate head'); },
+    };
+    const final = await reviewGate.revalidateFinalReviewPolicy(client, 253, head);
+    assert.equal(final.allowed, false, trailer);
+    if (trailer !== 'Correction-Owner: codex') {
+      assert.equal(final.state, 'scope_required', `${trailer}: a candidate body over this head is refused`);
+      assert.equal(statusWrites.at(-1).state, 'failure', trailer);
+      assert.match(statusWrites.at(-1).description,
+        /^scope: the PR body declares candidate correction owner "codex", but its head commit does not declare it/u, trailer);
+      assert.ok(!statusWrites.some((write) => write.state === 'success'), trailer);
+      continue;
+    }
+    assert.equal(final.state, 'ownership_withheld', `${trailer}: scope admitted it; it is held`);
+    assert.equal(final.ownershipReason, OWNERSHIP_CANDIDATE_HELD, trailer);
+    assert.equal(final.verdict.mergeEligible, false, trailer);
+    assert.equal(final.verdict.owner, 'codex', trailer);
+    assert.ok(!statusWrites.some((write) => write.state === 'success'), trailer);
+    assert.ok(!statusWrites.some((write) => write.description?.startsWith('scope: ')), `${trailer}: no scope refusal`);
+    assert.equal(
+      correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: final.ownershipReason }),
+      null,
+    );
+
+    // Recovery of a stale green status on the same head publishes the held failure, never success or merge,
+    // and the hold sticky names the candidate.
+    const cleanStatus = {
+      id: 402, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head',
+    };
+    assert.equal(await reviewGate.ensureTerminalReviewState(client, candidatePull(), head, cleanStatus, [cleanStatus]), true);
+    assert.equal(statusWrites.at(-1).state, 'failure', trailer);
+    assert.equal(statusWrites.at(-1).description, OWNERSHIP_CANDIDATE_HELD, trailer);
+    assert.ok(!statusWrites.some((write) => write.state === 'success'), trailer);
+    assert.match(stickies.at(-1), /- \*\*Correction owner:\*\* `codex`/u, trailer);
+  }
+});
+
+test('finding 4101018341 on #630: a transient candidate-head read failure is re-read before scope refuses', async () => {
+  const head = 'd'.repeat(40);
+  const pull = () => ({
+    number: 254, additions: 1, deletions: 0, changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: codex -->',
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/254',
+    head: { sha: head, ref: 'codex/observation-seed', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const run = async (failures) => {
+    let reads = 0;
+    const statusWrites = [];
+    const drafts = [];
+    const client = {
+      async pause() {},
+      async pullRequest() { return pull(); },
+      async setDraft(live, draft) { drafts.push(draft); return { ...live, draft }; },
+      async setStatus(h, state, description) { statusWrites.push({ state, description }); },
+      async updateStickyComment() {},
+      async reviewComments() { return []; },
+      async reviews() { return []; },
+      async markReplacementRequired() {},
+      async commit() {
+        reads += 1;
+        if (reads <= failures) throw new Error('GitHub 502');
+        return { commit: { message: 'seed\n\nCorrection-Owner: codex\n' }, files: [] };
+      },
+    };
+    const scope = await reviewGate.enforceReviewScope(client, pull(), head);
+    return { scope, reads, statusWrites, drafts };
+  };
+  // Two transient failures, then the read succeeds: admitted, no scope failure published.
+  const recovered = await run(2);
+  assert.equal(recovered.scope.allowed, true);
+  assert.equal(recovered.reads, 3);
+  assert.deepEqual(recovered.statusWrites, []);
+  // Still failing after the bounded re-reads: not admitted, but RETRYABLE (Codex finding 4101926931 on #630):
+  // no draft, no `scope:` hold, and an unreadable verdict for the caller's retryable status.
+  const exhausted = await run(3);
+  assert.equal(exhausted.scope.allowed, false);
+  assert.equal(exhausted.scope.retryable, true);
+  assert.equal(exhausted.scope.verdict.outcome, 'unreadable');
+  assert.equal(exhausted.reads, 3);
+  assert.deepEqual(exhausted.statusWrites, []);
+  assert.deepEqual(exhausted.drafts, []);
+});
+
+test('finding 4101926931 on #630: an exhausted candidate-head read recovers on the same SHA and body to the candidate hold', async () => {
+  // Delivery's required proof: reads fail beyond all three attempts, then the SAME head (and unchanged body)
+  // becomes readable. The supported recovery reaches normal checks and the candidate hold with no dummy push,
+  // body edit, competing correction lease, stale-SHA/status replay or merge eligibility.
+  const head = 'c'.repeat(40);
+  const body = '<!-- review-size: standard -->\n<!-- correction-owner: codex -->';
+  const pull = () => ({
+    number: 255, additions: 1, deletions: 0, changed_files: 1, body,
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/255',
+    head: { sha: head, ref: 'codex/observation-seed', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  let readable = false;
+  const commitReads = [];
+  const statusWrites = [];
+  const stickies = [];
+  const drafts = [];
+  const client = {
+    async pause() {},
+    async pullRequest() { return pull(); },
+    async setDraft(live, draft) { drafts.push(draft); return { ...live, draft }; },
+    async setStatus(sha, state, description) { statusWrites.push({ sha, state, description }); },
+    async updateStickyComment(number, text) { stickies.push(text); },
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async markReplacementRequired() {},
+    async commit(sha) {
+      commitReads.push(sha);
+      if (!readable) throw new Error('GitHub 502');
+      return { commit: { message: 'seed\n\nCorrection-Owner: codex\n' }, files: [] };
+    },
+    async mergeExactHead() { throw new Error('must not merge a candidate head'); },
+    async enableAutoMerge() { throw new Error('must not queue a candidate head'); },
+  };
+  const ciFailure = (ciRunAttempt) => ({
+    trigger: 'ci', ciConclusion: 'failure', ciRunId: 30329510227, ciRunAttempt,
+  });
+
+  // 1. Unreadable beyond the bounded re-reads (the review-scope CLI failed the same way).
+  const unreadScope = await reviewGate.enforceReviewScope(client, pull(), head);
+  assert.equal(unreadScope.retryable, true);
+  assert.equal(commitReads.length, 3);
+  // The failed CI run is retried once on this head, and the PR is never drafted while the head is unread.
+  assert.deepEqual(reviewGate.ciFailureDisposition(ciFailure(1), null, ['review-scope'], { pullRequest: pull(), scope: unreadScope }),
+    { retry: true, draft: false, unreadable: true, scopeAdmitted: false, reason: 'scope' });
+  assert.deepEqual(reviewGate.ciFailureDisposition(ciFailure(2), null, ['review-scope'], { pullRequest: pull(), scope: unreadScope }),
+    { retry: false, draft: false, unreadable: true, scopeAdmitted: false, reason: 'scope' });
+  // Final admission keeps the retryable meaning — `OWNERSHIP_READ_RETRY`, never `scope_required` — and it owes
+  // no correction, so no lease can open.
+  const unreadFinal = await reviewGate.revalidateFinalReviewPolicy(client, 255, head);
+  assert.equal(unreadFinal.state, 'ownership_withheld');
+  assert.equal(unreadFinal.ownershipReason, OWNERSHIP_READ_RETRY);
+  assert.equal(unreadFinal.verdict.mergeEligible, false);
+  assert.equal(correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY }), null);
+  assert.ok(reviewGate.isRetryableTerminalReviewFailure({
+    context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY,
+  }));
+  // Recovery of a published read-retry does not draft; the recovered status is the retryable one.
+  const retryStatus = { id: 501, context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY };
+  assert.equal(await reviewGate.ensureTerminalReviewState(client, pull(), head, retryStatus, [retryStatus]), true);
+  assert.deepEqual(drafts, []);
+  assert.ok(!statusWrites.some((write) => write.description?.startsWith('scope: ')));
+  assert.ok(!statusWrites.some((write) => write.state === 'success'));
+
+  // 2. The same SHA becomes readable; the body is unchanged.
+  readable = true;
+  const admitted = await reviewGate.enforceReviewScope(client, pull(), head);
+  assert.equal(admitted.allowed, true);
+  // A failed CI run whose scope failure was only the transient read is re-run once on this head (the
+  // controller returns after requesting it; `draft` applies only if no retry is taken).
+  assert.deepEqual(reviewGate.ciFailureDisposition(ciFailure(1), null, ['review-scope'], { pullRequest: pull(), scope: admitted }),
+    { retry: true, draft: true, unreadable: false, scopeAdmitted: true, reason: 'ci' });
+  // Shadow finding on #630: once the bounded retry is spent, a review-scope failure the controller's own read
+  // admits is reported as a CI failure. The notice keeps the admitted-candidate diagnostic and never says
+  // scope refused the head or asks for a new head.
+  const spent = reviewGate.ciFailureDisposition(ciFailure(2), null, ['review-scope'], { pullRequest: pull(), scope: admitted });
+  assert.deepEqual(spent, { retry: false, draft: true, unreadable: false, scopeAdmitted: true, reason: 'ci' });
+  const notice = correctionRouting({ declaration: parseCorrectionOwner(body, { headRef: 'codex/observation-seed' }), head, reason: spent.reason, detail: 'Failed checks: review-scope' });
+  assert.doesNotMatch(notice.instruction, /Scope refused this head|one new head/u);
+  assert.match(notice.instruction, /admitted candidate correction owner/u);
+  const held = await reviewGate.revalidateFinalReviewPolicy(client, 255, head);
+  assert.equal(held.state, 'ownership_withheld');
+  assert.equal(held.ownershipReason, OWNERSHIP_CANDIDATE_HELD);
+  assert.equal(held.verdict.mergeEligible, false);
+  assert.equal(held.verdict.owner, 'codex');
+  assert.equal(correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: held.ownershipReason }), null);
+  assert.equal(await reviewGate.authorizeExactHeadMerge(client, pull(), head, held.verdict).then((a) => a.allowed), false);
+
+  // Every read and write named this one SHA; nothing drafted, succeeded, merged, or edited the body.
+  assert.ok(commitReads.every((sha) => sha === head));
+  assert.ok(statusWrites.every((write) => write.sha === head));
+  assert.deepEqual(drafts, []);
+  assert.ok(!statusWrites.some((write) => write.state === 'success'));
+  assert.equal(pull().body, body);
+});
+
+test('finding 4103259698 on #630: a spent retry on an unread candidate head stays retryable, and recovery re-runs CI', async () => {
+  const head = 'a'.repeat(40);
+  const body = '<!-- review-size: standard -->\n<!-- correction-owner: codex -->';
+  const pull = (marker = body) => ({
+    number: 257, additions: 1, deletions: 0, changed_files: 1, body: marker,
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/257',
+    head: { sha: head, ref: 'codex/observation-seed', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const job = (name, conclusion, runId) => ({
+    name, status: 'completed', conclusion, completed_at: '2026-09-25T09:00:00Z',
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  // The real shape of a failed scope gate (Codex finding 4103993627 on #630): every job that needs it is
+  // skipped, and the summary counts those skips as failed.
+  const failedScopeRuns = [
+    job('review-scope', 'failure', '4242'),
+    ...['battery-plan', 'web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'].map((name) => job(name, 'skipped', '4242')),
+  ];
+  assert.deepEqual(reviewGate.summarizeRequiredChecks(failedScopeRuns).failed,
+    ['review-scope', 'battery-plan', 'web', 'api', 'e2e', 'api-e2e', 'upgrade-proof']);
+  const harness = (live = pull()) => {
+    const log = { statuses: [], drafts: [], reruns: [], stickies: [] };
+    const client = {
+      async pullRequest() { return live; },
+      async setDraft(pr, draft) { log.drafts.push(draft); return { ...pr, draft }; },
+      async setStatus(sha, state, description, url, context = 'codex-current-head') {
+        log.statuses.push({ sha, state, description, context });
+      },
+      async updateStickyComment(number, text) { log.stickies.push(text); },
+      async checkRuns() { return failedScopeRuns; },
+      async rerunFailedJobs(runId) { log.reruns.push(runId); },
+    };
+    return { client, log };
+  };
+  const unread = { allowed: false, retryable: true, verdict: { outcome: 'unreadable', mergeEligible: false, owner: null } };
+  const ci = (ciRunAttempt) => ({ trigger: 'ci', ciConclusion: 'failure', ciRunId: 4242, ciRunAttempt });
+  const pendingRequest = {
+    id: 9, context: 'codex-recovery-request/501', state: 'pending', description: 'recovery: requested terminal status 501',
+  };
+
+  // Attempt 1: the one bounded retry re-runs the same CI run; nothing is published or drafted.
+  const first = harness();
+  assert.equal(await reviewGate.handleCiFailure(first.client, ci(1), pull(), head, { scope: unread }), 'retried');
+  assert.deepEqual(first.log.reruns, [4242]);
+  assert.deepEqual(first.log.statuses, []);
+  assert.deepEqual(first.log.drafts, []);
+  // Codex finding 4104805621: a push during the head reads makes this head obsolete. Its retry neither re-runs
+  // the old workflow nor replaces the sticky of the newer head.
+  const pushed = harness({ ...pull(), head: { ...pull().head, sha: 'b'.repeat(40) } });
+  assert.equal(await reviewGate.handleCiFailure(pushed.client, ci(1), pull(), head, { scope: unread }), 'superseded');
+  assert.deepEqual(pushed.log.reruns, []);
+  assert.deepEqual(pushed.log.stickies, []);
+  assert.deepEqual(pushed.log.statuses, []);
+
+  // Attempt 2, still unread: the retryable status, never `ci:` (which the watchdog routes as an owed scope
+  // correction). No draft, and the pending recovery request is settled so a fresh one can follow.
+  const spent = harness();
+  assert.equal(await reviewGate.handleCiFailure(spent.client, ci(2), pull(), head,
+    { scope: unread, existingStatuses: [pendingRequest] }), 'unreadable');
+  const published = spent.log.statuses.filter((write) => write.context === 'codex-current-head');
+  assert.deepEqual(published.map((write) => write.description), [OWNERSHIP_READ_RETRY]);
+  assert.equal(correctionReasonFor({ context: 'codex-current-head', ...published[0] }), null);
+  assert.ok(reviewGate.isRetryableTerminalReviewFailure({ context: 'codex-current-head', ...published[0] }));
+  assert.ok(spent.log.statuses.some((write) => write.context === pendingRequest.context && write.state === 'success'));
+  assert.deepEqual(spent.log.drafts, []);
+  assert.deepEqual(spent.log.reruns, []);
+  assert.doesNotMatch(spent.log.stickies.at(-1), /Scope refused|new head/u);
+  // Another failed required check is real: it is not hidden behind the retryable hold.
+  assert.equal(reviewGate.ciFailureDisposition(ci(2), null, ['review-scope', 'automation'],
+    { pullRequest: pull(), scope: unread }).unreadable, false);
+  const independent = harness();
+  independent.client.checkRuns = async () => [job('review-scope', 'failure', '4242'), job('battery-plan', 'failure', '4242'),
+    ...['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'].map((name) => job(name, 'skipped', '4242'))];
+  await assert.rejects(reviewGate.handleCiFailure(independent.client, ci(2), pull(), head, { scope: unread }),
+    /Failed checks: review-scope, battery-plan/u);
+  assert.deepEqual(independent.log.drafts, [true]);
+
+  // The recovery run re-reads the same head, which now admits the candidate: it re-runs the failed CI run
+  // (the deciding review-scope run) on this same head instead of drafting it.
+  assert.equal(reviewGate.decidingRunId(failedScopeRuns, 'review-scope'), 4242);
+  const recovery = harness();
+  assert.equal(await reviewGate.rerunAdmittedCandidateScope(recovery.client, pull(), head, ['review-scope'], { allowed: true }), 'rerun');
+  assert.deepEqual(recovery.log.reruns, [4242]);
+  assert.deepEqual(recovery.log.drafts, []);
+  assert.deepEqual(recovery.log.statuses, []);
+
+  // Codex finding 4104384966: GitHub refusing the re-run keeps the recovery retryable. The caller republishes
+  // the retryable hold and settles the pending request; the helper itself drafts and publishes nothing.
+  const refusedRerun = harness();
+  refusedRerun.client.rerunFailedJobs = async () => { throw new Error('GitHub 403'); };
+  assert.equal(await reviewGate.rerunAdmittedCandidateScope(refusedRerun.client, pull(), head, ['review-scope'], { allowed: true }), 'rerun_failed');
+  assert.deepEqual(refusedRerun.log.drafts, []);
+  assert.deepEqual(refusedRerun.log.stickies, []);
+  await reviewGate.holdUnreadableCandidateHead(refusedRerun.client, pull(), head, { allowed: true }, [pendingRequest]);
+  assert.deepEqual(refusedRerun.log.statuses.filter((write) => write.context === 'codex-current-head').map((write) => write.description),
+    [OWNERSHIP_READ_RETRY]);
+  assert.ok(refusedRerun.log.statuses.some((write) => write.context === pendingRequest.context && write.state === 'success'));
+  assert.deepEqual(refusedRerun.log.drafts, []);
+
+  // Codex finding 4104384974: a head that moved before the re-run gets neither a re-run nor a sticky.
+  const moved = harness({ ...pull(), head: { ...pull().head, sha: 'b'.repeat(40) } });
+  assert.equal(await reviewGate.rerunAdmittedCandidateScope(moved.client, pull(), head, ['review-scope'], { allowed: true }), 'superseded');
+  assert.deepEqual(moved.log.reruns, []);
+  assert.deepEqual(moved.log.stickies, []);
+
+  // Never for a head the controller does not admit, a non-candidate body, or a different failed check.
+  for (const [label, live, failed, scope] of [
+    ['an unread head', pull(), ['review-scope'], unread],
+    ['a refused head', pull(), ['review-scope'], { allowed: false }],
+    ['a declared owner', pull('<!-- correction-owner: claude -->'), ['review-scope'], { allowed: true }],
+    ['a product failure', pull(), ['api'], { allowed: true }],
+  ]) {
+    const other = harness(live);
+    assert.equal(await reviewGate.rerunAdmittedCandidateScope(other.client, live, head, failed, scope), null, label);
+    assert.deepEqual(other.log.reruns, [], label);
+  }
+
+  // Shadow finding on #630: when the controller's own read admits the head but CI's review-scope failed again,
+  // the published status says so, and the watchdog reads it as a CI failure. Its notice for the candidate is
+  // the admitted-candidate diagnostic, never "Scope refused this head" or a new-head remedy.
+  const admittedRun = harness();
+  await assert.rejects(reviewGate.handleCiFailure(admittedRun.client, ci(2), pull(), head, { scope: { allowed: true } }),
+    /Failed checks: review-scope/u);
+  const admittedStatus = { context: 'codex-current-head', ...admittedRun.log.statuses.at(-1) };
+  assert.ok(admittedStatus.description.startsWith(`ci: ${CI_SCOPE_ADMITTED}; Failed checks: review-scope`));
+  assert.ok(admittedStatus.description.length <= 140, 'the admission note survives the 140-character cut');
+  assert.equal(correctionReasonFor(admittedStatus), 'ci');
+  const watchdogNotice = correctionRouting({
+    declaration: parseCorrectionOwner(body, { headRef: 'codex/observation-seed' }),
+    head, reason: correctionReasonFor(admittedStatus), detail: admittedStatus.description,
+  });
+  assert.doesNotMatch(watchdogNotice.instruction, /Scope refused this head|one new head whose own message/u);
+  // Codex finding 4104384957: the controller cannot tell why the job failed (it does not run the job's STATUS
+  // and tracked-tree checks), so the notice is actionable for either cause and never says "keep the marker".
+  assert.match(watchdogNotice.instruction, /read that job's log; a failed head read clears by re-running the job on this same head, and any other refusal needs a new head/u);
+  assert.doesNotMatch(watchdogNotice.instruction, /Keep the marker as it is|has requested no correction/u);
+  // The gate's own sticky, built from its notice detail, gives the same instruction.
+  assert.match(admittedRun.log.stickies.at(-1), /read that job's log/u);
+  // A plain review-scope failure still reads as a scope refusal, as before.
+  assert.equal(correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: 'ci: Failed checks: review-scope' }), 'scope');
+
+  // A declared owner's review-scope failure still drafts and fails as before.
+  const declared = harness(pull('<!-- correction-owner: claude -->'));
+  await assert.rejects(reviewGate.handleCiFailure(declared.client, ci(1), pull('<!-- correction-owner: claude -->'), head,
+    { scope: { allowed: true } }), /Failed checks: review-scope/u);
+  assert.deepEqual(declared.log.drafts, [true]);
+  assert.deepEqual(declared.log.reruns, []);
+  assert.match(declared.log.statuses.at(-1).description, /^ci: Failed checks: review-scope/u);
+});
+
+test('finding 4101926931 on #630: a readable ownership fault still fails closed, and review-scope stays unretried', async () => {
+  const head = 'b'.repeat(40);
+  const pull = (marker = 'codex', ref = 'codex/observation-seed') => ({
+    number: 256, additions: 1, deletions: 0, changed_files: 1,
+    body: `<!-- review-size: standard -->\n<!-- correction-owner: ${marker} -->`,
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/256',
+    head: { sha: head, ref, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const ciFailure = { trigger: 'ci', ciConclusion: 'failure', ciRunId: 30329510227, ciRunAttempt: 1 };
+  for (const [label, live, message] of [
+    ['an eligible Claude head under a candidate body', pull(), 'fix\n\nCorrection-Owner: claude\n'],
+    ['an ownerless head under a candidate body', pull(), 'fix: no trailer'],
+    ['a contradictory codex marker on claude/**', pull('codex', 'claude/x'), 'fix\n\nCorrection-Owner: codex\n'],
+    ['an unknown owner', pull('devin'), undefined],
+  ]) {
+    const statusWrites = [];
+    const drafts = [];
+    const client = {
+      async pause() {},
+      async pullRequest() { return live; },
+      async setDraft(pr, draft) { drafts.push(draft); return { ...pr, draft }; },
+      async setStatus(h, state, description) { statusWrites.push({ state, description }); },
+      async updateStickyComment() {},
+      async commit() {
+        if (message === undefined) throw new Error('GitHub 502');
+        return { commit: { message }, files: [] };
+      },
+    };
+    const scope = await reviewGate.enforceReviewScope(client, live, head);
+    assert.equal(scope.allowed, false, label);
+    assert.notEqual(scope.retryable, true, label);
+    assert.deepEqual(drafts, [true], `${label}: drafted`);
+    assert.match(statusWrites.at(-1).description, /^scope: /u, label);
+    const final = await reviewGate.revalidateFinalReviewPolicy(client, 256, head);
+    assert.equal(final.state, 'scope_required', label);
+    // A non-candidate or readable refusal never unlocks the review-scope retry, and stays a scope notice.
+    const disposition = reviewGate.ciFailureDisposition(ciFailure, null, ['review-scope'], { pullRequest: live, scope });
+    assert.equal(disposition.retry, false, label);
+    assert.equal(disposition.reason, 'scope', label);
+  }
+  // An ordinary declared owner's review-scope failure is still never retried.
+  assert.equal(reviewGate.ciFailureDisposition(ciFailure, null, ['review-scope'],
+    { pullRequest: pull('claude', 'claude/x'), scope: { allowed: true } }).retry, false);
+});
+
 test('recovery does not republish success when the SHA verdict is no longer eligible (unit 2B2)', async () => {
   const head = 'f'.repeat(40);
   const cleanStatus = {
@@ -2210,7 +2620,14 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
     liveFindingGuard >= 0 && liveFindingGuard < terminalRecovery,
     'live Codex evidence must be checked before recovered success can return',
   );
-  assert.match(runBody, /if \(!isTerminalReviewStatus\(existingStatus\)\)[\s\S]*`ci:/);
+  // The failed-CI path lives in `handleCiFailure`, which `run()` calls before any terminal recovery.
+  const ciHandler = runBody.indexOf('await handleCiFailure(');
+  assert.ok(ciHandler >= 0 && ciHandler < terminalRecovery);
+  const ciHelper = gate.slice(
+    gate.indexOf('export async function handleCiFailure'),
+    gate.indexOf('export async function holdUnreadableCandidateHead'),
+  );
+  assert.match(ciHelper, /if \(!isTerminalReviewStatus\(existingStatus\)\)[\s\S]*`ci:/);
 });
 
 test('workflow has no AI action or AI credential dependency', async () => {

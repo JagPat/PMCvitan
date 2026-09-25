@@ -41,10 +41,9 @@ export const CORRECTION_OWNERS = ['claude', 'cursor'];
 // Recognised in-flight CANDIDATE owners: a corrective HEAD may declare one and the ownership verdict
 // tracks it, but it is never merge-eligible and never awakenable, and it is NOT admitted to the routable
 // set above — so admitting a candidate here does not, by itself, let any consumer route, wake, or merge
-// it. A later unit teaches the promotion hold to admit-and-hold it; until then a candidate declaration
-// is reported as non-`declared` by the parsers (scope refuses, routing stalls), which is unchanged
-// consumer behaviour. Task and reviewer share the Codex bot identity, so it stays held pending
-// independent reviewer activation.
+// it. A candidate declaration is reported as non-`declared` by the parsers: the scope gate admits it (so
+// its head gets CI and review), routing stalls, and the promotion hold holds its reviewed head. Task and
+// reviewer share the Codex bot identity, so it stays held pending independent reviewer activation.
 export const CANDIDATE_CORRECTION_OWNERS = ['codex'];
 // Wake integrations enabled in this repository, not a product capability inventory.
 export const AWAKENABLE_FROM_GITHUB = new Set(['claude']);
@@ -60,6 +59,9 @@ export const CORRECTION_STALLED = 'correction_stalled';
 export const OWNERSHIP_READ_RETRY = 'validation: head commit ownership temporarily unreadable — retrying';
 // A consistent CANDIDATE head (e.g. codex) is held pending independent reviewer activation, never merged.
 export const OWNERSHIP_CANDIDATE_HELD = 'validation: candidate owner held for independent reviewer activation';
+// Leads a `ci:` failure whose failed `review-scope` job the controller's own scope check of the same exact
+// head ADMITS: a CI failure, not an ownership refusal, so the lease must not read it as `scope`.
+export const CI_SCOPE_ADMITTED = 'scope check admits this exact head';
 // A READABLE ownership fault: the exact head's Correction-Owner trailer is missing, invalid, or disagrees
 // with the mandatory PR body marker (including a branch-reservation contradiction). Written as the leading
 // text of a `scope:` failure detail.

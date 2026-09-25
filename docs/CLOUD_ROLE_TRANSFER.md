@@ -489,11 +489,24 @@ decision for the separate, operator-authorized installer.
 1. **Pick the PR.** An open, same-repository PR targeting `main` whose current head (the *reviewed head*) has
    green CI and a Claude shadow review (`claude-independent-review`) in state `changes_required`, the newest
    verified review of that head. It must be a truthful Codex candidate seed: its body declares
-   `<!-- correction-owner: codex -->` on a branch outside `claude/**`, and every commit (the reviewed head
-   included) ends with `Correction-Owner: codex`. The probe refuses any other PR (`not_candidate_seed`), and
+   `<!-- correction-owner: codex -->` on a branch outside `claude/**`, and the reviewed head commit's own
+   message ends with `Correction-Owner: codex` (scope and the observer read that exact head). The probe refuses any other PR (`not_candidate_seed`), and
    the observer's verdict holds unless the reviewed head and the PR both still declare the codex candidate.
-   Until candidate scope admission lands (the next unit), `review-scope` refuses a codex marker, so no such
-   seed gets CI yet and no cycle can run. Its title, description, comments and reviews must hold no Codex mention
+   `review-scope` admits a codex marker only over a head whose own trailer declares codex, so the seed gets
+   CI and review while its head is never merge-eligible: it never gets a green required status, so no
+   auto-merge can complete on it, and the controller holds its reviewed heads (`OWNERSHIP_CANDIDATE_HELD`, no
+   correction lease, nobody woken). If that head cannot be read after the bounded re-reads, the refusal is
+   retryable, not a hold: the PR is not drafted, the controller re-runs the failed CI (once automatically,
+   then on a same-SHA recovery once it can read the head), and a later read of the same head and body
+   recovers (never push again or edit the body for it). This covers a fresh seed. It does not close one other
+   case: an eligible Claude head whose body is edited to the codex marker while it is being merged, either by
+   an auto-merge already armed or by the controller's own exact-head merge in the gap after its last read. It
+   can merge before the edited CI run fails `review-scope`. What merges is the eligible Claude head, never a
+   candidate head, and the window is the same on `main` for any scope-failing body edit. GitHub offers no
+   body precondition on a merge. Both variants stay open as #628 finding 4100230308 and #630 finding
+   4103625675, for the next containment unit (the owner's ruling), since cancelling or guarding a merge
+   would be a new controller capability. Push the seed as ONE push: a second push can let a stale CI completion cancel the head's
+   shadow review. Its title, description, comments and reviews must hold no Codex mention
    except Codex's own, and no one but Codex and trusted workflows may have left a GitHub review on it.
 2. **Keep the cycle quiet** from the moment the reviewed head was pushed until the observer runs: nobody
    comments on, reviews, edits or pushes to the PR (a Claude session acting through the owner's account

@@ -8,6 +8,7 @@ import {
   PRE_REVIEW_ENFORCE_AFTER_PR,
   STATUS_DOCUMENT,
 } from './review-efficiency.mjs';
+import { correctionOwnerDeclaration, readHeadCommitMessage } from './correction-owner.mjs';
 import {
   assessPostMergeRunnerState,
   parseMaintenanceQueue,
@@ -43,12 +44,31 @@ async function pullRequestFiles({ fetchImpl, repository, number, token }) {
   }
 }
 
+// The exact head commit's message, read only for a PR whose body declares a CANDIDATE owner: scope admits
+// that PR only when the head declares the same candidate. The bounded re-reads are the shared
+// `readHeadCommitMessage` (correction-owner.mjs), the same one the controller uses.
+async function headCommitMessage({ fetchImpl, repository, sha, token, sleep }) {
+  if (typeof fetchImpl !== 'function' || !repository || !token || !/^[0-9a-f]{40}$/u.test(sha ?? '')) return undefined;
+  return readHeadCommitMessage(async () => {
+    const response = await fetchImpl(`https://api.github.com/repos/${repository}/commits/${sha}`, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token}`,
+        'x-github-api-version': '2022-11-28',
+      },
+    });
+    if (!response.ok) return undefined;
+    return (await response.json())?.commit?.message;
+  }, sleep ? { sleep } : {});
+}
+
 export async function run({
   eventPath = process.env.GITHUB_EVENT_PATH,
   token = process.env.GITHUB_TOKEN,
   repository = process.env.GITHUB_REPOSITORY,
   fetchImpl = globalThis.fetch,
   listTreeImpl = trackedTreeEntries,
+  sleep,
 } = {}) {
   if (!eventPath) throw new Error('GITHUB_EVENT_PATH is required');
   const event = JSON.parse(await readFile(eventPath, 'utf8'));
@@ -71,15 +91,28 @@ export async function run({
       console.error(`review-scope: could not inspect cumulative PR files: ${error.message}`);
     }
   }
+  const message = correctionOwnerDeclaration(event.pull_request).state === 'candidate'
+    ? await headCommitMessage({
+      fetchImpl,
+      repository: repository || event.repository?.full_name,
+      sha: event.pull_request.head?.sha,
+      token,
+      sleep,
+    })
+    : undefined;
   const result = assessReviewScope(event.pull_request, {
     changedFiles,
     requireChangedFiles: preReviewRequired,
+    headCommitMessage: message,
   });
   console.log(
     `review-scope: ${result.state}; ${result.changedFiles} files, ${result.changedLines} changed lines`,
   );
   if (!result.allowed) {
-    console.error(`::error title=Review preflight failed::${result.detail}`);
+    // An unread candidate head still fails closed, but as RETRYABLE: the controller re-runs this job on the
+    // same head once its own read of that head succeeds (`ciFailureDisposition`), and does not draft the PR.
+    const title = result.retryable ? 'Review preflight retryable' : 'Review preflight failed';
+    console.error(`::error title=${title}::${result.detail}`);
     process.exitCode = 1;
   }
 

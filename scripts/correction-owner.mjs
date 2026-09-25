@@ -9,6 +9,7 @@ import {
   CORRECTION_STALLED,
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
+  CI_SCOPE_ADMITTED,
   ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 export {
@@ -142,8 +143,8 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   }
 
   // A CANDIDATE (e.g. codex) is a first-class state distinct from `declared`: recognised in-flight but
-  // never merge-eligible and never awakenable. Every existing consumer checks `=== 'declared'`, so a
-  // candidate is treated as non-declared (scope refuses, routing stalls) until a later unit admits it.
+  // never merge-eligible and never awakenable. The scope gate admits it (`correctionOwnerProblem`), so its
+  // head gets CI and review; routing still stalls and its reviewed head is held, never merged.
   if (CANDIDATE_CORRECTION_OWNERS.includes(owner)) {
     return {
       state: 'candidate',
@@ -469,6 +470,29 @@ export function correctionOwnerDeclaration(pullRequest) {
 }
 
 /**
+ * The candidate head's commit message, read with bounded retries: `readOnce()` returns the message (or
+ * anything else for a failed read, or throws). A commit is immutable, so a failed read is retried after each
+ * `HEAD_READ_DELAYS_MS` pause before it counts: a transient API failure must not refuse a truthful candidate
+ * seed (Codex finding 4101018341 on #630). A read that still fails is `undefined`, which the scope gate
+ * refuses retryably (fail closed, never a hold: `candidateHeadUnread`). The one shared implementation for the review-scope CLI and the controller, so the
+ * two can never reach different admission verdicts for the same head.
+ */
+export const HEAD_READ_DELAYS_MS = Object.freeze([1_000, 3_000]);
+const pauseFor = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+export async function readHeadCommitMessage(readOnce, { sleep = pauseFor } = {}) {
+  for (let attempt = 0; attempt <= HEAD_READ_DELAYS_MS.length; attempt += 1) {
+    if (attempt > 0) await sleep(HEAD_READ_DELAYS_MS[attempt - 1]);
+    try {
+      const message = await readOnce();
+      if (typeof message === 'string') return message;
+    } catch {
+      // retried; the last failure refuses
+    }
+  }
+  return undefined;
+}
+
+/**
  * The scope-gate verdict: the detail string to refuse with, or null.
  *
  * Deliberately evaluated in `assessReviewScope`, which both the PR-side
@@ -483,10 +507,62 @@ export function correctionOwnerDeclaration(pullRequest) {
  * other PR in that range, so the carve-out protected nothing and contradicted
  * the contract it was written beside: a PR inside it could pass `review-scope`
  * with no owner and then route to nobody on its first finding.
+ *
+ * Admits a routable `declared` owner, or a recognised `candidate` (codex, on a
+ * branch that permits it) ONLY when the exact head commit declares the same
+ * candidate (`headCommitMessage`): a truthful body AND head. Such a head is never
+ * merge-eligible (`shaMergeAuthority`), so it never carries a green required
+ * status a queued auto-merge could act on, and its reviewed head is held with
+ * `OWNERSHIP_CANDIDATE_HELD` (no correction lease, nobody woken). A candidate
+ * body over any other head — an eligible `Correction-Owner: claude` head, one
+ * with no owner, or an unread head — is refused, so a body edit can never turn
+ * a mergeable head into a candidate-scoped one (Codex findings on #628). An
+ * unread head's refusal is retryable (`candidateHeadUnread`), never a hold. Missing,
+ * invalid and contradictory declarations — codex on `claude/**` included — are
+ * refused as before.
  */
-export function correctionOwnerProblem(pullRequest) {
+export function correctionOwnerProblem(pullRequest, { headCommitMessage } = {}) {
+  return assessCorrectionOwner(pullRequest, { headCommitMessage }).problem;
+}
+
+/**
+ * The owner verdict for the scope gate, with the head's trailers parsed ONCE: `problem` (the refusal detail,
+ * or null) and `unread` (the refusal is only an unread candidate head, so it is retryable). Parsing once means
+ * a transient git failure cannot make the two disagree (Codex finding 4104805631).
+ */
+export function assessCorrectionOwner(pullRequest, { headCommitMessage } = {}) {
   const declaration = correctionOwnerDeclaration(pullRequest);
-  return declaration.state === 'declared' ? null : declaration.detail;
+  if (declaration.state === 'declared') return { problem: null, unread: false };
+  if (declaration.state !== 'candidate') return { problem: declaration.detail, unread: false };
+  // A message that was read but whose trailers could not be parsed (`shaMergeAuthority` → `unreadable`, git
+  // could not run) is as unread as a failed fetch: retryable on the same SHA (Codex finding 4104384946).
+  const head = typeof headCommitMessage === 'string' ? shaMergeAuthority(headCommitMessage) : null;
+  if (!head || head.outcome === 'unreadable') {
+    return {
+      problem: `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
+        + `could not be read after ${HEAD_READ_DELAYS_MS.length + 1} attempts: retryable on this same head `
+        + '(re-run the check; no new head or PR edit is needed)',
+      unread: true,
+    };
+  }
+  if (head.outcome === 'candidate' && head.owner === declaration.owner) return { problem: null, unread: false };
+  return {
+    problem: `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
+      + 'does not declare it: the exact head commit\'s message must end with '
+      + `a single \`Correction-Owner: ${declaration.owner}\` trailer (a new head is required)`,
+    unread: false,
+  };
+}
+
+/**
+ * True when the ONLY reason `correctionOwnerProblem` refuses is that a candidate body's head commit could
+ * not be read (Codex finding 4101926931 on #630). A commit is immutable, so that refusal is RETRYABLE on
+ * the same SHA and body: callers must not draft the PR, publish a `scope:` hold, or demand a new head for
+ * it. It never admits: the head stays unassessed until a later read succeeds, and a readable missing,
+ * invalid or contradictory owner still fails closed.
+ */
+export function candidateHeadUnread(pullRequest, { headCommitMessage } = {}) {
+  return assessCorrectionOwner(pullRequest, { headCommitMessage }).unread;
 }
 
 function ownerLabel(owner) {
@@ -544,7 +620,40 @@ function declaredInstruction(owner, { reason, detail }) {
 // And what it says when nobody is declared. It names the defect and the exact
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
-function undeclaredInstruction(declaration) {
+function undeclaredInstruction(declaration, { reason = null, detail = null } = {}) {
+  // A CANDIDATE body is admitted only over a head whose own trailer declares it, and the PR must meet every
+  // other scope rule. When scope refused this head, the body alone proves nothing, so the notice names the
+  // refusal and its remedy instead of calling the candidate admitted (Codex finding 4101018333 on #630).
+  if (declaration.state === 'candidate' && reason === 'scope') {
+    return `Scope refused this head${detail ? `: ${detail}` : ''}. A "${declaration.owner}" candidate marker is `
+      + 'admitted only over a head whose own trailer declares it, and only when every other scope rule '
+      + 'holds. Resume action: clear the refusal above; a head-trailer mismatch needs one new head whose '
+      + `own message ends with \`Correction-Owner: ${declaration.owner}\`, or a different marker if `
+      + `${declaration.owner} is not this PR's author. This loop routes no agent and cannot observe whether `
+      + 'one is already running.';
+  }
+  // Otherwise an admitted CANDIDATE is not an ownership fault: the marker is truthful and the scope gate
+  // admitted it, so "replace the marker" would be false and would steer the PR away from its held workflow.
+  // It is still routed to nobody and woken by nothing; only the bounded probe requests a correction.
+  // CI's review-scope job failed although the controller's own scope check admits this head (the
+  // `CI_SCOPE_ADMITTED` note). The controller cannot see why the job failed: it does not run the job's STATUS
+  // and tracked-tree checks, and the job may not have been able to read the head. So name both causes and
+  // point to the job log; never claim the head was refused, and never ask for nothing (Codex finding 4104384957).
+  if (declaration.state === 'candidate' && reason === 'ci' && String(detail ?? '').includes(CI_SCOPE_ADMITTED)) {
+    return `CI's review-scope job failed although the controller's own scope check admits this head's `
+      + `"${declaration.owner}" candidate marker and trailer. The job refused something the controller does not `
+      + 'check (the committed STATUS or a tracked dependency path) or could not read the head. Resume action: '
+      + 'read that job\'s log; a failed head read clears by re-running the job on this same head, and any other '
+      + 'refusal needs a new head that fixes it. This loop routes no agent and cannot observe whether one is '
+      + 'already running.';
+  }
+  if (declaration.state === 'candidate') {
+    return `"${declaration.owner}" is the admitted candidate correction owner of this PR: tracked in-flight, `
+      + 'never merged automatically and never woken from GitHub, held pending independent reviewer '
+      + 'activation. This loop routes no agent and has requested no correction; it cannot observe whether '
+      + 'one is already running. Keep the marker as it is; the loop requests a correction only through '
+      + 'the bounded codex-fix-probe.';
+  }
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `
     + 'No agent is routed and no correction is in flight.';
   // ADD only when the block is empty. Told to a body that already carries a
@@ -594,7 +703,7 @@ export function correctionRouting({
       awakenable: false,
       head,
       detail,
-      instruction: undeclaredInstruction(resolved, { reason, pullRequestNumber }),
+      instruction: undeclaredInstruction(resolved, { reason, detail, pullRequestNumber }),
     };
   }
 
