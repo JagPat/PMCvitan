@@ -495,7 +495,9 @@ decision for the separate, operator-authorized installer.
    `review-scope` admits a codex marker only over a head whose own trailer declares codex, so the seed gets
    CI and review while its head is never merge-eligible: it never gets a green required status, so no
    auto-merge can complete on it, and the controller holds its reviewed heads (`OWNERSHIP_CANDIDATE_HELD`, no
-   correction lease, nobody woken). This covers a fresh seed. It does not close one other case: an
+   correction lease, nobody woken). If that head cannot be read after the bounded re-reads, the refusal is
+   retryable, not a hold: the PR is not drafted, the controller re-runs the failed CI once, and a later read
+   of the same head and body recovers (never push again or edit the body for it). This covers a fresh seed. It does not close one other case: an
    auto-merge already armed on an eligible Claude head, whose body is then edited to the codex marker, can
    complete before the edited CI run fails `review-scope`. That window is the same on `main` for any
    scope-failing body edit, and it stays open as #628 finding 4100230308, since cancelling a queued

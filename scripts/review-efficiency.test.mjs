@@ -641,11 +641,25 @@ test('the required scope CLI admits a candidate body only over a head that decla
       assert.equal(refused.allowed, false, label);
       assert.match(refused.detail, detail, label);
       assert.equal(process.exitCode, 1, label);
+      // Codex finding 4101926931 on #630: only the unread head is retryable; it still fails the check.
+      assert.equal(refused.retryable === true, head === null, label);
     }
     // A persistently unreadable head is read exactly 1 + HEAD_READ_DELAYS_MS.length times, then refused.
     requested.length = 0;
     await runScope(options(null));
     assert.equal(headReads(), 3);
+    // Codex finding 4101926931 on #630: reads fail beyond all three attempts, then the SAME head and body
+    // become readable. The re-run check admits it — no new head, no PR edit.
+    process.exitCode = previousExitCode;
+    requested.length = 0;
+    const exhausted = await runScope(options([null, null, null, null]));
+    assert.equal(exhausted.retryable, true);
+    assert.equal(process.exitCode, 1);
+    assert.equal(headReads(), 3);
+    process.exitCode = previousExitCode;
+    const rerun = await runScope(options('seed\n\nCorrection-Owner: codex\n'));
+    assert.equal(rerun.allowed, true, rerun.detail ?? 'expected the re-run to admit the same head');
+    assert.equal(process.exitCode, previousExitCode);
   } finally {
     process.exitCode = previousExitCode;
     await rm(directory, { recursive: true, force: true });

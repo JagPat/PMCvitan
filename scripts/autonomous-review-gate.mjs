@@ -223,15 +223,35 @@ export function shouldDraftForCiFailure(status) {
   );
 }
 
-export function shouldRetryCiFailure(context, existingStatus, failedChecks = []) {
+export function shouldRetryCiFailure(context, existingStatus, failedChecks = [], { candidateScope = false } = {}) {
   return context?.trigger === 'ci'
     && context.ciConclusion
     && context.ciConclusion !== 'success'
     && Number.isInteger(context.ciRunId)
     && context.ciRunId > 0
     && context.ciRunAttempt === 1
-    && !failedChecks.includes('review-scope')
+    && (candidateScope || !failedChecks.includes('review-scope'))
     && !isTerminalReviewStatus(existingStatus);
+}
+
+// What a failed CI run on one exact head gets. A `review-scope` failure is normally deterministic, so it is
+// never retried and the PR drafts. The one exception (Codex finding 4101926931 on #630): a CANDIDATE body
+// whose head the CLI could not read. The controller has already re-read that same SHA (`scope`); when its
+// read admits the candidate, or is itself still unreadable, the CLI's failure may be only the transient read,
+// so the one bounded failed-job retry re-runs the same head with no new head or PR edit. While the head is
+// still unreadable the PR is not drafted either, so a later green run on the same head proceeds. A readable
+// head that does not declare the candidate never reaches here: scope refuses it first (fail closed).
+// `draft` applies only when no retry is taken (the controller returns after requesting one).
+export function ciFailureDisposition(context, existingStatus, failedChecks = [], { pullRequest, scope } = {}) {
+  const candidateScope = failedChecks.includes('review-scope')
+    && correctionOwnerDeclaration(pullRequest).state === 'candidate'
+    && Boolean(scope?.allowed || scope?.retryable);
+  const unreadable = candidateScope && scope?.retryable === true;
+  return {
+    retry: Boolean(shouldRetryCiFailure(context, existingStatus, failedChecks, { candidateScope })),
+    draft: !unreadable && shouldDraftForCiFailure(existingStatus),
+    unreadable,
+  };
 }
 
 function statusesAfterLatestReviewPending(statuses) {
@@ -1171,6 +1191,11 @@ export async function setDraftForCurrentHead(
   return isCurrentReviewUnit(updated, expectedHead) ? updated : null;
 }
 
+// The verdict an exact head that could not be read carries: retryable, never an owner.
+const UNREADABLE_VERDICT = Object.freeze({
+  outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: 'unreadable',
+});
+
 // 2B2: the single SHA-scoped merge-authority read for one run. The controller reads the exact head
 // commit MESSAGE once and every required-success publisher and the merge consume this one parsed
 // verdict (`shaMergeAuthority`, itself SHA-only and mutation-free). A fetch failure or a message
@@ -1468,7 +1493,7 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
   }
   // A candidate body is admitted only over a head that declares the same candidate, so read that exact
   // head's message for it. A commit is immutable, so a failed read is retried (bounded, as the review-scope
-  // CLI does) before it counts; one that still fails leaves it undefined, which refuses (fail closed).
+  // CLI does) before it counts; one that still fails leaves it undefined, which refuses retryably.
   let headCommitMessage;
   if (correctionOwnerDeclaration(pullRequest).state === 'candidate') {
     // The shared bounded re-read (correction-owner.mjs), the same one the review-scope CLI uses;
@@ -1487,6 +1512,10 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
     replacementPullRequests: lineage?.replacementPullRequests,
   });
   if (result.allowed) return result;
+  // An unread candidate head is RETRYABLE on this same SHA (Codex finding 4101926931 on #630): no draft, no
+  // `scope:` hold, no correction notice. The caller publishes the retryable `OWNERSHIP_READ_RETRY` (or, on a
+  // failed CI run, re-runs it), so a later read of the same head and body recovers.
+  if (result.retryable) return { ...result, verdict: UNREADABLE_VERDICT };
 
   const live = await setDraftForCurrentHead(
     client,
@@ -1536,6 +1565,11 @@ export async function revalidateFinalReviewPolicy(
 
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return { ...scope, state: 'superseded' };
+  // An unread candidate head keeps its retryable meaning here, never `scope_required`: callers publish
+  // `OWNERSHIP_READ_RETRY` without drafting, so a later read of the same SHA recovers.
+  if (scope.retryable) {
+    return { state: 'ownership_withheld', allowed: false, ownershipReason: OWNERSHIP_READ_RETRY, verdict: scope.verdict, pullRequest };
+  }
   if (!scope.allowed) return { ...scope, state: 'scope_required' };
 
   const convergence = await enforceReviewConvergence(
@@ -1882,14 +1916,31 @@ export async function run() {
 
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return;
-  if (!scope.allowed) throw new Error(scope.detail);
+  if (!scope.allowed && !scope.retryable) throw new Error(scope.detail);
+  const ciFailed = Boolean(context.ciConclusion && context.ciConclusion !== 'success');
+  if (scope.retryable && !ciFailed) {
+    // The exact candidate head could not be read (Codex finding 4101926931 on #630): publish the retryable
+    // `OWNERSHIP_READ_RETRY` — no draft, no `scope:` hold, no correction — so the supported exact-head
+    // recovery re-reads this same SHA and proceeds.
+    await client.setStatus(expectedHead, 'failure', OWNERSHIP_READ_RETRY, pullRequest.html_url);
+    const stillCurrent = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+    if (stillCurrent) {
+      await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
+        ownershipReason: OWNERSHIP_READ_RETRY,
+        verdict: scope.verdict,
+      });
+    }
+    console.log(`Exact candidate head is unreadable; retryable on this same head: ${scope.detail}`);
+    return;
+  }
 
-  if (context.ciConclusion && context.ciConclusion !== 'success') {
+  if (ciFailed) {
     const ciSummary = summarizeRequiredChecks(
       await client.checkRuns(expectedHead),
       requiredChecksForPullRequest(pullRequest.number),
     );
-    if (shouldRetryCiFailure(context, existingStatus, ciSummary.failed)) {
+    const disposition = ciFailureDisposition(context, existingStatus, ciSummary.failed, { pullRequest, scope });
+    if (disposition.retry) {
       try {
         await client.rerunFailedJobs(context.ciRunId);
         await client.updateStickyComment(
@@ -1910,7 +1961,7 @@ export async function run() {
         );
       }
     }
-    pullRequest = shouldDraftForCiFailure(existingStatus)
+    pullRequest = disposition.draft
       ? await setDraftForCurrentHead(
           client,
           pullRequest.number,
@@ -1933,6 +1984,24 @@ export async function run() {
         `ci: ${ciDetail}`,
         pullRequest.html_url,
       );
+    }
+    if (disposition.unreadable) {
+      // Still unreadable after the bounded retry: stay ready and name the same-head remedy, not a new head.
+      const hold = ownershipHoldNotice(scope.verdict);
+      await client.updateStickyComment(
+        pullRequest.number,
+        statusBody({
+          state: 'blocked',
+          head: expectedHead,
+          detail: `${ciDetail}; ${scope.detail}`,
+          attempt: 0,
+          owner: hold.owner,
+          correctionState: hold.correctionState,
+          next: 'Retryable: re-run the failed CI jobs on this same head once it can be read; no new head '
+            + 'or PR edit is needed.',
+        }),
+      );
+      throw new Error(`${ciDetail}; ${scope.detail}`);
     }
     const ciNotice = correctionNotice(pullRequest, {
       detail: ciDetail,

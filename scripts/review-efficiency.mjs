@@ -29,7 +29,7 @@ import { LINEAGE_BASE_REF, isLineageBase } from './lineage-policy.mjs';
 // Correction ownership is checked HERE, in the one assessment both the PR-side
 // `review-scope` job and the trusted controller's `enforceReviewScope` call, so
 // the cheap gate and the merge boundary cannot disagree about who owns a fix.
-import { correctionOwnerProblem } from './correction-owner.mjs';
+import { candidateHeadUnread, correctionOwnerProblem } from './correction-owner.mjs';
 
 // Legacy convergence packets retain their parsing threshold; the live gate
 // never closes or blocks a PR based on the number of reviewed heads.
@@ -412,10 +412,15 @@ export function assessReviewScope(
     ...preReviewProblems,
   ];
   if (problems.length > 0) {
+    // Retryable only when an unread candidate head is the SOLE problem: re-running the same head can
+    // then assess it, whereas any other problem needs a change first.
+    const retryable = problems.length === 1 && ownerProblem !== null
+      && candidateHeadUnread(pullRequest, { headCommitMessage });
     return {
       ...common,
-      state: 'blocked',
+      state: retryable ? 'owner_head_unreadable' : 'blocked',
       allowed: false,
+      ...(retryable ? { retryable: true } : {}),
       missingInvariants,
       detail: problems.join('; '),
     };

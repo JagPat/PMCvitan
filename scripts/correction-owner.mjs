@@ -473,7 +473,7 @@ export function correctionOwnerDeclaration(pullRequest) {
  * anything else for a failed read, or throws). A commit is immutable, so a failed read is retried after each
  * `HEAD_READ_DELAYS_MS` pause before it counts: a transient API failure must not refuse a truthful candidate
  * seed (Codex finding 4101018341 on #630). A read that still fails is `undefined`, which the scope gate
- * refuses (fail closed). The one shared implementation for the review-scope CLI and the controller, so the
+ * refuses retryably (fail closed, never a hold: `candidateHeadUnread`). The one shared implementation for the review-scope CLI and the controller, so the
  * two can never reach different admission verdicts for the same head.
  */
 export const HEAD_READ_DELAYS_MS = Object.freeze([1_000, 3_000]);
@@ -515,7 +515,8 @@ export async function readHeadCommitMessage(readOnce, { sleep = pauseFor } = {})
  * `OWNERSHIP_CANDIDATE_HELD` (no correction lease, nobody woken). A candidate
  * body over any other head — an eligible `Correction-Owner: claude` head, one
  * with no owner, or an unread head — is refused, so a body edit can never turn
- * a mergeable head into a candidate-scoped one (Codex findings on #628). Missing,
+ * a mergeable head into a candidate-scoped one (Codex findings on #628). An
+ * unread head's refusal is retryable (`candidateHeadUnread`), never a hold. Missing,
  * invalid and contradictory declarations — codex on `claude/**` included — are
  * refused as before.
  */
@@ -523,11 +524,28 @@ export function correctionOwnerProblem(pullRequest, { headCommitMessage } = {}) 
   const declaration = correctionOwnerDeclaration(pullRequest);
   if (declaration.state === 'declared') return null;
   if (declaration.state !== 'candidate') return declaration.detail;
-  const head = typeof headCommitMessage === 'string' ? shaMergeAuthority(headCommitMessage) : null;
-  if (head?.outcome === 'candidate' && head.owner === declaration.owner) return null;
+  if (typeof headCommitMessage !== 'string') {
+    return `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
+      + `could not be read after ${HEAD_READ_DELAYS_MS.length + 1} attempts: retryable on this same head `
+      + '(re-run the check; no new head or PR edit is needed)';
+  }
+  const head = shaMergeAuthority(headCommitMessage);
+  if (head.outcome === 'candidate' && head.owner === declaration.owner) return null;
   return `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
-    + `${head ? 'does not declare it' : 'could not be read'}: the exact head commit's message must end with `
+    + 'does not declare it: the exact head commit\'s message must end with '
     + `a single \`Correction-Owner: ${declaration.owner}\` trailer (a new head is required)`;
+}
+
+/**
+ * True when the ONLY reason `correctionOwnerProblem` refuses is that a candidate body's head commit could
+ * not be read (Codex finding 4101926931 on #630). A commit is immutable, so that refusal is RETRYABLE on
+ * the same SHA and body: callers must not draft the PR, publish a `scope:` hold, or demand a new head for
+ * it. It never admits: the head stays unassessed until a later read succeeds, and a readable missing,
+ * invalid or contradictory owner still fails closed.
+ */
+export function candidateHeadUnread(pullRequest, { headCommitMessage } = {}) {
+  return correctionOwnerDeclaration(pullRequest).state === 'candidate'
+    && typeof headCommitMessage !== 'string';
 }
 
 function ownerLabel(owner) {

@@ -1747,10 +1747,11 @@ test('finding 4101018341 on #630: a transient candidate-head read failure is re-
   const run = async (failures) => {
     let reads = 0;
     const statusWrites = [];
+    const drafts = [];
     const client = {
       async pause() {},
       async pullRequest() { return pull(); },
-      async setDraft(live, draft) { return { ...live, draft }; },
+      async setDraft(live, draft) { drafts.push(draft); return { ...live, draft }; },
       async setStatus(h, state, description) { statusWrites.push({ state, description }); },
       async updateStickyComment() {},
       async reviewComments() { return []; },
@@ -1763,18 +1764,154 @@ test('finding 4101018341 on #630: a transient candidate-head read failure is re-
       },
     };
     const scope = await reviewGate.enforceReviewScope(client, pull(), head);
-    return { scope, reads, statusWrites };
+    return { scope, reads, statusWrites, drafts };
   };
   // Two transient failures, then the read succeeds: admitted, no scope failure published.
   const recovered = await run(2);
   assert.equal(recovered.scope.allowed, true);
   assert.equal(recovered.reads, 3);
   assert.deepEqual(recovered.statusWrites, []);
-  // Still failing after the bounded re-reads: refused, fail closed.
-  const refused = await run(3);
-  assert.equal(refused.scope.allowed, false);
-  assert.equal(refused.reads, 3);
-  assert.match(refused.statusWrites.at(-1)?.description ?? '', /^scope: .*head commit could not be read/u);
+  // Still failing after the bounded re-reads: not admitted, but RETRYABLE (Codex finding 4101926931 on #630):
+  // no draft, no `scope:` hold, and an unreadable verdict for the caller's retryable status.
+  const exhausted = await run(3);
+  assert.equal(exhausted.scope.allowed, false);
+  assert.equal(exhausted.scope.retryable, true);
+  assert.equal(exhausted.scope.verdict.outcome, 'unreadable');
+  assert.equal(exhausted.reads, 3);
+  assert.deepEqual(exhausted.statusWrites, []);
+  assert.deepEqual(exhausted.drafts, []);
+});
+
+test('finding 4101926931 on #630: an exhausted candidate-head read recovers on the same SHA and body to the candidate hold', async () => {
+  // Delivery's required proof: reads fail beyond all three attempts, then the SAME head (and unchanged body)
+  // becomes readable. The supported recovery reaches normal checks and the candidate hold with no dummy push,
+  // body edit, competing correction lease, stale-SHA/status replay or merge eligibility.
+  const head = 'c'.repeat(40);
+  const body = '<!-- review-size: standard -->\n<!-- correction-owner: codex -->';
+  const pull = () => ({
+    number: 255, additions: 1, deletions: 0, changed_files: 1, body,
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/255',
+    head: { sha: head, ref: 'codex/observation-seed', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  let readable = false;
+  const commitReads = [];
+  const statusWrites = [];
+  const stickies = [];
+  const drafts = [];
+  const client = {
+    async pause() {},
+    async pullRequest() { return pull(); },
+    async setDraft(live, draft) { drafts.push(draft); return { ...live, draft }; },
+    async setStatus(sha, state, description) { statusWrites.push({ sha, state, description }); },
+    async updateStickyComment(number, text) { stickies.push(text); },
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async markReplacementRequired() {},
+    async commit(sha) {
+      commitReads.push(sha);
+      if (!readable) throw new Error('GitHub 502');
+      return { commit: { message: 'seed\n\nCorrection-Owner: codex\n' }, files: [] };
+    },
+    async mergeExactHead() { throw new Error('must not merge a candidate head'); },
+    async enableAutoMerge() { throw new Error('must not queue a candidate head'); },
+  };
+  const ciFailure = (ciRunAttempt) => ({
+    trigger: 'ci', ciConclusion: 'failure', ciRunId: 30329510227, ciRunAttempt,
+  });
+
+  // 1. Unreadable beyond the bounded re-reads (the review-scope CLI failed the same way).
+  const unreadScope = await reviewGate.enforceReviewScope(client, pull(), head);
+  assert.equal(unreadScope.retryable, true);
+  assert.equal(commitReads.length, 3);
+  // The failed CI run is retried once on this head, and the PR is never drafted while the head is unread.
+  assert.deepEqual(reviewGate.ciFailureDisposition(ciFailure(1), null, ['review-scope'], { pullRequest: pull(), scope: unreadScope }),
+    { retry: true, draft: false, unreadable: true });
+  assert.deepEqual(reviewGate.ciFailureDisposition(ciFailure(2), null, ['review-scope'], { pullRequest: pull(), scope: unreadScope }),
+    { retry: false, draft: false, unreadable: true });
+  // Final admission keeps the retryable meaning — `OWNERSHIP_READ_RETRY`, never `scope_required` — and it owes
+  // no correction, so no lease can open.
+  const unreadFinal = await reviewGate.revalidateFinalReviewPolicy(client, 255, head);
+  assert.equal(unreadFinal.state, 'ownership_withheld');
+  assert.equal(unreadFinal.ownershipReason, OWNERSHIP_READ_RETRY);
+  assert.equal(unreadFinal.verdict.mergeEligible, false);
+  assert.equal(correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY }), null);
+  assert.ok(reviewGate.isRetryableTerminalReviewFailure({
+    context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY,
+  }));
+  // Recovery of a published read-retry does not draft; the recovered status is the retryable one.
+  const retryStatus = { id: 501, context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY };
+  assert.equal(await reviewGate.ensureTerminalReviewState(client, pull(), head, retryStatus, [retryStatus]), true);
+  assert.deepEqual(drafts, []);
+  assert.ok(!statusWrites.some((write) => write.description?.startsWith('scope: ')));
+  assert.ok(!statusWrites.some((write) => write.state === 'success'));
+
+  // 2. The same SHA becomes readable; the body is unchanged.
+  readable = true;
+  const admitted = await reviewGate.enforceReviewScope(client, pull(), head);
+  assert.equal(admitted.allowed, true);
+  // A failed CI run whose scope failure was only the transient read is re-run once on this head (the
+  // controller returns after requesting it; `draft` applies only if no retry is taken).
+  assert.deepEqual(reviewGate.ciFailureDisposition(ciFailure(1), null, ['review-scope'], { pullRequest: pull(), scope: admitted }),
+    { retry: true, draft: true, unreadable: false });
+  const held = await reviewGate.revalidateFinalReviewPolicy(client, 255, head);
+  assert.equal(held.state, 'ownership_withheld');
+  assert.equal(held.ownershipReason, OWNERSHIP_CANDIDATE_HELD);
+  assert.equal(held.verdict.mergeEligible, false);
+  assert.equal(held.verdict.owner, 'codex');
+  assert.equal(correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: held.ownershipReason }), null);
+  assert.equal(await reviewGate.authorizeExactHeadMerge(client, pull(), head, held.verdict).then((a) => a.allowed), false);
+
+  // Every read and write named this one SHA; nothing drafted, succeeded, merged, or edited the body.
+  assert.ok(commitReads.every((sha) => sha === head));
+  assert.ok(statusWrites.every((write) => write.sha === head));
+  assert.deepEqual(drafts, []);
+  assert.ok(!statusWrites.some((write) => write.state === 'success'));
+  assert.equal(pull().body, body);
+});
+
+test('finding 4101926931 on #630: a readable ownership fault still fails closed, and review-scope stays unretried', async () => {
+  const head = 'b'.repeat(40);
+  const pull = (marker = 'codex', ref = 'codex/observation-seed') => ({
+    number: 256, additions: 1, deletions: 0, changed_files: 1,
+    body: `<!-- review-size: standard -->\n<!-- correction-owner: ${marker} -->`,
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/256',
+    head: { sha: head, ref, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const ciFailure = { trigger: 'ci', ciConclusion: 'failure', ciRunId: 30329510227, ciRunAttempt: 1 };
+  for (const [label, live, message] of [
+    ['an eligible Claude head under a candidate body', pull(), 'fix\n\nCorrection-Owner: claude\n'],
+    ['an ownerless head under a candidate body', pull(), 'fix: no trailer'],
+    ['a contradictory codex marker on claude/**', pull('codex', 'claude/x'), 'fix\n\nCorrection-Owner: codex\n'],
+    ['an unknown owner', pull('devin'), undefined],
+  ]) {
+    const statusWrites = [];
+    const drafts = [];
+    const client = {
+      async pause() {},
+      async pullRequest() { return live; },
+      async setDraft(pr, draft) { drafts.push(draft); return { ...pr, draft }; },
+      async setStatus(h, state, description) { statusWrites.push({ state, description }); },
+      async updateStickyComment() {},
+      async commit() {
+        if (message === undefined) throw new Error('GitHub 502');
+        return { commit: { message }, files: [] };
+      },
+    };
+    const scope = await reviewGate.enforceReviewScope(client, live, head);
+    assert.equal(scope.allowed, false, label);
+    assert.notEqual(scope.retryable, true, label);
+    assert.deepEqual(drafts, [true], `${label}: drafted`);
+    assert.match(statusWrites.at(-1).description, /^scope: /u, label);
+    const final = await reviewGate.revalidateFinalReviewPolicy(client, 256, head);
+    assert.equal(final.state, 'scope_required', label);
+    // A non-candidate or readable refusal never unlocks the review-scope retry.
+    assert.equal(reviewGate.ciFailureDisposition(ciFailure, null, ['review-scope'], { pullRequest: live, scope }).retry, false, label);
+  }
+  // An ordinary declared owner's review-scope failure is still never retried.
+  assert.equal(reviewGate.ciFailureDisposition(ciFailure, null, ['review-scope'],
+    { pullRequest: pull('claude', 'claude/x'), scope: { allowed: true } }).retry, false);
 });
 
 test('recovery does not republish success when the SHA verdict is no longer eligible (unit 2B2)', async () => {

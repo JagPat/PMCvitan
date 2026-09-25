@@ -110,13 +110,25 @@ test('review-scope admits a declared or candidate owner and refuses every other 
     ['an eligible Claude head', 'fix\n\nCorrection-Owner: claude\n', /head commit does not declare it/u],
     ['a head with no owner', 'fix: no trailer', /head commit does not declare it/u],
     ['a conflicting head', 'fix\n\nCorrection-Owner: codex\nCorrection-Owner: claude\n', /head commit does not declare it/u],
-    ['an unread head', undefined, /head commit could not be read/u],
   ]) {
     const result = scope([owner('codex')], 'codex/observation-seed', headCommitMessage);
     assert.equal(result.allowed, false, label);
+    assert.notEqual(result.retryable, true, `${label}: a readable refusal fails closed, never retryably`);
     assert.match(result.detail, detail, label);
     assert.match(result.detail, /the exact head commit's message must end with a single `Correction-Owner: codex`/u, label);
     assert.doesNotMatch(result.detail, /every commit/u, label);
+  }
+  // Codex finding 4101926931 on #630: an unread head is refused RETRYABLY — the same head and body can be
+  // assessed by a later read — and never told to push a new head.
+  const unread = scope([owner('codex')], 'codex/observation-seed', undefined);
+  assert.equal(unread.allowed, false);
+  assert.equal(unread.retryable, true);
+  assert.equal(unread.state, 'owner_head_unreadable');
+  assert.match(unread.detail, /head commit could not be read after 3 attempts: retryable on this same head/u);
+  assert.doesNotMatch(unread.detail, /a new head is required/u);
+  // A missing, invalid or contradictory declaration is never retryable, whatever the head.
+  for (const markers of [[], [owner('devin')], [owner('codex'), owner('claude')]]) {
+    assert.notEqual(scope(markers, 'codex/x', undefined).retryable, true, `${markers}`);
   }
   // The head is consulted only for a candidate body: a declared owner never needs it.
   assert.equal(scope([owner('claude')], 'claude/x', undefined).allowed, true);

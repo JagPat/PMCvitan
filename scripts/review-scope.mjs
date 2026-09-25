@@ -109,7 +109,10 @@ export async function run({
     `review-scope: ${result.state}; ${result.changedFiles} files, ${result.changedLines} changed lines`,
   );
   if (!result.allowed) {
-    console.error(`::error title=Review preflight failed::${result.detail}`);
+    // An unread candidate head still fails closed, but as RETRYABLE: the controller re-runs this job on the
+    // same head once its own read of that head succeeds (`ciFailureDisposition`), and does not draft the PR.
+    const title = result.retryable ? 'Review preflight retryable' : 'Review preflight failed';
+    console.error(`::error title=${title}::${result.detail}`);
     process.exitCode = 1;
   }
 
