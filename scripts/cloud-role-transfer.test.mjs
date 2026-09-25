@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { parseCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
+import {
+  HEAD_READ_DELAYS_MS, parseCorrectionOwner, correctionRouting, correctionOwnerProblem, readHeadCommitMessage,
+} from './correction-owner.mjs';
 import { authorizeExactHeadMerge, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
 import { assessCorrectionLease, correctionReasonFor } from './correction-lease.mjs';
 import { assessReviewScope } from './review-efficiency.mjs';
@@ -131,6 +133,33 @@ test('the written owner contract names every marker review-scope admits (finding
   }
   assert.match(markerRule, /held codex candidate/u);
   assert.match(contract, /Codex is a recognised CANDIDATE owner: scope admits its marker off `claude\/\*\*`/u);
+});
+
+test('shadow finding on #630: one shared bounded head re-read for the CLI and the controller', async () => {
+  // Two copies of the retry bound could drift and give the review-scope job and the controller different
+  // verdicts for the same head. The loop and its bound live once, in correction-owner.mjs.
+  for (const file of ['review-scope.mjs', 'autonomous-review-gate.mjs']) {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /HEAD_READ_DELAYS_MS\s*=/u, `${file} defines no retry bound of its own`);
+    assert.match(source, /readHeadCommitMessage\(/u, `${file} uses the shared re-read`);
+  }
+  assert.deepEqual([...HEAD_READ_DELAYS_MS], [1_000, 3_000]);
+  assert.ok(Object.isFrozen(HEAD_READ_DELAYS_MS));
+  const pauses = [];
+  const sleep = async (ms) => { pauses.push(ms); };
+  const reader = (answers) => async () => {
+    const answer = answers.shift();
+    if (answer instanceof Error) throw answer;
+    return answer;
+  };
+  assert.equal(await readHeadCommitMessage(reader([new Error('502'), undefined, 'seed']), { sleep }), 'seed');
+  assert.deepEqual(pauses, [1_000, 3_000]);
+  pauses.length = 0;
+  assert.equal(await readHeadCommitMessage(reader([new Error('502'), new Error('502'), new Error('502'), 'late']), { sleep }), undefined);
+  assert.deepEqual(pauses, [1_000, 3_000], 'exactly three reads, then fail closed');
+  pauses.length = 0;
+  assert.equal(await readHeadCommitMessage(reader(['first']), { sleep }), 'first');
+  assert.deepEqual(pauses, [], 'no pause when the first read succeeds');
 });
 
 test('an admitted candidate PR still opens no autonomous correction writer', () => {

@@ -469,6 +469,29 @@ export function correctionOwnerDeclaration(pullRequest) {
 }
 
 /**
+ * The candidate head's commit message, read with bounded retries: `readOnce()` returns the message (or
+ * anything else for a failed read, or throws). A commit is immutable, so a failed read is retried after each
+ * `HEAD_READ_DELAYS_MS` pause before it counts: a transient API failure must not refuse a truthful candidate
+ * seed (Codex finding 4101018341 on #630). A read that still fails is `undefined`, which the scope gate
+ * refuses (fail closed). The one shared implementation for the review-scope CLI and the controller, so the
+ * two can never reach different admission verdicts for the same head.
+ */
+export const HEAD_READ_DELAYS_MS = Object.freeze([1_000, 3_000]);
+const pauseFor = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+export async function readHeadCommitMessage(readOnce, { sleep = pauseFor } = {}) {
+  for (let attempt = 0; attempt <= HEAD_READ_DELAYS_MS.length; attempt += 1) {
+    if (attempt > 0) await sleep(HEAD_READ_DELAYS_MS[attempt - 1]);
+    try {
+      const message = await readOnce();
+      if (typeof message === 'string') return message;
+    } catch {
+      // retried; the last failure refuses
+    }
+  }
+  return undefined;
+}
+
+/**
  * The scope-gate verdict: the detail string to refuse with, or null.
  *
  * Deliberately evaluated in `assessReviewScope`, which both the PR-side

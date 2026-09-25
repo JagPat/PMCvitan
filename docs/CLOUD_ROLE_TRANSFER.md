@@ -493,9 +493,13 @@ decision for the separate, operator-authorized installer.
    message ends with `Correction-Owner: codex` (scope and the observer read that exact head). The probe refuses any other PR (`not_candidate_seed`), and
    the observer's verdict holds unless the reviewed head and the PR both still declare the codex candidate.
    `review-scope` admits a codex marker only over a head whose own trailer declares codex, so the seed gets
-   CI and review while its head is never merge-eligible: no green required status or queued auto-merge can
-   act on it, and the controller holds its reviewed heads (`OWNERSHIP_CANDIDATE_HELD`, no correction lease,
-   nobody woken). Push the seed as ONE push: a second push can let a stale CI completion cancel the head's
+   CI and review while its head is never merge-eligible: it never gets a green required status, so no
+   auto-merge can complete on it, and the controller holds its reviewed heads (`OWNERSHIP_CANDIDATE_HELD`, no
+   correction lease, nobody woken). This covers a fresh seed. It does not close one other case: an
+   auto-merge already armed on an eligible Claude head, whose body is then edited to the codex marker, can
+   complete before the edited CI run fails `review-scope`. That window is the same on `main` for any
+   scope-failing body edit, and it stays open as #628 finding 4100230308, since cancelling a queued
+   auto-merge would be a new controller capability. Push the seed as ONE push: a second push can let a stale CI completion cancel the head's
    shadow review. Its title, description, comments and reviews must hold no Codex mention
    except Codex's own, and no one but Codex and trusted workflows may have left a GitHub review on it.
 2. **Keep the cycle quiet** from the moment the reviewed head was pushed until the observer runs: nobody

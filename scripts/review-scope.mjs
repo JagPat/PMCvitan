@@ -8,7 +8,7 @@ import {
   PRE_REVIEW_ENFORCE_AFTER_PR,
   STATUS_DOCUMENT,
 } from './review-efficiency.mjs';
-import { correctionOwnerDeclaration } from './correction-owner.mjs';
+import { correctionOwnerDeclaration, readHeadCommitMessage } from './correction-owner.mjs';
 import {
   assessPostMergeRunnerState,
   parseMaintenanceQueue,
@@ -45,32 +45,21 @@ async function pullRequestFiles({ fetchImpl, repository, number, token }) {
 }
 
 // The exact head commit's message, read only for a PR whose body declares a CANDIDATE owner: scope admits
-// that PR only when the head declares the same candidate. A commit is immutable, so a failed read is retried
-// (bounded, `HEAD_READ_DELAYS_MS`) before it counts: a transient API failure must not refuse a truthful seed
-// (Codex finding 4101018341 on #630). A read that still fails is `undefined`, which refuses (fail closed).
-export const HEAD_READ_DELAYS_MS = [1_000, 3_000];
-const pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
-async function headCommitMessage({ fetchImpl, repository, sha, token, sleep = pause }) {
+// that PR only when the head declares the same candidate. The bounded re-reads are the shared
+// `readHeadCommitMessage` (correction-owner.mjs), the same one the controller uses.
+async function headCommitMessage({ fetchImpl, repository, sha, token, sleep }) {
   if (typeof fetchImpl !== 'function' || !repository || !token || !/^[0-9a-f]{40}$/u.test(sha ?? '')) return undefined;
-  for (let attempt = 0; attempt <= HEAD_READ_DELAYS_MS.length; attempt += 1) {
-    if (attempt > 0) await sleep(HEAD_READ_DELAYS_MS[attempt - 1]);
-    try {
-      const response = await fetchImpl(`https://api.github.com/repos/${repository}/commits/${sha}`, {
-        headers: {
-          accept: 'application/vnd.github+json',
-          authorization: `Bearer ${token}`,
-          'x-github-api-version': '2022-11-28',
-        },
-      });
-      if (response.ok) {
-        const commit = await response.json();
-        if (typeof commit?.commit?.message === 'string') return commit.commit.message;
-      }
-    } catch {
-      // retried below; the last failure refuses
-    }
-  }
-  return undefined;
+  return readHeadCommitMessage(async () => {
+    const response = await fetchImpl(`https://api.github.com/repos/${repository}/commits/${sha}`, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token}`,
+        'x-github-api-version': '2022-11-28',
+      },
+    });
+    if (!response.ok) return undefined;
+    return (await response.json())?.commit?.message;
+  }, sleep ? { sleep } : {});
 }
 
 export async function run({
@@ -79,7 +68,7 @@ export async function run({
   repository = process.env.GITHUB_REPOSITORY,
   fetchImpl = globalThis.fetch,
   listTreeImpl = trackedTreeEntries,
-  sleep = pause,
+  sleep,
 } = {}) {
   if (!eventPath) throw new Error('GITHUB_EVENT_PATH is required');
   const event = JSON.parse(await readFile(eventPath, 'utf8'));

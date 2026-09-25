@@ -34,6 +34,7 @@ import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mj
 import {
   CORRECTION_STALLED,
   correctionOwnerDeclaration,
+  readHeadCommitMessage,
   correctionRouting,
   shaMergeAuthority,
 } from './correction-owner.mjs';
@@ -1450,25 +1451,6 @@ export async function enforceReviewConvergence(
   return reviewHistoryPolicy(findingHeads);
 }
 
-// Bounded re-reads of one immutable commit's message (Codex finding 4101018341 on #630): a transient API
-// failure must not refuse a truthful candidate seed. `client.pause` is injectable for tests.
-const HEAD_READ_DELAYS_MS = [1_000, 3_000];
-async function readHeadCommitMessage(client, head) {
-  const pause = typeof client.pause === 'function'
-    ? client.pause.bind(client)
-    : (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
-  for (let attempt = 0; attempt <= HEAD_READ_DELAYS_MS.length; attempt += 1) {
-    if (attempt > 0) await pause(HEAD_READ_DELAYS_MS[attempt - 1]);
-    try {
-      const message = (await client.commit(head))?.commit?.message;
-      if (typeof message === 'string') return message;
-    } catch {
-      // retried; the last failure refuses
-    }
-  }
-  return undefined;
-}
-
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
   let changedFiles;
   let lineage;
@@ -1489,7 +1471,12 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
   // CLI does) before it counts; one that still fails leaves it undefined, which refuses (fail closed).
   let headCommitMessage;
   if (correctionOwnerDeclaration(pullRequest).state === 'candidate') {
-    headCommitMessage = await readHeadCommitMessage(client, expectedHead);
+    // The shared bounded re-read (correction-owner.mjs), the same one the review-scope CLI uses;
+    // `client.pause` is injectable for tests.
+    headCommitMessage = await readHeadCommitMessage(
+      async () => (await client.commit(expectedHead))?.commit?.message,
+      typeof client.pause === 'function' ? { sleep: client.pause.bind(client) } : {},
+    );
   }
   const result = assessReviewScope(pullRequest, {
     changedFiles,
