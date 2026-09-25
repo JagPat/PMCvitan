@@ -126,6 +126,18 @@ test('review-scope admits a declared or candidate owner and refuses every other 
   assert.equal(unread.state, 'owner_head_unreadable');
   assert.match(unread.detail, /head commit could not be read after 3 attempts: retryable on this same head/u);
   assert.doesNotMatch(unread.detail, /a new head is required/u);
+  // Codex finding 4104384946: a head that WAS fetched but whose trailers git could not parse is as unread as a
+  // failed fetch — retryable on the same SHA, never a new-head refusal.
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = '/nonexistent-for-this-test';
+    const unparsed = scope([owner('codex')], 'codex/observation-seed', 'seed\n\nCorrection-Owner: codex\n');
+    assert.equal(unparsed.allowed, false);
+    assert.equal(unparsed.retryable, true);
+    assert.doesNotMatch(unparsed.detail, /a new head is required/u);
+  } finally {
+    process.env.PATH = savedPath;
+  }
   // A missing, invalid or contradictory declaration is never retryable, whatever the head.
   for (const markers of [[], [owner('devin')], [owner('codex'), owner('claude')]]) {
     assert.notEqual(scope(markers, 'codex/x', undefined).retryable, true, `${markers}`);

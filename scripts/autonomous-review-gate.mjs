@@ -1691,20 +1691,24 @@ export function decidingRunId(checkRuns, name, requiredChecks = REQUIRED_CHECKS)
 // re-read the candidate head and now admits it, but CI's `review-scope` still carries the failed read.
 // Re-run that failed CI run on this same head instead of drafting the PR. Only a candidate body whose scope
 // the controller admits qualifies, and only on a run that reaches the check wait with a failed check (a
-// recovery run), so recovery requests pace it. Returns whether the re-run was requested.
+// recovery run), so recovery requests pace it. Returns null when it does not apply, 'superseded' when the
+// head moved (nothing is re-run or published for an obsolete head, Codex finding 4104384974), 'rerun', or
+// 'rerun_failed' when GitHub refused the re-run, which the caller keeps retryable (Codex finding 4104384966).
 export async function rerunAdmittedCandidateScope(client, pullRequest, expectedHead, failedChecks, scope) {
-  if (!failedChecks?.includes('review-scope') || scope?.allowed !== true) return false;
-  if (correctionOwnerDeclaration(pullRequest).state !== 'candidate') return false;
+  if (!failedChecks?.includes('review-scope') || scope?.allowed !== true) return null;
+  if (correctionOwnerDeclaration(pullRequest).state !== 'candidate') return null;
   const runId = decidingRunId(
     await client.checkRuns(expectedHead), 'review-scope', requiredChecksForPullRequest(pullRequest.number),
   );
-  if (!runId) return false;
+  if (!runId) return null;
+  if (!await refreshCurrentHead(client, pullRequest.number, expectedHead)) return 'superseded';
   try {
     await client.rerunFailedJobs(runId);
   } catch (error) {
-    console.warn(`Could not re-run the failed review-scope job; failing closed: ${error.message}`);
-    return false;
+    console.warn(`Could not re-run the failed review-scope job; keeping it retryable: ${error.message}`);
+    return 'rerun_failed';
   }
+  if (!await refreshCurrentHead(client, pullRequest.number, expectedHead)) return 'superseded';
   await client.updateStickyComment(
     pullRequest.number,
     statusBody({
@@ -1715,7 +1719,7 @@ export async function rerunAdmittedCandidateScope(client, pullRequest, expectedH
       next: 'GitHub is re-running the failed CI jobs on this same head.',
     }),
   );
-  return true;
+  return 'rerun';
 }
 
 export async function revalidateFinalReviewPolicy(
@@ -2156,7 +2160,14 @@ export async function run() {
   const checks = await waitForRequiredChecks(client, pullRequest, expectedHead);
   if (checks.state === 'superseded') return;
   if (checks.state !== 'success') {
-    if (await rerunAdmittedCandidateScope(client, pullRequest, expectedHead, checks.failed, scope)) return;
+    const recovery = await rerunAdmittedCandidateScope(client, pullRequest, expectedHead, checks.failed, scope);
+    if (recovery === 'rerun' || recovery === 'superseded') return;
+    if (recovery === 'rerun_failed') {
+      // Keep the recovery retryable rather than drafting: republish the retryable hold and settle the pending
+      // recovery request, so the watchdog can request a fresh same-SHA recovery (Codex finding 4104384966).
+      await holdUnreadableCandidateHead(client, pullRequest, expectedHead, scope, existingStatuses);
+      return;
+    }
     pullRequest = await setDraftForCurrentHead(
       client,
       pullRequest.number,

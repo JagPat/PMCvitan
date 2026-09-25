@@ -9,6 +9,7 @@ import {
   CORRECTION_STALLED,
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
+  CI_SCOPE_ADMITTED,
   ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 export {
@@ -524,12 +525,14 @@ export function correctionOwnerProblem(pullRequest, { headCommitMessage } = {}) 
   const declaration = correctionOwnerDeclaration(pullRequest);
   if (declaration.state === 'declared') return null;
   if (declaration.state !== 'candidate') return declaration.detail;
-  if (typeof headCommitMessage !== 'string') {
+  // A message that was read but whose trailers could not be parsed (`shaMergeAuthority` → `unreadable`, git
+  // could not run) is as unread as a failed fetch: retryable on the same SHA (Codex finding 4104384946).
+  const head = typeof headCommitMessage === 'string' ? shaMergeAuthority(headCommitMessage) : null;
+  if (!head || head.outcome === 'unreadable') {
     return `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
       + `could not be read after ${HEAD_READ_DELAYS_MS.length + 1} attempts: retryable on this same head `
       + '(re-run the check; no new head or PR edit is needed)';
   }
-  const head = shaMergeAuthority(headCommitMessage);
   if (head.outcome === 'candidate' && head.owner === declaration.owner) return null;
   return `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
     + 'does not declare it: the exact head commit\'s message must end with '
@@ -545,7 +548,7 @@ export function correctionOwnerProblem(pullRequest, { headCommitMessage } = {}) 
  */
 export function candidateHeadUnread(pullRequest, { headCommitMessage } = {}) {
   return correctionOwnerDeclaration(pullRequest).state === 'candidate'
-    && typeof headCommitMessage !== 'string';
+    && (typeof headCommitMessage !== 'string' || shaMergeAuthority(headCommitMessage).outcome === 'unreadable');
 }
 
 function ownerLabel(owner) {
@@ -618,6 +621,18 @@ function undeclaredInstruction(declaration, { reason = null, detail = null } = {
   // Otherwise an admitted CANDIDATE is not an ownership fault: the marker is truthful and the scope gate
   // admitted it, so "replace the marker" would be false and would steer the PR away from its held workflow.
   // It is still routed to nobody and woken by nothing; only the bounded probe requests a correction.
+  // CI's review-scope job failed although the controller's own scope check admits this head (the
+  // `CI_SCOPE_ADMITTED` note). The controller cannot see why the job failed: it does not run the job's STATUS
+  // and tracked-tree checks, and the job may not have been able to read the head. So name both causes and
+  // point to the job log; never claim the head was refused, and never ask for nothing (Codex finding 4104384957).
+  if (declaration.state === 'candidate' && reason === 'ci' && String(detail ?? '').includes(CI_SCOPE_ADMITTED)) {
+    return `CI's review-scope job failed although the controller's own scope check admits this head's `
+      + `"${declaration.owner}" candidate marker and trailer. The job refused something the controller does not `
+      + 'check (the committed STATUS or a tracked dependency path) or could not read the head. Resume action: '
+      + 'read that job\'s log; a failed head read clears by re-running the job on this same head, and any other '
+      + 'refusal needs a new head that fixes it. This loop routes no agent and cannot observe whether one is '
+      + 'already running.';
+  }
   if (declaration.state === 'candidate') {
     return `"${declaration.owner}" is the admitted candidate correction owner of this PR: tracked in-flight, `
       + 'never merged automatically and never woken from GitHub, held pending independent reviewer '

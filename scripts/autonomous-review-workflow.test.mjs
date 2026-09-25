@@ -1955,10 +1955,29 @@ test('finding 4103259698 on #630: a spent retry on an unread candidate head stay
   // (the deciding review-scope run) on this same head instead of drafting it.
   assert.equal(reviewGate.decidingRunId(failedScopeRuns, 'review-scope'), 4242);
   const recovery = harness();
-  assert.equal(await reviewGate.rerunAdmittedCandidateScope(recovery.client, pull(), head, ['review-scope'], { allowed: true }), true);
+  assert.equal(await reviewGate.rerunAdmittedCandidateScope(recovery.client, pull(), head, ['review-scope'], { allowed: true }), 'rerun');
   assert.deepEqual(recovery.log.reruns, [4242]);
   assert.deepEqual(recovery.log.drafts, []);
   assert.deepEqual(recovery.log.statuses, []);
+
+  // Codex finding 4104384966: GitHub refusing the re-run keeps the recovery retryable. The caller republishes
+  // the retryable hold and settles the pending request; the helper itself drafts and publishes nothing.
+  const refusedRerun = harness();
+  refusedRerun.client.rerunFailedJobs = async () => { throw new Error('GitHub 403'); };
+  assert.equal(await reviewGate.rerunAdmittedCandidateScope(refusedRerun.client, pull(), head, ['review-scope'], { allowed: true }), 'rerun_failed');
+  assert.deepEqual(refusedRerun.log.drafts, []);
+  assert.deepEqual(refusedRerun.log.stickies, []);
+  await reviewGate.holdUnreadableCandidateHead(refusedRerun.client, pull(), head, { allowed: true }, [pendingRequest]);
+  assert.deepEqual(refusedRerun.log.statuses.filter((write) => write.context === 'codex-current-head').map((write) => write.description),
+    [OWNERSHIP_READ_RETRY]);
+  assert.ok(refusedRerun.log.statuses.some((write) => write.context === pendingRequest.context && write.state === 'success'));
+  assert.deepEqual(refusedRerun.log.drafts, []);
+
+  // Codex finding 4104384974: a head that moved before the re-run gets neither a re-run nor a sticky.
+  const moved = harness({ ...pull(), head: { ...pull().head, sha: 'b'.repeat(40) } });
+  assert.equal(await reviewGate.rerunAdmittedCandidateScope(moved.client, pull(), head, ['review-scope'], { allowed: true }), 'superseded');
+  assert.deepEqual(moved.log.reruns, []);
+  assert.deepEqual(moved.log.stickies, []);
 
   // Never for a head the controller does not admit, a non-candidate body, or a different failed check.
   for (const [label, live, failed, scope] of [
@@ -1968,7 +1987,7 @@ test('finding 4103259698 on #630: a spent retry on an unread candidate head stay
     ['a product failure', pull(), ['api'], { allowed: true }],
   ]) {
     const other = harness(live);
-    assert.equal(await reviewGate.rerunAdmittedCandidateScope(other.client, live, head, failed, scope), false, label);
+    assert.equal(await reviewGate.rerunAdmittedCandidateScope(other.client, live, head, failed, scope), null, label);
     assert.deepEqual(other.log.reruns, [], label);
   }
 
@@ -1986,7 +2005,13 @@ test('finding 4103259698 on #630: a spent retry on an unread candidate head stay
     declaration: parseCorrectionOwner(body, { headRef: 'codex/observation-seed' }),
     head, reason: correctionReasonFor(admittedStatus), detail: admittedStatus.description,
   });
-  assert.doesNotMatch(watchdogNotice.instruction, /Scope refused this head|one new head/u);
+  assert.doesNotMatch(watchdogNotice.instruction, /Scope refused this head|one new head whose own message/u);
+  // Codex finding 4104384957: the controller cannot tell why the job failed (it does not run the job's STATUS
+  // and tracked-tree checks), so the notice is actionable for either cause and never says "keep the marker".
+  assert.match(watchdogNotice.instruction, /read that job's log; a failed head read clears by re-running the job on this same head, and any other refusal needs a new head/u);
+  assert.doesNotMatch(watchdogNotice.instruction, /Keep the marker as it is|has requested no correction/u);
+  // The gate's own sticky, built from its notice detail, gives the same instruction.
+  assert.match(admittedRun.log.stickies.at(-1), /read that job's log/u);
   // A plain review-scope failure still reads as a scope refusal, as before.
   assert.equal(correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: 'ci: Failed checks: review-scope' }), 'scope');
 
