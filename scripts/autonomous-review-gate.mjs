@@ -9,6 +9,7 @@ import {
   STATUS_CONTEXT,
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
+  CI_SCOPE_ADMITTED,
   ownershipInconsistentScopeDetail,
   isOwnershipInconsistentScopeDetail,
   isBodyOnlyOwnershipRecoveryDetail,
@@ -1618,10 +1619,12 @@ export async function handleCiFailure(
     ? `Failed checks: ${ciSummary.failed.join(', ')}`
     : `CI workflow concluded ${context.ciConclusion}`;
   if (!isTerminalReviewStatus(existingStatus)) {
+    // The admission note LEADS the description (statuses are cut at 140 characters), so the lease reads an
+    // admitted candidate's failed review-scope job as a CI failure, not an ownership refusal.
     await client.setStatus(
       expectedHead,
       'failure',
-      `ci: ${ciDetail}`,
+      disposition.scopeAdmitted ? `ci: ${CI_SCOPE_ADMITTED}; ${ciDetail}` : `ci: ${ciDetail}`,
       pullRequest.html_url,
     );
   }

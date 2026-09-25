@@ -59,6 +59,9 @@ export const CORRECTION_STALLED = 'correction_stalled';
 export const OWNERSHIP_READ_RETRY = 'validation: head commit ownership temporarily unreadable — retrying';
 // A consistent CANDIDATE head (e.g. codex) is held pending independent reviewer activation, never merged.
 export const OWNERSHIP_CANDIDATE_HELD = 'validation: candidate owner held for independent reviewer activation';
+// Leads a `ci:` failure whose failed `review-scope` job the controller's own scope check of the same exact
+// head ADMITS: a CI failure, not an ownership refusal, so the lease must not read it as `scope`.
+export const CI_SCOPE_ADMITTED = 'scope check admits this exact head';
 // A READABLE ownership fault: the exact head's Correction-Owner trailer is missing, invalid, or disagrees
 // with the mandatory PR body marker (including a branch-reservation contradiction). Written as the leading
 // text of a `scope:` failure detail.

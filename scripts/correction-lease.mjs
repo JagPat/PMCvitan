@@ -1,5 +1,6 @@
 import {
   CORRECTION_LEASE_GRACE_MS,
+  CI_SCOPE_ADMITTED,
   isRetryableReviewFailureDescription,
   isOwnershipInconsistentScopeDetail,
   OWNERSHIP_CANDIDATE_HELD,
@@ -86,7 +87,11 @@ export function correctionReasonFor(status) {
   // `ci: Failed checks: review-scope`, while its own sticky routes that same
   // result as a scope verdict. Read as CI it told the owner to push a new head,
   // which invalidates the head for a verdict a body edit clears.
-  if (reason === 'ci' && /\breview-scope\b/u.test(description)) return 'scope';
+  // Unless the controller's own scope check of the same head ADMITS it (shadow finding on #630): then the
+  // failed job is a CI failure, and reading it as `scope` would publish a false "scope refused" remedy.
+  if (reason === 'ci' && /\breview-scope\b/u.test(description) && !description.includes(CI_SCOPE_ADMITTED)) {
+    return 'scope';
+  }
   return reason;
 }
 

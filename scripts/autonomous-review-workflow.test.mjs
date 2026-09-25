@@ -7,6 +7,7 @@ import * as reviewGate from './autonomous-review-gate.mjs';
 import {
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
+  CI_SCOPE_ADMITTED,
   ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 import { correctionReasonFor } from './correction-lease.mjs';
@@ -1970,6 +1971,24 @@ test('finding 4103259698 on #630: a spent retry on an unread candidate head stay
     assert.equal(await reviewGate.rerunAdmittedCandidateScope(other.client, live, head, failed, scope), false, label);
     assert.deepEqual(other.log.reruns, [], label);
   }
+
+  // Shadow finding on #630: when the controller's own read admits the head but CI's review-scope failed again,
+  // the published status says so, and the watchdog reads it as a CI failure. Its notice for the candidate is
+  // the admitted-candidate diagnostic, never "Scope refused this head" or a new-head remedy.
+  const admittedRun = harness();
+  await assert.rejects(reviewGate.handleCiFailure(admittedRun.client, ci(2), pull(), head, { scope: { allowed: true } }),
+    /Failed checks: review-scope/u);
+  const admittedStatus = { context: 'codex-current-head', ...admittedRun.log.statuses.at(-1) };
+  assert.ok(admittedStatus.description.startsWith(`ci: ${CI_SCOPE_ADMITTED}; Failed checks: review-scope`));
+  assert.ok(admittedStatus.description.length <= 140, 'the admission note survives the 140-character cut');
+  assert.equal(correctionReasonFor(admittedStatus), 'ci');
+  const watchdogNotice = correctionRouting({
+    declaration: parseCorrectionOwner(body, { headRef: 'codex/observation-seed' }),
+    head, reason: correctionReasonFor(admittedStatus), detail: admittedStatus.description,
+  });
+  assert.doesNotMatch(watchdogNotice.instruction, /Scope refused this head|one new head/u);
+  // A plain review-scope failure still reads as a scope refusal, as before.
+  assert.equal(correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: 'ci: Failed checks: review-scope' }), 'scope');
 
   // A declared owner's review-scope failure still drafts and fails as before.
   const declared = harness(pull('<!-- correction-owner: claude -->'));
