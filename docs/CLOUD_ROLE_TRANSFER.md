@@ -489,8 +489,8 @@ decision for the separate, operator-authorized installer.
 1. **Pick the PR.** An open, same-repository PR targeting `main` whose current head (the *reviewed head*) has
    green CI and a Claude shadow review (`claude-independent-review`) in state `changes_required`, the newest
    verified review of that head. It must be a truthful Codex candidate seed: its body declares
-   `<!-- correction-owner: codex -->` on a branch outside `claude/**`, and every commit (the reviewed head
-   included) ends with `Correction-Owner: codex`. The probe refuses any other PR (`not_candidate_seed`), and
+   `<!-- correction-owner: codex -->` on a branch outside `claude/**`, and the reviewed head commit's own
+   message ends with `Correction-Owner: codex` (scope and the observer read that exact head). The probe refuses any other PR (`not_candidate_seed`), and
    the observer's verdict holds unless the reviewed head and the PR both still declare the codex candidate.
    `review-scope` admits a codex marker only over a head whose own trailer declares codex, so the seed gets
    CI and review while its head is never merge-eligible: no green required status or queued auto-merge can

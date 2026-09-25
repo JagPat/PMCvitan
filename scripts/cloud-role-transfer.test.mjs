@@ -60,7 +60,9 @@ test('finding 4094243334: an admitted candidate gets a held diagnostic, never an
   assert.equal(refused.awakenable, false);
   assert.ok(refused.instruction.startsWith(`Scope refused this head: ${refusal}.`));
   assert.match(refused.instruction, /Resume action: clear the refusal above/u);
-  assert.match(refused.instruction, /every commit ends with `Correction-Owner: codex`/u);
+  // Codex finding 4101298577: scope reads only the exact head, so the remedy names that head, not every commit.
+  assert.match(refused.instruction, /one new head whose own message ends with `Correction-Owner: codex`/u);
+  assert.doesNotMatch(refused.instruction, /every commit/u);
   assert.doesNotMatch(refused.instruction, /admitted candidate correction owner of this PR|Keep the marker as it is|@/u);
   // A real ownership fault keeps its remedy.
   const contradictory = parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'claude/x' });
@@ -111,7 +113,8 @@ test('review-scope admits a declared or candidate owner and refuses every other 
     const result = scope([owner('codex')], 'codex/observation-seed', headCommitMessage);
     assert.equal(result.allowed, false, label);
     assert.match(result.detail, detail, label);
-    assert.match(result.detail, /Correction-Owner: codex/u, label);
+    assert.match(result.detail, /the exact head commit's message must end with a single `Correction-Owner: codex`/u, label);
+    assert.doesNotMatch(result.detail, /every commit/u, label);
   }
   // The head is consulted only for a candidate body: a declared owner never needs it.
   assert.equal(scope([owner('claude')], 'claude/x', undefined).allowed, true);

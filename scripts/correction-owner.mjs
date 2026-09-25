@@ -503,7 +503,7 @@ export function correctionOwnerProblem(pullRequest, { headCommitMessage } = {}) 
   const head = typeof headCommitMessage === 'string' ? shaMergeAuthority(headCommitMessage) : null;
   if (head?.outcome === 'candidate' && head.owner === declaration.owner) return null;
   return `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
-    + `${head ? 'does not declare it' : 'could not be read'}: every commit of a candidate PR must end with `
+    + `${head ? 'does not declare it' : 'could not be read'}: the exact head commit's message must end with `
     + `a single \`Correction-Owner: ${declaration.owner}\` trailer (a new head is required)`;
 }
 
@@ -570,7 +570,7 @@ function undeclaredInstruction(declaration, { reason = null, detail = null } = {
     return `Scope refused this head${detail ? `: ${detail}` : ''}. A "${declaration.owner}" candidate marker is `
       + 'admitted only over a head whose own trailer declares it, and only when every other scope rule '
       + 'holds. Resume action: clear the refusal above; a head-trailer mismatch needs one new head whose '
-      + `every commit ends with \`Correction-Owner: ${declaration.owner}\`, or a different marker if `
+      + `own message ends with \`Correction-Owner: ${declaration.owner}\`, or a different marker if `
       + `${declaration.owner} is not this PR's author. This loop routes no agent and cannot observe whether `
       + 'one is already running.';
   }
