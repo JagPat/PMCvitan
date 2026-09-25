@@ -1880,6 +1880,95 @@ test('finding 4101926931 on #630: an exhausted candidate-head read recovers on t
   assert.equal(pull().body, body);
 });
 
+test('findings 4100230308 (#628) and 4103625675 (#630): a relabel to a candidate marker is refused on the edit itself', async () => {
+  const head = '9'.repeat(40);
+  const pull = (marker, draft = false) => ({
+    number: 258, additions: 1, deletions: 0, changed_files: 1,
+    body: `<!-- review-size: standard -->\n<!-- correction-owner: ${marker} -->`,
+    state: 'open', draft, html_url: 'https://github.com/JagPat/PMCvitan/pull/258',
+    head: { sha: head, ref: 'codex/observation-seed', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const harness = (live, message) => {
+    const log = { statuses: [], drafts: [], reads: 0 };
+    const client = {
+      async pause() {},
+      async pullRequest() { return live; },
+      async setDraft(pr, draft) { log.drafts.push(draft); return { ...pr, draft }; },
+      async setStatus(sha, state, description) { log.statuses.push({ sha, state, description }); },
+      async updateStickyComment() {},
+      async commit() {
+        log.reads += 1;
+        if (message === undefined) throw new Error('GitHub 502');
+        return { commit: { message }, files: [] };
+      },
+    };
+    return { client, log };
+  };
+
+  // An eligible Claude head relabelled to the codex marker: the green status is revoked with the scope
+  // refusal, and the draft conversion cancels any queued native auto-merge.
+  const relabel = harness(pull('codex'), 'fix\n\nCorrection-Owner: claude\n');
+  assert.equal(await reviewGate.guardCandidateRelabel(relabel.client, pull('codex'), head), 'refused');
+  assert.deepEqual(relabel.log.drafts, [true]);
+  assert.equal(relabel.log.statuses.at(-1).state, 'failure');
+  assert.equal(relabel.log.statuses.at(-1).sha, head);
+  assert.match(relabel.log.statuses.at(-1).description, /^scope: .*head commit does not declare it/u);
+
+  // A truthful candidate seed (the head declares codex) is untouched: no status, no draft.
+  const seed = harness(pull('codex'), 'seed\n\nCorrection-Owner: codex\n');
+  assert.equal(await reviewGate.guardCandidateRelabel(seed.client, pull('codex'), head), 'admitted');
+  assert.deepEqual(seed.log.statuses, []);
+  assert.deepEqual(seed.log.drafts, []);
+
+  // A body that declares no candidate is not read or touched at all; the ordinary edited CI run handles it.
+  const ordinary = harness(pull('claude'), 'fix\n\nCorrection-Owner: claude\n');
+  assert.equal(await reviewGate.guardCandidateRelabel(ordinary.client, pull('claude'), head), 'not_candidate');
+  assert.equal(ordinary.log.reads, 0);
+  assert.deepEqual(ordinary.log.statuses, []);
+
+  // An unreadable head still revokes success, retryably: `OWNERSHIP_READ_RETRY`, no draft.
+  const unread = harness(pull('codex'), undefined);
+  assert.equal(await reviewGate.guardCandidateRelabel(unread.client, pull('codex'), head), 'unreadable');
+  assert.deepEqual(unread.log.statuses.map((write) => write.description), [OWNERSHIP_READ_RETRY]);
+  assert.deepEqual(unread.log.drafts, []);
+
+  // The event context: only a body edit seen from trusted code, bound to that edit's exact head.
+  assert.deepEqual(
+    reviewGate.contextForEvent('pull_request_target', { action: 'edited', pull_request: { number: 258, head: { sha: head } } }),
+    { number: 258, expectedHead: head, ciConclusion: null, trigger: 'relabel' },
+  );
+  assert.equal(reviewGate.contextForEvent('pull_request_target', { action: 'synchronize', pull_request: { number: 258 } }), null);
+});
+
+test('the relabel guard workflow runs trusted default-branch code with only the permissions it needs', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/candidate-relabel-guard.yml', import.meta.url), 'utf8');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const orchestrator = await readFile(workflowPath, 'utf8');
+  assert.match(workflow, /pull_request_target:\s*\n\s*types: \[edited\]/u);
+  assert.doesNotMatch(workflow, /^\s*(push|pull_request|workflow_run|schedule|workflow_dispatch):/mu);
+  assert.match(workflow, /ref:\s*\$\{\{ github\.event\.repository\.default_branch \}\}/u);
+  assert.match(workflow, /persist-credentials:\s*false/u);
+  assert.match(workflow, /actions\/checkout@[0-9a-f]{40}/u);
+  assert.match(workflow, /actions\/setup-node@[0-9a-f]{40}/u);
+  assert.match(workflow, /head\.repo\.full_name == github\.repository/u);
+  assert.match(workflow, /AUTONOMOUS_REVIEW_MODE: relabel-guard/u);
+  // It never checks out or runs PR code.
+  assert.deepEqual([...workflow.matchAll(/^\s*ref:\s*(.+)$/gmu)].map(([, ref]) => ref.trim()),
+    ['${{ github.event.repository.default_branch }}']);
+  assert.doesNotMatch(workflow, /pnpm|npm (ci|install)/u);
+  const permissions = workflow.slice(workflow.indexOf('permissions:'), workflow.indexOf('jobs:'));
+  assert.deepEqual(
+    [...permissions.matchAll(/^\s+([a-z-]+):\s*(\w+)/gmu)].map(([, name, level]) => `${name}:${level}`).sort(),
+    ['contents:read', 'issues:write', 'pull-requests:write', 'statuses:write'],
+  );
+  // The controller's exact-head concurrency group, never cancelled: one writer per head at a time.
+  assert.match(workflow, /group: autonomous-review-owner-\$\{\{ github\.event\.pull_request\.number \}\}-\$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
+  assert.match(workflow, /cancel-in-progress:\s*false/u);
+  assert.match(orchestrator, /group: autonomous-review-owner-/u);
+  assert.match(gate, /mode === 'relabel-guard'/u);
+});
+
 test('finding 4103259698 on #630: a spent retry on an unread candidate head stays retryable, and recovery re-runs CI', async () => {
   const head = 'a'.repeat(40);
   const body = '<!-- review-size: standard -->\n<!-- correction-owner: codex -->';

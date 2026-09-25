@@ -1,0 +1,40 @@
+name: Candidate relabel guard
+
+# A PR body edit to a candidate correction-owner marker does not revoke a green
+# `codex-current-head` already on the head. On the edit itself, this runs the
+# controller's own scope check from trusted default-branch code. A head that does
+# not declare the candidate is refused: a `scope:` failure, and a draft conversion
+# that cancels any queued auto-merge. See docs/CLOUD_ROLE_TRANSFER.md.
+on:
+  pull_request_target:
+    types: [edited]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  guard:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    # The controller's exact-head group: never races the orchestrator on the same head.
+    concurrency:
+      group: autonomous-review-owner-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted default-branch automation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Refuse a candidate marker over a head that does not declare it
+        env:
+          AUTONOMOUS_REVIEW_MODE: relabel-guard
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/autonomous-review-gate.mjs
