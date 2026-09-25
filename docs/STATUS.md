@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-candidate-admission
-reviewed_merge: 816e414
-open_pr: 630
+work_item: cloud-role-transfer-relabel-guard
+reviewed_merge: 0f33ece
+open_pr: 635
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-25
 ```
 
-### Now — cloud role transfer: candidate scope admission (#628 redesign, unit 2); #629 merged
+### Now — cloud role transfer: relabel containment; #630 merged
 
 The cloud role transfer continues with one writer and one channel. The additive split is merged: #620
 (evidence reader, `7f2cbbef`), #621 (lifecycle event log, `2a1f0f46`), #622 (integration, `0a712d93`)
@@ -30,16 +30,18 @@ and #619 (the activation-readiness verdict, `1273465`). #623 (`b9d31da`) added t
 `Codex-Fix-Probe` trailer, #624 (`89a4268`) made `codexTaskCausation` provable from the owner's
 attestation, #625 (`96208ae`) gave the verdict its `activate` readiness state, #626 (`149dfe4`) let
 `codex-fix-probe` key its request to a verified Claude shadow finding, #627 (`6496a98`) added the manual,
-read-only observer and the observed-cycle runbook, and #629 (`816e414`, unit 1 of the #628 redesign) added
-probe and observer containment for a Codex candidate seed.
+read-only observer and the observed-cycle runbook, #629 (`816e414`, unit 1 of the #628 redesign) added
+probe and observer containment for a Codex candidate seed, #631 (`8fa3e9c`) left Correction-Owner trailers
+to the controller in the review guidelines, and #630 (`0f33ece`, unit 2) admitted a truthful candidate seed
+to scope over a head that declares it, with a retryable unread head.
 
-- **Now, unit 2 of the #628 redesign, `open_pr: 630`** (`work_item: cloud-role-transfer-candidate-admission`,
-  branch `claude/role-transfer-candidate-admission`, from `main` at `816e414`). #628 (the repair Delivery
-  selected in #482 comment 5813153709) reached POLICY's third-P1-head stop and was split into two units.
-  This unit: `review-scope` admits a codex candidate body only over a head that declares the candidate, so a
-  truthful seed gets CI and review while its head is never merge-eligible; final admission and the merge
-  authorizer also hold a candidate-marked PR; the candidate gets a held diagnostic. #628's disputed
-  queued-auto-merge finding stays open (identical window on `main`; needs a frozen controller capability).
+- **Now, the relabel containment, `open_pr: 635`** (`work_item: cloud-role-transfer-relabel-guard`,
+  branch `claude/role-transfer-relabel-guard`, from `main` at `0f33ece`). Delivery made it the next unit
+  (#630 comment 5829393114), and the owner approved the design. The `Candidate relabel guard` workflow runs
+  the controller's own scope check on each PR body edit, so a candidate marker over a head that does not
+  declare it revokes the green status and drafts the PR, which cancels a queued auto-merge. This answers
+  #628 finding 4100230308 and #630 finding 4103625675. What remains is one webhook's delay and the gap
+  between the controller's last read and its merge call.
 - **Next:** the one bounded, non-activating trial on a genuinely Codex-created seed (runbook, one push);
   then the operator-authorized switch (the installer). Retirement is a later unit.
 
