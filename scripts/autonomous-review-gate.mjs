@@ -1450,6 +1450,25 @@ export async function enforceReviewConvergence(
   return reviewHistoryPolicy(findingHeads);
 }
 
+// Bounded re-reads of one immutable commit's message (Codex finding 4101018341 on #630): a transient API
+// failure must not refuse a truthful candidate seed. `client.pause` is injectable for tests.
+const HEAD_READ_DELAYS_MS = [1_000, 3_000];
+async function readHeadCommitMessage(client, head) {
+  const pause = typeof client.pause === 'function'
+    ? client.pause.bind(client)
+    : (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+  for (let attempt = 0; attempt <= HEAD_READ_DELAYS_MS.length; attempt += 1) {
+    if (attempt > 0) await pause(HEAD_READ_DELAYS_MS[attempt - 1]);
+    try {
+      const message = (await client.commit(head))?.commit?.message;
+      if (typeof message === 'string') return message;
+    } catch {
+      // retried; the last failure refuses
+    }
+  }
+  return undefined;
+}
+
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
   let changedFiles;
   let lineage;
@@ -1466,15 +1485,11 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       : undefined;
   }
   // A candidate body is admitted only over a head that declares the same candidate, so read that exact
-  // head's message for it; a failed read leaves it undefined, which refuses (Codex findings on #628).
+  // head's message for it. A commit is immutable, so a failed read is retried (bounded, as the review-scope
+  // CLI does) before it counts; one that still fails leaves it undefined, which refuses (fail closed).
   let headCommitMessage;
   if (correctionOwnerDeclaration(pullRequest).state === 'candidate') {
-    try {
-      const message = (await client.commit(expectedHead))?.commit?.message;
-      if (typeof message === 'string') headCommitMessage = message;
-    } catch {
-      headCommitMessage = undefined;
-    }
+    headCommitMessage = await readHeadCommitMessage(client, expectedHead);
   }
   const result = assessReviewScope(pullRequest, {
     changedFiles,

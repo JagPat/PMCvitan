@@ -562,9 +562,20 @@ function declaredInstruction(owner, { reason, detail }) {
 // And what it says when nobody is declared. It names the defect and the exact
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
-function undeclaredInstruction(declaration) {
-  // An admitted CANDIDATE is not an ownership fault: the marker is truthful and the scope gate admits
-  // it, so "replace the marker" would be false and would steer the PR away from its held workflow.
+function undeclaredInstruction(declaration, { reason = null, detail = null } = {}) {
+  // A CANDIDATE body is admitted only over a head whose own trailer declares it, and the PR must meet every
+  // other scope rule. When scope refused this head, the body alone proves nothing, so the notice names the
+  // refusal and its remedy instead of calling the candidate admitted (Codex finding 4101018333 on #630).
+  if (declaration.state === 'candidate' && reason === 'scope') {
+    return `Scope refused this head${detail ? `: ${detail}` : ''}. A "${declaration.owner}" candidate marker is `
+      + 'admitted only over a head whose own trailer declares it, and only when every other scope rule '
+      + 'holds. Resume action: clear the refusal above; a head-trailer mismatch needs one new head whose '
+      + `every commit ends with \`Correction-Owner: ${declaration.owner}\`, or a different marker if `
+      + `${declaration.owner} is not this PR's author. This loop routes no agent and cannot observe whether `
+      + 'one is already running.';
+  }
+  // Otherwise an admitted CANDIDATE is not an ownership fault: the marker is truthful and the scope gate
+  // admitted it, so "replace the marker" would be false and would steer the PR away from its held workflow.
   // It is still routed to nobody and woken by nothing; only the bounded probe requests a correction.
   if (declaration.state === 'candidate') {
     return `"${declaration.owner}" is the admitted candidate correction owner of this PR: tracked in-flight, `
@@ -622,7 +633,7 @@ export function correctionRouting({
       awakenable: false,
       head,
       detail,
-      instruction: undeclaredInstruction(resolved, { reason, pullRequestNumber }),
+      instruction: undeclaredInstruction(resolved, { reason, detail, pullRequestNumber }),
     };
   }
 

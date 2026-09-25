@@ -1735,6 +1735,48 @@ test('a candidate-owned PR passes scope but its reviewed head is held, never suc
   }
 });
 
+test('finding 4101018341 on #630: a transient candidate-head read failure is re-read before scope refuses', async () => {
+  const head = 'd'.repeat(40);
+  const pull = () => ({
+    number: 254, additions: 1, deletions: 0, changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: codex -->',
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/254',
+    head: { sha: head, ref: 'codex/observation-seed', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const run = async (failures) => {
+    let reads = 0;
+    const statusWrites = [];
+    const client = {
+      async pause() {},
+      async pullRequest() { return pull(); },
+      async setDraft(live, draft) { return { ...live, draft }; },
+      async setStatus(h, state, description) { statusWrites.push({ state, description }); },
+      async updateStickyComment() {},
+      async reviewComments() { return []; },
+      async reviews() { return []; },
+      async markReplacementRequired() {},
+      async commit() {
+        reads += 1;
+        if (reads <= failures) throw new Error('GitHub 502');
+        return { commit: { message: 'seed\n\nCorrection-Owner: codex\n' }, files: [] };
+      },
+    };
+    const scope = await reviewGate.enforceReviewScope(client, pull(), head);
+    return { scope, reads, statusWrites };
+  };
+  // Two transient failures, then the read succeeds: admitted, no scope failure published.
+  const recovered = await run(2);
+  assert.equal(recovered.scope.allowed, true);
+  assert.equal(recovered.reads, 3);
+  assert.deepEqual(recovered.statusWrites, []);
+  // Still failing after the bounded re-reads: refused, fail closed.
+  const refused = await run(3);
+  assert.equal(refused.scope.allowed, false);
+  assert.equal(refused.reads, 3);
+  assert.match(refused.statusWrites.at(-1)?.description ?? '', /^scope: .*head commit could not be read/u);
+});
+
 test('recovery does not republish success when the SHA verdict is no longer eligible (unit 2B2)', async () => {
   const head = 'f'.repeat(40);
   const cleanStatus = {

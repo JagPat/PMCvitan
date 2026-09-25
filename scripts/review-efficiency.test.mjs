@@ -594,17 +594,24 @@ test('the required scope CLI admits a candidate body only over a head that decla
   const previousExitCode = process.exitCode;
   const sha = 'e'.repeat(40);
   const requested = [];
-  const options = (head) => ({
-    eventPath,
-    token: 'test-token',
-    fetchImpl: async (url) => {
-      requested.push(url);
-      if (url.includes(`/commits/${sha}`)) {
-        return head === null ? new Response('no', { status: 502 }) : new Response(JSON.stringify({ commit: { message: head } }));
-      }
-      return new Response(JSON.stringify([{ filename: 'scripts/review-efficiency.mjs' }]));
-    },
-  });
+  // `head` is the message every read returns, or a list of per-read answers (null = a failed read).
+  const options = (head) => {
+    const answers = Array.isArray(head) ? [...head] : null;
+    return {
+      eventPath,
+      token: 'test-token',
+      sleep: async () => {},
+      fetchImpl: async (url) => {
+        requested.push(url);
+        if (url.includes(`/commits/${sha}`)) {
+          const answer = answers ? answers.shift() : head;
+          return answer === null ? new Response('no', { status: 502 }) : new Response(JSON.stringify({ commit: { message: answer } }));
+        }
+        return new Response(JSON.stringify([{ filename: 'scripts/review-efficiency.mjs' }]));
+      },
+    };
+  };
+  const headReads = () => requested.filter((url) => url.endsWith(`/commits/${sha}`)).length;
   await writeFile(eventPath, JSON.stringify({
     repository: { full_name: 'JagPat/PMCvitan' },
     pull_request: pullRequest({
@@ -617,6 +624,13 @@ test('the required scope CLI admits a candidate body only over a head that decla
     const admitted = await runScope(options('seed\n\nCorrection-Owner: codex\n'));
     assert.equal(admitted.allowed, true, admitted.detail ?? 'expected a truthful candidate seed to pass');
     assert.ok(requested.some((url) => url.endsWith(`/repos/JagPat/PMCvitan/commits/${sha}`)));
+    // Codex finding 4101018341 on #630: a transient failure is retried (bounded) before it refuses.
+    requested.length = 0;
+    const recovered = await runScope(options([null, null, 'seed\n\nCorrection-Owner: codex\n']));
+    assert.equal(recovered.allowed, true, recovered.detail ?? 'expected a seed read on the third attempt to pass');
+    assert.equal(headReads(), 3);
+    requested.length = 0;
+    process.exitCode = previousExitCode;
     for (const [label, head, detail] of [
       ['an eligible Claude head', 'fix\n\nCorrection-Owner: claude\n', /does not declare it/u],
       ['a head with no owner', 'fix', /does not declare it/u],
@@ -628,6 +642,10 @@ test('the required scope CLI admits a candidate body only over a head that decla
       assert.match(refused.detail, detail, label);
       assert.equal(process.exitCode, 1, label);
     }
+    // A persistently unreadable head is read exactly 1 + HEAD_READ_DELAYS_MS.length times, then refused.
+    requested.length = 0;
+    await runScope(options(null));
+    assert.equal(headReads(), 3);
   } finally {
     process.exitCode = previousExitCode;
     await rm(directory, { recursive: true, force: true });

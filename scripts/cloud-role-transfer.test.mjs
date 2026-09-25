@@ -37,7 +37,7 @@ test('finding 4094243334: an admitted candidate gets a held diagnostic, never an
   // The candidate marker is truthful and admitted, so telling the reader ownership is not established and
   // to replace the marker would be false. It is still routed to nobody, stalled and not awakenable.
   const declaration = parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'codex/observation-seed' });
-  for (const reason of ['review', 'ci', 'scope']) {
+  for (const reason of ['review', 'ci']) {
     const route = correctionRouting({ declaration, head, reason, detail: 'x' });
     assert.equal(route.owner, null, reason);
     assert.equal(route.state, CORRECTION_STALLED, reason);
@@ -50,6 +50,18 @@ test('finding 4094243334: an admitted candidate gets a held diagnostic, never an
     assert.doesNotMatch(route.instruction, /no correction is in flight/u, reason);
     assert.doesNotMatch(route.instruction, /not established|replace the correction-owner marker|@/u, reason);
   }
+  // Codex finding 4101018333 on #630: when scope refused the head (a candidate body over a head that does
+  // not declare it, or any other scope rule), the notice names the refusal and its remedy, never "admitted"
+  // or "keep the marker". Still routed to nobody, stalled and not awakenable.
+  const refusal = 'the PR body declares candidate correction owner "codex", but its head commit does not declare it';
+  const refused = correctionRouting({ declaration, head, reason: 'scope', detail: refusal });
+  assert.equal(refused.owner, null);
+  assert.equal(refused.state, CORRECTION_STALLED);
+  assert.equal(refused.awakenable, false);
+  assert.ok(refused.instruction.startsWith(`Scope refused this head: ${refusal}.`));
+  assert.match(refused.instruction, /Resume action: clear the refusal above/u);
+  assert.match(refused.instruction, /every commit ends with `Correction-Owner: codex`/u);
+  assert.doesNotMatch(refused.instruction, /admitted candidate correction owner of this PR|Keep the marker as it is|@/u);
   // A real ownership fault keeps its remedy.
   const contradictory = parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'claude/x' });
   assert.match(correctionRouting({ declaration: contradictory, head }).instruction,
