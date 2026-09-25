@@ -1727,6 +1727,25 @@ export async function rerunAdmittedCandidateScope(client, pullRequest, expectedH
   return 'rerun';
 }
 
+// The relabel guard (#628 finding 4100230308, #630 finding 4103625675). A body edit to a candidate marker
+// does not revoke a green `codex-current-head` already on the head, so until the edited CI run reports, a
+// queued native auto-merge or the controller's own merge could land the relabelled PR. On the edit itself,
+// this runs the controller's own scope check. A head that does not declare the candidate is refused exactly
+// as `enforceReviewScope` refuses it: a `scope:` failure revokes the green status, and the draft conversion
+// cancels any queued auto-merge. An unreadable head gets the retryable hold. A truthful candidate seed, or a
+// body that declares no candidate, is left untouched. It adds no new writer path: it is the controller's
+// scope enforcement, serialized with the controller on the same exact-head concurrency group.
+export async function guardCandidateRelabel(client, pullRequest, expectedHead, existingStatuses = []) {
+  if (correctionOwnerDeclaration(pullRequest).state !== 'candidate') return 'not_candidate';
+  const scope = await enforceReviewScope(client, pullRequest, expectedHead);
+  if (scope.superseded) return 'superseded';
+  if (scope.retryable) {
+    await holdUnreadableCandidateHead(client, pullRequest, expectedHead, scope, existingStatuses);
+    return 'unreadable';
+  }
+  return scope.allowed ? 'admitted' : 'refused';
+}
+
 export async function revalidateFinalReviewPolicy(
   client,
   number,
@@ -2003,6 +2022,15 @@ export function contextForEvent(eventName, event, dispatchNumber) {
       trigger: 'ci',
     };
   }
+  // The relabel guard: a PR body edit, seen from trusted default-branch code (`pull_request_target`).
+  if (eventName === 'pull_request_target' && event.action === 'edited') {
+    return {
+      number: Number(event.pull_request?.number),
+      expectedHead: event.pull_request?.head?.sha ?? null,
+      ciConclusion: null,
+      trigger: 'relabel',
+    };
+  }
   return null;
 }
 
@@ -2053,6 +2081,13 @@ export async function run() {
   const existingStatus = existingStatuses.find(
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
+
+  if (mode === 'relabel-guard') {
+    if (context.trigger !== 'relabel') throw new Error('The relabel guard runs only on a pull request body edit');
+    const outcome = await guardCandidateRelabel(client, pullRequest, expectedHead, existingStatuses);
+    console.log(`Relabel guard: ${outcome}.`);
+    return;
+  }
 
   if (mode === 'request-recovery') {
     const authorizedStatus = authorizeRecoveryDispatch(
