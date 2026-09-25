@@ -11,10 +11,8 @@ Do not recreate policy lists here or treat historical chronology as a current or
 
 ## Review guidelines
 
-The merge gate and `review-scope` read correction ownership from exactly one commit: the pull
-request's head commit (`head.sha`). Only that commit message's final trailer block counts
-(`shaMergeAuthority` in [scripts/correction-owner.mjs](scripts/correction-owner.mjs)).
-A review checkout is usually a merge commit (`refs/pull/<n>/merge`, or one made locally), and its
-message carries no trailers. Never report a missing or invalid `Correction-Owner` trailer from such a
-commit: read `git log -1 --format=%B <head.sha>` (`HEAD^2` on a merge checkout), and report only when
-that exact commit lacks it. Earlier PR commits and commits outside the PR do not affect merge ownership.
+A review checkout is usually a merge commit (`refs/pull/<n>/merge`, or one made locally), and its message
+carries no trailers. Before reporting a missing or invalid `Correction-Owner` trailer, read the PR's head
+commit (`head.sha`): `git log -1 --format=%B <head.sha>`, or `HEAD^2` on a merge checkout. Report it only
+when that exact commit lacks the trailer, and name that commit. Never report it from a merge commit or from a
+commit outside the PR. How ownership is enforced is in docs/POLICY.md.

@@ -56,9 +56,11 @@ test('AGENTS.md review guidelines scope ownership findings to the exact PR head 
   const agents = await readFile(new URL('../AGENTS.md', import.meta.url), 'utf8');
   const guidelines = agents.slice(agents.indexOf('## Review guidelines'));
   assert.ok(agents.includes('## Review guidelines'));
-  for (const rule of [/head commit \(`head\.sha`\)/u, /shaMergeAuthority/u, /refs\/pull\/<n>\/merge/u, /`HEAD\^2` on a merge checkout/u]) {
+  for (const rule of [/head\s+commit \(`head\.sha`\)/u, /refs\/pull\/<n>\/merge/u, /`HEAD\^2` on a merge checkout/u, /docs\/POLICY\.md/u]) {
     assert.match(guidelines, rule);
   }
+  // An entrypoint procedure, not a policy copy: it states no rule about which check reads what.
+  assert.doesNotMatch(guidelines, /review-scope|shaMergeAuthority|merge gate/u);
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   assert.match(gate, /readShaMergeVerdict\(client, expectedHead\)/u);
   const owner = await import('./correction-owner.mjs');
