@@ -585,6 +585,55 @@ test('the required scope CLI refuses an off-main unit with no lineage data', asy
   }
 });
 
+test('the required scope CLI admits a candidate body only over a head that declares the same candidate', async () => {
+  // Codex findings on #628: the real CLI reads the exact head commit for a candidate body. A body edited to
+  // `codex` over an eligible Claude head, a head with no owner, or an unread head fails the required check,
+  // so a queued auto-merge on a mergeable head can never proceed under a candidate marker.
+  const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-candidate-'));
+  const eventPath = join(directory, 'event.json');
+  const previousExitCode = process.exitCode;
+  const sha = 'e'.repeat(40);
+  const requested = [];
+  const options = (head) => ({
+    eventPath,
+    token: 'test-token',
+    fetchImpl: async (url) => {
+      requested.push(url);
+      if (url.includes(`/commits/${sha}`)) {
+        return head === null ? new Response('no', { status: 502 }) : new Response(JSON.stringify({ commit: { message: head } }));
+      }
+      return new Response(JSON.stringify([{ filename: 'scripts/review-efficiency.mjs' }]));
+    },
+  });
+  await writeFile(eventPath, JSON.stringify({
+    repository: { full_name: 'JagPat/PMCvitan' },
+    pull_request: pullRequest({
+      number: 401, changed_files: 1, additions: 40, deletions: 0,
+      body: preReviewBody().replace('correction-owner: claude', 'correction-owner: codex'),
+      head: { ref: 'codex/observation-seed', sha },
+    }),
+  }));
+  try {
+    const admitted = await runScope(options('seed\n\nCorrection-Owner: codex\n'));
+    assert.equal(admitted.allowed, true, admitted.detail ?? 'expected a truthful candidate seed to pass');
+    assert.ok(requested.some((url) => url.endsWith(`/repos/JagPat/PMCvitan/commits/${sha}`)));
+    for (const [label, head, detail] of [
+      ['an eligible Claude head', 'fix\n\nCorrection-Owner: claude\n', /does not declare it/u],
+      ['a head with no owner', 'fix', /does not declare it/u],
+      ['an unreadable head', null, /could not be read/u],
+    ]) {
+      process.exitCode = previousExitCode;
+      const refused = await runScope(options(head));
+      assert.equal(refused.allowed, false, label);
+      assert.match(refused.detail, detail, label);
+      assert.equal(process.exitCode, 1, label);
+    }
+  } finally {
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('a claimant that does not target main is refused at admission', () => {
   const source = {
     pullRequest: { number: 346, state: 'closed', base: { ref: 'main' } },

@@ -1684,9 +1684,9 @@ test('a candidate-owned PR passes scope but its reviewed head is held, never suc
     head: { sha: head, ref: 'codex/observation-seed', repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
   });
-  // Codex finding 4098329036 on #628: the body's candidate marker holds the PR even when the unchanged head
-  // still carries an eligible `Correction-Owner: claude` trailer; it only ever withholds.
-  for (const trailer of ['Correction-Owner: codex', 'Correction-Owner: claude']) {
+  // Codex findings on #628: scope admits a candidate body only over a head that declares the same candidate;
+  // over an eligible `Correction-Owner: claude` head (or no owner) it is a scope refusal, never success.
+  for (const trailer of ['Correction-Owner: codex', 'Correction-Owner: claude', 'no owner']) {
     const statusWrites = [];
     const stickies = [];
     const client = {
@@ -1697,12 +1697,20 @@ test('a candidate-owned PR passes scope but its reviewed head is held, never suc
       async reviewComments() { return []; },
       async reviews() { return []; },
       async markReplacementRequired() {},
-      async commit() { return { commit: { message: `fix: x\n\n${trailer}\n` }, files: [] }; },
+      async commit() { return { commit: { message: trailer === 'no owner' ? 'fix: x' : `fix: x\n\n${trailer}\n` }, files: [] }; },
       async mergeExactHead() { throw new Error('must not merge a candidate head'); },
       async enableAutoMerge() { throw new Error('must not queue a candidate head'); },
     };
     const final = await reviewGate.revalidateFinalReviewPolicy(client, 253, head);
     assert.equal(final.allowed, false, trailer);
+    if (trailer !== 'Correction-Owner: codex') {
+      assert.equal(final.state, 'scope_required', `${trailer}: a candidate body over this head is refused`);
+      assert.equal(statusWrites.at(-1).state, 'failure', trailer);
+      assert.match(statusWrites.at(-1).description,
+        /^scope: the PR body declares candidate correction owner "codex", but its head commit does not declare it/u, trailer);
+      assert.ok(!statusWrites.some((write) => write.state === 'success'), trailer);
+      continue;
+    }
     assert.equal(final.state, 'ownership_withheld', `${trailer}: scope admitted it; it is held`);
     assert.equal(final.ownershipReason, OWNERSHIP_CANDIDATE_HELD, trailer);
     assert.equal(final.verdict.mergeEligible, false, trailer);

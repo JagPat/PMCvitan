@@ -484,9 +484,11 @@ decision for the separate, operator-authorized installer.
 1. **Pick the PR.** An open, same-repository PR targeting `main` whose current head (the *reviewed head*) has
    green CI and a Claude shadow review (`claude-independent-review`) in state `changes_required`, the newest
    verified review of that head. It must be a truthful Codex candidate seed: its body declares
-   `<!-- correction-owner: codex -->` on a branch outside `claude/**`; the probe refuses any other PR
-   (`not_candidate_seed`), because the request's Codex owner trailer would read there as inconsistent
-   ownership rather than a held candidate. Its title, description, comments and reviews must hold no Codex mention
+   `<!-- correction-owner: codex -->` on a branch outside `claude/**`, and every commit (the reviewed head
+   included) ends with `Correction-Owner: codex`. `review-scope` admits a codex body only over a head that
+   declares codex, so the head is never merge-eligible and no queued auto-merge can act on it; the probe
+   refuses any other PR (`not_candidate_seed`); and the observer's verdict holds unless the PR still
+   declares the codex candidate at its closing reads. Its title, description, comments and reviews must hold no Codex mention
    except Codex's own, and no one but Codex and trusted workflows may have left a GitHub review on it.
 2. **Keep the cycle quiet** from the moment the reviewed head was pushed until the observer runs: nobody
    comments on, reviews, edits or pushes to the PR (a Claude session acting through the owner's account

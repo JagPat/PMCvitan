@@ -484,17 +484,27 @@ export function correctionOwnerDeclaration(pullRequest) {
  * the contract it was written beside: a PR inside it could pass `review-scope`
  * with no owner and then route to nobody on its first finding.
  *
- * Admits a routable `declared` owner or a recognised `candidate` (codex, on a
- * branch that permits it), so a candidate head gets CI and review. Admission is
- * scope only: the candidate head is still never merge-eligible
- * (`shaMergeAuthority`), its reviewed head is held with `OWNERSHIP_CANDIDATE_HELD`
- * (which opens no correction lease), and routing names nobody to wake. Missing,
+ * Admits a routable `declared` owner, or a recognised `candidate` (codex, on a
+ * branch that permits it) ONLY when the exact head commit declares the same
+ * candidate (`headCommitMessage`): a truthful body AND head. Such a head is never
+ * merge-eligible (`shaMergeAuthority`), so it never carries a green required
+ * status a queued auto-merge could act on, and its reviewed head is held with
+ * `OWNERSHIP_CANDIDATE_HELD` (no correction lease, nobody woken). A candidate
+ * body over any other head — an eligible `Correction-Owner: claude` head, one
+ * with no owner, or an unread head — is refused, so a body edit can never turn
+ * a mergeable head into a candidate-scoped one (Codex findings on #628). Missing,
  * invalid and contradictory declarations — codex on `claude/**` included — are
  * refused as before.
  */
-export function correctionOwnerProblem(pullRequest) {
+export function correctionOwnerProblem(pullRequest, { headCommitMessage } = {}) {
   const declaration = correctionOwnerDeclaration(pullRequest);
-  return declaration.state === 'declared' || declaration.state === 'candidate' ? null : declaration.detail;
+  if (declaration.state === 'declared') return null;
+  if (declaration.state !== 'candidate') return declaration.detail;
+  const head = typeof headCommitMessage === 'string' ? shaMergeAuthority(headCommitMessage) : null;
+  if (head?.outcome === 'candidate' && head.owner === declaration.owner) return null;
+  return `the PR body declares candidate correction owner "${declaration.owner}", but its head commit `
+    + `${head ? 'does not declare it' : 'could not be read'}: every commit of a candidate PR must end with `
+    + `a single \`Correction-Owner: ${declaration.owner}\` trailer (a new head is required)`;
 }
 
 function ownerLabel(owner) {

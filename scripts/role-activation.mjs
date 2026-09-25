@@ -262,6 +262,11 @@ export function roleTransferActivationVerdict(evidence, expected) {
     // controller cannot hold as a candidate) holds the cycle (Codex finding 4094243346 on #628).
     && commits.every((commit) => commit?.correctionOwner?.outcome === 'candidate'
       && commit.correctionOwner.owner === 'codex')
+    // ...and the cycle ran on a truthful codex candidate seed: the PR's body declares the codex candidate on
+    // a branch that permits it, at both closing reads (Codex finding 4099077984 on #628). A Claude-owned or
+    // undeclared PR never demonstrated candidate-scope admission, so it holds.
+    && [freshness?.ownerDeclarationAtEnd, freshness?.ownerDeclarationAtClose]
+      .every((declaration) => declaration?.state === 'candidate' && declaration.owner === 'codex')
     && inPullRequest(conversation)
     && Array.isArray(conversation.items)
     && conversation.items.filter((item) => item?.kind === 'pull_request').length === 1

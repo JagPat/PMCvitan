@@ -2,7 +2,7 @@ import { CLAUDE_SHADOW_CONTEXT, CODEX_LOGIN, requiredChecksForPullRequest } from
 import { resolveRequiredChecks } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { PROBE_MARKER_PREFIX, probeTrailersIn } from './codex-fix-probe.mjs';
-import { shaMergeAuthority } from './correction-owner.mjs';
+import { correctionOwnerDeclaration, shaMergeAuthority } from './correction-owner.mjs';
 import { readPullRequestEventLog } from './pull-request-event-log.mjs';
 
 /**
@@ -255,6 +255,12 @@ export function normalizePushLog(activities, { repository, pullRequest, branch, 
  * never sufficient, for causation; the reader only reports them. The list counts as complete only when the server returned every commit (`total_commits`,
  * which the compare API caps per page, equals both the list and `ahead_by`).
  */
+function seedDeclaration(pull) {
+  if (!pull || typeof pull !== 'object' || !(typeof pull.body === 'string' || pull.body === null)) return null;
+  const { state, owner } = correctionOwnerDeclaration(pull);
+  return { state, owner };
+}
+
 function commitCorrectionOwner(message) {
   if (typeof message !== 'string') return null;
   const { outcome, owner } = shaMergeAuthority(message);
@@ -663,6 +669,10 @@ export async function readRoleActivationEvidence(
       baseRefAtClose: pullAtClose?.base?.ref ?? null,
       baseShaAtClose: pullAtClose?.base?.sha ?? null,
       baseRepositoryAtClose: pullAtClose?.base?.repo?.full_name ?? null,
+      // The seed PR's correction-owner declaration (body marker + branch reservation), read at both closing
+      // PR reads, so the verdict can require the cycle to have run on a truthful codex candidate seed.
+      ownerDeclarationAtEnd: seedDeclaration(pullAtEnd),
+      ownerDeclarationAtClose: seedDeclaration(pullAtClose),
       pushesAfterCorrective,
       // An immutable historical entry of the append-only push log, read in the opening pass.
       reviewedHeadArrival: log.headArrival,

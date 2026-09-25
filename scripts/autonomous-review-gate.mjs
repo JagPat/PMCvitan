@@ -1465,9 +1465,21 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       ? lineageResult.value
       : undefined;
   }
+  // A candidate body is admitted only over a head that declares the same candidate, so read that exact
+  // head's message for it; a failed read leaves it undefined, which refuses (Codex findings on #628).
+  let headCommitMessage;
+  if (correctionOwnerDeclaration(pullRequest).state === 'candidate') {
+    try {
+      const message = (await client.commit(expectedHead))?.commit?.message;
+      if (typeof message === 'string') headCommitMessage = message;
+    } catch {
+      headCommitMessage = undefined;
+    }
+  }
   const result = assessReviewScope(pullRequest, {
     changedFiles,
     requireChangedFiles: true,
+    headCommitMessage,
     requireReplacementLineage: pullRequest.number > PRE_REVIEW_ENFORCE_AFTER_PR,
     requiredReplacements: lineage?.requiredReplacements,
     replacementPullRequests: lineage?.replacementPullRequests,

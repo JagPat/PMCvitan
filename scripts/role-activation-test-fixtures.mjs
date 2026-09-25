@@ -16,7 +16,9 @@ import { CODEX_LOGIN, REQUIRED_CHECKS } from './review-policy.mjs';
 
 export const REPO = 'JagPat/PMCvitan';
 export const PR = 619;
-export const BRANCH = 'claude/x';
+export const BRANCH = 'codex/observation-seed';
+// A truthful codex candidate seed's description: the only PR a cycle can be observed on.
+export const SEED_BODY = '<!-- correction-owner: codex -->\nCodex codes; Claude reviews.';
 export const BASE = 'b'.repeat(40);
 export const ORIGINAL = 'a'.repeat(40);
 export const CORRECTIVE = 'c'.repeat(40);
@@ -99,6 +101,7 @@ export function pull(headSha = CORRECTIVE, overrides = {}) {
   return {
     number: PR,
     state: 'open',
+    body: SEED_BODY,
     head: { ref: BRANCH, sha: headSha, repo: { full_name: REPO } },
     base: { ref: 'main', sha: BASE, repo: { full_name: REPO } },
     ...overrides,
@@ -144,7 +147,7 @@ export function world() {
     conversation: {
       pull_request: { id: 9619, number: PR, pull_request: { url: `https://api.github.com/repos/${REPO}/pulls/${PR}` },
         user: { login: 'JagPat' }, created_at: at('09:30'), updated_at: at('11:40'),
-        title: 'Fix the finding', body: 'Codex codes; Claude reviews.' },
+        title: 'Fix the finding', body: SEED_BODY },
       issue_comment: [
         conversationItem(61, 'JagPat', '08:30', 'Looks good so far.'),
         conversationItem(62, GITHUB_ACTIONS_LOGIN, '08:50', '<!-- autonomous-review-state --> waiting for Codex', { updated: '11:30' }),

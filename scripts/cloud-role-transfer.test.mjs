@@ -24,7 +24,7 @@ test('Codex implementation ownership is recognised as an in-flight candidate but
     const declaration = parseCorrectionOwner(body, { headRef: ref });
     assert.equal(declaration.state, expectedState[ref]);
     assert.notEqual(declaration.state, 'declared');
-    const problem = correctionOwnerProblem({ body, head: { ref } });
+    const problem = correctionOwnerProblem({ body, head: { ref } }, { headCommitMessage: 'fix\n\nCorrection-Owner: codex\n' });
     if (ref === 'claude/product') assert.match(problem ?? '', /reserved for Claude-authored work/u);
     else assert.equal(problem, null);
     const route = correctionRouting({ declaration, head });
@@ -62,10 +62,12 @@ test('review-scope admits a declared or candidate owner and refuses every other 
   const body = (markers) => ['<!-- review-size: standard -->', '<!-- migration-scope: n/a -->', ...markers,
     'Replaces: none', '', '## Pre-review checklist', ...KEYS.map((key) => `- [x] \`${key}\` — checked`), '',
     '- Migration/service seam: n/a'].join('\n');
-  const scope = (markers, ref) => assessReviewScope({
+  const codexHead = 'seed\n\nCorrection-Owner: codex\n';
+  // The head message defaults to a codex head only when the argument is omitted, never for an explicit undefined.
+  const scope = (markers, ref, ...head) => assessReviewScope({
     number: 700, additions: 20, deletions: 0, changed_files: 2, body: body(markers),
     base: { ref: 'main' }, head: { ref },
-  });
+  }, { headCommitMessage: head.length > 0 ? head[0] : codexHead });
   const owner = (name) => `<!-- correction-owner: ${name} -->`;
   // Admitted: the routable owners, and codex as a candidate on a branch that permits it.
   for (const [markers, ref] of [[[owner('claude')], 'claude/x'], [[owner('cursor')], 'codex/x'],
@@ -85,6 +87,22 @@ test('review-scope admits a declared or candidate owner and refuses every other 
     assert.equal(result.allowed, false, `${markers} on ${ref}`);
     assert.match(result.detail, detail);
   }
+  // Codex findings on #628: a candidate body is admitted only over a head that declares the same candidate.
+  // A mergeable Claude head, a head with no owner, a conflicting head, or an unread head is refused, so a
+  // body edit can never put a merge-eligible head (or a queued auto-merge) into candidate scope.
+  for (const [label, headCommitMessage, detail] of [
+    ['an eligible Claude head', 'fix\n\nCorrection-Owner: claude\n', /head commit does not declare it/u],
+    ['a head with no owner', 'fix: no trailer', /head commit does not declare it/u],
+    ['a conflicting head', 'fix\n\nCorrection-Owner: codex\nCorrection-Owner: claude\n', /head commit does not declare it/u],
+    ['an unread head', undefined, /head commit could not be read/u],
+  ]) {
+    const result = scope([owner('codex')], 'codex/observation-seed', headCommitMessage);
+    assert.equal(result.allowed, false, label);
+    assert.match(result.detail, detail, label);
+    assert.match(result.detail, /Correction-Owner: codex/u, label);
+  }
+  // The head is consulted only for a candidate body: a declared owner never needs it.
+  assert.equal(scope([owner('claude')], 'claude/x', undefined).allowed, true);
 });
 
 test('the written owner contract names every marker review-scope admits (finding 4093756711)', () => {

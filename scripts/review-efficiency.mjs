@@ -259,6 +259,7 @@ export function assessReviewScope(
     requireReplacementLineage = false,
     requiredReplacements,
     replacementPullRequests,
+    headCommitMessage,
   } = {},
 ) {
   const additions = finiteCount(pullRequest?.additions);
@@ -404,7 +405,7 @@ export function assessReviewScope(
   // number, with no exemption. An earlier draft carried its own threshold; the
   // carve-out let a PR inside it pass this gate with no owner and then route to
   // nobody on its first finding, so it was deleted rather than raised.
-  const ownerProblem = correctionOwnerProblem(pullRequest);
+  const ownerProblem = correctionOwnerProblem(pullRequest, { headCommitMessage });
   const problems = [
     ...(sizeProblem ? [sizeProblem] : []),
     ...(ownerProblem ? [ownerProblem] : []),

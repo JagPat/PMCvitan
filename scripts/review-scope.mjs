@@ -8,6 +8,7 @@ import {
   PRE_REVIEW_ENFORCE_AFTER_PR,
   STATUS_DOCUMENT,
 } from './review-efficiency.mjs';
+import { correctionOwnerDeclaration } from './correction-owner.mjs';
 import {
   assessPostMergeRunnerState,
   parseMaintenanceQueue,
@@ -43,6 +44,26 @@ async function pullRequestFiles({ fetchImpl, repository, number, token }) {
   }
 }
 
+// The exact head commit's message, read only for a PR whose body declares a CANDIDATE owner: scope admits
+// that PR only when the head declares the same candidate. A failed read is `undefined`, which refuses it.
+async function headCommitMessage({ fetchImpl, repository, sha, token }) {
+  if (typeof fetchImpl !== 'function' || !repository || !token || !/^[0-9a-f]{40}$/u.test(sha ?? '')) return undefined;
+  try {
+    const response = await fetchImpl(`https://api.github.com/repos/${repository}/commits/${sha}`, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token}`,
+        'x-github-api-version': '2022-11-28',
+      },
+    });
+    if (!response.ok) return undefined;
+    const commit = await response.json();
+    return typeof commit?.commit?.message === 'string' ? commit.commit.message : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function run({
   eventPath = process.env.GITHUB_EVENT_PATH,
   token = process.env.GITHUB_TOKEN,
@@ -71,9 +92,18 @@ export async function run({
       console.error(`review-scope: could not inspect cumulative PR files: ${error.message}`);
     }
   }
+  const message = correctionOwnerDeclaration(event.pull_request).state === 'candidate'
+    ? await headCommitMessage({
+      fetchImpl,
+      repository: repository || event.repository?.full_name,
+      sha: event.pull_request.head?.sha,
+      token,
+    })
+    : undefined;
   const result = assessReviewScope(event.pull_request, {
     changedFiles,
     requireChangedFiles: preReviewRequired,
+    headCommitMessage: message,
   });
   console.log(
     `review-scope: ${result.state}; ${result.changedFiles} files, ${result.changedLines} changed lines`,

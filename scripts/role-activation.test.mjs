@@ -212,6 +212,16 @@ test('finding 4083067617: task -> push causation needs the exact trailer on a co
     holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.comparison.commits = commits; }), expected), 'codexTaskCausation');
   }
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].correctionOwner = null; }), 'codexTaskCausation');
+  // Codex finding 4099077984 on #628: the cycle must run on a truthful codex candidate seed. The reader
+  // records the declaration at both closing reads; a Claude-owned, undeclared or unread seed holds.
+  const claudeSeed = pull(CORRECTIVE, { body: '<!-- correction-owner: claude -->' });
+  holds(roleTransferActivationVerdict(await evidenceFor((w) => { w.pulls = [claudeSeed, claudeSeed, claudeSeed]; }), expected),
+    'codexTaskCausation');
+  for (const declaration of [{ state: 'declared', owner: 'claude' }, { state: 'missing', owner: null },
+    { state: 'contradictory', owner: null }, null]) {
+    holds(await verdictWith((e) => { e.records.freshness.ownerDeclarationAtEnd = declaration; }), 'codexTaskCausation');
+    holds(await verdictWith((e) => { e.records.freshness.ownerDeclarationAtClose = declaration; }), 'codexTaskCausation');
+  }
   // Every entry must be a whole, distinct commit: a SHA-less (partial) or repeated entry holds (root-cause
   // audit of the partial-record findings on #624).
   holds(await verdictWith((e) => { e.records.correctivePush.ancestry.commits[0].sha = null; }), 'codexTaskCausation');
