@@ -15,3 +15,8 @@ test('clampPercent maps anything that is not a finite number to 0', () => {
     assert.equal(clampPercent(value), 0, String(value));
   }
 });
+
+test('clampPercent clamps negative values to 0', () => {
+  assert.equal(clampPercent(-0.25), 0);
+  assert.equal(clampPercent(-100), 0);
+});

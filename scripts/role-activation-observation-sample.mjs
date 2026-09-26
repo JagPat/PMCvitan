@@ -9,6 +9,7 @@
 /** Clamp a percentage to the closed range [0, 100]. Any value that is not a finite number is 0. */
 export function clampPercent(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
   if (value > 100) return 100;
   return value;
 }
