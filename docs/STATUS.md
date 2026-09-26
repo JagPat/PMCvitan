@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-project-row-lock
 reviewed_merge: 9235a9a
-open_pr: none
+open_pr: 642
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-26
@@ -27,7 +27,7 @@ updated: 2026-09-26
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, a correction (`work_item: phase-6-task-4d-ii-a-project-row-lock`, branch
+- **Now, a correction, `open_pr: 642` (`work_item: phase-6-task-4d-ii-a-project-row-lock`, branch
   `claude/project-row-lock-no-key`, from `main` at `9235a9a`).** Migration
   `20271225000000_phase6_project_row_lock_no_key` redefines `phase6_project_operable` and
   `phase6_user_decision_authority` to lock the project row `FOR NO KEY UPDATE` instead of `FOR UPDATE`.
