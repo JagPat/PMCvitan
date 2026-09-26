@@ -52,13 +52,19 @@ candidate relabel on the body edit itself.
     conversation, which the owner's attestation excludes. Trailers are containment, not causation.
 - **This record, `open_pr: 637`** (`work_item: cloud-role-transfer-trial-record`, branch
   `claude/role-transfer-trial-record`, from `main` at `3d2d631`). It is docs only and changes no code.
-- **Now:** a decision for the owner on how a Codex correction task is started. Codex does not act on a
-  bot-authored request. The options are:
+- **The role-transfer lane is parked on an owner decision.** The decision is how a Codex correction task is
+  started, since Codex does not act on a bot-authored request. The options are:
   - accept an owner-typed request, which needs an observer change and a fresh trial;
   - another task trigger;
   - Codex stays reviewer only.
-- **Next:** whatever that decision requires, then the operator-authorized switch (the installer).
-  Retirement is a later unit.
+
+  No agent starts any of these routes, an observer change, a fresh trial or the installer. That work waits
+  until a later STATUS update records the owner's choice and names its unit as the `work_item`. After the
+  choice come its unit and then the operator-authorized switch (the installer); retirement is a later unit.
+- **After this merges, the runner's move is `task:4`.** That means the remaining Phase 6 task 4d product
+  units under the active plan's §D: 4d-ii-a, 4d-ii-b, the drain attestation and 4d-iii. 4d-i-b's U1/U2/U3
+  are merged. These units do not depend on the role transfer. The next author verifies fresh `main` and the
+  active producer before opening one.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614 and #615 (reform-1b lock-order probe and lifecycle) are closed unmerged, shelved as not
