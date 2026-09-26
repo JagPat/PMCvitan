@@ -62,7 +62,8 @@ candidate relabel on the body edit itself.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614 and #615 (reform-1b lock-order probe and lifecycle) are closed unmerged, shelved as not
-critical, on the owner's direction. Nothing on `main` consumes them. The rubric's `lockOrderProbe` "arrives
+critical, on the owner's direction. Their open findings stay intact and are not waived; resuming means a
+fresh unit from `main`. Nothing on `main` consumes them. The rubric's `lockOrderProbe` "arrives
 in `reform-1b`" row stays, as the policy contract test requires. The preserved merged branch
 `claude/pmcvitan-mobile-places-n3fxup` stays untouched at `b2490c2a`.
 
@@ -136,9 +137,9 @@ unbroken block as the `Co-Authored-By:`/`Claude-Session:` lines — a blank line
 them drops it from the block and the head reads as owner-undeclared even though the
 line is present.
 
-Deferred with their findings intact, not merged and not waived:
-`reform-1b` successor #615 (`f88d45d0`, five open findings, third-P1 stop) and #614
-(`43ad7ad3`). Neither is a dependency of #590 — the branch imports none of the
+Closed unmerged on 2026-09-26 on the owner's direction (shelved as not critical; see the Now section),
+with their findings intact and not waived: `reform-1b` successor #615 (`f88d45d0`, five open findings,
+third-P1 stop) and #614 (`43ad7ad3`). Neither is a dependency of #590 — the branch imports none of the
 lock helper, and main's REVIEW_RUBRIC/probes defer `lockOrderProbe`. 2A3, the
 migration-verifier replacement, and the size/metrics/runner automation stay
 recorded but do not precede product delivery unless a release blocker proves
