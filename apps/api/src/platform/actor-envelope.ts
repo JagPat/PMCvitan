@@ -24,11 +24,23 @@ import type { EventActor } from '../common/actor';
  *   act.
  *
  * Before the answer is read, the rows it depends on are locked `FOR SHARE`: the actor's
- * `ProjectUserStanding` rows on the project and their `OrgUserAuthority` row for the project's
- * organisation. A concurrent removal, re-role or demotion then waits for this transaction rather
- * than changing the answer between this read and the event's INSERT. The order is the seal's:
- * the standing registers, then `UserIdentity` (§A.3 obligation 3's canonical order puts every
- * per-user register after `Membership`, which a command writes before it emits).
+ * `OrgUserAuthority` row for the project's organisation, then their `ProjectUserStanding` rows on
+ * the project. A concurrent removal, re-role or demotion then waits for this transaction rather
+ * than changing the answer between this read and the event's INSERT.
+ *
+ * **The lock order is the projection writers' order**, and it is load-bearing (#641 Codex finding
+ * 4111429421). An `OrgMembership` write fires `OrgMembership_t4d_org_authority` and then
+ * `OrgMembership_t4d_user_standing` (AFTER triggers run in name order), so it holds
+ * `OrgUserAuthority` before it reaches `ProjectUserStanding`. Locking the two the other way round
+ * let an owner's emit hold PUS while waiting on OUA as that owner's demotion held OUA while
+ * waiting on PUS, and PostgreSQL aborted one of two valid requests as a deadlock. No other
+ * register writer takes both. `UserIdentity` comes last: only `User_t4d_identity` writes it, and
+ * that writer takes no standing register.
+ *
+ * One interleaving no read order can remove: a transaction that ITSELF writes a standing register
+ * (a membership change) and then emits already holds that row, so it can still meet a concurrent
+ * writer that took the other register first. That is the ordinary cost of writing two registers in
+ * one transaction, is not introduced by the envelope, and aborts a single retryable command.
  *
  * **Known limit.** An ABSENT row cannot be locked. A membership-less org owner/admin whose
  * `pmc` claim rests on the window's race-free arm ("no membership-granted row") can see a
@@ -58,15 +70,16 @@ export async function resolveActorEnvelope(
 
   // `Prisma.sql` objects rather than tagged-template calls, as the kernel's other raw reads are, so
   // every bind value is carried on the one argument.
-  await tx.$queryRaw(Prisma.sql`
-    SELECT 1 FROM "ProjectUserStanding"
-     WHERE "projectId" = ${projectId} AND "userId" = ${actor.actorId}
-       FOR SHARE`);
+  // OrgUserAuthority BEFORE ProjectUserStanding: the OrgMembership projection writers' order.
   await tx.$queryRaw(Prisma.sql`
     SELECT 1 FROM "OrgUserAuthority" a
       JOIN "ProjectOrg" po ON po."orgId" = a."orgId"
      WHERE po."projectId" = ${projectId} AND a."userId" = ${actor.actorId}
        FOR SHARE OF a`);
+  await tx.$queryRaw(Prisma.sql`
+    SELECT 1 FROM "ProjectUserStanding"
+     WHERE "projectId" = ${projectId} AND "userId" = ${actor.actorId}
+       FOR SHARE`);
   const standing = await tx.$queryRaw<Array<{ holds: boolean }>>(Prisma.sql`
     SELECT platform_user_holds_role_windowed(${projectId}, ${actor.actorId}, ${role}) AS "holds"`);
   if (!Array.isArray(standing) || standing[0]?.holds !== true) return null;

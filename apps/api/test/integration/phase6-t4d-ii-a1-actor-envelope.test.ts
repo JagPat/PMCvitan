@@ -168,6 +168,49 @@ describe('4d-ii-a / A1 — the actor envelope (live PG)', () => {
     expect(await identityName(f.memberUser.id)).toBe(renamed);
   });
 
+  it('an owner demoted while emitting: the envelope locks in the projection writers\' order, so neither side deadlocks', async () => {
+    // #641 Codex finding 4111429421. The OrgMembership triggers write `OrgUserAuthority`
+    // (`_org_authority`) and then `ProjectUserStanding` (`_user_standing`). An emit that locked
+    // PUS first and OUA second could hold PUS while waiting on OUA, as the demotion held OUA while
+    // waiting on PUS: PostgreSQL aborts one of two valid requests. This holds the demotion at the
+    // exact point between its two writes.
+    const run = randomUUID().slice(0, 8);
+    const owner = await t.prisma.user.create({
+      data: { id: `it-a1-demote-${run}`, projectId: f.projectA.id, role: 'pmc', name: `Demoted ${run}`, email: `it-a1-demote-${run}@test.local` },
+    });
+    const om = await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: owner.id, role: 'owner' } });
+    try {
+      const holdsAuthority = deferred();
+      const releaseDemotion = deferred();
+      const demotion = t.prisma.$transaction(async (tx) => {
+        // The demotion's first write: the owner's OrgUserAuthority row, locked as its trigger does.
+        await tx.$queryRawUnsafe(
+          `SELECT 1 FROM "OrgUserAuthority" WHERE "orgId" = $1 AND "userId" = $2 FOR UPDATE`, f.orgA.id, owner.id);
+        holdsAuthority.resolve();
+        await releaseDemotion.promise;
+        // Its second write reaches ProjectUserStanding (the fan-out retracts the derived pmc row).
+        await tx.orgMembership.update({ where: { id: om.id }, data: { role: 'member' } });
+      }, { timeout: 20_000 });
+      await holdsAuthority.promise;
+
+      let emitDone = false;
+      const emitting = emit(human(owner.id, 'pmc')).finally(() => { emitDone = true; });
+      await new Promise((r) => setTimeout(r, 300));
+      expect(emitDone, 'the emit waits on the authority row the demotion holds').toBe(false);
+      releaseDemotion.resolve();
+
+      const [demoted, emitted] = await Promise.allSettled([demotion, emitting]);
+      expect(demoted.status, demoted.status === 'rejected' ? String(demoted.reason) : '').toBe('fulfilled');
+      expect(emitted.status, emitted.status === 'rejected' ? String(emitted.reason) : '').toBe('fulfilled');
+      // The emit read the registers after the demotion committed: the owner no longer holds pmc.
+      const { eventId } = (emitted as PromiseFulfilledResult<{ eventId: string }>).value;
+      expect(await envelopeOf(eventId)).toMatchObject({ actorId: owner.id, actorRole: null, actorName: null });
+    } finally {
+      await t.prisma.orgMembership.deleteMany({ where: { userId: owner.id } });
+      await t.prisma.user.delete({ where: { id: owner.id } });
+    }
+  });
+
   it('a supplied eventId is the id the event is written under; a non-UUID one is refused before any write', async () => {
     const eventId = randomUUID();
     const meta = await emit(human(f.memberUser.id, 'pmc'), { eventId });
