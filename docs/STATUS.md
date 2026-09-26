@@ -14,15 +14,38 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-decision
-reviewed_merge: 3da889b
-open_pr: 638
+work_item: phase-6-task-4d-ii-a-staging
+reviewed_merge: 4877c63
+open_pr: 640
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-26
 ```
 
-### Now — the role transfer is closed: Claude codes, Codex reviews
+### Now — Phase 6 task 4d: 4d-ii-a staged as additive units (A1 … A8)
+
+The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
+(4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
+
+- **This record, `open_pr: 640`** (`work_item: phase-6-task-4d-ii-a-staging`, branch
+  `claude/4d-ii-a-staging`, from `main` at `4877c63`). It is docs only and changes no code. It adds
+  `docs/superpowers/plans/2026-09-26-4d-ii-a-additive-units.md` and a dated pointer note at the top of the
+  4d plan and of its companion activation document.
+- **The owner's disposition (2026-09-26).** 4d-ii-a is delivered as additive units rather than the one
+  `justified-large` PR §D stages. A gap map against `main` found almost none of the server unit built, and
+  the monolithic `reform-1b` probe had stopped at repeated P1-bearing heads while 4d-i-b's additive split
+  landed. The record changes how 4d-ii-a is staged, not what it contains: every §D inventory item maps to
+  exactly one of A1–A8, and §A stays the specification.
+- **The gap the map found.** The `OutboxConsumerActivation` register, which §D and the companion document
+  say 4d-i installed, is not on `main`. Unit A6 installs it, before A7 registers `decisions.effects`.
+- **The one staging rule.** Only A7 may change a consumer's durable contract version, add or retire an
+  `ExternalEffectCatalog` row, or widen a push ceiling. That keeps §D's inseparable catalog seam in one unit.
+  No unit retires a reservation door, activates `decisions.effects`, or ships a web surface.
+- **Order.** A1 → {A2, A3} → A5; A4 and A6 independently; then A7; then A8a → A8b. After this merges, the
+  next unit is **A1** (the actor and event envelope). The drain's minimum release becomes the release
+  carrying A8b.
+
+### History — the role transfer closed (#638, merged at 4877c63): Claude codes, Codex reviews
 
 The owner decided on 2026-09-26, after the observed trial, that the role transfer does not proceed.
 Claude stays the coding and correction owner. Codex stays the independent reviewer, and
@@ -55,10 +78,11 @@ candidate relabel on the body edit itself.
     `liveHeadFreshness` and `milestoneOrder`. The last two are missing only because there is no acceptance.
   - `codexTaskCausation` passed, but it is not evidence here: the task was started outside the PR
     conversation, which the owner's attestation excludes. Trailers are containment, not causation.
-- **This record, `open_pr: 638`** (`work_item: cloud-role-transfer-decision`, branch
-  `claude/role-transfer-decision`, from `main` at `3da889b`). It adds a status note at the top of
-  `docs/CLOUD_ROLE_TRANSFER.md` and marks its activation steps and observed-cycle runbook superseded. Its one
-  non-docs change is the probe's refusal step and the test that pins it.
+- **Recorded by #638** (merged at `4877c63`). It added a status note at the top of
+  `docs/CLOUD_ROLE_TRANSFER.md` and marked its activation steps and observed-cycle runbook superseded. Its one
+  non-docs change is the probe's refusal step and the test that pins it. #639 (`fa83ed3`) then fixed a
+  controller false positive seen on #638: a Codex reply in an older head's thread is no longer counted as a
+  review of the current head or as a finding-bearing head.
 - **Why the owner closed it.** Codex does not act on a bot-authored request. An owner-typed request would
   put the owner in every correction cycle. No known trigger lets automation start a Codex correction whose
   push the controller can verify. The current arrangement already runs end to end without a person.
@@ -69,9 +93,6 @@ candidate relabel on the body edit itself.
   Nothing starts a trial, runs the probe or observer, or builds the installer unless a later owner decision
   reopens the lane in this file. The recommendation the owner accepted named one reason to revisit: a
   supported trigger that lets automation start a Codex correction that pushes as the Codex connector.
-- **After this merges, the runner's move is `task:4`.** That means the remaining Phase 6 task 4d product
-  units under the active plan's §D: 4d-ii-a, 4d-ii-b, the drain attestation and 4d-iii. 4d-i-b's U1/U2/U3
-  are merged. The next author verifies fresh `main` and the active producer before opening one.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614 and #615 (reform-1b lock-order probe and lifecycle) are closed unmerged, shelved as not
