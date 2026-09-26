@@ -91,6 +91,61 @@ export const CORRECTION_LEASE_GRACE_MS = Number(
 export const LINEAGE_BASE_REF = 'main';
 export const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
+
+/**
+ * Is this Codex review nothing but replies in threads opened on an EARLIER head than its own?
+ *
+ * GitHub files every inline reply as a review stamped with the head at the time of the reply. So when a
+ * human comment mentions Codex in an old finding's thread, the connector's answer (an account-setup
+ * prompt, on #638) arrives as a Codex review of the CURRENT head. Read as a finding, it holds a head no
+ * one reviewed and counts that head as finding-bearing. A review is exempt only when all of these are
+ * proven:
+ * - its state is `COMMENTED`, the state GitHub gives a reply (#639 Codex finding 4110489910: a blank
+ *   `CHANGES_REQUESTED`, or any other state, is a verdict about the head and keeps blocking);
+ * - its body is blank (every real Codex review carries its "Codex Review" summary);
+ * - it has an id and owns at least one comment;
+ * - every one of its comments is a Codex reply whose thread is PROVEN to belong to another head: its
+ *   `in_reply_to_id` chain resolves, comment by comment, to a root that is in `comments` and replies to
+ *   nothing, and both that root and the reply itself were first posted against a head other than the
+ *   review's own (#639 Codex finding 4110382385: the reply's own SHA alone is not the thread's).
+ * A review with no comments, or with any comment that opens a thread, sits in a thread of its own head, or
+ * whose chain is orphaned, cyclic or mismatched, is not exempt. `comments` must be the complete, paginated
+ * review-comment list of every author, because the root may be anyone's.
+ */
+export function isCodexReplyOnlyReview(review, comments) {
+  if (review?.user?.login !== CODEX_LOGIN) return false;
+  if (review?.state !== 'COMMENTED') return false;
+  const body = review?.body;
+  if (body !== undefined && body !== null && (typeof body !== 'string' || body.trim() !== '')) return false;
+  const head = review?.commit_id;
+  if (!Number.isInteger(review?.id) || typeof head !== 'string' || head.length === 0) return false;
+  const all = Array.isArray(comments) ? comments : [];
+  const byId = new Map();
+  for (const comment of all) {
+    if (Number.isInteger(comment?.id)) byId.set(comment.id, comment);
+  }
+  const postedOn = (comment) => comment?.original_commit_id ?? comment?.commit_id;
+  const onAnotherHead = (comment) => typeof postedOn(comment) === 'string' && postedOn(comment) !== head;
+  // The thread's root, or null when the chain is broken: a missing parent, or more steps than there are
+  // comments (a cycle).
+  const rootOf = (comment) => {
+    let current = comment;
+    for (let steps = 0; steps <= all.length; steps += 1) {
+      if (current.in_reply_to_id == null) return current;
+      current = byId.get(current.in_reply_to_id);
+      if (!current) return null;
+    }
+    return null;
+  };
+  const own = all.filter(
+    (comment) => comment?.user?.login === CODEX_LOGIN && comment.pull_request_review_id === review.id,
+  );
+  return own.length > 0 && own.every((comment) => {
+    if (comment.in_reply_to_id == null || !onAnotherHead(comment)) return false;
+    const root = rootOf(comment);
+    return root !== null && root !== comment && onAnotherHead(root);
+  });
+}
 export const REQUIRED_CHECKS = [...GATE_CHECKS, ...PRODUCT_CHECKS];
 export const STATUS_CONTEXT = 'codex-current-head';
 export const CLAUDE_SHADOW_CONTEXT = 'claude-independent-review';
