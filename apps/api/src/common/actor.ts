@@ -23,15 +23,19 @@ export interface Actor {
 }
 
 /**
- * The attribution a DomainEvent envelope records: who, and whether they are a person.
+ * The attribution a DomainEvent envelope records: who, whether they are a person, and the role
+ * they acted in.
  *
- * `emitEvent` reads exactly these two fields — the display name and the role belong to the audit
- * trail, which resolves them itself. Naming the subset lets a deep seam (Phase 5 Task 7A's
- * `CommercialBudgetService.evaluate`, reached through eight callers) announce an event without
- * every one of them threading a full {@link Actor} it does not otherwise need. An `Actor`
- * structurally satisfies this, so no existing caller changes.
+ * Phase 6 task 4d unit 4d-ii-a / A1 widens this from `actorId`/`actorKind` by the ROLE, because
+ * `emitEvent` now writes the envelope's frozen `actorRole`/`actorName` pair
+ * (`platform/actor-envelope.ts`). It deliberately stops short of the full {@link Actor}: the
+ * envelope's NAME must not come from here. `resolveActor` reads `User.name` BEFORE the emitting
+ * transaction opens, and §A.3 obligation 3 requires the frozen name to be read inside that
+ * transaction from `UserIdentity`, with the identity row locked, or a rename committing in
+ * between would freeze a stale name. The role is the token role the window disposition names,
+ * re-checked in the transaction before it is written. An `Actor` satisfies this structurally.
  */
-export type EventActor = Pick<Actor, 'actorId' | 'actorKind'>;
+export type EventActor = Pick<Actor, 'actorId' | 'actorKind' | 'actorRole'>;
 
 /** The caller's REAL identity for attribution (Phase 1): id + display name + role, plus the
  *  actor KIND (Phase 2 Task 3) — a human sign-in always resolves `actorKind: 'human'` with a

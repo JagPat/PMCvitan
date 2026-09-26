@@ -832,10 +832,13 @@ describe('Phase 5 Task 1 — commercial capability + §C commitment attribution 
     // Both operator spellings the CLI and a programmatic caller use resolve through the same
     // orgs-owned contract — identity semantics belong to the owner, not to commercial.
     const orgs = t.app.get(OrgsParticipant);
-    const memberEmail = (await t.prisma.user.findUniqueOrThrow({ where: { id: f.memberUser.id }, select: { email: true } })).email!;
+    const member = await t.prisma.user.findUniqueOrThrow({ where: { id: f.memberUser.id }, select: { email: true, name: true } });
+    const memberEmail = member.email!;
+    // 4d-ii-a / A1 — the owner's contract returns the display name with the id.
+    const identity = { id: f.memberUser.id, name: member.name };
     await t.prisma.$transaction(async (tx) => {
-      expect(await orgs.resolveUserIdentity(tx, f.memberUser.id)).toEqual({ id: f.memberUser.id });
-      expect(await orgs.resolveUserIdentity(tx, memberEmail)).toEqual({ id: f.memberUser.id });
+      expect(await orgs.resolveUserIdentity(tx, f.memberUser.id)).toEqual(identity);
+      expect(await orgs.resolveUserIdentity(tx, memberEmail)).toEqual(identity);
       expect(await orgs.resolveUserIdentity(tx, 'nobody@example.invalid')).toBeNull();
       expect(await orgs.resolveUserIdentity(tx, '')).toBeNull();
     });

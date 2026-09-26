@@ -10,7 +10,7 @@ import { LabourRequirementQuery } from '../labour/labour.query';
 import { ProcurementQuery } from '../procurement/procurement.query';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
-import { CommercialParticipant, type AttributionActor } from './commercial.participant';
+import { CommercialParticipant, eventActorOf, type AttributionActor } from './commercial.participant';
 
 /**
  * Phase 5 Task 1 — commercial pilot ACTIVATION (plan §L).
@@ -196,7 +196,7 @@ export class CommercialActivationService {
       // The actor is the RESOLVED operator — the same durable identity the cost heads, attributions
       // and capability row above are attributed to, carrying `actorKind: 'system'` because §L
       // activation is an operator process rather than a signed-in request.
-      await announceMoneyMoved(tx, projectId, actor, {
+      await announceMoneyMoved(tx, projectId, eventActorOf(actor), {
         costHeadCodes: plan.costHeads.map((h) => h.code), reason: 'activation',
       });
       await recordAudit(tx, {

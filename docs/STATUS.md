@@ -14,23 +14,33 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-staging
-reviewed_merge: 4877c63
-open_pr: 640
+work_item: phase-6-task-4d-ii-a-a1-actor-envelope
+reviewed_merge: 8d2847d
+open_pr: 641
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-26
 ```
 
-### Now — Phase 6 task 4d: 4d-ii-a staged as additive units (A1 … A8)
+### Now — Phase 6 task 4d: 4d-ii-a unit A1, the actor and event envelope
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **This record, `open_pr: 640`** (`work_item: phase-6-task-4d-ii-a-staging`, branch
-  `claude/4d-ii-a-staging`, from `main` at `4877c63`). It is docs only and changes no code. It adds
-  `docs/superpowers/plans/2026-09-26-4d-ii-a-additive-units.md` and a dated pointer note at the top of the
-  4d plan and of its companion activation document.
+- **Now, unit A1, `open_pr: 641`** (`work_item: phase-6-task-4d-ii-a-a1-actor-envelope`, branch
+  `claude/4d-ii-a-a1-actor-envelope`, from `main` at `8d2847d`). `emitEvent` writes the frozen
+  `actorRole`/`actorName` envelope, resolved inside the emitting transaction
+  (`apps/api/src/platform/actor-envelope.ts`):
+  - the role is the token role, written only when the seal's own `platform_user_holds_role_windowed`
+    admits it;
+  - the name is read from `UserIdentity` under `FOR UPDATE`.
+
+  Anything the seal would not admit leaves the pair NULL, which the seal admits, so no delivered emitter
+  gains a refusal. The unit also adds `EmitInput.eventId`, widens the kernel `EventActor` by the role, and
+  makes `OrgsParticipant.resolveUserIdentity` return the display name. It is dark: no reader consumes the
+  pair until later units.
+- **The staging record merged as #640** (`8d2847d`): `docs/superpowers/plans/2026-09-26-4d-ii-a-additive-units.md`,
+  with a dated pointer note at the top of the 4d plan and of its companion activation document.
 - **The owner's disposition (2026-09-26).** 4d-ii-a is delivered as additive units rather than the one
   `justified-large` PR §D stages. A gap map against `main` found almost none of the server unit built, and
   the monolithic `reform-1b` probe had stopped at repeated P1-bearing heads while 4d-i-b's additive split
@@ -41,9 +51,9 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
 - **The one staging rule.** Only A7 may change a consumer's durable contract version, add or retire an
   `ExternalEffectCatalog` row, or widen a push ceiling. That keeps §D's inseparable catalog seam in one unit.
   No unit retires a reservation door, activates `decisions.effects`, or ships a web surface.
-- **Order.** A1 → {A2, A3} → A5; A4 and A6 independently; then A7; then A8a → A8b. After this merges, the
-  next unit is **A1** (the actor and event envelope). The drain's minimum release becomes the release
-  carrying A8b.
+- **Order.** A1 → {A2, A3} → A5; A4 and A6 independently; then A7; then A8a → A8b. After A1 merges, A2
+  (attribution seams), A3 (membership commands), A4 (readers) and A6 (delivery substrate) are all open to
+  start. The drain's minimum release becomes the release carrying A8b.
 
 ### History — the role transfer closed (#638, merged at 4877c63): Claude codes, Codex reviews
 

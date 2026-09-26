@@ -269,6 +269,9 @@ function makeLifecycle(status: string) {
     project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
+    // here means no standing is proven, so the event is written with a NULL pair.
+    $queryRaw: vi.fn(async () => []),
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
     // interactive form emulates the REAL transaction's rollback: on a thrown error the
