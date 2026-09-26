@@ -1,5 +1,11 @@
 # Outbox consumer activation — the register, its mirror, and the operator protocol
 
+> **Staging correction (2026-09-26).** The paragraph below says "4d-i installs the register, its seals and
+> its baseline backfill". 4d-i did not; the register is not on `main`. Under the 4d-ii-a additive staging
+> (`2026-09-26-4d-ii-a-additive-units.md`), unit **A6** installs it exactly as specified here, with its
+> catalog-INSERT baseline trigger, before A7 registers `decisions.effects`. The specification below is
+> unchanged.
+
 **Docs-only COMPANION DOCUMENT of the phase-6 4d plan unit**
 (`docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`, PR #572). No
 schema, no migration, no runtime code ships here; this document specifies them.

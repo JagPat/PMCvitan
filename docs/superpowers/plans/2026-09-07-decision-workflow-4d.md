@@ -1,5 +1,11 @@
 # Decision workflow, unit 4d — the architect, forwarding and countersign: the plan
 
+> **Staging amendment (owner disposition, 2026-09-26).** 4d-ii-a is delivered as the additive units A1–A8
+> recorded in `2026-09-26-4d-ii-a-additive-units.md`, not as the single `justified-large` PR that §D stages.
+> That record maps every §D 4d-ii-a inventory item to exactly one unit; §A remains the specification. It also
+> corrects one staging fact: the `OutboxConsumerActivation` register, which §D says 4d-i installs, was not
+> installed there, and unit A6 installs it. The text below is left as reviewed.
+
 **Status: PLANNING — this is the docs-only 4d plan unit the merged 4b plan's §E order requires**
 (`docs/superpowers/plans/2026-08-14-decision-workflow-4b.md`
 §E: "the 4d plan unit (STARTING MATERIAL: the §C orchestration design at
