@@ -54,6 +54,9 @@ function make(
     project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
+    // here means no standing is proven, so the event is written with a NULL pair.
+    $queryRaw: vi.fn(async () => []),
     $transaction: vi.fn(async (arg: unknown) =>
       typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
   };

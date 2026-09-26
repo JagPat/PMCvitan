@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { EventActor } from '../common/actor';
+import { resolveActorEnvelope } from './actor-envelope';
 import type { DomainEventType } from '@vitan/shared';
 import { materializeDeliveries, type DispatchIntent as PersistedDispatchIntent, type EmittedEventMeta } from './outbox/registry';
 import { buildDispatchIntent, type ExternalEffectKey, type DispatchInput } from './external-effects';
@@ -71,11 +72,16 @@ export function collectedEvents(tx: EventDb): readonly EmittedEventMeta[] {
 export interface EmitInput {
   /** The project (site) the event belongs to; also the ordering scope. */
   projectId: string;
-  /** Who acted — the id + kind of the resolved `Actor` from the audit kernel (Task 3). A `human`
-   *  carries a real `actorId`; a `system` actor's id becomes the named `systemActor`. Typed as the
-   *  {@link EventActor} subset because those are the only two fields written here; a full `Actor`
-   *  satisfies it structurally. */
+  /** Who acted — the id, kind and role of the resolved `Actor` from the audit kernel (Task 3). A
+   *  `human` carries a real `actorId`; a `system` actor's id becomes the named `systemActor`. The
+   *  role feeds the frozen envelope pair (4d-ii-a / A1), which is re-checked inside this
+   *  transaction; the NAME is read from `UserIdentity` there, never taken from the caller. A full
+   *  `Actor` satisfies {@link EventActor} structurally. */
   actor: EventActor;
+  /** 4d-ii-a / A1 — the event id, when the caller must know it BEFORE the event exists (a kinded
+   *  notice that names its event is written in the same transaction). Omitted, the database mints
+   *  one. Must be a UUID. */
+  eventId?: string;
   /** One of the shared catalog types (`decision.approved`, `activity.started`, …). */
   eventType: DomainEventType;
   entityType: string;
@@ -108,9 +114,19 @@ export interface EmitInput {
  * cannot exist without its counter (created in the project-creation transaction, backfilled for
  * legacy projects) means this only fires if that invariant was violated, never in normal flow.
  */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedEventMeta> {
+  if (input.eventId !== undefined && !UUID.test(input.eventId)) {
+    throw new Error(`emitEvent: eventId "${input.eventId}" is not a UUID`);
+  }
   // Derive the tenant from the project itself — a forged organizationId is impossible.
   const { orgId } = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { orgId: true } });
+  // 4d-ii-a / A1 — the frozen actor envelope, resolved BEFORE the stream counter is taken. The
+  // resolver locks the actor's standing registers and identity row; a membership command writes
+  // those registers (through the orgs trigger) and then emits, so taking the registers first and
+  // the stream second keeps one order across every emitting transaction.
+  const envelope = await resolveActorEnvelope(tx, input.projectId, input.actor);
   // Lock + increment the per-project counter INSIDE this transaction: two concurrent commits on
   // one project serialize here, so positions are distinct, ordered and never skipped.
   const stream = await tx.projectEventStream.update({
@@ -127,6 +143,7 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
   const dispatchIntent = builtIntent as unknown as PersistedDispatchIntent;
   const event = await tx.domainEvent.create({
     data: {
+      ...(input.eventId !== undefined ? { eventId: input.eventId } : {}),
       eventType: input.eventType,
       payloadVersion: input.payloadVersion ?? 1,
       organizationId: orgId,
@@ -136,6 +153,8 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
       actorId: actorKind === 'human' ? input.actor.actorId : null,
       actorKind,
       systemActor: actorKind === 'system' ? input.actor.actorId : null,
+      actorRole: envelope?.actorRole ?? null,
+      actorName: envelope?.actorName ?? null,
       entityType: input.entityType,
       entityId: input.entityId,
       correlationId: input.correlationId ?? null,

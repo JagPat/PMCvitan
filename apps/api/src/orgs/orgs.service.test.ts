@@ -95,6 +95,9 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     membership: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.memberships.push(data); return data; }) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { eventId: 'evt-test', ...data }; created.events.push(row); return row; }) },
+    // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
+    // here means no standing is proven, so the event is written with a NULL pair.
+    $queryRaw: vi.fn(async () => []),
     // materializeDeliveries reads the active catalog set inside the emit tx (PR B correction — active
     // is authoritative); the test consumer registered below is active.
     outboxConsumerCatalog: { findMany: vi.fn(async () => [{ consumer: PROJECT_INIT_TEST_CONSUMER }]) },
@@ -225,6 +228,9 @@ function make(orgRole: string | null) {
     user: { findUnique: vi.fn(async () => ({ name: 'Tester' })) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
+    // here means no standing is proven, so the event is written with a NULL pair.
+    $queryRaw: vi.fn(async () => []),
     activity: { findMany: vi.fn(async () => []) },
     inspection: { findMany: vi.fn(async () => []) },
     $executeRaw: vi.fn(async () => 0),
@@ -807,6 +813,9 @@ function makeCopy(source: {
     membership: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
+    // here means no standing is proven, so the event is written with a NULL pair.
+    $queryRaw: vi.fn(async () => []),
   };
   const prisma = {
     orgMembership: { findUnique: vi.fn(async () => ({ role: 'owner' })) },
@@ -949,6 +958,9 @@ function makeModules(opts: {
     membership: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
+    // here means no standing is proven, so the event is written with a NULL pair.
+    $queryRaw: vi.fn(async () => []),
     templateModule: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (opts.modules ?? []).find((m) => m.id === where.id) ?? null),
       findMany: vi.fn(async () => opts.modules ?? []),

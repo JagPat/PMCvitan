@@ -1,7 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ROLE_POLICY } from '@vitan/shared';
-import type { ActorKind } from '../common/actor';
+import type { ActorKind, EventActor } from '../common/actor';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialBudgetService, type HeadroomMover } from './commercial-budget.service';
@@ -16,6 +16,15 @@ export interface AttributionActor {
    *  already holds a full `Actor`; this asks for the one field it was dropping. */
   readonly actorKind: ActorKind;
   readonly role: string;
+}
+
+/**
+ * 4d-ii-a / A1 — the {@link EventActor} an attribution announces an event as. `emitEvent` now needs
+ * the acting ROLE to write the frozen envelope pair (it reads the name itself, in the transaction),
+ * and this seam spells the role `role`. One mapping, so every emitter below it says the same thing.
+ */
+export function eventActorOf(actor: AttributionActor): EventActor {
+  return { actorId: actor.actorId, actorKind: actor.actorKind, actorRole: actor.role };
 }
 
 /** ONE attribution target. The XOR is a PG CHECK; this type makes it unrepresentable in TS too. */
@@ -92,7 +101,7 @@ export class CommercialParticipant {
     heads: readonly string[],
     raisedBy: HeadroomMover,
   ): Promise<void> {
-    await this.budget.evaluate(tx, projectId, actor, heads, raisedBy);
+    await this.budget.evaluate(tx, projectId, eventActorOf(actor), heads, raisedBy);
   }
 
   /**
@@ -363,7 +372,7 @@ export class CommercialParticipant {
     await this.bills.disputeClaimsBeyondEvidence(
       tx, projectId, 'material', poLineId, accepted,
       `qty-over-accepted: an acceptance on purchase-order line ${poLineId} was reversed, leaving ${accepted.toString()} base units of accepted evidence`,
-      actor,
+      eventActorOf(actor),
     );
   }
 
@@ -455,7 +464,7 @@ export class CommercialParticipant {
     await this.bills.disputeClaimsBeyondEvidence(
       tx, projectId, 'labour', labourPoLineId, measured,
       `qty-over-accepted: measured work on labour purchase-order line ${labourPoLineId} was corrected down to ${measured.toString()} person-shifts`,
-      actor,
+      eventActorOf(actor),
     );
   }
 
@@ -520,7 +529,7 @@ export class CommercialParticipant {
     await this.bills.disputeClaimsBeyondEvidence(
       tx, projectId, kind, poLineId, new Prisma.Decimal(0),
       `order-not-live: purchase-order line ${poLineId} is no longer ordered — ${reason}`,
-      actor,
+      eventActorOf(actor),
     );
   }
 

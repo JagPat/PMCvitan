@@ -141,7 +141,7 @@ export async function reevaluateAll(
       // envelope `evaluate` appends records the distinction. The id is the RESOLVED user, so the
       // exception rows and the event point at the same real identity.
       await budget.evaluate(
-        tx, projectId, { actorId: operator.userId, actorKind: 'system' },
+        tx, projectId, { actorId: operator.userId, actorKind: 'system', actorRole: 'system' },
         heads.map((h) => h.code), 'fold_correction',
       );
 

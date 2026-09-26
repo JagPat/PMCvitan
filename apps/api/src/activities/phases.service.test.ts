@@ -17,6 +17,9 @@ function make(anchor: string | null) {
     // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its stream + event steps
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
+    // here means no standing is proven, so the event is written with a NULL pair.
+    $queryRaw: vi.fn(async () => []),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   } as unknown as PrismaService;

@@ -172,11 +172,13 @@ export class OrgsParticipant {
   async resolveUserIdentity(
     tx: OrgsParticipantClient | Prisma.TransactionClient,
     identifier: string,
-  ): Promise<{ id: string } | null> {
+  ): Promise<{ id: string; name: string } | null> {
     if (!identifier) return null;
     // Both values bind as parameters; nothing user-controlled is interpolated into the SQL text.
-    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ id: string }>>(
-      `SELECT "id" FROM "User" WHERE "id" = $1 OR "email" = $1 ORDER BY ("id" = $1) DESC LIMIT 1`,
+    // 4d-ii-a / A1 — the display name comes back with the id, so a caller that attributes an act to
+    // this identity has the owner's name for it rather than reading `User` itself.
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ id: string; name: string }>>(
+      `SELECT "id", "name" FROM "User" WHERE "id" = $1 OR "email" = $1 ORDER BY ("id" = $1) DESC LIMIT 1`,
       identifier,
     );
     return rows[0] ?? null;
