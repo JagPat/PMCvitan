@@ -1,4 +1,4 @@
-import { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN } from './review-policy.mjs';
+import { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN, isCodexReplyOnlyReview } from './review-policy.mjs';
 export { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN } from './review-policy.mjs';
 
 import { isLineageBase } from './lineage-policy.mjs';
@@ -140,7 +140,11 @@ export function classifyCodexState({
   }
 
   const currentHeadReviews = reviews.filter(
-    (review) => isCodexActor(review) && review.commit_id === expectedHead,
+    (review) => isCodexActor(review)
+      && review.commit_id === expectedHead
+      // A reply-only review (a Codex answer in an older head's thread) is not a review of this head;
+      // a new finding on this head is a current-head comment and was counted above (#638).
+      && !isCodexReplyOnlyReview(review, comments),
   );
   if (currentHeadReviews.length > 0) {
     return {
