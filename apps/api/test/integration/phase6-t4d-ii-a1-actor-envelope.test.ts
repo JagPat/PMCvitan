@@ -131,8 +131,10 @@ describe('4d-ii-a / A1 — the actor envelope (live PG)', () => {
     }, { timeout: 20_000 });
     await renameHeld.promise;
     // The emit blocks on the locked identity row; release the rename, and the emit then reads it.
-    const emitting = emit(human(f.memberUser.id, 'pmc'));
+    let emitDone = false;
+    const emitting = emit(human(f.memberUser.id, 'pmc')).finally(() => { emitDone = true; });
     await new Promise((r) => setTimeout(r, 300));
+    expect(emitDone, 'the emit is still waiting on the identity row the uncommitted rename holds').toBe(false);
     releaseRename.resolve();
     await rename;
     const { eventId } = await emitting;
@@ -152,8 +154,13 @@ describe('4d-ii-a / A1 — the actor envelope (live PG)', () => {
       await releaseEmit.promise;
     }, { timeout: 20_000 });
     await emitted.promise;
-    const rename = t.prisma.user.update({ where: { id: f.memberUser.id }, data: { name: renamed } });
+    let renameDone = false;
+    const rename = t.prisma.user.update({ where: { id: f.memberUser.id }, data: { name: renamed } })
+      .finally(() => { renameDone = true; });
     await new Promise((r) => setTimeout(r, 300));
+    // The completion barrier (#641 Codex finding 4111320926): the rename cannot finish while the
+    // event's transaction holds the identity row, so a regression of that lock fails here.
+    expect(renameDone, 'the rename is still waiting on the identity row the emitting transaction holds').toBe(false);
     releaseEmit.resolve();
     await emitting;
     await rename;
