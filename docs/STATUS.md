@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-relabel-guard
-reviewed_merge: 0f33ece
-open_pr: 635
+work_item: cloud-role-transfer-trial-record
+reviewed_merge: 3d2d631
+open_pr: 637
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-25
+updated: 2026-09-26
 ```
 
-### Now — cloud role transfer: relabel containment; #630 merged
+### Now — cloud role transfer: the observed trial held; the Codex trigger is the open question
 
 The cloud role transfer continues with one writer and one channel. The additive split is merged: #620
 (evidence reader, `7f2cbbef`), #621 (lifecycle event log, `2a1f0f46`), #622 (integration, `0a712d93`)
@@ -32,26 +32,50 @@ attestation, #625 (`96208ae`) gave the verdict its `activate` readiness state, #
 `codex-fix-probe` key its request to a verified Claude shadow finding, #627 (`6496a98`) added the manual,
 read-only observer and the observed-cycle runbook, #629 (`816e414`, unit 1 of the #628 redesign) added
 probe and observer containment for a Codex candidate seed, #631 (`8fa3e9c`) left Correction-Owner trailers
-to the controller in the review guidelines, and #630 (`0f33ece`, unit 2) admitted a truthful candidate seed
-to scope over a head that declares it, with a retryable unread head.
+to the controller in the review guidelines, #630 (`0f33ece`, unit 2) admitted a truthful candidate seed
+to scope over a head that declares it, with a retryable unread head, and #635 (`3d2d631`) refuses a
+candidate relabel on the body edit itself.
 
-- **Now, the relabel containment, `open_pr: 635`** (`work_item: cloud-role-transfer-relabel-guard`,
-  branch `claude/role-transfer-relabel-guard`, from `main` at `0f33ece`). Delivery made it the next unit
-  (#630 comment 5829393114), and the owner approved the design. The `Candidate relabel guard` workflow runs
-  the controller's own scope check on each PR body edit, so a candidate marker over a head that does not
-  declare it revokes the green status and drafts the PR, which cancels a queued auto-merge. This answers
-  #628 finding 4100230308 and #630 finding 4103625675. What remains is one webhook's delay and the gap
-  between the controller's last read and its merge call.
-- **Next:** the one bounded, non-activating trial on a genuinely Codex-created seed (runbook, one push);
-  then the operator-authorized switch (the installer). Retirement is a later unit.
+- **The observed trial, #636 (closed unmerged).** It ran on a Codex-created seed (`codex/observation-seed-2`)
+  under the runbook:
+  - CI was green and the Claude shadow review returned `changes_required`. The probe then posted its request
+    (comment 5841644118) as `github-actions[bot]`.
+  - Codex did not act on the bot-authored request: no acceptance reaction and no push.
+  - The owner then started a Codex cloud task. Its corrective head `9e4cad1` carried the request's trailer
+    and `Correction-Owner: codex`, CI was green, and the shadow re-review was clear.
+  - The controller held that head as a candidate (`validation: candidate owner held for independent
+    reviewer activation`) and did not merge it.
+  - Observer run 36211938724 returned **hold**. It proved 7 of 11 proofs and was missing
+    `codexTaskAcceptance`, `codexCorrectivePush` (the pusher was the owner, not the Codex connector),
+    `liveHeadFreshness` and `milestoneOrder`. The last two are missing only because there is no acceptance.
+  - `codexTaskCausation` passed, but it is not evidence here: the task was started outside the PR
+    conversation, which the owner's attestation excludes. Trailers are containment, not causation.
+- **This record, `open_pr: 637`** (`work_item: cloud-role-transfer-trial-record`, branch
+  `claude/role-transfer-trial-record`, from `main` at `3d2d631`). It is docs only and changes no code.
+- **The role-transfer lane is parked on an owner decision.** The decision is how a Codex correction task is
+  started, since Codex does not act on a bot-authored request. The options are:
+  - accept an owner-typed request, which needs an observer change and a fresh trial;
+  - another task trigger;
+  - Codex stays reviewer only.
+
+  No agent starts any of these routes, an observer change, a fresh trial or the installer. That work waits
+  until a later STATUS update records the owner's choice and names its unit as the `work_item`. After the
+  choice come its unit and then the operator-authorized switch (the installer); retirement is a later unit.
+- **After this merges, the runner's move is `task:4`.** That means the remaining Phase 6 task 4d product
+  units under the active plan's §D: 4d-ii-a, 4d-ii-b, the drain attestation and 4d-iii. 4d-i-b's U1/U2/U3
+  are merged. These units do not depend on the role transfer. The next author verifies fresh `main` and the
+  active producer before opening one.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
-deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
-stays untouched at `b2490c2a`.
+deployment. #614 and #615 (reform-1b lock-order probe and lifecycle) are closed unmerged, shelved as not
+critical, on the owner's direction. Their open findings stay intact and are not waived; resuming means a
+fresh unit from `main`. Nothing on `main` consumes them. The rubric's `lockOrderProbe` "arrives
+in `reform-1b`" row stays, as the policy contract test requires. The preserved merged branch
+`claude/pmcvitan-mobile-places-n3fxup` stays untouched at `b2490c2a`.
 
-**Merged in the role-transfer lane:** #619 (`1273465`), the activation-readiness verdict. #622
-(`0a712d93`), the reader/event-log integration. #621 (`2a1f0f46`), the pull request lifecycle event log. #620
-(`7f2cbbef`), the activation evidence reader. #618
+**Merged in the role-transfer lane:** #635 (`3d2d631`), the candidate relabel guard. #619 (`1273465`), the
+activation-readiness verdict. #622 (`0a712d93`), the reader/event-log integration. #621 (`2a1f0f46`), the
+pull request lifecycle event log. #620 (`7f2cbbef`), the activation evidence reader. #618
 (`e0908622`), the shadow-consumer broadening (non-authoritative). #617 (`b2490c2a`), Phase 6 task 4d
 unit 4d-i-b U3.
 
@@ -119,9 +143,9 @@ unbroken block as the `Co-Authored-By:`/`Claude-Session:` lines — a blank line
 them drops it from the block and the head reads as owner-undeclared even though the
 line is present.
 
-Deferred with their findings intact, not merged and not waived:
-`reform-1b` successor #615 (`f88d45d0`, five open findings, third-P1 stop) and #614
-(`43ad7ad3`). Neither is a dependency of #590 — the branch imports none of the
+Closed unmerged on 2026-09-26 on the owner's direction (shelved as not critical; see the Now section),
+with their findings intact and not waived: `reform-1b` successor #615 (`f88d45d0`, five open findings,
+third-P1 stop) and #614 (`43ad7ad3`). Neither is a dependency of #590 — the branch imports none of the
 lock helper, and main's REVIEW_RUBRIC/probes defer `lockOrderProbe`. 2A3, the
 migration-verifier replacement, and the size/metrics/runner automation stay
 recorded but do not precede product delivery unless a release blocker proves
