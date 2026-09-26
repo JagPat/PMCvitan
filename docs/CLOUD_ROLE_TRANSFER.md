@@ -1,5 +1,13 @@
 # Cloud role transfer staging
 
+> **Status: closed, not activated (owner decision, 2026-09-26).** The observed trial (#636) held. Codex
+> does not act on a bot-authored correction request, and no known trigger lets automation start a Codex correction
+> whose push the controller can verify. Claude stays the coding and correction owner, Codex stays the
+> independent reviewer, and `codex-current-head` stays the required gate. The Claude shadow review keeps
+> running, non-authoritative. The manual probe and observer below stay unused; the candidate-scope containment stays in place.
+> Do not start a trial, run the probe or observer, or build the installer unless `docs/STATUS.md` records a
+> later owner decision reopening the transfer. What follows is the design as built.
+
 This change prepares, but does not activate, the requested role transfer. Codex is
 the intended coding owner and Claude Code is the intended independent reviewer.
 Cursor remains an optional dispute opinion. The existing `codex-current-head` gate

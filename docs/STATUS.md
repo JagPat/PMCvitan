@@ -14,17 +14,22 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-trial-record
-reviewed_merge: 3d2d631
-open_pr: 637
+work_item: cloud-role-transfer-decision
+reviewed_merge: 3da889b
+open_pr: 638
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-26
 ```
 
-### Now — cloud role transfer: the observed trial held; the Codex trigger is the open question
+### Now — the role transfer is closed: Claude codes, Codex reviews
 
-The cloud role transfer continues with one writer and one channel. The additive split is merged: #620
+The owner decided on 2026-09-26, after the observed trial, that the role transfer does not proceed.
+Claude stays the coding and correction owner. Codex stays the independent reviewer, and
+`codex-current-head` stays the required, authoritative gate. The Claude shadow review keeps running as a
+non-authoritative second opinion that never gates a merge.
+
+The lane built this machinery, and all of it is merged: #620
 (evidence reader, `7f2cbbef`), #621 (lifecycle event log, `2a1f0f46`), #622 (integration, `0a712d93`)
 and #619 (the activation-readiness verdict, `1273465`). #623 (`b9d31da`) added the request's
 `Codex-Fix-Probe` trailer, #624 (`89a4268`) made `codexTaskCausation` provable from the owner's
@@ -50,21 +55,20 @@ candidate relabel on the body edit itself.
     `liveHeadFreshness` and `milestoneOrder`. The last two are missing only because there is no acceptance.
   - `codexTaskCausation` passed, but it is not evidence here: the task was started outside the PR
     conversation, which the owner's attestation excludes. Trailers are containment, not causation.
-- **This record, `open_pr: 637`** (`work_item: cloud-role-transfer-trial-record`, branch
-  `claude/role-transfer-trial-record`, from `main` at `3d2d631`). It is docs only and changes no code.
-- **The role-transfer lane is parked on an owner decision.** The decision is how a Codex correction task is
-  started, since Codex does not act on a bot-authored request. The options are:
-  - accept an owner-typed request, which needs an observer change and a fresh trial;
-  - another task trigger;
-  - Codex stays reviewer only.
-
-  No agent starts any of these routes, an observer change, a fresh trial or the installer. That work waits
-  until a later STATUS update records the owner's choice and names its unit as the `work_item`. After the
-  choice come its unit and then the operator-authorized switch (the installer); retirement is a later unit.
+- **This record, `open_pr: 638`** (`work_item: cloud-role-transfer-decision`, branch
+  `claude/role-transfer-decision`, from `main` at `3da889b`). It is docs only and changes no code. It also
+  adds a status note at the top of `docs/CLOUD_ROLE_TRANSFER.md`.
+- **Why the owner closed it.** Codex does not act on a bot-authored request. An owner-typed request would
+  put the owner in every correction cycle. No known trigger lets automation start a Codex correction whose
+  push the controller can verify. The current arrangement already runs end to end without a person.
+- **What stays, dormant.** The probe (`codex-fix-probe.yml`) and the observer (`role-activation-observe.yml`)
+  run only when dispatched manually. Candidate-scope admission and the relabel guard are containment only.
+  Nothing starts a trial, runs the probe or observer, or builds the installer unless a later owner decision
+  reopens the lane in this file. The recommendation the owner accepted named one reason to revisit: a
+  supported trigger that lets automation start a Codex correction that pushes as the Codex connector.
 - **After this merges, the runner's move is `task:4`.** That means the remaining Phase 6 task 4d product
   units under the active plan's §D: 4d-ii-a, 4d-ii-b, the drain attestation and 4d-iii. 4d-i-b's U1/U2/U3
-  are merged. These units do not depend on the role transfer. The next author verifies fresh `main` and the
-  active producer before opening one.
+  are merged. The next author verifies fresh `main` and the active producer before opening one.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614 and #615 (reform-1b lock-order probe and lifecycle) are closed unmerged, shelved as not
