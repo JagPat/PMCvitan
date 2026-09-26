@@ -24,6 +24,24 @@ A7 registers `decisions.effects`. Both documents keep their reviewed text. Each 
 note at its top, in the same change as this record, pointing here and naming A6 as the
 installer.
 
+## A correction found building A2 (2026-09-26): the Project row lock mode
+
+`phase6_project_operable` (4c-i) and `phase6_user_decision_authority` (4b) lock the project row
+`FOR UPDATE` to read `archivedAt`. That also conflicts with the `FOR KEY SHARE` every ledgered
+command's receipt holds on the row through `CommandExecution_tenant_fkey`, taken before the command
+runs. So a command holding the readiness key that writes a fact whose seal reaches either function
+deadlocks against any other command on the project that has reserved its receipt and waits for the key.
+Every 4d fact seal reaches `phase6_project_operable` through `phase6_t4d_actor_bound`, so the first
+unit to write a frozen pair under the ledger (A2's `requestChange`) meets it, and A3 and A8 would too.
+
+A correction unit lands before A2: migration `20271225000000_phase6_project_row_lock_no_key`
+redefines both functions with `FOR NO KEY UPDATE`, which still serialises with the archive (an UPDATE
+of a non-key column) and with every other write to the row, and drops only the conflict with a
+foreign-key check. The unit is SQL only, per the migration/service separation: the service-side twin,
+`OrgsParticipant.isProjectOperable`, takes the same `FOR UPDATE` inside ledgered decision commands and
+moves to `FOR NO KEY UPDATE` in A2, the service unit that depends on this one. The migration is on
+`ALWAYS_EXECUTE` and carries the obligations below. It changes no seal's rule and no unit's content.
+
 ## Why each unit is safe on its own
 
 4d-ii-a was already specified to land **dark**. The six reservation doors keep every

@@ -14,31 +14,35 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a1-actor-envelope
-reviewed_merge: 8d2847d
-open_pr: 641
+work_item: phase-6-task-4d-ii-a-project-row-lock
+reviewed_merge: 9235a9a
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-26
 ```
 
-### Now — Phase 6 task 4d: 4d-ii-a unit A1, the actor and event envelope
+### Now — Phase 6 task 4d: a correction before A2, the Project row lock mode
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, unit A1, `open_pr: 641`** (`work_item: phase-6-task-4d-ii-a-a1-actor-envelope`, branch
-  `claude/4d-ii-a-a1-actor-envelope`, from `main` at `8d2847d`). `emitEvent` writes the frozen
-  `actorRole`/`actorName` envelope, resolved inside the emitting transaction
-  (`apps/api/src/platform/actor-envelope.ts`):
-  - the role is the token role, written only when the seal's own `platform_user_holds_role_windowed`
-    admits it;
-  - the name is read from `UserIdentity` under `FOR UPDATE`.
-
-  Anything the seal would not admit leaves the pair NULL, which the seal admits, so no delivered emitter
-  gains a refusal. The unit also adds `EmitInput.eventId`, widens the kernel `EventActor` by the role, and
-  makes `OrgsParticipant.resolveUserIdentity` return the display name. It is dark: no reader consumes the
-  pair until later units.
+- **Now, a correction (`work_item: phase-6-task-4d-ii-a-project-row-lock`, branch
+  `claude/project-row-lock-no-key`, from `main` at `9235a9a`).** Migration
+  `20271225000000_phase6_project_row_lock_no_key` redefines `phase6_project_operable` and
+  `phase6_user_decision_authority` to lock the project row `FOR NO KEY UPDATE` instead of `FOR UPDATE`.
+  The unit is SQL only; `OrgsParticipant.isProjectOperable`, the service-side twin, moves with A2. The lock exists to serialise with an archive, an
+  UPDATE of a non-key column, and still does. `FOR UPDATE` also conflicted with the `FOR KEY SHARE` a
+  ledgered command's receipt holds on the row through `CommandExecution_tenant_fkey`, so a command holding
+  the readiness key deadlocked (`40P01`) against any other command on the project that had reserved its
+  receipt and was waiting for the key. Found building A2: `requestChange`'s frozen requester pair reaches
+  `phase6_project_operable` through `ChangeRequest_t4d_birth_pair`, and two simultaneous requests answered
+  201 and 500 where the loser is owed a 409. Every 4d fact seal goes through the same function, so A2, A3
+  and A8 all depend on this. The migration is on `ALWAYS_EXECUTE` and re-runnable
+  (`CREATE OR REPLACE FUNCTION` only). A2 follows on this merge.
+- **A1 merged as #641** (`9235a9a`): `emitEvent` writes the frozen `actorRole`/`actorName` envelope,
+  resolved inside the emitting transaction (`apps/api/src/platform/actor-envelope.ts`), locking
+  `OrgUserAuthority`, then `ProjectUserStanding`, then `UserIdentity`, the projection writers' order.
 - **The staging record merged as #640** (`8d2847d`): `docs/superpowers/plans/2026-09-26-4d-ii-a-additive-units.md`,
   with a dated pointer note at the top of the 4d plan and of its companion activation document.
 - **The owner's disposition (2026-09-26).** 4d-ii-a is delivered as additive units rather than the one
@@ -51,9 +55,10 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
 - **The one staging rule.** Only A7 may change a consumer's durable contract version, add or retire an
   `ExternalEffectCatalog` row, or widen a push ceiling. That keeps §D's inseparable catalog seam in one unit.
   No unit retires a reservation door, activates `decisions.effects`, or ships a web surface.
-- **Order.** A1 → {A2, A3} → A5; A4 and A6 independently; then A7; then A8a → A8b. After A1 merges, A2
-  (attribution seams), A3 (membership commands), A4 (readers) and A6 (delivery substrate) are all open to
-  start. The drain's minimum release becomes the release carrying A8b.
+- **Order.** A1 → {A2, A3} → A5; A4 and A6 independently; then A7; then A8a → A8b. With A1 merged, A2
+  (attribution seams), A3 (membership commands), A4 (readers) and A6 (delivery substrate) are open to
+  start; this correction goes first because A2 cannot write a frozen pair without it. The drain's minimum
+  release becomes the release carrying A8b.
 
 ### History — the role transfer closed (#638, merged at 4877c63): Claude codes, Codex reviews
 
