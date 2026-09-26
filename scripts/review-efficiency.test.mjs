@@ -746,6 +746,8 @@ test('a reply-only Codex review makes its head no finding-bearing head; a real r
   assert.deepEqual(codexFindingHeads([finding], reviews), [OLD, NEW]);
   const { in_reply_to_id: _root, ...opener } = reply;
   assert.deepEqual(codexFindingHeads([finding, { ...opener, original_commit_id: OLD }], reviews), [OLD, NEW]);
+  // An orphaned reply (its parent missing from the complete list) proves no thread, so NEW counts.
+  assert.deepEqual(codexFindingHeads([reply], reviews), [OLD, NEW]);
   // A summarized review of NEW counts NEW whatever its comments are.
   assert.deepEqual(codexFindingHeads([finding, reply], [reviews[0], { ...reviews[1], body: '### 💡 Codex Review' }]), [OLD, NEW]);
 });

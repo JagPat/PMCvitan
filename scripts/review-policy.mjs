@@ -102,10 +102,13 @@ export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
  * proven:
  * - its body is blank (every real Codex review carries its "Codex Review" summary);
  * - it has an id and owns at least one comment;
- * - every one of its comments is a Codex reply (`in_reply_to_id`) in a thread first posted against
- *   another head than the review's own.
- * A review with no comments, or with any comment that opens a thread or sits in a thread of its own
- * head, is not exempt. `comments` must be the complete, paginated review-comment list.
+ * - every one of its comments is a Codex reply whose thread is PROVEN to belong to another head: its
+ *   `in_reply_to_id` chain resolves, comment by comment, to a root that is in `comments` and replies to
+ *   nothing, and both that root and the reply itself were first posted against a head other than the
+ *   review's own (#639 Codex finding 4110382385: the reply's own SHA alone is not the thread's).
+ * A review with no comments, or with any comment that opens a thread, sits in a thread of its own head, or
+ * whose chain is orphaned, cyclic or mismatched, is not exempt. `comments` must be the complete, paginated
+ * review-comment list of every author, because the root may be anyone's.
  */
 export function isCodexReplyOnlyReview(review, comments) {
   if (review?.user?.login !== CODEX_LOGIN) return false;
@@ -113,12 +116,31 @@ export function isCodexReplyOnlyReview(review, comments) {
   if (body !== undefined && body !== null && (typeof body !== 'string' || body.trim() !== '')) return false;
   const head = review?.commit_id;
   if (!Number.isInteger(review?.id) || typeof head !== 'string' || head.length === 0) return false;
-  const own = (comments ?? []).filter(
+  const all = Array.isArray(comments) ? comments : [];
+  const byId = new Map();
+  for (const comment of all) {
+    if (Number.isInteger(comment?.id)) byId.set(comment.id, comment);
+  }
+  const postedOn = (comment) => comment?.original_commit_id ?? comment?.commit_id;
+  const onAnotherHead = (comment) => typeof postedOn(comment) === 'string' && postedOn(comment) !== head;
+  // The thread's root, or null when the chain is broken: a missing parent, or more steps than there are
+  // comments (a cycle).
+  const rootOf = (comment) => {
+    let current = comment;
+    for (let steps = 0; steps <= all.length; steps += 1) {
+      if (current.in_reply_to_id == null) return current;
+      current = byId.get(current.in_reply_to_id);
+      if (!current) return null;
+    }
+    return null;
+  };
+  const own = all.filter(
     (comment) => comment?.user?.login === CODEX_LOGIN && comment.pull_request_review_id === review.id,
   );
   return own.length > 0 && own.every((comment) => {
-    const threadHead = comment.original_commit_id ?? comment.commit_id;
-    return comment.in_reply_to_id != null && typeof threadHead === 'string' && threadHead !== head;
+    if (comment.in_reply_to_id == null || !onAnotherHead(comment)) return false;
+    const root = rootOf(comment);
+    return root !== null && root !== comment && onAnotherHead(root);
   });
 }
 export const REQUIRED_CHECKS = [...GATE_CHECKS, ...PRODUCT_CHECKS];
