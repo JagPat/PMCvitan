@@ -56,13 +56,16 @@ candidate relabel on the body edit itself.
   - `codexTaskCausation` passed, but it is not evidence here: the task was started outside the PR
     conversation, which the owner's attestation excludes. Trailers are containment, not causation.
 - **This record, `open_pr: 638`** (`work_item: cloud-role-transfer-decision`, branch
-  `claude/role-transfer-decision`, from `main` at `3da889b`). It is docs only and changes no code. It also
-  adds a status note at the top of `docs/CLOUD_ROLE_TRANSFER.md`.
+  `claude/role-transfer-decision`, from `main` at `3da889b`). It adds a status note at the top of
+  `docs/CLOUD_ROLE_TRANSFER.md` and marks its activation steps and observed-cycle runbook superseded. Its one
+  non-docs change is the probe's refusal step and the test that pins it.
 - **Why the owner closed it.** Codex does not act on a bot-authored request. An owner-typed request would
   put the owner in every correction cycle. No known trigger lets automation start a Codex correction whose
   push the controller can verify. The current arrangement already runs end to end without a person.
-- **What stays, dormant.** The probe (`codex-fix-probe.yml`) and the observer (`role-activation-observe.yml`)
-  run only when dispatched manually. Candidate-scope admission and the relabel guard are containment only.
+- **What stays, dormant.** The probe (`codex-fix-probe.yml`) refuses every dispatch in its first step, before
+  any checkout or comment, and only a reviewed change to that workflow can lift the refusal (Codex finding
+  4110278484). The observer (`role-activation-observe.yml`) is read-only and runs only when dispatched.
+  Candidate-scope admission and the relabel guard are containment only.
   Nothing starts a trial, runs the probe or observer, or builds the installer unless a later owner decision
   reopens the lane in this file. The recommendation the owner accepted named one reason to revisit: a
   supported trigger that lets automation start a Codex correction that pushes as the Codex connector.

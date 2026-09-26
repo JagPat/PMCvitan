@@ -311,6 +311,21 @@ test('the pre-post recheck reruns the full authorizer: a mid-window resolve, ret
   }
 });
 
+test('the probe refuses every dispatch while the role transfer is closed, before any code runs or comment is posted', () => {
+  // Owner decision of 2026-09-26 (docs/STATUS.md; Codex finding 4110278484 on #638): the transfer is closed,
+  // so the one workflow that posts a bot-authored `@codex fix` must not be dispatchable. The refusal is the
+  // job's FIRST step, ahead of the checkout and the dispatch, and only a reviewed change to this file on
+  // `main` can lift it.
+  const workflow = readFileSync(new URL('../.github/workflows/codex-fix-probe.yml', import.meta.url), 'utf8');
+  const steps = workflow.slice(workflow.indexOf('    steps:'));
+  const refusal = steps.indexOf('- name: Refuse while the role transfer is closed');
+  assert.ok(refusal > 0, 'the closed-transfer refusal step is present');
+  assert.ok(refusal < steps.indexOf('- name: Check out trusted probe code'), 'it runs before the checkout');
+  assert.ok(refusal < steps.indexOf('node scripts/codex-fix-probe.mjs dispatch'), 'it runs before the dispatch');
+  assert.match(steps.slice(refusal, steps.indexOf('- name: Check out trusted probe code')), /\n\s*exit 1\n/u);
+  assert.doesNotMatch(steps.slice(refusal, steps.indexOf('- name: Check out trusted probe code')), /continue-on-error|if:/u);
+});
+
 test('the probe workflow declares a non-cancelling per-PR concurrency group, the main-ref guard and minimal permissions', () => {
   const workflow = readFileSync(new URL('../.github/workflows/codex-fix-probe.yml', import.meta.url), 'utf8');
   assert.match(workflow, /on:\s*\n\s*workflow_dispatch:/u);

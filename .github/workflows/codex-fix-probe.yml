@@ -1,4 +1,4 @@
-name: Codex correction-boundary probe (manual, disabled by default)
+name: Codex correction-boundary probe (closed, refuses every dispatch)
 
 # workflow_dispatch only: this never runs on its own. An operator arms it for ONE chosen PR/head
 # by supplying the exact head and an authorization string bound to that PR/head. It posts exactly
@@ -52,6 +52,13 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      # The cloud role transfer is CLOSED by owner decision (2026-09-26, docs/STATUS.md): Claude codes and
+      # Codex reviews. This step refuses every dispatch before any code runs or any comment is posted.
+      # Reopening the transfer needs a reviewed change to this workflow on `main`, not a dispatch input.
+      - name: Refuse while the role transfer is closed
+        run: |
+          echo "::error::The cloud role transfer is closed by owner decision (2026-09-26; see docs/STATUS.md). This probe posts no @codex fix request until a reviewed change reopens it."
+          exit 1
       - name: Check out trusted probe code from this workflow's commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

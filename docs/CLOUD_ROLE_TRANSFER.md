@@ -4,9 +4,15 @@
 > does not act on a bot-authored correction request, and no known trigger lets automation start a Codex correction
 > whose push the controller can verify. Claude stays the coding and correction owner, Codex stays the
 > independent reviewer, and `codex-current-head` stays the required gate. The Claude shadow review keeps
-> running, non-authoritative. The manual probe and observer below stay unused; the candidate-scope containment stays in place.
+> running, non-authoritative. The candidate-scope containment stays in place. The probe
+> (`codex-fix-probe.yml`) now refuses every dispatch in its first step, and only a reviewed change to that
+> workflow can lift the refusal. The observer is read-only and stays unused.
 > Do not start a trial, run the probe or observer, or build the installer unless `docs/STATUS.md` records a
-> later owner decision reopening the transfer. What follows is the design as built.
+> later owner decision reopening the transfer.
+>
+> **Everything below is HISTORICAL: the design as built and the steps as they stood before the decision.**
+> "Codex is the intended coding owner", the "Pending activation" steps and the observed-cycle runbook are
+> not current instructions.
 
 This change prepares, but does not activate, the requested role transfer. Codex is
 the intended coding owner and Claude Code is the intended independent reviewer.
@@ -57,6 +63,9 @@ All triggers, runs, bindings, and check results live in GitHub Actions and Check
 they are visible from any device and do not depend on a desktop or local runner.
 
 ## Pending activation
+
+> **Superseded (2026-09-26).** The transfer is closed; these steps are not to be carried out. See the status
+> note at the top of this document.
 
 1. `CLAUDE_CODE_OAUTH_TOKEN` was provisioned as a repository Actions secret on
    2026-09-16. Never copy the token into an issue, log, commit, or agent session.
@@ -483,6 +492,9 @@ Nothing here activates anything. It makes the observed cycle possible; the verdi
 are unchanged.
 
 ### Observer and the observed-cycle runbook (manual, read-only, non-activating)
+
+> **Superseded (2026-09-26).** The one observed cycle ran on #636 and held. The transfer is closed, and the
+> probe that starts a cycle refuses every dispatch. This runbook is kept as the record of that trial.
 
 `.github/workflows/role-activation-observe.yml` (`scripts/role-activation-observe.mjs`) runs the trusted
 evidence reader over one correction cycle and judges it with the pure verdict. The operator dispatches it
