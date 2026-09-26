@@ -48,9 +48,12 @@ export class OrgsParticipant {
     // activation read `operable = true`, an org admin archive and commit, and activation then
     // write onto a project no request path can operate. Locking the row makes the archive wait
     // for this transaction (or this read wait for the archive) — the decision cannot go stale
-    // between the check and the writes it authorises.
+    // between the check and the writes it authorises. `FOR NO KEY UPDATE`, as the seals' own
+    // `phase6_project_operable` takes it (20271225000000): it conflicts with the archive's UPDATE,
+    // and not with the `FOR KEY SHARE` a ledgered command's receipt holds on this row through its
+    // foreign key, which `FOR UPDATE` turned into a deadlock between two commands on one project.
     const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ archived: boolean }>>(
-      `SELECT ("archivedAt" IS NOT NULL) AS archived FROM "Project" WHERE "id" = $1 FOR UPDATE`,
+      `SELECT ("archivedAt" IS NOT NULL) AS archived FROM "Project" WHERE "id" = $1 FOR NO KEY UPDATE`,
       projectId,
     );
     return rows.length > 0 && rows[0]!.archived === false;

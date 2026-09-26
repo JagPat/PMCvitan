@@ -929,6 +929,8 @@ describe('Phase 5 Task 1 — commercial capability + §C commitment attribution 
 
     // Hold the Project row in another session and prove activation BLOCKS on it — the read is a
     // lock, not a snapshot. RED before the fix: `SELECT EXISTS` took no row lock and sailed past.
+    // The operability read locks `FOR NO KEY UPDATE` (4d-ii-a / A2, the twin of #642), which still
+    // conflicts with this holder's `FOR UPDATE` — and with an archive's UPDATE — so it still waits.
     const holder = new PrismaService();
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
@@ -946,7 +948,7 @@ describe('Phase 5 Task 1 — commercial capability + §C commitment attribution 
       for (let i = 0; i < 400; i++) {
         const rows = await t.prisma.$queryRaw<Array<{ c: number }>>`
           SELECT COUNT(*)::int AS c FROM pg_stat_activity
-          WHERE wait_event_type = 'Lock' AND query LIKE '%FOR UPDATE%'`;
+          WHERE wait_event_type = 'Lock' AND query LIKE '%FROM "Project"%FOR NO KEY UPDATE%'`;
         if (rows[0]!.c >= 1) break;
         if (i === 399) throw new Error('barrier timeout: activation never blocked on the project row');
         await new Promise((r) => setTimeout(r, 25));

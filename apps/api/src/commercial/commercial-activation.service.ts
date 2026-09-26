@@ -10,7 +10,7 @@ import { LabourRequirementQuery } from '../labour/labour.query';
 import { ProcurementQuery } from '../procurement/procurement.query';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
-import { CommercialParticipant, eventActorOf, type AttributionActor } from './commercial.participant';
+import { CommercialParticipant, type AttributionActor } from './commercial.participant';
 
 /**
  * Phase 5 Task 1 — commercial pilot ACTIVATION (plan §L).
@@ -82,7 +82,7 @@ export class CommercialActivationService {
         // Task 7A — `actorKind: 'system'`: §L activation is an operator process, not a signed-in
         // request, and the `commercial.money_moved` envelope this identity ends up on records the
         // distinction. The `actorId` is the RESOLVED user, so attribution stays a real identity.
-        return { actorId: user.id, actorKind: 'system', role: candidate };
+        return { actorId: user.id, actorKind: 'system', actorRole: candidate };
       }
     }
     throw new ForbiddenException(
@@ -196,7 +196,7 @@ export class CommercialActivationService {
       // The actor is the RESOLVED operator — the same durable identity the cost heads, attributions
       // and capability row above are attributed to, carrying `actorKind: 'system'` because §L
       // activation is an operator process rather than a signed-in request.
-      await announceMoneyMoved(tx, projectId, eventActorOf(actor), {
+      await announceMoneyMoved(tx, projectId, actor, {
         costHeadCodes: plan.costHeads.map((h) => h.code), reason: 'activation',
       });
       await recordAudit(tx, {

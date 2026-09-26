@@ -154,7 +154,7 @@ export class CommercialService {
         }
         // The participant enforces `commercial.attribute` — the SAME check the `pos.issue` path
         // gets, because the authority follows the WRITE, not the route (§C, probe 5ar).
-        await this.participant.replaceAttribution(tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role }, [
+        await this.participant.replaceAttribution(tx, projectId, actor, [
           { from: target, to: target, costHeadCode: input.costHeadCode, reason: input.reason },
         // the label is DERIVED: this route names a NEW head for the same line, so the participant
         // sees `active.costHeadCode !== code` and records `reattribution` on both heads. Naming it

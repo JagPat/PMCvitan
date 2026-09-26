@@ -369,7 +369,7 @@ export class CommercialMeasurementService {
         // keep the fold whole while the certificate's own frozen row is walked back underneath it.
         if (row.quantity.isNegative()) {
           await this.participant.assertMeasurementWithdrawable(
-            tx, projectId, row.labourPoLineId, after, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
+            tx, projectId, row.labourPoLineId, after, actor,
             row.correctsId ?? undefined,
           );
         }
@@ -379,7 +379,7 @@ export class CommercialMeasurementService {
         // but the rule is mechanical and the evaluation is idempotent — one OPEN exception per
         // head is a partial unique. See `commercial.contract.test.ts` FOLD_INPUTS.
         await this.participant.evaluateForTarget(
-          tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
+          tx, projectId, actor,
           { labourPoLineId: row.labourPoLineId }, 'measurement',
         );
         return { resultRef: created.id, events: [] };

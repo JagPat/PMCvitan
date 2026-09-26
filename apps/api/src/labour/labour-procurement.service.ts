@@ -183,7 +183,7 @@ export class LabourProcurementService {
       );
     }
     await this.commercial.attribute(
-      tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
+      tx, projectId, actor,
       lines.map((l) => ({ target: { labourPoLineId: l.id }, costHeadCode: map.get(l.id)!, reason })),
     );
   }
@@ -210,7 +210,6 @@ export class LabourProcurementService {
     // Codex round 3 (P2): keyed by REQUISITION LINE — the identity the caller supplies. The
     // replacement PO-line ids are generated in THIS transaction, so a caller could never name them.
     const map = new Map((costHeads ?? []).map((c) => [c.requisitionLineId, c.costHeadCode]));
-    const identity = { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role };
 
     const carried = new Set<string>();
     const replaced: { from: { labourPoLineId: string }; to: { labourPoLineId: string }; costHeadCode?: string; reason: string }[] = [];
@@ -235,15 +234,15 @@ export class LabourProcurementService {
     // the label is DERIVED per line inside the participant: a carried line whose head is unchanged
     // is a COMMITMENT that changed size; one the caller reclassified via `costHeads` is a
     // reattribution. One amend can do both, so no single caller-supplied label would be true.
-    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, touched);
+    await this.commercial.replaceAttribution(tx, projectId, actor, replaced, touched);
     await this.commercial.attribute(
-      tx, projectId, identity,
+      tx, projectId, actor,
       fresh.map((f) => ({ target: { labourPoLineId: f.labourPoLineId }, costHeadCode: f.costHeadCode, reason })),
       touched,
     );
     const dropped = priorLines.filter((l) => !carried.has(l.id)).map((l) => ({ labourPoLineId: l.id }));
-    await this.commercial.releaseAttribution(tx, projectId, identity, dropped, reason, touched);
-    await this.commercial.evaluateDeferred(tx, projectId, identity, touched);
+    await this.commercial.releaseAttribution(tx, projectId, actor, dropped, reason, touched);
+    await this.commercial.evaluateDeferred(tx, projectId, actor, touched);
   }
 
   /**
@@ -256,11 +255,11 @@ export class LabourProcurementService {
    * Derived from the fold's input set, not from a list of sites — see `commercial.contract.test.ts`.
    */
   private async evaluateBudgetForLine(
-    tx: Prisma.TransactionClient, projectId: string, actor: Actor, role: string, labourPoLineId: string,
+    tx: Prisma.TransactionClient, projectId: string, actor: Actor, labourPoLineId: string,
   ): Promise<void> {
     if (!(await this.commercial.isActive(tx, projectId))) return;
     await this.commercial.evaluateForTarget(
-      tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role }, { labourPoLineId }, 'commitment',
+      tx, projectId, actor, { labourPoLineId }, 'commitment',
     );
   }
 
@@ -1028,7 +1027,7 @@ export class LabourProcurementService {
         // §C — a cancelled version is no longer live, so its attributions are released.
         if (await this.commercial.isActive(tx, projectId)) {
           await this.commercial.releaseAttribution(
-            tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
+            tx, projectId, actor,
             current.lines.map((l) => ({ labourPoLineId: l.id })), input.reason,
           );
         }
@@ -1083,7 +1082,7 @@ export class LabourProcurementService {
         // `COMMITTED` re-reads the reduced obligation with attributable evidence behind the change.
         if (await this.commercial.isActive(tx, projectId)) {
           await this.commercial.replaceAttribution(
-            tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
+            tx, projectId, actor,
             current.lines.map((l) => ({ from: { labourPoLineId: l.id }, to: { labourPoLineId: l.id }, reason: input.reason })),
           );
         }
@@ -1151,7 +1150,7 @@ export class LabourProcurementService {
         // move together, so the committed slice stays allocated (§F bound 2) across the PO lifecycle.
         await tx.labourPurchaseOrderLine.updateMany({ where: { projectId, id: line.id }, data: { committedQty: line.personShiftQty } });
         await this.recomputeVersionStatus(tx, projectId, line.poVersionId);
-        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, line.id);
+        await this.evaluateBudgetForLine(tx, projectId, actor, line.id);
         await recordAudit(tx, { projectId, actor, action: 'labour.commitment.commit', entity: 'CapacityCommitment', entityId: commitment.id });
         const full = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitment.id }, include: { promises: true } });
         const ev = await emitEvent(tx, {
@@ -1229,7 +1228,7 @@ export class LabourProcurementService {
         );
         await tx.labourPurchaseOrderLine.updateMany({ where: { projectId, id: defaulted.poLineId }, data: { committedQty: 0 } });
         await this.recomputeVersionStatus(tx, projectId, defaulted.poLine.poVersionId);
-        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, defaulted.poLineId);
+        await this.evaluateBudgetForLine(tx, projectId, actor, defaulted.poLineId);
         // R2 — the freed slice's requisition line must reflect its now-ZERO live allocation: a
         // defaulted PO line covers nothing (it can never be re-committed), so the line reopens to
         // 'open' whether the version returned to issued/partially_committed or was closed short —

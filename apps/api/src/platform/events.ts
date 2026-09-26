@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { EventActor } from '../common/actor';
-import { resolveActorEnvelope } from './actor-envelope';
+import { resolveActorEnvelope, type ActorEnvelope } from './actor-envelope';
 import type { DomainEventType } from '@vitan/shared';
 import { materializeDeliveries, type DispatchIntent as PersistedDispatchIntent, type EmittedEventMeta } from './outbox/registry';
 import { buildDispatchIntent, type ExternalEffectKey, type DispatchInput } from './external-effects';
@@ -82,6 +82,13 @@ export interface EmitInput {
    *  notice that names its event is written in the same transaction). Omitted, the database mints
    *  one. Must be a UUID. */
   eventId?: string;
+  /** 4d-ii-a / A2 — the pair the command ALREADY resolved in this transaction (with
+   *  {@link resolveActorEnvelope}) for the fact it records, `null` when that resolution found
+   *  none. Supplied, it is written as given instead of being resolved a second time, so the fact's
+   *  frozen pair and its event's envelope are ONE reading (§A.3 obligation 7's correspondence) even
+   *  where a second read could differ: an absent standing row cannot be locked (see
+   *  `actor-envelope.ts`). The envelope seal still judges it. Omitted, `emitEvent` resolves it. */
+  actorEnvelope?: ActorEnvelope | null;
   /** One of the shared catalog types (`decision.approved`, `activity.started`, …). */
   eventType: DomainEventType;
   entityType: string;
@@ -120,13 +127,18 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
   if (input.eventId !== undefined && !UUID.test(input.eventId)) {
     throw new Error(`emitEvent: eventId "${input.eventId}" is not a UUID`);
   }
+  if (input.actorEnvelope && input.actor.actorKind !== 'human') {
+    throw new Error(`emitEvent: a ${input.actor.actorKind} actor carries no envelope pair`);
+  }
   // Derive the tenant from the project itself — a forged organizationId is impossible.
   const { orgId } = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { orgId: true } });
   // 4d-ii-a / A1 — the frozen actor envelope, resolved BEFORE the stream counter is taken. The
   // resolver locks the actor's standing registers and identity row; a membership command writes
   // those registers (through the orgs trigger) and then emits, so taking the registers first and
   // the stream second keeps one order across every emitting transaction.
-  const envelope = await resolveActorEnvelope(tx, input.projectId, input.actor);
+  const envelope = input.actorEnvelope !== undefined
+    ? input.actorEnvelope
+    : await resolveActorEnvelope(tx, input.projectId, input.actor);
   // Lock + increment the per-project counter INSIDE this transaction: two concurrent commits on
   // one project serialize here, so positions are distinct, ordered and never skipped.
   const stream = await tx.projectEventStream.update({

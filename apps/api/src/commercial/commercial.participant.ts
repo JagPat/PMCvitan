@@ -1,31 +1,25 @@
 import { ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ROLE_POLICY } from '@vitan/shared';
-import type { ActorKind, EventActor } from '../common/actor';
+import type { EventActor } from '../common/actor';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialBudgetService, type HeadroomMover } from './commercial-budget.service';
 import { CommercialBillService } from './commercial-bill.service';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
 
-/** The acting identity a lifecycle site passes in; the participant never re-derives it. */
-export interface AttributionActor {
-  readonly actorId: string;
-  /** Phase 5 Task 7A — a headroom move now ANNOUNCES itself (`commercial.money_moved`), and the
-   *  event envelope records whether the actor is a person or a named system process. Every caller
-   *  already holds a full `Actor`; this asks for the one field it was dropping. */
-  readonly actorKind: ActorKind;
-  readonly role: string;
-}
-
 /**
- * 4d-ii-a / A1 — the {@link EventActor} an attribution announces an event as. `emitEvent` now needs
- * the acting ROLE to write the frozen envelope pair (it reads the name itself, in the transaction),
- * and this seam spells the role `role`. One mapping, so every emitter below it says the same thing.
+ * The acting identity a lifecycle site passes in; the participant never re-derives it.
+ *
+ * It IS the kernel's {@link EventActor}: a headroom move announces itself (`commercial.money_moved`,
+ * Task 7A), and the event envelope records the actor's id, kind and role (4d-ii-a). The role is
+ * the one the acting `Actor` already carries, so every human site passes its resolved `Actor`
+ * as it stands (§A.3 obligation 7's "every constructing site passing the resolved `Actor` it
+ * already holds", 4d-ii-a / A2). The display NAME is deliberately not carried: `emitEvent` reads
+ * it from `UserIdentity` inside the transaction (A1), and a name threaded down from a
+ * pre-transaction read is the stale attribution §A.3 obligation 3 forbids.
  */
-export function eventActorOf(actor: AttributionActor): EventActor {
-  return { actorId: actor.actorId, actorKind: actor.actorKind, actorRole: actor.role };
-}
+export type AttributionActor = EventActor;
 
 /** ONE attribution target. The XOR is a PG CHECK; this type makes it unrepresentable in TS too. */
 export type AttributionTarget = { poLineId: string } | { labourPoLineId: string };
@@ -101,7 +95,7 @@ export class CommercialParticipant {
     heads: readonly string[],
     raisedBy: HeadroomMover,
   ): Promise<void> {
-    await this.budget.evaluate(tx, projectId, eventActorOf(actor), heads, raisedBy);
+    await this.budget.evaluate(tx, projectId, actor, heads, raisedBy);
   }
 
   /**
@@ -372,7 +366,7 @@ export class CommercialParticipant {
     await this.bills.disputeClaimsBeyondEvidence(
       tx, projectId, 'material', poLineId, accepted,
       `qty-over-accepted: an acceptance on purchase-order line ${poLineId} was reversed, leaving ${accepted.toString()} base units of accepted evidence`,
-      eventActorOf(actor),
+      actor,
     );
   }
 
@@ -464,7 +458,7 @@ export class CommercialParticipant {
     await this.bills.disputeClaimsBeyondEvidence(
       tx, projectId, 'labour', labourPoLineId, measured,
       `qty-over-accepted: measured work on labour purchase-order line ${labourPoLineId} was corrected down to ${measured.toString()} person-shifts`,
-      eventActorOf(actor),
+      actor,
     );
   }
 
@@ -529,7 +523,7 @@ export class CommercialParticipant {
     await this.bills.disputeClaimsBeyondEvidence(
       tx, projectId, kind, poLineId, new Prisma.Decimal(0),
       `order-not-live: purchase-order line ${poLineId} is no longer ordered — ${reason}`,
-      eventActorOf(actor),
+      actor,
     );
   }
 
@@ -540,7 +534,7 @@ export class CommercialParticipant {
 
   /** §C/§I — the WRITE carries the authority, whichever route reached it. */
   private assertAttributeAuthority(actor: AttributionActor): void {
-    if (!(ROLE_POLICY['commercial.attribute'] as readonly string[]).includes(actor.role)) {
+    if (!(ROLE_POLICY['commercial.attribute'] as readonly string[]).includes(actor.actorRole)) {
       throw new ForbiddenException(
         'Attributing a vendor commitment to a cost head requires `commercial.attribute` — issuing a purchase order does not confer it',
       );

@@ -679,7 +679,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ).toBe(true);
     }
     expect(
-      /evaluateDeferred\(tx, projectId, identity, touched\)/u.test(body),
+      /evaluateDeferred\(tx, projectId, actor, touched\)/u.test(body),
       `${file}#${method} never settles the deferred evaluation — the amend's budget effect would be dropped entirely`,
     ).toBe(true);
   });
