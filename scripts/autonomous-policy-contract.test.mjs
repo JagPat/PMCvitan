@@ -22,6 +22,19 @@ test('gate, CI planner and scope consumers use the same canonical policy definit
   assert.equal(lineage.LINEAGE_BASE_REF, policy.LINEAGE_BASE_REF);
 });
 
+test('the controller and the finding-head count share one reply-only review predicate (#638)', async () => {
+  const policy = await import('./review-policy.mjs');
+  const stateSource = await readFile(new URL('./autonomous-review-state.mjs', import.meta.url), 'utf8');
+  const efficiencySource = await readFile(new URL('./review-efficiency.mjs', import.meta.url), 'utf8');
+  assert.equal(typeof policy.isCodexReplyOnlyReview, 'function');
+  // Both readers import it from the canonical module rather than restating the rule.
+  for (const source of [stateSource, efficiencySource]) {
+    assert.match(source, /isCodexReplyOnlyReview,?[\s\S]*?from '\.\/review-policy\.mjs'/u);
+    assert.match(source, /isCodexReplyOnlyReview\(review, comments\)/u);
+    assert.doesNotMatch(source, /function isCodexReplyOnlyReview|function isReplyOnlyReview/u);
+  }
+});
+
 test('owner admission and routing share the canonical supported and awakenable owners', async () => {
   const policy = await import('./review-policy.mjs');
   assert.strictEqual(owner.CORRECTION_OWNERS, policy.CORRECTION_OWNERS);

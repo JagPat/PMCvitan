@@ -91,6 +91,36 @@ export const CORRECTION_LEASE_GRACE_MS = Number(
 export const LINEAGE_BASE_REF = 'main';
 export const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
+
+/**
+ * Is this Codex review nothing but replies in threads opened on an EARLIER head than its own?
+ *
+ * GitHub files every inline reply as a review stamped with the head at the time of the reply. So when a
+ * human comment mentions Codex in an old finding's thread, the connector's answer (an account-setup
+ * prompt, on #638) arrives as a Codex review of the CURRENT head. Read as a finding, it holds a head no
+ * one reviewed and counts that head as finding-bearing. A review is exempt only when all of these are
+ * proven:
+ * - its body is blank (every real Codex review carries its "Codex Review" summary);
+ * - it has an id and owns at least one comment;
+ * - every one of its comments is a Codex reply (`in_reply_to_id`) in a thread first posted against
+ *   another head than the review's own.
+ * A review with no comments, or with any comment that opens a thread or sits in a thread of its own
+ * head, is not exempt. `comments` must be the complete, paginated review-comment list.
+ */
+export function isCodexReplyOnlyReview(review, comments) {
+  if (review?.user?.login !== CODEX_LOGIN) return false;
+  const body = review?.body;
+  if (body !== undefined && body !== null && (typeof body !== 'string' || body.trim() !== '')) return false;
+  const head = review?.commit_id;
+  if (!Number.isInteger(review?.id) || typeof head !== 'string' || head.length === 0) return false;
+  const own = (comments ?? []).filter(
+    (comment) => comment?.user?.login === CODEX_LOGIN && comment.pull_request_review_id === review.id,
+  );
+  return own.length > 0 && own.every((comment) => {
+    const threadHead = comment.original_commit_id ?? comment.commit_id;
+    return comment.in_reply_to_id != null && typeof threadHead === 'string' && threadHead !== head;
+  });
+}
 export const REQUIRED_CHECKS = [...GATE_CHECKS, ...PRODUCT_CHECKS];
 export const STATUS_CONTEXT = 'codex-current-head';
 export const CLAUDE_SHADOW_CONTEXT = 'claude-independent-review';

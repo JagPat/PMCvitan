@@ -185,6 +185,70 @@ test('a current-head Codex review is conservatively blocking without a clean rea
   });
 });
 
+test('a Codex review that only replies in an older head\'s thread is not a current-head review (#638)', () => {
+  // Observed on #638: a human reply in an old finding's thread mentioned Codex, and the connector's
+  // account-setup answer was filed as a blank-bodied Codex review stamped with the new head. The
+  // conservative rule read it as a finding and held a head no one had reviewed.
+  const reply = {
+    id: 9001,
+    user: { login: CODEX_LOGIN },
+    pull_request_review_id: 77,
+    in_reply_to_id: 9000,
+    original_commit_id: OLD_HEAD,
+    commit_id: HEAD,
+    path: 'docs/STATUS.md',
+    body: 'To use Codex here, create a Codex account and connect to github.',
+  };
+  const replyOnly = { id: 77, user: { login: CODEX_LOGIN }, commit_id: HEAD, state: 'COMMENTED', body: '' };
+  assert.equal(classifyCodexState(input({ reviews: [replyOnly], comments: [reply] })).state, 'pending');
+  // The same with an absent body, as some readers return it.
+  const { body: _omitted, ...bodiless } = replyOnly;
+  assert.equal(classifyCodexState(input({ reviews: [bodiless], comments: [reply] })).state, 'pending');
+  // ...and a fresh clean reaction on this head still clears it.
+  assert.equal(classifyCodexState(input({
+    reviews: [replyOnly],
+    comments: [reply],
+    reactions: [{ user: { login: CODEX_LOGIN }, content: '+1', created_at: '2026-07-27T10:01:00Z' }],
+  })).state, 'clear');
+});
+
+test('the reply-only exemption is narrow: anything short of a proven reply-only review still blocks', () => {
+  const reply = {
+    id: 9001,
+    user: { login: CODEX_LOGIN },
+    pull_request_review_id: 77,
+    in_reply_to_id: 9000,
+    original_commit_id: OLD_HEAD,
+    commit_id: HEAD,
+    path: 'docs/STATUS.md',
+    body: 'reply',
+  };
+  const review = { id: 77, user: { login: CODEX_LOGIN }, commit_id: HEAD, state: 'COMMENTED', body: '' };
+  const blocks = (reviews, comments) => {
+    const result = classifyCodexState(input({ reviews, comments }));
+    assert.equal(result.state, 'changes_required');
+    return result;
+  };
+  // A real review carries its summary body, whatever its comments are.
+  assert.equal(blocks([{ ...review, body: '### 💡 Codex Review\n\nsuggestions' }], [reply]).detail,
+    'Codex submitted a current-head review');
+  // A blank review that owns no comment proves nothing.
+  blocks([review], []);
+  // A comment of another review, or another author's reply, is not this review's.
+  blocks([review], [{ ...reply, pull_request_review_id: 78 }]);
+  blocks([review], [{ ...reply, user: { login: 'JagPat' } }]);
+  // A comment that OPENS a thread (no in_reply_to_id), even one carried from an older head.
+  const { in_reply_to_id: _root, ...opener } = reply;
+  blocks([review], [opener]);
+  // A reply in a thread on THIS head, which is a current-head comment in its own right.
+  assert.equal(blocks([review], [{ ...reply, original_commit_id: HEAD }]).detail, '1 current-head Codex finding');
+  // One reply-only comment beside one thread opener in the same review.
+  blocks([review], [reply, { ...opener, id: 9002, body: 'new thread' }]);
+  // A review without an id cannot be matched to its comments.
+  const { id: _id, ...unidentified } = review;
+  blocks([unidentified], [reply]);
+});
+
 test('ignores Codex findings attached to an older head', () => {
   const result = classifyCodexState(
     input({

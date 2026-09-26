@@ -8,6 +8,7 @@ import {
   REQUIRED_INVARIANTS,
   STATUS_DOCUMENT,
   CODEX_LOGIN,
+  isCodexReplyOnlyReview,
   isRetryableReviewFailureDescription,
 } from './review-policy.mjs';
 export {
@@ -507,6 +508,9 @@ export function codexFindingHeads(comments, reviews = []) {
   }
   for (const review of reviews ?? []) {
     if (review?.user?.login !== CODEX_LOGIN) continue;
+    // A reply-only review is Codex answering in an older head's thread, not a review of its own head, so
+    // it makes that head no finding-bearing head (#638). Its replies count toward their thread's head above.
+    if (isCodexReplyOnlyReview(review, comments)) continue;
     const head = review.commit_id;
     if (typeof head === 'string' && head.length > 0) heads.add(head);
   }
