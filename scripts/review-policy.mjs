@@ -100,6 +100,8 @@ export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
  * prompt, on #638) arrives as a Codex review of the CURRENT head. Read as a finding, it holds a head no
  * one reviewed and counts that head as finding-bearing. A review is exempt only when all of these are
  * proven:
+ * - its state is `COMMENTED`, the state GitHub gives a reply (#639 Codex finding 4110489910: a blank
+ *   `CHANGES_REQUESTED`, or any other state, is a verdict about the head and keeps blocking);
  * - its body is blank (every real Codex review carries its "Codex Review" summary);
  * - it has an id and owns at least one comment;
  * - every one of its comments is a Codex reply whose thread is PROVEN to belong to another head: its
@@ -112,6 +114,7 @@ export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
  */
 export function isCodexReplyOnlyReview(review, comments) {
   if (review?.user?.login !== CODEX_LOGIN) return false;
+  if (review?.state !== 'COMMENTED') return false;
   const body = review?.body;
   if (body !== undefined && body !== null && (typeof body !== 'string' || body.trim() !== '')) return false;
   const head = review?.commit_id;

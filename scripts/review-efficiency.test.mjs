@@ -738,14 +738,16 @@ test('a reply-only Codex review makes its head no finding-bearing head; a real r
   const finding = { id: 1, user: { login: CODEX }, pull_request_review_id: 10, original_commit_id: OLD, commit_id: OLD };
   const reply = { id: 2, user: { login: CODEX }, pull_request_review_id: 11, in_reply_to_id: 1, original_commit_id: OLD, commit_id: NEW };
   const reviews = [
-    { id: 10, user: { login: CODEX }, commit_id: OLD, body: '### 💡 Codex Review' },
-    { id: 11, user: { login: CODEX }, commit_id: NEW, body: '' },
+    { id: 10, user: { login: CODEX }, commit_id: OLD, state: 'COMMENTED', body: '### 💡 Codex Review' },
+    { id: 11, user: { login: CODEX }, commit_id: NEW, state: 'COMMENTED', body: '' },
   ];
   assert.deepEqual(codexFindingHeads([finding, reply], reviews), [OLD]);
   // A blank review of NEW that owns no comment, or that opens a thread, still counts NEW.
   assert.deepEqual(codexFindingHeads([finding], reviews), [OLD, NEW]);
   const { in_reply_to_id: _root, ...opener } = reply;
   assert.deepEqual(codexFindingHeads([finding, { ...opener, original_commit_id: OLD }], reviews), [OLD, NEW]);
+  // A blank CHANGES_REQUESTED review is a verdict on NEW, not a reply, so NEW counts.
+  assert.deepEqual(codexFindingHeads([finding, reply], [reviews[0], { ...reviews[1], state: 'CHANGES_REQUESTED' }]), [OLD, NEW]);
   // An orphaned reply (its parent missing from the complete list) proves no thread, so NEW counts.
   assert.deepEqual(codexFindingHeads([reply], reviews), [OLD, NEW]);
   // A summarized review of NEW counts NEW whatever its comments are.

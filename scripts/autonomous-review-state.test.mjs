@@ -262,6 +262,12 @@ test('the reply-only exemption is narrow: anything short of a proven reply-only 
   assert.equal(blocks([review], [root, { ...reply, original_commit_id: HEAD }]).detail, '1 current-head Codex finding');
   // One reply-only comment beside one thread opener in the same review.
   blocks([review], [root, reply, { ...opener, id: 9002, body: 'new thread' }]);
+  // Only a COMMENTED review is a reply (#639 Codex finding 4110489910): a blank change request is a verdict.
+  blocks([{ ...review, state: 'CHANGES_REQUESTED' }], [root, reply]);
+  blocks([{ ...review, state: 'APPROVED' }], [root, reply]);
+  blocks([{ ...review, state: 'commented' }], [root, reply]);
+  const { state: _state, ...stateless } = review;
+  blocks([stateless], [root, reply]);
   // A review without an id cannot be matched to its comments.
   const { id: _id, ...unidentified } = review;
   blocks([unidentified], [root, reply]);
