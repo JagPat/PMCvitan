@@ -183,6 +183,16 @@ and no new ones. The first is fixed here; the rest are recorded as each opens:
   writers. A kind with no arm is omitted, never served from its cache. A kinded pending demand keeps
   the kind-less audience (pmc and the decider), so a consultee who may see the decision gets no
   demand.
+- **A4d, the reader enumeration and the status tripwire (server and shared arms):**
+  `awaiting_countersign` joins the shared `DecisionStatus` (with a runtime `DECISION_STATUSES` held
+  equal to the type and, by the tripwire, to the database enum); the shared chip, label and rail
+  maps and `deriveDecisionReading` answer it explicitly (`wait`, "Approved by <decider noun> —
+  awaiting the architect's countersign"); the API's lagging `DecisionStatus` copy and the snapshot's
+  string union point at the shared type. The tripwire walks every value against every registered
+  map and predicate and scans shared, API and web for status-keyed literals, each of which must be
+  registered. The web's `locationTree` counter answers (it had to, to compile); its label and rank,
+  and the other web readers §A.2 names, are registered as OWED BY 4d-ii-b, the client unit.
+  **With A4d, A4 is complete.**
 
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its

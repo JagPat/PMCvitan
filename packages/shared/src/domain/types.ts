@@ -106,8 +106,19 @@ export type ScreenKey =
 export type Lang = 'en' | 'hi' | 'gu';
 
 /** `withdrawn` = a published, never-approved decision the PMC took back (Phase 6 task 4a)
- *  — TERMINAL, pmc-only visible, and every reader keyed by this type must answer for it. */
-export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded';
+ *  — TERMINAL, pmc-only visible, and every reader keyed by this type must answer for it.
+ *  `awaiting_countersign` = approved by its decider and waiting for the architect's countersign
+ *  (Phase 6 task 4d; unreachable until the chain is activated). Every status-keyed reader answers
+ *  for every value: the status tripwire (`apps/api/src/domain/decision-status-tripwire.test.ts`)
+ *  walks {@link DECISION_STATUSES} against each registered map and predicate. */
+export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded' | 'awaiting_countersign';
+
+/** Every {@link DecisionStatus} value, at runtime. The `satisfies` and the exhaustiveness check
+ *  below keep it equal to the type: a value added to one and not the other fails to compile. */
+export const DECISION_STATUSES = ['pending', 'approved', 'change', 'withdrawn', 'recorded', 'awaiting_countersign'] as const satisfies readonly DecisionStatus[];
+type _AllDecisionStatusesListed = Exclude<DecisionStatus, (typeof DECISION_STATUSES)[number]> extends never ? true : never;
+const _allDecisionStatusesListed: _AllDecisionStatusesListed = true;
+void _allDecisionStatusesListed;
 
 /** Phase 6 task 4b — WHO decides a decision. `none` is the record-only issue (born terminal
  *  `recorded`, approvable by nobody); `member` names an active project membership. */

@@ -98,7 +98,7 @@ export interface DecisionGroup {
   key: string;
   label: string;
   rows: DecisionRow[];
-  counts: { total: number; pending: number; approved: number; change: number; withdrawn: number; recorded: number };
+  counts: { total: number; pending: number; approved: number; change: number; withdrawn: number; recorded: number; awaiting_countersign: number };
 }
 
 const STATUS_LABEL: Record<string, string> = { pending: 'Pending', approved: 'Approved', change: 'Change requested', withdrawn: 'Withdrawn', recorded: 'Recorded' };
@@ -170,7 +170,9 @@ export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode
   }
 
   const groups: DecisionGroup[] = [...map.entries()].map(([key, rows]) => {
-    const counts = { total: rows.length, pending: 0, approved: 0, change: 0, withdrawn: 0, recorded: 0 };
+    // (`awaiting_countersign`, Phase 6 task 4d, is counted so the counter answers for every status; its
+    // label and its place in the status order are the client unit's, 4d-ii-b)
+    const counts = { total: rows.length, pending: 0, approved: 0, change: 0, withdrawn: 0, recorded: 0, awaiting_countersign: 0 };
     for (const r of rows) counts[r.decision.status] += 1;
     // rows sorted by their finer location, then id
     rows.sort((a, b) => a.subLabel.localeCompare(b.subLabel) || a.decision.id.localeCompare(b.decision.id));

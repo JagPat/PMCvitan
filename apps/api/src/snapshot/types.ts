@@ -1,6 +1,6 @@
 /** API response shapes — aligned with the frontend domain model so the client
  *  hydrates its store directly from a snapshot. */
-import type { Drawing, Checklist, Review, PlacedInspection } from '@vitan/shared';
+import type { Drawing, Checklist, Review, PlacedInspection, DecisionStatus } from '@vitan/shared';
 
 /** Phase 2 Task 9 — the project-shell summary (identity + projection counts), the light payload the
  *  app loads first. `enabledModules` is added by the controller from the module registry. */
@@ -48,14 +48,10 @@ export interface DecisionDto {
   room: string;
   /** the location-tree node this decision attaches to (null/absent = ungrouped, legacy `room`) */
   nodeId?: string;
-  // Phase 6 task 4d unit 4d-i — `awaiting_countersign` is added here, with the enum value, because
-  // this union is a DECLARATIVE MIRROR of the Prisma `DecisionStatus` and `serializeDecision`
-  // assigns the generated type straight into it: without the value the migration unit does not
-  // compile. No row can carry it until 4d-iii — `Decision_t4d_awaiting_reserved` refuses the
-  // write — so this widens what the type admits and nothing about what the API can return.
-  // The READERS keyed by this value (the shared type, the web maps, the exhaustive switches) are
-  // 4d-ii's, per §A.2's reader enumeration.
-  status: 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded' | 'awaiting_countersign';
+  // Phase 6 task 4d — the SHARED `DecisionStatus` (4d-ii-a / A4d, §A.2's reader enumeration), which
+  // equals the Prisma enum `serializeDecision` assigns into it (pinned by the status tripwire). No row
+  // can carry `awaiting_countersign` until 4d-iii — `Decision_t4d_awaiting_reserved` refuses the write.
+  status: DecisionStatus;
   ageDays?: number;
   /** absent for a RECORD (`deciderKind: 'none'`) — the zero-option form has no option swatch */
   photoSwatch?: string;

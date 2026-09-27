@@ -34,7 +34,10 @@ export type {
 } from '@vitan/shared';
 
 export type GateState = 'ok' | 'wait' | 'fail' | 'na';
-export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn';
+// Phase 6 task 4d-ii-a / A4d (§A.2's reader enumeration) — the SHARED type, not a lagging copy: this
+// union once lacked `recorded`, so a status added later was never answered for here.
+export type { DecisionStatus } from '@vitan/shared';
+import type { DecisionStatus } from '@vitan/shared';
 
 /** The Decision gate is derived live from the linked decision's status (legacy four-gate helper). */
 export function deriveDecisionGate(decisionStatus: DecisionStatus | null): GateState {

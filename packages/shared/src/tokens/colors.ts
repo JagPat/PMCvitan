@@ -39,6 +39,9 @@ export const decisionChip = {
   // a record-only issue (Phase 6 task 4b) — filed, terminal, nothing approvable: the same
   // muted ink family as withdrawn, distinguished by its label
   recorded: { bg: '#EAE5DA', color: '#6B665C', border: 'rgba(35,33,28,0.15)' },
+  // approved and waiting for the architect's countersign (Phase 6 task 4d) — ink-blue, like a
+  // reopened decision or a completion claim: it is with a reviewer, not with its decider
+  awaiting_countersign: { bg: '#E6ECF3', color: '#31567F', border: '#C4D3E4' },
 } as const;
 
 export const decisionChipLabel = {
@@ -47,6 +50,7 @@ export const decisionChipLabel = {
   change: 'CHANGE REQUESTED',
   withdrawn: 'WITHDRAWN',
   recorded: 'RECORDED',
+  awaiting_countersign: 'AWAITING COUNTERSIGN',
 } as const;
 
 export const decisionRail = {
@@ -55,6 +59,7 @@ export const decisionRail = {
   change: '#31567F',
   withdrawn: '#6B665C',
   recorded: '#6B665C',
+  awaiting_countersign: '#31567F',
 } as const;
 
 /** Readiness-gate colours. `na` renders as a hollow inset ring (transparent fill). */
