@@ -165,7 +165,7 @@ describe('4d-ii-a / A3b — the member commands write their transition fact firs
     expect(await t.prisma.user.count({ where: { email: email('by-stale') } })).toBe(0);
   });
 
-  it('a DISCIPLINE-only change writes no fact and no member receipt, and still emits its own event', async () => {
+  it('a DISCIPLINE-only change writes no fact and no MEMBER receipt (it is receipted as members.updateDiscipline), and still emits its own event', async () => {
     const r = await add(pmcToken, { name: 'A3b lumen', role: 'consultant', discipline: 'lighting', email: email('lumen') });
     expect(r.status, r.text).toBe(201);
     const { userId, membershipId } = r.body as { userId: string; membershipId: string };
@@ -175,7 +175,36 @@ describe('4d-ii-a / A3b — the member commands write their transition fact firs
     expect(moved.body).toMatchObject({ role: 'consultant', discipline: 'acoustics' });
     expect(await factsOf(membershipId)).toHaveLength(1); // the add only
     expect(await t.prisma.commandExecution.count({ where: { projectId: f.projectA.id, commandType: 'members.updateRole' } })).toBe(receiptsBefore);
+    expect(await t.prisma.commandExecution.count({ where: { projectId: f.projectA.id, commandType: 'members.updateDiscipline', resultRef: membershipId } })).toBe(1);
     expect(await t.prisma.domainEvent.count({ where: { projectId: f.projectA.id, entityId: userId, eventType: 'membership.discipline_changed' } })).toBe(1);
+  });
+
+  // #647's review, findings 4115635418 and 4115635421 — a no-op must still CONSUME the caller's key,
+  // or a retry after someone else changed the membership executes instead of replaying the no-op.
+  it('a KEYED no-op PATCH replays after another manager re-roles the member — the retry does not undo their change', async () => {
+    const { userId, membershipId } = await addNew('noop-patch', 'engineer');
+    const key = randomUUID();
+    const noop = await patch(pmcToken, userId, { role: 'engineer' }, key);
+    expect(noop.status, noop.text).toBe(200);
+    expect(await receiptOf((await t.prisma.commandExecution.findFirstOrThrow({ where: { idempotencyKey: key } })).id))
+      .toMatchObject({ commandType: 'members.updateDiscipline', status: 'succeeded', resultRef: membershipId });
+    expect((await patch(ownerToken, userId, { role: 'contractor' })).status).toBe(200);
+    const retry = await patch(pmcToken, userId, { role: 'engineer' }, key);
+    expect(retry.status, retry.text).toBe(200);
+    expect(await t.prisma.membership.findUniqueOrThrow({ where: { id: membershipId } })).toMatchObject({ role: 'contractor' });
+    expect(await t.prisma.commandExecution.count({ where: { idempotencyKey: key } })).toBe(1);
+  });
+
+  it('a KEYED DELETE of an already-removed member replays after they are re-added — the retry does not remove them again', async () => {
+    const { userId, membershipId } = await addNew('noop-delete', 'engineer');
+    expect((await del(pmcToken, userId)).status).toBe(200);
+    const key = randomUUID();
+    expect((await del(pmcToken, userId, key)).status).toBe(200);
+    expect((await add(pmcToken, { name: 'A3b noop-delete', role: 'engineer', email: email('noop-delete') })).status).toBe(201);
+    expect((await del(pmcToken, userId, key)).status).toBe(200);
+    expect(await t.prisma.membership.findUniqueOrThrow({ where: { id: membershipId } })).toMatchObject({ status: 'active' });
+    expect(await t.prisma.commandExecution.findMany({ where: { idempotencyKey: key } }))
+      .toMatchObject([{ commandType: 'members.remove', status: 'succeeded', resultRef: membershipId }]);
   });
 
   it('the shapes 4d-i refuses for a member receipt are refused by the service first, recording nothing', async () => {

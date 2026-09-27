@@ -25,7 +25,7 @@ function make(orgRole: string | null = null, opts: { holds?: boolean } = {}) {
   const users: U[] = [];
   const memberships: M[] = [];
   const transitions: T[] = [];
-  const receipts: Array<{ id: string; commandType: string; status: string; resultRef?: string }> = [];
+  const receipts: Array<{ id: string; commandType: string; status: string; resultRef?: string; idempotencyKey?: string; requestHash?: string; actorId?: string }> = [];
   let seq = 0;
   const withUser = (m: M, include?: { user?: boolean }) => (include?.user ? { ...m, user: users.find((u) => u.id === m.userId) } : m);
   const byWhere = (where: { id?: string; projectId_userId?: { projectId: string; userId: string } }) =>
@@ -40,8 +40,13 @@ function make(orgRole: string | null = null, opts: { holds?: boolean } = {}) {
     $queryRaw: envelopeReads({ holds: opts.holds ?? true }),
     // 4d-ii-a / A3b — the command ledger the three member commands reserve a receipt in.
     commandExecution: {
-      findFirst: vi.fn(async () => null),
-      create: vi.fn(async ({ data }: { data: { commandType: string } }) => { const r = { id: `cmd${receipts.length + 1}`, commandType: data.commandType, status: 'reserved' }; receipts.push(r); return { id: r.id }; }),
+      findFirst: vi.fn(async ({ where }: { where: { commandType: string; idempotencyKey: string; actorId: string; status?: string } }) =>
+        receipts.find((r) => r.commandType === where.commandType && r.idempotencyKey === where.idempotencyKey && r.actorId === where.actorId
+          && r.status === 'succeeded' && (!where.status || r.status === where.status)) ?? null),
+      create: vi.fn(async ({ data }: { data: { commandType: string; idempotencyKey: string; requestHash: string; actorId: string } }) => {
+        const r = { id: `cmd${receipts.length + 1}`, commandType: data.commandType, status: 'reserved', idempotencyKey: data.idempotencyKey, requestHash: data.requestHash, actorId: data.actorId };
+        receipts.push(r); return { id: r.id };
+      }),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: { status: string; resultRef: string } }) => { const r = receipts.find((x) => x.id === where.id)!; Object.assign(r, data); return r; }),
     },
     membershipTransition: {
@@ -279,19 +284,24 @@ describe('MembersService — 4d-ii-a / A3b member commands', () => {
     await expect(svc.updateRole('p1', pmc, uid, { role: 'engineer' })).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('a DISCIPLINE-only change writes no fact and reserves no member receipt; asking for the current state writes nothing', async () => {
+  it('a DISCIPLINE-only change writes no fact and takes no member receipt, but IS receipted (members.updateDiscipline), no-op included', async () => {
     const { svc, memberships, transitions, receipts } = make();
     await svc.add('p1', pmc, { name: 'Lumen', role: 'consultant', discipline: 'lighting', email: 'lumen@vitan.in' });
     const uid = memberships[0].userId;
-    const before = { facts: transitions.length, receipts: receipts.length };
+    const facts = transitions.length;
     await expect(svc.updateRole('p1', pmc, uid, { role: 'consultant', discipline: 'acoustics' })).resolves.toMatchObject({ discipline: 'acoustics' });
     expect(memberships[0].discipline).toBe('acoustics');
     await svc.updateRole('p1', pmc, uid, { role: 'consultant', discipline: 'acoustics' });
-    expect({ facts: transitions.length, receipts: receipts.length }).toEqual(before);
+    expect(transitions).toHaveLength(facts);
+    // #647 review 4115635418 — both calls consumed a key, under the command 4d-i's seal does not judge
+    expect(receipts.slice(-2)).toMatchObject([
+      { commandType: 'members.updateDiscipline', status: 'succeeded', resultRef: memberships[0].id },
+      { commandType: 'members.updateDiscipline', status: 'succeeded', resultRef: memberships[0].id },
+    ]);
   });
 
   it('a REMOVAL writes (role, active) → (role, removed); removing someone already removed records nothing', async () => {
-    const { svc, memberships, transitions } = make();
+    const { svc, memberships, transitions, receipts } = make();
     await svc.add('p1', pmc, { name: 'Gone', role: 'engineer', email: 'gone@vitan.in' });
     const uid = memberships[0].userId;
     await svc.remove('p1', pmc, uid);
@@ -299,6 +309,8 @@ describe('MembersService — 4d-ii-a / A3b member commands', () => {
     const facts = transitions.length;
     await expect(svc.remove('p1', pmc, uid)).resolves.toEqual({ ok: true });
     expect(transitions).toHaveLength(facts);
+    // #647 review 4115635421 — the no-op still consumed its key, under members.remove
+    expect(receipts.at(-1)).toMatchObject({ commandType: 'members.remove', status: 'succeeded', resultRef: memberships[0].id });
   });
 
   it('an actor whose token role no longer stands has no pair to freeze — the command is refused and nothing is written', async () => {
@@ -306,5 +318,25 @@ describe('MembersService — 4d-ii-a / A3b member commands', () => {
     await expect(svc.add('p1', pmc, { name: 'Stale', role: 'engineer', email: 'stale@vitan.in' })).rejects.toBeInstanceOf(ForbiddenException);
     expect(transitions).toHaveLength(0);
     expect(memberships).toHaveLength(0);
+  });
+
+  it('a same-key PATCH IN FLIGHT on the other branch is found under the readiness lock, and the retry replays instead of re-roling (#647 review 4115635418)', async () => {
+    const { svc, prisma, memberships, receipts, transitions } = make();
+    await svc.add('p1', pmc, { name: 'Race', role: 'engineer', email: 'race@vitan.in' });
+    const uid = memberships[0].userId;
+    // The first request (a keyed no-op, receipted under members.updateDiscipline) is still in flight
+    // when the retry reads the ledger, and commits while the retry waits for the readiness lock.
+    // Meanwhile another manager moved the member, so the retry's pre-read sends it down the ROLE branch.
+    memberships[0].role = 'contractor';
+    const lock = prisma.$executeRaw.getMockImplementation();
+    prisma.$executeRaw.mockImplementationOnce(async (...args: unknown[]) => {
+      const { hashRequest } = await import('../platform/commands');
+      receipts.push({ id: 'cmd-first', commandType: 'members.updateDiscipline', status: 'succeeded', idempotencyKey: 'K', requestHash: hashRequest({ userId: uid, role: 'engineer', discipline: null }), actorId: 'pmc1', resultRef: memberships[0].id });
+      return lock ? lock(...(args as [])) : 1;
+    });
+    const facts = transitions.length;
+    await expect(svc.updateRole('p1', pmc, uid, { role: 'engineer' }, 'K')).resolves.toMatchObject({ role: 'contractor' });
+    expect(memberships[0].role).toBe('contractor');
+    expect(transitions).toHaveLength(facts);
   });
 });

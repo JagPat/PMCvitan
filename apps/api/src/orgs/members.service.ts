@@ -5,7 +5,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import type { AddMemberInput, UpdateMemberInput } from '../contracts';
-import { resolveActor, type EventActor } from '../common/actor';
+import { resolveActor, type Actor, type EventActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import { resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
@@ -58,6 +58,9 @@ function rethrowTransitionAuthority(e: unknown): never {
 }
 
 type MembershipWithUser = Prisma.MembershipGetPayload<{ include: { user: true } }>;
+
+/** The two ledger commands one member PATCH can land in; a keyed retry is matched against both. */
+const PATCH_COMMAND_TYPES = ['members.updateRole', 'members.updateDiscipline'] as const;
 
 /** One `MembershipTransition` row, exactly as 4d-i's table spells it. */
 interface TransitionFact {
@@ -220,6 +223,28 @@ export class MembersService {
   }
 
   /**
+   * The other branch's receipt for THIS PATCH, read under the readiness lock. The pre-transaction
+   * replay check cannot see a same-key request still in flight on the other branch; both branches
+   * take the readiness lock first, so by the time this runs that request has committed or rolled
+   * back, and a committed one is the act this call repeats. Only a CLIENT key can be shared —
+   * a synthesized one is unique per call.
+   */
+  private async priorPatchReceipt(
+    tx: Prisma.TransactionClient, projectId: string, actorId: string, otherType: string,
+    idempotencyKey: string | undefined, requestHash: string,
+  ): Promise<boolean> {
+    const key = idempotencyKey?.trim();
+    if (!key) return false;
+    const prior = await tx.commandExecution.findFirst({
+      where: { scopeKind: 'project', projectId, actorId, commandType: otherType, idempotencyKey: key, status: 'succeeded' },
+      select: { requestHash: true },
+    });
+    if (!prior) return false;
+    if (prior.requestHash !== requestHash) throw new ConflictException('This idempotency key was already used for a different request.');
+    return true;
+  }
+
+  /**
    * `members.add` — a ledger command (4d-ii-a / A3b). Its receipt covers the IDENTITY too: the
    * account lookup and the provisioning create run inside `executeCommand.run`, so two requests
    * with one `Idempotency-Key` for a new email replay rather than race the user uniqueness key,
@@ -352,13 +377,21 @@ export class MembersService {
     const actor = await resolveActor(this.prisma, requester);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({ userId, role: input.role, discipline });
-    if (await peekReplay(this.prisma, scope, actor.actorId, 'members.updateRole', idempotencyKey, requestHash)) {
-      return this.memberDto(projectId, userId);
+    // ONE PATCH IS ONE ACT, whichever ledger command it lands in (#647 review, finding 4115635418).
+    // A request that keeps the role is receipted as `members.updateDiscipline` and one that moves it
+    // as `members.updateRole`, and a receipt is looked up per command type. So a keyed retry is
+    // matched against BOTH before the current row decides the branch: otherwise a no-op answered
+    // under one type, followed by another manager's re-role, would send the retry down the other
+    // branch and perform a change instead of replaying the act it repeats.
+    for (const type of PATCH_COMMAND_TYPES) {
+      if (await peekReplay(this.prisma, scope, actor.actorId, type, idempotencyKey, requestHash)) {
+        return this.memberDto(projectId, userId);
+      }
     }
     const existing = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId } } });
     if (!existing) throw new NotFoundException('Member not found on this project');
     if (existing.role === input.role) {
-      return this.toDto(await this.updateDiscipline(projectId, userId, existing.role, discipline, actor));
+      return this.updateDiscipline(projectId, userId, existing.role, discipline, actor, scope, requestHash, idempotencyKey);
     }
 
     const outcome = await executeCommand<MembershipWithUser>(this.prisma, {
@@ -372,8 +405,11 @@ export class MembersService {
         // Phase 6 task 4b (§A.1/§B.1) — a role change is a standing write behind the decider
         // gate: serialized on the readiness key so the seal's try-acquire sees one writer.
         await lockProjectReadiness(tx, projectId);
-        const cur = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId } } });
+        const cur = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { user: true } });
         if (!cur) throw new NotFoundException('Member not found on this project');
+        if (await this.priorPatchReceipt(tx, projectId, actor.actorId, 'members.updateDiscipline', idempotencyKey, requestHash)) {
+          return { resultRef: cur.id, value: cur, events: [] };
+        }
         if (cur.status !== 'active') {
           throw new ConflictException('Only an active member\'s role can be changed — add them to the team again instead');
         }
@@ -403,27 +439,48 @@ export class MembersService {
   }
 
   /**
-   * The role stays, only the discipline moves (or nothing does). Not a standing change, so no
-   * fact and no member receipt; the write is compare-and-set on the role and status the caller
-   * saw, so a concurrent re-role or removal makes it a 409 rather than a silent overwrite.
+   * `members.updateDiscipline` — the role stays, only the discipline moves (or nothing does). Not a
+   * standing change, so it writes no fact; and not under a member receipt, because 4d-i's
+   * fact-first seal demands a transition for every membership write under `members.add`,
+   * `members.updateRole` or `members.remove`, and no transition describes a move that keeps role and
+   * status. It is still a LEDGER command (#647 review, finding 4115635418): the caller's key is
+   * consumed here even when nothing changes, so a retry replays this act. The write is
+   * compare-and-set on the role the caller saw, so a concurrent re-role or removal is a 409.
    */
-  private async updateDiscipline(projectId: string, userId: string, role: string, discipline: string | null, actor: EventActor): Promise<MembershipWithUser> {
-    return this.prisma.$transaction(async (tx) => {
-      await lockProjectReadiness(tx, projectId);
-      const cur = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { user: true } });
-      if (!cur) throw new NotFoundException('Member not found on this project');
-      if (cur.role !== role) throw new ConflictException('This member\'s role changed while updating — reload and retry');
-      if ((cur.discipline ?? null) === discipline) return cur;
-      const m = await tx.membership.update({ where: { id: cur.id }, data: { discipline }, include: { user: true } });
-      await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: discipline ? { discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} });
-      return m;
+  private async updateDiscipline(
+    projectId: string, userId: string, role: string, discipline: string | null, actor: Actor,
+    scope: CommandScope, requestHash: string, idempotencyKey?: string,
+  ): Promise<MemberDto> {
+    const outcome = await executeCommand<MembershipWithUser>(this.prisma, {
+      scope,
+      actor,
+      commandType: 'members.updateDiscipline',
+      idempotencyKey,
+      requestHash,
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        const cur = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { user: true } });
+        if (!cur) throw new NotFoundException('Member not found on this project');
+        if (await this.priorPatchReceipt(tx, projectId, actor.actorId, 'members.updateRole', idempotencyKey, requestHash)) {
+          return { resultRef: cur.id, value: cur, events: [] };
+        }
+        if (cur.role !== role) throw new ConflictException('This member\'s role changed while updating — reload and retry');
+        if ((cur.discipline ?? null) === discipline) return { resultRef: cur.id, value: cur, events: [] };
+        const m = await tx.membership.update({ where: { id: cur.id }, data: { discipline }, include: { user: true } });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: discipline ? { discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} });
+        return { resultRef: m.id, value: m, events: [ev] };
+      },
     });
+    return outcome.value ? this.toDto(outcome.value) : this.memberDto(projectId, userId);
   }
 
   /**
    * `members.remove` — a ledger command (4d-ii-a / A3b). A removal ends a standing that EXISTED
    * and lands `removed`, the shape 4d-i's binding admits for its receipt; removing someone already
-   * removed records nothing and succeeds, as the repeated click of a slow tab expects.
+   * removed records nothing and succeeds, as the repeated click of a slow tab expects — under a
+   * receipt all the same, which is admissible because 4d-i's fact-first seal judges membership
+   * WRITES and this one makes none.
    */
   async remove(projectId: string, requester: AuthUser, userId: string, idempotencyKey?: string): Promise<{ ok: boolean }> {
     await this.assertCanManage(projectId, requester);
@@ -434,7 +491,9 @@ export class MembersService {
     if (await peekReplay(this.prisma, scope, actor.actorId, 'members.remove', idempotencyKey, requestHash)) return { ok: true };
     const existing = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId } } });
     if (!existing) throw new NotFoundException('Member not found on this project');
-    if (existing.status === 'removed') return { ok: true };
+    // An already-removed member still goes through the command (#647 review, finding 4115635421):
+    // its receipt consumes the caller's key with nothing recorded, so a retry after the member was
+    // re-added replays this no-op instead of removing them again.
 
     // removal changes the active set behind the drawing gate — a readiness write
     // (gate finding 1), serialized against start()

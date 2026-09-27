@@ -44,6 +44,11 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
     themselves records `pmc` on the fact (the pre-state) and whatever standing they hold on the event.
   - No migration (`migration-scope: n/a`). The architect crossing event stays with A7; the
     reservation-door 409s with A5.
+  - **Review findings 4115635418 and 4115635421, fixed forward.** A no-op must still consume the
+    caller's key. A PATCH that keeps the role is now the ledger command `members.updateDiscipline`
+    (not one the fact-first seal judges); a DELETE of an already-removed member runs through
+    `members.remove` with nothing recorded. One PATCH is one act: a keyed retry is matched against
+    both PATCH command types before branching, and again under the readiness lock inside each.
 - **The writers witness merged as #646** (`61acff7`): migration `20271226000000_phase6_t4d_ii_release_lease_writer`
   installs `platform_t4d_ii_writers_installed()` and drops the lease door; `release-lease.service.ts`
   writes and renews each serving process's lease and fences a process whose lease would lapse. The
