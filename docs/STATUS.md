@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-writers-witness
 reviewed_merge: e42950a
-open_pr: none
+open_pr: 646
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
@@ -27,7 +27,7 @@ updated: 2026-09-27
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, the writers witness (`work_item: phase-6-task-4d-ii-a-writers-witness`, branch
+- **Now, the writers witness, `open_pr: 646` (`work_item: phase-6-task-4d-ii-a-writers-witness`, branch
   `claude/4d-ii-writers-witness`, from `main` at `e42950a`).** The owner's resequencing of
   2026-09-27, recorded in the staging document: taken from A6 and landed before A3b, because A1 and A2
   already write data 4d-i's replay audits read as unvalidated until `phase6_t4d_ii_installed()` holds.
