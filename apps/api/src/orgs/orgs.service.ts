@@ -17,7 +17,8 @@ import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant } from './orgs.participant';
 import { InvitationsService } from './invitations.service';
-import { lockProjectReadiness } from '../common/readiness-lock';
+import { lockOrgStanding, lockProjectReadiness } from '../common/readiness-lock';
+import { assertOrgStandingSnapshotCurrent, holdsOrgStanding, lockOrgStandingWriters } from './org-standing';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import type { AuthUser, Role } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
@@ -185,13 +186,26 @@ export class OrgsService {
   private async guardedOrgStandingWrite<T>(
     orgId: string,
     targetUserId: string,
-    reduces: boolean,
+    nextRole: string | null,
     write: (tx: Prisma.TransactionClient) => Promise<T>,
   ): Promise<T> {
     return this.prisma.$transaction(async (tx) => {
+      // Phase 6 task 4d unit 4d-ii-a / A3c — every roster write takes the org key FIRST and reads
+      // the target's role under it, where every owner/admin writer is serialized: a role read
+      // before the transaction could be stale, and a write it misjudged as a `member` edit would
+      // move owner/admin standing without the key. A write that gives or takes owner/admin
+      // standing (additions and promotions too, not only reductions) then marks the org row and
+      // takes the project keys ascending, enumerated under the org key so no project can appear
+      // mid-write (`org-standing.ts`). A plain `member` edit moves no project's standing.
+      await lockOrgStanding(tx, orgId);
+      const current = await tx.orgMembership.findUnique({
+        where: { orgId_userId: { orgId, userId: targetUserId } },
+        select: { role: true },
+      });
+      if (!holdsOrgStanding(current?.role) && !holdsOrgStanding(nextRole)) return write(tx);
+      const projects = await lockOrgStandingWriters(tx, orgId);
+      const reduces = holdsOrgStanding(current?.role) && !holdsOrgStanding(nextRole);
       if (!reduces) return write(tx);
-      const projects = await tx.project.findMany({ where: { orgId }, select: { id: true }, orderBy: { id: 'asc' } });
-      for (const p of projects) await lockProjectReadiness(tx, p.id);
       // the DB org-membership seal (AFTER-row) judges this write at the statement — its raise
       // on the command path is the command's own refusal, translated to the deliberate 409
       const result = await write(tx).catch((e: unknown) =>
@@ -232,8 +246,15 @@ export class OrgsService {
   /** Create a new org; the creator becomes its owner. */
   async createOrg(userId: string, input: CreateOrgInput): Promise<{ id: string; name: string; slug: string }> {
     const slug = `${slugify(input.name)}-${randomUUID().slice(0, 4)}`;
-    const org = await this.prisma.org.create({ data: { name: input.name, slug } });
-    await this.prisma.orgMembership.create({ data: { orgId: org.id, userId, role: 'owner' } });
+    // 4d-ii-a / A3c — the owner grant is an owner/admin org write, so it takes the org key like
+    // every other one. The org is new and holds no projects, so the key has nothing to wait for;
+    // the org and its first owner are one transaction so no org exists without its owner.
+    const org = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.org.create({ data: { name: input.name, slug } });
+      await lockOrgStandingWriters(tx, created.id);
+      await tx.orgMembership.create({ data: { orgId: created.id, userId, role: 'owner' } });
+      return created;
+    });
     return { id: org.id, name: org.name, slug: org.slug };
   }
 
@@ -296,15 +317,8 @@ export class OrgsService {
     // reduces their owner/admin standing, so it rides the SAME holder guard (readiness keys
     // over covered projects in stable order; the DB seal's raise translated to the deliberate
     // 409) instead of a bare upsert the trigger would fail as an unhandled error.
-    const existingOm = await this.prisma.orgMembership.findUnique({
-      where: { orgId_userId: { orgId, userId: user.id } },
-      select: { role: true },
-    });
-    const reduces =
-      !!existingOm
-      && (existingOm.role === 'owner' || existingOm.role === 'admin')
-      && input.role !== 'owner' && input.role !== 'admin';
-    const membership = await this.guardedOrgStandingWrite(orgId, user.id, reduces, (tx) =>
+    // (4d-ii-a / A3c: the existing role is read inside, under the org key)
+    const membership = await this.guardedOrgStandingWrite(orgId, user.id, input.role, (tx) =>
       tx.orgMembership.upsert({
         where: { orgId_userId: { orgId, userId: user.id } },
         update: { role: input.role },
@@ -343,9 +357,7 @@ export class OrgsService {
     }
     // Phase 6 task 4b (§A.1 round 11) — demoting an owner/admin below admin can strand a
     // covered project's pmc-held open decision; judged per project under its readiness key.
-    const reduces =
-      (existing.role === 'owner' || existing.role === 'admin') && input.role !== 'owner' && input.role !== 'admin';
-    const membership = await this.guardedOrgStandingWrite(orgId, userId, reduces, (tx) =>
+    const membership = await this.guardedOrgStandingWrite(orgId, userId, input.role, (tx) =>
       tx.orgMembership.update({ where: { orgId_userId: { orgId, userId } }, data: { role: input.role } }),
     );
     return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, orgRole: membership.role, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
@@ -427,14 +439,22 @@ export class OrgsService {
     }
     // Phase 6 task 4b (§A.1 round 11) — removing an owner/admin can strand a covered project's
     // pmc-held open decision; judged per project under its readiness key.
-    const reduces = existing.role === 'owner' || existing.role === 'admin';
-    await this.guardedOrgStandingWrite(orgId, userId, reduces, (tx) =>
+    await this.guardedOrgStandingWrite(orgId, userId, null, (tx) =>
       tx.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } }),
     );
     return { ok: true };
   }
 
-  /** Create a project under an org (owner/admin only); enrol the creator as PMC. */
+  /**
+   * Create a project under an org (owner/admin only); enrol the creator as PMC.
+   *
+   * 4d-ii-a / A3c — the creation holds the ORG key while it inserts, so no owner/admin org write
+   * can enumerate the org's projects around it (`org-standing.ts`). The authority read before the
+   * transaction is the fast refusal only: the creator's standing is RE-JUDGED inside, after the key,
+   * because an admin could pass the read, be demoted by an org write that took the key first, and
+   * then acquire it (#557's review round 2, finding 3). The creator's membership is written under
+   * the new project's own key, after the org key — the one lock order.
+   */
   async createProject(orgId: string, userId: string, input: CreateProjectInput): Promise<{ id: string; name: string; short: string }> {
     const role = await this.orgRole(orgId, userId);
     if (role !== 'owner' && role !== 'admin') {
@@ -449,6 +469,14 @@ export class OrgsService {
     const today = ddMmmYyyy(new Date());
 
     const project = await runSerializableProjectInit(this.prisma, async (tx) => {
+      await lockOrgStanding(tx, orgId);
+      // A snapshot taken while the key was contended predates the org write it waited for; this
+      // turns that into a serialization failure, which the runner retries with a fresh snapshot.
+      await assertOrgStandingSnapshotCurrent(tx, orgId);
+      const standing = await tx.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } }, select: { role: true } });
+      if (!holdsOrgStanding(standing?.role)) {
+        throw new ForbiddenException('Your org role changed while creating the project — only an org owner or admin can create projects');
+      }
       const templateSelections = input.templateId ? await this.templateSelections(tx, orgId, input.templateId) : [];
       const selections = [...templateSelections, ...explicitSelections];
       const source = input.structureFrom ? await this.loadSourceStructure(tx, orgId, input.structureFrom) : null;
@@ -457,6 +485,9 @@ export class OrgsService {
 
       validateInitializationGraph('Project initialization', this.initializationGraph(sources));
       await lockInitializationDisplayIds(tx);
+      // 4d-ii-a / A3c — the new project's own key, held from before its row exists until commit, so
+      // the creator's membership below is written under it (and after the org key)
+      await lockProjectReadiness(tx, id);
       const [allActivityIds, allInspectionIds] = await Promise.all([
         this.activitiesQuery.allIds(tx),
         this.inspections.allIds(tx),
@@ -480,7 +511,8 @@ export class OrgsService {
           milestonePct: 0,
         },
       });
-      // the creator runs the project as its PMC
+      // the creator runs the project as its PMC — a membership write, under the new project's key
+      // (taken before the `Project` insert, just after the org key: the one lock order)
       await tx.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
       await emitEvent(tx, { projectId: id, actor, eventType: 'project.created', entityType: 'Project', entityId: id, payload: { name: input.name }, effectKey: 'project.created', dispatch: {} });
 

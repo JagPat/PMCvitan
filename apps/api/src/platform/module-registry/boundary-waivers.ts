@@ -88,6 +88,13 @@ export const RAW_SQL_WRITE_WAIVERS: ReadonlyArray<RawSqlWriteWaiver> = [
     reason:
       'Phase 6 task 4d-ii-a — the lease renewal: UPDATE "ReleaseLease" SET "leaseUntil" = GREATEST("leaseUntil", CURRENT_TIMESTAMP + make_interval(…)), an expression over the column and the database clock that the delegate API cannot express; GREATEST keeps the renewal monotone, the only move ReleaseLease_t4d_frozen admits. Own-module write (platform owns ReleaseLease).',
   },
+  {
+    file: 'orgs/org-standing.ts',
+    symbol: 'markOrgStandingWrite',
+    owner: 'orgs',
+    reason:
+      'Phase 6 task 4d-ii-a A3c — the org-standing write mark: UPDATE "Org" SET "name" = "name" WHERE "id" = … row-locks the org and leaves a new row version, so a SERIALIZABLE project creation whose snapshot predates this writer\'s commit fails 40001 at its FOR SHARE read instead of judging standing from a stale snapshot. The delegate API sends no UPDATE when nothing changes, so the no-op write must be raw. Own-module write (orgs owns Org).',
+  },
 ];
 
 /** A reviewed, BOUNDED delegate write to another module's model. Keyed by (module, model). */

@@ -11,6 +11,7 @@ import {
 } from '../src/domain/seed-data';
 import { addCivilDays, fromIsoCivilDate } from '../src/common/civil-date';
 import { lockProjectReadiness } from '../src/common/readiness-lock';
+import { holdsOrgStanding, lockOrgStandingWriters } from '../src/orgs/org-standing';
 import { ddMmmYyyy } from '../src/domain/dates';
 
 import { sanctionedReset } from './sanctioned-reset';
@@ -291,8 +292,14 @@ async function main(): Promise<void> {
       await lockProjectReadiness(tx, PROJECT_ID);
       await tx.membership.create({ data: { projectId: PROJECT_ID, userId: user.id, role: a.role, status: 'active' } });
     });
-    // the architect administers the org; everyone else is a plain org member
-    await prisma.orgMembership.create({ data: { orgId: org.id, userId: user.id, role: a.role === 'pmc' ? 'owner' : 'member' } });
+    // the architect administers the org; everyone else is a plain org member. An owner grant is
+    // an org-standing write, so it takes the org key, then every project's readiness key, like
+    // the roster commands (4d-ii-a / A3c)
+    const orgRole = a.role === 'pmc' ? 'owner' : 'member';
+    await prisma.$transaction(async (tx) => {
+      if (holdsOrgStanding(orgRole)) await lockOrgStandingWriters(tx, org.id);
+      await tx.orgMembership.create({ data: { orgId: org.id, userId: user.id, role: orgRole } });
+    });
   }
 
   // ── Phase 0 Task 8: deterministic two-project acceptance fixtures ──────────

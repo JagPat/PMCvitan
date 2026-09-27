@@ -46,3 +46,27 @@ export async function lockProjectReadiness(tx: Prisma.TransactionClient, project
 export function readinessLockKey(projectId: string): string {
   return 'readiness:' + projectId;
 }
+
+/**
+ * Phase 6 task 4d unit 4d-ii-a / A3c — the ORG standing key, `org:<orgId>` in the same advisory
+ * shape as the project key (plan §A.2, the push families: #557's review round 1, finding 3).
+ *
+ * A per-project key cannot close a phantom: an owner/admin `OrgMembership` writer enumerates the
+ * org's projects and takes each one's key, and a project whose creation has not committed yet is
+ * not in that enumeration, so a writer can miss it and a forward on it can later freeze a `pmc` set
+ * the committing owner is absent from. ONE key per org serializes the SET: project creation holds it
+ * while it inserts, and every owner/admin org writer takes it FIRST and then the project keys
+ * ascending, so its enumeration under the key sees every committed project.
+ *
+ * The lock order org → project is the only order: a creation takes the org key and then its own new
+ * project's key, an org writer takes the org key and then the project keys ascending, and a
+ * command takes one project key and never the org key. So no cycle exists.
+ */
+export async function lockOrgStanding(tx: Prisma.TransactionClient, orgId: string): Promise<void> {
+  await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${orgStandingLockKey(orgId)}, 0))`);
+}
+
+/** The org key, exported for the same reason as {@link readinessLockKey}: one derivation. */
+export function orgStandingLockKey(orgId: string): string {
+  return 'org:' + orgId;
+}
