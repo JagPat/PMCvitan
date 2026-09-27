@@ -187,7 +187,11 @@ function buildBase(): void {
   const unit = new Set<string>([...UNIT_DIRS,
     '20271222000000_phase6_t4d_i_b_u1_bound_event_actor',
     '20271223000000_phase6_t4d_i_b_u2_change_bundle_seals',
-    '20271224000000_phase6_t4d_i_b_u3_pairing_flip']);
+    '20271224000000_phase6_t4d_i_b_u3_pairing_flip',
+    // 4d-ii-a's writers witness DECLARES 4d-ii, which stands 4d-i's dark-window door and audits
+    // down — the very arms this harness proves on a 4d-i-only database. It depends on 4d-i's
+    // `ReleaseLease` too, so it is excluded with the other units built on 4d-i.
+    '20271226000000_phase6_t4d_ii_release_lease_writer']);
   for (const dir of readdirSync(MIGRATIONS_DIR).filter((d) => !unit.has(d) && !d.endsWith('.toml')).sort()) {
     const file = join(MIGRATIONS_DIR, dir, 'migration.sql');
     // Everything is applied the way Prisma applies it (one transaction, stop on error), because

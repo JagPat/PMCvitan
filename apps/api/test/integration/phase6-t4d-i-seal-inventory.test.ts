@@ -158,7 +158,9 @@ const INVENTORY: Record<string, string[]> = {
   ProjectOrg: ['ProjectOrg_t4d_backed', 'ProjectOrg_t4d_frozen', 'ProjectOrg_t4d_no_truncate', 'ProjectOrg_t4d_writer'],
   ProjectRoleStanding: ['ProjectRoleStanding_t4d_backed', 'ProjectRoleStanding_t4d_no_truncate', 'ProjectRoleStanding_t4d_writer'],
   ProjectUserStanding: ['ProjectUserStanding_t4d_backed', 'ProjectUserStanding_t4d_no_truncate', 'ProjectUserStanding_t4d_writer'],
-  ReleaseLease: ['ReleaseLease_t4d_frozen', 'ReleaseLease_t4d_insert_reserved', 'ReleaseLease_t4d_no_truncate'],
+  // 4d-ii-a's writers witness (20271226) stands the dark window's INSERT reservation down: the
+  // startup lease writer is the sanctioned writer it was waiting for.
+  ReleaseLease: ['ReleaseLease_t4d_frozen', 'ReleaseLease_t4d_no_truncate'],
   RolloutRetirement: [
     'RolloutRetirement_t4d_frozen',
     'RolloutRetirement_t4d_gate',

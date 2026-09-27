@@ -74,6 +74,20 @@ export const RAW_SQL_WRITE_WAIVERS: ReadonlyArray<RawSqlWriteWaiver> = [
     reason:
       'Phase 6 task 4a round 4 (waived round 14): the subject-stamp restore — UPDATE "OutboxDelivery" d SET "subject" = e."entityId" FROM "DomainEvent" e copies the identity an old-instance writer omitted from the row\'s OWN event in one set-based statement; an UPDATE … FROM join is not expressible via the delegate API. Own-module write (platform owns both tables). Round 14 made ALIASED updates visible to isWriteSql — this statement was reviewed in round 4 and is waived under its named enclosing symbol so the one-waiver-one-site ambiguity rule stays intact.',
   },
+  {
+    file: 'platform/release-lease.service.ts',
+    symbol: 'writeLease',
+    owner: 'platform',
+    reason:
+      'Phase 6 task 4d-ii-a — the serving process\'s ReleaseLease INSERT with BOTH timestamps from the database clock (CURRENT_TIMESTAMP and CURRENT_TIMESTAMP + make_interval): the delegate API sends client-side DateTimes, and the lease is compared against the database clock by its CHECK and by 4d-iii\'s drain preflight, so a skewed host would write a lease that looks expired or live when it is not. Own-module write (platform owns ReleaseLease).',
+  },
+  {
+    file: 'platform/release-lease.service.ts',
+    symbol: 'renewLease',
+    owner: 'platform',
+    reason:
+      'Phase 6 task 4d-ii-a — the lease renewal: UPDATE "ReleaseLease" SET "leaseUntil" = GREATEST("leaseUntil", CURRENT_TIMESTAMP + make_interval(…)), an expression over the column and the database clock that the delegate API cannot express; GREATEST keeps the renewal monotone, the only move ReleaseLease_t4d_frozen admits. Own-module write (platform owns ReleaseLease).',
+  },
 ];
 
 /** A reviewed, BOUNDED delegate write to another module's model. Keyed by (module, model). */

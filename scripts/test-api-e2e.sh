@@ -16,6 +16,12 @@ export JWT_SECRET
 # honors this ONLY outside production (see src/common/throttle.ts + its tests).
 export THROTTLE_DISABLED=true
 
+# Phase 6 4d-ii-a — the compiled server registers a `ReleaseLease` at startup, and a lease is
+# PERMANENT (its seal refuses DELETE and TRUNCATE), so the seed's wipe cannot clear it: every run
+# would leave one behind, and the next run would inherit 4d-ii's serving witness instead of the clean
+# database it advertises. The server honors this ONLY outside production (release-lease.service.ts).
+export RELEASE_LEASE_DISABLED=true
+
 # PR C Task 5 — dual-mode acceptance. The suite runs in one of two SENDER modes, both proving the
 # same user-visible consequences (the browser/API reads come from the DB snapshot, which is
 # synchronous in either mode):

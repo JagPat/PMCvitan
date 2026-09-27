@@ -4926,7 +4926,9 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # the dark migration can be applied last and asserted to abort. 4d-i-b U1 (20271222), U2 (20271223)
   # and U3 (20271224) each install catalog-driven seals 4d-i makes resolvable and refuse to apply
   # without it, so they belong here with their prerequisites, not in the pre-4d ledger.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*) continue ;; esac
+  # 4d-ii-a's writers witness (20271226) needs 4d-i's `ReleaseLease` and DECLARES 4d-ii, which
+  # would stand this ledger's dark-window audits down, so it is skipped with them.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5132,26 +5134,71 @@ assert_rejects "4d-i: the retirement marker is written only by the retiring migr
 # decrease refused, DELETE and TRUNCATE refused, THE RENEWAL ADMITTED. The last clause is the one
 # a strictness-only seal passes and a shippable one must not: a freeze that refused its own
 # writer's renewal is a freeze 4d-ii could not start a process against.
-# THE DARK WINDOW FIRST (#582's review round 36, finding 3). Until 4d-ii installs the sanctioned
-# startup writer there is NO writer for this table, and an INSERT admitted in that window is
-# PERMANENT — the seals below refuse DELETE and refuse any `leaseUntil` decrease, so 4d-iii's
-# drain preflight would read a planted row as a still-serving previous release forever. This
-# script itself was registering a lease through that open door, which is how the hole stayed
-# invisible: the proof depended on it.
-assert_rejects "4d-i P38: the dark window admits NO lease — there is no sanctioned writer yet" \
-  "INSERT INTO \"ReleaseLease\" (\"instanceId\",\"catalogVersion\",\"release\",\"startedAt\",\"leaseUntil\") VALUES ('UP4D-DARK', 1, 'r-ghost', now(), now() + interval '10 years')" \
-  "takes no INSERT yet"
+# THE DARK WINDOW IS CLOSED ON THIS LEDGER (#582's review round 36, finding 3; 4d-ii-a's witness).
+# Until 4d-ii installs the sanctioned startup writer, 4d-i reserves this table's INSERT: a lease
+# admitted then is PERMANENT (the seals below refuse DELETE and any `leaseUntil` decrease), and
+# 4d-iii's drain preflight would read a planted row as a still-serving release forever. That door is
+# proven on a 4d-i-only database by the seal-stripped harness and by the R21 ledger above. THIS
+# database ran the whole ledger, including 20271226, which installs the writer's witness and drops
+# the door itself (the witness alone would not: 4d-i drops it only on a replay), so what is asserted
+# here is that the writer era is REAL, with no hand-made witness standing in for it.
+assert "4d-ii-a: the writers witness is DECLARED by the migration, not by hand" \
+  "SELECT phase6_t4d_ii_declared()::text;" \
+  "true"
+assert "4d-ii-a: the dark window's INSERT reservation is stood down" \
+  "SELECT count(*)::text FROM pg_trigger WHERE tgname = 'ReleaseLease_t4d_insert_reserved' AND NOT tgisinternal;" \
+  "0"
+assert "4d-ii-a: a declared database with NO lease is not yet 'installed' — the data audits still run until a process serves" \
+  "SELECT phase6_t4d_ii_installed()::text;" \
+  "false"
 
-# WRITER ACTIVATION. 4d-ii installs `platform_t4d_ii_writers_installed()` beside its startup
-# writer and its validation; 4d-i's reservation stands down the moment that function exists, and
-# a 4d-i replay over such a database drops the door rather than re-installing it. Everything
-# below is therefore the WRITER-ERA world, which is the world P38's four clauses are about.
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: 4d-ii's writer witness could not be installed"; FAIL=1; }
-CREATE OR REPLACE FUNCTION platform_t4d_ii_writers_installed() RETURNS BOOLEAN LANGUAGE sql AS $$ SELECT true $$;
+# ── the replay a LEDGER-LOST RESTORE takes, before and after this release serves (#646's review,
+#    finding 4114478871) ─────────────────────────────────────────────────────────────────────────
+# A really-migrated database restored without `_prisma_migrations` is the one kind that reaches
+# migrate.sh's P3005 baseline replay holding rows 4d-ii-a's writers wrote: a `db push` database has
+# none of the §C guards and is refused before anything replays (t3c seals exit 5, the correction-3
+# runner proof's case 7). That replay re-runs 4d-i, and 4d-i's data audits stand down only on
+# `phase6_t4d_ii_installed()`. Each replay below applies the files exactly as the baseline deploy
+# does, in ledger order, over this database's own state.
+#
+# The event is A1's shape — a human actor's frozen `actorRole`/`actorName` pair — written through
+# every live seal, as `emitEvent` writes it: the stream position allocated in the same transaction,
+# a catalog-backed intent, a standing the envelope seal resolves.
+T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d_i_decision_facts
+20271222000000_phase6_t4d_i_b_u1_bound_event_actor 20271223000000_phase6_t4d_i_b_u2_change_bundle_seals
+20271224000000_phase6_t4d_i_b_u3_pairing_flip 20271225000000_phase6_project_row_lock_no_key
+20271226000000_phase6_t4d_ii_release_lease_writer"
+t4d_replay() {
+  local m
+  for m in $T4D_REPLAY; do
+    psql -X -q -v ON_ERROR_STOP=1 -d "$DB" -f "$MIG_DIR/$m/migration.sql" 2>&1 >/dev/null || { echo "[$m]"; return 1; }
+  done
+}
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-ii-a: the A1-shaped event fixture was refused by a live seal"; FAIL=1; }
+BEGIN;
+INSERT INTO "Org"("id","name","slug") VALUES ('org-up4d-ll','Restored Org','restored-org-ll');
+INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+VALUES ('UP4D-LL-P','org-up4d-ll','Restored','LL','','Finishing','LL-01','01 Jan 2026','31 Dec 2026',0,0,0);
+INSERT INTO "User"("id","projectId","name","email","role") VALUES ('UP4D-LL-U','UP4D-LL-P','Restored Pmc','restored-pmc@vitan.in','pmc');
+INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('UP4D-LL-M','UP4D-LL-P','UP4D-LL-U','pmc','active');
+UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'UP4D-LL-P';
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorKind","actorId","actorRole","actorName","entityType","entityId","dispatchIntent")
+SELECT 'UP4D-LL-E0','activity.deleted','org-up4d-ll','UP4D-LL-P',0,'human','UP4D-LL-U','pmc','Restored Pmc','Activity','UP4D-LL-A',
+       jsonb_build_object('effectKey', c."effectKey", 'coverageVersion', c."coverageVersion", 'invalidate', true)
+  FROM "ExternalEffectCatalog" c WHERE c."effectKey" = 'activity.deleted' AND c."retiredAt" IS NULL
+ ORDER BY c."coverageVersion" LIMIT 1;
+COMMIT;
 SQL
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: the replay did not stand the reservation down at writer activation"; FAIL=1; }
-DROP TRIGGER IF EXISTS "ReleaseLease_t4d_insert_reserved" ON "ReleaseLease";
-SQL
+# BEFORE any process of this release has served: declared, no lease. Nothing this release installs
+# can evidence that an A1/A2-era process served, so the audit still refuses the pair — the residual
+# the RUNBOOK's "A restored database that lost its migration ledger" recovers through its ledger.
+if t4d_out="$(t4d_replay)"; then
+  echo "FAILED  4d-ii-a: with NO lease the 4d-i replay ADOPTED the A1 pair — the serving witness is not what gates it"; FAIL=1
+elif printf '%s' "$t4d_out" | grep -q '4d-only KERNEL columns' && printf '%s' "$t4d_out" | grep -q 'UP4D-LL-E0'; then
+  echo "ok      4d-ii-a: a ledger-lost replay with NO lease still refuses the A1 pair, naming the event (the documented residual)"
+else
+  echo "FAILED  4d-ii-a: the lease-less replay failed, but not by the kernel legacy-shape audit; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
+fi
 
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: a serving process could not register its lease"; FAIL=1; }
 INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil")
@@ -5178,6 +5225,21 @@ assert_rejects "4d-i P38: a lease expires and stays as history — it is never d
 assert_rejects "4d-i P38: the lease register cannot be truncated away" \
   "TRUNCATE \"ReleaseLease\"" \
   "never truncated|truncate"
+
+# AFTER a process of this release served: the witness and a lease are both on the database, and a
+# restore carries both, so the same replay adopts the A1 pair. The witness does not have to sort
+# before 4d-i on this path — 20271226 already ran here, and the restore brought its function with it.
+if t4d_out="$(t4d_replay)"; then
+  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271220–20271226 through"
+else
+  echo "FAILED  4d-ii-a: the replay refused a database this release served; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
+fi
+assert "4d-ii-a: the replay kept the A1 pair it adopted, and 4d-ii stays installed" \
+  "SELECT \"actorRole\" || '|' || \"actorName\" || '|' || phase6_t4d_ii_installed()::text FROM \"DomainEvent\" WHERE \"eventId\" = 'UP4D-LL-E0';" \
+  "pmc|Restored Pmc|true"
+assert "4d-ii-a: the replay did not put the lease door back" \
+  "SELECT count(*)::text FROM pg_trigger WHERE tgname = 'ReleaseLease_t4d_insert_reserved' AND NOT tgisinternal;" \
+  "0"
 
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

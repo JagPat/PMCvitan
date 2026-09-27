@@ -216,13 +216,34 @@ report_4c_iiir_migration_failure() {
 # function is the `migrate resolve --rolled-back` step, and it must name THE HALF THAT FAILED:
 # resolving the wrong one leaves the real failure recorded and the next deploy stops at P3009
 # again, on a migration the operator believes they already cleared.
+#
+# THE LEDGER-LOSS NOTE, printed for EITHER half and only on the P3005 baseline path (#646's
+# review, findings 4114478871 and 4114890644). There the replayed 4d-i audits can refuse rows the
+# 4d-ii-a writers produced under the live seals — the registers half on an event's actor pair, a
+# bound notice or a dark-table row; the decisions half on a change request's provenance — when the
+# database is a restore that lost its ledger before any process carrying the writers witness had
+# served. The half-specific repairs above those rows are "remove or reset", which on such a
+# restore erases attribution the seals already judged. On the ordinary path the ledger is intact
+# and a first apply cannot meet such rows, so the note is not printed there.
+report_4d_i_ledger_loss() {
+  echo "[migrate] ON THE P3005 BASELINE PATH, READ THIS FIRST. If the refused rows carry 4d columns a"
+  echo "[migrate] serving release wrote — an event's actor pair, a bound notice, a change request's"
+  echo "[migrate] provenance or frozen requester, or a dark-table row — and this database is a RESTORE"
+  echo "[migrate] of one that was migrated normally, its ledger was lost: replace \`_prisma_migrations\`"
+  echo "[migrate] with the one from the same backup and redeploy. Do NOT remove or reset those rows,"
+  echo "[migrate] and do not run the steps below for them. See docs/RUNBOOK.md §P6T4D, \"A restored"
+  echo "[migrate] database that lost its migration ledger\"."
+}
+
 report_4d_i_migration_failure() {
+  _path="${2:-ordinary}"
   _failed_half=''
   for _half in 20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d_i_decision_facts; do
     printf '%s\n' "$1" | grep -q "$_half" && _failed_half="$_half"
   done
   [ -n "$_failed_half" ] || return 0
   if [ "$_failed_half" = 20271221000000_phase6_t4d_i_decision_facts ]; then
+    [ "$_path" = baseline ] && report_4d_i_ledger_loss
     echo "[migrate] That failure is the 4d-i decisions half. Its audits name the tables and rows"
     echo "[migrate] they refuse — a dark fact table that already holds rows, or rows already"
     echo "[migrate] carrying this unit's 4d-only columns — so read the abort and remove or reset"
@@ -236,6 +257,7 @@ report_4d_i_migration_failure() {
     echo "[migrate] Full detail: docs/RUNBOOK.md §P6T4D."
     return 0
   fi
+  [ "$_path" = baseline ] && report_4d_i_ledger_loss
   echo "[migrate] That failure is the 4d-i dark migration. Its own message is swallowed by the"
   echo "[migrate] aborted transaction, so the recovery is repeated here. The audit names BOTH"
   echo "[migrate] tables and they take DIFFERENT repairs:"
@@ -481,7 +503,8 @@ if echo "$out" | grep -q "P3005"; then
 20271222000000_phase6_t4d_i_b_u1_bound_event_actor
 20271223000000_phase6_t4d_i_b_u2_change_bundle_seals
 20271224000000_phase6_t4d_i_b_u3_pairing_flip
-20271225000000_phase6_project_row_lock_no_key"
+20271225000000_phase6_project_row_lock_no_key
+20271226000000_phase6_t4d_ii_release_lease_writer"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -585,7 +608,7 @@ if echo "$out" | grep -q "P3005"; then
     printf '%s\n' "$baseline_out"
     echo "[migrate] migrate deploy failed on the P3005 baseline path — refusing to start."
     report_4c_iiir_migration_failure "$baseline_out"
-    report_4d_i_migration_failure "$baseline_out"
+    report_4d_i_migration_failure "$baseline_out" baseline
     exit 1
   fi
   printf '%s\n' "$baseline_out"

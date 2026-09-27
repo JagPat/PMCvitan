@@ -42,6 +42,35 @@ foreign-key check. The unit is SQL only, per the migration/service separation: t
 moves to `FOR NO KEY UPDATE` in A2, the service unit that depends on this one. The migration is on
 `ALWAYS_EXECUTE` and carries the obligations below. It changes no seal's rule and no unit's content.
 
+## Resequencing (owner disposition, 2026-09-27): the 4d-ii writers witness before A3b
+
+4d-i's replay audits (`$dark_registers$` and `$legacy_shape_kernel$` in 20271220, `$dark_tables$`
+and `$legacy_shape$` in 20271221, U3's foreign-generation audit) refuse to ADOPT 4d-shaped data
+unless `phase6_t4d_ii_installed()`: the witness `platform_t4d_ii_writers_installed()` AND a
+`ReleaseLease` row. This staging put both in A6, after the writer units, so A1 (the event envelope
+pair) and A2 (the change request's provenance and frozen pair) already write data those audits
+read as unvalidated. A P3005 baseline replay over a database that already holds what they wrote
+aborts; ordinary ledger-backed deploys never replay 4d-i. The database that reaches that replay
+with such rows is a normally migrated one restored without its `_prisma_migrations` ledger: a
+`db push`-built database is refused before anything replays (t3c seals exit 5). A3b's
+`MembershipTransition` facts would widen the gap.
+
+What the unit closes is bounded (#646's review, finding 4114478871). From the first start of the
+release carrying it, the database holds the witness and a lease, and a restore carries both, so the
+replay stands the audits down. A restore from before that start holds no lease, and nothing the
+unit installs can evidence that an A1/A2-era process served; a lease written by the deploy runner
+ahead of the replay would be the deploying release attesting for itself, which 4d-i's round 40
+refused. That restore recovers through its ledger (RUNBOOK §P6T4D, "A restored database that lost
+its migration ledger"), and `scripts/upgrade-proof.sh` proves both arms on one A1-shaped event.
+
+So one unit lands before A3b, taken from A6's inventory: the witness and the `ReleaseLease` startup
+writer, in migration `20271226000000_phase6_t4d_ii_release_lease_writer` and
+`src/platform/release-lease.service.ts`. It is `migration-scope: inseparable`: the witness opens the
+lease table to INSERT, a lease is permanent, and a declaration with no writer reopens the window
+#582's round 36 closed, while a writer with no declaration meets 4d-i's door at boot. The rest of
+A6 (the activation register, rule columns, delivery seals and the server-generation fence) stays
+in A6. A6's `rollout:drain-evidence` CLI also stays there.
+
 ## Why each unit is safe on its own
 
 4d-ii-a was already specified to land **dark**. The six reservation doors keep every

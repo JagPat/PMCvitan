@@ -905,9 +905,13 @@ const REGISTER: Record<string, SealContract> = {
   },
   platform_t4d_release_lease_insert_reserved: {
     rule: 'the dark window admits NO lease INSERT — there is no sanctioned writer until 4d-ii '
-      + 'installs one, and the freeze above would make a planted row permanent',
-    plan: '§D dark tables; #582 round 36, finding 3',
-    on: { 'ReleaseLease.ReleaseLease_t4d_insert_reserved': B('I') },
+      + 'installs one, and the freeze above would make a planted row permanent. 4d-ii-a\'s '
+      + '20271226 migration installs that writer\'s witness and stands the door down, so on this '
+      + 'database the function backs NO trigger; it stays defined because a 4d-i replay over a '
+      + 'pre-4d-ii database re-installs the door from it (the dark window is proven there, on the '
+      + 'seal-stripped harness\'s 4d-i-only databases)',
+    plan: '§D dark tables; #582 round 36, finding 3; 4d-ii-a writers witness',
+    on: {},
     must: ['takes no INSERT yet', '4d-ii'],
   },
   platform_t4d_project_org_frozen: {

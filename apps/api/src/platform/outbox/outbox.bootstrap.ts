@@ -20,6 +20,7 @@ import { LabourCoverageService } from '../../labour/labour-coverage.service';
 import { CommercialBudgetQuery } from '../../commercial/commercial-budget.query';
 import { OrgsParticipant } from '../../orgs/orgs.participant';
 import { effectCoverageVersion } from '../external-effects';
+import { ReleaseLeaseService } from '../release-lease.service';
 
 /**
  * Phase 2 Task 6 — outbox lifecycle bootstrap. At app start it registers the socket + push
@@ -53,6 +54,7 @@ export class OutboxBootstrap implements OnModuleInit {
     // round-1 Codex F5 — the role-claim holder resolution routes through the orgs-owned answer;
     // boot binds it so platform code never reads a membership table.
     private readonly orgsParticipant: OrgsParticipant,
+    private readonly releaseLease: ReleaseLeaseService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -148,6 +150,9 @@ export class OutboxBootstrap implements OnModuleInit {
       }
       this.log.log(`outbox-mode cutover seal verified at coverage ${compiled}`);
     }
+    // 4d-ii-a — the serving process's `ReleaseLease`, written only once the catalog is synced and
+    // the sender gate has passed, so a process refused above never claims one (a no-op under test).
+    await this.releaseLease.register();
     this.relay.start();
   }
 }

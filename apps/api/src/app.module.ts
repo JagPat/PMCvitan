@@ -101,6 +101,7 @@ import { CompaniesController } from './orgs/companies.controller';
 import { OutboxRelay } from './platform/outbox/relay.service';
 import { ExternalEffectDispatcher } from './platform/outbox/external-effect-dispatcher';
 import { OutboxBootstrap } from './platform/outbox/outbox.bootstrap';
+import { ReleaseLeaseService } from './platform/release-lease.service';
 import { OutboxOperationsService } from './platform/outbox/outbox-operations.service';
 import { ProjectionRebuilder } from './platform/projections/rebuilder.service';
 import { ModuleRegistryService } from './platform/module-registry/module-registry.service';
@@ -232,6 +233,8 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     // depends on OutboxRelay for the shared claim/dispatch/failure path.
     ExternalEffectDispatcher,
     OutboxBootstrap,
+    // 4d-ii-a — the serving process's ReleaseLease, registered by the bootstrap after the catalog sync.
+    ReleaseLeaseService,
     OutboxOperationsService,
     // Task 9 — the projection rebuild + final-activation-barrier protocol (generation swap).
     ProjectionRebuilder,

@@ -1224,10 +1224,68 @@ a row planted in that window is permanent, and 4d-iii's drain preflight would re
 still-serving previous release forever.
 
 If a deploy or a script hits this refusal, the row it was trying to write is not one anything
-should be writing yet — do not disable the door to get past it. The door stands down on its own the
-moment `platform_release_lease_writer_installed()` exists, which 4d-ii creates alongside the writer
-and its validation; a 4d-i replay over such a database drops the reservation rather than
-re-installing it.
+should be writing yet — do not disable the door to get past it. The door stands down with 4d-ii-a's
+migration `20271226000000_phase6_t4d_ii_release_lease_writer`, which installs the writers witness
+`platform_t4d_ii_writers_installed()` beside the startup writer (`src/platform/release-lease.service.ts`)
+and drops `ReleaseLease_t4d_insert_reserved` itself: the witness alone does not remove the door,
+which 4d-i drops only when it is replayed over a declared database. A 4d-i replay over such a
+database drops the reservation rather than re-installing it.
+
+From that migration on, every serving process writes one lease at startup (after the consumer
+catalog sync) and renews it every three minutes for a ten-minute lease, both timestamps from the
+database clock. `release` is the process's `SOURCE_COMMIT` (or `RELEASE_ID`), else `unreleased`;
+set one of them on the deployment so the drain evidence can name the release. A lease is never
+deleted: a stopped process's row expires where it stands.
+
+A process that cannot keep its lease live STOPS ITSELF. Failed renewals retry every 15 seconds; if
+none succeeds within the ten-minute lease less a one-minute margin (measured on the process's own
+monotonic clock from when the last successful write was sent), the process logs `FENCED` and exits,
+and the container starts a new instance with a new lease. A renewal also refuses to revive a lease
+that has already lapsed on the database clock, and fences the process the same way. The drain
+reads "no live lease below the minimum" as "no such process serves", so a process whose lease ran
+out must not be serving. A `FENCED` exit therefore means the database was unreachable (or the
+process stalled) for most of a lease: look there, not at the lease.
+
+`RELEASE_LEASE_DISABLED=true` skips registration for the API acceptance harness, whose seed wipes
+the database every run and cannot wipe this table. It is honored only when `NODE_ENV` is not
+`production`, which the image sets, so a deployed process always registers.
+
+### A restored database that lost its migration ledger
+
+4d-i's data audits — the dark tables, and the 4d-only columns of `DomainEvent`, `Notification`,
+`ChangeRequest` and the other tables its legacy-shape audits name — run again whenever 4d-i is
+REPLAYED, and stand down only on `phase6_t4d_ii_installed()`: the writers witness AND a lease. An
+ordinary ledger-backed deploy never replays 4d-i. The P3005 baseline path in `scripts/migrate.sh`
+does, because both halves are on `ALWAYS_EXECUTE`.
+
+Only one kind of database reaches that replay holding rows the 4d-ii-a writers wrote: a database
+that WAS migrated normally and has been restored without its `_prisma_migrations` table. A
+`prisma db push` database never gets there — it has none of the §C guards, and the runner refuses to
+baseline it before anything replays (t3c seals exit 5; see §P4T3C3).
+
+- **Restored from a point after this release first served:** the witness function and a lease were
+  in the backup, so the replay stands the audits down and the deploy completes. Nothing to do.
+- **Restored from a point when only A1/A2-era processes had served** (from `9235a9a` up to the
+  release carrying `20271226000000_phase6_t4d_ii_release_lease_writer`): those processes wrote
+  event actor pairs and change-request provenance, under the live seals, and wrote no lease — the
+  writer did not exist yet. The replay's audits refuse those rows, and the deploy stops at
+  `20271220000000_phase6_t4d_i_dark_migration`. Nothing this release installs can evidence that an
+  earlier process served, and writing a lease from the deploy runner ahead of the replay would make
+  the deploying release attest for itself.
+
+  **Repair: restore the ledger, not the rows.** The failed baseline attempt created a partial
+  `_prisma_migrations` (everything outside `ALWAYS_EXECUTE` resolved as applied, and the failed
+  4d-i half). Replace it with the `_prisma_migrations` table from the SAME backup the database came
+  from, then redeploy: the ordinary path applies only what the backup had not yet applied. **Do
+  NOT use the legacy-shape repair below on these rows** — it clears attribution the seals already
+  judged, and it cannot be undone.
+
+  If no copy of that ledger exists, which migrations the restored schema carries is a judgement,
+  as in §P4T3C3, and it belongs to the owner. The legacy-shape repair is for rows no sanctioned
+  writer produced.
+
+`scripts/upgrade-proof.sh` proves both arms: the same A1-shaped event, written through every live
+seal, is refused by a replay with no lease and adopted by the replay once a lease exists.
 
 **This matters for recovery.** Prisma records each migration separately, so a
 `migrate resolve --rolled-back` must name THE HALF THAT FAILED. Resolving the other one leaves the
@@ -1432,6 +1490,12 @@ does:
 - `row(s) already carry this unit's 4d-only columns before it seals them` — a `ChangeRequest`,
   `DecisionApprovalRevision`, `DomainEvent`, `Notification` or consultation row is already in a
   4d shape. **Reset each named row to its legacy shape**, using the script below.
+
+  **Not on a restore that lost its ledger.** On the P3005 baseline path these audits can instead be
+  refusing rows a serving 4d-ii-a writer produced under the live seals, such as a change request's
+  provenance and frozen requester. Those rows are recovered through the ledger, never reset: see
+  "A restored database that lost its migration ledger" above. `scripts/migrate.sh` prints that
+  note ahead of either half's repair on that path.
 
 #### The legacy-shape repair, executable as written
 
