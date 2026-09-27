@@ -7,6 +7,8 @@ import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { DECISIONS_PROJECTION } from '../../src/decisions/decisions.projection';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a / A4a — the consultation cycle counts FINALIZED approvals, at every
@@ -187,6 +189,38 @@ describe('4d-ii-a / A4a — the consultation cycle counts finalized approvals (l
     const projected = await query.projectionSlice(f.projectA.id, 'engineer', eng.id);
     expect(projected.generation, 'the projection is caught up and servable, so the comparison is real').not.toBeNull();
     expect(projected.decisions.find((d) => d.id === decisionId)).toEqual(live);
+  });
+
+  // #649's review, finding 4116369412 — the migration re-runs on every deploy (`ALWAYS_EXECUTE`),
+  // and on a database 4d-iii has retired it must leave 4d-iii's seal bodies standing. It asks the
+  // DURABLE predicate: `phase6_t4d_retired_at_start()` reads a setting only 4d-i's own transaction
+  // sets, so in this file's transaction it is always false and the replay would overwrite them.
+  it('on a database 4d-iii has RETIRED, the migration leaves the retired seal bodies standing', async () => {
+    const file = join(__dirname, '../../prisma/migrations/20271227000000_phase6_t4d_ii_consultation_finalized_cycle/migration.sql');
+    const sql = readFileSync(file, 'utf8');
+    const ROLLBACK = new Error('rolled back by design');
+    let survived: boolean | undefined;
+    await t.prisma.$transaction(async (tx) => {
+      // stand in for 4d-iii's retirement: its marker (admitted only inside a retirement transaction)
+      // and a post-retirement body the migration must not replace
+      await tx.$executeRawUnsafe(`SELECT set_config('vitan.phase6_4d_retire', 'on', true)`);
+      await tx.$executeRawUnsafe(`INSERT INTO "RolloutRetirement" ("unit", "retiredBy") VALUES ('phase6-4d', 'a4a-probe')`);
+      await tx.$executeRawUnsafe(
+        `CREATE OR REPLACE FUNCTION phase6_t4c_consultation_request_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN /* a4a-retired-body */ RETURN NEW; END $$`,
+      );
+      await tx.$executeRawUnsafe(sql);
+      const rows = await tx.$queryRawUnsafe<Array<{ kept: boolean }>>(
+        `SELECT prosrc LIKE '%a4a-retired-body%' AS kept FROM pg_proc WHERE proname = 'phase6_t4c_consultation_request_seal'`,
+      );
+      survived = rows[0]?.kept;
+      throw ROLLBACK;
+    }).catch((e: unknown) => { if (e !== ROLLBACK) throw e; });
+    expect(survived, 'the replay must not overwrite a retired database\'s seal bodies').toBe(true);
+    // and the rollback restored the live body
+    const live = await t.prisma.$queryRawUnsafe<Array<{ finalized: boolean }>>(
+      `SELECT prosrc LIKE '%AND r."finalized"%' AS finalized FROM pg_proc WHERE proname = 'phase6_t4c_consultation_request_seal'`,
+    );
+    expect(live[0]?.finalized).toBe(true);
   });
 
   it('the counts that must NOT move: a provisional approval is still approval evidence, so the decision cannot be withdrawn', async () => {

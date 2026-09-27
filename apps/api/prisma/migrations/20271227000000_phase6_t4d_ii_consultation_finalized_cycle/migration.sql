@@ -27,11 +27,18 @@
 -- RE-RUNNABLE AND MARKER-AWARE (it is on `ALWAYS_EXECUTE`). `CREATE OR REPLACE FUNCTION` only, and it
 -- sorts after 4d-i, which `ALWAYS_EXECUTE` also re-runs, so on every deploy this is the definition
 -- that stands. On a database 4d-iii has already retired, these seals carry 4d-iii's bodies (its
--- requester arm re-pointed) and this migration leaves them alone, exactly as 4d-i's own widening
--- does; 4d-iii's bodies therefore owe the same finalized count (recorded in the staging document).
+-- requester arm re-pointed) and this migration leaves them alone, as 4d-i's own widening does;
+-- 4d-iii's bodies therefore owe the same finalized count (recorded in the staging document).
+--
+-- IT ASKS THE DURABLE PREDICATE, `phase6_t4d_retired()` (#649's review, finding 4116369412). 4d-i's
+-- own gates read `phase6_t4d_retired_at_start()`, a TRANSACTION-LOCAL snapshot 4d-i takes before it
+-- creates the evidence the durable predicate reads. This file is its own transaction, where that
+-- setting is never set, so it would always read false and a replay would overwrite 4d-iii's bodies.
+-- This file creates none of that evidence, so on the settled database it runs over, the durable
+-- predicate is the right question: exactly what 4d-i says a later unit should ask.
 
 DO $a4a_cycle$ BEGIN
-IF phase6_t4d_retired_at_start() THEN RETURN; END IF;
+IF phase6_t4d_retired() THEN RETURN; END IF;
 CREATE OR REPLACE FUNCTION phase6_t4c_consultation_request_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_user TEXT; d RECORD; v_cycle INT;
 BEGIN

@@ -154,8 +154,10 @@ and no new ones. The first is fixed here; the rest are recorded as each opens:
   total, a question asked beside a provisional approval would be refused by the database as a
   closed cycle. A4a therefore ships a migration
   (`20271227000000_phase6_t4d_ii_consultation_finalized_cycle`) re-issuing both with the finalized
-  count, carrying every obligation below. It is marker-aware as 4d-i's widening is, so **4d-iii's
-  re-issued bodies (the request seal's requester arm re-pointed) owe the same finalized count.**
+  count, carrying every obligation below. It leaves a retired database's bodies alone, asking the
+  durable `phase6_t4d_retired()` (4d-i's transaction-local snapshot is unset in a later file's
+  transaction; #649's review, finding 4116369412), so **4d-iii's re-issued bodies (the request
+  seal's requester arm re-pointed) owe the same finalized count.**
   §C's P25d sequences end to end need the provisional approve and the countersign, so they travel
   with A8b; A4a proves the rule at each site over a planted provisional revision.
 
