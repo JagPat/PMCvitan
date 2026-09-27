@@ -269,9 +269,16 @@ function makeLifecycle(status: string) {
     project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
-    // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
-    // here means no standing is proven, so the event is written with a NULL pair.
-    $queryRaw: vi.fn(async () => []),
+    // 4d-ii-a — the actor envelope is resolved from the platform registers. This lifecycle's
+    // actors HOLD the role their token names (the gate-finding-6 premise), so the stub answers
+    // the resolver as the database would for a holder: the standing admits the role and the
+    // identity row names the account. The lock reads return nothing, as a `SELECT 1` would.
+    $queryRaw: vi.fn(async (q: { sql?: string; strings?: readonly string[] }) => {
+      const text = q?.sql ?? q?.strings?.join('?') ?? '';
+      if (text.includes('platform_user_holds_role_windowed')) return [{ holds: true }];
+      if (text.includes('"UserIdentity"')) return [{ displayName: 'Registered Name' }];
+      return [];
+    }),
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
     // interactive form emulates the REAL transaction's rollback: on a thrown error the

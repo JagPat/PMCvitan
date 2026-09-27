@@ -151,7 +151,8 @@ describe('4d-ii-a / A2 — requestChange provenance and the frozen requester pai
     const { req, audit, event, receipt } = await recordsOf(id);
     expect([req.requestedByRole, req.requestedByName]).toEqual([null, null]);
     expect([event.actorRole, event.actorName]).toEqual([null, null]);
-    expect(audit.actorId).toBe(f.memberUser.id);
+    // the audit row agrees: no role the transaction did not observe (#643 Codex 4114025986)
+    expect(audit).toMatchObject({ actorId: f.memberUser.id, actorRole: null, actorName: null });
     expect(receipt?.resultRef).toBe(req.id);
   });
 

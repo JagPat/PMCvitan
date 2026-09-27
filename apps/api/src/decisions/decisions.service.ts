@@ -888,8 +888,14 @@ export class DecisionsService {
             select: { id: true },
           });
           requestId = request.id;
-          const auditName = pair?.actorName ?? actor.actorName;
-          await tx.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: auditName, actorId: actor.actorId, actorName: auditName, actorRole: actor.actorRole, payload: input } });
+          // The audit row's role and name are the SAME pair, both or neither (#643 Codex
+          // 4114025986): where the resolution found none (a stale token role), writing the token
+          // role would claim a standing this transaction did not observe. `actor` is the legacy
+          // display label (NOT NULL), not attribution; it keeps the account name.
+          await tx.decisionEvent.create({ data: {
+            decisionId, type: 'change_requested', actor: pair?.actorName ?? actor.actorName, actorId: actor.actorId,
+            actorName: pair?.actorName ?? null, actorRole: pair?.actorRole ?? null, payload: input,
+          } });
           await recordAudit(tx, { projectId, actor, action: 'decision.change', entity: 'Decision', entityId: decisionId });
           events.push(await emitEvent(tx, { projectId, actor, eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId, payload: { reason: input.reason, ...(input.costImpact !== undefined ? { costImpact: input.costImpact } : {}), ...(input.timeImpactDays !== undefined ? { timeImpactDays: input.timeImpactDays } : {}) }, effectKey: 'decision.change_requested', dispatch: {}, actorEnvelope: pair }));
         } catch (e) {
