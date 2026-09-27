@@ -135,6 +135,11 @@ items and no new ones:
   standing re-judged under it, and the creator membership under the new project's key) and by every
   owner/admin `OrgMembership` writer before the project keys ascending, the seed's and
   `ensure-accounts`' org upserts included.
+  As delivered: the creation's transaction is SERIALIZABLE, and its snapshot is fixed when the key
+  statement starts, so a creation that waited on an org writer would still read the standing from
+  before it. Each org writer therefore also writes a new version of the `Org` row under the key, and
+  the creation locks that row `FOR SHARE` right after taking it; a writer that committed after the
+  snapshot makes that a serialization failure, which the creation's runner retries on a fresh snapshot.
 
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its

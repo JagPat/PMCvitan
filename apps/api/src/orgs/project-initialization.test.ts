@@ -200,6 +200,32 @@ describe('runSerializableProjectInit', () => {
     expect(sleep).toHaveBeenCalledTimes(2);
   });
 
+  // 4d-ii-a / A3c — the org key's stale-snapshot check raises 40001 from a RAW query, which Prisma
+  // surfaces as P2010 carrying the SQLSTATE, not as P2034.
+  const rawFailure = (sqlstate: string) => new Prisma.PrismaClientKnownRequestError('Raw query failed', {
+    code: 'P2010',
+    clientVersion: 'test',
+    meta: { code: sqlstate, message: 'could not serialize access due to concurrent update' },
+  });
+
+  it('retries a raw-query serialization failure (P2010 / 40001) with a fresh snapshot', async () => {
+    const run = vi.fn(async () => 'created');
+    const transaction = vi.fn().mockRejectedValueOnce(rawFailure('40001')).mockImplementationOnce(run);
+    const sleep = vi.fn(async () => undefined);
+
+    await expect(runSerializableProjectInit({ $transaction: transaction } as never, run, sleep, () => 0)).resolves.toBe('created');
+    expect(transaction).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry any other raw-query failure', async () => {
+    const error = rawFailure('23505');
+    const transaction = vi.fn().mockRejectedValue(error);
+    const sleep = vi.fn(async () => undefined);
+
+    await expect(runSerializableProjectInit({ $transaction: transaction } as never, vi.fn(), sleep)).rejects.toBe(error);
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+
   it('does not retry another Prisma error code', async () => {
     const error = Object.assign(new Error('unique conflict'), { code: 'P2002' });
     const transaction = vi.fn().mockRejectedValue(error);

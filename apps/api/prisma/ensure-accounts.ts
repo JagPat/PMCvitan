@@ -3,6 +3,7 @@ import * as bcrypt from 'bcryptjs';
 import { SEED_NODES, SEED_DECISIONS, SEED_ACTIVITIES, SEED_INSPECTIONS, SEED_LOG_MATERIALS, createStarterLibrary } from '../src/domain/seed-data';
 import { addCivilDays, fromIsoCivilDate } from '../src/common/civil-date';
 import { lockProjectReadiness } from '../src/common/readiness-lock';
+import { holdsOrgStanding, lockOrgStandingWriters } from '../src/orgs/org-standing';
 import { AccountRosterError, parseAccountRoster, refusedBackfillProblems, type AccountSpec } from '../src/orgs/account-roster';
 
 /**
@@ -73,10 +74,14 @@ async function main(): Promise<void> {
       // eslint-disable-next-line no-console
       console.warn(`ORG_OWNER_EMAIL="${ownerEmail}" — no such user yet; sign them in once (or add them below), then rerun.`);
     } else {
-      await prisma.orgMembership.upsert({
-        where: { orgId_userId: { orgId: org.id, userId: ownerUser.id } },
-        update: { role: 'owner' },
-        create: { orgId: org.id, userId: ownerUser.id, role: 'owner' },
+      // an org-standing write: the org key, then every project's readiness key (4d-ii-a / A3c)
+      await prisma.$transaction(async (tx) => {
+        await lockOrgStandingWriters(tx, org.id);
+        await tx.orgMembership.upsert({
+          where: { orgId_userId: { orgId: org.id, userId: ownerUser.id } },
+          update: { role: 'owner' },
+          create: { orgId: org.id, userId: ownerUser.id, role: 'owner' },
+        });
       });
       // eslint-disable-next-line no-console
       console.log(`promoted ${ownerEmail} to OWNER of "${org.slug}"`);
@@ -143,10 +148,15 @@ async function main(): Promise<void> {
         create: { projectId: PROJECT_ID, userId, role: a.role, status: 'active' },
       });
     });
-    await prisma.orgMembership.upsert({
-      where: { orgId_userId: { orgId: org.id, userId: user.id } },
-      update: {},
-      create: { orgId: org.id, userId: user.id, role: a.role === 'pmc' ? 'owner' : 'member' },
+    // create-only; an owner create is an org-standing write and takes the org key (A3c)
+    const orgRole = a.role === 'pmc' ? 'owner' : 'member';
+    await prisma.$transaction(async (tx) => {
+      if (holdsOrgStanding(orgRole)) await lockOrgStandingWriters(tx, org.id);
+      await tx.orgMembership.upsert({
+        where: { orgId_userId: { orgId: org.id, userId } },
+        update: {},
+        create: { orgId: org.id, userId, role: orgRole },
+      });
     });
     // eslint-disable-next-line no-console
     console.log(`ensured ${user.role} ${user.email ?? user.phone} (${user.id}) + memberships`);

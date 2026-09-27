@@ -14,44 +14,37 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a3b-member-commands
-reviewed_merge: 61acff7
-open_pr: 647
+work_item: phase-6-task-4d-ii-a-a3c-org-key
+reviewed_merge: e7665f1
+open_pr: 648
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
 ```
 
-### Now — Phase 6 task 4d: A3b, the member commands
+### Now — Phase 6 task 4d: A3c, the org key
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A3b, `open_pr: 647` (`work_item: phase-6-task-4d-ii-a-a3b-member-commands`, branch
-  `claude/4d-ii-a3b-member-commands`, from `main` at `61acff7`).** `members.add`, `members.updateRole`
-  and `members.remove` become ledger commands with `synthesizeKeyWhenAbsent: true`, each writing its
-  `MembershipTransition` BEFORE the membership write, with the actor's frozen pair resolved in the
-  transaction; the add's identity lookup and provisioning move inside `executeCommand.run`.
-  - The shapes 4d-i's binding admits per receipt decide three behaviours: an add over an ACTIVE member
-    is refused 409 (their role changes from the team list), except one asking for exactly what they
-    are, which records nothing; a removed member's role cannot be changed (409); removing someone
-    already removed records nothing and succeeds.
-  - A change that keeps the role (a consultant's discipline, or nothing at all) is not a standing
-    change: no fact and no member receipt, because 4d-i's fact-first seal demands a transition for
-    every membership write under one and none describes such a move. It stays a readiness-locked
-    compare-and-set with its own `membership.discipline_changed` event.
-  - The event's envelope pair is resolved by `emitEvent` after the write, so a PMC re-roling
-    themselves records `pmc` on the fact (the pre-state) and whatever standing they hold on the event.
-  - No migration (`migration-scope: n/a`). The architect crossing event stays with A7; the
-    reservation-door 409s with A5.
-  - **Review findings 4115635418 and 4115635421, fixed forward.** A no-op must still consume the
-    caller's key. A PATCH that keeps the role is now the ledger command `members.updateDiscipline`
-    (not one the fact-first seal judges); a DELETE of an already-removed member runs through
-    `members.remove` with nothing recorded. One PATCH is one act: a keyed retry is matched against
-    both PATCH command types before branching, and again under the readiness lock inside each.
-  - **The shadow review's finding on `91dd0af`, fixed forward.** A removed membership keeps its role,
-    so a PATCH naming it reached the discipline branch and edited a departed member; that branch now
-    refuses anything but an active member, as the role branch does.
+- **Now, A3c, `open_pr: 648` (`work_item: phase-6-task-4d-ii-a-a3c-org-key`, branch `claude/4d-ii-a3c-org-key`, from
+  `main` at `e7665f1`).** `lockOrgStanding` closes the phantom between project creation and owner/admin
+  org writes: a grant fans standing out over the org's committed projects while a new project seeds its
+  owners from the org, so the two could each miss the other.
+  - Every owner/admin `OrgMembership` writer (the roster commands, `createOrg`, the seed and
+    `ensure-accounts`) takes the org key, marks the org row, then takes every project's readiness key
+    ascending, for grants and promotions as well as reductions (`apps/api/src/orgs/org-standing.ts`).
+    The roster commands take the org key for every write and judge the target's role under it.
+  - Project creation takes the org key first, re-judges its creator's owner/admin standing under it
+    (403 if a write that held the key demoted them), and takes the new project's key before the insert.
+  - A SERIALIZABLE snapshot is fixed when its first statement starts, so a creation that waited on the
+    key would judge from before the write it waited for. The org-row mark and the creation's `FOR SHARE`
+    read of it turn that into a serialization failure, which the creation's runner retries.
+  - No migration (`migration-scope: n/a`).
+- **A3b merged as #647** (`e7665f1`): `members.add`, `members.updateRole` and `members.remove` are ledger
+  commands that write their `MembershipTransition` fact first, with the actor's frozen pair resolved in the
+  transaction; a role-keeping PATCH is its own ledger command, `members.updateDiscipline`, and a no-op
+  still consumes the caller's key.
 - **The writers witness merged as #646** (`61acff7`): migration `20271226000000_phase6_t4d_ii_release_lease_writer`
   installs `platform_t4d_ii_writers_installed()` and drops the lease door; `release-lease.service.ts`
   writes and renews each serving process's lease and fences a process whose lease would lapse. The

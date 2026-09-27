@@ -202,6 +202,17 @@ function isDisplayIdPrimaryKeyConflict(error: unknown): boolean {
     || (Array.isArray(meta.target) && meta.target.length === 1 && meta.target[0] === 'id');
 }
 
+// Phase 6 task 4d unit 4d-ii-a / A3c — the same pre-wait snapshot, detected at the ORG key instead of
+// discovered at a primary key. `assertOrgStandingSnapshotCurrent` locks the org row FOR SHARE right
+// after the key, and a Serializable snapshot older than the last owner/admin org write cannot take
+// that lock: PostgreSQL raises 40001. Through a raw query Prisma surfaces it as P2010 carrying the
+// SQLSTATE rather than as P2034, so it is recognised here and restarted with a fresh snapshot.
+export function isRawSerializationFailure(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2010') return false;
+  const meta = error.meta as { code?: unknown } | undefined;
+  return meta?.code === '40001';
+}
+
 export async function runSerializableProjectInit<T>(
   prisma: SerializableRunner,
   run: (tx: Prisma.TransactionClient) => Promise<T>,
@@ -213,7 +224,8 @@ export async function runSerializableProjectInit<T>(
       return await prisma.$transaction(run, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     } catch (error) {
       const retryable = (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034')
-        || isDisplayIdPrimaryKeyConflict(error);
+        || isDisplayIdPrimaryKeyConflict(error)
+        || isRawSerializationFailure(error);
       if (!retryable || attempt === 2) throw error;
       const baseDelay = attempt === 0 ? 25 : 75;
       await sleep(baseDelay + Math.floor(random() * 26));

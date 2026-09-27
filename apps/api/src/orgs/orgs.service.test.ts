@@ -83,6 +83,8 @@ function makeAtomicProjectInit(throwFromInspection = false) {
 
   const tx = {
     $executeRaw: vi.fn(async () => 0),
+    // 4d-ii-a / A3c — the creator's owner/admin standing is re-judged INSIDE, after the org key
+    orgMembership: { findUnique: vi.fn(async () => ({ role: 'owner' })) },
     project: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => where.id === 'ambli' ? sourceProject : null),
       findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1', scheduleStartDate: new Date('2026-07-03T00:00:00.000Z') })),
@@ -216,6 +218,7 @@ function make(orgRole: string | null) {
     },
     project: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { projects.push(data); return data; }),
+      findMany: vi.fn(async () => []),
       findUnique: vi.fn(async () => ({ orgId: 'org1' })),
       findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1', timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => ({ id: where.id, ...data })),
@@ -291,7 +294,8 @@ describe('OrgsService.createProject', () => {
       tx.$executeRaw,
     ];
     for (const readOrLock of requiredReadsAndLocks) expect(readOrLock).toHaveBeenCalled();
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    // the two display-id locks, the org key (4d-ii-a / A3c) and the new project's key for the creator
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(4);
     expect(tx.activity.findMany).toHaveBeenCalledTimes(2);
     expect(tx.inspection.findMany).toHaveBeenCalledTimes(2);
     const projectWriteOrder = tx.project.create.mock.invocationCallOrder[0]!;
@@ -465,6 +469,10 @@ describe('OrgsService.addOrgMember', () => {
         }),
       },
       membership: { create: vi.fn() }, // must NOT be called by addOrgMember (no phantom project grant)
+      // 4d-ii-a / A3c — an owner/admin grant takes the org key, marks the org row and takes every
+      // project's key ascending
+      project: { findMany: vi.fn(async () => projects) },
+      $executeRaw: vi.fn(async () => 0),
       // round-6 Codex F2 — the upsert now rides guardedOrgStandingWrite, which wraps in a
       // transaction even when nothing reduces; the mock passes itself through as the tx client
       $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
@@ -598,6 +606,29 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
   it('forbids a non-owner from removing anyone', async () => {
     const { svc } = makeManage([{ userId: 'a1', role: 'admin' }, { userId: 'u2', role: 'member' }]);
     await expect(svc.removeOrgMember('org1', 'a1', 'u2')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  // 4d-ii-a / A3c — whether a roster write moves owner/admin standing is judged from the target's
+  // role read UNDER the org key, never from the read before the transaction
+  it('a plain member edit takes the org key and no project key', async () => {
+    const { svc, prisma } = makeManage([{ userId: 'owner1', role: 'owner' }, { userId: 'u2', role: 'member' }]);
+    await svc.updateOrgMemberRole('org1', 'owner1', 'u2', { role: 'member' });
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1); // the org key only
+    expect(prisma.project.findMany).not.toHaveBeenCalled();
+  });
+
+  it('a target promoted after the pre-read is re-read under the org key, and the demotion takes every project key', async () => {
+    const { svc, prisma, state } = makeManage([{ userId: 'owner1', role: 'owner' }, { userId: 'u2', role: 'member' }]);
+    // a concurrent promotion commits between the service's read and its transaction
+    const run = prisma.$transaction.getMockImplementation()!;
+    prisma.$transaction.mockImplementationOnce(async (arg: unknown) => {
+      state.find((x) => x.userId === 'u2')!.role = 'admin';
+      return run(arg);
+    });
+    await svc.updateOrgMemberRole('org1', 'owner1', 'u2', { role: 'member' });
+    expect(prisma.project.findMany).toHaveBeenCalledTimes(1); // enumerated under the org key
+    expect(prisma.$executeRaw.mock.calls.length).toBeGreaterThanOrEqual(2); // the org key, then the org-row mark
+    expect(state.find((x) => x.userId === 'u2')!.role).toBe('member');
   });
 });
 
@@ -788,6 +819,8 @@ function makeCopy(source: {
   const created = { nodes: [] as Record<string, unknown>[], phases: [] as Record<string, unknown>[], activities: [] as Record<string, unknown>[], inspections: [] as Record<string, unknown>[] };
   let cuid = 0;
   const tx = {
+    // 4d-ii-a / A3c — the creator's standing re-judged inside, after the org key
+    orgMembership: { findUnique: vi.fn(async () => ({ role: 'owner' })) },
     $executeRaw: vi.fn(async () => 0),
     projectNode: {
       findMany: vi.fn(async () => source.nodes ?? []),
@@ -933,6 +966,8 @@ function makeModules(opts: {
   const created = { nodes: [] as Record<string, unknown>[], phases: [] as Record<string, unknown>[], activities: [] as Record<string, unknown>[], inspections: [] as Record<string, unknown>[], modules: [] as Record<string, unknown>[] };
   let cuid = 0;
   const tx = {
+    // 4d-ii-a / A3c — the creator's standing re-judged inside, after the org key
+    orgMembership: { findUnique: vi.fn(async () => (opts.orgRole === undefined ? { role: 'owner' } : opts.orgRole ? { role: opts.orgRole } : null)) },
     $executeRaw: vi.fn(async () => 0),
     projectNode: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-n${++cuid}`, ...data }; created.nodes.push(row); return row; }),
@@ -1213,6 +1248,8 @@ describe('OrgsService.addOrgMember — invite notice', () => {
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'newuser', passwordHash: null, emailVerifiedAt: null, ...data })),
       },
       membership: { create: vi.fn() },
+      project: { findMany: vi.fn(async () => [{ id: 'ambli' }]) },
+      $executeRaw: vi.fn(async () => 0),
       $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     };
     const notify = vi.fn(async () => undefined);
