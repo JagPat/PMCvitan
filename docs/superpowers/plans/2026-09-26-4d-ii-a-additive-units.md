@@ -85,6 +85,21 @@ of 4d-ii-a.
 | **A8a** forward and approve | `decisions.forward` on the ledger with `lockProjectReadiness` in the canonical order, refusing 409 while the reservation stands; the approve CAS landing `awaiting_countersign` under a chain with the provisional notice, the frozen `approvedFrom`/`approvedByName`/`approvedByRole` and its `decider`/`forward` cancellations; the exact `revisionId` in `decision.approved`/`reapproved` from the direct approve | A7 | ~1200 lines |
 | **A8b** countersign, disagree, stranded | `decisions.countersign`, `decisions.disagree` (both paths), `decisions.resolveStrandedCountersign` (both outcomes), each writing its fact with the in-transaction pair and emitting its event, audit row and feed row; the exact `revisionId` from the countersign and the `completed` resolution; the architect's Decision Log server controls; its migration RAISES the persisted server-generation minimum to A8b's, so every earlier build is refused at startup | A8a | ~1200 lines |
 
+**A3 is delivered as three sub-units (2026-09-27)**, each inside the standard budget, with the same
+items and no new ones:
+
+- **A3a, the provisioning writers:** `ensure-accounts` validating `ACCOUNTS_JSON` (and its legacy
+  backfill) before the first write and refusing `architect`; the three non-command `Membership`
+  writers outside project creation (sign-in provisioning, made one transaction, `prisma/seed.ts` and
+  `ensure-accounts`) taking `lockProjectReadiness`.
+- **A3b, the member commands:** `members.add`/`updateRole`/`remove` as ledger commands with
+  `synthesizeKeyWhenAbsent: true`, each writing its `MembershipTransition` first with the pair
+  resolved in-transaction, the add's lookup and create inside `executeCommand.run`.
+- **A3c, the org key:** `lockOrgStanding`, taken by project creation (with the creator's owner/admin
+  standing re-judged under it, and the creator membership under the new project's key) and by every
+  owner/admin `OrgMembership` writer before the project keys ascending, the seed's and
+  `ensure-accounts`' org upserts included.
+
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its
 packet which §C arms it carries. None may leave an arm unowned: the last 4d-ii-a unit to merge

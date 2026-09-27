@@ -47,7 +47,7 @@ function fakePrisma(seed: FakeUser[] = [], membershipSeed: FakeMembership[] = []
     return p ? !p.archivedAt : true; // projects not modelled here are treated as active
   };
   let workerSeq = 0;
-  return {
+  const client = {
     users,
     memberships,
     workerCreated: [] as unknown[],
@@ -102,7 +102,13 @@ function fakePrisma(seed: FakeUser[] = [], membershipSeed: FakeMembership[] = []
           (p) => (where.orgId?.in ? p.orgId !== null && where.orgId.in.includes(p.orgId) : true) && (where.archivedAt === null ? !p.archivedAt : true),
         ) ?? null,
     },
+    // 4d-ii-a / A3a — sign-in provisioning is ONE transaction under the project readiness key:
+    // the interactive form runs against this same in-memory client, and the advisory lock is a
+    // no-op here.
+    $executeRaw: async () => 1,
+    $transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(client),
   };
+  return client;
 }
 
 function make(prisma: ReturnType<typeof fakePrisma>) {
