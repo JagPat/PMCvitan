@@ -2,6 +2,8 @@ import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { SEED_NODES, SEED_DECISIONS, SEED_ACTIVITIES, SEED_INSPECTIONS, SEED_LOG_MATERIALS, createStarterLibrary } from '../src/domain/seed-data';
 import { addCivilDays, fromIsoCivilDate } from '../src/common/civil-date';
+import { lockProjectReadiness } from '../src/common/readiness-lock';
+import { AccountRosterError, parseAccountRoster, refusedBackfillProblems, type AccountSpec } from '../src/orgs/account-roster';
 
 /**
  * Non-destructive account provisioning — safe to run against a LIVE database.
@@ -29,13 +31,6 @@ const prisma = new PrismaClient();
 
 const PROJECT_ID = process.env.PROJECT_ID || 'ambli';
 
-interface AccountSpec {
-  role: 'pmc' | 'client' | 'contractor' | 'engineer';
-  name: string;
-  email?: string;
-  phone?: string;
-}
-
 const DEFAULT_ACCOUNTS: AccountSpec[] = [
   { role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in' },
   { role: 'client', name: 'Mr. Shah', email: 'client@vitan.in' },
@@ -47,6 +42,16 @@ async function main(): Promise<void> {
   if (!project) {
     throw new Error(`Project "${PROJECT_ID}" not found — refusing to create orphan accounts. Set PROJECT_ID.`);
   }
+
+  // 4d-ii-a / A3a — the WHOLE roster, and the legacy backfill it would run, are judged before the
+  // first write (the org upsert below). A refused `architect` entry used to pass the `User` write
+  // and fail at the membership, leaving the account behind; now nothing is written at all.
+  const accounts = parseAccountRoster(process.env.ACCOUNTS_JSON, DEFAULT_ACCOUNTS);
+  const backfillProblems = refusedBackfillProblems(await prisma.user.findMany({
+    where: { memberships: { none: {} }, orgMemberships: { none: {} } },
+    select: { id: true, role: true, email: true, phone: true },
+  }));
+  if (backfillProblems.length > 0) throw new AccountRosterError(backfillProblems);
 
   // Ensure the owning org, and link the project to it (multi-tenant backfill).
   const orgSlug = process.env.ORG_SLUG || 'vitan';
@@ -77,10 +82,6 @@ async function main(): Promise<void> {
       console.log(`promoted ${ownerEmail} to OWNER of "${org.slug}"`);
     }
   }
-
-  const accounts: AccountSpec[] = process.env.ACCOUNTS_JSON
-    ? (JSON.parse(process.env.ACCOUNTS_JSON) as AccountSpec[])
-    : DEFAULT_ACCOUNTS;
 
   // P1-5: NO default password. A known-fallback password (the old `vitan123`) on a
   // reachable production account is an account-takeover. A newly-created office account
@@ -130,10 +131,17 @@ async function main(): Promise<void> {
     // Memberships are also create-only: a membership row that exists keeps its
     // role AND its status — this must never resurrect a `removed` member
     // (removal is the access-revocation record; see SEC-01).
-    await prisma.membership.upsert({
-      where: { projectId_userId: { projectId: PROJECT_ID, userId: user.id } },
-      update: {},
-      create: { projectId: PROJECT_ID, userId: user.id, role: a.role, status: 'active' },
+    // 4d-ii-a / A3a — every `Membership` writer takes the project readiness key (the waiting form),
+    // as the member commands already do, so a standing change never interleaves with a command
+    // that reads the project's standing under that key (plan §A.2's writer enumeration).
+    const userId = user.id;
+    await prisma.$transaction(async (tx) => {
+      await lockProjectReadiness(tx, PROJECT_ID);
+      await tx.membership.upsert({
+        where: { projectId_userId: { projectId: PROJECT_ID, userId } },
+        update: {},
+        create: { projectId: PROJECT_ID, userId, role: a.role, status: 'active' },
+      });
     });
     await prisma.orgMembership.upsert({
       where: { orgId_userId: { orgId: org.id, userId: user.id } },
@@ -166,7 +174,10 @@ async function main(): Promise<void> {
   });
   let backfilled = 0;
   for (const u of legacyUsers) {
-    await prisma.membership.create({ data: { projectId: u.projectId, userId: u.id, role: u.role, status: 'active' } });
+    await prisma.$transaction(async (tx) => {
+      await lockProjectReadiness(tx, u.projectId);
+      await tx.membership.create({ data: { projectId: u.projectId, userId: u.id, role: u.role, status: 'active' } });
+    });
     backfilled += 1;
     // eslint-disable-next-line no-console
     console.log(`backfilled membership for legacy ${u.role} ${u.email ?? u.phone ?? u.id} on ${u.projectId}`);

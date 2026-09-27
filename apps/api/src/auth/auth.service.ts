@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma.service';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import { SmsService } from './sms.service';
 import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
@@ -146,19 +147,27 @@ export class AuthService {
       if (!input.allowProvision) {
         throw new UnauthorizedException('No account for this sign-in. Ask your PMC to add you.');
       }
-      const created = await this.prisma.user.create({
-        data: {
-          projectId: input.projectId,
-          role: 'engineer',
-          name: input.name || 'Site Engineer',
-          email: input.email,
-          phone: input.phone,
-        },
-      });
-      // Write the explicit access grant too — access now derives ONLY from an
-      // active membership (or org-admin reach), never from the User row's fields.
-      await this.prisma.membership.create({
-        data: { projectId: input.projectId, userId: created.id, role: 'engineer', status: 'active' },
+      // 4d-ii-a / A3a — ONE transaction under the project readiness key: the account and its
+      // access grant commit together (never a half-provisioned user), and the membership write
+      // serialises with the commands that read the project's standing under that key, as every
+      // `Membership` writer does (plan §A.2's writer enumeration).
+      const created = await this.prisma.$transaction(async (tx) => {
+        await lockProjectReadiness(tx, input.projectId);
+        const user = await tx.user.create({
+          data: {
+            projectId: input.projectId,
+            role: 'engineer',
+            name: input.name || 'Site Engineer',
+            email: input.email,
+            phone: input.phone,
+          },
+        });
+        // Write the explicit access grant too — access now derives ONLY from an
+        // active membership (or org-admin reach), never from the User row's fields.
+        await tx.membership.create({
+          data: { projectId: input.projectId, userId: user.id, role: 'engineer', status: 'active' },
+        });
+        return user;
       });
       return { token: this.issueNamedUser(created, 'engineer', created.projectId), role: 'engineer', projectId: created.projectId, name: created.name };
     }

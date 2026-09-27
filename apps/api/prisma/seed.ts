@@ -10,6 +10,7 @@ import {
   createStarterLibrary,
 } from '../src/domain/seed-data';
 import { addCivilDays, fromIsoCivilDate } from '../src/common/civil-date';
+import { lockProjectReadiness } from '../src/common/readiness-lock';
 import { ddMmmYyyy } from '../src/domain/dates';
 
 import { sanctionedReset } from './sanctioned-reset';
@@ -284,8 +285,12 @@ async function main(): Promise<void> {
   for (const a of accounts) {
     const user = await prisma.user.create({ data: a });
     if (a.role === 'pmc') pmcId = user.id;
-    // project membership (the access grant tokens scope to)
-    await prisma.membership.create({ data: { projectId: PROJECT_ID, userId: user.id, role: a.role, status: 'active' } });
+    // project membership (the access grant tokens scope to), under the project readiness key like
+    // every `Membership` writer (4d-ii-a / A3a, plan §A.2's writer enumeration)
+    await prisma.$transaction(async (tx) => {
+      await lockProjectReadiness(tx, PROJECT_ID);
+      await tx.membership.create({ data: { projectId: PROJECT_ID, userId: user.id, role: a.role, status: 'active' } });
+    });
     // the architect administers the org; everyone else is a plain org member
     await prisma.orgMembership.create({ data: { orgId: org.id, userId: user.id, role: a.role === 'pmc' ? 'owner' : 'member' } });
   }
@@ -328,7 +333,10 @@ async function main(): Promise<void> {
   for (const u of testUsers) {
     await prisma.user.create({ data: { id: u.id, projectId: u.home, role: u.role, name: u.name, email: u.email, passwordHash: hash } });
     for (const [projectId, role] of u.grants) {
-      await prisma.membership.create({ data: { projectId, userId: u.id, role, status: 'active' } });
+      await prisma.$transaction(async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        await tx.membership.create({ data: { projectId, userId: u.id, role, status: 'active' } });
+      });
     }
     // plain org members — NEVER owner/admin, so the org super-admin path can't
     // mask a missing membership in the non-member/removed-member scenarios

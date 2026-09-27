@@ -14,29 +14,32 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a2-attribution-seams
-reviewed_merge: 04b12e0
-open_pr: 643
+work_item: phase-6-task-4d-ii-a-a3a-provisioning-writers
+reviewed_merge: 7422f0c
+open_pr: 645
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
 ```
 
-### Now — Phase 6 task 4d: 4d-ii-a unit A2, the attribution seams
+### Now — Phase 6 task 4d: 4d-ii-a unit A3a, the provisioning writers
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, unit A2, `open_pr: 643` (`work_item: phase-6-task-4d-ii-a-a2-attribution-seams`, branch `claude/4d-ii-a-a2`, from
-  `main` at `04b12e0`).**
-  - **`requestChange`** records the frozen `requestedByRole`/`requestedByName` pair, resolved inside the
-    command's transaction by A1's resolver, and ONE resolution feeds the request, its audit row and its
-    event (`EmitInput.actorEnvelope`). It records `sourceCommandId`, opts into server key synthesis so an
-    unkeyed call still has a receipt, and its receipt names the created request.
-  - **The commercial seam:** `AttributionActor` is the kernel's `EventActor`, and the sixteen constructing
-    sites pass the resolved `Actor`; `eventActorOf` is retired. The two system-kind sites keep a NULL
-    envelope, which 4d-i's seal requires of a system actor.
-  - **`OrgsParticipant.isProjectOperable`** locks `FOR NO KEY UPDATE`, the service-side twin of #642.
+- **Now, unit A3a, `open_pr: 645` (`work_item: phase-6-task-4d-ii-a-a3a-provisioning-writers`, branch
+  `claude/4d-ii-a-a3a-provisioning`, from `main` at `7422f0c`).** The first of A3's three sub-units
+  (recorded in the staging document):
+  - **`ensure-accounts`** judges its whole roster (`ACCOUNTS_JSON`) and its legacy backfill before the
+    first write (`src/orgs/account-roster.ts`). An `architect` entry, or a legacy `User.role` of
+    `architect`, is refused with the entry named and nothing written; before, it passed its `User`
+    write and failed at the membership, leaving the account and the org behind.
+  - **The three non-command `Membership` writers** (sign-in provisioning, now one transaction, the
+    demo seed and `ensure-accounts`) take `lockProjectReadiness`, as the member commands already do.
+    Project creation and the org writers move with A3c and the org key.
+- **A2 merged as #643** (`7422f0c`): `requestChange` records its provenance and the frozen requester
+  pair, one resolution feeding the request, its audit row and its event; the commercial seam passes
+  the resolved `Actor`; `isProjectOperable` locks `FOR NO KEY UPDATE`.
 - **The row-lock correction merged as #642** (`04b12e0`): migration `20271225000000_phase6_project_row_lock_no_key`
   moved `phase6_project_operable` and `phase6_user_decision_authority` to `FOR NO KEY UPDATE`. `FOR UPDATE`
   also conflicted with the `FOR KEY SHARE` a ledgered command's receipt holds on the project row, so a
