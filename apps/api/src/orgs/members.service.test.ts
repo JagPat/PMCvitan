@@ -282,6 +282,9 @@ describe('MembersService — 4d-ii-a / A3b member commands', () => {
 
     await svc.remove('p1', pmc, uid);
     await expect(svc.updateRole('p1', pmc, uid, { role: 'engineer' })).rejects.toBeInstanceOf(ConflictException);
+    // the role a removed member still carries does not open the discipline branch to them
+    await expect(svc.updateRole('p1', pmc, uid, { role: 'contractor' })).rejects.toBeInstanceOf(ConflictException);
+    expect(memberships[0]).toMatchObject({ role: 'contractor', status: 'removed' });
   });
 
   it('a DISCIPLINE-only change writes no fact and takes no member receipt, but IS receipted (members.updateDiscipline), no-op included', async () => {

@@ -445,7 +445,9 @@ export class MembersService {
    * `members.updateRole` or `members.remove`, and no transition describes a move that keeps role and
    * status. It is still a LEDGER command (#647 review, finding 4115635418): the caller's key is
    * consumed here even when nothing changes, so a retry replays this act. The write is
-   * compare-and-set on the role the caller saw, so a concurrent re-role or removal is a 409.
+   * compare-and-set on the role the caller saw AND on active standing — removal leaves the role in
+   * place, so it is the status check, not the role check, that refuses a removed member — and a
+   * concurrent re-role or removal is a 409.
    */
   private async updateDiscipline(
     projectId: string, userId: string, role: string, discipline: string | null, actor: Actor,
@@ -466,6 +468,11 @@ export class MembersService {
           return { resultRef: cur.id, value: cur, events: [] };
         }
         if (cur.role !== role) throw new ConflictException('This member\'s role changed while updating — reload and retry');
+        // A REMOVED membership keeps its role, so the role comparison above cannot see a removal
+        // (#647's shadow review on `91dd0af`). Only an active member is edited, by either branch.
+        if (cur.status !== 'active') {
+          throw new ConflictException('Only an active member can be changed — add them to the team again instead');
+        }
         if ((cur.discipline ?? null) === discipline) return { resultRef: cur.id, value: cur, events: [] };
         const m = await tx.membership.update({ where: { id: cur.id }, data: { discipline }, include: { user: true } });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: discipline ? { discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} });

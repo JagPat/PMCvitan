@@ -49,6 +49,9 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
     (not one the fact-first seal judges); a DELETE of an already-removed member runs through
     `members.remove` with nothing recorded. One PATCH is one act: a keyed retry is matched against
     both PATCH command types before branching, and again under the readiness lock inside each.
+  - **The shadow review's finding on `91dd0af`, fixed forward.** A removed membership keeps its role,
+    so a PATCH naming it reached the discipline branch and edited a departed member; that branch now
+    refuses anything but an active member, as the role branch does.
 - **The writers witness merged as #646** (`61acff7`): migration `20271226000000_phase6_t4d_ii_release_lease_writer`
   installs `platform_t4d_ii_writers_installed()` and drops the lease door; `release-lease.service.ts`
   writes and renews each serving process's lease and fences a process whose lease would lapse. The

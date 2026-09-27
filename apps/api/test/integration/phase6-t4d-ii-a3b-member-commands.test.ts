@@ -219,6 +219,10 @@ describe('4d-ii-a / A3b — the member commands write their transition fact firs
     // a removed member's role cannot be changed; removing them again records nothing
     expect((await del(pmcToken, a.userId)).status).toBe(200);
     expect((await patch(pmcToken, a.userId, { role: 'contractor' })).status).toBe(409);
+    // nor, naming the role they still carry, can anything else about them (#647's shadow review on
+    // `91dd0af`: removal keeps the role, so this used to reach the discipline branch and edit a
+    // departed member)
+    expect((await patch(pmcToken, a.userId, { role: 'engineer' })).status).toBe(409);
     expect((await del(pmcToken, a.userId)).status).toBe(200);
     expect(await facts()).toBe(n + 1);
   });
