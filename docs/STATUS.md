@@ -14,29 +14,31 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a3a-provisioning-writers
-reviewed_merge: 7422f0c
-open_pr: 645
+work_item: phase-6-task-4d-ii-a-writers-witness
+reviewed_merge: e42950a
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
 ```
 
-### Now — Phase 6 task 4d: 4d-ii-a unit A3a, the provisioning writers
+### Now — Phase 6 task 4d: the 4d-ii writers witness and the ReleaseLease startup writer
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, unit A3a, `open_pr: 645` (`work_item: phase-6-task-4d-ii-a-a3a-provisioning-writers`, branch
-  `claude/4d-ii-a-a3a-provisioning`, from `main` at `7422f0c`).** The first of A3's three sub-units
-  (recorded in the staging document):
-  - **`ensure-accounts`** judges its whole roster (`ACCOUNTS_JSON`) and its legacy backfill before the
-    first write (`src/orgs/account-roster.ts`). An `architect` entry, or a legacy `User.role` of
-    `architect`, is refused with the entry named and nothing written; before, it passed its `User`
-    write and failed at the membership, leaving the account and the org behind.
-  - **The three non-command `Membership` writers** (sign-in provisioning, now one transaction, the
-    demo seed and `ensure-accounts`) take `lockProjectReadiness`, as the member commands already do.
-    Project creation and the org writers move with A3c and the org key.
+- **Now, the writers witness (`work_item: phase-6-task-4d-ii-a-writers-witness`, branch
+  `claude/4d-ii-writers-witness`, from `main` at `e42950a`).** The owner's resequencing of
+  2026-09-27, recorded in the staging document: taken from A6 and landed before A3b, because A1 and A2
+  already write data 4d-i's replay audits read as unvalidated until `phase6_t4d_ii_installed()` holds.
+  - **Migration `20271226000000_phase6_t4d_ii_release_lease_writer`** installs
+    `platform_t4d_ii_writers_installed()` and drops the dark window's `ReleaseLease` INSERT door (the
+    witness alone does not: 4d-i drops it only on a replay). On `ALWAYS_EXECUTE`, re-runnable.
+  - **`src/platform/release-lease.service.ts`** writes each serving process's lease after the catalog
+    sync and renews it, both timestamps on the database clock; never under `NODE_ENV=test`.
+  - `migration-scope: inseparable`: neither half is safe without the other.
+- **A3a merged as #645** (`e42950a`): `ensure-accounts` judges its whole roster before the first write
+  and refuses `architect`; the non-command `Membership` writers take the readiness key.
 - **A2 merged as #643** (`7422f0c`): `requestChange` records its provenance and the frozen requester
   pair, one resolution feeding the request, its audit row and its event; the commercial seam passes
   the resolved `Actor`; `isProjectOperable` locks `FOR NO KEY UPDATE`.

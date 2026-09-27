@@ -184,6 +184,8 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
       'platform/outbox/cancellation.ts:cancelQueuedPushBySubject',
       'platform/outbox/relay.service.ts:claim',
       'platform/outbox/relay.service.ts:claimExternalRecovery',
+      'platform/release-lease.service.ts:renewLease',
+      'platform/release-lease.service.ts:writeLease',
     ]);
     // and no un-analyzable dynamic delegate exists in runtime code
     expect(analysis.persistence.dynamicWrites).toEqual([]);

@@ -4926,7 +4926,9 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # the dark migration can be applied last and asserted to abort. 4d-i-b U1 (20271222), U2 (20271223)
   # and U3 (20271224) each install catalog-driven seals 4d-i makes resolvable and refuse to apply
   # without it, so they belong here with their prerequisites, not in the pre-4d ledger.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*) continue ;; esac
+  # 4d-ii-a's writers witness (20271226) needs 4d-i's `ReleaseLease` and DECLARES 4d-ii, which
+  # would stand this ledger's dark-window audits down, so it is skipped with them.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5132,26 +5134,23 @@ assert_rejects "4d-i: the retirement marker is written only by the retiring migr
 # decrease refused, DELETE and TRUNCATE refused, THE RENEWAL ADMITTED. The last clause is the one
 # a strictness-only seal passes and a shippable one must not: a freeze that refused its own
 # writer's renewal is a freeze 4d-ii could not start a process against.
-# THE DARK WINDOW FIRST (#582's review round 36, finding 3). Until 4d-ii installs the sanctioned
-# startup writer there is NO writer for this table, and an INSERT admitted in that window is
-# PERMANENT — the seals below refuse DELETE and refuse any `leaseUntil` decrease, so 4d-iii's
-# drain preflight would read a planted row as a still-serving previous release forever. This
-# script itself was registering a lease through that open door, which is how the hole stayed
-# invisible: the proof depended on it.
-assert_rejects "4d-i P38: the dark window admits NO lease — there is no sanctioned writer yet" \
-  "INSERT INTO \"ReleaseLease\" (\"instanceId\",\"catalogVersion\",\"release\",\"startedAt\",\"leaseUntil\") VALUES ('UP4D-DARK', 1, 'r-ghost', now(), now() + interval '10 years')" \
-  "takes no INSERT yet"
-
-# WRITER ACTIVATION. 4d-ii installs `platform_t4d_ii_writers_installed()` beside its startup
-# writer and its validation; 4d-i's reservation stands down the moment that function exists, and
-# a 4d-i replay over such a database drops the door rather than re-installing it. Everything
-# below is therefore the WRITER-ERA world, which is the world P38's four clauses are about.
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: 4d-ii's writer witness could not be installed"; FAIL=1; }
-CREATE OR REPLACE FUNCTION platform_t4d_ii_writers_installed() RETURNS BOOLEAN LANGUAGE sql AS $$ SELECT true $$;
-SQL
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: the replay did not stand the reservation down at writer activation"; FAIL=1; }
-DROP TRIGGER IF EXISTS "ReleaseLease_t4d_insert_reserved" ON "ReleaseLease";
-SQL
+# THE DARK WINDOW IS CLOSED ON THIS LEDGER (#582's review round 36, finding 3; 4d-ii-a's witness).
+# Until 4d-ii installs the sanctioned startup writer, 4d-i reserves this table's INSERT: a lease
+# admitted then is PERMANENT (the seals below refuse DELETE and any `leaseUntil` decrease), and
+# 4d-iii's drain preflight would read a planted row as a still-serving release forever. That door is
+# proven on a 4d-i-only database by the seal-stripped harness and by the R21 ledger above. THIS
+# database ran the whole ledger, including 20271226, which installs the writer's witness and drops
+# the door itself (the witness alone would not: 4d-i drops it only on a replay), so what is asserted
+# here is that the writer era is REAL, with no hand-made witness standing in for it.
+assert "4d-ii-a: the writers witness is DECLARED by the migration, not by hand" \
+  "SELECT phase6_t4d_ii_declared()::text;" \
+  "true"
+assert "4d-ii-a: the dark window's INSERT reservation is stood down" \
+  "SELECT count(*)::text FROM pg_trigger WHERE tgname = 'ReleaseLease_t4d_insert_reserved' AND NOT tgisinternal;" \
+  "0"
+assert "4d-ii-a: a declared database with NO lease is not yet 'installed' — the data audits still run until a process serves" \
+  "SELECT phase6_t4d_ii_installed()::text;" \
+  "false"
 
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: a serving process could not register its lease"; FAIL=1; }
 INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil")

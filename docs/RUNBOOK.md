@@ -1224,10 +1224,18 @@ a row planted in that window is permanent, and 4d-iii's drain preflight would re
 still-serving previous release forever.
 
 If a deploy or a script hits this refusal, the row it was trying to write is not one anything
-should be writing yet — do not disable the door to get past it. The door stands down on its own the
-moment `platform_release_lease_writer_installed()` exists, which 4d-ii creates alongside the writer
-and its validation; a 4d-i replay over such a database drops the reservation rather than
-re-installing it.
+should be writing yet — do not disable the door to get past it. The door stands down with 4d-ii-a's
+migration `20271226000000_phase6_t4d_ii_release_lease_writer`, which installs the writers witness
+`platform_t4d_ii_writers_installed()` beside the startup writer (`src/platform/release-lease.service.ts`)
+and drops `ReleaseLease_t4d_insert_reserved` itself: the witness alone does not remove the door,
+which 4d-i drops only when it is replayed over a declared database. A 4d-i replay over such a
+database drops the reservation rather than re-installing it.
+
+From that migration on, every serving process writes one lease at startup (after the consumer
+catalog sync) and renews it every three minutes for a ten-minute lease, both timestamps from the
+database clock. `release` is the process's `SOURCE_COMMIT` (or `RELEASE_ID`), else `unreleased`;
+set one of them on the deployment so the drain evidence can name the release. A lease is never
+deleted: a stopped process's row expires where it stands.
 
 **This matters for recovery.** Prisma records each migration separately, so a
 `migrate resolve --rolled-back` must name THE HALF THAT FAILED. Resolving the other one leaves the
