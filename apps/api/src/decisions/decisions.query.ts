@@ -56,7 +56,7 @@ export class DecisionsQueryService {
         changeRequests: { where: { status: 'open' }, take: 1 },
         deciderMembership: { select: { userId: true } },
         consultations: { include: { response: true } },
-        approvalRevisions: { select: { version: true } },
+        approvalRevisions: { select: { version: true, finalized: true } },
       },
       orderBy: { id: 'desc' },
     });
@@ -345,7 +345,8 @@ export class DecisionsQueryService {
       // still be current (a `requestChange` reopen would otherwise resurrect a delivery the
       // approval cancelled), and the consultee who saw the in-app thread and ANSWERED before the
       // delivery was claimed must not be pushed to do what they have already done.
-      const cycle = await tx.decisionApprovalRevision.count({ where: { decisionId } });
+      // (4d-ii-a / A4a: the cycle counts FINALIZED approvals, as the request froze it)
+      const cycle = await tx.decisionApprovalRevision.count({ where: { decisionId, finalized: true } });
       const standing = await tx.decisionConsultation.findFirst({
         where: {
           projectId, decisionId, consulteeUserId: targetUserId,

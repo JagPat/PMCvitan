@@ -26,7 +26,9 @@ export type DecisionRow = Prisma.DecisionGetPayload<{
     // `decisionConsultationResponse`, `decisionApprovalRevision` are in this module's
     // `ownsModels`), so this is a same-module read, not a boundary crossing.
     consultations: { include: { response: true } };
-    approvalRevisions: { select: { version: true } };
+    // 4d-ii-a / A4a — `finalized` rides with every revision so the cycle can count only FINALIZED
+    // approvals; a provisional approval awaiting countersign has approved nothing yet
+    approvalRevisions: { select: { version: true; finalized: true } };
   };
 }>;
 
@@ -93,7 +95,14 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
     // Every consumer already reads the absent case as the empty one — `viewerIsConsultee` treats a
     // missing collection as no standing and a missing cycle as `0` — so the omission is not a
     // second shape to handle, it is the same meaning spelled with no key.
-    ...(consultations.length ? { consultations, approvalCycle: d.approvalRevisions.length } : {}),
+    //
+    // Phase 6 task 4d-ii-a / A4a — the cycle counts FINALIZED approvals (§A.2's cycle trace), the
+    // rule every producer and reader of `openCycle` shares: the request that freezes it, the
+    // response check, the claim-time push predicate, the two DB seals, and this DTO field, which
+    // `viewerIsConsultee` reads on the server (below) and the client alike. A provisional approval
+    // does not end the cycle; the countersign that finalizes it does. Every revision written before
+    // the chain exists is born finalized, so on every such decision the two counts are equal.
+    ...(consultations.length ? { consultations, approvalCycle: approvalCycleOf(d) } : {}),
     options: d.options.map((o) => ({
       label: o.label,
       key: o.optionKey,
@@ -104,6 +113,11 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
       recommended: o.recommended,
     })),
   };
+}
+
+/** The decision's approval cycle: how many of its approvals are FINALIZED (4d-ii-a / A4a). */
+function approvalCycleOf(d: DecisionRow): number {
+  return d.approvalRevisions.filter((r) => r.finalized).length;
 }
 
 /** The consultation thread of one decision, oldest first. */

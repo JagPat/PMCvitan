@@ -191,7 +191,10 @@ function buildBase(): void {
     // 4d-ii-a's writers witness DECLARES 4d-ii, which stands 4d-i's dark-window door and audits
     // down — the very arms this harness proves on a 4d-i-only database. It depends on 4d-i's
     // `ReleaseLease` too, so it is excluded with the other units built on 4d-i.
-    '20271226000000_phase6_t4d_ii_release_lease_writer']);
+    '20271226000000_phase6_t4d_ii_release_lease_writer',
+    // 4d-ii-a / A4a's consultation-cycle seals are 4d-i's bodies re-issued, guarded on 4d-i's
+    // retirement marker, so they too apply only on top of 4d-i.
+    '20271227000000_phase6_t4d_ii_consultation_finalized_cycle']);
   for (const dir of readdirSync(MIGRATIONS_DIR).filter((d) => !unit.has(d) && !d.endsWith('.toml')).sort()) {
     const file = join(MIGRATIONS_DIR, dir, 'migration.sql');
     // Everything is applied the way Prisma applies it (one transaction, stop on error), because

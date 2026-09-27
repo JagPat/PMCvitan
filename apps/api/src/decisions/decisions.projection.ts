@@ -46,7 +46,7 @@ const DECISION_INCLUDE = {
   // and folding it from `Membership` here would be the cross-module read the module rules forbid
   // — which is exactly why §A made `DecisionConsultation.consulteeUserId` decisions-owned.
   consultations: { include: { response: true } },
-  approvalRevisions: { select: { version: true } },
+  approvalRevisions: { select: { version: true, finalized: true } },
 } satisfies Prisma.DecisionInclude;
 
 /** Upsert one decision's generation-scoped projection row from its canonical record. */

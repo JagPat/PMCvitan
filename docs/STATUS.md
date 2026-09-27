@@ -14,33 +14,35 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a3c-org-key
-reviewed_merge: e7665f1
-open_pr: 648
+work_item: phase-6-task-4d-ii-a-a4a-consultation-cycle
+reviewed_merge: 8894ed0
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
 ```
 
-### Now — Phase 6 task 4d: A3c, the org key
+### Now — Phase 6 task 4d: A4a, the consultation cycle
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A3c, `open_pr: 648` (`work_item: phase-6-task-4d-ii-a-a3c-org-key`, branch `claude/4d-ii-a3c-org-key`, from
-  `main` at `e7665f1`).** `lockOrgStanding` closes the phantom between project creation and owner/admin
-  org writes: a grant fans standing out over the org's committed projects while a new project seeds its
-  owners from the org, so the two could each miss the other.
-  - Every owner/admin `OrgMembership` writer (the roster commands, `createOrg`, the seed and
-    `ensure-accounts`) takes the org key, marks the org row, then takes every project's readiness key
-    ascending, for grants and promotions as well as reductions (`apps/api/src/orgs/org-standing.ts`).
-    The roster commands take the org key for every write and judge the target's role under it.
-  - Project creation takes the org key first, re-judges its creator's owner/admin standing under it
-    (403 if a write that held the key demoted them), and takes the new project's key before the insert.
-  - A SERIALIZABLE snapshot is fixed when its first statement starts, so a creation that waited on the
-    key would judge from before the write it waited for. The org-row mark and the creation's `FOR SHARE`
-    read of it turn that into a serialization failure, which the creation's runner retries.
-  - No migration (`migration-scope: n/a`).
+- **Now, A4a (`work_item: phase-6-task-4d-ii-a-a4a-consultation-cycle`, branch
+  `claude/4d-ii-a4-readers`, from `main` at `8894ed0`).** A4 (the readers) is split into sub-units,
+  recorded in the staging document. A4a makes the consultation cycle count FINALIZED approvals at
+  every site of §A.2's cycle trace: a provisional approval awaiting countersign has not ended the
+  cycle.
+  - The request's frozen `openCycle`, the response check, the claim-time push predicate and the
+    DTO's `approvalCycle` (read by `viewerIsConsultee` on the server and the client, and folded by the
+    projection) all count finalized revisions. The withdraw's evidence count and the next approval's
+    version stay on every revision, as the trace requires.
+  - The two consultation seals re-count the cycle too, a site the trace does not name. Migration
+    `20271227000000_phase6_t4d_ii_consultation_finalized_cycle` re-issues them with the finalized
+    count (on `ALWAYS_EXECUTE`, re-runnable, marker-aware); 4d-iii's re-issued bodies owe the same.
+  - Behaviour is unchanged until the chain: every revision today is born finalized.
+- **A3c merged as #648** (`8894ed0`): owner/admin org writes and project creation serialize on the org
+  key (`lockOrgStanding`), with the creator's standing re-judged under it and a stale SERIALIZABLE
+  snapshot turned into a retried serialization failure.
 - **A3b merged as #647** (`e7665f1`): `members.add`, `members.updateRole` and `members.remove` are ledger
   commands that write their `MembershipTransition` fact first, with the actor's frozen pair resolved in the
   transaction; a role-keeping PATCH is its own ledger command, `members.updateDiscipline`, and a no-op

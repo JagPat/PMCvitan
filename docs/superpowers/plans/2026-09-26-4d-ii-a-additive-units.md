@@ -141,6 +141,24 @@ items and no new ones:
   the creation locks that row `FOR SHARE` right after taking it; a writer that committed after the
   snapshot makes that a serialization failure, which the creation's runner retries on a fresh snapshot.
 
+**A4 is delivered as sub-units (2026-09-27)**, each inside the standard budget, with the same items
+and no new ones. The first is fixed here; the rest are recorded as each opens:
+
+- **A4a, the consultation cycle:** the cycle counts FINALIZED approvals at every producer and reader
+  of §A.2's cycle trace (the request freezing `openCycle`, the response check, the claim-time push
+  predicate, the DTO's `approvalCycle` that `viewerIsConsultee` and the projection read), with the
+  withdraw's evidence count and the next approval's version deliberately unchanged. **One site the
+  trace does not name moves with them:** the two consultation seals 4d-i re-issued
+  (`phase6_t4c_consultation_request_seal`, `phase6_t4c_consultation_response_seal`) re-count the
+  cycle under the decision lock, so with the service on the finalized count and the seals on the
+  total, a question asked beside a provisional approval would be refused by the database as a
+  closed cycle. A4a therefore ships a migration
+  (`20271227000000_phase6_t4d_ii_consultation_finalized_cycle`) re-issuing both with the finalized
+  count, carrying every obligation below. It is marker-aware as 4d-i's widening is, so **4d-iii's
+  re-issued bodies (the request seal's requester arm re-pointed) owe the same finalized count.**
+  §C's P25d sequences end to end need the provisional approve and the countersign, so they travel
+  with A8b; A4a proves the rule at each site over a planted provisional revision.
+
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its
 packet which §C arms it carries. None may leave an arm unowned: the last 4d-ii-a unit to merge
