@@ -79,8 +79,14 @@ describe('4d-ii-a — the writers witness and the ReleaseLease startup writer (l
   it('a lease that has already LAPSED on the database clock is not revived by a renewal (#646 review, 4114736200)', async () => {
     await inRolledBack(async (tx) => {
       const instanceId = newInstanceId();
-      // ttl 0: leaseUntil = startedAt = this transaction's CURRENT_TIMESTAMP, i.e. no longer live
-      await writeLease(tx, { instanceId, catalogVersion: 2, release: 'r-probe', ttlSeconds: 0 });
+      // A lease that ran out minutes ago, written directly (INSERT is the one move no seal refuses
+      // once the door is down). NOT `ttlSeconds: 0`: `leaseUntil` is TIMESTAMP(3), so the stored
+      // value is CURRENT_TIMESTAMP ROUNDED to the millisecond, and when it rounds up the "lapsed"
+      // lease sits up to 0.5ms after CURRENT_TIMESTAMP and reads as live (seen on CI, 3824412).
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "ReleaseLease" ("instanceId", "catalogVersion", "release", "startedAt", "leaseUntil")
+         VALUES ($1, 2, 'r-probe', CURRENT_TIMESTAMP - interval '15 minutes', CURRENT_TIMESTAMP - interval '5 minutes')`,
+        instanceId);
       const before = await one<{ u: Date }>(tx, `SELECT "leaseUntil" AS u FROM "ReleaseLease" WHERE "instanceId" = $1`, instanceId);
       expect(await renewLease(tx, instanceId), 'the renewal matches only a live lease').toBe(0);
       const after = await one<{ u: Date }>(tx, `SELECT "leaseUntil" AS u FROM "ReleaseLease" WHERE "instanceId" = $1`, instanceId);
