@@ -42,6 +42,10 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
     from before that holds no lease, still stops, and recovers through its ledger, not a row reset
     (RUNBOOK §P6T4D). A `db push` database never reaches the replay. `upgrade-proof.sh` proves both
     arms, and `migrate.sh` now prints that recovery for this abort.
+  - **Review findings 4114736200 and 4114736203, fixed forward.** A process that cannot keep its lease
+    live fences itself (exits) before the lease can expire, and a renewal never revives a lapsed lease;
+    the recovery interleaving is probed. The API acceptance harness opts out with
+    `RELEASE_LEASE_DISABLED=true`, honored only outside production.
 - **A3a merged as #645** (`e42950a`): `ensure-accounts` judges its whole roster before the first write
   and refuses `architect`; the non-command `Membership` writers take the readiness key.
 - **A2 merged as #643** (`7422f0c`): `requestChange` records its provenance and the frozen requester

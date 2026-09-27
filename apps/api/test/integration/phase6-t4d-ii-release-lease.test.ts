@@ -76,6 +76,18 @@ describe('4d-ii-a — the writers witness and the ReleaseLease startup writer (l
     });
   });
 
+  it('a lease that has already LAPSED on the database clock is not revived by a renewal (#646 review, 4114736200)', async () => {
+    await inRolledBack(async (tx) => {
+      const instanceId = newInstanceId();
+      // ttl 0: leaseUntil = startedAt = this transaction's CURRENT_TIMESTAMP, i.e. no longer live
+      await writeLease(tx, { instanceId, catalogVersion: 2, release: 'r-probe', ttlSeconds: 0 });
+      const before = await one<{ u: Date }>(tx, `SELECT "leaseUntil" AS u FROM "ReleaseLease" WHERE "instanceId" = $1`, instanceId);
+      expect(await renewLease(tx, instanceId), 'the renewal matches only a live lease').toBe(0);
+      const after = await one<{ u: Date }>(tx, `SELECT "leaseUntil" AS u FROM "ReleaseLease" WHERE "instanceId" = $1`, instanceId);
+      expect(after.u.getTime()).toBe(before.u.getTime());
+    });
+  });
+
   it('without this unit\'s migration the writer is refused: the 4d-i door, re-installed, meets the first lease', async () => {
     // What a pre-4d-ii database carries, reconstructed inside a rolled-back transaction: the lease
     // door 4d-i installs over an undeclared database. The writer cannot pass it.

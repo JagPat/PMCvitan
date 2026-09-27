@@ -1237,6 +1237,19 @@ database clock. `release` is the process's `SOURCE_COMMIT` (or `RELEASE_ID`), el
 set one of them on the deployment so the drain evidence can name the release. A lease is never
 deleted: a stopped process's row expires where it stands.
 
+A process that cannot keep its lease live STOPS ITSELF. Failed renewals retry every 15 seconds; if
+none succeeds within the ten-minute lease less a one-minute margin (measured on the process's own
+monotonic clock from when the last successful write was sent), the process logs `FENCED` and exits,
+and the container starts a new instance with a new lease. A renewal also refuses to revive a lease
+that has already lapsed on the database clock, and fences the process the same way. The drain
+reads "no live lease below the minimum" as "no such process serves", so a process whose lease ran
+out must not be serving. A `FENCED` exit therefore means the database was unreachable (or the
+process stalled) for most of a lease: look there, not at the lease.
+
+`RELEASE_LEASE_DISABLED=true` skips registration for the API acceptance harness, whose seed wipes
+the database every run and cannot wipe this table. It is honored only when `NODE_ENV` is not
+`production`, which the image sets, so a deployed process always registers.
+
 ### A restored database that lost its migration ledger
 
 4d-i's data audits — the dark tables, and the 4d-only columns of `DomainEvent`, `Notification`,
