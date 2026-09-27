@@ -14,30 +14,30 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a4b-approved-ref
-reviewed_merge: 1f4f228
-open_pr: 650
+work_item: phase-6-task-4d-ii-a-a4c-kinded-feed
+reviewed_merge: c904ef9
+open_pr: 651
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
 ```
 
-### Now — Phase 6 task 4d: A4b, the finality key's writers
+### Now — Phase 6 task 4d: A4c, the kinded feed readers
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A4b, `open_pr: 650` (`work_item: phase-6-task-4d-ii-a-a4b-approved-ref`, branch
-  `claude/4d-ii-a4b-approved-ref`, from `main` at `1f4f228`).** A requirement's decision provenance
-  must name a FINAL approval.
-  - `decisions.approvedRef` refuses a provisional head (400) and returns the head's `finalized` as
-    `revisionFinalized`.
-  - Every spec writer states the carrier: material and labour create/revise from the widened
-    reference, both cancellation copies carrying it verbatim, a spec with no decision stating `true`.
-    A static writer sweep pins the four INSERT sites.
-  - Measured for 4d-iii: the delivered writers fail only once `schema.prisma` also loses the
-    column's `@default(true)` (the client sends it otherwise), recorded in the staging document.
-  - No migration (`migration-scope: n/a`).
+- **Now, A4c, `open_pr: 651` (`work_item: phase-6-task-4d-ii-a-a4c-kinded-feed`, branch `claude/4d-ii-a4c-kinded-feed`,
+  from `main` at `c904ef9`).** How the feed reads a KINDED notice (one bound to its event):
+  - the snapshot reads the viewer's decision slice and the feed (with the bound events) in ONE
+    REPEATABLE READ transaction, through the decisions module's and the platform's own queries;
+  - a kinded notice is rendered from its kind and event, never its stored text, and served only when
+    its decision is in the viewer's slice; its actionable kinds are suppressed once the decision is
+    withdrawn, and the withdraw deletes kind-less notices only;
+  - A4c's renderer arms are the published (pending and record) and withdrawn notices; the others join
+    with their writers (A7, A8). No migration (`migration-scope: n/a`).
+- **A4b merged as #650** (`c904ef9`): `decisions.approvedRef` refuses a provisional head and returns
+  `revisionFinalized`, every spec writer states it, and a writer sweep pins the four INSERT sites.
 - **A4a merged as #649** (`1f4f228`): the consultation cycle counts FINALIZED approvals at every site
   of §A.2's trace, and migration `20271227000000` re-issues the two consultation seals with the same
   count (asking the durable `phase6_t4d_retired()`, review finding 4116369412).

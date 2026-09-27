@@ -439,7 +439,13 @@ export async function plantUnpairedDecisionState<T>(
  */
 export async function insertRawEvent(
   prisma: PrismaService,
-  spec: {
+  spec: RawEventSpec,
+): Promise<number> {
+  return prisma.$transaction((tx) => insertRawEventVia(tx, spec));
+}
+
+/** The raw event's shape, for {@link insertRawEvent} and {@link insertRawEventVia}. */
+export interface RawEventSpec {
     projectId: string;
     organizationId: string;
     eventId: string;
@@ -454,52 +460,59 @@ export async function insertRawEvent(
     columns?: string[];
     /** matching SQL value expressions, e.g. `'pmc'` */
     values?: string[];
-  },
+}
+
+/**
+ * Phase 6 task 4d-ii-a / A4c — {@link insertRawEvent} on the CALLER's transaction, for a plant that
+ * must bind another row to the event in the same transaction: a kinded `Notification` is admitted
+ * only beside the event it names (`Notification_t4d_binding_bound`).
+ */
+export async function insertRawEventVia(
+  tx: TxClient,
+  spec: RawEventSpec,
 ): Promise<number> {
   const ownIntent = (spec.columns ?? []).some((c) => c.includes('dispatchIntent'));
   const effectKey = spec.effectKey ?? 'decision.drafted';
   const columns = [...(spec.columns ?? [])];
   const values = [...(spec.values ?? [])];
-  return prisma.$transaction(async (tx) => {
-    if (!ownIntent) {
-      // THIS RELEASE's definition of the key, named by version rather than ranked (#582's review
-      // round 8, finding 3). Two generations of every key now coexist from the moment 4d-i
-      // commits — the one this source computes and the outgoing one a still-serving process
-      // emits — so "pick a row for the key" is no longer a question with one answer. The previous
-      // form ordered by `coverageVersion DESC` and called the winner the newest, but a coverage
-      // version is a SHA-256: sorting it lexicographically ranks nothing, and the row it happened
-      // to return was decided by which hash sorted higher. A plant stands in for a CURRENT
-      // writer, so it names the version a current writer computes.
-      const cat = await tx.$queryRawUnsafe<Array<{ coverageVersion: string; eventType: string; invalidate: boolean }>>(
-        `SELECT "coverageVersion","eventType","invalidate" FROM "ExternalEffectCatalog"
-          WHERE "effectKey" = $1 AND "coverageVersion" = $2 AND "retiredAt" IS NULL`,
-        effectKey,
-        effectCoverageVersion(),
-      );
-      const row = cat[0];
-      if (!row) throw new Error(`insertRawEvent: no unretired ExternalEffectCatalog row for '${effectKey}' at coverage ${effectCoverageVersion()}`);
-      columns.push('"dispatchIntent"');
-      values.push(
-        `'${JSON.stringify({ effectKey, coverageVersion: row.coverageVersion, invalidate: row.invalidate })}'::jsonb`,
-      );
-      // the seal requires the event's type to equal the catalog row's, so the plant takes it
-      // from the row rather than from a caller that did not name one.
-      spec = { ...spec, eventType: spec.eventType ?? row.eventType };
-    }
-    const cols = columns.length > 0 ? `,${columns.join(',')}` : '';
-    const vals = values.length > 0 ? `,${values.join(',')}` : '';
-    const rows = await tx.$queryRawUnsafe<Array<{ at: bigint }>>(
-      `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1
-        WHERE "projectId" = $1 RETURNING "nextPosition" - 1 AS "at"`,
-      spec.projectId,
+  if (!ownIntent) {
+    // THIS RELEASE's definition of the key, named by version rather than ranked (#582's review
+    // round 8, finding 3). Two generations of every key now coexist from the moment 4d-i
+    // commits — the one this source computes and the outgoing one a still-serving process
+    // emits — so "pick a row for the key" is no longer a question with one answer. The previous
+    // form ordered by `coverageVersion DESC` and called the winner the newest, but a coverage
+    // version is a SHA-256: sorting it lexicographically ranks nothing, and the row it happened
+    // to return was decided by which hash sorted higher. A plant stands in for a CURRENT
+    // writer, so it names the version a current writer computes.
+    const cat = await tx.$queryRawUnsafe<Array<{ coverageVersion: string; eventType: string; invalidate: boolean }>>(
+      `SELECT "coverageVersion","eventType","invalidate" FROM "ExternalEffectCatalog"
+        WHERE "effectKey" = $1 AND "coverageVersion" = $2 AND "retiredAt" IS NULL`,
+      effectKey,
+      effectCoverageVersion(),
     );
-    const at = Number(rows[0]!.at);
-    await tx.$executeRawUnsafe(
-      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId"${cols})`
-      + ` VALUES ('${spec.eventId}','${spec.eventType ?? 'x'}',1,'${spec.organizationId}','${spec.projectId}',${at},'system','system:seed','${spec.entityType ?? 'Decision'}','${spec.entityId ?? 'x'}'${vals})`,
+    const row = cat[0];
+    if (!row) throw new Error(`insertRawEvent: no unretired ExternalEffectCatalog row for '${effectKey}' at coverage ${effectCoverageVersion()}`);
+    columns.push('"dispatchIntent"');
+    values.push(
+      `'${JSON.stringify({ effectKey, coverageVersion: row.coverageVersion, invalidate: row.invalidate })}'::jsonb`,
     );
-    return at;
-  });
+    // the seal requires the event's type to equal the catalog row's, so the plant takes it
+    // from the row rather than from a caller that did not name one.
+    spec = { ...spec, eventType: spec.eventType ?? row.eventType };
+  }
+  const cols = columns.length > 0 ? `,${columns.join(',')}` : '';
+  const vals = values.length > 0 ? `,${values.join(',')}` : '';
+  const rows = await tx.$queryRawUnsafe<Array<{ at: bigint }>>(
+    `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1
+      WHERE "projectId" = $1 RETURNING "nextPosition" - 1 AS "at"`,
+    spec.projectId,
+  );
+  const at = Number(rows[0]!.at);
+  await tx.$executeRawUnsafe(
+    `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId"${cols})`
+    + ` VALUES ('${spec.eventId}','${spec.eventType ?? 'x'}',1,'${spec.organizationId}','${spec.projectId}',${at},'system','system:seed','${spec.entityType ?? 'Decision'}','${spec.entityId ?? 'x'}'${vals})`,
+  );
+  return at;
 }
 
 /**

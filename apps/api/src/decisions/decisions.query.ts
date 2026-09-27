@@ -7,6 +7,7 @@ import type { DeciderKind } from '@vitan/shared';
 import type { Role } from '../common/auth';
 import type { DecisionDto } from '../snapshot/types';
 import { serializeDecision, decisionVisibleToViewer, hydrateStoredDecisionDto } from './decision-serialize';
+import { kindedDecisionNoticeServed, renderKindedDecisionNotice, type KindedNoticeEvent } from './decision-notice';
 import { DECISIONS_PROJECTION } from './decisions.projection';
 import { readServableGeneration, stillServableAfterRead } from '../platform/projections/generation';
 
@@ -44,8 +45,11 @@ export class DecisionsQueryService {
     projectId: string,
     role: Role,
     userId?: string,
+    /** 4d-ii-a / A4c — the snapshot passes its REPEATABLE READ transaction, so the slice and the
+     *  notification feed judged against it are one snapshot. */
+    client: Pick<Prisma.TransactionClient, 'decision'> = this.prisma,
   ): Promise<{ decisions: DecisionDto[]; statuses: Map<string, DecisionStatus>; drafts: Set<string>; deciders: Map<string, DeciderKind> }> {
-    const rows = await this.prisma.decision.findMany({
+    const rows = await client.decision.findMany({
       where: { projectId },
       // the OPEN change request travels with a reopened decision (Phase 1 Task 2)
       // Phase 6 unit 4c-ii — the LIVE slice reads exactly what the projection's `DECISION_INCLUDE`
@@ -83,6 +87,24 @@ export class DecisionsQueryService {
       .map(serializeDecision);
 
     return { decisions, statuses, drafts, deciders };
+  }
+
+  /**
+   * Phase 6 task 4d-ii-a / A4c — a KINDED decision notice as this viewer is served it: rendered from
+   * its kind and bound event, or `null` when it is hidden (its decision is not in the viewer's slice,
+   * it is an actionable kind of a withdrawn decision, or a pending demand for someone who does not
+   * decide) or this release has no renderer arm for its kind. `decision` is the viewer's visible DTO
+   * from {@link snapshotSlice}, read in the same snapshot as the notice. See `decision-notice.ts`.
+   */
+  renderKindedNotice(
+    kind: string,
+    event: KindedNoticeEvent,
+    decision: DecisionDto | undefined,
+    role: Role,
+    userId?: string,
+  ): { text: string; color: string } | null {
+    if (!kindedDecisionNoticeServed(kind, event, decision, role, userId)) return null;
+    return renderKindedDecisionNotice(kind, event);
   }
 
   /**

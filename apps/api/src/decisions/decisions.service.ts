@@ -8,7 +8,7 @@ import type { AuthUser } from '../common/auth';
 import { resolveActor, ROLE_LABEL } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
-import { pendingDecisionNotice, recordedDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
+import { PENDING_DECISION_NOTICE_COLOR, RECORDED_DECISION_NOTICE_COLOR, WITHDRAWN_DECISION_NOTICE_COLOR, pendingDecisionNotice, recordedDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
 import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
 import type { ApproveInput, ChangeInput, CreateDecisionInput, RequestConsultationInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
@@ -217,7 +217,7 @@ export class DecisionsService {
         if (input.publish) {
           // Phase 6 task 4a — decision-notice writers stamp `decisionId`, so a later withdrawal
           // retires the pending notice by IDENTITY, never by matching display text.
-          await tx.notification.create({ data: { projectId, text: notice, color: record ? '#6B665C' : '#C08A2D', time: 'just now', decisionId: id } });
+          await tx.notification.create({ data: { projectId, text: notice, color: record ? RECORDED_DECISION_NOTICE_COLOR : PENDING_DECISION_NOTICE_COLOR, time: 'just now', decisionId: id } });
         }
         await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
         const ev = await emitEvent(tx, {
@@ -332,7 +332,7 @@ export class DecisionsService {
         if (count === 0) throw new ConflictException('Decision is already published');
         const notice = record ? recordedDecisionNotice(d.title) : pendingDecisionNotice(d.title);
         await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } });
-        await tx.notification.create({ data: { projectId, text: notice, color: record ? '#6B665C' : '#C08A2D', time: 'just now', decisionId } });
+        await tx.notification.create({ data: { projectId, text: notice, color: record ? RECORDED_DECISION_NOTICE_COLOR : PENDING_DECISION_NOTICE_COLOR, time: 'just now', decisionId } });
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
@@ -1211,7 +1211,11 @@ export class DecisionsService {
         // decision every other surface has removed is a live false instruction, not history.
         // Stamped rows retire by IDENTITY; only pending notices can be stamped with THIS
         // decision (it was never approved, so no approval announcement exists for it).
-        await tx.notification.deleteMany({ where: { projectId, decisionId } });
+        //
+        // 4d-ii-a / A4c — KIND-LESS rows only. A kinded notice (bound to its event) is evidence of an
+        // act that was announced, and its seal refuses the delete; the kinded readers hide it from
+        // everyone the decision is hidden from and suppress its actionable kinds once withdrawn.
+        await tx.notification.deleteMany({ where: { projectId, decisionId, kind: null } });
         // A LEGACY unstamped pending notice (the owner's live case predates the stamp) retires
         // by its exact text shape rebuilt from the decision's own title — multiplicity-guarded:
         // if another still-pending published decision shares the title, the text is ambiguous
@@ -1221,7 +1225,7 @@ export class DecisionsService {
           where: { projectId, title: d.title, status: 'pending', publishedAt: { not: null }, id: { not: decisionId } },
         });
         if (titleSharers === 0) {
-          await tx.notification.deleteMany({ where: { projectId, decisionId: null, text: legacyText } });
+          await tx.notification.deleteMany({ where: { projectId, decisionId: null, kind: null, text: legacyText } });
         }
 
         // the register entry IS the history (the report of a left-ambiguous legacy notice rides it)
@@ -1238,7 +1242,7 @@ export class DecisionsService {
         });
         // the appended withdrawal notice — pmc-only: `isWithdrawnDecisionNotice` strips it from
         // every non-pmc feed, the same mechanism that hides pending notices (§A.2/§A.3)
-        await tx.notification.create({ data: { projectId, text: withdrawnDecisionNotice(d.title, reason), color: '#6B665C', time: 'just now', decisionId } });
+        await tx.notification.create({ data: { projectId, text: withdrawnDecisionNotice(d.title, reason), color: WITHDRAWN_DECISION_NOTICE_COLOR, time: 'just now', decisionId } });
 
         // outrun the QUEUED past: a committed `decision.published` push intent the relay has
         // not yet delivered must not tell the client "awaiting your approval" about a decision

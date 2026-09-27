@@ -44,6 +44,10 @@ export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 /** The decisions module's read queries (must equal the manifest `queries`). */
 export const DECISION_QUERIES = [
   'decisions.snapshotSlice',
+  // Phase 6 task 4d-ii-a / A4c — a KINDED decision notice as a viewer is served it: rendered from its
+  // kind and bound event (never its stored text), hidden unless its decision is in the viewer's slice
+  // read in the same snapshot, its actionable kinds suppressed once the decision is withdrawn.
+  'decisions.renderKindedNotice',
   // Task 9 — the same decision slice served from the module's rebuildable projection (query-time authz)
   'decisions.projectionSlice',
   'decisions.existsInProject',
