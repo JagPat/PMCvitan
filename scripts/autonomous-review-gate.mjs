@@ -1692,6 +1692,38 @@ export function decidingRunId(checkRuns, name, requiredChecks = REQUIRED_CHECKS)
   return null;
 }
 
+function belongsToWorkflowRun(checkRun, runId) {
+  if (!runId) return false;
+  for (const url of [checkRun?.html_url, checkRun?.details_url]) {
+    const match = /\/actions\/runs\/(\d+)\//u.exec(typeof url === 'string' ? url : '');
+    if (match && match[1] === String(runId)) return true;
+  }
+  return false;
+}
+
+// A push can start two `CI` runs for one head. The battery plan skips the products of one, which completes
+// within a minute and wakes the controller; the other runs them for ~42 minutes. Waiting on that run from
+// this wake spends CHECK_TIMEOUT_MS on a run this wake did not trigger, publishes `ci: Checks did not
+// settle: api` and drafts the PR, and the deciding run's own completion then promotes the head a minute
+// later (PRs #639 and #640, 2026-09-26). True when the triggering run's products were all deliberately
+// skipped (its gates passed) and a required check of ANOTHER run on this head is still unfinished: that
+// run's completion wakes the controller again, so this wake decides nothing and publishes nothing. A skip
+// over an already-decided head (a metadata edit on a covered SHA) has nothing in flight and proceeds.
+export function batteryDeferredToInFlightRun(checkRuns, ciRunId, requiredChecks = REQUIRED_CHECKS) {
+  if (!ciRunId) return false;
+  const own = checkRuns.filter((run) => belongsToWorkflowRun(run, ciRunId));
+  const products = own.filter((run) => PRODUCT_CHECKS.includes(run.name));
+  if (products.length === 0) return false;
+  const gatesPassed = attemptsWithPassingGates(own);
+  const skippedBattery = products.every((run) =>
+    run.status === 'completed' && run.conclusion === 'skipped' && intentionalSkip(run, gatesPassed));
+  if (!skippedBattery) return false;
+  return checkRuns.some((run) =>
+    requiredChecks.includes(run.name)
+    && !belongsToWorkflowRun(run, ciRunId)
+    && run.status !== 'completed');
+}
+
 // Same-SHA recovery once the bounded retry is spent (Codex finding 4103259698 on #630): a recovery run
 // re-read the candidate head and now admits it, but CI's `review-scope` still carries the failed read.
 // Re-run that failed CI run on this same head instead of drafting the PR. Only a candidate body whose scope
@@ -2140,6 +2172,18 @@ export async function run() {
 
   if (ciFailed) {
     await handleCiFailure(client, context, pullRequest, expectedHead, { existingStatus, existingStatuses, scope });
+    return;
+  }
+
+  // Before any status write: a wake from a run whose battery the plan skipped, while another run still
+  // decides this head, has nothing to publish — that run's completion wakes the controller again.
+  if (batteryDeferredToInFlightRun(
+    await client.checkRuns(expectedHead), context.ciRunId, requiredChecksForPullRequest(pullRequest.number),
+  )) {
+    console.log(
+      `CI run ${context.ciRunId} skipped the product battery while another CI run for this head is still `
+        + 'deciding it; leaving the head to that run\'s completion.',
+    );
     return;
   }
 
