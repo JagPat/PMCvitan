@@ -160,6 +160,16 @@ and no new ones. The first is fixed here; the rest are recorded as each opens:
   seal's requester arm re-pointed) owe the same finalized count.**
   §C's P25d sequences end to end need the provisional approve and the countersign, so they travel
   with A8b; A4a proves the rule at each site over a planted provisional revision.
+- **A4b, the finality key's writers:** `decisions.approvedRef` refuses a provisional head and returns
+  the head's `finalized` as `revisionFinalized`; every spec writer states it (material and labour
+  create and revise from the widened reference, both cancellation copies carrying it verbatim, a
+  spec with no decision stating `true`), and the writer sweep pins the four INSERT sites. **One
+  measured correction to P42's wording, for 4d-iii:** the delivered three-field writers do NOT fail
+  when only the DATABASE defaults are dropped, because the Prisma client sends the schema's
+  `@default(true)` itself. They fail only once 4d-iii also removes that `@default` from
+  `schema.prisma`, where the field becomes required, so 4d-iii's default drop must take both. A4b's
+  RED evidence is the static writer sweep and the provisional-head refusal; its live arms record
+  that every shipped writer's rows carry the column with the database defaults dropped.
 
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its

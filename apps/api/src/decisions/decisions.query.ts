@@ -489,12 +489,20 @@ export class DecisionsQueryService {
    *     could not provably backfill) REFUSES until an operator repairs it.
    * Runs on the caller's transaction client when provided (same-tx validation, spec §6) —
    * the provenance a requirement pins is transactionally the register head.
+   *
+   * Phase 6 task 4d-ii-a / A4b (§A.2 "The finality key, stated exactly") — the head must also be
+   * FINAL. Under the chain an approval is provisional until the architect countersigns it, and a
+   * demand derived from it would be a commitment made on a decision nobody has finished making. An
+   * unfinalized head is REFUSED, and the reference carries the head's `finalized` as
+   * `revisionFinalized`, which every spec writer states: the specs' provenance FK targets the
+   * register's widened key `(…, finalized)`, and 4d-iii drops the column's default, so a writer
+   * that does not state it fails there.
    */
   async approvedRef(
     projectId: string,
     decisionId: string,
     tx?: Prisma.TransactionClient,
-  ): Promise<{ decisionId: string; decisionVersion: number; optionKey: string }> {
+  ): Promise<{ decisionId: string; decisionVersion: number; optionKey: string; revisionFinalized: true }> {
     const client = tx ?? this.prisma;
     const d = await client.decision.findFirst({
       where: { id: decisionId, projectId },
@@ -508,12 +516,15 @@ export class DecisionsQueryService {
     const head = await client.decisionApprovalRevision.findFirst({
       where: { decisionId },
       orderBy: { version: 'desc' },
-      select: { version: true, optionKey: true },
+      select: { version: true, optionKey: true, finalized: true },
     });
     if (!head) {
       throw new BadRequestException('The approved decision has no immutable approval revision on record — operator repair is required before it can anchor requirement provenance');
     }
-    return { decisionId: d.id, decisionVersion: head.version, optionKey: head.optionKey };
+    if (!head.finalized) {
+      throw new BadRequestException('The decision\'s approval is provisional until the architect countersigns it — it cannot anchor requirement provenance yet');
+    }
+    return { decisionId: d.id, decisionVersion: head.version, optionKey: head.optionKey, revisionFinalized: true };
   }
 
 }

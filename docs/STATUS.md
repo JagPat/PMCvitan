@@ -14,32 +14,33 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a4a-consultation-cycle
-reviewed_merge: 8894ed0
-open_pr: 649
+work_item: phase-6-task-4d-ii-a-a4b-approved-ref
+reviewed_merge: 1f4f228
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
 ```
 
-### Now — Phase 6 task 4d: A4a, the consultation cycle
+### Now — Phase 6 task 4d: A4b, the finality key's writers
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A4a, `open_pr: 649` (`work_item: phase-6-task-4d-ii-a-a4a-consultation-cycle`, branch
-  `claude/4d-ii-a4-readers`, from `main` at `8894ed0`).** A4 (the readers) is split into sub-units,
-  recorded in the staging document. A4a makes the consultation cycle count FINALIZED approvals at
-  every site of §A.2's cycle trace: a provisional approval awaiting countersign has not ended the
-  cycle.
-  - The request's frozen `openCycle`, the response check, the claim-time push predicate and the
-    DTO's `approvalCycle` (read by `viewerIsConsultee` on the server and the client, and folded by the
-    projection) all count finalized revisions. The withdraw's evidence count and the next approval's
-    version stay on every revision, as the trace requires.
-  - The two consultation seals re-count the cycle too, a site the trace does not name. Migration
-    `20271227000000_phase6_t4d_ii_consultation_finalized_cycle` re-issues them with the finalized
-    count (on `ALWAYS_EXECUTE`, re-runnable, marker-aware); 4d-iii's re-issued bodies owe the same.
-  - Behaviour is unchanged until the chain: every revision today is born finalized.
+- **Now, A4b (`work_item: phase-6-task-4d-ii-a-a4b-approved-ref`, branch
+  `claude/4d-ii-a4b-approved-ref`, from `main` at `1f4f228`).** A requirement's decision provenance
+  must name a FINAL approval.
+  - `decisions.approvedRef` refuses a provisional head (400) and returns the head's `finalized` as
+    `revisionFinalized`.
+  - Every spec writer states the carrier: material and labour create/revise from the widened
+    reference, both cancellation copies carrying it verbatim, a spec with no decision stating `true`.
+    A static writer sweep pins the four INSERT sites.
+  - Measured for 4d-iii: the delivered writers fail only once `schema.prisma` also loses the
+    column's `@default(true)` (the client sends it otherwise), recorded in the staging document.
+  - No migration (`migration-scope: n/a`).
+- **A4a merged as #649** (`1f4f228`): the consultation cycle counts FINALIZED approvals at every site
+  of §A.2's trace, and migration `20271227000000` re-issues the two consultation seals with the same
+  count (asking the durable `phase6_t4d_retired()`, review finding 4116369412).
 - **A3c merged as #648** (`8894ed0`): owner/admin org writes and project creation serialize on the org
   key (`lockOrgStanding`), with the creator's standing re-judged under it and a stale SERIALIZABLE
   snapshot turned into a retried serialization failure.

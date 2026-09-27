@@ -49,6 +49,8 @@ export class LabourRequirementParticipant {
       decisionId: string | null;
       decisionVersion: number | null;
       optionKey: string | null;
+      /** 4d-ii-a / A4b — the provenance's finality carrier, stated by every writer (4d-iii drops the default). */
+      revisionFinalized: boolean;
       slices: ReadonlyArray<{ civilDate: Date; personShiftQty: number }>;
     },
   ): Promise<void> {
@@ -65,6 +67,7 @@ export class LabourRequirementParticipant {
         decisionId: input.decisionId,
         decisionVersion: input.decisionVersion,
         optionKey: input.optionKey,
+        revisionFinalized: input.revisionFinalized,
       },
     });
     for (const slice of input.slices) {
@@ -171,6 +174,8 @@ export class LabourRequirementParticipant {
         decisionId: spec.decisionId,
         decisionVersion: spec.decisionVersion,
         optionKey: spec.optionKey,
+        // 4d-ii-a / A4b — the finality carrier travels VERBATIM with the provenance it pins
+        revisionFinalized: spec.revisionFinalized,
       },
     });
     const slices = await tx.labourDemandSlice.findMany({ where: { projectId, requirementId, revision: fromRevision } });
