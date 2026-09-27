@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a3c-org-key
 reviewed_merge: e7665f1
-open_pr: none
+open_pr: 648
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
@@ -27,7 +27,7 @@ updated: 2026-09-27
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A3c (`work_item: phase-6-task-4d-ii-a-a3c-org-key`, branch `claude/4d-ii-a3c-org-key`, from
+- **Now, A3c, `open_pr: 648` (`work_item: phase-6-task-4d-ii-a-a3c-org-key`, branch `claude/4d-ii-a3c-org-key`, from
   `main` at `e7665f1`).** `lockOrgStanding` closes the phantom between project creation and owner/admin
   org writes: a grant fans standing out over the org's committed projects while a new project seeds its
   owners from the org, so the two could each miss the other.
