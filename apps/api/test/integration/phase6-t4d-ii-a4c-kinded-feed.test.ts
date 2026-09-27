@@ -162,6 +162,18 @@ describe('4d-ii-a / A4c — the snapshot serves kinded notices by rendering, vis
     expect(await feedOf('client', f.clientUser.id)).not.toContain(`Decision withdrawn: ${d.title} — Superseded`);
   });
 
+  // #651's review, finding 4117114385 — a pending decision's `decision.published` event emitted under
+  // the RECORD catalog key (which the envelope seal admits for the type) is not a team-visible record
+  it('a notice whose catalog key disagrees with its decision is served to no one', async () => {
+    const d = await publish();
+    await plantKinded(d.id, 'decision.published.record', { title: d.title });
+    for (const [role, user] of [['pmc', f.memberUser.id], ['client', f.clientUser.id], ['contractor', contractorId]] as const) {
+      const feed = await feedOf(role, user);
+      expect(feed, `${role}: no "record" for a decision awaiting approval`).not.toContain(`Issue recorded: ${d.title}`);
+      expect(feed).not.toContain(FORGED);
+    }
+  });
+
   it('a kind this release has no renderer arm for is omitted, never served from its stored text', async () => {
     const d = await publish();
     await plantKinded(d.id, 'decision.drafted', { title: d.title });

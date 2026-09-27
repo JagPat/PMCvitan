@@ -31,6 +31,14 @@ import type { DecisionDto } from '../snapshot/types';
  *   an ACTIONABLE kind of a withdrawn decision is suppressed, since it asks for an act the withdrawal
  *   cancelled; and a pending approval demand keeps the kind-less notice's audience, pmc and the
  *   decider, so a consultee who may see the decision still receives no demand.
+ *
+ * WHICH AUDIENCE IS THE DECISION'S TO SAY, NOT THE EVENT'S (#651's review, finding 4117114385). A
+ * `decision.published` event is emitted under one of two catalog keys, the approval demand or the
+ * record, and the envelope seal admits either for the type: nothing binds the key a direct writer
+ * chose to the decision it names. So the decision's own state decides (a record is `deciderKind`
+ * `none`, fixed at publication), and a notice whose event key disagrees with it is not served at all:
+ * trusting the key would let a pending decision's notice pass as a team-visible record, and read as
+ * one.
  */
 
 /** The kinds that ask a viewer to act. Suppressed once their decision is withdrawn; the rows and
@@ -100,10 +108,15 @@ export function kindedDecisionNoticeServed(
 ): boolean {
   if (!decision) return false;
   if (decision.status === 'withdrawn' && ACTIONABLE_DECISION_NOTICE_KINDS.has(kind)) return false;
-  // the pending approval demand's audience, exactly the kind-less notice's (snapshot's
-  // `stripPendingNotice`): pmc and the decider. A record demands nothing and is team-visible.
-  if (kind === 'decision.published' && event.effectKey !== RECORD_EFFECT_KEY && role !== 'pmc') {
-    return viewerIsDecider({ deciderKind: decision.deciderKind, deciderUserId: decision.deciderUserId ?? null }, role, userId);
+  if (kind === 'decision.published') {
+    const recordDecision = decision.deciderKind === 'none';
+    // the event's catalog key must say what the decision is; one that disagrees is not served
+    if ((event.effectKey === RECORD_EFFECT_KEY) !== recordDecision) return false;
+    // the pending approval demand's audience, exactly the kind-less notice's (snapshot's
+    // `stripPendingNotice`): pmc and the decider. A record demands nothing and is team-visible.
+    if (!recordDecision && role !== 'pmc') {
+      return viewerIsDecider({ deciderKind: decision.deciderKind, deciderUserId: decision.deciderUserId ?? null }, role, userId);
+    }
   }
   return true;
 }

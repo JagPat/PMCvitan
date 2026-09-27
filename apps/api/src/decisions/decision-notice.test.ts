@@ -85,6 +85,18 @@ describe('who is served a kinded decision notice (4d-ii-a / A4c)', () => {
     expect(kindedDecisionNoticeServed('decision.published', published('T'), memberHeld, 'client', 'u-client')).toBe(false);
   });
 
+  // #651's review, finding 4117114385 — the audience is the DECISION's to say, not the event key's
+  it('a notice whose catalog key disagrees with the decision is served to no one', () => {
+    // a PENDING decision's notice emitted under the record key: not a team-visible record
+    const recordKeyOnPending = published('T', 'decision.published.record');
+    for (const [role, user] of [['pmc', 'u-pmc'], ['engineer', 'u-eng'], ['engineer', 'u-other'], ['client', 'u-client']] as const) {
+      expect(kindedDecisionNoticeServed('decision.published', recordKeyOnPending, memberHeld, role, user), `${role}/${user}`).toBe(false);
+    }
+    // and a RECORD's notice emitted under the demand key: not a demand
+    const recorded = { status: 'recorded' as const, deciderKind: 'none' as const, deciderUserId: undefined };
+    expect(kindedDecisionNoticeServed('decision.published', published('T'), recorded, 'pmc', 'u-pmc')).toBe(false);
+  });
+
   it('a record demands nothing and reaches everyone who may see it', () => {
     const recorded = { status: 'recorded' as const, deciderKind: 'none' as const, deciderUserId: undefined };
     expect(kindedDecisionNoticeServed('decision.published', published('T', 'decision.published.record'), recorded, 'contractor', 'u-con')).toBe(true);
