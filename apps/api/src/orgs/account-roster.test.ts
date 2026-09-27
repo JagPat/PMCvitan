@@ -45,6 +45,25 @@ describe('the provisioning roster (4d-ii-a / A3a)', () => {
     ]);
   });
 
+  it('refuses a non-string email or phone before any write, and admits a null or absent one (#645 Codex 4114271547)', () => {
+    const refusal = (() => {
+      try {
+        parseAccountRoster(JSON.stringify([
+          { role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in' },
+          { role: 'client', name: 'Mr. Shah', email: 7 },
+          { role: 'engineer', name: 'Site', phone: { n: 1 } },
+        ]), defaults);
+      } catch (e) { return e as AccountRosterError; }
+    })()!;
+    expect(refusal).toBeInstanceOf(AccountRosterError);
+    expect(refusal.problems).toEqual([
+      'entry #2 (Mr. Shah) has a non-string email (7)',
+      'entry #3 (Site) has a non-string phone ({"n":1})',
+    ]);
+    const roster = [{ role: 'engineer', name: 'Site', email: null, phone: '9000000000' }];
+    expect(parseAccountRoster(JSON.stringify(roster), defaults)).toEqual(roster);
+  });
+
   it('names a legacy architect User.role the membership backfill would grant, and only that', () => {
     const problems = refusedBackfillProblems([
       { id: 'u1', role: 'engineer', email: null, phone: '9000000000' },

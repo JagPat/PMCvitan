@@ -56,6 +56,24 @@ describe('4d-ii-a / A3a — ensure-accounts judges its roster before writing (li
     expect(await t.prisma.org.count({ where: { slug: orgSlug } }), 'not even the org upsert ran').toBe(0);
   }, 150_000);
 
+  it('a roster with a non-string contact is refused before the org upsert, like every other malformed entry (#645 Codex 4114271547)', async () => {
+    const run = randomUUID().slice(0, 8);
+    const pmcEmail = `a3a-pmc-${run}@test.local`;
+    const orgSlug = `a3a-${run}`;
+    const result = runEnsureAccounts({
+      PROJECT_ID: f.projectA.id,
+      ORG_SLUG: orgSlug,
+      ACCOUNTS_JSON: JSON.stringify([
+        { role: 'pmc', name: 'A3a PMC', email: pmcEmail },
+        { role: 'client', name: 'A3a Client', email: 7 },
+      ]),
+    });
+    expect(result.status, 'the run fails closed').not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/entry #2 \(A3a Client\) has a non-string email \(7\)/);
+    expect(await t.prisma.user.count({ where: { email: pmcEmail } })).toBe(0);
+    expect(await t.prisma.org.count({ where: { slug: orgSlug } }), 'not even the org upsert ran').toBe(0);
+  }, 150_000);
+
   it('sign-in provisioning waits for the project readiness key, then commits the account and its membership together', async () => {
     const auth = t.app.get(AuthService);
     const phone = `9${Date.now().toString().slice(-9)}`;

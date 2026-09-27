@@ -69,6 +69,17 @@ export function parseAccountRoster(raw: string | undefined, defaults: readonly A
       );
     }
     if (typeof a.name !== 'string' || a.name.trim() === '') problems.push(`${describe(a, index)} has no name`);
+    // Every field the script hands Prisma is judged here, not only the role and name (#645 Codex
+    // 4114271547): a non-string contact would pass this pass and be rejected by Prisma at the
+    // entry's `user.findUnique`, AFTER the org upsert and every earlier entry had been written.
+    // Absent (`undefined`) or `null` is "no contact of that kind", which the script already
+    // treats as absent; anything else must be a string.
+    for (const field of ['email', 'phone'] as const) {
+      const v = a[field] as unknown;
+      if (v !== undefined && v !== null && typeof v !== 'string') {
+        problems.push(`${describe({ name: a.name }, index)} has a non-string ${field} (${JSON.stringify(v)})`);
+      }
+    }
   });
   if (problems.length > 0) throw new AccountRosterError(problems);
   return value as AccountSpec[];
