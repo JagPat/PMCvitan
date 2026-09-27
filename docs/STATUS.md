@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a4c-kinded-feed
 reviewed_merge: c904ef9
-open_pr: none
+open_pr: 651
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
@@ -27,7 +27,7 @@ updated: 2026-09-27
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A4c (`work_item: phase-6-task-4d-ii-a-a4c-kinded-feed`, branch `claude/4d-ii-a4c-kinded-feed`,
+- **Now, A4c, `open_pr: 651` (`work_item: phase-6-task-4d-ii-a-a4c-kinded-feed`, branch `claude/4d-ii-a4c-kinded-feed`,
   from `main` at `c904ef9`).** How the feed reads a KINDED notice (one bound to its event):
   - the snapshot reads the viewer's decision slice and the feed (with the bound events) in ONE
     REPEATABLE READ transaction, through the decisions module's and the platform's own queries;
