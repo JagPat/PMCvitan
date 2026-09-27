@@ -14,43 +14,42 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-writers-witness
-reviewed_merge: e42950a
-open_pr: 646
+work_item: phase-6-task-4d-ii-a-a3b-member-commands
+reviewed_merge: 61acff7
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
 ```
 
-### Now — Phase 6 task 4d: the 4d-ii writers witness and the ReleaseLease startup writer
+### Now — Phase 6 task 4d: A3b, the member commands
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, the writers witness, `open_pr: 646` (`work_item: phase-6-task-4d-ii-a-writers-witness`, branch
-  `claude/4d-ii-writers-witness`, from `main` at `e42950a`).** The owner's resequencing of
-  2026-09-27, recorded in the staging document: taken from A6 and landed before A3b, because A1 and A2
-  already write data 4d-i's replay audits read as unvalidated until `phase6_t4d_ii_installed()` holds.
-  - **Migration `20271226000000_phase6_t4d_ii_release_lease_writer`** installs
-    `platform_t4d_ii_writers_installed()` and drops the dark window's `ReleaseLease` INSERT door (the
-    witness alone does not: 4d-i drops it only on a replay). On `ALWAYS_EXECUTE`, re-runnable.
-  - **`src/platform/release-lease.service.ts`** writes each serving process's lease after the catalog
-    sync and renews it, both timestamps on the database clock; never under `NODE_ENV=test`.
-  - `migration-scope: inseparable`: neither half is safe without the other.
-  - **Review finding 4114478871, fixed forward.** The claim is bounded: a ledger-lost restore replays
-    through 4d-i once this release has served (the witness and a lease are in the backup); a restore
-    from before that holds no lease, still stops, and recovers through its ledger, not a row reset
-    (RUNBOOK §P6T4D). A `db push` database never reaches the replay. `upgrade-proof.sh` proves both
-    arms, and `migrate.sh` now prints that recovery for this abort.
-  - **Review findings 4114736200 and 4114736203, fixed forward.** A process that cannot keep its lease
-    live fences itself (exits) before the lease can expire, and a renewal never revives a lapsed lease;
-    the recovery interleaving is probed. The API acceptance harness opts out with
-    `RELEASE_LEASE_DISABLED=true`, honored only outside production.
-  - **Review findings 4114890640 and 4114890644 (on `e4b0738`).** 4114890644 is fixed forward:
-    `migrate.sh` prints the ledger-restoration note for EITHER 4d-i half, only on the P3005 path,
-    pinned by `scripts/ci-migrate-4d-i-report.test.mjs`. 4114890640 (a fleet-wide witness) is
-    disputed on its thread, by the owner's decision of 2026-09-27: every 4d-shaped row a rolling
-    fleet can write passed 4d-i's live seals; it awaits a new head's answer or the owner's ruling.
+- **Now, A3b (`work_item: phase-6-task-4d-ii-a-a3b-member-commands`, branch
+  `claude/4d-ii-a3b-member-commands`, from `main` at `61acff7`).** `members.add`, `members.updateRole`
+  and `members.remove` become ledger commands with `synthesizeKeyWhenAbsent: true`, each writing its
+  `MembershipTransition` BEFORE the membership write, with the actor's frozen pair resolved in the
+  transaction; the add's identity lookup and provisioning move inside `executeCommand.run`.
+  - The shapes 4d-i's binding admits per receipt decide three behaviours: an add over an ACTIVE member
+    is refused 409 (their role changes from the team list), except one asking for exactly what they
+    are, which records nothing; a removed member's role cannot be changed (409); removing someone
+    already removed records nothing and succeeds.
+  - A change that keeps the role (a consultant's discipline, or nothing at all) is not a standing
+    change: no fact and no member receipt, because 4d-i's fact-first seal demands a transition for
+    every membership write under one and none describes such a move. It stays a readiness-locked
+    compare-and-set with its own `membership.discipline_changed` event.
+  - The event's envelope pair is resolved by `emitEvent` after the write, so a PMC re-roling
+    themselves records `pmc` on the fact (the pre-state) and whatever standing they hold on the event.
+  - No migration (`migration-scope: n/a`). The architect crossing event stays with A7; the
+    reservation-door 409s with A5.
+- **The writers witness merged as #646** (`61acff7`): migration `20271226000000_phase6_t4d_ii_release_lease_writer`
+  installs `platform_t4d_ii_writers_installed()` and drops the lease door; `release-lease.service.ts`
+  writes and renews each serving process's lease and fences a process whose lease would lapse. The
+  ledger-lost replay claim is bounded and proven both ways in `upgrade-proof.sh`, and `migrate.sh` prints
+  the ledger recovery for either 4d-i half on the P3005 path. The fleet-wide-witness finding
+  (4114890640) was disputed on its thread with the owner's agreement; the final head reviewed clean.
 - **A3a merged as #645** (`e42950a`): `ensure-accounts` judges its whole roster before the first write
   and refuses `architect`; the non-command `Membership` writers take the readiness key.
 - **A2 merged as #643** (`7422f0c`): `requestChange` records its provenance and the frozen requester

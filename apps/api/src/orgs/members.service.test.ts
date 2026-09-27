@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { MembersService } from './members.service';
 import type { DecisionsParticipant } from '../decisions/decisions.participant';
 import type { OrgsParticipant } from './orgs.participant';
@@ -8,20 +8,45 @@ import type { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 
 interface U { id: string; name: string; email: string | null; phone: string | null; role: string; projectId: string; passwordHash: string | null; emailVerifiedAt: Date | null }
-interface M { projectId: string; userId: string; role: string; status: string }
+interface M { id: string; projectId: string; userId: string; role: string; status: string; discipline?: string | null }
+interface T { id: string; membershipId: string; userId: string; fromRole: string | null; fromStatus: string | null; toRole: string; toStatus: string; actorId: string; actorRole: string; actorName: string; sourceCommandId: string }
 
-function make(orgRole: string | null = null) {
+/** The raw reads `resolveActorEnvelope` makes: the actor holds their token role and has a name. */
+function envelopeReads(opts: { holds: boolean }) {
+  return vi.fn(async (q: { sql?: string; strings?: string[] }) => {
+    const text = q?.sql ?? q?.strings?.join('?') ?? '';
+    if (text.includes('platform_user_holds_role_windowed')) return [{ holds: opts.holds }];
+    if (text.includes('"displayName"')) return [{ displayName: 'Priya PMC' }];
+    return [];
+  });
+}
+
+function make(orgRole: string | null = null, opts: { holds?: boolean } = {}) {
   const users: U[] = [];
   const memberships: M[] = [];
+  const transitions: T[] = [];
+  const receipts: Array<{ id: string; commandType: string; status: string; resultRef?: string }> = [];
   let seq = 0;
+  const withUser = (m: M, include?: { user?: boolean }) => (include?.user ? { ...m, user: users.find((u) => u.id === m.userId) } : m);
+  const byWhere = (where: { id?: string; projectId_userId?: { projectId: string; userId: string } }) =>
+    memberships.find((x) => (where.id ? x.id === where.id : x.projectId === where.projectId_userId!.projectId && x.userId === where.projectId_userId!.userId));
   const prisma = {
     project: { findUnique: vi.fn(async () => ({ id: 'p1', orgId: 'org1', name: 'Ambli' })), findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1' })) },
     // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its stream + event steps
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
-    // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
-    // here means no standing is proven, so the event is written with a NULL pair.
-    $queryRaw: vi.fn(async () => []),
+    // 4d-ii-a / A1 + A3b — the envelope reads: by default the actor holds their token role, so a
+    // member command can freeze the pair on its transition fact (and emitEvent on its event).
+    $queryRaw: envelopeReads({ holds: opts.holds ?? true }),
+    // 4d-ii-a / A3b — the command ledger the three member commands reserve a receipt in.
+    commandExecution: {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async ({ data }: { data: { commandType: string } }) => { const r = { id: `cmd${receipts.length + 1}`, commandType: data.commandType, status: 'reserved' }; receipts.push(r); return { id: r.id }; }),
+      update: vi.fn(async ({ where, data }: { where: { id: string }; data: { status: string; resultRef: string } }) => { const r = receipts.find((x) => x.id === where.id)!; Object.assign(r, data); return r; }),
+    },
+    membershipTransition: {
+      create: vi.fn(async ({ data }: { data: T }) => { transitions.push({ ...data }); return { id: data.id }; }),
+    },
     orgMembership: { findUnique: vi.fn(async () => (orgRole ? { role: orgRole } : null)) },
     user: {
       findUnique: vi.fn(async ({ where }: { where: { id?: string; email?: string; phone?: string } }) =>
@@ -31,18 +56,15 @@ function make(orgRole: string | null = null) {
     },
     membership: {
       findMany: vi.fn(async () => memberships.filter((m) => m.status !== 'removed').map((m) => ({ ...m, user: users.find((u) => u.id === m.userId) }))),
-      findUnique: vi.fn(async ({ where }: { where: { projectId_userId: { projectId: string; userId: string } } }) => {
-        const m = memberships.find((x) => x.projectId === where.projectId_userId.projectId && x.userId === where.projectId_userId.userId);
+      findUnique: vi.fn(async ({ where }: { where: { id?: string; projectId_userId?: { projectId: string; userId: string } } }) => {
+        const m = byWhere(where);
         return m ? { ...m, user: users.find((u) => u.id === m.userId) } : null;
       }),
-      upsert: vi.fn(async ({ where, create, update }: { where: { projectId_userId: { projectId: string; userId: string } }; create: M; update: Partial<M> }) => {
-        const ex = memberships.find((x) => x.projectId === where.projectId_userId.projectId && x.userId === where.projectId_userId.userId);
-        if (ex) { Object.assign(ex, update); return ex; }
-        const m = { ...create }; memberships.push(m); return m;
-      }),
-      update: vi.fn(async ({ where, data }: { where: { projectId_userId: { projectId: string; userId: string } }; data: Partial<M> }) => {
-        const m = memberships.find((x) => x.projectId === where.projectId_userId.projectId && x.userId === where.projectId_userId.userId)!;
-        Object.assign(m, data); return m;
+      findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => ({ ...byWhere(where)!, user: users.find((u) => u.id === byWhere(where)!.userId) })),
+      create: vi.fn(async ({ data, include }: { data: M; include?: { user?: boolean } }) => { const m = { ...data }; memberships.push(m); return withUser(m, include); }),
+      update: vi.fn(async ({ where, data, include }: { where: { id?: string; projectId_userId?: { projectId: string; userId: string } }; data: Partial<M>; include?: { user?: boolean } }) => {
+        const m = byWhere(where)!;
+        Object.assign(m, data); return withUser(m, include);
       }),
     },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
@@ -61,7 +83,7 @@ function make(orgRole: string | null = null) {
     { effectiveRoleStanding: vi.fn(async () => 1) } as unknown as OrgsParticipant,
     { notify } as unknown as InvitationsService,
   );
-  return { svc, users, memberships, notify, prisma };
+  return { svc, users, memberships, transitions, receipts, notify, prisma };
 }
 
 const pmc: AuthUser = { sub: 'pmc1', role: 'pmc', projectId: 'p1' };
@@ -193,5 +215,96 @@ describe('MembersService.add — invite notice', () => {
     );
     expect(nameReads).toHaveLength(1);
     expect(memberships).toHaveLength(1);
+  });
+});
+
+// Phase 6 task 4d unit 4d-ii-a / A3b — the three member mutations are ledger commands, each writing
+// its `MembershipTransition` FIRST. The seals themselves (order, shape, authority, binding) are
+// proven against live PostgreSQL in `test/integration/phase6-t4d-ii-a3b-member-commands.test.ts`.
+describe('MembersService — 4d-ii-a / A3b member commands', () => {
+  const order = (prisma: ReturnType<typeof make>['prisma'], fn: 'create' | 'update') => ({
+    fact: prisma.membershipTransition.create.mock.invocationCallOrder[0]!,
+    write: prisma.membership[fn].mock.invocationCallOrder.at(-1)!,
+  });
+
+  it('an ADD reserves a members.add receipt and writes its fact, naming the pre-minted membership, BEFORE the membership', async () => {
+    const { svc, prisma, transitions, receipts, memberships } = make();
+    await svc.add('p1', pmc, { name: 'Asha', role: 'engineer', email: 'asha@vitan.in' });
+    expect(receipts).toMatchObject([{ commandType: 'members.add', status: 'succeeded', resultRef: memberships[0].id }]);
+    expect(transitions).toEqual([expect.objectContaining({
+      membershipId: memberships[0].id, userId: memberships[0].userId, fromRole: null, fromStatus: null,
+      toRole: 'engineer', toStatus: 'active', actorId: 'pmc1', actorRole: 'pmc', actorName: 'Priya PMC', sourceCommandId: 'cmd1',
+    })]);
+    const o = order(prisma, 'create');
+    expect(o.fact).toBeLessThan(o.write);
+  });
+
+  it('the identity lookup and provisioning run INSIDE the command, after its receipt', async () => {
+    const { svc, prisma } = make();
+    await svc.add('p1', pmc, { name: 'Inside', role: 'engineer', email: 'inside@vitan.in' });
+    expect(prisma.commandExecution.create.mock.invocationCallOrder[0]!).toBeLessThan(prisma.user.create.mock.invocationCallOrder[0]!);
+  });
+
+  it('re-adding a REMOVED member re-activates them from `removed` under members.add', async () => {
+    const { svc, memberships, transitions } = make();
+    await svc.add('p1', pmc, { name: 'Back', role: 'engineer', email: 'back@vitan.in' });
+    const uid = memberships[0].userId;
+    await svc.remove('p1', pmc, uid);
+    await svc.add('p1', pmc, { name: 'Back', role: 'contractor', email: 'back@vitan.in' });
+    expect(memberships).toHaveLength(1);
+    expect(memberships[0]).toMatchObject({ role: 'contractor', status: 'active' });
+    expect(transitions.at(-1)).toMatchObject({ fromRole: 'engineer', fromStatus: 'removed', toRole: 'contractor', toStatus: 'active' });
+  });
+
+  it('adding someone already ACTIVE is refused (their role changes from the team list), unless it asks for what they already are', async () => {
+    const { svc, memberships, transitions } = make();
+    await svc.add('p1', pmc, { name: 'Here', role: 'engineer', email: 'here@vitan.in' });
+    await expect(svc.add('p1', pmc, { name: 'Here', role: 'contractor', email: 'here@vitan.in' })).rejects.toBeInstanceOf(ConflictException);
+    await expect(svc.add('p1', pmc, { name: 'Here', role: 'engineer', email: 'here@vitan.in' })).resolves.toMatchObject({ role: 'engineer' });
+    expect(memberships[0].role).toBe('engineer');
+    expect(transitions).toHaveLength(1);
+  });
+
+  it('a RE-ROLE writes (old role, active) → (new role, active) before the update; a removed member is refused', async () => {
+    const { svc, prisma, memberships, transitions, receipts } = make();
+    await svc.add('p1', pmc, { name: 'Role', role: 'engineer', email: 'role@vitan.in' });
+    const uid = memberships[0].userId;
+    await svc.updateRole('p1', pmc, uid, { role: 'contractor' });
+    expect(transitions.at(-1)).toMatchObject({ fromRole: 'engineer', fromStatus: 'active', toRole: 'contractor', toStatus: 'active' });
+    expect(receipts.at(-1)).toMatchObject({ commandType: 'members.updateRole', resultRef: memberships[0].id });
+    const facts = prisma.membershipTransition.create.mock.invocationCallOrder;
+    expect(facts.at(-1)!).toBeLessThan(prisma.membership.update.mock.invocationCallOrder.at(-1)!);
+
+    await svc.remove('p1', pmc, uid);
+    await expect(svc.updateRole('p1', pmc, uid, { role: 'engineer' })).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('a DISCIPLINE-only change writes no fact and reserves no member receipt; asking for the current state writes nothing', async () => {
+    const { svc, memberships, transitions, receipts } = make();
+    await svc.add('p1', pmc, { name: 'Lumen', role: 'consultant', discipline: 'lighting', email: 'lumen@vitan.in' });
+    const uid = memberships[0].userId;
+    const before = { facts: transitions.length, receipts: receipts.length };
+    await expect(svc.updateRole('p1', pmc, uid, { role: 'consultant', discipline: 'acoustics' })).resolves.toMatchObject({ discipline: 'acoustics' });
+    expect(memberships[0].discipline).toBe('acoustics');
+    await svc.updateRole('p1', pmc, uid, { role: 'consultant', discipline: 'acoustics' });
+    expect({ facts: transitions.length, receipts: receipts.length }).toEqual(before);
+  });
+
+  it('a REMOVAL writes (role, active) → (role, removed); removing someone already removed records nothing', async () => {
+    const { svc, memberships, transitions } = make();
+    await svc.add('p1', pmc, { name: 'Gone', role: 'engineer', email: 'gone@vitan.in' });
+    const uid = memberships[0].userId;
+    await svc.remove('p1', pmc, uid);
+    expect(transitions.at(-1)).toMatchObject({ fromRole: 'engineer', fromStatus: 'active', toRole: 'engineer', toStatus: 'removed' });
+    const facts = transitions.length;
+    await expect(svc.remove('p1', pmc, uid)).resolves.toEqual({ ok: true });
+    expect(transitions).toHaveLength(facts);
+  });
+
+  it('an actor whose token role no longer stands has no pair to freeze — the command is refused and nothing is written', async () => {
+    const { svc, memberships, transitions } = make(null, { holds: false });
+    await expect(svc.add('p1', pmc, { name: 'Stale', role: 'engineer', email: 'stale@vitan.in' })).rejects.toBeInstanceOf(ForbiddenException);
+    expect(transitions).toHaveLength(0);
+    expect(memberships).toHaveLength(0);
   });
 });

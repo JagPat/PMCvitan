@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { MembersService } from './members.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { addMemberSchema, updateMemberSchema, type AddMemberInput, type UpdateMemberInput } from '../contracts';
@@ -24,10 +24,18 @@ export class MembersController {
     return this.members.list(projectId, user);
   }
 
+  /** 4d-ii-a / A3b — the three member mutations are ledger commands: an `Idempotency-Key` makes a
+   *  retry replay the committed act exactly once; with none, the server reserves a per-call key so
+   *  the `MembershipTransition` fact always has a receipt to cite. */
   @Post()
   @AllowAnyRole(MEMBERS_AUTHZ)
-  add(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser, @Body(new ZodPipe(addMemberSchema)) body: AddMemberInput) {
-    return this.members.add(projectId, user, body);
+  add(
+    @Param('projectId') projectId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(addMemberSchema)) body: AddMemberInput,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.members.add(projectId, user, body, idempotencyKey);
   }
 
   @Patch(':userId')
@@ -37,13 +45,19 @@ export class MembersController {
     @Param('userId') userId: string,
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(updateMemberSchema)) body: UpdateMemberInput,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.members.updateRole(projectId, user, userId, body);
+    return this.members.updateRole(projectId, user, userId, body, idempotencyKey);
   }
 
   @Delete(':userId')
   @AllowAnyRole(MEMBERS_AUTHZ)
-  remove(@Param('projectId') projectId: string, @Param('userId') userId: string, @CurrentUser() user: AuthUser) {
-    return this.members.remove(projectId, user, userId);
+  remove(
+    @Param('projectId') projectId: string,
+    @Param('userId') userId: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.members.remove(projectId, user, userId, idempotencyKey);
   }
 }

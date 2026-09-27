@@ -75,7 +75,10 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
     // this — events are immutable there. ProjectEventStream cascades with the project delete.
     // OutboxDelivery (Task 6) FK-references DomainEvent, so truncate them together; ProcessedEvent
     // and ProjectionCursor carry no FK but are cleared for a clean per-suite slate.
-    await sanctionedReset(prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
+    // 4d-ii-a / A3b — a member command writes an immutable `MembershipTransition` that holds a
+    // NO ACTION key to its receipt and a key to its membership, so the receipt and membership
+    // deletes below are refused while one exists. Its TRUNCATE is the same sanctioned reset.
+    await sanctionedReset(prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'MembershipTransition'], { cascade: true });
     // reverse foreign-key order, one transaction — a failed test never strands rows
     await prisma.$transaction([
       // command-idempotency receipts (Phase 2 Task 5) reference the project/org tenant; clear
