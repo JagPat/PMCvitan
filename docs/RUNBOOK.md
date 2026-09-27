@@ -1491,6 +1491,12 @@ does:
   `DecisionApprovalRevision`, `DomainEvent`, `Notification` or consultation row is already in a
   4d shape. **Reset each named row to its legacy shape**, using the script below.
 
+  **Not on a restore that lost its ledger.** On the P3005 baseline path these audits can instead be
+  refusing rows a serving 4d-ii-a writer produced under the live seals, such as a change request's
+  provenance and frozen requester. Those rows are recovered through the ledger, never reset: see
+  "A restored database that lost its migration ledger" above. `scripts/migrate.sh` prints that
+  note ahead of either half's repair on that path.
+
 #### The legacy-shape repair, executable as written
 
 **Why it is a script and not a sentence** (#582's review round 19, finding 1). The earlier text

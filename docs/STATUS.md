@@ -46,6 +46,11 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
     live fences itself (exits) before the lease can expire, and a renewal never revives a lapsed lease;
     the recovery interleaving is probed. The API acceptance harness opts out with
     `RELEASE_LEASE_DISABLED=true`, honored only outside production.
+  - **Review findings 4114890640 and 4114890644 (on `e4b0738`).** 4114890644 is fixed forward:
+    `migrate.sh` prints the ledger-restoration note for EITHER 4d-i half, only on the P3005 path,
+    pinned by `scripts/ci-migrate-4d-i-report.test.mjs`. 4114890640 (a fleet-wide witness) is
+    disputed on its thread, by the owner's decision of 2026-09-27: every 4d-shaped row a rolling
+    fleet can write passed 4d-i's live seals; it awaits a new head's answer or the owner's ruling.
 - **A3a merged as #645** (`e42950a`): `ensure-accounts` judges its whole roster before the first write
   and refuses `architect`; the non-command `Membership` writers take the readiness key.
 - **A2 merged as #643** (`7422f0c`): `requestChange` records its provenance and the frozen requester
