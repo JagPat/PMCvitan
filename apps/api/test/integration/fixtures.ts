@@ -118,6 +118,22 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
   return { orgA, orgB, projectA, projectB, memberUser, ownerUser, otherUser, strangerUser, clientUser, cleanup };
 }
 
+/** Phase 6 task 4d unit 4d-ii-a / A3b — a suite that drives the member commands leaves
+ *  `MembershipTransition` facts behind, and they are immutable: the append-only seal refuses a
+ *  direct DELETE and admits only the project's own deletion cascade. A suite that tears down a
+ *  temporary member mid-run (a user delete cascades into their memberships, and a membership
+ *  delete into its facts) clears that member's facts first, here, under the seal disabled BY NAME
+ *  inside ONE transaction — the same sanctioned-bypass shape as {@link wipeDecisionsVia}: DDL is
+ *  transactional, so a throw re-enables it, and `ALTER TABLE`'s ACCESS EXCLUSIVE lock means no
+ *  parallel probe ever sees the seal off. Scoped to the facts ABOUT or BY the named users. */
+export async function wipeMembershipTransitionsVia(prisma: PrismaService, userIds: readonly string[]): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe('ALTER TABLE "MembershipTransition" DISABLE TRIGGER "MembershipTransition_t4d_append_only"');
+    await tx.membershipTransition.deleteMany({ where: { OR: [{ userId: { in: [...userIds] } }, { actorId: { in: [...userIds] } }] } });
+    await tx.$executeRawUnsafe('ALTER TABLE "MembershipTransition" ENABLE TRIGGER "MembershipTransition_t4d_append_only"');
+  });
+}
+
 /** Phase 6 task 4a (round 12) — approval `DecisionEvent` rows are undeletable EVIDENCE
  *  (`DecisionEvent_no_withdrawn_approval` refuses their DELETE, so erasing one cannot launder a
  *  legacy approval before a withdrawal). Suites that approve decisions therefore wipe events
