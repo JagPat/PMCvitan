@@ -63,6 +63,14 @@ const LABOUR_BASE_UOM = 'person-shift';
 // include here — it is fetched through the Labour read contract (`LabourRequirementQuery`).
 const REQUIREMENT_INCLUDE = { materialSpec: true } as const;
 
+/**
+ * Phase 6 task 4d-ii-a / A4b — the provenance of a spec that names no decision. `revisionFinalized`
+ * is stated here too: the spec tables' CHECK constrains it only when a decision is named, but 4d-iii
+ * drops the column's default, so every writer states a value. `true` is what the default has always
+ * written, and a spec with no decision behind it is final by definition.
+ */
+const NO_DECISION_PROVENANCE = { decisionId: null, decisionVersion: null, optionKey: null, revisionFinalized: true } as const;
+
 type SpecRow = Prisma.MaterialRequirementSpecGetPayload<Record<string, never>>;
 type Row = Prisma.ActivityRequirementGetPayload<{ include: typeof REQUIREMENT_INCLUDE }>;
 
@@ -223,7 +231,7 @@ export class RequirementsService {
     const specFingerprint = await computeSpecFingerprint(identity);
     const provenance = input.decisionId
       ? await this.decisionsQuery.approvedRef(projectId, input.decisionId, tx)
-      : { decisionId: null, decisionVersion: null, optionKey: null };
+      : NO_DECISION_PROVENANCE;
     // the unit stays part of the fingerprinted §B identity but is stored ONCE, on the revision
     // row — the spec record has no baseUom column to disagree with (round-2 finding 4)
     const { baseUom: _uomOnRevisionRow, ...columns } = identity;
@@ -238,7 +246,7 @@ export class RequirementsService {
     if (input.type === 'labour') {
       const provenance = input.decisionId
         ? await this.decisionsQuery.approvedRef(projectId, input.decisionId, tx)
-        : { decisionId: null, decisionVersion: null, optionKey: null };
+        : NO_DECISION_PROVENANCE;
       const labourSpecFingerprint = await computeLabourSpecFingerprint({
         tradeCode: input.tradeCode, skillCode: input.skillCode ?? null, shift: input.shift,
       });
@@ -251,7 +259,8 @@ export class RequirementsService {
       return;
     }
     const spec = await this.specColumns(projectId, input, tx);
-    await tx.materialRequirementSpec.create({ data: { projectId, requirementId, revision, ...spec } });
+    // `revisionFinalized` is STATED, never left to the column default 4d-iii drops (the writer sweep)
+    await tx.materialRequirementSpec.create({ data: { projectId, requirementId, revision, ...spec, revisionFinalized: spec.revisionFinalized } });
   }
 
   /** Lock the requirement ROOT (the revision-lineage serialization point) and return the head. */
@@ -396,6 +405,8 @@ export class RequirementsService {
               materialCategory: s.materialCategory, make: s.make, grade: s.grade,
               normalizedAttributes: s.normalizedAttributes, specFingerprint: s.specFingerprint,
               decisionId: s.decisionId, decisionVersion: s.decisionVersion, optionKey: s.optionKey,
+              // 4d-ii-a / A4b — the finality carrier travels VERBATIM with the provenance it pins
+              revisionFinalized: s.revisionFinalized,
             },
           });
         }
