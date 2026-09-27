@@ -59,6 +59,10 @@ export const orgsManifest: ModuleManifest = {
     'orgs.archiveTemplate',
     'members.add',
     'members.updateRole',
+    // 4d-ii-a / A3b — a member PATCH that keeps the role (a consultant's discipline, or nothing):
+    // ledgered so its key is consumed, and deliberately NOT one of the three member commands 4d-i's
+    // fact-first seal judges, because no transition describes a move that keeps role and status.
+    'members.updateDiscipline',
     'members.remove',
     'companies.add',
     'companies.update',

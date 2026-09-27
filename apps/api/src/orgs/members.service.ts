@@ -1,11 +1,14 @@
+import { randomUUID } from 'node:crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import type { AddMemberInput, UpdateMemberInput } from '../contracts';
-import { resolveActor } from '../common/actor';
+import { resolveActor, type Actor, type EventActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
+import { resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
+import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant } from './orgs.participant';
 import { InvitationsService } from './invitations.service';
@@ -38,6 +41,36 @@ export interface MemberDto {
 export function rethrowHolderSealViolation(e: unknown, message: string): never {
   if (e instanceof Error && /phase6-4b/.test(e.message)) throw new ConflictException(message);
   throw e;
+}
+
+/**
+ * Phase 6 task 4d unit 4d-ii-a / A3b — the one 4d-i transition-seal refusal a correct command can
+ * still meet: the actor's team-management authority, re-judged LIVE by
+ * `MembershipTransition_t4d_seal` at the fact's insert. `canManage` read it before the
+ * transaction (and a `pmc` token is trusted as issued), so a PMC demoted or an owner/admin removed
+ * in between reaches the seal, and the caller is owed the 403 `canManage` would now give.
+ */
+function rethrowTransitionAuthority(e: unknown): never {
+  if (e instanceof Error && /holds neither owner\/admin authority/.test(e.message)) {
+    throw new ForbiddenException('Only the project PMC or an org admin can manage the team');
+  }
+  throw e;
+}
+
+type MembershipWithUser = Prisma.MembershipGetPayload<{ include: { user: true } }>;
+
+/** The two ledger commands one member PATCH can land in; a keyed retry is matched against both. */
+const PATCH_COMMAND_TYPES = ['members.updateRole', 'members.updateDiscipline'] as const;
+
+/** One `MembershipTransition` row, exactly as 4d-i's table spells it. */
+interface TransitionFact {
+  projectId: string;
+  membershipId: string;
+  userId: string;
+  fromRole: string | null;
+  fromStatus: string | null;
+  toRole: string;
+  toStatus: string;
 }
 
 /**
@@ -125,139 +158,395 @@ export class MembersService {
     return role === 'consultant' ? (discipline ?? null) : null;
   }
 
-  async add(projectId: string, requester: AuthUser, input: AddMemberInput): Promise<MemberDto> {
+  /**
+   * 4d-ii-a / A3b — the actor's frozen `(actorRole, actorName)` for a transition fact, resolved
+   * INSIDE the command's transaction by the same predicate and identity read the fact's seal
+   * (`phase6_t4d_actor_bound`) judges it with, and BEFORE the membership write: the fact records
+   * the standing the actor held when they acted, so a PMC re-roling themselves is recorded as the
+   * PMC they were. The fact's columns are NOT NULL, so where no pair resolves (the token's role no
+   * longer stands) there is no attributable act to record and the command is refused.
+   */
+  private async factPair(tx: Prisma.TransactionClient, projectId: string, actor: EventActor): Promise<ActorEnvelope> {
+    const pair = await resolveActorEnvelope(tx, projectId, actor);
+    if (!pair) {
+      throw new ForbiddenException('Your standing on this project changed — reload and retry');
+    }
+    return pair;
+  }
+
+  /**
+   * 4d-ii-a / A3b — write the command's `MembershipTransition` FIRST, before the membership write
+   * it describes: 4d-i's `Membership_t4d_fact_first` refuses a membership write under a member
+   * receipt with no fact for it yet, and the fact's insert seal reads the actor's authority and
+   * pair against the pre-state. The deferred `MembershipTransition_t4d_provenance_bound` then binds
+   * it at commit to this receipt (`resultRef` = the membership id) and to the write.
+   */
+  private async recordTransition(
+    tx: Prisma.TransactionClient,
+    fact: TransitionFact,
+    actor: EventActor,
+    pair: ActorEnvelope,
+    commandId: string | null,
+  ): Promise<void> {
+    if (!commandId) throw new Error('members: a membership transition needs the receipt it cites');
+    await tx.membershipTransition
+      .create({
+        data: {
+          id: randomUUID(),
+          ...fact,
+          actorId: actor.actorId,
+          actorRole: pair.actorRole,
+          actorName: pair.actorName,
+          sourceCommandId: commandId,
+        },
+        select: { id: true },
+      })
+      .catch(rethrowTransitionAuthority);
+  }
+
+  private toDto(m: MembershipWithUser): MemberDto {
+    return {
+      userId: m.userId, membershipId: m.id, name: m.user.name, email: m.user.email, phone: m.user.phone, role: m.role,
+      discipline: m.discipline ?? undefined, status: m.status, credentialState: m.user.passwordHash ? 'active' : 'not_set',
+    };
+  }
+
+  /**
+   * The member as they stand now. Used BEFORE a write (a no-op) and on a REPLAY, where nothing this
+   * call did has committed; a fresh write returns the row its own transaction produced instead, so
+   * no fallible read ever follows a commit (round-1 Codex F1 on `add`).
+   */
+  private async memberDto(projectId: string, userId: string): Promise<MemberDto> {
+    const m = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { user: true } });
+    if (!m) throw new NotFoundException('Member not found on this project');
+    return this.toDto(m);
+  }
+
+  /**
+   * The other branch's receipt for THIS PATCH, read under the readiness lock. The pre-transaction
+   * replay check cannot see a same-key request still in flight on the other branch; both branches
+   * take the readiness lock first, so by the time this runs that request has committed or rolled
+   * back, and a committed one is the act this call repeats. Only a CLIENT key can be shared —
+   * a synthesized one is unique per call.
+   */
+  private async priorPatchReceipt(
+    tx: Prisma.TransactionClient, projectId: string, actorId: string, otherType: string,
+    idempotencyKey: string | undefined, requestHash: string,
+  ): Promise<boolean> {
+    const key = idempotencyKey?.trim();
+    if (!key) return false;
+    const prior = await tx.commandExecution.findFirst({
+      where: { scopeKind: 'project', projectId, actorId, commandType: otherType, idempotencyKey: key, status: 'succeeded' },
+      select: { requestHash: true },
+    });
+    if (!prior) return false;
+    if (prior.requestHash !== requestHash) throw new ConflictException('This idempotency key was already used for a different request.');
+    return true;
+  }
+
+  /**
+   * `members.add` — a ledger command (4d-ii-a / A3b). Its receipt covers the IDENTITY too: the
+   * account lookup and the provisioning create run inside `executeCommand.run`, so two requests
+   * with one `Idempotency-Key` for a new email replay rather than race the user uniqueness key,
+   * and a later failure leaves no identity behind (plan §A.3 obligation 6). Keyless calls, which
+   * every deployed tab makes, get a per-call server key (`synthesizeKeyWhenAbsent`) so the fact
+   * always has a receipt to cite.
+   *
+   * An add ENDS active and BEGINS from nothing or from `removed` — the shape 4d-i's binding admits
+   * for a `members.add` receipt. So an add naming someone already on the team is refused (their
+   * role is changed from the team list), except an add that asks for exactly what they already
+   * are, which records nothing and succeeds.
+   */
+  async add(projectId: string, requester: AuthUser, input: AddMemberInput, idempotencyKey?: string): Promise<MemberDto> {
     await this.assertCanManage(projectId, requester);
     const email = input.email?.toLowerCase();
     const phone = input.phone;
     const discipline = this.disciplineFor(input.role, input.discipline);
-
-    let user =
-      (email && (await this.prisma.user.findUnique({ where: { email } }))) ||
-      (phone && (await this.prisma.user.findUnique({ where: { phone } }))) ||
-      null;
-    if (!user) {
-      // provision the invited identity (they set a credential on first sign-in)
-      user = await this.prisma.user.create({ data: { projectId, role: input.role, name: input.name, email, phone } });
-    }
-
     const actor = await resolveActor(this.prisma, requester);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ name: input.name, role: input.role, email: email ?? null, phone: phone ?? null, discipline });
     // round-1 Codex F1 — read BEFORE the transaction. A fallible lookup AFTER commit could
     // reject `add` when the membership and its `membership.added` event are already durable,
     // handing the caller a failure for a write it can see — the partial success this notice
     // exists to avoid. Read here and a transient error fails the add before anything commits.
     const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { name: true } });
-    // (re)activating a member can shrink a frozen distribution's outstanding set —
-    // a readiness write (gate finding 1), serialized against start()
-    const membership = await this.prisma.$transaction(async (tx) => {
-      await lockProjectReadiness(tx, projectId);
-      // §A.1 round 19 (activation DISPLACEMENT): the roles this activation could reduce — the
-      // OLD explicit role a role-change deactivates, and the membership-less effective-PMC arm
-      // that an explicit non-pmc membership suppresses by precedence.
-      const prior = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId: user.id } } });
-      const atRisk = new Set<string>();
-      if (prior?.status === 'active' && prior.role !== input.role) atRisk.add(prior.role);
-      if (input.role !== 'pmc' && prior?.status !== 'active') {
-        const project = await tx.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
-        const om = project?.orgId
-          ? await tx.orgMembership.findUnique({ where: { orgId_userId: { orgId: project.orgId, userId: user.id } } })
-          : null;
-        if (om?.role === 'owner' || om?.role === 'admin') atRisk.add('pmc');
-      }
-      const m = await tx.membership.upsert({
-          where: { projectId_userId: { projectId, userId: user.id } },
-          update: { role: input.role, discipline, status: 'active' },
-          create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
-        })
-        .catch((e: unknown) =>
+
+    const outcome = await executeCommand<MembershipWithUser>(this.prisma, {
+      scope,
+      actor,
+      commandType: 'members.add',
+      idempotencyKey,
+      requestHash,
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, { commandId }) => {
+        // (re)activating a member can shrink a frozen distribution's outstanding set —
+        // a readiness write (gate finding 1), serialized against start()
+        await lockProjectReadiness(tx, projectId);
+        let user =
+          (email && (await tx.user.findUnique({ where: { email } }))) ||
+          (phone && (await tx.user.findUnique({ where: { phone } }))) ||
+          null;
+        if (!user) {
+          // provision the invited identity (they set a credential on first sign-in)
+          user = await tx.user.create({ data: { projectId, role: input.role, name: input.name, email, phone } }).catch((e: unknown) => {
+            // The same email or phone provisioned by another project's add a moment ago. Translated
+            // HERE so the command kernel never mistakes this P2002 for an idempotency-key conflict.
+            if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+              throw new ConflictException('That email or phone was just registered by another request — retry');
+            }
+            throw e;
+          });
+        }
+        const prior = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId: user.id } } });
+        if (prior && prior.status !== 'removed') {
+          if (prior.status === 'active' && prior.role === input.role && (prior.discipline ?? null) === discipline) {
+            return { resultRef: prior.id, value: { ...prior, user }, events: [] };
+          }
+          throw new ConflictException(`${user.name} is already on this project's team — change their role from the team list instead`);
+        }
+        // §A.1 round 19 (activation DISPLACEMENT): the roles this activation could reduce — the
+        // membership-less effective-PMC arm that an explicit non-pmc membership suppresses by
+        // precedence. (A prior row here is `removed`, so it held no active role to displace.)
+        const atRisk = new Set<string>();
+        if (input.role !== 'pmc') {
+          const owning = await tx.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
+          const om = owning?.orgId
+            ? await tx.orgMembership.findUnique({ where: { orgId_userId: { orgId: owning.orgId, userId: user.id } } })
+            : null;
+          if (om?.role === 'owner' || om?.role === 'admin') atRisk.add('pmc');
+        }
+        // An ADD's membership does not exist yet, so its id is minted here for the fact to name;
+        // the fact's membership FK is deferred to commit for exactly this order.
+        const membershipId = prior?.id ?? randomUUID();
+        const pair = await this.factPair(tx, projectId, actor);
+        await this.recordTransition(tx, {
+          projectId, membershipId, userId: user.id,
+          fromRole: prior?.role ?? null, fromStatus: prior?.status ?? null,
+          toRole: input.role, toStatus: 'active',
+        }, actor, pair, commandId);
+        const holderRefusal = (e: unknown) =>
           rethrowHolderSealViolation(
             e,
             'An open decision is held by a role this activation would displace and the change would leave it without a holder — withdraw and reissue the decision first',
-          ),
-        );
-      await this.refuseHolderOrphan(tx, projectId, atRisk);
-      await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
-      return m;
+          );
+        const m = prior
+          ? await tx.membership.update({ where: { id: prior.id }, data: { role: input.role, discipline, status: 'active' } }).catch(holderRefusal)
+          : await tx.membership.create({ data: { id: membershipId, projectId, userId: user.id, role: input.role, discipline, status: 'active' } }).catch(holderRefusal);
+        await this.refuseHolderOrphan(tx, projectId, atRisk);
+        // The event's pair is resolved by `emitEvent` itself, AFTER the write: it records the
+        // actor as they stand when the event is emitted, which the envelope seal judges live.
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
+        return { resultRef: m.id, value: { ...m, user }, events: [ev] };
+      },
     });
-    // AFTER commit, success path only: the membership above is durable and the readiness lock
-    // is released, so the SMTP round-trip holds nothing. Every project-team member gets an
-    // ACTIVE membership here, so `signInAccess` will admit them once they hold a credential.
-    // `notify` re-reads the credential state itself and never throws.
-    await this.invitations?.notify(user.id, {
-      context: project?.name ? `the ${project.name} project` : 'a project',
-      role: membership.role,
-      // Only a human actor's id is a real `User` row; a system actor's id is a name, and
-      // `SecurityAuditEvent.actorUserId` is an FK.
-      actorUserId: actor.actorKind === 'human' ? actor.actorId : null,
-    });
-    return { userId: user.id, membershipId: membership.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: user.passwordHash ? 'active' : 'not_set' };
+
+    // A replay committed nothing in THIS call, so reading the member back is not a read after a
+    // commit of ours; a fresh execution hands back the row its own transaction wrote.
+    const membership: MembershipWithUser = outcome.value
+      ?? (await this.prisma.membership.findUniqueOrThrow({ where: { id: outcome.resultRef }, include: { user: true } }));
+    if (!outcome.replayed) {
+      // AFTER commit, success path only: the membership above is durable and the readiness lock
+      // is released, so the SMTP round-trip holds nothing. Every project-team member gets an
+      // ACTIVE membership here, so `signInAccess` will admit them once they hold a credential.
+      // `notify` re-reads the credential state itself and never throws.
+      await this.invitations?.notify(membership.userId, {
+        context: project?.name ? `the ${project.name} project` : 'a project',
+        role: membership.role,
+        // Only a human actor's id is a real `User` row; a system actor's id is a name, and
+        // `SecurityAuditEvent.actorUserId` is an FK.
+        actorUserId: actor.actorKind === 'human' ? actor.actorId : null,
+      });
+    }
+    return this.toDto(membership);
   }
 
-  async updateRole(projectId: string, requester: AuthUser, userId: string, input: UpdateMemberInput): Promise<MemberDto> {
+  /**
+   * `members.updateRole` — a ledger command (4d-ii-a / A3b) when the ROLE moves: a re-role moves
+   * the role of a membership that is ACTIVE on both sides, which is the only shape 4d-i's binding
+   * admits for its receipt, so a removed member is refused (they are added again instead).
+   *
+   * A change that leaves the role where it is is not a standing change and writes no fact: a
+   * consultant's discipline moving is its own act (`membership.discipline_changed`), and a
+   * request for exactly the current state records nothing. That path takes no member receipt,
+   * because 4d-i's fact-first seal would demand a transition for every membership write under
+   * one, and no transition describes a move that keeps role and status.
+   */
+  async updateRole(projectId: string, requester: AuthUser, userId: string, input: UpdateMemberInput, idempotencyKey?: string): Promise<MemberDto> {
     await this.assertCanManage(projectId, requester);
-    const existing = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { user: true } });
-    if (!existing) throw new NotFoundException('Member not found on this project');
+    const discipline = this.disciplineFor(input.role, input.discipline);
     const actor = await resolveActor(this.prisma, requester);
-    const membership = await this.prisma.$transaction(async (tx) => {
-      // Phase 6 task 4b (§A.1/§B.1) — a role change is a standing write behind the decider
-      // gate: serialized on the readiness key so the seal's try-acquire sees one writer.
-      await lockProjectReadiness(tx, projectId);
-      const atRisk = new Set<string>();
-      if (existing.status === 'active' && existing.role !== input.role) atRisk.add(existing.role);
-      const m = await tx.membership.update({
-          where: { projectId_userId: { projectId, userId } },
-          data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
-        })
-        .catch((e: unknown) =>
-          rethrowHolderSealViolation(
-            e,
-            `An open decision is held by the ${existing.role} role and this change would leave it without a holder — withdraw and reissue the decision first`,
-          ),
-        );
-      await this.refuseHolderOrphan(tx, projectId, atRisk);
-      await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role }, effectKey: 'membership.role_changed', dispatch: {} });
-      // a consultant's discipline moving is its own fact
-      if ((existing.discipline ?? null) !== (m.discipline ?? null)) {
-        await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: m.discipline ? { discipline: m.discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} });
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ userId, role: input.role, discipline });
+    // ONE PATCH IS ONE ACT, whichever ledger command it lands in (#647 review, finding 4115635418).
+    // A request that keeps the role is receipted as `members.updateDiscipline` and one that moves it
+    // as `members.updateRole`, and a receipt is looked up per command type. So a keyed retry is
+    // matched against BOTH before the current row decides the branch: otherwise a no-op answered
+    // under one type, followed by another manager's re-role, would send the retry down the other
+    // branch and perform a change instead of replaying the act it repeats.
+    for (const type of PATCH_COMMAND_TYPES) {
+      if (await peekReplay(this.prisma, scope, actor.actorId, type, idempotencyKey, requestHash)) {
+        return this.memberDto(projectId, userId);
       }
-      return m;
-    });
-    return { userId, membershipId: membership.id, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
-  }
-
-  async remove(projectId: string, requester: AuthUser, userId: string): Promise<{ ok: boolean }> {
-    await this.assertCanManage(projectId, requester);
-    if (userId === requester.sub) throw new BadRequestException('You cannot remove yourself');
+    }
     const existing = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId } } });
     if (!existing) throw new NotFoundException('Member not found on this project');
+    if (existing.role === input.role) {
+      return this.updateDiscipline(projectId, userId, existing.role, discipline, actor, scope, requestHash, idempotencyKey);
+    }
+
+    const outcome = await executeCommand<MembershipWithUser>(this.prisma, {
+      scope,
+      actor,
+      commandType: 'members.updateRole',
+      idempotencyKey,
+      requestHash,
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, { commandId }) => {
+        // Phase 6 task 4b (§A.1/§B.1) — a role change is a standing write behind the decider
+        // gate: serialized on the readiness key so the seal's try-acquire sees one writer.
+        await lockProjectReadiness(tx, projectId);
+        const cur = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { user: true } });
+        if (!cur) throw new NotFoundException('Member not found on this project');
+        if (await this.priorPatchReceipt(tx, projectId, actor.actorId, 'members.updateDiscipline', idempotencyKey, requestHash)) {
+          return { resultRef: cur.id, value: cur, events: [] };
+        }
+        if (cur.status !== 'active') {
+          throw new ConflictException('Only an active member\'s role can be changed — add them to the team again instead');
+        }
+        if (cur.role === input.role) throw new ConflictException('This member\'s role changed while updating — reload and retry');
+        const pair = await this.factPair(tx, projectId, actor);
+        await this.recordTransition(tx, {
+          projectId, membershipId: cur.id, userId,
+          fromRole: cur.role, fromStatus: cur.status, toRole: input.role, toStatus: 'active',
+        }, actor, pair, commandId);
+        const m = await tx.membership.update({ where: { id: cur.id }, data: { role: input.role, discipline }, include: { user: true } })
+          .catch((e: unknown) =>
+            rethrowHolderSealViolation(
+              e,
+              `An open decision is held by the ${cur.role} role and this change would leave it without a holder — withdraw and reissue the decision first`,
+            ),
+          );
+        await this.refuseHolderOrphan(tx, projectId, new Set([cur.role]));
+        const events = [await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role }, effectKey: 'membership.role_changed', dispatch: {} })];
+        // a consultant's discipline moving is its own fact
+        if ((cur.discipline ?? null) !== (m.discipline ?? null)) {
+          events.push(await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: m.discipline ? { discipline: m.discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} }));
+        }
+        return { resultRef: m.id, value: m, events };
+      },
+    });
+    return outcome.value ? this.toDto(outcome.value) : this.memberDto(projectId, userId);
+  }
+
+  /**
+   * `members.updateDiscipline` — the role stays, only the discipline moves (or nothing does). Not a
+   * standing change, so it writes no fact; and not under a member receipt, because 4d-i's
+   * fact-first seal demands a transition for every membership write under `members.add`,
+   * `members.updateRole` or `members.remove`, and no transition describes a move that keeps role and
+   * status. It is still a LEDGER command (#647 review, finding 4115635418): the caller's key is
+   * consumed here even when nothing changes, so a retry replays this act. The write is
+   * compare-and-set on the role the caller saw AND on active standing — removal leaves the role in
+   * place, so it is the status check, not the role check, that refuses a removed member — and a
+   * concurrent re-role or removal is a 409.
+   */
+  private async updateDiscipline(
+    projectId: string, userId: string, role: string, discipline: string | null, actor: Actor,
+    scope: CommandScope, requestHash: string, idempotencyKey?: string,
+  ): Promise<MemberDto> {
+    const outcome = await executeCommand<MembershipWithUser>(this.prisma, {
+      scope,
+      actor,
+      commandType: 'members.updateDiscipline',
+      idempotencyKey,
+      requestHash,
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        const cur = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { user: true } });
+        if (!cur) throw new NotFoundException('Member not found on this project');
+        if (await this.priorPatchReceipt(tx, projectId, actor.actorId, 'members.updateRole', idempotencyKey, requestHash)) {
+          return { resultRef: cur.id, value: cur, events: [] };
+        }
+        if (cur.role !== role) throw new ConflictException('This member\'s role changed while updating — reload and retry');
+        // A REMOVED membership keeps its role, so the role comparison above cannot see a removal
+        // (#647's shadow review on `91dd0af`). Only an active member is edited, by either branch.
+        if (cur.status !== 'active') {
+          throw new ConflictException('Only an active member can be changed — add them to the team again instead');
+        }
+        if ((cur.discipline ?? null) === discipline) return { resultRef: cur.id, value: cur, events: [] };
+        const m = await tx.membership.update({ where: { id: cur.id }, data: { discipline }, include: { user: true } });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: discipline ? { discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} });
+        return { resultRef: m.id, value: m, events: [ev] };
+      },
+    });
+    return outcome.value ? this.toDto(outcome.value) : this.memberDto(projectId, userId);
+  }
+
+  /**
+   * `members.remove` — a ledger command (4d-ii-a / A3b). A removal ends a standing that EXISTED
+   * and lands `removed`, the shape 4d-i's binding admits for its receipt; removing someone already
+   * removed records nothing and succeeds, as the repeated click of a slow tab expects — under a
+   * receipt all the same, which is admissible because 4d-i's fact-first seal judges membership
+   * WRITES and this one makes none.
+   */
+  async remove(projectId: string, requester: AuthUser, userId: string, idempotencyKey?: string): Promise<{ ok: boolean }> {
+    await this.assertCanManage(projectId, requester);
+    if (userId === requester.sub) throw new BadRequestException('You cannot remove yourself');
     const actor = await resolveActor(this.prisma, requester);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ userId });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'members.remove', idempotencyKey, requestHash)) return { ok: true };
+    const existing = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId } } });
+    if (!existing) throw new NotFoundException('Member not found on this project');
+    // An already-removed member still goes through the command (#647 review, finding 4115635421):
+    // its receipt consumes the caller's key with nothing recorded, so a retry after the member was
+    // re-added replays this no-op instead of removing them again.
+
     // removal changes the active set behind the drawing gate — a readiness write
     // (gate finding 1), serialized against start()
-    await this.prisma.$transaction(async (tx) => {
-      await lockProjectReadiness(tx, projectId);
-      // Phase 6 task 4b (§A.1) — BOTH holder designations: a published open decision that NAMES
-      // this membership refuses the removal outright; a ROLE-held decision refuses it only when
-      // this member was the last effective holder of that role. A private draft blocks nothing.
-      const holders = await this.decisionHolders.holdsOpenDecisions(tx, { projectId, membershipId: existing.id });
-      if (holders.named) {
-        throw new ConflictException(
-          'This member is the named decider on an open decision — withdraw and reissue it first',
-        );
-      }
-      await tx.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { status: 'removed' } })
-        .catch((e: unknown) =>
-          rethrowHolderSealViolation(
-            e,
-            `An open decision is held by the ${existing.role} role and removing its last active holder would leave it undecidable — withdraw and reissue the decision first`,
-          ),
-        );
-      if (existing.status === 'active' && holders.heldRoles.includes(existing.role)) {
-        if ((await this.standing.effectiveRoleStanding(tx, projectId, existing.role)) === 0) {
+    await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'members.remove',
+      idempotencyKey,
+      requestHash,
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, { commandId }) => {
+        await lockProjectReadiness(tx, projectId);
+        const cur = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId } } });
+        if (!cur) throw new NotFoundException('Member not found on this project');
+        if (cur.status === 'removed') return { resultRef: cur.id, events: [] };
+        // Phase 6 task 4b (§A.1) — BOTH holder designations: a published open decision that NAMES
+        // this membership refuses the removal outright; a ROLE-held decision refuses it only when
+        // this member was the last effective holder of that role. A private draft blocks nothing.
+        const holders = await this.decisionHolders.holdsOpenDecisions(tx, { projectId, membershipId: cur.id });
+        if (holders.named) {
           throw new ConflictException(
-            `An open decision is held by the ${existing.role} role and removing its last active holder would leave it undecidable — withdraw and reissue the decision first`,
+            'This member is the named decider on an open decision — withdraw and reissue it first',
           );
         }
-      }
-      await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
+        const pair = await this.factPair(tx, projectId, actor);
+        await this.recordTransition(tx, {
+          projectId, membershipId: cur.id, userId,
+          fromRole: cur.role, fromStatus: cur.status, toRole: cur.role, toStatus: 'removed',
+        }, actor, pair, commandId);
+        await tx.membership.update({ where: { id: cur.id }, data: { status: 'removed' } })
+          .catch((e: unknown) =>
+            rethrowHolderSealViolation(
+              e,
+              `An open decision is held by the ${cur.role} role and removing its last active holder would leave it undecidable — withdraw and reissue the decision first`,
+            ),
+          );
+        if (cur.status === 'active' && holders.heldRoles.includes(cur.role)) {
+          if ((await this.standing.effectiveRoleStanding(tx, projectId, cur.role)) === 0) {
+            throw new ConflictException(
+              `An open decision is held by the ${cur.role} role and removing its last active holder would leave it undecidable — withdraw and reissue the decision first`,
+            );
+          }
+        }
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
+        return { resultRef: cur.id, events: [ev] };
+      },
     });
     return { ok: true };
   }

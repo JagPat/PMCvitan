@@ -124,6 +124,13 @@ items and no new ones:
 - **A3b, the member commands:** `members.add`/`updateRole`/`remove` as ledger commands with
   `synthesizeKeyWhenAbsent: true`, each writing its `MembershipTransition` first with the pair
   resolved in-transaction, the add's lookup and create inside `executeCommand.run`.
+  4d-i's binding admits one shape per receipt (an add from nothing or `removed` to active, a re-role
+  active to active with a new role, a removal from an existing standing to `removed`), and its
+  fact-first seal demands a fact for EVERY membership write under a member receipt. So A3b refuses
+  an add over an active member (409; one asking for exactly what they are records nothing), refuses
+  a removed member's re-role (409), lets a repeated removal record nothing, and runs a change that
+  keeps the role (a consultant's discipline) outside the member ledger, as the readiness-locked
+  compare-and-set it was. None of this is new product behaviour beyond those refusals.
 - **A3c, the org key:** `lockOrgStanding`, taken by project creation (with the creator's owner/admin
   standing re-judged under it, and the creator membership under the new project's key) and by every
   owner/admin `OrgMembership` writer before the project keys ascending, the seed's and

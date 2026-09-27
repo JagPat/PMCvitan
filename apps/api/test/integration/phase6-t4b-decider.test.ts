@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { wipeDecisionEvents, plantLegacyDecisionAudit } from './fixtures';
+import { wipeDecisionEvents, plantLegacyDecisionAudit, wipeMembershipTransitionsVia } from './fixtures';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
@@ -122,7 +122,9 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     ]);
     // the fixture-cleanup discipline (fixtures.ts): append-only platform tables truncate, then
     // reverse-FK-order deletes so a failed test never strands rows for the next suite
-    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
+    // (4d-ii-a / A3b — the member routes this suite drives record immutable `MembershipTransition`
+    // facts, whose keys would refuse the receipt and membership deletes below.)
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'MembershipTransition'], { cascade: true });
     await t?.prisma.$transaction([
       t.prisma.commandExecution.deleteMany({ where: { OR: [{ projectId: { in: [projectId, projectBId] } }, { organizationId: { in: [orgId, orgBId] } }] } }),
       t.prisma.auditLog.deleteMany({ where: { projectId: { in: [projectId, projectBId] } } }),
@@ -313,6 +315,8 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     expect((await post(pmcToken)(`/projects/${projectId}/decisions/${d.id}/publish`)).status).toBe(201);
     // leave no open obligation behind for later probes
     expect((await post(engAToken)(`/projects/${projectId}/decisions/${d.id}/approve`, { optionIndex: 0 })).status).toBe(201);
+    // 4d-ii-a / A3b — the removal above recorded an immutable transition fact about this member
+    await wipeMembershipTransitionsVia(t.prisma, [tempUser]);
     await t.prisma.user.deleteMany({ where: { id: tempUser } });
   });
 
@@ -1003,7 +1007,9 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
 
     // precision: the REMAINING holder's live standing approves exactly as before
     expect((await post(clientToken)(`/projects/${projectId}/decisions/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
-    // cleanup the temp identities (memberships are 'removed' rows — deletable now the register is closed)
+    // cleanup the temp identities (memberships are 'removed' rows — deletable now the register is closed;
+    // 4d-ii-a / A3b — their removals recorded immutable transition facts, cleared first)
+    await wipeMembershipTransitionsVia(t.prisma, [tempClient, tempPmc]);
     await t.prisma.membership.deleteMany({ where: { projectId, userId: { in: [tempClient, tempPmc] } } });
     await t.prisma.user.deleteMany({ where: { id: { in: [tempClient, tempPmc] } } });
   });
