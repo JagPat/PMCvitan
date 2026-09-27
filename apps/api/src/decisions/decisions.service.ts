@@ -508,6 +508,9 @@ export class DecisionsService {
         // register row could not be backfilled still reapproves as version 2, never as a
         // colliding version 1. Identity SERVED to consumers comes solely from these rows —
         // `decisions.approvedRef` reads the head revision, never event counts or labels.
+        // 4d-ii-a / A4a — DELIBERATELY every revision and every approval event, finalized or not:
+        // a provisional revision occupies its version as much as a final one does, so the
+        // consultation cycle's finalized-only count must never reach this allocation.
         const registerHead = await tx.decisionApprovalRevision.findFirst({
           where: { decisionId }, orderBy: { version: 'desc' }, select: { version: true },
         });
@@ -638,7 +641,9 @@ export class DecisionsService {
           throw new BadRequestException('Asking yourself for advice records nothing — name the member you want to hear from');
         }
         // the cycle is FROZEN here, counted under the decision lock the seal re-counts under.
-        const openCycle = await tx.decisionApprovalRevision.count({ where: { decisionId } });
+        // 4d-ii-a / A4a — FINALIZED approvals only: a provisional approval awaiting countersign
+        // has not closed the cycle, so a question asked beside it belongs to the current one.
+        const openCycle = await tx.decisionApprovalRevision.count({ where: { decisionId, finalized: true } });
 
         const id = `dc-${ctx.commandId}`;
         await tx.decisionConsultation.create({
@@ -764,7 +769,8 @@ export class DecisionsService {
         const d = await lockDecisionForConsultation(tx, projectId, decisionId);
         if (!d) throw new NotFoundException(`Decision ${decisionId} not found`);
         assertConsultationEligible(d, decisionId);
-        const cycle = await tx.decisionApprovalRevision.count({ where: { decisionId } });
+        // (4d-ii-a / A4a: FINALIZED approvals, the rule the request froze `openCycle` by)
+        const cycle = await tx.decisionApprovalRevision.count({ where: { decisionId, finalized: true } });
         if (cycle !== consultation.openCycle) {
           throw new ConflictException(
             'This decision was approved since you were asked — that question is closed. A new question in the reopened decision is a new consultation.',
@@ -1181,6 +1187,10 @@ export class DecisionsService {
         }
         // belt-and-braces: the DB entry seal refuses this too (source-state + register), but a
         // 409 is an answer and a trigger error is a crash — refuse here first.
+        // 4d-ii-a / A4a — DELIBERATELY every revision, not the finalized ones the consultation cycle
+        // counts: a PROVISIONAL approval is approval evidence too, and a decision awaiting its
+        // countersign must never become withdrawable (§A.2's cycle trace names this count as one
+        // that must not move).
         const approvals = await tx.decisionApprovalRevision.count({ where: { decisionId } });
         if (approvals > 0) throw new ConflictException('This decision carries approval evidence — it can never be withdrawn');
         // round 9 (Codex): the PR-#192 legacy class holds approvals whose ONLY trace is a

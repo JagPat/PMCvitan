@@ -4927,8 +4927,9 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # and U3 (20271224) each install catalog-driven seals 4d-i makes resolvable and refuse to apply
   # without it, so they belong here with their prerequisites, not in the pre-4d ledger.
   # 4d-ii-a's writers witness (20271226) needs 4d-i's `ReleaseLease` and DECLARES 4d-ii, which
-  # would stand this ledger's dark-window audits down, so it is skipped with them.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*) continue ;; esac
+  # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
+  # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5167,7 +5168,7 @@ assert "4d-ii-a: a declared database with NO lease is not yet 'installed' — th
 T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d_i_decision_facts
 20271222000000_phase6_t4d_i_b_u1_bound_event_actor 20271223000000_phase6_t4d_i_b_u2_change_bundle_seals
 20271224000000_phase6_t4d_i_b_u3_pairing_flip 20271225000000_phase6_project_row_lock_no_key
-20271226000000_phase6_t4d_ii_release_lease_writer"
+20271226000000_phase6_t4d_ii_release_lease_writer 20271227000000_phase6_t4d_ii_consultation_finalized_cycle"
 t4d_replay() {
   local m
   for m in $T4D_REPLAY; do
@@ -5230,7 +5231,7 @@ assert_rejects "4d-i P38: the lease register cannot be truncated away" \
 # restore carries both, so the same replay adopts the A1 pair. The witness does not have to sort
 # before 4d-i on this path — 20271226 already ran here, and the restore brought its function with it.
 if t4d_out="$(t4d_replay)"; then
-  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271220–20271226 through"
+  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271220–20271227 through"
 else
   echo "FAILED  4d-ii-a: the replay refused a database this release served; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi
@@ -5240,6 +5241,11 @@ assert "4d-ii-a: the replay kept the A1 pair it adopted, and 4d-ii stays install
 assert "4d-ii-a: the replay did not put the lease door back" \
   "SELECT count(*)::text FROM pg_trigger WHERE tgname = 'ReleaseLease_t4d_insert_reserved' AND NOT tgisinternal;" \
   "0"
+# A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
+# which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
+assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \
+  "SELECT count(*)::text FROM pg_proc WHERE proname IN ('phase6_t4c_consultation_request_seal','phase6_t4c_consultation_response_seal') AND prosrc LIKE '%AND r.\"finalized\";%';" \
+  "2"
 
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."
