@@ -13,6 +13,7 @@ import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
 import type { ApproveInput, ChangeInput, CreateDecisionInput, RequestConsultationInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
+import { resolveActorEnvelope } from '../platform/actor-envelope';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -833,8 +834,14 @@ export class DecisionsService {
       commandType: 'decisions.requestChange',
       idempotencyKey,
       requestHash,
-      run: async (tx) => {
+      // 4d-ii-a / A2 — the request records the receipt that opened it (`sourceCommandId`), so an
+      // unkeyed call must still reserve one. Synthesis gives it a per-call server key: two unkeyed
+      // retries still each run once, exactly as the ledger-less path did, a keyed caller keeps its
+      // replay, and enforcement still refuses a missing key first (§A.3 obligation 6).
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, { commandId }) => {
         const events: EmittedEventMeta[] = [];
+        let requestId = '';
         try {
           // reopening reverts readiness — a readiness write (gate finding 1)
           await lockProjectReadiness(tx, projectId);
@@ -859,7 +866,13 @@ export class DecisionsService {
             data: { status: 'change' },
           });
           if (count === 0) throw new ConflictException('The decision changed while requesting — reload and retry');
-          await tx.changeRequest.create({
+          // 4d-ii-a / A2 — the frozen requester pair, resolved HERE, inside the transaction (§A.3
+          // obligation 3), by the same predicate and identity read `ChangeRequest_t4d_birth_pair`
+          // judges it with. ONE resolution feeds the request, its audit row and its event, so the
+          // three records of the act name the same role and name (obligation 7). NULL when the
+          // requester's token role does not stand: the drain shape, which the seals admit.
+          const pair = await resolveActorEnvelope(tx, projectId, actor);
+          const request = await tx.changeRequest.create({
             // Phase 6 unit 4d-i — `projectId` became NOT NULL when the row joined the uniform
             // seal contract (§A.3 obligation 5: every reference project-bound through the
             // child's own column). The migration's BEFORE INSERT trigger fills it from the
@@ -867,11 +880,24 @@ export class DecisionsService {
             // working through the drain; a writer compiled against the new client names it
             // directly. Same row, same value, no behaviour change — the project is the one this
             // command already holds.
-            data: { projectId, decisionId, reason: input.reason, costImpact: input.costImpact, timeImpactDays: input.timeImpactDays, status: 'open', requestedById: actor.actorId },
+            data: {
+              projectId, decisionId, reason: input.reason, costImpact: input.costImpact, timeImpactDays: input.timeImpactDays, status: 'open', requestedById: actor.actorId,
+              requestedByRole: pair?.actorRole ?? null, requestedByName: pair?.actorName ?? null,
+              sourceCommandId: commandId,
+            },
+            select: { id: true },
           });
-          await tx.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: input } });
+          requestId = request.id;
+          // The audit row's role and name are the SAME pair, both or neither (#643 Codex
+          // 4114025986): where the resolution found none (a stale token role), writing the token
+          // role would claim a standing this transaction did not observe. `actor` is the legacy
+          // display label (NOT NULL), not attribution; it keeps the account name.
+          await tx.decisionEvent.create({ data: {
+            decisionId, type: 'change_requested', actor: pair?.actorName ?? actor.actorName, actorId: actor.actorId,
+            actorName: pair?.actorName ?? null, actorRole: pair?.actorRole ?? null, payload: input,
+          } });
           await recordAudit(tx, { projectId, actor, action: 'decision.change', entity: 'Decision', entityId: decisionId });
-          events.push(await emitEvent(tx, { projectId, actor, eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId, payload: { reason: input.reason, ...(input.costImpact !== undefined ? { costImpact: input.costImpact } : {}), ...(input.timeImpactDays !== undefined ? { timeImpactDays: input.timeImpactDays } : {}) }, effectKey: 'decision.change_requested', dispatch: {} }));
+          events.push(await emitEvent(tx, { projectId, actor, eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId, payload: { reason: input.reason, ...(input.costImpact !== undefined ? { costImpact: input.costImpact } : {}), ...(input.timeImpactDays !== undefined ? { timeImpactDays: input.timeImpactDays } : {}) }, effectKey: 'decision.change_requested', dispatch: {}, actorEnvelope: pair }));
         } catch (e) {
           // the one-open-per-decision partial unique index fired — a concurrent request won.
           // Translate HERE (inside run) so the command kernel never mistakes THIS P2002 for a
@@ -881,7 +907,9 @@ export class DecisionsService {
           }
           throw e;
         }
-        return { resultRef: decisionId, events };
+        // A command that writes a fact names THAT fact (§A.3 obligation 6): the deferred
+        // `ChangeRequest_t4d_source_bound` requires this receipt's `resultRef` to be the request.
+        return { resultRef: requestId, events };
       },
     });
 

@@ -6,13 +6,15 @@ import { Prisma } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { lockProjectReadiness } from '../../src/common/readiness-lock';
+import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 
 /**
  * Phase 6 correction (20271225000000) — the Project row lock a seal takes to judge operability is
  * `FOR NO KEY UPDATE`, proven against live PostgreSQL.
  *
  * `phase6_project_operable` and `phase6_user_decision_authority` lock the project row to read
- * `archivedAt`, so an archive cannot commit between the read and the
+ * `archivedAt`, as does their service-side twin `OrgsParticipant.isProjectOperable` (moved to the same
+ * mode by 4d-ii-a / A2, the separate service unit), so an archive cannot commit between the read and the
  * write it authorises. `FOR UPDATE` also conflicted with the `FOR KEY SHARE` a ledgered command's
  * receipt holds on the row through `CommandExecution_tenant_fkey`, so a command holding the
  * readiness key deadlocked with any other command on the project that had reserved its receipt and
@@ -25,10 +27,12 @@ import { lockProjectReadiness } from '../../src/common/readiness-lock';
 describe('Project row lock — FOR NO KEY UPDATE (live PG)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
+  let orgs: OrgsParticipant;
 
   beforeAll(async () => {
     t = await createTestApp();
     f = await createTwoProjectFixture(t.prisma);
+    orgs = t.app.get(OrgsParticipant);
   });
   afterAll(async () => {
     await f?.cleanup();
@@ -90,6 +94,7 @@ describe('Project row lock — FOR NO KEY UPDATE (live PG)', () => {
   const primitives: Array<[string, (tx: Prisma.TransactionClient) => Promise<boolean>]> = [
     ['phase6_project_operable', (tx) => bool(tx, `SELECT phase6_project_operable($1) AS v`, f.projectA.id)],
     ['phase6_user_decision_authority', (tx) => bool(tx, `SELECT phase6_user_decision_authority($1, $2) AS v`, f.projectA.id, f.memberUser.id)],
+    ['OrgsParticipant.isProjectOperable', (tx) => orgs.isProjectOperable(tx, f.projectA.id)],
   ];
 
   it.each(primitives)('%s answers beside another command\'s held receipt, without waiting on it', async (_name, call) => {

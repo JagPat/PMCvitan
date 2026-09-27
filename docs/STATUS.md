@@ -14,32 +14,34 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-project-row-lock
-reviewed_merge: 9235a9a
-open_pr: 642
+work_item: phase-6-task-4d-ii-a-a2-attribution-seams
+reviewed_merge: 04b12e0
+open_pr: 643
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-26
+updated: 2026-09-27
 ```
 
-### Now — Phase 6 task 4d: a correction before A2, the Project row lock mode
+### Now — Phase 6 task 4d: 4d-ii-a unit A2, the attribution seams
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, a correction, `open_pr: 642` (`work_item: phase-6-task-4d-ii-a-project-row-lock`, branch
-  `claude/project-row-lock-no-key`, from `main` at `9235a9a`).** Migration
-  `20271225000000_phase6_project_row_lock_no_key` redefines `phase6_project_operable` and
-  `phase6_user_decision_authority` to lock the project row `FOR NO KEY UPDATE` instead of `FOR UPDATE`.
-  The unit is SQL only; `OrgsParticipant.isProjectOperable`, the service-side twin, moves with A2. The lock exists to serialise with an archive, an
-  UPDATE of a non-key column, and still does. `FOR UPDATE` also conflicted with the `FOR KEY SHARE` a
-  ledgered command's receipt holds on the row through `CommandExecution_tenant_fkey`, so a command holding
-  the readiness key deadlocked (`40P01`) against any other command on the project that had reserved its
-  receipt and was waiting for the key. Found building A2: `requestChange`'s frozen requester pair reaches
-  `phase6_project_operable` through `ChangeRequest_t4d_birth_pair`, and two simultaneous requests answered
-  201 and 500 where the loser is owed a 409. Every 4d fact seal goes through the same function, so A2, A3
-  and A8 all depend on this. The migration is on `ALWAYS_EXECUTE` and re-runnable
-  (`CREATE OR REPLACE FUNCTION` only). A2 follows on this merge.
+- **Now, unit A2, `open_pr: 643` (`work_item: phase-6-task-4d-ii-a-a2-attribution-seams`, branch `claude/4d-ii-a-a2`, from
+  `main` at `04b12e0`).**
+  - **`requestChange`** records the frozen `requestedByRole`/`requestedByName` pair, resolved inside the
+    command's transaction by A1's resolver, and ONE resolution feeds the request, its audit row and its
+    event (`EmitInput.actorEnvelope`). It records `sourceCommandId`, opts into server key synthesis so an
+    unkeyed call still has a receipt, and its receipt names the created request.
+  - **The commercial seam:** `AttributionActor` is the kernel's `EventActor`, and the sixteen constructing
+    sites pass the resolved `Actor`; `eventActorOf` is retired. The two system-kind sites keep a NULL
+    envelope, which 4d-i's seal requires of a system actor.
+  - **`OrgsParticipant.isProjectOperable`** locks `FOR NO KEY UPDATE`, the service-side twin of #642.
+- **The row-lock correction merged as #642** (`04b12e0`): migration `20271225000000_phase6_project_row_lock_no_key`
+  moved `phase6_project_operable` and `phase6_user_decision_authority` to `FOR NO KEY UPDATE`. `FOR UPDATE`
+  also conflicted with the `FOR KEY SHARE` a ledgered command's receipt holds on the project row, so a
+  command holding the readiness key whose fact seal reached either function deadlocked against another
+  command on the project waiting for the key. Found building A2; A3 and A8 depend on it too.
 - **A1 merged as #641** (`9235a9a`): `emitEvent` writes the frozen `actorRole`/`actorName` envelope,
   resolved inside the emitting transaction (`apps/api/src/platform/actor-envelope.ts`), locking
   `OrgUserAuthority`, then `ProjectUserStanding`, then `UserIdentity`, the projection writers' order.
@@ -57,7 +59,7 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
   No unit retires a reservation door, activates `decisions.effects`, or ships a web surface.
 - **Order.** A1 → {A2, A3} → A5; A4 and A6 independently; then A7; then A8a → A8b. With A1 merged, A2
   (attribution seams), A3 (membership commands), A4 (readers) and A6 (delivery substrate) are open to
-  start; this correction goes first because A2 cannot write a frozen pair without it. The drain's minimum
+  start; #642's row-lock correction went first because A2 cannot write a frozen pair without it. The drain's minimum
   release becomes the release carrying A8b.
 
 ### History — the role transfer closed (#638, merged at 4877c63): Claude codes, Codex reviews
