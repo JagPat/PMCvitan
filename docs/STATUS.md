@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a4a-consultation-cycle
 reviewed_merge: 8894ed0
-open_pr: none
+open_pr: 649
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
@@ -27,7 +27,7 @@ updated: 2026-09-27
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A4a (`work_item: phase-6-task-4d-ii-a-a4a-consultation-cycle`, branch
+- **Now, A4a, `open_pr: 649` (`work_item: phase-6-task-4d-ii-a-a4a-consultation-cycle`, branch
   `claude/4d-ii-a4-readers`, from `main` at `8894ed0`).** A4 (the readers) is split into sub-units,
   recorded in the staging document. A4a makes the consultation cycle count FINALIZED approvals at
   every site of §A.2's cycle trace: a provisional approval awaiting countersign has not ended the
