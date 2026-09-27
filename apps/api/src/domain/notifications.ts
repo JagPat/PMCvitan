@@ -10,6 +10,15 @@
  */
 const PENDING_DECISION_PREFIX = 'Decision awaiting approval';
 
+/**
+ * Phase 6 task 4d-ii-a / A4c — the colour each decision notice is written with, beside its text,
+ * so the writers and the kinded renderer (`decisions/decision-notice.ts`) read one definition and a
+ * tripwire can pin them together.
+ */
+export const PENDING_DECISION_NOTICE_COLOR = '#C08A2D';
+export const RECORDED_DECISION_NOTICE_COLOR = '#6B665C';
+export const WITHDRAWN_DECISION_NOTICE_COLOR = '#6B665C';
+
 /** The notification text shown when a PMC issues a decision (awaiting client approval). */
 export function pendingDecisionNotice(title: string): string {
   return `${PENDING_DECISION_PREFIX}: ${title}`;

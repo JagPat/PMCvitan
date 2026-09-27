@@ -55,7 +55,7 @@ export const decisionsManifest: ModuleManifest = {
   commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw', 'decisions.updateDraft', 'consultations.request', 'consultations.respond'],
   // 4b adds: `statusAndDraftMap`/`statusAndDraftOf` (the recorded gate arm's draft flag),
   // `deciderPushTarget` (the decider push family's claim-time predicate, bound at bootstrap).
-  queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef', 'decisions.statusAndDraftMap', 'decisions.statusAndDraftOf', 'decisions.deciderPushTarget', 'decisions.consultationRequestedPushTarget', 'decisions.consultationRespondedPushTarget'],
+  queries: ['decisions.snapshotSlice', 'decisions.renderKindedNotice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef', 'decisions.statusAndDraftMap', 'decisions.statusAndDraftOf', 'decisions.deciderPushTarget', 'decisions.consultationRequestedPushTarget', 'decisions.consultationRespondedPushTarget'],
   routes: [
     'POST /projects/:projectId/decisions',
     'POST /projects/:projectId/decisions/:decisionId/publish',

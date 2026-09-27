@@ -8,6 +8,8 @@ import { DrawingsQueryService } from '../drawings/drawings.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice, isWithdrawnDecisionNotice } from '../domain/notifications';
+import { readFeedEvents, readNotificationFeed } from '../platform/notification-feed';
+import { Prisma } from '@prisma/client';
 import { viewerIsDecider } from '@vitan/shared';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
@@ -71,8 +73,23 @@ export class SnapshotService {
 
     // Task 8 — the decisions slice comes from the module's query (role-filtered DTOs + an
     // id→status map for readiness), not a direct `prisma.decision` read.
-    const decisionSlicePromise = this.decisionsQuery.snapshotSlice(projectId, role, userId);
-    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, notifications, siteMedia, drawingDtos, companies, nodes] = await Promise.all([
+    //
+    // Phase 6 task 4d-ii-a / A4c — the slice and the notification feed are read in ONE REPEATABLE
+    // READ transaction, each through its owner's query (the decisions module's slice, the platform's
+    // feed and the events kinded notices are bound to) and with no cross-module join. A kinded
+    // notice is served only if its decision is in the viewer's slice, so the two must be one
+    // snapshot: read separately, a withdrawal committing between them would let the notice be
+    // authorized against the decision as it stood before.
+    const feedSnapshot = this.prisma.$transaction(async (tx) => {
+      const slice = await this.decisionsQuery.snapshotSlice(projectId, role, userId, tx);
+      const feed = await readNotificationFeed(tx, projectId);
+      const events = await readFeedEvents(tx, projectId, feed.flatMap((n) => (n.eventId ? [n.eventId] : [])));
+      return { slice, feed, events };
+      // read-only, so REPEATABLE READ never fails it with a serialization error; the limits are
+      // generous because these reads used to need no interactive transaction at all
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 10_000, timeout: 30_000 });
+    const decisionSlicePromise = feedSnapshot.then((f) => f.slice);
+    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, { feed: notifications, events: noticeEvents }, siteMedia, drawingDtos, companies, nodes] = await Promise.all([
       decisionSlicePromise,
       // Task 10 (Module 4) — the activity spine (`activities` + `phases`) comes from the activities
       // module's query, never a direct `prisma.activity`/`gateOverride`/`prisma.phase` read. It bakes
@@ -87,7 +104,7 @@ export class SnapshotService {
       // module's query, never a direct `prisma.dailyLog`/`prisma.siteMaterial` read. The progress
       // PHOTOS remain the snapshot's to compose from media (below), so the DTO stays byte-identical.
       this.dailyLogQuery.snapshotSlice(projectId),
-      this.prisma.notification.findMany({ where: { projectId }, orderBy: { at: 'desc' } }),
+      feedSnapshot,
       // Site-reality photos for the daily-log gallery AND the Place view. One query,
       // capped, newest first; carries nodeId so a photo can be shown at its location.
       this.prisma.media.findMany({
@@ -195,13 +212,26 @@ export class SnapshotService {
       // AUTH-02: a pending-decision notice ("Decision awaiting approval: …") is
       // pmc/client-only — drop it from the feed for roles that have pending decisions
       // hidden, so a decision's title can't leak through the bell.
-      notifications: notifications
-        .filter((n) => !stripPendingNotice(n))
+      notifications: notifications.flatMap((n) => {
+        // Phase 6 task 4d-ii-a / A4c — a KINDED notice is never served from its stored text: the
+        // decisions module renders it from its kind and bound event, and decides whether this
+        // viewer may see it (its decision in the viewer's slice, read in the same snapshot above;
+        // an actionable kind of a withdrawn decision suppressed). A kind with no renderer arm in
+        // this release, or a notice about no decision, is omitted.
+        if (n.kind !== null) {
+          const event = n.eventId ? noticeEvents.get(n.eventId) : undefined;
+          if (!event || !n.decisionId) return [];
+          const rendered = this.decisionsQuery.renderKindedNotice(n.kind, event, visibleById.get(n.decisionId), role, userId);
+          return rendered ? [{ text: rendered.text, time: n.time, color: rendered.color }] : [];
+        }
+        // KIND-LESS rows (every notice written today): the delivered text-prefix filters, unchanged.
+        if (stripPendingNotice(n)) return [];
         // Phase 6 task 4a — a withdrawal notice (title + reason) is PMC-ONLY: a withdrawn
         // decision is invisible to every other role INCLUDING the client (§A.3), so its
         // explanation must not leak through the bell either.
-        .filter((n) => !(role !== 'pmc' && isWithdrawnDecisionNotice(n.text)))
-        .map((n) => ({ text: n.text, time: n.time, color: n.color })),
+        if (role !== 'pmc' && isWithdrawnDecisionNotice(n.text)) return [];
+        return [{ text: n.text, time: n.time, color: n.color }];
+      }),
       companies: companies.map((c) => ({
         id: c.id,
         name: c.name,

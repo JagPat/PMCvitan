@@ -170,6 +170,19 @@ and no new ones. The first is fixed here; the rest are recorded as each opens:
   `schema.prisma`, where the field becomes required, so 4d-iii's default drop must take both. A4b's
   RED evidence is the static writer sweep and the provisional-head refusal; its live arms record
   that every shipped writer's rows carry the column with the database defaults dropped.
+- **A4c, the kinded feed readers:** the snapshot (the ONE feed reader: `decisions.inbox` folds
+  decisions, not notices) reads the viewer's decision slice and the notification feed, with the
+  events its kinded notices are bound to, in one REPEATABLE READ transaction through the owners'
+  queries; a kinded notice is rendered from its kind and event (never its stored text), served only
+  when its decision is in the viewer's slice, its ACTIONABLE kinds suppressed once the decision is
+  withdrawn; the renderer tripwire pins the rendering to the writers' own strings and colours; and
+  the withdraw's retirement deletes kind-less rows only. **Renderer arms land with what they need:**
+  A4c renders `decision.published` (pending and record) and `decision.withdrawn`, whose events carry
+  every word of the notice; the green approved notice renders from the revision its event names (A7,
+  with A8a's `revisionId`), and the forwarding, countersign and change-request notices with their
+  writers. A kind with no arm is omitted, never served from its cache. A kinded pending demand keeps
+  the kind-less audience (pmc and the decider), so a consultee who may see the decision gets no
+  demand.
 
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its
