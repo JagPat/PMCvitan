@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a3a-provisioning-writers
 reviewed_merge: 7422f0c
-open_pr: none
+open_pr: 645
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
@@ -27,7 +27,7 @@ updated: 2026-09-27
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, unit A3a (`work_item: phase-6-task-4d-ii-a-a3a-provisioning-writers`, branch
+- **Now, unit A3a, `open_pr: 645` (`work_item: phase-6-task-4d-ii-a-a3a-provisioning-writers`, branch
   `claude/4d-ii-a-a3a-provisioning`, from `main` at `7422f0c`).** The first of A3's three sub-units
   (recorded in the staging document):
   - **`ensure-accounts`** judges its whole roster (`ACCOUNTS_JSON`) and its legacy backfill before the
