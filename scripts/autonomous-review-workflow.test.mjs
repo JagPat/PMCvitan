@@ -8,6 +8,7 @@ import {
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
   CI_SCOPE_ADMITTED,
+  PRODUCT_CHECKS,
   ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 import { correctionReasonFor } from './correction-lease.mjs';
@@ -3264,4 +3265,77 @@ test('2A2-ii: GitHubClient.graphql attaches the structured error entries to the 
   // A response with no errors returns its data unchanged and carries nothing extra.
   client.request = async () => ({ data: { ok: true } });
   assert.deepEqual(await client.graphql('query Q { x }', {}), { ok: true });
+});
+
+test('PR #639/#640: a CI run whose battery was skipped defers to the run still deciding the same head', async () => {
+  // Observed on #639 (head 9c4d4fb) and #640 (head 52bf7aa), 2026-09-26: a push starts two `CI` runs for
+  // one head. The battery plan skips the products of one, which completes within a minute and wakes the
+  // controller; the other runs the ~42-minute `api` job. The controller then waited CHECK_TIMEOUT_MS on a
+  // run it did not trigger, published `ci: Checks did not settle: api` and drafted the PR, and the slow
+  // run's own completion promoted the head a minute later. The fast run decided nothing about the
+  // products, so its wake must return without publishing while the deciding run is still in flight.
+  const job = (name, runId, conclusion, status = 'completed') => ({
+    name, status, conclusion, completed_at: status === 'completed' ? '2026-09-26T10:01:00Z' : null,
+    html_url: `https://github.com/JagPat/PMCvitan/actions/runs/${runId}/job/1`,
+  });
+  const fastRun = 7001;
+  const slowRun = 7002;
+  const fast = [
+    job('review-scope', fastRun, 'success'),
+    job('battery-plan', fastRun, 'success'),
+    ...PRODUCT_CHECKS.map((name) => job(name, fastRun, 'skipped')),
+  ];
+  const slowInFlight = [
+    job('review-scope', slowRun, 'success'),
+    job('battery-plan', slowRun, 'success'),
+    job('web', slowRun, 'success'),
+    job('e2e', slowRun, 'success'),
+    job('api-e2e', slowRun, 'success'),
+    job('upgrade-proof', slowRun, 'success'),
+    job('api', slowRun, null, 'in_progress'),
+  ];
+  const slowDone = slowInFlight.map((run) => (run.name === 'api' ? job('api', slowRun, 'success') : run));
+
+  // The fast run's wake, with the slow run's `api` still running: defer. The settle summary is what the
+  // controller would otherwise wait on, and it is pending on exactly that job.
+  assert.equal(reviewGate.summarizeRequiredChecks([...fast, ...slowInFlight]).state, 'pending');
+  assert.deepEqual(reviewGate.summarizeRequiredChecks([...fast, ...slowInFlight]).pending, ['api']);
+  assert.equal(reviewGate.batteryDeferredToInFlightRun([...fast, ...slowInFlight], fastRun), true);
+
+  // The slow run's own wake decides: it ran the products, so it never defers, whatever else is on the head.
+  assert.equal(reviewGate.batteryDeferredToInFlightRun([...fast, ...slowDone], slowRun), false);
+  assert.equal(reviewGate.batteryDeferredToInFlightRun([...fast, ...slowInFlight], slowRun), false);
+
+  // A skipped battery over an already-decided head (a metadata edit on a covered SHA) is the plan's own
+  // verdict, and nothing else is deciding: the wake proceeds, and the summary reads the older evidence.
+  assert.equal(reviewGate.batteryDeferredToInFlightRun([...slowDone, ...fast], fastRun), false);
+  assert.equal(reviewGate.summarizeRequiredChecks([...slowDone, ...fast]).state, 'success');
+
+  // Nothing else in flight at all (the products never ran anywhere): not a deferral either — that head
+  // is stuck, and the settle wait with its failure is the honest report.
+  assert.equal(reviewGate.batteryDeferredToInFlightRun(fast, fastRun), false);
+
+  // A wake without a triggering CI run (a recovery dispatch) has no battery to defer.
+  assert.equal(reviewGate.batteryDeferredToInFlightRun([...fast, ...slowInFlight], undefined), false);
+  assert.equal(reviewGate.batteryDeferredToInFlightRun([...fast, ...slowInFlight], null), false);
+
+  // A run whose battery was aborted (a red gate skipped the products) is not a deliberate skip; it is a
+  // CI failure `run()` routes through `handleCiFailure` before this check, and the helper does not claim it.
+  const aborted = [
+    job('review-scope', fastRun, 'failure'),
+    job('battery-plan', fastRun, 'skipped'),
+    ...PRODUCT_CHECKS.map((name) => job(name, fastRun, 'skipped')),
+  ];
+  assert.equal(reviewGate.batteryDeferredToInFlightRun([...aborted, ...slowInFlight], fastRun), false);
+
+  // `run()` consults it on the CI-success path, after the CI-failure branch and BEFORE the `pending`
+  // status and the settle wait, so a deferred wake publishes nothing on the head.
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  const ciHandler = runBody.indexOf('await handleCiFailure(');
+  const deferral = runBody.indexOf('batteryDeferredToInFlightRun(');
+  const pendingStatus = runBody.indexOf("'review: pending required CI and current-head Codex review'");
+  const settleWait = runBody.indexOf('await waitForRequiredChecks(');
+  assert.ok(ciHandler >= 0 && ciHandler < deferral, 'the deferral follows the CI-failure branch');
+  assert.ok(deferral < pendingStatus && pendingStatus < settleWait, 'the deferral precedes any status write and the settle wait');
 });
