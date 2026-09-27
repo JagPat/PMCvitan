@@ -260,6 +260,14 @@ report_4d_i_migration_failure() {
   echo "[migrate] committing an incomplete register (#582's review round 3, finding 2). Give each"
   echo "[migrate] named account a real display name, then step 2 and step 3 above:"
   echo "[migrate]   UPDATE \"User\" SET \"name\" = '<real name>' WHERE \"id\" = '<the id from the sample>';"
+  # #646's review, finding 4114478871: on THIS path the dark migration can also abort on rows the
+  # 4d-ii-a writers wrote — a restore that lost its ledger before any process carrying the writers
+  # witness had served. Resetting those rows destroys attribution the seals already judged.
+  echo "[migrate] On THIS path (P3005 baseline) it may instead refuse rows already carrying 4d"
+  echo "[migrate] columns — an event's actor pair, a bound notice, or a dark-table row. If this"
+  echo "[migrate] database is a RESTORE of one that was migrated normally, its ledger was lost:"
+  echo "[migrate] restore \`_prisma_migrations\` from the same backup and redeploy. Do NOT reset those"
+  echo "[migrate] rows. See docs/RUNBOOK.md §P6T4D, \"A restored database that lost its migration ledger\"."
   echo "[migrate] Full detail: docs/RUNBOOK.md §P6T4D."
 }
 

@@ -6,9 +6,21 @@
 -- replay unless `phase6_t4d_ii_installed()` is true: the witness below AND at least one lease. The
 -- additive staging let writers land first — A1 writes the event envelope pair, A2 the change
 -- request's provenance and frozen pair — so a P3005 baseline replay over a database holding what
--- they wrote would abort on rows they wrote correctly. The witness and a real process's lease close
--- that, as 4d-i always intended ("4d-ii installs `platform_t4d_ii_writers_installed()` alongside its
--- startup writers").
+-- they wrote aborts on rows they wrote correctly. Only one kind of database reaches that replay
+-- with such rows: a really-migrated one restored WITHOUT its `_prisma_migrations` ledger. A
+-- `prisma db push` database never does — it has none of the §C guards, and `migrate.sh` refuses to
+-- baseline it before any migration is replayed (t3c seals exit 5).
+--
+-- WHAT THIS CLOSES, AND WHAT IT CANNOT (#646 review, finding 4114478871). From the first start of
+-- this release the database carries the witness AND a lease, and both are restored with it, so a
+-- ledger-lost restore taken after that start replays through 4d-i with the audits stood down —
+-- the witness does not have to sort before 4d-i, because it is already there. A restore taken
+-- while ONLY A1/A2-era processes had served carries no lease, and nothing this release installs can
+-- supply evidence that a process served before it existed: writing a lease from the deploy runner
+-- ahead of the replay would make the deploying release attest for itself, the stand-in 4d-i's
+-- round 40 refused. That restore's recovery is its ledger, not a reset of the rows (RUNBOOK
+-- §P6T4D, "A restored database that lost its migration ledger"). `scripts/upgrade-proof.sh` replays
+-- 4d-i over the same A1-shaped event both ways.
 --
 -- WHY THE SERVICE SHIPS IN THE SAME UNIT. Declaring the witness is what opens `ReleaseLease` to
 -- INSERT, and an INSERT is permanent (`ReleaseLease_t4d_frozen` refuses DELETE and any `leaseUntil`

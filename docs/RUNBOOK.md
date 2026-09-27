@@ -1237,6 +1237,43 @@ database clock. `release` is the process's `SOURCE_COMMIT` (or `RELEASE_ID`), el
 set one of them on the deployment so the drain evidence can name the release. A lease is never
 deleted: a stopped process's row expires where it stands.
 
+### A restored database that lost its migration ledger
+
+4d-i's data audits — the dark tables, and the 4d-only columns of `DomainEvent`, `Notification`,
+`ChangeRequest` and the other tables its legacy-shape audits name — run again whenever 4d-i is
+REPLAYED, and stand down only on `phase6_t4d_ii_installed()`: the writers witness AND a lease. An
+ordinary ledger-backed deploy never replays 4d-i. The P3005 baseline path in `scripts/migrate.sh`
+does, because both halves are on `ALWAYS_EXECUTE`.
+
+Only one kind of database reaches that replay holding rows the 4d-ii-a writers wrote: a database
+that WAS migrated normally and has been restored without its `_prisma_migrations` table. A
+`prisma db push` database never gets there — it has none of the §C guards, and the runner refuses to
+baseline it before anything replays (t3c seals exit 5; see §P4T3C3).
+
+- **Restored from a point after this release first served:** the witness function and a lease were
+  in the backup, so the replay stands the audits down and the deploy completes. Nothing to do.
+- **Restored from a point when only A1/A2-era processes had served** (from `9235a9a` up to the
+  release carrying `20271226000000_phase6_t4d_ii_release_lease_writer`): those processes wrote
+  event actor pairs and change-request provenance, under the live seals, and wrote no lease — the
+  writer did not exist yet. The replay's audits refuse those rows, and the deploy stops at
+  `20271220000000_phase6_t4d_i_dark_migration`. Nothing this release installs can evidence that an
+  earlier process served, and writing a lease from the deploy runner ahead of the replay would make
+  the deploying release attest for itself.
+
+  **Repair: restore the ledger, not the rows.** The failed baseline attempt created a partial
+  `_prisma_migrations` (everything outside `ALWAYS_EXECUTE` resolved as applied, and the failed
+  4d-i half). Replace it with the `_prisma_migrations` table from the SAME backup the database came
+  from, then redeploy: the ordinary path applies only what the backup had not yet applied. **Do
+  NOT use the legacy-shape repair below on these rows** — it clears attribution the seals already
+  judged, and it cannot be undone.
+
+  If no copy of that ledger exists, which migrations the restored schema carries is a judgement,
+  as in §P4T3C3, and it belongs to the owner. The legacy-shape repair is for rows no sanctioned
+  writer produced.
+
+`scripts/upgrade-proof.sh` proves both arms: the same A1-shaped event, written through every live
+seal, is refused by a replay with no lease and adopted by the replay once a lease exists.
+
 **This matters for recovery.** Prisma records each migration separately, so a
 `migrate resolve --rolled-back` must name THE HALF THAT FAILED. Resolving the other one leaves the
 real failure recorded and the next deploy stops at P3009 again — on a migration the operator

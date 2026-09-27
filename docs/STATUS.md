@@ -37,6 +37,11 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
   - **`src/platform/release-lease.service.ts`** writes each serving process's lease after the catalog
     sync and renews it, both timestamps on the database clock; never under `NODE_ENV=test`.
   - `migration-scope: inseparable`: neither half is safe without the other.
+  - **Review finding 4114478871, fixed forward.** The claim is bounded: a ledger-lost restore replays
+    through 4d-i once this release has served (the witness and a lease are in the backup); a restore
+    from before that holds no lease, still stops, and recovers through its ledger, not a row reset
+    (RUNBOOK §P6T4D). A `db push` database never reaches the replay. `upgrade-proof.sh` proves both
+    arms, and `migrate.sh` now prints that recovery for this abort.
 - **A3a merged as #645** (`e42950a`): `ensure-accounts` judges its whole roster before the first write
   and refuses `architect`; the non-command `Membership` writers take the readiness key.
 - **A2 merged as #643** (`7422f0c`): `requestChange` records its provenance and the frozen requester
