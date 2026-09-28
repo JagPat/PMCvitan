@@ -34,7 +34,7 @@ export function ClientHealthScreen() {
   return (
     <div className={styles.clientScreen}>
       <div style={{ padding: '8px 0 12px' }}>
-        <Eyebrow>PROJECT HEALTH</Eyebrow>
+        <Eyebrow size={9}>PROJECT HEALTH</Eyebrow>
         <div style={{ fontFamily: 'var(--font-serif)', fontSize: 26, fontWeight: 500, marginTop: 4, lineHeight: 1.15 }}>{short}</div>
         <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>{stageLine}</div>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 10, background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 20, padding: '6px 12px' }}>

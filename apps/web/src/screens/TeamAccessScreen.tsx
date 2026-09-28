@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { GoogleSignInButton } from '@/components';
 import { useStore } from '@/store/store';
 import { useT } from '@/i18n/useT';
+import { noteLangChoice } from '@/lib/langPreference';
 import { LANGS, swatch as swatchGradient, type Lang } from '@vitan/shared';
 import {
   Users,
@@ -112,7 +113,10 @@ export function TeamAccessScreen() {
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.18em', color: 'var(--faint)', marginTop: 22 }}>{t.pick}</div>
         <div style={{ display: 'flex', gap: 7, marginTop: 9 }}>
           {LANGS.map((l) => (
-            <button key={l.key} onClick={() => setLang(l.key as Lang)} style={langStyle(lang === l.key)}>
+            <button key={l.key} onClick={() => {
+              noteLangChoice(l.key as Lang);
+              setLang(l.key as Lang);
+            }} style={langStyle(lang === l.key)}>
               {l.label}
             </button>
           ))}

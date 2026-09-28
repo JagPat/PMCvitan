@@ -152,7 +152,7 @@ export function DailyLogScreen() {
         )}
         <div style={{ padding: '10px 0 12px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
-            <Eyebrow>DAILY SITE LOG</Eyebrow>
+            <Eyebrow size={9}>DAILY SITE LOG</Eyebrow>
             <div style={{ fontWeight: 700, fontSize: 22, marginTop: 4 }}>{short}</div>
             <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{dailyLog.date}</div>
           </div>

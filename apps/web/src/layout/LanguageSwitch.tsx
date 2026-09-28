@@ -1,5 +1,6 @@
 import { LANG_SWITCH, shellLabels } from '@vitan/shared';
 import { useStore } from '@/store/store';
+import { noteLangChoice } from '@/lib/langPreference';
 import styles from './LanguageSwitch.module.css';
 
 /**
@@ -25,7 +26,10 @@ export function LanguageSwitch() {
             aria-pressed={on}
             data-testid={`lang-seg-${l.key}`}
             className={on ? `${styles.option} ${styles.optionOn}` : styles.option}
-            onClick={() => setLang(l.key)}
+            onClick={() => {
+              noteLangChoice(l.key);
+              setLang(l.key);
+            }}
           >
             {l.mark}
           </button>

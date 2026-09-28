@@ -128,7 +128,7 @@ export function EngineerChecklistScreen() {
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       <div className={styles.mobileScreen} style={{ flex: 1, paddingBottom: 20 }}>
         <div style={{ padding: '10px 0 14px' }}>
-          <Eyebrow>TODAY'S INSPECTION</Eyebrow>
+          <Eyebrow size={9}>TODAY'S INSPECTION</Eyebrow>
           <div data-testid="checklist-title" style={{ fontWeight: 700, fontSize: 21, marginTop: 4, lineHeight: 1.2 }}>{checklist.title}</div>
           {/* WHERE this check is carried out — the filed trail, tappable back to the Site Map. */}
           <div style={{ marginTop: 4 }}>
@@ -141,7 +141,7 @@ export function EngineerChecklistScreen() {
               between them costs nothing. */}
           {openChecklists.length > 1 && (
             <div data-testid="checklist-picker" style={{ marginTop: 12 }}>
-              <Eyebrow>{openChecklists.length} CHECKLISTS OUT — TAP TO SWITCH</Eyebrow>
+              <Eyebrow size={9}>{openChecklists.length} CHECKLISTS OUT — TAP TO SWITCH</Eyebrow>
               <div style={{ display: 'flex', gap: 7, marginTop: 7, flexWrap: 'wrap' }}>
                 {openChecklists.map((c) => {
                   const active = c.id === checklist.id;

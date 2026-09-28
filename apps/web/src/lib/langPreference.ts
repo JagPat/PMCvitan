@@ -37,3 +37,22 @@ export function writeLangPreference(key: string, lang: Lang): void {
     /* storage unavailable — the choice still holds for this session */
   }
 }
+
+/**
+ * The viewer's EXPLICIT choice, recorded at every language picker. `LangPreference` cannot infer
+ * intent from identity changes alone — a language on screen may be one the viewer picked or a
+ * default it applied — so a picker says so here. A choice made before the viewer has a console
+ * identity (the sign-in screen) waits here until the next identity takes it and saves it; a choice
+ * made inside the console is saved at once and the note is cleared.
+ */
+let pendingChoice: Lang | null = null;
+
+export function noteLangChoice(lang: Lang): void {
+  pendingChoice = lang;
+}
+
+export function takeLangChoice(): Lang | null {
+  const choice = pendingChoice;
+  pendingChoice = null;
+  return choice;
+}

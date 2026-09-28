@@ -1,14 +1,21 @@
 import { useLayoutEffect, useRef } from 'react';
 import { useStore } from '@/store/store';
-import { defaultLangFor, langPreferenceKey, readLangPreference, writeLangPreference } from '@/lib/langPreference';
+import { defaultLangFor, langPreferenceKey, readLangPreference, takeLangChoice, writeLangPreference } from '@/lib/langPreference';
 
 /**
- * Applies and remembers the viewer's language. When the identity or the role changes (sign-in,
- * persona switch, a project switch that re-issues the role) it restores that person's saved choice, or their role's default; after that, a change
- * the viewer makes is saved under the same identity. A default that was only applied is never
- * written back, so the role default can change later without being frozen into storage.
+ * Applies and remembers the viewer's language. It acts on an EXPLICIT choice (`noteLangChoice`, set by
+ * every picker) and never infers one from an identity change — inference is what confused a
+ * language the viewer picked with a default this component applied.
  *
- * Mounted inside the console only — the sign-in gate keeps its own language picker.
+ * When the identity or the role changes (sign-in, persona switch, a project switch that re-issues
+ * the role), in order:
+ *   1. a choice the viewer just made with no console identity (the sign-in screen) is theirs: it is
+ *      applied and saved under the new identity;
+ *   2. otherwise that person's saved choice;
+ *   3. otherwise the role's default — applied, never written back, so it can change later.
+ * With the identity stable, a change the viewer makes is saved under it.
+ *
+ * Mounted inside the console only; the sign-in screen's picker records its choice for step 1.
  */
 export function LangPreference() {
   const role = useStore((s) => s.role);
@@ -23,7 +30,9 @@ export function LangPreference() {
     // the ROLE is tracked beside the key: a project switch can keep the same user (same key) under
     // a different role, and a person with no saved choice then takes the new role's default
     if (applied.current?.key !== key || applied.current.role !== role) {
-      const next = readLangPreference(key) ?? defaultLangFor(role);
+      const chosen = takeLangChoice();
+      if (chosen) writeLangPreference(key, chosen);
+      const next = chosen ?? readLangPreference(key) ?? defaultLangFor(role);
       applied.current = { key, role, lang: next };
       if (next !== lang) setLang(next);
       return;
@@ -31,6 +40,8 @@ export function LangPreference() {
     if (lang !== applied.current.lang) {
       applied.current = { key, role, lang };
       writeLangPreference(key, lang);
+      // saved under this identity — the note must not carry into the next one
+      takeLangChoice();
     }
   }, [key, lang, role, setLang]);
 

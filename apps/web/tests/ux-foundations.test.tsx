@@ -170,7 +170,8 @@ async function loadShell(overrides: Record<string, unknown> = {}) {
   const { TopBar } = await import('@/layout/TopBar');
   const { LanguageSwitch } = await import('@/layout/LanguageSwitch');
   const { LangPreference } = await import('@/layout/LangPreference');
-  return { useStore, BottomTabs, TopBar, LanguageSwitch, LangPreference };
+  const pref = await import('@/lib/langPreference');
+  return { useStore, BottomTabs, TopBar, LanguageSwitch, LangPreference, pref };
 }
 
 describe('LangPreference — restores and remembers the viewer’s language', () => {
@@ -216,6 +217,46 @@ describe('LangPreference — restores and remembers the viewer’s language', ()
     useStore.setState({ role: 'pmc' });
     r.rerender(<LangPreference />);
     expect(useStore.getState().lang).toBe('hi');
+  });
+
+  it('a language picked on the sign-in screen is kept and saved for the user who then signs in', async () => {
+    // the picker notes the choice before any console identity exists; the client default is English
+    const { useStore, LangPreference, pref } = await loadShell({ role: 'client', sessionUserId: 'u-new', lang: 'gu' });
+    pref.noteLangChoice('gu');
+    render(<LangPreference />);
+    expect(useStore.getState().lang).toBe('gu');
+    expect(readLangPreference('user:u-new')).toBe('gu');
+  });
+
+  it('a sign-in choice outranks an older saved one — it is the newest thing the person said', async () => {
+    writeLangPreference('user:u-old', 'en');
+    const { useStore, LangPreference, pref } = await loadShell({ role: 'engineer', sessionUserId: 'u-old', lang: 'hi' });
+    pref.noteLangChoice('hi');
+    render(<LangPreference />);
+    expect(useStore.getState().lang).toBe('hi');
+    expect(readLangPreference('user:u-old')).toBe('hi');
+  });
+
+  it('a choice made inside the console is saved there and never carried to the next person', async () => {
+    const { useStore, LangPreference, LanguageSwitch } = await loadShell({ role: 'client', sessionUserId: 'u-a', lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <LanguageSwitch />
+      </>,
+    );
+    fireEvent.click(r.getByTestId('lang-seg-hi'));
+    expect(readLangPreference('user:u-a')).toBe('hi');
+    useStore.setState({ sessionUserId: 'u-b' });
+    r.rerender(
+      <>
+        <LangPreference />
+        <LanguageSwitch />
+      </>,
+    );
+    // u-b chose nothing: the client default applies, not u-a's Hindi
+    expect(useStore.getState().lang).toBe('en');
+    expect(readLangPreference('user:u-b')).toBeNull();
   });
 
   it('a change is saved under this person, and another person keeps their own', async () => {

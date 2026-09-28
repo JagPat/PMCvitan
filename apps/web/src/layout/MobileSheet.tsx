@@ -6,6 +6,7 @@ import { CreateProjectModal } from './ProjectSwitcher';
 import { Check, Plus, X, LayoutGrid } from '@/lib/icons';
 import { ROLE_LABEL } from '@/lib/screens';
 import { navLabelFor } from '@/lib/mobileNav';
+import { noteLangChoice } from '@/lib/langPreference';
 import { LANG_SWITCH, shellLabels } from '@vitan/shared';
 import { useNavItems, type NavItem } from './useNavItems';
 import styles from './MobileSheet.module.css';
@@ -180,6 +181,7 @@ export function LanguageSheet({ onClose }: { onClose: () => void }) {
             className={on ? `${styles.row} ${styles.rowActive}` : styles.row}
             aria-pressed={on}
             onClick={() => {
+              noteLangChoice(l.key);
               setLang(l.key);
               onClose();
             }}
