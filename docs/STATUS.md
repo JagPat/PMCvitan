@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a5b-service-doors
 reviewed_merge: 2afc0be
-open_pr: none
+open_pr: 654
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
@@ -27,7 +27,7 @@ updated: 2026-09-28
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A5b (`work_item: phase-6-task-4d-ii-a-a5b-service-doors`, branch
+- **Now, A5b, `open_pr: 654` (`work_item: phase-6-task-4d-ii-a-a5b-service-doors`, branch
   `claude/4d-ii-a5b-service-doors`, from `main` at `2afc0be`).** The second A5 sub-unit: §A.1's doors on
   the service path.
   - The zod role enums and `DECIDER_KINDS` admit `architect`, and every command naming it refuses 409
