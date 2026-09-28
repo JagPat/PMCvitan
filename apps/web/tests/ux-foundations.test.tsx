@@ -43,6 +43,19 @@ describe('Eyebrow — the 13px critical-label floor', () => {
     expect((r.getByText('PROJECT HEALTH') as HTMLElement).style.fontSize).toBe('13px');
   });
 
+  it('a style asking for larger than the floor is kept, in a number or in px', () => {
+    const r = render(
+      <>
+        <Eyebrow style={{ fontSize: 20 }}>LARGE</Eyebrow>
+        <Eyebrow style={{ fontSize: '18px' }}>LARGE PX</Eyebrow>
+        <Eyebrow style={{ fontSize: '9px' }}>SMALL PX</Eyebrow>
+      </>,
+    );
+    expect((r.getByText('LARGE') as HTMLElement).style.fontSize).toBe('20px');
+    expect((r.getByText('LARGE PX') as HTMLElement).style.fontSize).toBe('18px');
+    expect((r.getByText('SMALL PX') as HTMLElement).style.fontSize).toBe('13px');
+  });
+
   it('a caller may still ask for larger', () => {
     const r = render(<Eyebrow size={16}>PORTFOLIO</Eyebrow>);
     expect((r.getByText('PORTFOLIO') as HTMLElement).style.fontSize).toBe('16px');
