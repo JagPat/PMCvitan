@@ -2969,7 +2969,7 @@ export const useStore = create<Store>()(
         return;
       }
       // local demo: mark building-to on the current rev
-      const label = get().userName ?? { pmc: 'PMC', client: 'Client', engineer: 'Site Engineer', contractor: 'Contractor', consultant: 'Consultant' }[get().role] ?? 'You';
+      const label = get().userName ?? { pmc: 'PMC', client: 'Client', engineer: 'Site Engineer', contractor: 'Contractor', consultant: 'Consultant', architect: 'Architect' }[get().role] ?? 'You';
       set((s) => {
         const d = s.drawings.find((x) => x.id === drawingId);
         if (!d?.current) return;

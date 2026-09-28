@@ -203,6 +203,34 @@ and no new ones. The first is fixed here; the rest are recorded as each opens:
   sibling still carries the legacy pending text the withdraw retires; 4d-ii-b every web reader.
   **With A4d, A4 is complete.**
 
+**A5 is delivered as four sub-units (2026-09-28)**, with the same items and no new ones. A gap map
+against `main` at `9d58b44` put A5 at 1,400–1,800 lines (the table's ~900 predates it), and one piece
+of it cannot land alone: widening the zod role enums makes an `architect` request reach the services,
+so the enums move with the 409 refusals, never before them.
+
+- **A5a, the role vocabulary:** `architect` in the shared `TokenRole` (a runtime `TOKEN_ROLES` beside
+  it), the API's `Role`, `PushRole` (the type; the targeted ceilings are A7's), the registry's
+  `KNOWN_ROLES`, the decisions manifest's permissions, the audit label and the membership comment;
+  `ROLE_POLICY` grants the eight of §A.1's eleven actions that have routes, pinned by equality (P28;
+  `decision.forward` joins with A8a, `decision.countersign` and `decision.disagree` with A8b); the web
+  answers the role in its maps and holds the persona back (`PERSONAS_OWED`); a role tripwire registers
+  every role vocabulary in shared, API and web with a verdict. Nothing is reachable: no token can carry
+  the role while 4d-i's doors stand, and the zod enums still refuse it.
+- **A5b, the doors on the service path:** both zod role enums and `DECIDER_KINDS` widened together
+  with the 409 refusals naming `phase-6-4d-previous-release-drained` (`decisions.create`/`updateDraft`
+  naming the architect designation, under the readiness lock; `MembersService.add` and the role update
+  before any write; `AuthService.session` before either branch, its synthetic fallback never minting the
+  role), all judged by one service-side catalog read of the reservation trigger, and the same read's
+  `rollout.phase6_4d` on the shell payload.
+- **A5c, the kernel standing reads and the designation fan-out:** `RoleStandingQuery` and the
+  `countersignRequired` overlay; `effectiveRoleHolderUserIds` wrapping `platform_role_holder_user_ids`;
+  the designation's `architect` arms (the shared `DeciderKind`, `viewerIsDecider`, `deciderNoun`, the
+  open-holder answer, the holder-orphan rule's register arm); `countPending`'s architect arm and
+  countersign obligations, with the shell summary reading it; the architect as consultation requester
+  and the roster on the consultation surface (server).
+- **A5d, the client boundary:** the `countersign-v1` interceptor, its in-command refusals and its
+  completeness tripwire.
+
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its
 packet which §C arms it carries. None may leave an arm unowned: the last 4d-ii-a unit to merge

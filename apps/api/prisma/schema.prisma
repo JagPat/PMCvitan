@@ -1022,7 +1022,7 @@ model Membership {
   projectId  String
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId     String
-  role       String // pmc | client | engineer | contractor | consultant
+  role       String // pmc | client | engineer | contractor | consultant | architect (reserved by 4d-i's door until 4d-iii)
   // For a `consultant` member: the discipline they cover (architect | mep | lighting | …).
   // A label, not a permission — every consultant shares the same read-mostly role.
   discipline String?

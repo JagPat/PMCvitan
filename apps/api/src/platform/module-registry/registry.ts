@@ -47,6 +47,7 @@ export const KNOWN_ROLES: ReadonlySet<string> = new Set([
   'engineer',
   'contractor',
   'consultant',
+  'architect',
   'worker',
   'owner',
   'admin',

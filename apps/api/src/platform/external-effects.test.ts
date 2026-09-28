@@ -15,7 +15,7 @@ import {
  * SHA-256, and a dispatch that contradicts its catalog entry is rejected before any event is written.
  */
 
-const VALID_ROLES: readonly PushRole[] = ['pmc', 'client', 'contractor', 'engineer', 'consultant'];
+const VALID_ROLES: readonly PushRole[] = ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'];
 const EVENT_TYPES = new Set<string>(DOMAIN_EVENT_TYPES);
 const keys = Object.keys(EXTERNAL_EFFECTS) as ExternalEffectKey[];
 

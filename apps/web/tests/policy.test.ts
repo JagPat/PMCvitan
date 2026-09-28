@@ -13,13 +13,13 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'decision.publish': ['pmc'],
   // Phase 6 task 4b (§A.1) — the ROUTE ceiling is the union of decider-capable roles; the
   // SERVICE narrows to the decision's actual decider (a same-role non-decider is refused there).
-  'decision.approve': ['client', 'pmc', 'contractor', 'engineer', 'consultant'],
+  'decision.approve': ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'],
   // Phase 6 task 4b — editing an unpublished draft (decider re-point / record conversion).
   // Round-7 Codex F1 — the route ceiling admits every role the AUTHOR can be reassigned to;
   // the service narrows to the draft's author or a pmc.
-  'decision.updateDraft': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  'decision.updateDraft': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
-  'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;
   // that is the practice's call alone.
   'decision.withdraw': ['pmc'],
@@ -112,15 +112,15 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'org.create': ['pmc', 'client', 'engineer', 'contractor'],
   // Read surfaces requiring a real account (the API derives these GET allowlists from the
   // same map — Phase 2 Task 2); a worker device token is excluded.
-  'project.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
-  'members.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
-  'companies.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
+  'project.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant', 'architect'],
+  'members.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant', 'architect'],
+  'companies.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant', 'architect'],
   // Phase 6 unit 4c-ii — asking for advice is the practice's call (`architect` joins in 4d WITH
   // the role); ANSWERING admits every role a consultee can hold, because the service narrows to
   // the ONE named consultee. A tighter ceiling here would make RolesGuard reject a legitimately
   // named contractor consultee before the service's own check could admit them.
-  'consultation.request': ['pmc'],
-  'consultation.respond': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  'consultation.request': ['pmc', 'architect'],
+  'consultation.respond': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
 };
 
 describe('authorization policy (shared source of truth)', () => {
@@ -160,7 +160,11 @@ describe('authorization policy (shared source of truth)', () => {
   });
 
   it('withdraw shares the change allowlist — the SERVICE narrows it to requester-or-PMC (Phase 1 Task 2)', () => {
-    expect([...rolesFor('decision.withdrawChange')].sort()).toEqual([...rolesFor('decision.change')].sort());
+    // …plus `architect` (Phase 6 task 4d, §A.1): the architect withdraws as a HOLDER but never opens a
+    // standard change request, since its own change path is the countersign disagreement
+    expect([...rolesFor('decision.withdrawChange')].filter((r) => r !== 'architect').sort()).toEqual([...rolesFor('decision.change')].sort());
+    expect(rolesFor('decision.withdrawChange')).toContain('architect');
+    expect(rolesFor('decision.change')).not.toContain('architect');
     expect(can('decision.withdrawChange', 'worker')).toBe(false);
   });
 });
