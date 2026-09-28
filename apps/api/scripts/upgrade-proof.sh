@@ -4945,7 +4945,7 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*) continue ;; esac
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5215,6 +5215,41 @@ assert "4d-ii-a / A6b: the appended fact moved the mirror through the seam (acti
   "SELECT \"active\"::text || '|' || \"activationSeq\"::text FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.flip';" \
   "true|2"
 
+# ── 4d-ii-a / A6c: the persisted rules and the registration barrier ─────────────────────────
+# Over the ledger this database ran, the catalog-data migration wrote the compiled rule of every
+# row it KNOWS (the two external consumers this legacy fixture registered) and left the planted
+# history — consumers no compiled contract names — with NO rule; a direct UPDATE of a rule is
+# refused, a rewrite under the rule gate is admitted (the migration's own path), and the barrier
+# trigger stands on the catalog.
+assert "4d-ii-a / A6c: the migration wrote the compiled rules it knows and no rule for planted history" \
+  "SELECT string_agg(\"consumer\" || ':' || coalesce(\"dispatchRule\", '-') || ':' || cardinality(\"subscribedEventTypes\")::text, ',' ORDER BY \"consumer\") FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" IN ('socket.invalidation','webpush.notify','upgrade.proof.history','upgrade.proof.inactive','upgrade.proof.flip');" \
+  "socket.invalidation:invalidate:0,upgrade.proof.flip:-:0,upgrade.proof.history:-:0,upgrade.proof.inactive:-:0,webpush.notify:push:0"
+assert_rejects "4d-ii-a / A6c: a direct UPDATE of dispatchRule is refused — the rule is sealed evidence" \
+  "UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'all' WHERE \"consumer\" = 'webpush.notify'" \
+  "SEALED EVIDENCE|transition closed"
+assert_rejects "4d-ii-a / A6c: a direct UPDATE of subscribedEventTypes is refused" \
+  "UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'types', \"subscribedEventTypes\" = ARRAY['decision.published'] WHERE \"consumer\" = 'upgrade.proof.flip'" \
+  "SEALED EVIDENCE|transition closed"
+assert_rejects "4d-ii-a / A6c: a session setting opens nothing — the transition is DDL, not state a DML writer can set" \
+  "DO \$\$ BEGIN PERFORM set_config('vitan.outbox_catalog_rule_migration', 'on', true); UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'all' WHERE \"consumer\" = 'upgrade.proof.flip'; END \$\$" \
+  "SEALED EVIDENCE|transition closed"
+assert_rejects "4d-ii-a / A6c: an unknown rule kind is refused by the CHECK even inside the transition" \
+  "DO \$\$ BEGIN EXECUTE 'CREATE FUNCTION platform_t4d_catalog_rule_migration_open() RETURNS void LANGUAGE sql AS ''SELECT'''; UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'sometimes' WHERE \"consumer\" = 'upgrade.proof.flip'; END \$\$" \
+  "OutboxConsumerCatalog_t4d_rule_kind"
+assert_rejects "4d-ii-a / A6c: a NULL subscription element is refused by the CHECK even inside the transition" \
+  "DO \$\$ BEGIN EXECUTE 'CREATE FUNCTION platform_t4d_catalog_rule_migration_open() RETURNS void LANGUAGE sql AS ''SELECT'''; UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'types', \"subscribedEventTypes\" = ARRAY[NULL]::TEXT[] WHERE \"consumer\" = 'upgrade.proof.flip'; END \$\$" \
+  "OutboxConsumerCatalog_t4d_rule_type_names"
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-ii-a / A6c: the rule rewrite inside the transition was refused"; FAIL=1; }
+DO $$ BEGIN
+  EXECUTE 'CREATE FUNCTION platform_t4d_catalog_rule_migration_open() RETURNS void LANGUAGE sql AS ''SELECT''';
+  UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = 'all' WHERE "consumer" = 'upgrade.proof.flip';
+  EXECUTE 'DROP FUNCTION platform_t4d_catalog_rule_migration_open()';
+END $$;
+SQL
+assert "4d-ii-a / A6c: the rewrite inside the transition stands, the marker is gone, and the barrier trigger is on the catalog" \
+  "SELECT (SELECT \"dispatchRule\" FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.flip') || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_catalog_rule_migration_open')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgname = 'OutboxConsumerCatalog_t4d_registration_barrier' AND NOT tgisinternal)::text;" \
+  "all|0|1"
+
 # ── the replay a LEDGER-LOST RESTORE takes, before and after this release serves (#646's review,
 #    finding 4114478871) ─────────────────────────────────────────────────────────────────────────
 # A really-migrated database restored without `_prisma_migrations` is the one kind that reaches
@@ -5231,7 +5266,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20271222000000_phase6_t4d_i_b_u1_bound_event_actor 20271223000000_phase6_t4d_i_b_u2_change_bundle_seals
 20271224000000_phase6_t4d_i_b_u3_pairing_flip 20271225000000_phase6_project_row_lock_no_key
 20271226000000_phase6_t4d_ii_release_lease_writer 20271227000000_phase6_t4d_ii_consultation_finalized_cycle
-20271228000000_phase6_t4d_ii_a6a_activation_register 20271229000000_phase6_t4d_ii_a6b_activation_rules"
+20271228000000_phase6_t4d_ii_a6a_activation_register 20271229000000_phase6_t4d_ii_a6b_activation_rules
+20271230000000_phase6_t4d_ii_a6c_catalog_rules"
 t4d_replay() {
   local m
   for m in $T4D_REPLAY; do
@@ -5312,6 +5348,12 @@ assert "4d-ii-a / A6a: the replayed register migration appended no second baseli
 assert "4d-ii-a / A6b: the replay re-issued the freeze and left the operator's fact and mirror as they were" \
   "SELECT (SELECT count(*) FROM pg_trigger WHERE tgname = 'OutboxConsumerCatalog_t4d_rules' AND NOT tgisinternal)::text || '|' || (SELECT count(*) FROM \"OutboxConsumerActivation\" WHERE \"consumer\" = 'upgrade.proof.flip')::text || '|' || (SELECT \"active\"::text || \"activationSeq\"::text FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.flip');" \
   "1|2|true2"
+# A6c — the replay re-ran the rules migration: its backfill is guarded on the ABSENCE of a rule and
+# names only compiled consumers, so the rule written under the gate above stands, the compiled rules
+# stand, the planted history still has none, and the barrier is re-issued.
+assert "4d-ii-a / A6c: the replay re-issued the barrier and rewrote no rule" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE tgname = 'OutboxConsumerCatalog_t4d_registration_barrier' AND NOT tgisinternal)::text || '|' || (SELECT string_agg(\"consumer\" || ':' || coalesce(\"dispatchRule\", '-'), ',' ORDER BY \"consumer\") FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" IN ('socket.invalidation','webpush.notify','upgrade.proof.history','upgrade.proof.flip'));" \
+  "1|socket.invalidation:invalidate,upgrade.proof.flip:all,upgrade.proof.history:-,webpush.notify:push"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

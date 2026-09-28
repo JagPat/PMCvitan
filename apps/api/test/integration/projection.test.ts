@@ -30,7 +30,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  *  `entityId`) and the stream position (in `entity`), so "gen G reflects position P exactly once" is a
  *  row count and the generation-scoping is directly observable. */
 const projConsumer: OutboxConsumer = {
-  name: PROJ, kind: 'ordered', effect: 'db', catalogVersion: 1,
+  name: PROJ, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
   deliveryFor: () => ({ action: 'dispatch' }),
   projection: {
     dropGeneration: async (tx, target: ProjectionTarget) => {
@@ -51,7 +51,7 @@ const projConsumer: OutboxConsumer = {
  *  returns that position, so the rebuild replays only the tail (> seedThrough). */
 let seedThrough = -1n; // set per-test; -1 ⇒ nothing seeded (replay from 0)
 const seededConsumer: OutboxConsumer = {
-  name: SEEDED, kind: 'ordered', effect: 'db', catalogVersion: 1,
+  name: SEEDED, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
   deliveryFor: () => ({ action: 'dispatch' }),
   projection: {
     rebuildSeed: async (tx, target: ProjectionTarget) => {

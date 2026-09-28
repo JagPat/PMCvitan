@@ -47,6 +47,8 @@ export function makeSocketConsumer(realtime: RealtimeGateway): OutboxConsumer {
     kind: 'unordered',
     effect: 'external',
     catalogVersion: 1,
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries: dispatch iff the intent invalidates.
+    dispatchRule: { kind: 'invalidate' },
     // Dispatch only when the PERSISTED intent asks to invalidate; otherwise a recorded no-op. PR C
     // narrows this per command (a private draft never invalidates). A null-intent legacy event is
     // never invalidated here.
@@ -74,6 +76,8 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
     // The SOCKET consumer is deliberately NOT bumped: it carries no consultation contract — it
     // tells a room to refetch and has nothing new to understand.
     catalogVersion: 2,
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries: dispatch iff the intent carries a push.
+    dispatchRule: { kind: 'push' },
     // Dispatch only when the PERSISTED intent carries a push body; otherwise a recorded no-op. A
     // null-intent legacy event has no push, so it is always a no-op — the outbox never invents a
     // historical push from an old payload.

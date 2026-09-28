@@ -26,6 +26,9 @@ const human: Actor = { actorId: '', actorName: 'Priya (PMC)', actorRole: 'pmc', 
 // no-op — so a project stream mixes dispatch + noop positions the cursor must still cover in order.
 const filtered: OutboxConsumer = {
   name: FILTERED, kind: 'ordered', effect: 'db', catalogVersion: 1,
+  // 4d-ii-a / A6c — the persisted rule is declared for the row's birth; the entityId filter below is
+  // this fixture's own until A6d derives the rows from the persisted rule and re-expresses it.
+  dispatchRule: { kind: 'all' },
   deliveryFor: (meta) => (meta.entityId.startsWith('GO-') ? { action: 'dispatch' } : { action: 'noop' }),
   handle: async (ctx) => {
     if (!ctx.tx) throw new Error('ordered consumer needs a tx');
@@ -100,7 +103,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     await emit(p, 'NP-b');
     // a brand-new unordered consumer, registered only now — it has NO deliveries for the prior events
     const LATE = 'test.late.unordered';
-    const late: OutboxConsumer = { name: LATE, kind: 'unordered', effect: 'external', catalogVersion: 1, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} };
+    const late: OutboxConsumer = { name: LATE, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] }, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} };
     registerConsumer(late);
     await syncConsumerCatalog(t.prisma);
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: LATE } })).toBe(0);
@@ -147,7 +150,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     const p = await freshProject();
     for (const e of ['GO-1', 'GO-2', 'GO-3', 'GO-4', 'GO-5']) await emit(p, e); // five events before the consumer exists
     const LATE = 'test.bounded.unordered';
-    const late: OutboxConsumer = { name: LATE, kind: 'unordered', effect: 'external', catalogVersion: 1, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} };
+    const late: OutboxConsumer = { name: LATE, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] }, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} };
     registerConsumer(late);
     await syncConsumerCatalog(t.prisma);
     const owed = () => t.prisma.outboxDelivery.count({ where: { consumer: LATE, projectId: p } });
@@ -169,7 +172,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
   it('a deactivated catalog consumer accrues NO delivery on a new event (active authoritative at materialize)', async () => {
     const p = await freshProject();
     const OFF = 'test.inactive.unordered';
-    const off: OutboxConsumer = { name: OFF, kind: 'unordered', effect: 'external', catalogVersion: 1, deliveryFor: () => ({ action: 'dispatch' }), handle: async () => {} };
+    const off: OutboxConsumer = { name: OFF, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'all' }, deliveryFor: () => ({ action: 'dispatch' }), handle: async () => {} };
     registerConsumer(off);
     await syncConsumerCatalog(t.prisma);
     await activation.request({ consumer: OFF, active: false, reason: 'probe: deactivate before the event through the activation protocol', actorId: 'outbox-scanner.test', requestToken: randomUUID() });
@@ -187,7 +190,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     const PAUSE = 'test.pause.ordered';
     const ran = () => t.prisma.auditLog.count({ where: { action: 'test.pause', projectId: p } });
     const pause: OutboxConsumer = {
-      name: PAUSE, kind: 'ordered', effect: 'db', catalogVersion: 1,
+      name: PAUSE, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
       deliveryFor: () => ({ action: 'dispatch' }),
       handle: async (ctx) => { if (!ctx.tx) throw new Error('tx'); await ctx.tx.auditLog.create({ data: { projectId: ctx.meta.projectId, actor: 'pz', actorId: 'pz', actorRole: 'system', action: 'test.pause', entity: 'Ev', entityId: ctx.meta.eventId } }); },
     };
@@ -217,7 +220,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     const { eventId: eNp } = await emit(p, 'NP-mix');
     const LATEF = 'test.latefiltered.ordered';
     const latef: OutboxConsumer = {
-      name: LATEF, kind: 'ordered', effect: 'db', catalogVersion: 1,
+      name: LATEF, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' }, // as FILTERED's: the entityId filter is the fixture's own until A6d
       deliveryFor: (m) => (m.entityId.startsWith('GO-') ? { action: 'dispatch' } : { action: 'noop' }),
       handle: async () => {},
     };
@@ -245,7 +248,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     await emit(p, 'GO-y');
     await relay.expandMissingDeliveries(); // code absent → nothing derived (never guessed)
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: ABSENT } })).toBe(0);
-    const absent: OutboxConsumer = { name: ABSENT, kind: 'unordered', effect: 'external', catalogVersion: 1, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} };
+    const absent: OutboxConsumer = { name: ABSENT, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] }, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} };
     registerConsumer(absent);
     await relay.expandMissingDeliveries(); // code now present → gap repaired
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: ABSENT, projectId: p } })).toBe(2);

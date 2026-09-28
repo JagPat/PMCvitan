@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
+import { eventTypesUnder } from '../platform/outbox/registry';
 import { computeInspectionsBase } from './inspections-serialize';
 
 /**
@@ -62,6 +63,9 @@ export function makeInspectionsProjectionConsumer(): OutboxConsumer {
     // required: the ordinary `projection:rebuild` stamps a fresh generation at v2, and until it runs the
     // fallback serves correct data.
     catalogVersion: 2,
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries; the unit tripwire holds it equal
+    // to `deliveryFor` over the closed event-type list until A6d derives the rows from it.
+    dispatchRule: { kind: 'types', eventTypes: eventTypesUnder('inspection.') },
     deliveryFor,
     projection: {
       rebuildSeed: async (tx, target) => {

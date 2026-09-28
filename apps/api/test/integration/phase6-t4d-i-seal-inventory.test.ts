@@ -152,8 +152,9 @@ const INVENTORY: Record<string, string[]> = {
     'OutboxConsumerActivation_t4d_head_lock',
     'OutboxConsumerActivation_t4d_no_truncate',
   ],
-  // 4d-ii-a / A6b (20271229): the mirror's sole-writer freeze beside the registration head.
-  OutboxConsumerCatalog: ['OutboxConsumerCatalog_t4d_registration_head', 'OutboxConsumerCatalog_t4d_rules'],
+  // 4d-ii-a / A6b (20271229): the mirror's sole-writer freeze beside the registration head;
+  // A6c (20271230): the registration barrier (the EXCLUSIVE half of the one shared key).
+  OutboxConsumerCatalog: ['OutboxConsumerCatalog_t4d_registration_barrier', 'OutboxConsumerCatalog_t4d_registration_head', 'OutboxConsumerCatalog_t4d_rules'],
   Project: ['Project_t4d_deleting', 'Project_t4d_project_org', 'Project_t4d_user_standing'],
   ProjectEventStream: [
     // §A.2 names FIVE objects here and the first version of this unit installed two, with the
@@ -251,8 +252,10 @@ const FUNCTIONS = [
   'platform_t4d_activation_append_only',
   'platform_t4d_activation_no_truncate',
   'platform_t4d_catalog_registration_head',
-  // 4d-ii-a / A6b — the catalog rules freeze
+  // 4d-ii-a / A6b — the catalog rules freeze (A6c re-issues it one column family wider)
   'platform_t4d_catalog_rules',
+  // 4d-ii-a / A6c — the registration barrier
+  'platform_t4d_registration_barrier',
 ];
 
 describe('Phase 6 units 4d-i and 4d-i-b — every seal the migrations name is INSTALLED (live PG)', () => {
