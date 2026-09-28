@@ -37,6 +37,9 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
     same token replays its own fact, a different request under it is refused, every distinct request
     appends; the five direct `active` UPDATE fixtures converted to it. P-A2–P-A5, P-A6's freeze arms,
     P-A9–P-A11.
+  - Codex's first review of `c2e57a0` was clean; that head's `Correction-Owner` trailer sat in a
+    non-final paragraph git's trailer parser does not read, so the scope check authenticated no
+    owner. This head carries the trailer in its terminal block; the content is unchanged.
 - **A6a merged as #659** (`12c6f8f`): the `OutboxConsumerActivation` register — CHECKs, the triple retry
   identity, the head lock, the apply, the seals, the catalog-INSERT baseline trigger and the backfill —
   with the row-scoped `sanctionedConsumerRemoval` seam and the eleven teardowns through it.
