@@ -21,7 +21,6 @@ const ORD = 'test.ops.ordered';
 const human: Actor = { actorId: '', actorName: 'Priya (PMC)', actorRole: 'pmc', actorKind: 'human' };
 const ordered: OutboxConsumer = {
   name: ORD, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
-  deliveryFor: () => ({ action: 'dispatch' }),
   handle: async (ctx) => { if (!ctx.tx) throw new Error('tx'); await ctx.tx.auditLog.create({ data: { projectId: ctx.meta.projectId, actor: 'o', actorId: 'o', actorRole: 'system', action: 'test.ops', entity: 'Ev', entityId: ctx.meta.eventId } }); },
 };
 

@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { LabourActivityForecastDto, LabourForecastVerdict, LabourReadinessDto, RequirementEventPayload } from '@vitan/shared';
-import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
+import type { OutboxConsumer } from '../platform/outbox/registry';
 import type { LabourCoverageService } from './labour-coverage.service';
 import type { LabourCoverageRequirement, RequirementLabourForecast } from './coverage';
 
@@ -153,14 +153,6 @@ const READINESS_EVENTS = new Set([
   'labour_work.recorded',
 ]);
 
-/** Any forecast-affecting canonical event refreshes the whole project row; everything else is a
- *  no-op that still advances the ordered cursor contiguously. Attendance events are deliberately
- *  absent: the §A forecast and execution tables differ ONLY in whether presence is required, and
- *  the forecast never consults presence. */
-function deliveryFor(meta: EmittedEventMeta): DeliveryPlan {
-  return READINESS_EVENTS.has(meta.eventType) ? { action: 'dispatch' } : { action: 'noop' };
-}
-
 async function refreshRow(tx: Prisma.TransactionClient, generationId: string, projectId: string): Promise<void> {
   const dto = (await computeLabourReadinessDto(tx, projectId)) as unknown as Prisma.InputJsonValue;
   await tx.labourReadinessProjection.upsert({
@@ -177,10 +169,9 @@ export function makeLabourReadinessProjectionConsumer(): OutboxConsumer {
     kind: 'ordered',
     effect: 'db',
     catalogVersion: 1,
-    // 4d-ii-a / A6c — the persisted rule the catalog row carries; the unit tripwire holds it equal
-    // to `deliveryFor` over the closed event-type list until A6d derives the rows from it.
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries; from A6d it is what derives this
+    // consumer's delivery rows (`deliveryRowsFor`), so a rule change is a contract change.
     dispatchRule: { kind: 'types', eventTypes: [...READINESS_EVENTS] },
-    deliveryFor,
     projection: {
       rebuildSeed: async (tx, target) => {
         const max = await tx.domainEvent.aggregate({ where: { projectId: target.projectId }, _max: { streamPosition: true } });

@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
+import type { OutboxConsumer } from '../platform/outbox/registry';
 import type { InventoryService } from '../inventory/inventory.service';
 import type { SubstitutionsService } from './substitutions.service';
 import type { RequirementCoverage } from '../inventory/coverage';
@@ -83,12 +83,6 @@ const READINESS_EVENTS = new Set([
   'activity.material_blocked', 'activity.material_unblocked',
 ]);
 
-/** Any coverage-affecting canonical event refreshes the whole project row; everything else is a
- *  no-op that still advances the ordered cursor contiguously. */
-function deliveryFor(meta: EmittedEventMeta): DeliveryPlan {
-  return READINESS_EVENTS.has(meta.eventType) ? { action: 'dispatch' } : { action: 'noop' };
-}
-
 async function refreshRow(tx: Prisma.TransactionClient, generationId: string, projectId: string): Promise<void> {
   const dto = (await computeMaterialReadingsDto(tx, projectId)) as unknown as Prisma.InputJsonValue;
   await tx.materialReadinessProjection.upsert({
@@ -105,10 +99,9 @@ export function makeMaterialReadinessProjectionConsumer(): OutboxConsumer {
     kind: 'ordered',
     effect: 'db',
     catalogVersion: 1,
-    // 4d-ii-a / A6c — the persisted rule the catalog row carries; the unit tripwire holds it equal
-    // to `deliveryFor` over the closed event-type list until A6d derives the rows from it.
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries; from A6d it is what derives this
+    // consumer's delivery rows (`deliveryRowsFor`), so a rule change is a contract change.
     dispatchRule: { kind: 'types', eventTypes: [...READINESS_EVENTS] },
-    deliveryFor,
     projection: {
       rebuildSeed: async (tx, target) => {
         const max = await tx.domainEvent.aggregate({ where: { projectId: target.projectId }, _max: { streamPosition: true } });

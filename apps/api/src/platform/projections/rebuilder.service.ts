@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma.service';
-import { getConsumer, outboxSenderMode, type EmittedEventMeta, type OutboxConsumer, type ProjectionTarget } from '../outbox/registry';
+import { dispatchActionFor, getConsumer, outboxSenderMode, type EmittedEventMeta, type OutboxConsumer, type ProjectionTarget } from '../outbox/registry';
 import { metaFromEvent } from '../outbox/relay.service';
 
 /**
@@ -198,7 +198,10 @@ export class ProjectionRebuilder {
       throw new Error(`replay gap for ${consumer.name}/${target.projectId}: expected ${nextExpected}, got ${event.streamPosition}`);
     }
     const meta: EmittedEventMeta = metaFromEvent(event);
-    if (consumer.deliveryFor(meta).action === 'dispatch') {
+    // 4d-ii-a / A6d — the replay judges each event by the consumer's DECLARED rule (the same rule
+    // its catalog row carries and the live rows derive from), so a rebuild applies exactly the
+    // events the live relay dispatched and no other.
+    if (dispatchActionFor(consumer.dispatchRule, meta) === 'dispatch') {
       await consumer.handle({
         delivery: { id: `(rebuild:${target.generationId})`, consumer: consumer.name, projectId: target.projectId, streamPosition: event.streamPosition, payload: event.payload },
         meta,

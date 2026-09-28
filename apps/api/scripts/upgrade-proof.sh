@@ -4945,7 +4945,7 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*) continue ;; esac
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5250,6 +5250,89 @@ assert "4d-ii-a / A6c: the rewrite inside the transition stands, the marker is g
   "SELECT (SELECT \"dispatchRule\" FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.flip') || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_catalog_rule_migration_open')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgname = 'OutboxConsumerCatalog_t4d_registration_barrier' AND NOT tgisinternal)::text;" \
   "all|0|1"
 
+# ── 4d-ii-a / A6d: the delivery rows and their seals ────────────────────────────────────────
+# Over the ledger this database ran, the three seals stand; a hand-run event that writes no delivery
+# rows is refused at COMMIT naming the consumer it owes; a row carrying an action its consumer's rule
+# does not derive, and a row for the rule-less planted history, are refused at the row; the frozen
+# columns and the mark hold; a legacy (null-intent) row still takes the relay's neutralization; and a
+# complete hand-run bundle — event and rows from the kernel's own derivation — commits.
+assert "4d-ii-a / A6d: the three delivery seals and the two kernel reads they judge by are installed" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('DomainEvent_t4d_deliveries','OutboxDelivery_t4d_bound','OutboxDelivery_t4d_frozen'))::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname IN ('platform_t4d_delivery_action','platform_t4d_push_payload','platform_t4d_event_deliveries','platform_t4d_delivery_bound','platform_t4d_delivery_frozen'))::text;" \
+  "3|5"
+assert "4d-ii-a / A6d: the kernel's derivation over this database's rules — invalidate follows the intent, push needs a body, all always, types by name" \
+  "SELECT platform_t4d_delivery_action('invalidate', NULL, 'x', '{\"invalidate\":true}') || '|' || platform_t4d_delivery_action('invalidate', NULL, 'x', NULL) || '|' || platform_t4d_delivery_action('push', NULL, 'x', '{\"push\":{\"body\":\"\"}}') || '|' || platform_t4d_delivery_action('push', NULL, 'x', '{\"push\":{\"body\":\"hi\"}}') || '|' || platform_t4d_delivery_action('all', NULL, 'x', NULL) || '|' || platform_t4d_delivery_action('types', ARRAY['x'], 'x', NULL) || '|' || platform_t4d_delivery_action('types', ARRAY['x'], 'y', NULL) || '|' || coalesce(platform_t4d_delivery_action(NULL, NULL, 'x', NULL), '-');" \
+  "dispatch|noop|noop|dispatch|dispatch|dispatch|noop|-"
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-ii-a / A6d: the bundle fixture's project was refused"; FAIL=1; }
+INSERT INTO "Org"("id","name","slug") VALUES ('org-up4d-a6d','Delivery Org','delivery-org-a6d');
+INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+VALUES ('UP4D-A6D-P','org-up4d-a6d','Delivered','A6D','','Finishing','A6D-01','01 Jan 2026','31 Dec 2026',0,0,0);
+SQL
+# an event with NO rows: one implicit transaction, refused when its deferred seal fires at commit
+assert_rejects "4d-ii-a / A6d: a hand-run event that writes no delivery rows is refused at commit, naming the consumer it owes" \
+  "UPDATE \"ProjectEventStream\" SET \"nextPosition\" = \"nextPosition\" + 1 WHERE \"projectId\" = 'UP4D-A6D-P'; INSERT INTO \"DomainEvent\"(\"eventId\",\"eventType\",\"organizationId\",\"projectId\",\"streamPosition\",\"actorKind\",\"systemActor\",\"entityType\",\"entityId\",\"dispatchIntent\") SELECT 'UP4D-A6D-E0','activity.deleted','org-up4d-a6d','UP4D-A6D-P',0,'system','upgrade-proof','Activity','UP4D-A6D-A', jsonb_build_object('effectKey', c.\"effectKey\", 'coverageVersion', c.\"coverageVersion\", 'invalidate', true) FROM \"ExternalEffectCatalog\" c WHERE c.\"effectKey\" = 'activity.deleted' AND c.\"retiredAt\" IS NULL ORDER BY c.\"coverageVersion\" LIMIT 1" \
+  'owes consumer "socket.invalidation" a delivery row'
+assert "4d-ii-a / A6d: the refused bundle left nothing behind — no event, no allocation" \
+  "SELECT (SELECT count(*) FROM \"DomainEvent\" WHERE \"projectId\" = 'UP4D-A6D-P')::text || '|' || (SELECT \"nextPosition\"::text FROM \"ProjectEventStream\" WHERE \"projectId\" = 'UP4D-A6D-P');" \
+  "0|0"
+# the complete bundle: event and rows from the kernel's own derivation
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-ii-a / A6d: the complete hand-run bundle was refused"; FAIL=1; }
+BEGIN;
+UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'UP4D-A6D-P';
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+SELECT 'UP4D-A6D-E0','activity.deleted','org-up4d-a6d','UP4D-A6D-P',0,'system','upgrade-proof','Activity','UP4D-A6D-A',
+       jsonb_build_object('effectKey', c."effectKey", 'coverageVersion', c."coverageVersion", 'invalidate', true)
+  FROM "ExternalEffectCatalog" c WHERE c."effectKey" = 'activity.deleted' AND c."retiredAt" IS NULL
+ ORDER BY c."coverageVersion" LIMIT 1;
+INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","payload","subject","updatedAt")
+SELECT 'UP4D-A6D-D-' || c."consumer", e."eventId", e."projectId", c."consumer", c."consumerKind", a.action, e."streamPosition",
+       CASE WHEN a.action = 'dispatch' OR c."consumerKind" = 'ordered' THEN 'pending' ELSE 'succeeded' END,
+       CASE WHEN c."dispatchRule" = 'push' AND a.action = 'dispatch' THEN platform_t4d_push_payload(e."dispatchIntent") END,
+       CASE WHEN c."dispatchRule" = 'push' AND a.action = 'dispatch' THEN e."entityId" END,
+       now()
+  FROM "DomainEvent" e
+  CROSS JOIN "OutboxConsumerCatalog" c
+  CROSS JOIN LATERAL (SELECT platform_t4d_delivery_action(c."dispatchRule", c."subscribedEventTypes", e."eventType", e."dispatchIntent") AS action) a
+ WHERE e."eventId" = 'UP4D-A6D-E0' AND c."active" AND c."dispatchRule" IS NOT NULL;
+COMMIT;
+SQL
+assert "4d-ii-a / A6d: the bundle's rows are the active ruled set's — the socket dispatches, the push is a done no-op, the flipped consumer dispatches under 'all', the rule-less history and the inactive row get nothing" \
+  "SELECT string_agg(\"consumer\" || ':' || \"deliveryAction\" || '/' || \"status\", ',' ORDER BY \"consumer\") FROM \"OutboxDelivery\" WHERE \"eventId\" = 'UP4D-A6D-E0';" \
+  "socket.invalidation:dispatch/pending,upgrade.proof.flip:dispatch/pending,webpush.notify:noop/succeeded"
+# (the BEFORE INSERT binding judges before the unique index does, so the flipped consumer's existing row is no obstacle)
+assert_rejects "4d-ii-a / A6d: a delivery row carrying an action its consumer's rule does not derive is refused at the row" \
+  "INSERT INTO \"OutboxDelivery\" (\"id\",\"eventId\",\"projectId\",\"consumer\",\"consumerKind\",\"deliveryAction\",\"streamPosition\",\"status\",\"updatedAt\") VALUES ('UP4D-A6D-BAD','UP4D-A6D-E0','UP4D-A6D-P','upgrade.proof.flip','unordered','noop',0,'succeeded',now())" \
+  "persisted rule all derives .dispatch."
+assert_rejects "4d-ii-a / A6d: a delivery row for the rule-less planted history is refused — nothing derives for it" \
+  "INSERT INTO \"OutboxDelivery\" (\"id\",\"eventId\",\"projectId\",\"consumer\",\"consumerKind\",\"deliveryAction\",\"streamPosition\",\"status\",\"updatedAt\") VALUES ('UP4D-A6D-BAD','UP4D-A6D-E0','UP4D-A6D-P','upgrade.proof.history','unordered','dispatch',0,'pending',now())" \
+  "NO persisted dispatch rule"
+assert_rejects "4d-ii-a / A6d: a socket row may not carry a payload — only a push-rule delivery projects the intent" \
+  "INSERT INTO \"OutboxDelivery\" (\"id\",\"eventId\",\"projectId\",\"consumer\",\"consumerKind\",\"deliveryAction\",\"streamPosition\",\"status\",\"payload\",\"updatedAt\") VALUES ('UP4D-A6D-BAD','UP4D-A6D-E0','UP4D-A6D-P','upgrade.proof.flip','unordered','dispatch',0,'pending','{\"body\":\"invented\"}',now())" \
+  "only a push-rule delivery projects the intent"
+assert_rejects "4d-ii-a / A6d: a delivery's identity is FROZEN" \
+  "UPDATE \"OutboxDelivery\" SET \"consumerKind\" = 'ordered' WHERE \"id\" = 'UP4D-A6D-D-socket.invalidation'" \
+  "FROZEN|foreign key"
+assert_rejects "4d-ii-a / A6d: a delivery's payload is FROZEN" \
+  "UPDATE \"OutboxDelivery\" SET \"payload\" = '{\"body\":\"rewritten\"}' WHERE \"id\" = 'UP4D-A6D-D-socket.invalidation'" \
+  "FROZEN"
+assert_rejects "4d-ii-a / A6d: a bare dispatch -> noop is refused — neither the mark, a completion, nor a legacy event" \
+  "UPDATE \"OutboxDelivery\" SET \"deliveryAction\" = 'noop', \"status\" = 'succeeded' WHERE \"id\" = 'UP4D-A6D-D-socket.invalidation'" \
+  "admitted only as the cancellation MARK"
+assert_rejects "4d-ii-a / A6d: noop never becomes dispatch" \
+  "UPDATE \"OutboxDelivery\" SET \"deliveryAction\" = 'dispatch', \"status\" = 'pending' WHERE \"id\" = 'UP4D-A6D-D-webpush.notify'" \
+  "never noop -> dispatch"
+$PSQL -q -c "UPDATE \"OutboxDelivery\" SET \"deliveryAction\" = 'noop', \"status\" = 'succeeded', \"cancelledAt\" = now() WHERE \"id\" = 'UP4D-A6D-D-upgrade.proof.flip';" >/dev/null \
+  || { echo "FAILED  4d-ii-a / A6d: the cancellation MARK (dispatch -> noop with cancelledAt in the same statement) was refused"; FAIL=1; }
+assert_rejects "4d-ii-a / A6d: the mark is never cleared" \
+  "UPDATE \"OutboxDelivery\" SET \"cancelledAt\" = NULL WHERE \"id\" = 'UP4D-A6D-D-upgrade.proof.flip'" \
+  "never cleared or rewritten"
+# the legacy neutralization: UP4A-DEL1 is a pre-4a `dispatch` row of a NULL-intent event, still pending —
+# the relay's `dispatchExternal` retires exactly such a row, and the freeze admits exactly that statement
+$PSQL -q -c "UPDATE \"OutboxDelivery\" SET \"status\" = 'succeeded', \"deliveryAction\" = 'noop', \"leaseOwner\" = NULL, \"leaseExpiresAt\" = NULL, \"lastError\" = NULL WHERE \"id\" = 'UP4A-DEL1';" >/dev/null \
+  || { echo "FAILED  4d-ii-a / A6d: the relay's pre-intent neutralization of a legacy delivery was refused"; FAIL=1; }
+assert "4d-ii-a / A6d: the mark and the legacy neutralization stand, payloads preserved" \
+  "SELECT (SELECT \"deliveryAction\" || '/' || \"status\" || '/' || (\"cancelledAt\" IS NOT NULL)::text FROM \"OutboxDelivery\" WHERE \"id\" = 'UP4D-A6D-D-upgrade.proof.flip') || '|' || (SELECT \"deliveryAction\" || '/' || \"status\" || '/' || (\"payload\" IS NOT NULL)::text FROM \"OutboxDelivery\" WHERE \"id\" = 'UP4A-DEL1');" \
+  "noop/succeeded/true|noop/succeeded/true"
+
 # ── the replay a LEDGER-LOST RESTORE takes, before and after this release serves (#646's review,
 #    finding 4114478871) ─────────────────────────────────────────────────────────────────────────
 # A really-migrated database restored without `_prisma_migrations` is the one kind that reaches
@@ -5267,7 +5350,7 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20271224000000_phase6_t4d_i_b_u3_pairing_flip 20271225000000_phase6_project_row_lock_no_key
 20271226000000_phase6_t4d_ii_release_lease_writer 20271227000000_phase6_t4d_ii_consultation_finalized_cycle
 20271228000000_phase6_t4d_ii_a6a_activation_register 20271229000000_phase6_t4d_ii_a6b_activation_rules
-20271230000000_phase6_t4d_ii_a6c_catalog_rules"
+20271230000000_phase6_t4d_ii_a6c_catalog_rules 20271231000000_phase6_t4d_ii_a6d_delivery_seals"
 t4d_replay() {
   local m
   for m in $T4D_REPLAY; do
@@ -5287,6 +5370,19 @@ SELECT 'UP4D-LL-E0','activity.deleted','org-up4d-ll','UP4D-LL-P',0,'human','UP4D
        jsonb_build_object('effectKey', c."effectKey", 'coverageVersion', c."coverageVersion", 'invalidate', true)
   FROM "ExternalEffectCatalog" c WHERE c."effectKey" = 'activity.deleted' AND c."retiredAt" IS NULL
  ORDER BY c."coverageVersion" LIMIT 1;
+-- 4d-ii-a / A6d — a hand-run bundle owes the event's delivery rows in the same transaction: one per
+-- ACTIVE, RULED catalog row, from the kernel's own derivation and projection (the planted history
+-- `upgrade.proof.history` carries no rule and is owed nothing; `upgrade.proof.inactive` is inactive)
+INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","payload","subject","updatedAt")
+SELECT gen_random_uuid()::text, e."eventId", e."projectId", c."consumer", c."consumerKind", a.action, e."streamPosition",
+       CASE WHEN a.action = 'dispatch' OR c."consumerKind" = 'ordered' THEN 'pending' ELSE 'succeeded' END,
+       CASE WHEN c."dispatchRule" = 'push' AND a.action = 'dispatch' THEN platform_t4d_push_payload(e."dispatchIntent") END,
+       CASE WHEN c."dispatchRule" = 'push' AND a.action = 'dispatch' THEN e."entityId" END,
+       now()
+  FROM "DomainEvent" e
+  CROSS JOIN "OutboxConsumerCatalog" c
+  CROSS JOIN LATERAL (SELECT platform_t4d_delivery_action(c."dispatchRule", c."subscribedEventTypes", e."eventType", e."dispatchIntent") AS action) a
+ WHERE e."eventId" = 'UP4D-LL-E0' AND c."active" AND c."dispatchRule" IS NOT NULL;
 COMMIT;
 SQL
 # BEFORE any process of this release has served: declared, no lease. Nothing this release installs
@@ -5354,6 +5450,11 @@ assert "4d-ii-a / A6b: the replay re-issued the freeze and left the operator's f
 assert "4d-ii-a / A6c: the replay re-issued the barrier and rewrote no rule" \
   "SELECT (SELECT count(*) FROM pg_trigger WHERE tgname = 'OutboxConsumerCatalog_t4d_registration_barrier' AND NOT tgisinternal)::text || '|' || (SELECT string_agg(\"consumer\" || ':' || coalesce(\"dispatchRule\", '-'), ',' ORDER BY \"consumer\") FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" IN ('socket.invalidation','webpush.notify','upgrade.proof.history','upgrade.proof.flip'));" \
   "1|socket.invalidation:invalidate,upgrade.proof.flip:all,upgrade.proof.history:-,webpush.notify:push"
+# A6d — the replay re-ran the delivery seals' migration (CREATE OR REPLACE, DROP TRIGGER IF EXISTS):
+# the three seals stand and no delivery row moved.
+assert "4d-ii-a / A6d: the replay re-issued the three delivery seals and moved no row" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('DomainEvent_t4d_deliveries','OutboxDelivery_t4d_bound','OutboxDelivery_t4d_frozen'))::text || '|' || (SELECT string_agg(\"consumer\" || ':' || \"deliveryAction\", ',' ORDER BY \"consumer\") FROM \"OutboxDelivery\" WHERE \"eventId\" = 'UP4D-LL-E0');" \
+  "3|socket.invalidation:dispatch,upgrade.proof.flip:dispatch,webpush.notify:noop"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

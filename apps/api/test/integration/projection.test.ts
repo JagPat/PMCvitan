@@ -31,7 +31,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  *  row count and the generation-scoping is directly observable. */
 const projConsumer: OutboxConsumer = {
   name: PROJ, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
-  deliveryFor: () => ({ action: 'dispatch' }),
   projection: {
     dropGeneration: async (tx, target: ProjectionTarget) => {
       await tx.auditLog.deleteMany({ where: { action: PROJ, entityId: target.generationId } });
@@ -52,7 +51,6 @@ const projConsumer: OutboxConsumer = {
 let seedThrough = -1n; // set per-test; -1 ⇒ nothing seeded (replay from 0)
 const seededConsumer: OutboxConsumer = {
   name: SEEDED, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
-  deliveryFor: () => ({ action: 'dispatch' }),
   projection: {
     rebuildSeed: async (tx, target: ProjectionTarget) => {
       if (seedThrough < 0n) return null;

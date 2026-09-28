@@ -22,14 +22,14 @@ import { randomUUID } from 'node:crypto';
 const FILTERED = 'test.filtered.ordered';
 const human: Actor = { actorId: '', actorName: 'Priya (PMC)', actorRole: 'pmc', actorKind: 'human' };
 
-// An ordered consumer that DISPATCHES only for entityIds starting 'GO-', else a recorded ordered
+// An ordered consumer that DISPATCHES only for `decision.published` events, else a recorded ordered
 // no-op — so a project stream mixes dispatch + noop positions the cursor must still cover in order.
+// 4d-ii-a / A6d — the filter is the PERSISTED rule (`types`): the rows derive from the catalog row,
+// so `emit` below spells the filter through the event's TYPE — a 'GO-' entity is published, an 'NP-'
+// entity is merely drafted.
 const filtered: OutboxConsumer = {
   name: FILTERED, kind: 'ordered', effect: 'db', catalogVersion: 1,
-  // 4d-ii-a / A6c — the persisted rule is declared for the row's birth; the entityId filter below is
-  // this fixture's own until A6d derives the rows from the persisted rule and re-expresses it.
-  dispatchRule: { kind: 'all' },
-  deliveryFor: (meta) => (meta.entityId.startsWith('GO-') ? { action: 'dispatch' } : { action: 'noop' }),
+  dispatchRule: { kind: 'types', eventTypes: ['decision.published'] },
   handle: async (ctx) => {
     if (!ctx.tx) throw new Error('ordered consumer needs a tx');
     await ctx.tx.auditLog.create({ data: { projectId: ctx.meta.projectId, actor: 'flt', actorId: 'flt', actorRole: 'system', action: 'test.filtered', entity: 'Ev', entityId: ctx.meta.eventId } });
@@ -63,7 +63,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
   // no test leaks a registry entry or a (deactivated) catalog row into the shared test DB — otherwise
   // a failed run would leave a consumer inactive and syncConsumerCatalog does not (by design)
   // reactivate it, poisoning later runs.
-  const AD_HOC = ['test.late.unordered', 'test.bounded.unordered', 'test.inactive.unordered', 'test.pause.ordered', 'test.latefiltered.ordered', 'test.absentcode.unordered'];
+  const AD_HOC = ['test.late.unordered', 'test.bounded.unordered', 'test.inactive.unordered', 'test.pause.ordered', 'test.latefiltered.ordered', 'test.absentcode.unordered', 'test.norule.unordered'];
   afterEach(async () => {
     await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await t.prisma.auditLog.deleteMany({ where: { action: { in: ['test.filtered', 'test.pause'] } } });
@@ -77,8 +77,11 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     await t.prisma.project.create({ data: { id, orgId: f.orgA.id, name: id, short: 'S', descriptor: '', stage: 'x', siteCode: 'S', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 } });
     return id;
   };
+  // a 'GO-' entity is PUBLISHED (the filtered consumers' subscribed type); anything else is DRAFTED
   const emit = (projectId: string, entityId: string) =>
-    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId, effectKey: 'decision.published.record', dispatch: {} }));
+    t.prisma.$transaction((tx) => entityId.startsWith('GO-')
+      ? emitEvent(tx, { projectId, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId, effectKey: 'decision.published.record', dispatch: {} })
+      : emitEvent(tx, { projectId, actor: human, eventType: 'decision.drafted', entityType: 'Decision', entityId, effectKey: 'decision.drafted', dispatch: {} }));
   const cursor = (consumer: string, projectId: string) =>
     t.prisma.projectionCursor.findUnique({ where: { consumer_projectId: { consumer, projectId } } });
   const effects = (projectId: string) => t.prisma.auditLog.count({ where: { action: 'test.filtered', projectId } });
@@ -103,7 +106,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     await emit(p, 'NP-b');
     // a brand-new unordered consumer, registered only now — it has NO deliveries for the prior events
     const LATE = 'test.late.unordered';
-    const late: OutboxConsumer = { name: LATE, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] }, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} };
+    const late: OutboxConsumer = { name: LATE, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] }, handle: async () => {} };
     registerConsumer(late);
     await syncConsumerCatalog(t.prisma);
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: LATE } })).toBe(0);
@@ -150,7 +153,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     const p = await freshProject();
     for (const e of ['GO-1', 'GO-2', 'GO-3', 'GO-4', 'GO-5']) await emit(p, e); // five events before the consumer exists
     const LATE = 'test.bounded.unordered';
-    const late: OutboxConsumer = { name: LATE, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] }, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} };
+    const late: OutboxConsumer = { name: LATE, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] }, handle: async () => {} };
     registerConsumer(late);
     await syncConsumerCatalog(t.prisma);
     const owed = () => t.prisma.outboxDelivery.count({ where: { consumer: LATE, projectId: p } });
@@ -172,7 +175,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
   it('a deactivated catalog consumer accrues NO delivery on a new event (active authoritative at materialize)', async () => {
     const p = await freshProject();
     const OFF = 'test.inactive.unordered';
-    const off: OutboxConsumer = { name: OFF, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'all' }, deliveryFor: () => ({ action: 'dispatch' }), handle: async () => {} };
+    const off: OutboxConsumer = { name: OFF, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'all' }, handle: async () => {} };
     registerConsumer(off);
     await syncConsumerCatalog(t.prisma);
     await activation.request({ consumer: OFF, active: false, reason: 'probe: deactivate before the event through the activation protocol', actorId: 'outbox-scanner.test', requestToken: randomUUID() });
@@ -191,7 +194,6 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     const ran = () => t.prisma.auditLog.count({ where: { action: 'test.pause', projectId: p } });
     const pause: OutboxConsumer = {
       name: PAUSE, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
-      deliveryFor: () => ({ action: 'dispatch' }),
       handle: async (ctx) => { if (!ctx.tx) throw new Error('tx'); await ctx.tx.auditLog.create({ data: { projectId: ctx.meta.projectId, actor: 'pz', actorId: 'pz', actorRole: 'system', action: 'test.pause', entity: 'Ev', entityId: ctx.meta.eventId } }); },
     };
     registerConsumer(pause);
@@ -213,15 +215,14 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
 
   // Finding 3 (P2): prove the claim the packet made but the old noop-only test did NOT — a filtered
   // consumer registered late gets BOTH a dispatch row and a no-op row, each derived from the persisted
-  // event envelope. (Correct at main and head; this closes an evidence-accuracy gap.)
-  it('the scanner derives each plan from the persisted envelope — a late filtered consumer gets BOTH a dispatch and a no-op row', async () => {
+  // event envelope and (4d-ii-a / A6d) the consumer's PERSISTED rule.
+  it('the scanner derives each plan from the persisted envelope and rule — a late filtered consumer gets BOTH a dispatch and a no-op row', async () => {
     const p = await freshProject();
     const { eventId: eGo } = await emit(p, 'GO-mix');
     const { eventId: eNp } = await emit(p, 'NP-mix');
     const LATEF = 'test.latefiltered.ordered';
     const latef: OutboxConsumer = {
-      name: LATEF, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' }, // as FILTERED's: the entityId filter is the fixture's own until A6d
-      deliveryFor: (m) => (m.entityId.startsWith('GO-') ? { action: 'dispatch' } : { action: 'noop' }),
+      name: LATEF, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: ['decision.published'] }, // as FILTERED's
       handle: async () => {},
     };
     registerConsumer(latef);
@@ -237,23 +238,30 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     await sanctionedConsumerRemoval(t.prisma, [LATEF]);
   });
 
-  // Finding 3 (P2): explicitly prove the crash / old-instance case — a catalog contract persisted while
-  // this instance's consumer CODE is absent creates nothing (never guesses a plan), and is repaired by
-  // the scanner once the code registers. (Correct at main and head; closes an evidence-accuracy gap.)
-  it('a catalog contract persisted while its consumer code is absent is repaired by the scanner once the code registers', async () => {
+  // Finding 3 (P2), re-stated for 4d-ii-a / A6d: the crash / old-instance case. A catalog contract
+  // persisted WITH its rule while this instance's consumer CODE is absent still gets its rows — the
+  // rows derive from the persisted rule, never from process-local code (4d plan §A.3 obligation 7:
+  // "a process that booted no registry writes the same rows"): the emit transaction writes them for
+  // every later event, and the scanner repairs the earlier ones. What waits for the code is the
+  // HANDLER (`dispatchOne` dead-letters "no consumer registered"), not the obligation. A row with
+  // NO rule (planted history no migration knew) derives nothing and accrues nothing, ever.
+  it('a catalog contract persisted with its rule while its consumer code is absent gets its rows without the code; a rule-less row accrues nothing', async () => {
     const p = await freshProject();
     const ABSENT = 'test.absentcode.unordered';
-    await t.prisma.outboxConsumerCatalog.create({ data: { consumer: ABSENT, consumerKind: 'unordered', consumerEffect: 'external', catalogVersion: 1 } });
-    await emit(p, 'GO-x');
-    await emit(p, 'GO-y');
-    await relay.expandMissingDeliveries(); // code absent → nothing derived (never guessed)
-    expect(await t.prisma.outboxDelivery.count({ where: { consumer: ABSENT } })).toBe(0);
-    const absent: OutboxConsumer = { name: ABSENT, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] }, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} };
-    registerConsumer(absent);
-    await relay.expandMissingDeliveries(); // code now present → gap repaired
-    expect(await t.prisma.outboxDelivery.count({ where: { consumer: ABSENT, projectId: p } })).toBe(2);
-    unregisterConsumer(ABSENT);
+    const NORULE = 'test.norule.unordered';
+    await t.prisma.outboxConsumerCatalog.create({ data: { consumer: ABSENT, consumerKind: 'unordered', consumerEffect: 'external', catalogVersion: 1, dispatchRule: 'types', subscribedEventTypes: ['decision.published'] } });
+    await t.prisma.outboxConsumerCatalog.create({ data: { consumer: NORULE, consumerKind: 'unordered', consumerEffect: 'external', catalogVersion: 1 } });
+    const { eventId: eGo } = await emit(p, 'GO-x'); // the emit transaction owes ABSENT a row — and writes it, code or no code
+    const { eventId: eNp } = await emit(p, 'NP-y');
+    const emitted = await t.prisma.outboxDelivery.findMany({ where: { consumer: ABSENT, projectId: p } });
+    expect(Object.fromEntries(emitted.map((r) => [r.eventId, r.deliveryAction]))).toEqual({ [eGo]: 'dispatch', [eNp]: 'noop' });
+    expect(await t.prisma.outboxDelivery.count({ where: { consumer: NORULE } })).toBe(0);
+    // the scanner: nothing is missing for ABSENT (the emitter wrote it), nothing is ever owed to NORULE
+    await t.prisma.outboxDelivery.deleteMany({ where: { consumer: ABSENT, projectId: p } }); // a crash gap
+    await relay.expandMissingDeliveries();
+    expect(await t.prisma.outboxDelivery.count({ where: { consumer: ABSENT, projectId: p } })).toBe(2); // repaired from the persisted rule, code still absent
+    expect(await t.prisma.outboxDelivery.count({ where: { consumer: NORULE } })).toBe(0);
     await t.prisma.outboxDelivery.deleteMany({ where: { consumer: ABSENT } });
-    await sanctionedConsumerRemoval(t.prisma, [ABSENT]);
+    await sanctionedConsumerRemoval(t.prisma, [ABSENT, NORULE]);
   });
 });

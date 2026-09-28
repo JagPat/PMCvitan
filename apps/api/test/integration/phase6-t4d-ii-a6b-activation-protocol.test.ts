@@ -28,7 +28,7 @@ describe('4d-ii-a / A6b — the mirror freeze and the outbox:consumer protocol (
   type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
   const consumer = (name: string): OutboxConsumer => ({
     name, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] },
-    deliveryFor: () => ({ action: 'noop' }), handle: async () => {},
+    handle: async () => {},
   });
 
   const rolledBack = async (body: (tx: Tx) => Promise<void>): Promise<void> => {

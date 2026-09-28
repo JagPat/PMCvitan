@@ -37,7 +37,6 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
    *  "applied exactly once" is a row count and its ordered cursor can be observed directly. */
   const orderedConsumer: OutboxConsumer = {
     name: PROJECTION, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
-    deliveryFor: () => ({ action: 'dispatch' }),
     handle: async (ctx) => {
       if (control.failMode !== 'none') {
         if (control.failMode === 'once') control.failMode = 'none';

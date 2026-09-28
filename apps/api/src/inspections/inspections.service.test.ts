@@ -75,8 +75,11 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
     $executeRaw: vi.fn(async () => 1),
     // the IN-TRANSACTION locked assignee read (SELECT ... FOR UPDATE, Codex gate P1):
     // bind values are [projectId, assigneeId] — resolve against the fixture members
-    $queryRaw: vi.fn(async (q: { values: unknown[] }) => {
-      const [projectId, userId] = q.values as [string, string];
+    // (4d-ii-a / A6d: the emit transaction's catalog read arrives as a TAGGED TEMPLATE — an array of
+    // strings, whose `.values` is the array iterator, not bind values; it resolves to no rows, so no
+    // delivery is materialized in-memory)
+    $queryRaw: vi.fn(async (q: { values?: unknown[] } | readonly string[]) => {
+      const [projectId, userId] = (Array.isArray(q) ? [] : ((q as { values?: unknown[] }).values ?? [])) as [string, string];
       const m = members.find((x) => x.projectId === projectId && x.userId === userId);
       return m ? [{ status: m.status, role: m.role }] : [];
     }),

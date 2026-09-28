@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, wipeDecisionEvents, type TwoProjectFixture, plantLegacyApprovalRevision, plantLegacyDecisionAudit } from './fixtures';
+import { createTwoProjectFixture, wipeDecisionEvents, type TwoProjectFixture, plantLegacyApprovalRevision, plantLegacyDecisionAudit, rawDeliveryRowsSql, plantLegacyDelivery } from './fixtures';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { effectCoverageVersion } from '../../src/platform/external-effects';
@@ -600,6 +600,8 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
           await tx.$executeRawUnsafe(
             `INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ($1,$2,'approved','race')`,
             `de-${id}-race-b`, id);
+          // 4d-ii-a / A6d — and the delivery rows the event owes in this same transaction
+          await tx.$executeRawUnsafe(rawDeliveryRowsSql(`ev-${id}-race-b`));
           inserted();
           await gate;
         },
@@ -992,8 +994,10 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       const id = await seed({ title: 'Subjectless push' });
       const deliveryId = await emitQueuedPush(id, 'Subjectless push');
       // a migration-first rolling deploy: an OLD API instance (pre-4a code) materialized this
-      // row AFTER the one-time backfill ran — the new nullable column is written NULL
-      await t.prisma.outboxDelivery.update({ where: { id: deliveryId }, data: { subject: null } });
+      // row AFTER the one-time backfill ran — the new nullable column is written NULL. 4d-ii-a /
+      // A6d: `OutboxDelivery_t4d_frozen` admits `subject` to move only NULL -> the row's own
+      // entityId, so the old instance's state is planted under the NAMED bypass, by name.
+      await plantLegacyDelivery(t.prisma, (tx) => tx.outboxDelivery.update({ where: { id: deliveryId }, data: { subject: null } }));
       await svc.withdraw(f.projectA.id, id, { reason: 'withdrawn during the rolling deploy' }, pmc());
       const row = await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: deliveryId } });
       expect(row.subject).toBe(id); // identity restored from the row's OWN event, never invented
@@ -1055,9 +1059,13 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       // in-flight unique conflict, then resolves to its handled no-op).
       const scanner = raceDb.$transaction(
         async (btx) => {
+          // 4d-ii-a / A6d — the scanner's row is the PROJECTION of the event's own intent (the
+          // payload `OutboxDelivery_t4d_bound` binds every push row to); the stale body it carries
+          // is the event's, not one of the writer's choosing
           await btx.$executeRawUnsafe(
             `INSERT INTO "OutboxDelivery"("id","eventId","projectId","consumer","consumerKind","streamPosition","deliveryAction","status","payload","subject","updatedAt")
-             VALUES (gen_random_uuid()::text, $1, $2, 'webpush.notify', 'unordered', $3, 'dispatch', 'pending', '{"body":"stale"}', $4, now())`,
+             SELECT gen_random_uuid()::text, e."eventId", $2, 'webpush.notify', 'unordered', $3, 'dispatch', 'pending', platform_t4d_push_payload(e."dispatchIntent"), $4, now()
+               FROM "DomainEvent" e WHERE e."eventId" = $1`,
             ev.eventId, f.projectA.id, ev.streamPosition, id,
           );
           inserted();

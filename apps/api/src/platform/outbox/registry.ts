@@ -4,9 +4,11 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 /**
  * Phase 2 Task 6 — the outbox consumer registry.
  *
- * Consumers register at RUNTIME (app bootstrap), never statically, so a process that never boots
- * the app (unit tests constructing services directly) sees an EMPTY registry and `emitEvent`
- * materializes zero deliveries — the mocked-prisma unit tests need no outbox stubs. The full app
+ * Consumers register at RUNTIME (app bootstrap), never statically. The registry decides WHO HANDLES
+ * a delivery; from 4d-ii-a / A6d it no longer decides WHICH ROWS EXIST — the delivery rows are a
+ * pure function of the event and the PERSISTED catalog ({@link deliveryRowsFor}), so a process that
+ * booted no registry (a standalone CLI, a hand-run bundle) writes the same rows a booted API does,
+ * and the database's `DomainEvent_t4d_deliveries` seal demands them at commit. The full app
  * (integration / e2e / production) registers `socket.invalidation` + `webpush.notify` at
  * `onModuleInit`; a test may register an extra ordered consumer to exercise the ordering contract.
  */
@@ -43,7 +45,14 @@ export interface DispatchIntent {
   /** The Web Push intent — present only when the command attached a notification. Phase 6 task 4b
    *  (§A.3): `targetUserId` marks a TARGETED push — delivered only to currently-valid links of
    *  that user, with the family predicate re-judged at claim. */
-  push?: { body: string; roles?: string[] | null; targetUserId?: string | null };
+  push?: {
+    body: string;
+    roles?: string[] | null;
+    targetUserId?: string | null;
+    /** 4d-ii-a / A6d — a SET of targets (the 4d plan's architect set); projected into the delivery
+     *  payload as the canonical sorted, distinct array where present, absent where not. */
+    targetUserIds?: string[] | null;
+  };
 }
 
 /** The event facts a consumer needs at materialize + dispatch time. */
@@ -65,16 +74,6 @@ export interface NotificationIntent {
   body: string;
   roles?: string[];
 }
-
-/** A consumer's TOTAL decision for one event (PR B): every registered consumer produces a plan for
- *  every event — `dispatch` invokes it, `noop` records the event was deliberately irrelevant — so
- *  an ordered consumer's cursor never waits behind a stream position that produced no delivery row.
- *  There is no `null`: a missing row can no longer be silently "not relevant". */
-export type DeliveryPlan =
-  // `subject` (Phase 6 task 4a): the entity a PUSH delivery is about (the emitting module's
-  // entityId) — the key `cancelQueuedPushBySubject` targets when a queued announcement goes
-  // stale. Optional and consumer-chosen; today only the push consumer sets it.
-  { action: 'dispatch'; payload?: Prisma.InputJsonValue; subject?: string } | { action: 'noop' };
 
 /** Where a PROJECTION consumer must write (Task 9): the specific rebuildable generation instance its
  *  rows belong to. The live relay passes the ACTIVE generation; a rebuild passes the BUILDING one.
@@ -123,8 +122,8 @@ export interface DispatchContext {
  * evidence a database trigger can judge an obligation against without reproducing consumer logic —
  * and a compiled consumer DECLARES it beside `kind`/`effect`/`catalogVersion` so the row's birth
  * takes it from the same source verification later compares against (#572's review round 24,
- * finding 2). `deliveryFor` still decides the delivered row until A6d derives rows from the
- * persisted rule; the unit tripwire holds the two equal for every compiled consumer meanwhile.
+ * finding 2). From A6d the PERSISTED rule is what derives every delivery row ({@link deliveryRowsFor});
+ * the consumer contract's `deliveryFor` is retired.
  */
 export type DispatchRule =
   | { kind: 'all' }
@@ -141,17 +140,91 @@ export function eventTypesUnder(...prefixes: readonly string[]): readonly string
   return DOMAIN_EVENT_TYPES.filter((t) => prefixes.some((p) => t.startsWith(p)));
 }
 
-/** The action a persisted rule derives for one event — the ONE function the seals' logic mirrors. */
+/** The action a persisted rule derives for one event — the mirror of the database's
+ *  `platform_t4d_delivery_action`, which the three delivery seals judge by; the live suite holds the
+ *  two equal over the closed event list and every intent shape. */
 export function dispatchActionFor(rule: DispatchRule, meta: Pick<EmittedEventMeta, 'eventType' | 'dispatchIntent'>): 'dispatch' | 'noop' {
   switch (rule.kind) {
     case 'all': return 'dispatch';
-    case 'invalidate': return meta.dispatchIntent?.invalidate ? 'dispatch' : 'noop';
-    // a push WITH a body — the predicate the push consumer's `deliveryFor` uses, so an intent
-    // carrying `push: { body: '' }` (which `buildDispatchIntent` admits) is a no-op under both
-    // (#661's review round 1, finding 2); A6d's seal mirrors this exact predicate
+    case 'invalidate': return meta.dispatchIntent?.invalidate === true ? 'dispatch' : 'noop';
+    // a push WITH a body — an intent carrying `push: { body: '' }` (which `buildDispatchIntent`
+    // admits) is a no-op (#661's review round 1, finding 2); the seal mirrors this exact predicate
     case 'push': return meta.dispatchIntent?.push?.body ? 'dispatch' : 'noop';
     case 'types': return rule.eventTypes.includes(meta.eventType) ? 'dispatch' : 'noop';
   }
+}
+
+/** A catalog row as {@link deliveryRowsFor} reads it: the persisted rule beside the activation mirror. */
+export interface CatalogRuleRow {
+  consumer: string;
+  consumerKind: string;
+  active: boolean;
+  dispatchRule: string | null;
+  subscribedEventTypes: readonly string[];
+}
+
+/** The persisted rule of a catalog row as a {@link DispatchRule}; `null` for a row carrying none. */
+export function ruleOfRow(row: Pick<CatalogRuleRow, 'dispatchRule' | 'subscribedEventTypes'>): DispatchRule | null {
+  switch (row.dispatchRule) {
+    case 'all': return { kind: 'all' };
+    case 'invalidate': return { kind: 'invalidate' };
+    case 'push': return { kind: 'push' };
+    case 'types': return { kind: 'types', eventTypes: row.subscribedEventTypes };
+    default: return null;
+  }
+}
+
+/** The push delivery's payload: the platform's PROJECTION of the immutable intent — the mirror of
+ *  the database's `platform_t4d_push_payload`, which `OutboxDelivery_t4d_bound` binds the row to.
+ *  `{body, roles, targetUserId}` null-coalesced (the shape the previous release wrote) and
+ *  `targetUserIds` as the canonical sorted, distinct array where the intent carries one. `null` when
+ *  the intent carries no push body. */
+export function pushPayloadFor(intent: DispatchIntent | null): Prisma.InputJsonValue | null {
+  const push = intent?.push;
+  if (!push?.body) return null;
+  return {
+    body: push.body,
+    roles: push.roles ?? null,
+    targetUserId: push.targetUserId ?? null,
+    ...(Array.isArray(push.targetUserIds) ? { targetUserIds: [...new Set(push.targetUserIds)].sort() } : {}),
+  };
+}
+
+/**
+ * Phase 6 task 4d-ii-a / A6d — THE delivery row set for one event: a pure function of the event and
+ * the persisted catalog (4d plan §A.3 obligation 7, "The rows are a pure function of the event and
+ * the persisted catalog, so EVERY emitter writes the same rows"). Called by {@link materializeDeliveries}
+ * inside the emit transaction and by the relay's `expandMissingDeliveries` for the rows an event
+ * lacks; a process that booted no registry writes the same rows, and the database's
+ * `DomainEvent_t4d_deliveries` seal demands exactly these at commit.
+ *
+ * One row per catalog row that is ACTIVE and carries a rule: the action the rule derives; an
+ * unordered no-op is already done (`succeeded`), an ordered no-op stays `pending` so the relay
+ * advances that consumer's cursor through this position, a dispatch is `pending` until claimed; a
+ * `push`-rule dispatch carries the intent's projection and `subject = entityId`. A row with no rule
+ * (a consumer no migration knew) derives nothing and gets nothing — the seal owes it nothing either.
+ */
+export function deliveryRowsFor(meta: EmittedEventMeta, catalog: readonly CatalogRuleRow[]): Prisma.OutboxDeliveryCreateManyInput[] {
+  const rows: Prisma.OutboxDeliveryCreateManyInput[] = [];
+  for (const c of catalog) {
+    if (c.active !== true) continue;
+    const rule = ruleOfRow(c);
+    if (rule === null) continue;
+    const action = dispatchActionFor(rule, meta);
+    const status = action === 'dispatch' ? 'pending' : c.consumerKind === 'unordered' ? 'succeeded' : 'pending';
+    const payload = rule.kind === 'push' && action === 'dispatch' ? pushPayloadFor(meta.dispatchIntent) : null;
+    rows.push({
+      eventId: meta.eventId,
+      projectId: meta.projectId,
+      consumer: c.consumer,
+      consumerKind: c.consumerKind,
+      streamPosition: meta.streamPosition,
+      deliveryAction: action,
+      status,
+      ...(payload !== null ? { payload, subject: meta.entityId } : {}),
+    });
+  }
+  return rows;
 }
 
 /** The rule as the catalog row persists it: the kind, and the subscribed types SORTED and deduplicated
@@ -183,11 +256,6 @@ export interface OutboxConsumer {
    *  exactly as `catalogVersion` drift does), and frozen in the database against every other writer:
    *  a CHANGED rule is a contract change and ships in its versioned catalog-data migration. */
   dispatchRule: DispatchRule;
-  /** The TOTAL plan for this event: `{ action: 'dispatch', payload? }` to invoke the consumer, or
-   *  `{ action: 'noop' }` to record the event as deliberately irrelevant. Never null. Derives from
-   *  the PERSISTED `meta.dispatchIntent`, so the scanner reproduces the same plan. Runs INSIDE the
-   *  emit transaction and in the expansion scanner. */
-  deliveryFor(meta: EmittedEventMeta): DeliveryPlan;
   /** Dispatch one delivery. Throw to signal a retryable failure (the relay backs off / dead-letters). */
   handle(ctx: DispatchContext): Promise<void>;
   /** Task 9 — set on an ordered `db` consumer to make it a rebuildable PROJECTION: the relay applies
@@ -219,46 +287,27 @@ export function unregisterConsumer(name: string): void {
 }
 
 /**
- * Write one OutboxDelivery row per registered consumer FOR EVERY event, INSIDE the caller's emit
- * transaction — so a crash can never leave a committed event with no durable delivery work, and an
- * ordered consumer never waits behind a stream position for which no row exists. Totality (PR B):
- * a consumer returns `dispatch` or `noop`, never null. A no-op when the registry is empty (unit
- * tests without an app boot).
- *
- * `OutboxConsumerCatalog.active` is authoritative: a deactivated (or not-yet-synced) contract accrues
- * NO new delivery. The active set is read inside the SAME transaction as the event, so a consumer
- * disabled concurrently either sees the event or not, atomically — a deactivated consumer never
- * silently starts receiving work. (Consistent with the `(consumer,consumerKind)` FK, which requires
- * an existing catalog row anyway.)
+ * Write the event's delivery rows INSIDE the caller's emit transaction — so a crash can never leave
+ * a committed event with no durable delivery work, and an ordered consumer never waits behind a
+ * stream position for which no row exists. From 4d-ii-a / A6d the rows come from
+ * {@link deliveryRowsFor} over the PERSISTED catalog, read here under the SHARE half of the
+ * registration barrier and with EVERY catalog row locked `FOR SHARE` — active and inactive alike,
+ * before the active filter (#567's review round 1, finding 3) — so an activation's `FOR UPDATE`
+ * either committed before this read or waits for this transaction's commit, and a registration's
+ * INSERT (which takes the key EXCLUSIVE) is serialized against this event. The seal takes both
+ * again at commit; the lock is reentrant, so this early acquisition is lock-ordering hygiene
+ * (key -> catalog rows, the one order) at no cost. The registry is not consulted: a process that
+ * booted none writes the same rows.
  */
 export async function materializeDeliveries(
   tx: Prisma.TransactionClient,
   meta: EmittedEventMeta,
 ): Promise<void> {
-  const consumers = listConsumers();
-  if (!consumers.length) return; // no app boot (unit tests) — nothing to materialize, no catalog read
-  const activeRows = await tx.outboxConsumerCatalog.findMany({ where: { active: true }, select: { consumer: true } });
-  const active = new Set(activeRows.map((r) => r.consumer));
-  const rows: Prisma.OutboxDeliveryCreateManyInput[] = [];
-  for (const c of consumers) {
-    if (!active.has(c.name)) continue; // deactivated / unsynced contract — no new obligation
-    const plan = c.deliveryFor(meta);
-    // An unordered no-op is already done (nothing to send). An ordered no-op stays `pending` so the
-    // relay advances that consumer's cursor through this position in the same transaction as real
-    // projection work (Task 3), never skipping it. A dispatch is always `pending` until claimed.
-    const status = plan.action === 'dispatch' ? 'pending' : c.kind === 'unordered' ? 'succeeded' : 'pending';
-    rows.push({
-      eventId: meta.eventId,
-      projectId: meta.projectId,
-      consumer: c.name,
-      consumerKind: c.kind,
-      streamPosition: meta.streamPosition,
-      deliveryAction: plan.action,
-      status,
-      ...(plan.action === 'dispatch' && plan.payload !== undefined ? { payload: plan.payload } : {}),
-      ...(plan.action === 'dispatch' && plan.subject !== undefined ? { subject: plan.subject } : {}),
-    });
-  }
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(hashtext('OutboxConsumerCatalog:registration'))`;
+  const catalog = await tx.$queryRaw<CatalogRuleRow[]>`
+    SELECT "consumer", "consumerKind", "active", "dispatchRule", "subscribedEventTypes"
+      FROM "OutboxConsumerCatalog" ORDER BY "consumer" FOR SHARE`;
+  const rows = deliveryRowsFor(meta, Array.isArray(catalog) ? catalog : []);
   if (rows.length) await tx.outboxDelivery.createMany({ data: rows });
 }
 

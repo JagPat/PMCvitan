@@ -20,6 +20,8 @@ function make(anchor: string | null) {
     // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
     // here means no standing is proven, so the event is written with a NULL pair.
     $queryRaw: vi.fn(async () => []),
+    // 4d-ii-a / A6d — materializeDeliveries takes the registration key SHARED before it reads the catalog
+    $executeRaw: vi.fn(async () => 0),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   } as unknown as PrismaService;

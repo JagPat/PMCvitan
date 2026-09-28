@@ -512,7 +512,34 @@ export async function insertRawEventVia(
     `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId"${cols})`
     + ` VALUES ('${spec.eventId}','${spec.eventType ?? 'x'}',1,'${spec.organizationId}','${spec.projectId}',${at},'system','system:seed','${spec.entityType ?? 'Decision'}','${spec.entityId ?? 'x'}'${vals})`,
   );
+  // Phase 6 task 4d-ii-a / A6d — a plant is a DIRECT writer, and a direct writer owes the event's
+  // delivery rows in its own transaction (`DomainEvent_t4d_deliveries`). It writes them the way a
+  // hand-run bundle would: from the persisted catalog and the kernel's own derivation, never by
+  // calling the platform's `deliveryRowsFor`.
+  await tx.$executeRawUnsafe(rawDeliveryRowsSql(spec.eventId));
   return at;
+}
+
+/**
+ * Phase 6 task 4d-ii-a / A6d — the delivery rows a DIRECT writer owes for an event it inserted, as
+ * ONE SQL statement over the persisted catalog: one row per ACTIVE, RULED catalog row, the action
+ * from the kernel's `platform_t4d_delivery_action`, an unordered no-op already `succeeded`, a
+ * `push`-rule dispatch carrying the kernel's `platform_t4d_push_payload` projection and the event's
+ * entityId as its subject. This is what a hand-run bundle writes — the seals judge it exactly as they
+ * judge the emitter's rows — and it never touches the platform's TypeScript helper, so a suite that
+ * uses it proves the DIRECT-writer path, not the emitter's. Plain SQL: usable through Prisma and psql.
+ */
+export function rawDeliveryRowsSql(eventId: string): string {
+  return `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","payload","subject","updatedAt")
+    SELECT gen_random_uuid()::text, e."eventId", e."projectId", c."consumer", c."consumerKind", a.action, e."streamPosition",
+           CASE WHEN a.action = 'dispatch' OR c."consumerKind" = 'ordered' THEN 'pending' ELSE 'succeeded' END,
+           CASE WHEN c."dispatchRule" = 'push' AND a.action = 'dispatch' THEN platform_t4d_push_payload(e."dispatchIntent") END,
+           CASE WHEN c."dispatchRule" = 'push' AND a.action = 'dispatch' THEN e."entityId" END,
+           now()
+      FROM "DomainEvent" e
+      CROSS JOIN "OutboxConsumerCatalog" c
+      CROSS JOIN LATERAL (SELECT platform_t4d_delivery_action(c."dispatchRule", c."subscribedEventTypes", e."eventType", e."dispatchIntent") AS action) a
+     WHERE e."eventId" = '${eventId}' AND c."active" AND c."dispatchRule" IS NOT NULL`;
 }
 
 /**
@@ -528,7 +555,11 @@ export async function insertRawEventVia(
  * the plant afterwards would trip BOTH allocator arms — `_t4d_allocation` admits only `+1`, and
  * `_t4d_allocation_bound` requires every increment to carry its own event. A legacy plant has
  * neither, so the counter is set directly, inside the same bypass, and every seal goes back on in
- * `finally`. The same contract `scripts/upgrade-proof.sh` uses for its legacy plants.
+ * `finally`. The same contract `scripts/upgrade-proof.sh` uses for its legacy plants. 4d-ii-a / A6d
+ * adds two more: a legacy plant's delivery rows are legacy shapes too (a socket row carrying a
+ * payload, a null-intent event with a `dispatch` row), which `OutboxDelivery_t4d_bound` refuses by
+ * construction, and the deferred `DomainEvent_t4d_deliveries` would demand this release's rows of
+ * an event this release never emitted.
  *
  * Guarded on the triggers' existence, because a suite may run against an earlier migration point.
  */
@@ -548,6 +579,11 @@ export async function plantLegacyEvent<T>(
     ['DomainEvent', 'DomainEvent_t4d_pairing_actor'],
     ['ProjectEventStream', 'ProjectEventStream_t4d_allocation'],
     ['ProjectEventStream', 'ProjectEventStream_t4d_allocation_bound'],
+    // 4d-ii-a / A6d — the delivery obligation and the row binding: a legacy plant's rows are a
+    // pre-4d-ii shape by construction (see above). The FREEZE is deliberately NOT here: a plant
+    // inserts, it does not rewrite, and a probe of the freeze names its own bypass.
+    ['DomainEvent', 'DomainEvent_t4d_deliveries'],
+    ['OutboxDelivery', 'OutboxDelivery_t4d_bound'],
   ];
   const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
     'DO $do$ BEGIN '
@@ -585,6 +621,31 @@ export async function plantLegacyEvent<T>(
     await tx.$executeRawUnsafe(toggle('ENABLE'));
     return out;
   }, { timeout: 60_000, maxWait: 30_000 });
+}
+
+/**
+ * Phase 6 task 4d-ii-a / A6d — the NAMED BYPASS for a LEGACY-SHAPE delivery row REWRITE: the state
+ * an OLD-INSTANCE writer left (a row written subjectless during a migration-first rolling deploy)
+ * cannot be manufactured under `OutboxDelivery_t4d_frozen`, which admits `subject` to move only
+ * NULL -> the row's own entityId. A probe that needs that state declares it BY NAME, for exactly
+ * its statement, inside one transaction that puts the seal back in `finally`. Guarded on the
+ * trigger's existence, because a suite may run against an earlier migration point.
+ */
+export async function plantLegacyDelivery<T>(
+  prisma: PrismaService,
+  plant: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
+    `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'OutboxDelivery_t4d_frozen') THEN `
+    + `EXECUTE 'ALTER TABLE "OutboxDelivery" ${action} TRIGGER "OutboxDelivery_t4d_frozen"'; END IF; END $do$`;
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(toggle('DISABLE'));
+    try {
+      return await plant(tx);
+    } finally {
+      await tx.$executeRawUnsafe(toggle('ENABLE'));
+    }
+  }, { timeout: 30_000 });
 }
 
 /**

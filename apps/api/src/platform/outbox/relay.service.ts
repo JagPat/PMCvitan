@@ -1,7 +1,7 @@
 import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma.service';
-import { getConsumer, listConsumers, outboxSenderMode, type EmittedEventMeta, type OutboxConsumer } from './registry';
+import { deliveryRowsFor, getConsumer, listConsumers, outboxSenderMode, type EmittedEventMeta, type OutboxConsumer } from './registry';
 import { lockActiveGeneration } from '../projections/generation';
 
 /**
@@ -381,14 +381,20 @@ export class OutboxRelay implements OnModuleDestroy {
    * consumer)` is the backstop, and a lost create race (`P2002`) is ignored. A pre-intent legacy event
    * (`dispatchIntent = null`) yields an external no-op — the outbox never invents a historical push.
    * The catalog is the source of truth, so a deactivated consumer stops accruing new obligations
-   * without deleting existing deliveries.
+   * without deleting existing deliveries. From 4d-ii-a / A6d the rows derive from the PERSISTED rule
+   * through the same `deliveryRowsFor` the emit transaction uses — the registry is not consulted.
    */
   async expandMissingDeliveries(batchSize = 200): Promise<number> {
     let created = 0;
-    const catalog = await this.prisma.outboxConsumerCatalog.findMany({ where: { active: true } });
+    // 4d-ii-a / A6d — the obligation set is the ACTIVE, RULED catalog; the rows derive from the
+    // persisted rule (`deliveryRowsFor`), so a consumer whose code is absent in THIS instance still
+    // gets its rows (its handler is what waits for the code, not its obligation), and a row with no
+    // rule (a consumer no migration knew) derives nothing and is skipped — the seal owes it nothing.
+    const catalog = await this.prisma.outboxConsumerCatalog.findMany({
+      where: { active: true, dispatchRule: { not: null } },
+      select: { consumer: true, consumerKind: true, active: true, dispatchRule: true, subscribedEventTypes: true },
+    });
     for (const cat of catalog) {
-      const consumer = getConsumer(cat.consumer);
-      if (!consumer) continue; // an active contract whose code is absent in THIS instance — skip
       // ONE bounded batch per consumer per invocation: the earliest missing pairs first (ordered).
       // Later relay ticks pick up where this left off; no unbounded inner drain.
       const missing = await this.prisma.$queryRaw<{ eventId: string }[]>`
@@ -401,20 +407,14 @@ export class OutboxRelay implements OnModuleDestroy {
       if (!missing.length) continue;
       const events = await this.prisma.domainEvent.findMany({ where: { eventId: { in: missing.map((m) => m.eventId) } } });
       for (const event of events) {
-        const plan = consumer.deliveryFor(metaFromEvent(event));
-        const status = plan.action === 'dispatch' ? 'pending' : consumer.kind === 'unordered' ? 'succeeded' : 'pending';
+        // the SAME function the emit transaction uses, over this one catalog row: a crash-gap row
+        // recovered here is born exactly as the emitter would have born it — action, payload and
+        // subject alike (Phase 6 task 4a round 1, Codex F1: a recovered row without its subject would
+        // be uncancellable by `cancelQueuedPushBySubject`)
+        const [row] = deliveryRowsFor(metaFromEvent(event), [cat]);
+        if (!row) continue;
         try {
-          await this.prisma.outboxDelivery.create({
-            data: {
-              eventId: event.eventId, projectId: event.projectId, consumer: cat.consumer, consumerKind: consumer.kind,
-              streamPosition: event.streamPosition, deliveryAction: plan.action, status,
-              ...(plan.action === 'dispatch' && plan.payload !== undefined ? { payload: plan.payload } : {}),
-              // Phase 6 task 4a round 1 (Codex F1): the SUBJECT is part of the plan, in EVERY
-              // delivery-creation path — a crash-gap row recovered here without it would be
-              // born uncancellable by `cancelQueuedPushBySubject`.
-              ...(plan.action === 'dispatch' && plan.subject !== undefined ? { subject: plan.subject } : {}),
-            },
-          });
+          await this.prisma.outboxDelivery.create({ data: row });
           created++;
         } catch (err) {
           // a concurrent scanner already created it (unique) — fine
