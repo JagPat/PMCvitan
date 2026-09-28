@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
+import { eventTypesUnder } from '../platform/outbox/registry';
 import { computeDrawingsBase } from './drawings-serialize';
 
 /**
@@ -48,6 +49,9 @@ export function makeDrawingsProjectionConsumer(): OutboxConsumer {
     kind: 'ordered',
     effect: 'db',
     catalogVersion: 1,
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries; the unit tripwire holds it equal
+    // to `deliveryFor` over the closed event-type list until A6d derives the rows from it.
+    dispatchRule: { kind: 'types', eventTypes: eventTypesUnder('drawing.') },
     deliveryFor,
     projection: {
       rebuildSeed: async (tx, target) => {

@@ -1,3 +1,4 @@
+import { DOMAIN_EVENT_TYPES } from '@vitan/shared';
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 /**
@@ -114,6 +115,57 @@ export interface DispatchContext {
   projection?: ProjectionTarget;
 }
 
+/**
+ * Phase 6 task 4d-ii-a / A6c — a consumer's PERSISTED dispatch rule (the 4d plan, §A.3 obligation 7:
+ * "`dispatchRule` (`all`: every event dispatches; `invalidate`: dispatch iff the intent's
+ * `invalidate`; `push`: dispatch iff the intent carries a push; `types`: dispatch iff the event's
+ * type is in the row's `subscribedEventTypes`)"). The rule is what the catalog row CARRIES — sealed
+ * evidence a database trigger can judge an obligation against without reproducing consumer logic —
+ * and a compiled consumer DECLARES it beside `kind`/`effect`/`catalogVersion` so the row's birth
+ * takes it from the same source verification later compares against (#572's review round 24,
+ * finding 2). `deliveryFor` still decides the delivered row until A6d derives rows from the
+ * persisted rule; the unit tripwire holds the two equal for every compiled consumer meanwhile.
+ */
+export type DispatchRule =
+  | { kind: 'all' }
+  | { kind: 'invalidate' }
+  | { kind: 'push' }
+  | { kind: 'types'; eventTypes: readonly string[] };
+
+/** The four persisted spellings, as the catalog's CHECK admits them. */
+export const DISPATCH_RULE_KINDS = ['all', 'invalidate', 'push', 'types'] as const;
+
+/** The closed event-type list's members under the given prefixes — a projection subscribing to a
+ *  FAMILY spells its rule from the catalog the compiler closes, never from a hand-typed list. */
+export function eventTypesUnder(...prefixes: readonly string[]): readonly string[] {
+  return DOMAIN_EVENT_TYPES.filter((t) => prefixes.some((p) => t.startsWith(p)));
+}
+
+/** The action a persisted rule derives for one event — the ONE function the seals' logic mirrors. */
+export function dispatchActionFor(rule: DispatchRule, meta: Pick<EmittedEventMeta, 'eventType' | 'dispatchIntent'>): 'dispatch' | 'noop' {
+  switch (rule.kind) {
+    case 'all': return 'dispatch';
+    case 'invalidate': return meta.dispatchIntent?.invalidate ? 'dispatch' : 'noop';
+    case 'push': return meta.dispatchIntent?.push ? 'dispatch' : 'noop';
+    case 'types': return rule.eventTypes.includes(meta.eventType) ? 'dispatch' : 'noop';
+  }
+}
+
+/** The rule as the catalog row persists it: the kind, and the subscribed types SORTED and deduplicated
+ *  (empty under every kind but `types`, as the catalog's CHECK requires). */
+export function persistedRule(rule: DispatchRule): { dispatchRule: string; subscribedEventTypes: string[] } {
+  return {
+    dispatchRule: rule.kind,
+    subscribedEventTypes: rule.kind === 'types' ? [...new Set(rule.eventTypes)].sort() : [],
+  };
+}
+
+/** Render a persisted (or compiled) rule for a diagnostic. */
+export function describeRule(r: { dispatchRule: string | null; subscribedEventTypes: readonly string[] }): string {
+  if (r.dispatchRule === null) return 'NONE (no rule persisted)';
+  return r.dispatchRule === 'types' ? `types[${[...r.subscribedEventTypes].sort().join(',')}]` : r.dispatchRule;
+}
+
 export interface OutboxConsumer {
   name: string;
   kind: ConsumerKind;
@@ -122,6 +174,12 @@ export interface OutboxConsumer {
    *  startup error requiring an explicit migration — `syncConsumerCatalog` never silently
    *  reinterprets a persisted contract. */
   catalogVersion: number;
+  /** Phase 6 task 4d-ii-a / A6c — the PERSISTED dispatch rule this consumer's catalog row carries
+   *  ({@link DispatchRule}). Written at the row's birth by `syncConsumerCatalog` from this
+   *  declaration, VERIFIED against the persisted row at every startup (drift refuses the process,
+   *  exactly as `catalogVersion` drift does), and frozen in the database against every other writer:
+   *  a CHANGED rule is a contract change and ships in its versioned catalog-data migration. */
+  dispatchRule: DispatchRule;
   /** The TOTAL plan for this event: `{ action: 'dispatch', payload? }` to invoke the consumer, or
    *  `{ action: 'noop' }` to record the event as deliberately irrelevant. Never null. Derives from
    *  the PERSISTED `meta.dispatchIntent`, so the scanner reproduces the same plan. Runs INSIDE the
@@ -210,10 +268,25 @@ export async function materializeDeliveries(
  * rolling-deploy-safe: a concurrent create that loses the PK race re-reads and verifies the winner.
  */
 export async function syncConsumerCatalog(prisma: PrismaClient): Promise<void> {
-  const assertMatches = (existing: { consumerKind: string; consumerEffect: string; catalogVersion: number }, c: OutboxConsumer): void => {
+  type Persisted = { consumerKind: string; consumerEffect: string; catalogVersion: number; dispatchRule: string | null; subscribedEventTypes: string[] };
+  const assertMatches = (existing: Persisted, c: OutboxConsumer): void => {
     if (existing.consumerKind !== c.kind || existing.consumerEffect !== c.effect || existing.catalogVersion !== c.catalogVersion) {
       throw new Error(
         `OutboxConsumerCatalog contract drift for '${c.name}': persisted ${existing.consumerKind}/${existing.consumerEffect} v${existing.catalogVersion} != compiled ${c.kind}/${c.effect} v${c.catalogVersion}. An explicit migration is required — the catalog is never silently reinterpreted.`,
+      );
+    }
+    // Phase 6 task 4d-ii-a / A6c — the persisted RULE is verified exactly as the version is, and never
+    // rewritten here (#558's review round 2, finding 7; #560's review round 1, finding 7): a row that
+    // exists owns its rule, and a changed rule ships in its versioned catalog-data migration under the
+    // gate. A row with NO rule is a row this release's migration did not know — the same refusal.
+    const compiled = persistedRule(c.dispatchRule);
+    const persisted = { dispatchRule: existing.dispatchRule, subscribedEventTypes: [...existing.subscribedEventTypes].sort() };
+    if (persisted.dispatchRule !== compiled.dispatchRule
+      || persisted.subscribedEventTypes.length !== compiled.subscribedEventTypes.length
+      || persisted.subscribedEventTypes.some((t, i) => t !== compiled.subscribedEventTypes[i])) {
+      throw new Error(
+        `OutboxConsumerCatalog contract drift for '${c.name}': persisted dispatch rule ${describeRule(persisted)} != compiled ${describeRule(compiled)}. `
+        + 'A changed rule is a contract change: its versioned catalog-data migration rewrites the row under the rule gate — startup never writes a rule that already exists.',
       );
     }
   };
@@ -224,8 +297,10 @@ export async function syncConsumerCatalog(prisma: PrismaClient): Promise<void> {
       continue;
     }
     try {
+      // A6c — a row's BIRTH carries its rule, from the same compiled source verification compares
+      // against (#572's review round 24, finding 2), so no drift can be introduced by this write.
       await prisma.outboxConsumerCatalog.create({
-        data: { consumer: c.name, consumerKind: c.kind, consumerEffect: c.effect, catalogVersion: c.catalogVersion },
+        data: { consumer: c.name, consumerKind: c.kind, consumerEffect: c.effect, catalogVersion: c.catalogVersion, ...persistedRule(c.dispatchRule) },
       });
     } catch (e) {
       // Lost a concurrent create race (rolling deploy) — the winner must match our compiled contract.

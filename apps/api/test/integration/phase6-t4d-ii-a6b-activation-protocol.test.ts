@@ -27,7 +27,7 @@ describe('4d-ii-a / A6b — the mirror freeze and the outbox:consumer protocol (
   const SENTINEL = new Error('rollback');
   type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
   const consumer = (name: string): OutboxConsumer => ({
-    name, kind: 'unordered', effect: 'external', catalogVersion: 1,
+    name, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] },
     deliveryFor: () => ({ action: 'noop' }), handle: async () => {},
   });
 
@@ -83,7 +83,15 @@ describe('4d-ii-a / A6b — the mirror freeze and the outbox:consumer protocol (
     const list = readFileSync(join(__dirname, '..', '..', 'scripts', 'migrate.sh'), 'utf8').match(/ALWAYS_EXECUTE="([^"]+)"/)?.[1] ?? '';
     expect(list.split('\n').map((l) => l.trim())).toContain(MIGRATION);
     const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
-    execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', join(__dirname, '..', '..', 'prisma', 'migrations', MIGRATION, 'migration.sql')], { stdio: 'pipe' });
+    // Re-applied AS A REPLAY IS: every ALWAYS_EXECUTE file from this one onward, in ledger order. A6c
+    // (20271230) re-issues `platform_t4d_catalog_rules` one column family wider under the same trigger
+    // name; a replay of this file ALONE would leave the database holding the narrower body, which no
+    // real replay ever does — migrate.sh runs the list in order.
+    const later = list.split('\n').map((l) => l.trim()).filter((m) => m >= MIGRATION).sort();
+    expect(later[0]).toBe(MIGRATION);
+    for (const m of later) {
+      execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', join(__dirname, '..', '..', 'prisma', 'migrations', m, 'migration.sql')], { stdio: 'pipe' });
+    }
     const rows = await prisma.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM pg_trigger WHERE tgname = 'OutboxConsumerCatalog_t4d_rules' AND NOT tgisinternal`);
     expect(rows[0]!.n).toBe(1);
   });

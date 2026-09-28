@@ -14,32 +14,36 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a6b-activation-protocol
-reviewed_merge: 12c6f8f
-open_pr: 660
+work_item: phase-6-task-4d-ii-a-a6c-catalog-rules
+reviewed_merge: be92562
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
 ```
 
-### Now — Phase 6 task 4d: A6b, the mirror freeze and the operator protocol
+### Now — Phase 6 task 4d: A6c, the persisted rules and the registration barrier
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A6b, `open_pr: 660` (`work_item: phase-6-task-4d-ii-a-a6b-activation-protocol`, branch
-  `claude/4d-ii-a6b-activation-protocol`, from `main` at `12c6f8f`).** The second A6 sub-unit: the
-  mirror's sole writer and the operator protocol.
-  - Migration `20271229000000_phase6_t4d_ii_a6b_activation_rules` (on `ALWAYS_EXECUTE`):
-    `OutboxConsumerCatalog_t4d_rules` freezes `active` / `activationSeq` against every writer but the
-    register's apply (nested, under its marker) and freezes `registeredAt`.
-  - `outbox:consumer`, the request-token protocol (`OutboxConsumerActivationService` and the CLI): the
-    same token replays its own fact, a different request under it is refused, every distinct request
-    appends; the five direct `active` UPDATE fixtures converted to it. P-A2–P-A5, P-A6's freeze arms,
-    P-A9–P-A11.
-  - Codex's first review of `c2e57a0` was clean; that head's `Correction-Owner` trailer sat in a
-    non-final paragraph git's trailer parser does not read, so the scope check authenticated no
-    owner. This head carries the trailer in its terminal block; the content is unchanged.
+- **Now, A6c (`work_item: phase-6-task-4d-ii-a-a6c-catalog-rules`, branch
+  `claude/4d-ii-a6c-persisted-rules`, from `main` at `be92562`).** The third A6 sub-unit: the rules
+  the catalog rows carry, and the registration barrier.
+  - Migration `20271230000000_phase6_t4d_ii_a6c_catalog_rules` (on `ALWAYS_EXECUTE`): `dispatchRule`
+    / `subscribedEventTypes` on the catalog under three CHECKs, written for every row the migration
+    knows from a literal a unit test pins to the compiled contracts, and frozen by the re-issued
+    `OutboxConsumerCatalog_t4d_rules` outside the `vitan.outbox_catalog_rule_migration` gate;
+    `OutboxConsumerCatalog_t4d_registration_barrier` taking the registration key EXCLUSIVE on every
+    catalog INSERT.
+  - The compiled consumers DECLARE their rule (`OutboxConsumer.dispatchRule`); `syncConsumerCatalog`
+    INITIALIZES a created row's rule from it and VERIFIES an existing row's, refusing on drift and
+    never rewriting. `deliveryFor` still decides the delivered rows until A6d; a tripwire holds the
+    two equal over the closed event list. P38's rule and registration arms as far as this unit installs
+    them (the event's SHARE half is A6d's).
+- **A6b merged as #660** (`be92562`): `OutboxConsumerCatalog_t4d_rules` freezing the mirror behind the
+  register's apply and `registeredAt`; `outbox:consumer`, the request-token operator protocol; the five
+  direct `active` UPDATE fixtures converted.
 - **A6a merged as #659** (`12c6f8f`): the `OutboxConsumerActivation` register — CHECKs, the triple retry
   identity, the head lock, the apply, the seals, the catalog-INSERT baseline trigger and the backfill —
   with the row-scoped `sanctionedConsumerRemoval` seam and the eleven teardowns through it.

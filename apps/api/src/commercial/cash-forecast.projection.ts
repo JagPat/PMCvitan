@@ -242,6 +242,9 @@ export function makeCashForecastProjectionConsumer(): OutboxConsumer {
     kind: 'ordered',
     effect: 'db',
     catalogVersion: 1,
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries; the unit tripwire holds it equal
+    // to `deliveryFor` over the closed event-type list until A6d derives the rows from it.
+    dispatchRule: { kind: 'types', eventTypes: FORECAST_EVENT_TYPES },
     deliveryFor,
     projection: {
       rebuildSeed: async (tx, target) => {

@@ -27,7 +27,7 @@ describe('4d-ii-a / A6a — the activation register (live PG)', () => {
   type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
   const registered: OutboxConsumer = {
-    name: REGISTERED, kind: 'unordered', effect: 'external', catalogVersion: 1,
+    name: REGISTERED, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] },
     deliveryFor: () => ({ action: 'noop' }), handle: async () => {},
   };
 
