@@ -232,6 +232,38 @@ so the enums move with the 409 refusals, never before them.
 - **A5e, the client boundary:** the `countersign-v1` interceptor, its in-command refusals and its
   completeness tripwire.
 
+**A6 is delivered as five sub-units (2026-09-28)**, with the same items and no new ones, on A5's
+precedent. The table's own estimate is `justified-large`; the items separate cleanly along their
+dependency, and each sub-unit is additive and dark on its own.
+
+- **A6a, the activation register:** the `OutboxConsumerActivation` table, its CHECKs and the triple
+  uniqueness; `OutboxConsumerCatalog.activationSeq`; the head lock, the apply that is the mirror's only
+  writer, the append-only and no-truncate seals; the catalog-INSERT baseline trigger and the backfill;
+  `ALWAYS_EXECUTE`, `TRUNCATE_SEALS`, the seal inventories; the row-scoped `sanctionedConsumerRemoval`
+  and the eleven catalog-delete teardowns through it (companion document, P-A1, P-A6's register and
+  seam arms, P-A7, P-A8). The catalog's `active` is NOT yet frozen: the delivered direct UPDATE still
+  works, so no delivered writer or fixture changes behaviour.
+- **A6b, the mirror's sole writer and the operator protocol:** `OutboxConsumerCatalog_t4d_rules`
+  freezing `active`, `activationSeq` and `registeredAt` with the depth-and-marker seam; the
+  `outbox:consumer` operator service and CLI with the request-token protocol and the reserved `sys:`
+  prefix; the five direct `active` UPDATE fixtures converted (P-A2–P-A5, P-A6's freeze arms, P-A9–P-A11).
+- **A6c, the persisted rules and the registration barrier:** `dispatchRule` / `subscribedEventTypes`
+  on the catalog, written for every existing row by the migration from literals a test pins to the
+  compiled contracts, frozen by the rules trigger under the `SET LOCAL` gate; `syncConsumerCatalog`
+  INITIALIZING a created row's rule and VERIFYING an existing row's, refusing on drift;
+  `OutboxConsumerCatalog_t4d_registration_barrier`.
+- **A6d, the delivery rows and their seals:** `deliveryRowsFor(event, catalogRows)` called by
+  `materializeDeliveries` and `expandMissingDeliveries`, every `OutboxConsumerCatalog` row locked
+  `FOR SHARE` before the `active` filter, `deliveryFor` retired from the consumer contract;
+  `DomainEvent_t4d_deliveries` (deferred, taking the registration key in SHARE mode itself),
+  `OutboxDelivery_t4d_bound` and `OutboxDelivery_t4d_frozen`; P37 and P38's barrier arms in both
+  orderings, through the emitter and through a direct receipt-backed writer.
+- **A6e, the server-generation fence and the drain evidence:** the compiled monotone server
+  generation checked at startup against a persisted, migration-written minimum ("The drain"), and the
+  `rollout:drain-evidence` CLI. Independent of A6b–A6d.
+
+Order: A6a → A6b → A6c → A6d; A6e after A6a. A7 starts after A6d and A6e are on `main`.
+
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its
 packet which §C arms it carries. None may leave an arm unowned: the last 4d-ii-a unit to merge

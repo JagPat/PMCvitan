@@ -914,6 +914,42 @@ const REGISTER: Record<string, SealContract> = {
     on: {},
     must: ['takes no INSERT yet', '4d-ii'],
   },
+  // ── 4d-ii-a / A6a — the activation register (the companion document) ──────────────────────
+  platform_t4d_activation_head_lock: {
+    rule: 'an activation fact is appended at exactly `activationSeq + 1` under the consumer\'s catalog '
+      + 'row locked FOR UPDATE, and a fact naming an unregistered consumer RAISES by name (a STRICT '
+      + 'lookup, never a NULL head)',
+    plan: 'companion document "The register"; #561 round 1, finding 5; #580 round 1, finding 8',
+    on: { 'OutboxConsumerActivation.OutboxConsumerActivation_t4d_head_lock': B('I') },
+    must: ['INTO STRICT', 'FOR UPDATE', 'no_data_found', 'v_head + 1'],
+  },
+  platform_t4d_activation_apply: {
+    rule: 'the register\'s AFTER INSERT is THE ONLY WRITER of the catalog mirror: it advances `active` '
+      + 'and `activationSeq` together, under the transaction-local marker that names the seam',
+    plan: 'companion document "The register"; #580 round 1, finding 6',
+    on: { 'OutboxConsumerActivation.OutboxConsumerActivation_t4d_apply': A('I') },
+    must: ['vitan.outbox_activation_applying', '"active" = NEW."active"', '"activationSeq" = NEW."seq"'],
+  },
+  platform_t4d_activation_append_only: {
+    rule: 'a fact is immutable evidence: every UPDATE and DELETE refused; the row-scoped test seam '
+      + 'disables this trigger by name',
+    plan: 'companion document "The register"; #580 round 3, finding 1',
+    on: { 'OutboxConsumerActivation.OutboxConsumerActivation_t4d_append_only': B('D U') },
+    must: ['append-only', 'sanctionedConsumerRemoval'],
+  },
+  platform_t4d_activation_no_truncate: {
+    rule: 'the register is never truncated — the statement-level twin of the row seal',
+    plan: 'companion document "The register"; #560 round 2, finding 2',
+    on: { 'OutboxConsumerActivation.OutboxConsumerActivation_t4d_no_truncate': S('T') },
+    must: ['TRUNCATE_SEALS'],
+  },
+  platform_t4d_catalog_registration_head: {
+    rule: 'every catalog row has a head from the moment it exists: the catalog\'s own INSERT appends the '
+      + '`seq = 1` registration baseline mirroring the `active` the INSERT gave, token-less',
+    plan: 'companion document "Every catalog row has a head"; #580 round 1, finding 4',
+    on: { 'OutboxConsumerCatalog.OutboxConsumerCatalog_t4d_registration_head': A('I') },
+    must: ["'registration'", 'NEW."active"', 'system:outbox-registration'],
+  },
   platform_t4d_project_org_frozen: {
     rule: 'a project\'s tenancy never moves once registered',
     plan: '§A.2 the ProjectOrg register',

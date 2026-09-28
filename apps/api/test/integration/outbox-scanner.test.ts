@@ -6,7 +6,7 @@ import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { registerConsumer, unregisterConsumer, syncConsumerCatalog, type OutboxConsumer } from '../../src/platform/outbox/registry';
 import type { Actor } from '../../src/common/actor';
 
-import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { sanctionedReset, sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 fix-forward PR B Task 3 — continuous gap expansion + ordered no-ops (live PG).
  *
@@ -48,7 +48,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
   afterAll(async () => {
     unregisterConsumer(FILTERED);
     await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
-    await t?.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: FILTERED } });
+    await sanctionedConsumerRemoval(t?.prisma, [FILTERED]);
     await f?.cleanup();
     await t?.close();
   });
@@ -62,7 +62,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     await t.prisma.auditLog.deleteMany({ where: { action: { in: ['test.filtered', 'test.pause'] } } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-scn-' } } });
     for (const c of AD_HOC) unregisterConsumer(c);
-    await t.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: { in: AD_HOC } } });
+    await sanctionedConsumerRemoval(t.prisma, AD_HOC);
   });
 
   const freshProject = async (): Promise<string> => {
@@ -105,7 +105,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: LATE, projectId: p } })).toBe(2);
     unregisterConsumer(LATE);
     await t.prisma.outboxDelivery.deleteMany({ where: { consumer: LATE } });
-    await t.prisma.outboxConsumerCatalog.delete({ where: { consumer: LATE } });
+    await sanctionedConsumerRemoval(t.prisma, [LATE]);
   });
 
   it('two concurrent scanners create exactly one delivery per event/consumer (idempotent)', async () => {
@@ -156,7 +156,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     expect(await owed()).toBe(5); // drained over successive passes
     unregisterConsumer(LATE);
     await t.prisma.outboxDelivery.deleteMany({ where: { consumer: LATE } });
-    await t.prisma.outboxConsumerCatalog.delete({ where: { consumer: LATE } });
+    await sanctionedConsumerRemoval(t.prisma, [LATE]);
   });
 
   // Finding 1 (P1): OutboxConsumerCatalog.active is authoritative at MATERIALIZE — a deactivated
@@ -172,7 +172,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     await emit(p, 'GO-off');
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: OFF } })).toBe(0);
     unregisterConsumer(OFF);
-    await t.prisma.outboxConsumerCatalog.delete({ where: { consumer: OFF } });
+    await sanctionedConsumerRemoval(t.prisma, [OFF]);
   });
 
   // Finding 1 (P1): active is authoritative at CLAIM/DISPATCH too, and guards the claim→handle race —
@@ -201,7 +201,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     unregisterConsumer(PAUSE);
     await t.prisma.auditLog.deleteMany({ where: { action: 'test.pause' } });
     await t.prisma.outboxDelivery.deleteMany({ where: { consumer: PAUSE } });
-    await t.prisma.outboxConsumerCatalog.delete({ where: { consumer: PAUSE } });
+    await sanctionedConsumerRemoval(t.prisma, [PAUSE]);
   });
 
   // Finding 3 (P2): prove the claim the packet made but the old noop-only test did NOT — a filtered
@@ -227,7 +227,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     expect(byEvent[eNp]).toBe('noop'); // persisted NP- envelope → recorded no-op
     unregisterConsumer(LATEF);
     await t.prisma.outboxDelivery.deleteMany({ where: { consumer: LATEF } });
-    await t.prisma.outboxConsumerCatalog.delete({ where: { consumer: LATEF } });
+    await sanctionedConsumerRemoval(t.prisma, [LATEF]);
   });
 
   // Finding 3 (P2): explicitly prove the crash / old-instance case — a catalog contract persisted while
@@ -247,6 +247,6 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: ABSENT, projectId: p } })).toBe(2);
     unregisterConsumer(ABSENT);
     await t.prisma.outboxDelivery.deleteMany({ where: { consumer: ABSENT } });
-    await t.prisma.outboxConsumerCatalog.delete({ where: { consumer: ABSENT } });
+    await sanctionedConsumerRemoval(t.prisma, [ABSENT]);
   });
 });

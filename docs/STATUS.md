@@ -14,28 +14,33 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a5e-countersign-boundary
-reviewed_merge: 5b4e55a
-open_pr: 657
+work_item: phase-6-task-4d-ii-a-a6a-activation-register
+reviewed_merge: 0f84ecc
+open_pr: 659
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
 ```
 
-### Now — Phase 6 task 4d: A5e, the client boundary
+### Now — Phase 6 task 4d: A6a, the activation register
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A5e, `open_pr: 657` (`work_item: phase-6-task-4d-ii-a-a5e-countersign-boundary`, branch
-  `claude/4d-ii-a5e-countersign-boundary`, from `main` at `5b4e55a`).** The fifth and last A5 sub-unit:
-  the server half of the `countersign-v1` client boundary.
-  - A transport interceptor beside the 4b one: a request declaring less than `countersign-v1` has the
-    4d decision shapes stripped, `architect` rows stripped from memberships, roster and portfolio, and
-    an architect session or minted architect token refused with a reload 409.
-  - The declared contract rides the request's `AuthUser` into approve and the architect-designation
-    writes, which refuse a lesser client under an ACTIVE chain after the readiness lock; a completeness
-    tripwire classifies every 4d shape. Dark until 4d-iii. No migration (`migration-scope: n/a`).
+- **Now, A6a, `open_pr: 659` (`work_item: phase-6-task-4d-ii-a-a6a-activation-register`, branch
+  `claude/4d-ii-a6-delivery-substrate`, from `main` at `0f84ecc`).** A6 is delivered as five sub-units
+  (the staging document, 2026-09-28); this is the first: the `OutboxConsumerActivation` register the
+  companion document specifies and §D said 4d-i installed.
+  - Migration `20271228000000_phase6_t4d_ii_a6a_activation_register` (`migration-scope: inseparable`,
+    on `ALWAYS_EXECUTE`): the append-only attributable register with its CHECKs and triple uniqueness,
+    the catalog's `activationSeq`, the head lock, the apply that is the mirror's only writer, the two
+    seals, the catalog-INSERT baseline trigger and the backfill, so every consumer has a head.
+  - The row-scoped `sanctionedConsumerRemoval` test seam and the eleven catalog-delete teardowns through
+    it. The catalog's `active` is not yet frozen (A6b), so every delivered writer behaves as before.
+- **A5e merged as #657** (`0f84ecc`): the server half of the `countersign-v1` client boundary — a
+  transport interceptor stripping the 4d shapes and refusing an architect session or token to a lesser
+  client, the contract re-judged inside approve and the architect-designation writes under the readiness
+  lock, and a completeness tripwire over every 4d shape. **A5 is complete.**
 - **A5d merged as #656** (`5b4e55a`): the open-holder answer and the member commands' holder guard
   answer the architect designation and the awaiting-countersign set (P39), 4d-i's guard answered as the
   command's 409; `countPending` gains the architect arm and the countersign obligations, and the shell

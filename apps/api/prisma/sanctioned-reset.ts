@@ -143,6 +143,12 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // an empty table too — so a suite that never allocated an event still meets the seal in setup.
   { table: 'ProjectEventStream', trigger: 'ProjectEventStream_t4d_no_truncate' },
   { table: 'UserIdentity', trigger: 'UserIdentity_t4d_no_truncate' },
+  // Phase 6 task 4d-ii-a / A6a — the activation register (the companion document, "The register":
+  // "registered in `TRUNCATE_SEALS` while the table stays outside every sanctioned reset"). No
+  // sanctioned reset names it and no CASCADE reaches it today (its FK points AT the catalog, which
+  // nothing truncates), so the entry is the registry being complete, not a bypass a suite needs;
+  // the row-scoped removal below is the register's only seam.
+  { table: 'OutboxConsumerActivation', trigger: 'OutboxConsumerActivation_t4d_no_truncate' },
 ];
 
 /**
@@ -189,5 +195,41 @@ export async function sanctionedReset(
     ...TRUNCATE_SEALS.map((seal) => prisma.$executeRawUnsafe(toggleSeal('DISABLE', seal))),
     prisma.$executeRawUnsafe(truncate),
     ...TRUNCATE_SEALS.map((seal) => prisma.$executeRawUnsafe(toggleSeal('ENABLE', seal))),
+  ]);
+}
+
+/** The activation register's append-only seal, the one seal the row-scoped removal disables. */
+const ACTIVATION_APPEND_ONLY = { table: 'OutboxConsumerActivation', trigger: 'OutboxConsumerActivation_t4d_append_only' } as const;
+
+/**
+ * Phase 6 task 4d-ii-a / A6a — remove exactly the named outbox consumers, with their activation
+ * facts, through the ONE sanctioned seam (the companion document, "The register"; #580's review
+ * round 3, finding 1 and round 4, finding 4).
+ *
+ * In production NOTHING deletes a catalog row: the activation register's FK is `ON DELETE RESTRICT`
+ * and its seal refuses every DELETE, and since the catalog-INSERT trigger gives EVERY consumer a head,
+ * a catalog row cannot be deleted at all outside this seam. The integration fixtures that register
+ * ad-hoc consumers must still tear them down, and they are ROW-scoped — an `afterEach` removes its
+ * `AD_HOC` list while a long-lived consumer beside them must survive — which the table-level
+ * `sanctionedReset` (a `TRUNCATE`, with or without `CASCADE`) cannot express. So this is a second,
+ * row-scoped operation beside it, in the same file and under the same contract: test setup and
+ * teardown ONLY, nothing in `src/` may call it.
+ *
+ * ONE transaction: the seal is disabled by name (guarded on its existence, as every toggle here is),
+ * the named consumers' facts and catalog rows are deleted, and the seal is re-enabled — so a failure
+ * rolls the DISABLE back with it and the seal is never observed off between suites.
+ */
+export async function sanctionedConsumerRemoval(
+  prisma: TruncateCapableClient | null | undefined,
+  consumers: readonly string[],
+): Promise<void> {
+  if (!prisma) return;
+  if (consumers.length === 0) return;
+  const names = [...consumers];
+  await prisma.$transaction([
+    prisma.$executeRawUnsafe(toggleSeal('DISABLE', ACTIVATION_APPEND_ONLY)),
+    prisma.$executeRawUnsafe(`DELETE FROM "OutboxConsumerActivation" WHERE "consumer" = ANY($1::text[])`, names),
+    prisma.$executeRawUnsafe(`DELETE FROM "OutboxConsumerCatalog" WHERE "consumer" = ANY($1::text[])`, names),
+    prisma.$executeRawUnsafe(toggleSeal('ENABLE', ACTIVATION_APPEND_ONLY)),
   ]);
 }

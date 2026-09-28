@@ -3853,6 +3853,18 @@ $PSQL -q -c "UPDATE \"Membership\" SET \"role\"='client', \"status\"='active' WH
   || { echo "FAILED  4b-decider repair: covering membership activation"; FAIL=1; }
 $PSQL --single-transaction -q -f "$MIG_DIR/$PHASE6_T4B_DECIDER_NAME/migration.sql" >/dev/null \
   || { echo "FAILED  4b-decider migration after the sanctioned repair"; FAIL=1; }
+# ── 4d-ii-a / A6a: HISTORY for the activation register's backfill (P-A1) ────────────────────
+# Two catalog rows planted BEFORE the deferred ledger reaches 20271228, one active and one inactive
+# by direct write (the only way a row could be inactive before the register), so the register's
+# migration meets a catalog that already holds history and must give each row a `seq = 1` baseline
+# mirroring the `active` it found — asserted after the ledger below, and again after the
+# ledger-lost replay. `updatedAt` has no database default (Prisma's `@updatedAt`), so it is stated.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-ii-a / A6a: the pre-register catalog history was refused"; FAIL=1; }
+INSERT INTO "OutboxConsumerCatalog" ("consumer","consumerKind","consumerEffect","catalogVersion","active","updatedAt")
+VALUES ('upgrade.proof.history','unordered','external',1,true,now()),
+       ('upgrade.proof.inactive','unordered','external',1,false,now())
+ON CONFLICT DO NOTHING;
+SQL
 for d in "${phase6_t4b_decider_dirs[@]}"; do
   name="$(basename "$d")"
   [ "$name" = "$PHASE6_T4B_DECIDER_NAME" ] && continue
@@ -4929,7 +4941,8 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # 4d-ii-a's writers witness (20271226) needs 4d-i's `ReleaseLease` and DECLARES 4d-ii, which
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*) continue ;; esac
+  # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5153,6 +5166,31 @@ assert "4d-ii-a: a declared database with NO lease is not yet 'installed' — th
   "SELECT phase6_t4d_ii_installed()::text;" \
   "false"
 
+# ── 4d-ii-a / A6a: the activation register over a catalog that already held history (P-A1) ─────
+# The two rows planted before the deferred ledger (one inactive by direct write) pre-date the
+# register, so the migration's BACKFILL owed each a `seq = 1` baseline mirroring the `active` it
+# found, by the `migration` kind with the migration's own name as its retry identity. The rule is
+# asserted over EVERY catalog row, not the two by name: exactly one baseline, the mirror equal to
+# the head, `activationSeq` equal to the head's seq.
+assert "4d-ii-a / A6a: the history rows are on the catalog the register met" \
+  "SELECT count(*)::text FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" IN ('upgrade.proof.history','upgrade.proof.inactive');" \
+  "2"
+assert "4d-ii-a / A6a: every catalog row holds exactly one seq = 1 baseline, and the mirror equals its head" \
+  "SELECT count(*)::text FROM \"OutboxConsumerCatalog\" c WHERE (SELECT count(*) FROM \"OutboxConsumerActivation\" a WHERE a.\"consumer\" = c.\"consumer\" AND a.\"seq\" = 1) <> 1 OR c.\"activationSeq\" <> (SELECT max(a.\"seq\") FROM \"OutboxConsumerActivation\" a WHERE a.\"consumer\" = c.\"consumer\") OR c.\"active\" <> (SELECT a.\"active\" FROM \"OutboxConsumerActivation\" a WHERE a.\"consumer\" = c.\"consumer\" AND a.\"seq\" = c.\"activationSeq\");" \
+  "0"
+assert "4d-ii-a / A6a: the inactive history row's baseline mirrors FALSE, by the migration kind under the migration's own token" \
+  "SELECT \"active\"::text || '|' || \"actorKind\" || '|' || \"requestToken\" FROM \"OutboxConsumerActivation\" WHERE \"consumer\" = 'upgrade.proof.inactive' AND \"seq\" = 1;" \
+  "false|migration|20271228000000_phase6_t4d_ii_a6a_activation_register"
+assert_rejects "4d-ii-a / A6a: a baseline fact cannot be rewritten" \
+  "UPDATE \"OutboxConsumerActivation\" SET \"active\" = true WHERE \"consumer\" = 'upgrade.proof.inactive'" \
+  "append-only"
+assert_rejects "4d-ii-a / A6a: a catalog row with a head cannot be deleted" \
+  "DELETE FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.history'" \
+  "foreign key|OutboxConsumerActivation_consumer_fkey"
+assert_rejects "4d-ii-a / A6a: the register cannot be truncated away" \
+  "TRUNCATE \"OutboxConsumerActivation\"" \
+  "never truncated"
+
 # ── the replay a LEDGER-LOST RESTORE takes, before and after this release serves (#646's review,
 #    finding 4114478871) ─────────────────────────────────────────────────────────────────────────
 # A really-migrated database restored without `_prisma_migrations` is the one kind that reaches
@@ -5168,7 +5206,8 @@ assert "4d-ii-a: a declared database with NO lease is not yet 'installed' — th
 T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d_i_decision_facts
 20271222000000_phase6_t4d_i_b_u1_bound_event_actor 20271223000000_phase6_t4d_i_b_u2_change_bundle_seals
 20271224000000_phase6_t4d_i_b_u3_pairing_flip 20271225000000_phase6_project_row_lock_no_key
-20271226000000_phase6_t4d_ii_release_lease_writer 20271227000000_phase6_t4d_ii_consultation_finalized_cycle"
+20271226000000_phase6_t4d_ii_release_lease_writer 20271227000000_phase6_t4d_ii_consultation_finalized_cycle
+20271228000000_phase6_t4d_ii_a6a_activation_register"
 t4d_replay() {
   local m
   for m in $T4D_REPLAY; do
@@ -5241,6 +5280,11 @@ assert "4d-ii-a: the replay kept the A1 pair it adopted, and 4d-ii stays install
 assert "4d-ii-a: the replay did not put the lease door back" \
   "SELECT count(*)::text FROM pg_trigger WHERE tgname = 'ReleaseLease_t4d_insert_reserved' AND NOT tgisinternal;" \
   "0"
+# A6a — the replay re-ran the register's migration (it is on ALWAYS_EXECUTE): its backfill is guarded
+# on the ABSENCE of any fact for a row, so it appended nothing and moved no mirror.
+assert "4d-ii-a / A6a: the replayed register migration appended no second baseline and moved no mirror" \
+  "SELECT (SELECT count(*) FROM \"OutboxConsumerActivation\" WHERE \"consumer\" IN ('upgrade.proof.history','upgrade.proof.inactive'))::text || '|' || (SELECT \"active\"::text || \"activationSeq\"::text FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.inactive');" \
+  "2|false1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

@@ -29,6 +29,12 @@ export const platformManifest: ModuleManifest = {
     'projectionCursor',
     'projectionGeneration',
     'outboxConsumerCatalog',
+    // Phase 6 task 4d-ii-a / A6a — the catalog's append-only, attributable ACTIVATION REGISTER
+    // (the companion document): the head every obligation set is judged from, whose `active` the
+    // catalog row mirrors. Platform-owned like the catalog it explains; written by the operator
+    // protocol (A6b), a migration's backfill, and the catalog's own INSERT trigger — never by a
+    // domain module.
+    'outboxConsumerActivation',
     'outboxOperatorAction',
     'outboxCutoverState',
     // Phase 6 task 4d unit 4d-i (§D Part 0) — the durable retirement marker. One row per retired
