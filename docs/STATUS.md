@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a5c-standing-reads
 reviewed_merge: 8797a91
-open_pr: none
+open_pr: 655
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
@@ -27,7 +27,7 @@ updated: 2026-09-28
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A5c (`work_item: phase-6-task-4d-ii-a-a5c-standing-reads`, branch
+- **Now, A5c, `open_pr: 655` (`work_item: phase-6-task-4d-ii-a-a5c-standing-reads`, branch
   `claude/4d-ii-a5c-standing-reads`, from `main` at `8797a91`).** The third A5 sub-unit: §A.2's kernel
   standing reads.
   - `RoleStandingQuery` asks 4d-i's registers through the kernel SQL the seals use; both decision read
