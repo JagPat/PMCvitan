@@ -306,12 +306,41 @@ model OutboxConsumerCatalog {
   consumerKind   String // 'ordered' | 'unordered'
   consumerEffect String // 'db' | 'external'
   catalogVersion Int // the consumer CONTRACT version, not an app release
+  // Phase 6 task 4d-ii-a / A6a — the MIRROR of the activation register's head: written only by the
+  // register's AFTER INSERT trigger (`platform_t4d_activation_apply`), together with `activationSeq`.
+  // A6b freezes both against every other writer; until then the delivered direct UPDATE still works.
   active         Boolean          @default(true)
+  // the head's sequence (0 = no fact yet, which the catalog-INSERT trigger ends in the same statement)
+  activationSeq  Int              @default(0)
   registeredAt   DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   deliveries     OutboxDelivery[]
+  activations    OutboxConsumerActivation[]
 
   @@unique([consumer, consumerKind]) // the composite the OutboxDelivery FK references
+}
+
+// Phase 6 task 4d-ii-a / A6a — the append-only, attributable ACTIVATION REGISTER
+// (`docs/superpowers/plans/2026-09-09-outbox-consumer-activation.md`). The obligation set — which
+// consumers owe a delivery for an event — is judged from the newest fact here (the HEAD), never from
+// a writable column or a timestamp. A fact is never updated or deleted: excluding a consumer means
+// appending a deactivation that survives as evidence. `(consumer, actorKind, requestToken)` is the
+// retry identity (the KIND is part of it); a registration carries no token, a migration's is its own
+// name, an operator's is caller-generated and reused on every retry. Every seal is raw SQL in
+// `20271228000000_phase6_t4d_ii_a6a_activation_register` (on `ALWAYS_EXECUTE`).
+model OutboxConsumerActivation {
+  consumer     String
+  seq          Int
+  active       Boolean
+  reason       String
+  actorKind    String // 'operator' | 'migration' | 'registration'
+  actorId      String
+  requestToken String?
+  at           DateTime              @default(now())
+  catalog      OutboxConsumerCatalog @relation(fields: [consumer], references: [consumer], onDelete: Restrict, onUpdate: Cascade)
+
+  @@id([consumer, seq])
+  @@unique([consumer, actorKind, requestToken])
 }
 
 // Phase 2 fix-forward PR B — a durable audit row for every operator dead-letter action
