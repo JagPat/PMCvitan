@@ -3,7 +3,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 
-import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { sanctionedReset, sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 fix-forward PR B Task 1 — the durable-outbox constraint probes (live PG). Each proves a
  * constraint the pre-PR-B database LACKED: a delivery can no longer claim coordinates its event
@@ -16,6 +16,13 @@ describe('PR B Task 1 — durable outbox constraints (live PG)', () => {
   let f: TwoProjectFixture;
   const human = { actorId: '', actorName: 'Prober', actorRole: 'pmc', actorKind: 'human' as const };
 
+  // 4d-ii-a / A6a — every catalog row has an activation head and the register refuses DELETE, so
+  // the probe consumers leave through the row-scoped sanctioned seam, by name.
+  const removeProbeConsumers = async (): Promise<void> => {
+    if (!t?.prisma) return;
+    const rows = await t.prisma.outboxConsumerCatalog.findMany({ where: { consumer: { startsWith: 'probe.' } }, select: { consumer: true } });
+    await sanctionedConsumerRemoval(t.prisma, rows.map((r) => r.consumer));
+  };
   beforeAll(async () => {
     t = await createTestApp();
     f = await createTwoProjectFixture(t.prisma);
@@ -23,13 +30,13 @@ describe('PR B Task 1 — durable outbox constraints (live PG)', () => {
   });
   afterAll(async () => {
     await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
-    await t?.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: { startsWith: 'probe.' } } });
+    await removeProbeConsumers();
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
     await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
-    await t.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: { startsWith: 'probe.' } } });
+    await removeProbeConsumers();
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-rel-' } } });
   });
 

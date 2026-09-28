@@ -192,6 +192,10 @@ function buildBase(): void {
     // down — the very arms this harness proves on a 4d-i-only database. It depends on 4d-i's
     // `ReleaseLease` too, so it is excluded with the other units built on 4d-i.
     '20271226000000_phase6_t4d_ii_release_lease_writer',
+    // 4d-ii-a / A6a's activation register carries no 4d-i marker guard, but it is a 4d-ii unit with
+    // its own live probes (`phase6-t4d-ii-a6a-activation-register.test.ts`); this harness stays a
+    // 4d-i-only database, so it is excluded with the other units built after 4d-i.
+    '20271228000000_phase6_t4d_ii_a6a_activation_register',
     // 4d-ii-a / A4a's consultation-cycle seals are 4d-i's bodies re-issued, guarded on 4d-i's
     // retirement marker, so they too apply only on top of 4d-i.
     '20271227000000_phase6_t4d_ii_consultation_finalized_cycle']);

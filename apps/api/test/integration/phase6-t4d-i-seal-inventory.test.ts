@@ -143,6 +143,16 @@ const INVENTORY: Record<string, string[]> = {
   OrgMembership: ['OrgMembership_t4d_identity', 'OrgMembership_t4d_no_truncate',
     'OrgMembership_t4d_org_authority', 'OrgMembership_t4d_user_standing'],
   OrgUserAuthority: ['OrgUserAuthority_t4d_backed', 'OrgUserAuthority_t4d_no_truncate', 'OrgUserAuthority_t4d_writer'],
+  // 4d-ii-a / A6a (20271228): the activation register — the head lock, the apply that is the mirror's
+  // only writer, the append-only row seal and its statement twin — and the catalog's own INSERT giving
+  // every new row its head. The catalog's rules freeze and registration barrier are A6b's and A6c's.
+  OutboxConsumerActivation: [
+    'OutboxConsumerActivation_t4d_append_only',
+    'OutboxConsumerActivation_t4d_apply',
+    'OutboxConsumerActivation_t4d_head_lock',
+    'OutboxConsumerActivation_t4d_no_truncate',
+  ],
+  OutboxConsumerCatalog: ['OutboxConsumerCatalog_t4d_registration_head'],
   Project: ['Project_t4d_deleting', 'Project_t4d_project_org', 'Project_t4d_user_standing'],
   ProjectEventStream: [
     // §A.2 names FIVE objects here and the first version of this unit installed two, with the
@@ -234,6 +244,12 @@ const FUNCTIONS = [
   'phase6_t4d_change_transition_paired',
   'phase6_t4d_revision_claims_approval',
   'phase6_t4d_consultation_claims_event',
+  // 4d-ii-a / A6a — the activation register's five bodies (existence-only, like the rest)
+  'platform_t4d_activation_head_lock',
+  'platform_t4d_activation_apply',
+  'platform_t4d_activation_append_only',
+  'platform_t4d_activation_no_truncate',
+  'platform_t4d_catalog_registration_head',
 ];
 
 describe('Phase 6 units 4d-i and 4d-i-b — every seal the migrations name is INSTALLED (live PG)', () => {

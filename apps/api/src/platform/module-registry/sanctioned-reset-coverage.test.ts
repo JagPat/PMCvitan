@@ -158,6 +158,9 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // it, because a seal with no nameable bypass would break forty sanctioned resets — and then
       // the stream. None may route through the helper: it disables the seals under test.
       'phase6-t4d-i-seal-stripped.test.ts': 9,
+      // 4d-ii-a / A6a — P-A6's hostile TRUNCATE of the activation register, asserted refused under a
+      // savepoint on a rolled-back transaction.
+      'phase6-t4d-ii-a6a-activation-register.test.ts': 1,
     };
 
     const offenders: string[] = [];
