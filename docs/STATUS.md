@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a6b-activation-protocol
 reviewed_merge: 12c6f8f
-open_pr: none
+open_pr: 660
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
@@ -27,7 +27,7 @@ updated: 2026-09-28
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A6b (`work_item: phase-6-task-4d-ii-a-a6b-activation-protocol`, branch
+- **Now, A6b, `open_pr: 660` (`work_item: phase-6-task-4d-ii-a-a6b-activation-protocol`, branch
   `claude/4d-ii-a6b-activation-protocol`, from `main` at `12c6f8f`).** The second A6 sub-unit: the
   mirror's sole writer and the operator protocol.
   - Migration `20271229000000_phase6_t4d_ii_a6b_activation_rules` (on `ALWAYS_EXECUTE`):
