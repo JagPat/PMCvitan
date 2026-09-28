@@ -1,7 +1,7 @@
 import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma.service';
-import { getConsumer, listConsumers, outboxSenderMode, type EmittedEventMeta, type OutboxConsumer } from './registry';
+import { deliveryRowsFor, getConsumer, outboxSenderMode, type EmittedEventMeta, type OutboxConsumer } from './registry';
 import { lockActiveGeneration } from '../projections/generation';
 
 /**
@@ -67,7 +67,11 @@ export class OutboxRelay implements OnModuleDestroy {
     await this.expandMissingDeliveries();
     // catalog.active is authoritative: a deactivated contract is never claimed (its pending rows stay
     // recoverable for reactivation). Read once per pass; the dispatch guard covers a mid-pass change.
-    const active = await this.activeConsumerNames();
+    // 4d-ii-a / A6d — the claim loop walks the ACTIVE CATALOG, not the process-local registry: from
+    // A6d the rows derive from the persisted catalog, so a consumer whose code is absent in this
+    // process still has rows, and they must be CLAIMED for `dispatchOne` to dead-letter them by name
+    // ("no consumer registered") rather than left pending in silence (#662's review round 1, finding 3).
+    const active = await this.activeConsumers();
     // PR C fix-forward — the delivery LEASE is the single arbiter of who sends. In `outbox` mode the
     // relay owns ALL external dispatch. In `legacy`/`shadow` the immediate ExternalEffectDispatcher
     // owns the FIRST attempt of a fresh delivery (it claims the lease before sending — see
@@ -78,12 +82,11 @@ export class OutboxRelay implements OnModuleDestroy {
     const mode = outboxSenderMode();
     for (let guard = 0; guard < 1000; guard++) {
       let progressed = false;
-      for (const consumer of listConsumers()) {
-        if (!active.has(consumer.name)) continue; // deactivated contract — do not claim
+      for (const consumer of active) {
         const ids =
-          consumer.effect === 'external' && mode !== 'outbox'
-            ? await this.claimExternalRecovery(consumer.name) // the dispatcher owns fresh first attempts
-            : await this.claim(consumer.name);
+          consumer.consumerEffect === 'external' && mode !== 'outbox'
+            ? await this.claimExternalRecovery(consumer.consumer) // the dispatcher owns fresh first attempts
+            : await this.claim(consumer.consumer);
         for (const id of ids) {
           const outcome = await this.dispatchOne(id);
           if (outcome === 'succeeded' || outcome === 'duplicate' || outcome === 'dead' || outcome === 'retry') progressed = true;
@@ -93,10 +96,10 @@ export class OutboxRelay implements OnModuleDestroy {
     }
   }
 
-  /** The set of consumer names whose durable catalog contract is currently active. */
-  private async activeConsumerNames(): Promise<Set<string>> {
-    const rows = await this.prisma.outboxConsumerCatalog.findMany({ where: { active: true }, select: { consumer: true } });
-    return new Set(rows.map((r) => r.consumer));
+  /** The consumers whose durable catalog contract is currently active, with the effect the claim
+   *  path is chosen by — from the CATALOG, so a consumer this process has no code for is claimed too. */
+  private async activeConsumers(): Promise<Array<{ consumer: string; consumerEffect: string }>> {
+    return this.prisma.outboxConsumerCatalog.findMany({ where: { active: true }, select: { consumer: true, consumerEffect: true }, orderBy: { consumer: 'asc' } });
   }
 
   /** Atomically lease up to CLAIM_BATCH due deliveries for a consumer, in stream order. */
@@ -381,14 +384,20 @@ export class OutboxRelay implements OnModuleDestroy {
    * consumer)` is the backstop, and a lost create race (`P2002`) is ignored. A pre-intent legacy event
    * (`dispatchIntent = null`) yields an external no-op — the outbox never invents a historical push.
    * The catalog is the source of truth, so a deactivated consumer stops accruing new obligations
-   * without deleting existing deliveries.
+   * without deleting existing deliveries. From 4d-ii-a / A6d the rows derive from the PERSISTED rule
+   * through the same `deliveryRowsFor` the emit transaction uses — the registry is not consulted.
    */
   async expandMissingDeliveries(batchSize = 200): Promise<number> {
     let created = 0;
-    const catalog = await this.prisma.outboxConsumerCatalog.findMany({ where: { active: true } });
+    // 4d-ii-a / A6d — the obligation set is the ACTIVE, RULED catalog; the rows derive from the
+    // persisted rule (`deliveryRowsFor`), so a consumer whose code is absent in THIS instance still
+    // gets its rows (its handler is what waits for the code, not its obligation), and a row with no
+    // rule (a consumer no migration knew) derives nothing and is skipped — the seal owes it nothing.
+    const catalog = await this.prisma.outboxConsumerCatalog.findMany({
+      where: { active: true, dispatchRule: { not: null } },
+      select: { consumer: true, consumerKind: true, active: true, dispatchRule: true, subscribedEventTypes: true },
+    });
     for (const cat of catalog) {
-      const consumer = getConsumer(cat.consumer);
-      if (!consumer) continue; // an active contract whose code is absent in THIS instance — skip
       // ONE bounded batch per consumer per invocation: the earliest missing pairs first (ordered).
       // Later relay ticks pick up where this left off; no unbounded inner drain.
       const missing = await this.prisma.$queryRaw<{ eventId: string }[]>`
@@ -401,20 +410,14 @@ export class OutboxRelay implements OnModuleDestroy {
       if (!missing.length) continue;
       const events = await this.prisma.domainEvent.findMany({ where: { eventId: { in: missing.map((m) => m.eventId) } } });
       for (const event of events) {
-        const plan = consumer.deliveryFor(metaFromEvent(event));
-        const status = plan.action === 'dispatch' ? 'pending' : consumer.kind === 'unordered' ? 'succeeded' : 'pending';
+        // the SAME function the emit transaction uses, over this one catalog row: a crash-gap row
+        // recovered here is born exactly as the emitter would have born it — action, payload and
+        // subject alike (Phase 6 task 4a round 1, Codex F1: a recovered row without its subject would
+        // be uncancellable by `cancelQueuedPushBySubject`)
+        const [row] = deliveryRowsFor(metaFromEvent(event), [cat]);
+        if (!row) continue;
         try {
-          await this.prisma.outboxDelivery.create({
-            data: {
-              eventId: event.eventId, projectId: event.projectId, consumer: cat.consumer, consumerKind: consumer.kind,
-              streamPosition: event.streamPosition, deliveryAction: plan.action, status,
-              ...(plan.action === 'dispatch' && plan.payload !== undefined ? { payload: plan.payload } : {}),
-              // Phase 6 task 4a round 1 (Codex F1): the SUBJECT is part of the plan, in EVERY
-              // delivery-creation path — a crash-gap row recovered here without it would be
-              // born uncancellable by `cancelQueuedPushBySubject`.
-              ...(plan.action === 'dispatch' && plan.subject !== undefined ? { subject: plan.subject } : {}),
-            },
-          });
+          await this.prisma.outboxDelivery.create({ data: row });
           created++;
         } catch (err) {
           // a concurrent scanner already created it (unique) — fine

@@ -52,8 +52,11 @@ describe('PR B Task 1 — durable outbox constraints (live PG)', () => {
       `INSERT INTO "OutboxDelivery"(id,"eventId","projectId",consumer,"consumerKind","deliveryAction","streamPosition","updatedAt")
        VALUES (gen_random_uuid()::text, '${o.eventId}', '${o.projectId}', '${o.consumer}', '${o.kind}', '${o.action ?? 'dispatch'}', ${o.pos}, now())`,
     );
+  // 4d-ii-a / A6d — the probe row carries a rule (`all`), as every row born through
+  // `syncConsumerCatalog` does: `OutboxDelivery_t4d_bound` judges every delivery against its
+  // consumer's rule and refuses a row for a consumer that carries none
   const probeConsumer = () =>
-    t.prisma.outboxConsumerCatalog.create({ data: { consumer: 'probe.unordered', consumerKind: 'unordered', consumerEffect: 'external', catalogVersion: 1 } });
+    t.prisma.outboxConsumerCatalog.create({ data: { consumer: 'probe.unordered', consumerKind: 'unordered', consumerEffect: 'external', catalogVersion: 1, dispatchRule: 'all' } });
 
   it('rejects a delivery whose (projectId, streamPosition) disagrees with its event (composite FK)', async () => {
     const p = await freshProject();

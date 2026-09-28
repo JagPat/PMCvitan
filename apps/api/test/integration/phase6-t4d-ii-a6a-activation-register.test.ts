@@ -28,7 +28,7 @@ describe('4d-ii-a / A6a — the activation register (live PG)', () => {
 
   const registered: OutboxConsumer = {
     name: REGISTERED, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule: { kind: 'types', eventTypes: [] },
-    deliveryFor: () => ({ action: 'noop' }), handle: async () => {},
+    handle: async () => {},
   };
 
   /** Run `body` on a transaction that is always rolled back; rethrows what the body threw. */

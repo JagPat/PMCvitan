@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
+import type { OutboxConsumer } from '../platform/outbox/registry';
 import { eventTypesUnder } from '../platform/outbox/registry';
 import { serializeDecision, type DecisionRow } from './decision-serialize';
 
@@ -24,11 +24,6 @@ import { serializeDecision, type DecisionRow } from './decision-serialize';
  */
 
 export const DECISIONS_PROJECTION = 'decisions.inbox';
-
-/** Dispatch the six `decision.*` events; every other event is a no-op that still advances the cursor. */
-function deliveryFor(meta: EmittedEventMeta): DeliveryPlan {
-  return meta.eventType.startsWith('decision.') ? { action: 'dispatch' } : { action: 'noop' };
-}
 
 /** The include the serializer needs: ordered options + the single OPEN change request. */
 const DECISION_INCLUDE = {
@@ -149,10 +144,9 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
     // the drain durable — a rolled-back or newly-scheduled old worker is fenced out on EVERY
     // start, not merely at the one moment an operator looked.
     catalogVersion: 2,
-    // 4d-ii-a / A6c — the persisted rule the catalog row carries; the unit tripwire holds it equal
-    // to `deliveryFor` over the closed event-type list until A6d derives the rows from it.
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries; from A6d it is what derives this
+    // consumer's delivery rows (`deliveryRowsFor`), so a rule change is a contract change.
     dispatchRule: { kind: 'types', eventTypes: eventTypesUnder('decision.') },
-    deliveryFor,
     projection: {
       // Seed the replacement generation from the CONSISTENT canonical snapshot. Read the max committed
       // position FIRST, then the decisions (which therefore reflect AT LEAST that far), and return the

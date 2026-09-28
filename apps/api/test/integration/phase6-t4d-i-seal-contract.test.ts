@@ -976,6 +976,52 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'OutboxConsumerCatalog.OutboxConsumerCatalog_t4d_registration_barrier': B('I') },
     must: ['pg_advisory_xact_lock', "hashtext('OutboxConsumerCatalog:registration')"],
   },
+  // 4d-ii-a / A6d (20271231) — the delivery rows and their seals
+  platform_t4d_event_deliveries: {
+    rule: 'at commit, every catalog row that is ACTIVE and carries a rule has exactly one same-transaction '
+      + 'delivery row for the new event, with the action the rule derives (`platform_t4d_delivery_action`); '
+      + 'the seal takes the registration key SHARED itself (the SHARE half of the barrier, for every '
+      + 'writer) and locks EVERY catalog row FOR SHARE before the active filter; a rule-less row is owed '
+      + 'nothing, a deactivated consumer\'s row is admitted, a born-cancelled tombstone is admitted',
+    plan: '4d plan §A.3 obligation 7 ("the event\'s DELIVERY OBLIGATIONS are demanded in the authorizing '
+      + 'transaction"; "BOTH halves are taken in the DATABASE"); #558 round 1, finding 7; #567 round 1, '
+      + 'finding 3; #572 round 26, finding 1',
+    on: { 'DomainEvent.DomainEvent_t4d_deliveries': C('I') },
+    must: ['pg_advisory_xact_lock_shared', "hashtext('OutboxConsumerCatalog:registration')", 'FOR SHARE',
+      'platform_t4d_delivery_action', '"dispatchRule" IS NULL', "r.\"dispatchRule\" = 'push' AND v_action = 'dispatch'", '"cancelledAt" IS NOT NULL'],
+  },
+  platform_t4d_delivery_bound: {
+    rule: 'every delivery row carries the action its consumer\'s persisted rule derives for its event, '
+      + 'whatever the consumer\'s activation state; a row for a rule-less consumer is refused; a `push`-rule '
+      + 'dispatch carries exactly the projection of the intent (`platform_t4d_push_payload`: body, roles, '
+      + 'targetUserId, and targetUserIds sorted-distinct where carried) and `subject = entityId`; a no-op '
+      + 'push row carries no payload; any other rule carries neither; the one admitted deviation is the '
+      + '4a tombstone — `noop`, marked, succeeded, no payload, its own subject — for the PUSH rule alone, '
+      + 'for an event whose rule derives `dispatch` (no other rule has a cancellation)',
+    plan: '4d plan §A.3 obligation 7; #563 round 1, finding 3; #560 round 1, findings 4 and 6; #662 round 1, finding 1',
+    on: { 'OutboxDelivery.OutboxDelivery_t4d_bound': B('I') },
+    must: ['platform_t4d_delivery_action', 'platform_t4d_push_payload', "'targetUserIds'", '"subject" IS DISTINCT FROM',
+      'NO persisted dispatch rule', "v_rule = 'push' AND v_action = 'dispatch' AND NEW.\"deliveryAction\" = 'noop'", '"cancelledAt" IS NOT NULL'],
+  },
+  platform_t4d_delivery_retained: {
+    rule: 'a delivery row is a durable obligation — cancelled and RECORDED, never deleted; every DELETE is '
+      + 'refused (a disposable reset truncates through the sanctioned seam, which a row trigger does not see)',
+    plan: '4d plan §A.3 obligation 7; #662 round 1, finding 2',
+    on: { 'OutboxDelivery.OutboxDelivery_t4d_retained': B('D') },
+    must: ['never deleted', 'RAISE EXCEPTION'],
+  },
+  platform_t4d_delivery_frozen: {
+    rule: 'id, eventId, projectId, streamPosition, consumer, consumerKind and payload never move; subject '
+      + 'moves only NULL -> the row\'s own event\'s entityId; cancelledAt only NULL -> a timestamp, never '
+      + 'cleared or rewritten; deliveryAction only dispatch -> noop and only as the cancellation MARK (set '
+      + 'in the same statement), the COMPLETION of a row already marked, or the LEGACY neutralization of '
+      + 'an event with no intent or an intent no unretired catalog row backs; status, attempts, '
+      + 'nextAttemptAt, leaseOwner, leaseExpiresAt, lastError stay mutable',
+    plan: '4d plan §A.3 obligation 7; #561 round 1, finding 4; #562 round 2, finding 5; Phase 6 task 4a round 4',
+    on: { 'OutboxDelivery.OutboxDelivery_t4d_frozen': B('U') },
+    must: ['"payload" IS DISTINCT FROM OLD."payload"', 'NEW."subject" = v_entity', 'OLD."cancelledAt" IS NOT NULL OR NEW."cancelledAt" IS NULL',
+      "OLD.\"deliveryAction\" = 'dispatch' AND NEW.\"deliveryAction\" = 'noop'", '"retiredAt" IS NULL', 'ExternalEffectCatalog'],
+  },
   platform_t4d_project_org_frozen: {
     rule: 'a project\'s tenancy never moves once registered',
     plan: '§A.2 the ProjectOrg register',

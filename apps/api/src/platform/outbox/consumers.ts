@@ -47,12 +47,10 @@ export function makeSocketConsumer(realtime: RealtimeGateway): OutboxConsumer {
     kind: 'unordered',
     effect: 'external',
     catalogVersion: 1,
-    // 4d-ii-a / A6c — the persisted rule the catalog row carries: dispatch iff the intent invalidates.
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries: dispatch iff the intent invalidates
+    // (PR C narrows this per command — a private draft never invalidates; a null-intent legacy event
+    // is never invalidated). From A6d the persisted rule is what derives the row (`deliveryRowsFor`).
     dispatchRule: { kind: 'invalidate' },
-    // Dispatch only when the PERSISTED intent asks to invalidate; otherwise a recorded no-op. PR C
-    // narrows this per command (a private draft never invalidates). A null-intent legacy event is
-    // never invalidated here.
-    deliveryFor: (meta) => (meta.dispatchIntent?.invalidate ? { action: 'dispatch' } : { action: 'noop' }),
     handle: async (ctx) => {
       realtime.emitChanged(ctx.meta.projectId);
     },
@@ -76,19 +74,13 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
     // The SOCKET consumer is deliberately NOT bumped: it carries no consultation contract — it
     // tells a room to refetch and has nothing new to understand.
     catalogVersion: 2,
-    // 4d-ii-a / A6c — the persisted rule the catalog row carries: dispatch iff the intent carries a push.
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries: dispatch iff the intent carries a
+    // push WITH a body (a null-intent legacy event has no push, so it is always a no-op — the outbox
+    // never invents a historical push from an old payload). From A6d the persisted rule derives the
+    // row and the platform's `pushPayloadFor` projects the intent into its payload — `{body, roles,
+    // targetUserId}` (+ `targetUserIds`) — with `subject` = the emitting module's entityId (Phase 6
+    // task 4a): the domain that later learns this announcement went stale cancels by this key.
     dispatchRule: { kind: 'push' },
-    // Dispatch only when the PERSISTED intent carries a push body; otherwise a recorded no-op. A
-    // null-intent legacy event has no push, so it is always a no-op — the outbox never invents a
-    // historical push from an old payload.
-    deliveryFor: (meta) => {
-      const push = meta.dispatchIntent?.push;
-      // `subject` = the emitting module's entityId (Phase 6 task 4a): the domain that later
-      // learns this announcement went stale cancels by this key — never by reading the queue.
-      return push?.body
-        ? { action: 'dispatch', payload: { body: push.body, roles: push.roles ?? null, targetUserId: push.targetUserId ?? null }, subject: meta.entityId }
-        : { action: 'noop' };
-    },
     handle: async (ctx) => {
       const p = (ctx.delivery.payload ?? null) as { body?: string; roles?: string[] | null; targetUserId?: string | null } | null;
       if (!p?.body) return;

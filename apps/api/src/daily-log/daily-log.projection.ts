@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
+import type { OutboxConsumer } from '../platform/outbox/registry';
 import { eventTypesUnder } from '../platform/outbox/registry';
 import { computeDailyLogSlice } from './daily-log-serialize';
 
@@ -24,14 +24,6 @@ import { computeDailyLogSlice } from './daily-log-serialize';
 
 export const DAILY_LOG_PROJECTION = 'daily-log.inbox';
 
-/** Dispatch the daily-log lifecycle events (`dailylog.*` + `material.*`); every other event is a
- *  no-op that still advances the ordered cursor. */
-function deliveryFor(meta: EmittedEventMeta): DeliveryPlan {
-  return meta.eventType.startsWith('dailylog.') || meta.eventType.startsWith('material.')
-    ? { action: 'dispatch' }
-    : { action: 'noop' };
-}
-
 /** Refresh the project's single generation-scoped slice row from CANONICAL daily-log state. */
 async function refreshRow(tx: Prisma.TransactionClient, generationId: string, projectId: string): Promise<void> {
   const slice = await computeDailyLogSlice(tx, projectId);
@@ -50,10 +42,9 @@ export function makeDailyLogProjectionConsumer(): OutboxConsumer {
     kind: 'ordered',
     effect: 'db',
     catalogVersion: 1,
-    // 4d-ii-a / A6c — the persisted rule the catalog row carries; the unit tripwire holds it equal
-    // to `deliveryFor` over the closed event-type list until A6d derives the rows from it.
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries; from A6d it is what derives this
+    // consumer's delivery rows (`deliveryRowsFor`), so a rule change is a contract change.
     dispatchRule: { kind: 'types', eventTypes: eventTypesUnder('dailylog.', 'material.') },
-    deliveryFor,
     projection: {
       // Seed the replacement generation from the CONSISTENT canonical snapshot. Read the max committed
       // position FIRST, then the slice (which therefore reflects AT LEAST that far), and return the

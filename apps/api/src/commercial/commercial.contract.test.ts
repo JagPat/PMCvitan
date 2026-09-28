@@ -8,7 +8,7 @@ import { commercialManifest } from './commercial.manifest';
 import { COMMERCIAL_MONEY_EVENT, FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
 import { CommercialCommandRunner } from './commercial-command.runner';
 import { labourLinesOfLiveVersion } from './commercial-claim.query';
-import type { EmittedEventMeta } from '../platform/outbox/registry';
+import { dispatchActionFor, type EmittedEventMeta } from '../platform/outbox/registry';
 import type { VendorBillDto, VendorBillLineDto, VendorBillVersionDto } from '@vitan/shared';
 import { EXTERNAL_EFFECTS } from '../platform/external-effects';
 import { AUTHORITY_GUARDS } from './commercial.authority-guards';
@@ -1282,9 +1282,9 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     for (const eventType of FORECAST_EVENT_TYPES) {
       expect(DOMAIN_EVENT_TYPES as readonly string[], `${eventType} is not a declared domain event, so it can never dispatch`).toContain(eventType);
       expect(
-        consumer.deliveryFor({ eventType } as never),
+        dispatchActionFor(consumer.dispatchRule, { eventType, dispatchIntent: null }),
         `${eventType} resolves to a NO-OP delivery — which still advances the ordered cursor, so the generation stays SERVABLE while omitting whatever this event moved`,
-      ).toEqual({ action: 'dispatch' });
+      ).toBe('dispatch');
     }
     // the family that was wrong, by name, so a well-typed set that quietly dropped it still fails
     for (const eventType of ['labour.po.issued', 'labour.po.amended', 'labour.po.cancelled', 'labour.po.closed_short']) {
@@ -1292,9 +1292,9 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     }
     // …and the detector is not vacuous: an event the set does NOT carry must be a no-op
     expect(
-      consumer.deliveryFor({ eventType: 'decision.created' } as never),
+      dispatchActionFor(consumer.dispatchRule, { eventType: 'decision.created', dispatchIntent: null }),
       'an unrelated event dispatches — the forecast would recompute on every event in the system',
-    ).toEqual({ action: 'noop' });
+    ).toBe('noop');
   });
 
   /**

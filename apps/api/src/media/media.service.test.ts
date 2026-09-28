@@ -57,6 +57,9 @@ function make(
     // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
     // here means no standing is proven, so the event is written with a NULL pair.
     $queryRaw: vi.fn(async () => []),
+    // 4d-ii-a / A6d — materializeDeliveries takes the registration key SHARED and reads the
+    // catalog (`$queryRaw` above answers with no rows, so no delivery is written in-memory)
+    $executeRaw: vi.fn(async () => 0),
     $transaction: vi.fn(async (arg: unknown) =>
       typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
   };

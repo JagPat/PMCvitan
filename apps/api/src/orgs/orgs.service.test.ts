@@ -98,11 +98,15 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { eventId: 'evt-test', ...data }; created.events.push(row); return row; }) },
     // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
-    // here means no standing is proven, so the event is written with a NULL pair.
-    $queryRaw: vi.fn(async () => []),
-    // materializeDeliveries reads the active catalog set inside the emit tx (PR B correction — active
-    // is authoritative); the test consumer registered below is active.
-    outboxConsumerCatalog: { findMany: vi.fn(async () => [{ consumer: PROJECT_INIT_TEST_CONSUMER }]) },
+    // here means no standing is proven, so the event is written with a NULL pair. 4d-ii-a / A6d —
+    // materializeDeliveries reads the PERSISTED catalog (`FOR SHARE`) inside the emit tx and derives
+    // the rows from its rules; the stand-in answers that read with one active `all` row.
+    $queryRaw: vi.fn(async (q: { strings?: readonly string[] } | readonly string[]) => {
+      const text = Array.isArray(q) ? q.join('?') : ((q as { strings?: readonly string[] }).strings?.join('?') ?? '');
+      return text.includes('"OutboxConsumerCatalog"')
+        ? [{ consumer: PROJECT_INIT_TEST_CONSUMER, consumerKind: 'unordered', active: true, dispatchRule: 'all', subscribedEventTypes: [] }]
+        : [];
+    }),
     outboxDelivery: {
       createMany: vi.fn(async ({ data }: { data: Record<string, unknown>[] }) => {
         created.deliveries.push(...data);
@@ -186,7 +190,7 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     name: PROJECT_INIT_TEST_CONSUMER,
     kind: 'unordered',
     effect: 'external',
-    deliveryFor: () => ({}),
+    dispatchRule: { kind: 'all' },
     handle: async () => undefined,
   });
   return {
@@ -294,14 +298,19 @@ describe('OrgsService.createProject', () => {
       tx.$executeRaw,
     ];
     for (const readOrLock of requiredReadsAndLocks) expect(readOrLock).toHaveBeenCalled();
-    // the two display-id locks, the org key (4d-ii-a / A3c) and the new project's key for the creator
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(4);
+    // the two display-id locks, the org key (4d-ii-a / A3c), the new project's key for the creator,
+    // and (4d-ii-a / A6d) the registration key the event's delivery materialization takes SHARED
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(5);
     expect(tx.activity.findMany).toHaveBeenCalledTimes(2);
     expect(tx.inspection.findMany).toHaveBeenCalledTimes(2);
     const projectWriteOrder = tx.project.create.mock.invocationCallOrder[0]!;
     for (const readOrLock of requiredReadsAndLocks) {
-      expect(Math.max(...readOrLock.mock.invocationCallOrder)).toBeLessThan(projectWriteOrder);
+      // the four locks precede the write; the fifth `$executeRaw` is the registration key the
+      // project-created EVENT's delivery materialization takes (4d-ii-a / A6d), after it by design
+      const orders = readOrLock === tx.$executeRaw ? readOrLock.mock.invocationCallOrder.slice(0, 4) : readOrLock.mock.invocationCallOrder;
+      expect(Math.max(...orders)).toBeLessThan(projectWriteOrder);
     }
+    expect(tx.$executeRaw.mock.invocationCallOrder[4]).toBeGreaterThan(projectWriteOrder);
     for (const participant of [participants.nodeInit, participants.activityInit, participants.inspectionInit]) {
       for (const method of Object.values(participant)) {
         expect(method).toHaveBeenCalled();

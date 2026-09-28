@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
-import { plantLegacyApprovalRevision } from './fixtures';
+import { plantLegacyApprovalRevision, rawDeliveryRowsSql } from './fixtures';
 import { effectCoverageVersion } from '../../src/platform/external-effects';
 
 /**
@@ -103,7 +103,7 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
   // …and ATTRIBUTED to the acting user (`actorId`), as `emitEvent` attributes every delivered
   // writer's event: from #590 round 4 the claimant binds the event's actor to `requestedById` /
   // `respondedById`, so the event is a `human` one in that user's name
-  const eventSql = (o: { eventId: string; type: string; decisionId: string; project: string; org: string; payload: string; target: string; roles: string; actor: string }): [string, string] => [
+  const eventSql = (o: { eventId: string; type: string; decisionId: string; project: string; org: string; payload: string; target: string; roles: string; actor: string }): [string, string, string] => [
     `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = '${o.project}'`,
     `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","actorId","entityType","entityId","payload","dispatchIntent")
        SELECT '${o.eventId}','${o.type}',1,'${o.org}','${o.project}',s."nextPosition" - 1,'human','${o.actor}','Decision','${o.decisionId}',
@@ -112,6 +112,8 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
                                  'push', jsonb_build_object('body','t4c-i','roles', jsonb_build_array('${o.roles}'),'targetUserId','${o.target}'))
          FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
         WHERE s."projectId" = '${o.project}' AND c."effectKey" = '${o.type}' AND c."coverageVersion" = '${effectCoverageVersion()}'`,
+    // 4d-ii-a / A6d — a direct writer owes the event's delivery rows in the same transaction
+    rawDeliveryRowsSql(o.eventId),
   ];
   const requestEventSql = (rid: string, o: ReqOverrides) => {
     const project = o.projectId ?? projectId;

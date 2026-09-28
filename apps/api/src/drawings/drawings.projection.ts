@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
+import type { OutboxConsumer } from '../platform/outbox/registry';
 import { eventTypesUnder } from '../platform/outbox/registry';
 import { computeDrawingsBase } from './drawings-serialize';
 
@@ -25,12 +25,6 @@ import { computeDrawingsBase } from './drawings-serialize';
 
 export const DRAWINGS_PROJECTION = 'drawings.inbox';
 
-/** Dispatch the controlled-drawing lifecycle events (`drawing.*`); every other event is a no-op that
- *  still advances the ordered cursor. */
-function deliveryFor(meta: EmittedEventMeta): DeliveryPlan {
-  return meta.eventType.startsWith('drawing.') ? { action: 'dispatch' } : { action: 'noop' };
-}
-
 /** Refresh the project's single generation-scoped register base from CANONICAL drawing state. */
 async function refreshRow(tx: Prisma.TransactionClient, generationId: string, projectId: string): Promise<void> {
   const base = await computeDrawingsBase(tx, projectId);
@@ -49,10 +43,9 @@ export function makeDrawingsProjectionConsumer(): OutboxConsumer {
     kind: 'ordered',
     effect: 'db',
     catalogVersion: 1,
-    // 4d-ii-a / A6c — the persisted rule the catalog row carries; the unit tripwire holds it equal
-    // to `deliveryFor` over the closed event-type list until A6d derives the rows from it.
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries; from A6d it is what derives this
+    // consumer's delivery rows (`deliveryRowsFor`), so a rule change is a contract change.
     dispatchRule: { kind: 'types', eventTypes: eventTypesUnder('drawing.') },
-    deliveryFor,
     projection: {
       rebuildSeed: async (tx, target) => {
         const max = await tx.domainEvent.aggregate({ where: { projectId: target.projectId }, _max: { streamPosition: true } });
