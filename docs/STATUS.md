@@ -14,29 +14,30 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a5b-service-doors
-reviewed_merge: 2afc0be
-open_pr: 654
+work_item: phase-6-task-4d-ii-a-a5c-standing-reads
+reviewed_merge: 8797a91
+open_pr: 655
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
 ```
 
-### Now — Phase 6 task 4d: A5b, the doors on the service path
+### Now — Phase 6 task 4d: A5c, the kernel standing reads
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A5b, `open_pr: 654` (`work_item: phase-6-task-4d-ii-a-a5b-service-doors`, branch
-  `claude/4d-ii-a5b-service-doors`, from `main` at `2afc0be`).** The second A5 sub-unit: §A.1's doors on
-  the service path.
-  - The zod role enums and `DECIDER_KINDS` admit `architect`, and every command naming it refuses 409
-    with `phase-6-4d-previous-release-drained` before any write: the member add and role update, a
-    decision created or re-pointed at the architect designation, and the dev session (whose synthetic
-    fallback never mints the role). One catalog read of 4d-i's doors judges each, and the shell's
-    `rollout.phase6_4d` is baked from it.
-  - The shared `DeciderKind` gains the value, with `viewerIsDecider`'s and `deciderNoun`'s explicit
-    arms. No migration (`migration-scope: n/a`).
+- **Now, A5c, `open_pr: 655` (`work_item: phase-6-task-4d-ii-a-a5c-standing-reads`, branch
+  `claude/4d-ii-a5c-standing-reads`, from `main` at `8797a91`).** The third A5 sub-unit: §A.2's kernel
+  standing reads.
+  - `RoleStandingQuery` asks 4d-i's registers through the kernel SQL the seals use; both decision read
+    paths overlay `countersignRequired` when an active architect holds the role (absent otherwise);
+    the orgs participant's role audience answers `architect` from the register, `pmc`/`client` from it
+    once the rollout reads `open`; the consultation requester set admits the architect through it.
+  - Nothing is reachable while the doors stand. No migration (`migration-scope: n/a`).
+- **A5b merged as #654** (`8797a91`): the zod enums admit `architect` and every command naming it refuses
+  409 with the drain directive before any write; one catalog read of 4d-i's doors judges each and feeds
+  the shell's `rollout.phase6_4d`.
 - **A5a merged as #653** (`2afc0be`): `architect` joins the role vocabulary and every mirror of it,
   delivered dark; `ROLE_POLICY` grants the eight routed actions, pinned by equality; a role tripwire
   registers every role vocabulary in shared, API and web.

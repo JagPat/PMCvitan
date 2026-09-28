@@ -215,6 +215,10 @@ export interface Decision {
   /** the decision's CURRENT approval cycle — the value a consultation's frozen `openCycle` is
    *  compared against, so a reopened decision does not expose a closed thread to its consultee */
   approvalCycle?: number;
+  /** Phase 6 task 4d (§A.2) — the project's countersign chain is active (an active architect holds the
+   *  role), so an approval lands `awaiting_countersign`. A read-time kernel overlay, present only when
+   *  true; the client's countersign surfaces are 4d-ii-b's. */
+  countersignRequired?: true;
 }
 
 /** One consultation and, once given, its single answer (Phase 6 unit 4c-ii). Both facts are

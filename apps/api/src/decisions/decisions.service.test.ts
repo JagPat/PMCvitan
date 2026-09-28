@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { DecisionsService } from './decisions.service';
+import { DecisionsService, consultationRequesterStanding } from './decisions.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -467,5 +467,30 @@ describe('DecisionsService — withdraw refuses an approval awaiting countersign
         .rejects.toThrow(/carries an approval/);
       expect((prisma as unknown as { $transaction: { mock: { calls: unknown[] } } }).$transaction.mock.calls, status).toHaveLength(0);
     }
+  });
+});
+
+// 4d-ii-a / A5c — the consultation REQUESTER set: the delivered `pmc` standing, or the architect role
+// through the kernel read (`platform_user_holds_role`), never an orgs table.
+describe('consultationRequesterStanding — pmc by orgs truth, architect by the kernel register (4d-ii-a / A5c)', () => {
+  const tx = (holds: boolean) => {
+    const calls: unknown[][] = [];
+    return { calls, client: { $queryRawUnsafe: vi.fn(async (...args: unknown[]) => { calls.push(args); return [{ holds }]; }) } as unknown as Prisma.TransactionClient };
+  };
+  it('a pmc asks on the delivered check, without consulting the register', async () => {
+    const { calls, client } = tx(false);
+    const orgs = { hasProjectRoleStanding: vi.fn(async () => true) };
+    expect(await consultationRequesterStanding(orgs, client, 'proj-1', 'u-pmc')).toBe(true);
+    expect(orgs.hasProjectRoleStanding).toHaveBeenCalledWith(client, 'proj-1', 'u-pmc', ['pmc'], { forUpdate: true });
+    expect(calls).toHaveLength(0);
+  });
+  it('an architect asks through platform_user_holds_role', async () => {
+    const { calls, client } = tx(true);
+    expect(await consultationRequesterStanding({ hasProjectRoleStanding: vi.fn(async () => false) }, client, 'proj-1', 'u-arch')).toBe(true);
+    expect(calls).toEqual([[expect.stringContaining('platform_user_holds_role'), 'proj-1', 'u-arch', 'architect']]);
+  });
+  it('anyone else is refused', async () => {
+    const { client } = tx(false);
+    expect(await consultationRequesterStanding({ hasProjectRoleStanding: vi.fn(async () => false) }, client, 'proj-1', 'u-eng')).toBe(false);
   });
 });

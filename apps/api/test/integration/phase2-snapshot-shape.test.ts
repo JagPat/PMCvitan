@@ -122,8 +122,11 @@ const EXPECT: Record<string, Spec> = {
     // `approvalCycle` in particular is non-zero on any approved decision, so emitting it
     // unconditionally would add a key to projects the feature does not exist for. Every consumer
     // reads the absent case as the empty one (`viewerIsConsultee`: no standing, cycle `0`).
-    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'deciderKind', 'deciderMembershipId', 'deciderUserId', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations', 'approvalCycle'].sort(),
-    optional: ['nodeId', 'ageDays', 'photoSwatch', 'deciderMembershipId', 'deciderUserId', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations', 'approvalCycle'].sort(), nullable: [],
+    // Phase 6 task 4d (§A.2) — `countersignRequired`, the read-time kernel overlay, OPTIONAL for the
+    // same reason: present only when an active architect holds the role, so a project with no chain
+    // is served exactly the previous release's DTO.
+    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'deciderKind', 'deciderMembershipId', 'deciderUserId', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations', 'approvalCycle', 'countersignRequired'].sort(),
+    optional: ['nodeId', 'ageDays', 'photoSwatch', 'deciderMembershipId', 'deciderUserId', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations', 'approvalCycle', 'countersignRequired'].sort(), nullable: [],
   },
   OptionDto: { keys: ['label', 'key', 'material', 'delta', 'swatch', 'photoUrl', 'recommended'].sort(), optional: ['photoUrl'], nullable: [] },
   ActivityDto: {
