@@ -84,6 +84,7 @@ const COVERAGE: Record<string, Class> = {
   // that hand-disables must be visible, whichever database it points at.
   'test/integration/phase6-t4d-i-seal-stripped.test.ts': 'scratch-database probe: disables a no-truncate seal by name, in one transaction, to prove the sanctioned bypass still reaches the register',
   'test/integration/phase6-t4d-ii-a2-request-change.test.ts': 'scoped request teardown; audit deletes through wipeDecisionEvents; swept by 4d-iii with the trailing ChangeRequest seals',
+  'test/integration/phase6-t4d-ii-a5e-countersign-boundary.test.ts': 'scoped request teardown inside wipeDecisionsVia; audit deletes through wipeDecisionEvents; swept by 4d-iii with the trailing ChangeRequest seals',
   'test/integration/phase6-t4c-ii-consultation.test.ts': 'audit deletes through wipeDecisionEvents; notice deletes scoped teardown',
   'test/integration/platform-command-receipt.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
   'test/integration/start-readiness-race.test.ts': 'scoped notice teardown; no DELETE seal on Notification',

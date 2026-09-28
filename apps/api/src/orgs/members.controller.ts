@@ -4,6 +4,7 @@ import { ZodPipe } from '../common/zod.pipe';
 import { addMemberSchema, updateMemberSchema, type AddMemberInput, type UpdateMemberInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, RolesFor, RolesGuard } from '../common/roles';
+import { StripsArchitectRows } from '../common/countersign-compat.interceptor';
 
 const MEMBERS_AUTHZ = 'MembersService.canManage() enforces project-PMC / org owner-admin authority';
 
@@ -20,6 +21,7 @@ export class MembersController {
    *  anonymously-minted `worker` device token, which must never read team PII (P1-2). */
   @Get()
   @RolesFor('members.read')
+  @StripsArchitectRows()
   list(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
     return this.members.list(projectId, user);
   }

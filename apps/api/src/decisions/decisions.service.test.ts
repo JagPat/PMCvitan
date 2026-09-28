@@ -206,7 +206,7 @@ interface CrRow {
   requestedById?: string | null; resolvedById?: string | null; resolvedAt?: Date | null; resolution?: string | null;
 }
 
-function makeLifecycle(status: string) {
+function makeLifecycle(status: string, opts: { architects?: number } = {}) {
   const row: LifecycleRow = { id: 'DL-1', projectId: 'proj-1', title: 'Kitchen counter top', status, deciderKind: 'client', deciderMembershipId: null };
   const options = [{ label: 'Option A', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', order: 0 }];
   const changeRequests: CrRow[] = [];
@@ -279,6 +279,9 @@ function makeLifecycle(status: string) {
       if (text.includes('"UserIdentity"')) return [{ displayName: 'Registered Name' }];
       return [];
     }),
+    // 4d-ii-a / A5e — the kernel register the `countersign-v1` in-command check reads: no architect
+    // unless the arm seats one, so the chain is inactive and every lifecycle below runs as before
+    $queryRawUnsafe: vi.fn(async (sql: string) => (sql.includes('platform_role_standing') ? [{ n: opts.architects ?? 0 }] : [])),
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
     // interactive form emulates the REAL transaction's rollback: on a thrown error the
@@ -492,5 +495,43 @@ describe('consultationRequesterStanding — pmc by orgs truth, architect by the 
   it('anyone else is refused', async () => {
     const { client } = tx(false);
     expect(await consultationRequesterStanding({ hasProjectRoleStanding: vi.fn(async () => false) }, client, 'proj-1', 'u-eng')).toBe(false);
+  });
+});
+
+/**
+ * Phase 6 task 4d-ii-a / A5e (§A.2) — the IN-COMMAND half of the `countersign-v1` boundary on the
+ * approve. Under an ACTIVE chain (the kernel register counts an architect) an approval lands
+ * `awaiting_countersign`, which a client below `countersign-v1` would report as "Approved & locked": it
+ * is refused with a reload 409 inside the command, before any write. The live arm needs an architect to
+ * exist, which 4d-i's doors refuse until 4d-iii (P29c's stale-client arms travel there).
+ */
+describe('DecisionsService — the countersign-v1 client contract on approve (4d-ii-a / A5e)', () => {
+  const as = (decisionsContract?: AuthUser['decisionsContract']) =>
+    ({ sub: 'u-client', role: 'client', decisionsContract } as AuthUser);
+
+  it('an ACTIVE chain refuses a client below countersign-v1, naming the contract, and writes nothing', async () => {
+    for (const contract of [undefined, 'none', 'recorded-v1'] as const) {
+      const { svc, row, events, notices } = makeLifecycle('pending', { architects: 1 });
+      const refused = svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, as(contract));
+      await expect(refused).rejects.toBeInstanceOf(ConflictException);
+      await expect(refused).rejects.toThrow(/countersign-v1/);
+      expect(row.status, String(contract)).toBe('pending');
+      expect(events).toHaveLength(0);
+      expect(notices).toHaveLength(0);
+    }
+  });
+
+  it('a countersign-v1 client is not refused under an active chain', async () => {
+    const { svc, row } = makeLifecycle('pending', { architects: 1 });
+    await svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, as('countersign-v1'));
+    expect(row.status).not.toBe('pending');
+  });
+
+  it('with NO chain every client approves exactly as before', async () => {
+    for (const contract of [undefined, 'none', 'recorded-v1', 'countersign-v1'] as const) {
+      const { svc, row } = makeLifecycle('pending');
+      await svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, as(contract));
+      expect(row.status, String(contract)).toBe('approved');
+    }
   });
 });

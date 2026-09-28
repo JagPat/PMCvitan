@@ -20,6 +20,7 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { consultationOpen } from './consultation-open';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
+import { assertCountersignClient } from '../platform/countersign-contract';
 import { RoleStandingQuery } from '../platform/role-standing.query';
 
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
@@ -197,6 +198,9 @@ export class DecisionsService {
         if (input.deciderKind === 'architect') {
           if (!(input.publish || record)) await lockProjectReadiness(tx, projectId);
           await assertPhase6_4dOpen(tx, 'A decision designated to the architect role');
+          // 4d-ii-a / A5e — …and once open, a client below `countersign-v1` is refused under an
+          // ACTIVE chain: it cannot represent the designation it is writing
+          await assertCountersignClient(tx, projectId, user.decisionsContract, 'A decision designated to the architect role');
         }
         // 4b (§A.1): a NAMED decider must be an ACTIVE membership of THIS project, answered and
         // LOCKED by the owner through the declared participant edge — the FK alone proves too
@@ -463,6 +467,11 @@ export class DecisionsService {
       run: async (tx, ctx) => {
         // a lock-state transition moves the decision gate (gate finding 1)
         await lockProjectReadiness(tx, projectId);
+        // Phase 6 task 4d-ii-a / A5e (§A.2) — under an ACTIVE chain this approval lands
+        // `awaiting_countersign`, which a client below `countersign-v1` would report as "Approved &
+        // locked": refused 409 with a reload, judged here under the readiness key (never at the
+        // transport) and before any write. With no chain the approve is untouched.
+        await assertCountersignClient(tx, projectId, user.decisionsContract, 'Approving a decision');
         // round-11 Codex F1 — the ROLE that granted authority is re-validated LIVE inside the
         // transaction, under the membership-row lock: `user.role` was established by JwtGuard
         // BEFORE this transaction, and with two active holders a concurrent removal/re-role of
@@ -1073,7 +1082,10 @@ export class DecisionsService {
         const curKind = cur.deciderKind as 'client' | 'pmc' | 'member' | 'none' | 'architect';
         // Phase 6 task 4d (§A.1) — re-pointing a draft at the architect role is reserved until
         // 4d-iii: refused 409 with the drain directive, under the readiness key, before any write
-        if (input.deciderKind === 'architect') await assertPhase6_4dOpen(tx, 'A decision designated to the architect role');
+        if (input.deciderKind === 'architect') {
+          await assertPhase6_4dOpen(tx, 'A decision designated to the architect role');
+          await assertCountersignClient(tx, projectId, user.decisionsContract, 'A decision designated to the architect role');
+        }
         const nextKind = input.deciderKind ?? curKind;
         const nextStatus = nextKind === 'none' ? 'recorded' : cur.status === 'recorded' ? 'pending' : cur.status;
         if (input.deciderKind === 'member') {

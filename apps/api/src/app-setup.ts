@@ -1,6 +1,8 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { resolveCorsOrigins } from './config';
+import { Reflector } from '@nestjs/core';
 import { RecordedCompatInterceptor } from './common/recorded-compat.interceptor';
+import { CountersignCompatInterceptor } from './common/countersign-compat.interceptor';
 
 /**
  * The app configuration shared by the production bootstrap (src/main.ts) and the
@@ -23,4 +25,8 @@ export function configureApp(app: NestExpressApplication): void {
   // `recorded` status: a client that has not declared the decisions contract has recorded rows
   // stripped at the transport layer (see the interceptor's rationale).
   app.useGlobalInterceptors(new RecordedCompatInterceptor());
+  // Phase 6 task 4d-ii-a / A5e — the next boundary, `countersign-v1`: a client declaring less has the
+  // 4d shapes stripped and an architect session or token refused with a reload 409 (the interceptor's
+  // rationale). The commands re-judge the same contract under their lock.
+  app.useGlobalInterceptors(new CountersignCompatInterceptor(app.get(Reflector)));
 }
