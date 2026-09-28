@@ -21,9 +21,10 @@ import { deriveDecisionGate } from './transitions';
  *   `test/integration/phase6-t4d-ii-a4d-status-enum.test.ts` (#652's review, finding 4117568496);
  * - every registered map in shared and the API answers every value with its own key;
  * - every registered predicate answers every value with its own arm;
- * - a SCAN finds each flat status-keyed object literal in shared, API and web, and each must be
- *   registered — so a map added later has to be registered too;
- * - a second SCAN finds each web status SET that is not a flat map (a status list, a per-status
+ * - a SCAN finds each status-keyed object literal in shared, API and web, reading its top-level keys
+ *   whatever its entries hold (#652's review, finding 4118033111), and each must be registered — so a
+ *   map added later has to be registered too;
+ * - a second SCAN finds each web status SET that is not an object map (a status list, a per-status
  *   rollup), and each must be registered too (#652's review, finding 4117568488);
  * - a third SCAN finds every status PREDICATE in shared, API and web, one registration per
  *   occurrence, each with a verdict the predicate itself must bear out: it names the value, it
@@ -65,6 +66,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
 
   /** file (repo-relative) + the literal's name → whether it answers every status now. */
   const REGISTERED: Record<string, 'answered' | 'owed by 4d-ii-b'> = {
+    'packages/shared/src/tokens/colors.ts decisionChip': 'answered',
     'packages/shared/src/tokens/colors.ts decisionChipLabel': 'answered',
     'packages/shared/src/tokens/colors.ts decisionRail': 'answered',
     'apps/web/src/lib/locationTree.ts counts': 'answered',
@@ -72,25 +74,35 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     'apps/web/src/lib/locationTree.ts rank': 'owed by 4d-ii-b',
   };
 
-  it('every flat status-keyed literal in shared, API and web is registered, and each ANSWERED one answers every status', () => {
+  /** The TOP-LEVEL text of the object literal opening at `open` (a `{`), nested braces emptied, so an
+   *  outer map's keys are read whatever its entries hold (#652's review, finding 4118033111:
+   *  `decisionChip`'s entries are objects). `null` past `limit` characters. */
+  const topLevel = (src: string, open: number, limit = 6000): string | null => {
+    let depth = 0;
+    let out = '';
+    for (let i = open; i < Math.min(src.length, open + limit); i++) {
+      const c = src[i]!;
+      if (c === '{') { depth++; if (depth === 1) continue; }
+      if (c === '}') { depth--; if (depth === 0) return out; }
+      if (depth === 1) out += c;
+      else if (depth === 2 && c === '{') out += '{';
+    }
+    return null;
+  };
+
+  it('every status-keyed object literal in shared, API and web is registered, and each ANSWERED one answers every status', () => {
     const found: Array<{ id: string; keys: Set<string> }> = [];
-    const walk = (dir: string) => {
-      for (const entry of readdirSync(dir)) {
-        if (entry === 'node_modules' || entry === 'dist') continue;
-        const full = join(dir, entry);
-        if (statSync(full).isDirectory()) walk(full);
-        else if (/\.(ts|tsx)$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
-          const src = readFileSync(full, 'utf8');
-          for (const m of src.matchAll(/(\w+)\s*(?::\s*[^={};]*)?[=:]\s*\{([^{}]{0,600})\}/g)) {
-            const keys = new Set([...m[2]!.matchAll(/(?:^|[\s,{])'?(\w+)'?\s*:/g)].map((k) => k[1]!));
-            if (['pending', 'approved', 'withdrawn'].every((k) => keys.has(k))) {
-              found.push({ id: `${relative(REPO, full).split('\\').join('/')} ${m[1]}`, keys });
-            }
-          }
+    for (const { file, src } of sources(['packages/shared/src', 'apps/api/src', 'apps/web/src'])) {
+      // a declaration (`name[: type] = {`) or a property (`name: {`), whatever its entries' values
+      for (const m of src.matchAll(/(\w+)\s*(?::[^=\n]*?)?=\s*\{|(\w+)\s*:\s*\{/g)) {
+        const body = topLevel(src, m.index! + m[0].length - 1);
+        if (body === null) continue;
+        const keys = new Set([...body.matchAll(/(?:^|[\s,])'?(\w+)'?\s*:/g)].map((k) => k[1]!));
+        if (['pending', 'approved', 'withdrawn'].every((k) => keys.has(k))) {
+          found.push({ id: `${file} ${m[1] ?? m[2]}`, keys });
         }
       }
-    };
-    for (const root of ['packages/shared/src', 'apps/api/src', 'apps/web/src']) walk(join(REPO, root));
+    }
 
     expect(found.map((f) => f.id).filter((id) => !(id in REGISTERED)), 'register every status-keyed map here').toEqual([]);
     for (const f of found.filter((x) => REGISTERED[x.id] === 'answered')) {
@@ -159,7 +171,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
    * array literal made only of statuses (an open set, a Prisma `in`), or a Prisma filter in object
    * form, `status: '<status>'` (or `{ not | equals: … }`) inside a `where` or a `…WhereInput` object
    * (finding 4117838732: `countPending`'s filter), or a raw-SQL filter on a quoted `"status"` column
-   * (`= '<status>'`, `IN (…)`); a `data:` write and a seed row are not predicates. Its id is
+   * (`= '<status>'`, `IN (…)`), or a `switch` over a status with status cases; a `data:` write and a
+   * seed row are not predicates. Its id is
    * `<file> :: <the predicate, whitespace-normalised>`, suffixed `#n` for the n-th identical one in
    * the file, so a predicate that is added, or whose statuses change, must be registered again.
    *
@@ -300,6 +313,12 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
       for (const m of src.matchAll(chain)) add(m[0]);
       for (const m of src.matchAll(new RegExp(`\\bstatus:\\s*(?:\\{\\s*(?:not|equals):\\s*)?'(?:${ALT})'`, 'g'))) {
         if (inWhere(src, m.index!)) add(m[0]);
+      }
+      // a `switch` over a status: the discriminant and the status cases it names, as one predicate
+      for (const m of src.matchAll(/switch\s*\(([^)]*(?:status|Status)[^)]*)\)\s*\{/g)) {
+        const body = topLevel(src, m.index! + m[0].length - 1) ?? '';
+        const cases = [...body.matchAll(new RegExp(`case\\s+'(${ALT})'`, 'g'))].map((c) => c[1]!).sort();
+        if (cases.length) add(`switch (${m[1]!.trim()}) cases ${cases.join(', ')}`);
       }
       for (const m of src.matchAll(new RegExp(`"status"(?:::text)?\\s*(?:(?:=|<>|!=)\\s*'(?:${ALT})'|(?:NOT\\s+)?IN\\s*\\([^)]*'(?:${ALT})'[^)]*\\))`, 'g'))) add(m[0]);
       for (const m of src.matchAll(/\[([^[\]]*)\]/g)) {
