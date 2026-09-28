@@ -23,12 +23,15 @@ import { deriveDecisionGate } from './transitions';
  * - every registered predicate answers every value with its own arm;
  * - a SCAN finds each flat status-keyed object literal in shared, API and web, and each must be
  *   registered — so a map added later has to be registered too;
- * - a second SCAN finds each web status READER that is not a flat map (a status list, a per-status
- *   rollup, a file of status predicates), and each must be registered too (#652's review, finding
- *   4117568488).
+ * - a second SCAN finds each web status SET that is not a flat map (a status list, a per-status
+ *   rollup), and each must be registered too (#652's review, finding 4117568488);
+ * - a third SCAN finds every status PREDICATE in shared, API and web, one registration per
+ *   occurrence, each with a verdict the predicate itself must bear out: it names the value, it
+ *   rightly excludes it, it is owed by a named unit, or it reads another entity's status (#652's
+ *   review, findings 4117700813 and 4117700814).
  *
- * The web readers that do not yet answer `awaiting_countersign` are registered as OWED: their arms
- * are the client unit's (4d-ii-b), which moves each to ANSWERED as it lands.
+ * What does not yet answer `awaiting_countersign` is registered as OWED, by the unit that owns the
+ * arm (A5, A7, A8a, and 4d-ii-b for every web reader), which records its verdict as it lands.
  */
 const REPO = join(__dirname, '..', '..', '..', '..');
 
@@ -97,67 +100,177 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     expect(Object.keys(REGISTERED).filter((id) => !found.some((f) => f.id === id))).toEqual([]);
   });
 
-  /**
-   * Web status READERS that are not flat maps, which the scan above cannot see (#652's review,
-   * finding 4117568488). Three shapes, each found by the scan below and each registered here:
-   *
-   * - `<file> <name>`: a status LIST, an array literal whose entries are keyed `key: '<status>'`
-   *   (the Decision Log's filter chips). ANSWERED means it keys every status.
-   * - `<file> counts.*`: a per-status ROLLUP reading `counts.<status>` (the Decision Log's group
-   *   chips). ANSWERED means it reads every status.
-   * - `<file> status predicates`: a file comparing a decision's status with a status literal (the
-   *   selectors, the Schedule's and material picker's filters, the consultation thread's open set).
-   *   A predicate names the statuses it means, so no key set can be checked; ANSWERED means the file
-   *   names `awaiting_countersign`, which 4d-ii-b records after deciding each predicate.
-   *
-   * All are OWED by 4d-ii-b (the plan's §A.2 web arms): no row can carry the value until 4d-iii.
-   */
-  const WEB_READERS: Record<string, 'answered' | 'owed by 4d-ii-b'> = {
-    'apps/web/src/screens/DecisionLogScreen.tsx STATUS_FILTERS': 'owed by 4d-ii-b',
-    'apps/web/src/screens/DecisionLogScreen.tsx counts.*': 'owed by 4d-ii-b',
-    'apps/web/src/screens/DecisionLogScreen.tsx status predicates': 'owed by 4d-ii-b',
-    'apps/web/src/components/ConsultationThread.tsx status predicates': 'owed by 4d-ii-b',
-    'apps/web/src/layout/RouteBridge.tsx status predicates': 'owed by 4d-ii-b',
-    'apps/web/src/screens/ClientDecisionsScreen.tsx status predicates': 'owed by 4d-ii-b',
-    'apps/web/src/screens/PortfolioScreen.tsx status predicates': 'owed by 4d-ii-b',
-    'apps/web/src/screens/ScheduleScreen.tsx status predicates': 'owed by 4d-ii-b',
-    'apps/web/src/screens/TeamAccessScreen.tsx status predicates': 'owed by 4d-ii-b',
-    'apps/web/src/screens/modals/AddMaterialModal.tsx status predicates': 'owed by 4d-ii-b',
-    'apps/web/src/store/selectors.ts status predicates': 'owed by 4d-ii-b',
-    'apps/web/src/store/store.ts status predicates': 'owed by 4d-ii-b',
-  };
+  /** Source with its comments blanked (line numbers kept), so a predicate QUOTED in a comment is
+   *  not taken for code. A `//` counts only after whitespace or a line start (never inside a URL). */
+  const code = (src: string) => src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|\s)\/\/.*$/gm, (m, lead: string) => lead + ' '.repeat(m.length - lead.length));
 
-  it('every web status list, rollup and predicate file is registered, and each ANSWERED one answers every status', () => {
-    const alt = DECISION_STATUSES.join('|');
-    const found: Array<{ id: string; statuses: Set<string> | null; src: string }> = [];
+  /** Every non-test source file under `roots`, repo-relative, with its comment-blanked code. */
+  const sources = (roots: string[]) => {
+    const out: Array<{ file: string; src: string }> = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir)) {
         if (entry === 'node_modules' || entry === 'dist') continue;
         const full = join(dir, entry);
         if (statSync(full).isDirectory()) walk(full);
         else if (/\.(ts|tsx)$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
-          const src = readFileSync(full, 'utf8');
-          const file = relative(REPO, full).split('\\').join('/');
-          for (const m of src.matchAll(/(\w+)\s*(?::[^=]*?)?=\s*\[([^\]]{0,800})\]/g)) {
-            const keys = new Set([...m[2]!.matchAll(new RegExp(`\\bkey:\\s*'(${alt})'`, 'g'))].map((k) => k[1]!));
-            if (keys.size >= 2) found.push({ id: `${file} ${m[1]}`, statuses: keys, src });
-          }
-          const rollup = new Set([...src.matchAll(new RegExp(`\\bcounts\\.(${alt})\\b`, 'g'))].map((k) => k[1]!));
-          if (rollup.size >= 2) found.push({ id: `${file} counts.*`, statuses: rollup, src });
-          if (new RegExp(`\\b(?:d|o|decision)\\.status\\s*[!=]==?\\s*'(${alt})'`).test(src)) {
-            found.push({ id: `${file} status predicates`, statuses: null, src });
-          }
+          out.push({ file: relative(REPO, full).split('\\').join('/'), src: code(readFileSync(full, 'utf8')) });
         }
       }
     };
-    walk(join(REPO, 'apps/web/src'));
+    for (const root of roots) walk(join(REPO, root));
+    return out;
+  };
+  const ALT = DECISION_STATUSES.join('|');
 
-    expect(found.map((f) => f.id).filter((id) => !(id in WEB_READERS)), 'register every web status reader here').toEqual([]);
-    for (const f of found.filter((x) => WEB_READERS[x.id] === 'answered')) {
-      if (f.statuses) expect(DECISION_STATUSES.filter((s) => !f.statuses!.has(s)), f.id).toEqual([]);
-      else expect(f.src.includes("'awaiting_countersign'"), f.id).toBe(true);
+  /**
+   * Web status SETS that are not flat maps, which the flat-map scan cannot see (#652's review,
+   * finding 4117568488): a status LIST, an array literal whose entries are keyed `key: '<status>'`
+   * (the Decision Log's filter chips), and a per-status ROLLUP reading `counts.<status>` (its group
+   * chips). ANSWERED means it keys every status. Both are OWED by 4d-ii-b (the plan's §A.2 web arms).
+   */
+  const WEB_STATUS_SETS: Record<string, 'answered' | 'owed by 4d-ii-b'> = {
+    'apps/web/src/screens/DecisionLogScreen.tsx STATUS_FILTERS': 'owed by 4d-ii-b',
+    'apps/web/src/screens/DecisionLogScreen.tsx counts.*': 'owed by 4d-ii-b',
+  };
+
+  it('every web status list and rollup is registered, and each ANSWERED one keys every status', () => {
+    const found: Array<{ id: string; statuses: Set<string> }> = [];
+    for (const { file, src } of sources(['apps/web/src'])) {
+      for (const m of src.matchAll(/(\w+)\s*(?::[^=]*?)?=\s*\[([^\]]{0,800})\]/g)) {
+        const keys = new Set([...m[2]!.matchAll(new RegExp(`\\bkey:\\s*'(${ALT})'`, 'g'))].map((k) => k[1]!));
+        if (keys.size >= 2) found.push({ id: `${file} ${m[1]}`, statuses: keys });
+      }
+      const rollup = new Set([...src.matchAll(new RegExp(`\\bcounts\\.(${ALT})\\b`, 'g'))].map((k) => k[1]!));
+      if (rollup.size >= 2) found.push({ id: `${file} counts.*`, statuses: rollup });
     }
-    // and no registration outlives its reader
-    expect(Object.keys(WEB_READERS).filter((id) => !found.some((f) => f.id === id))).toEqual([]);
+    expect(found.map((f) => f.id).filter((id) => !(id in WEB_STATUS_SETS)), 'register every web status set here').toEqual([]);
+    for (const f of found.filter((x) => WEB_STATUS_SETS[x.id] === 'answered')) {
+      expect(DECISION_STATUSES.filter((st) => !f.statuses.has(st)), f.id).toEqual([]);
+    }
+    expect(Object.keys(WEB_STATUS_SETS).filter((id) => !found.some((f) => f.id === id))).toEqual([]);
+  });
+
+  /**
+   * Every status PREDICATE in shared, API and web, one registration per occurrence (#652's review,
+   * findings 4117700813 and 4117700814). A predicate is a comparison of a status with a status
+   * literal (`d.status !== 'pending' && d.status !== 'change'` is ONE predicate, the whole chain), or
+   * an array literal made only of statuses (an open set, a Prisma `in`). Its id is
+   * `<file> :: <the predicate, whitespace-normalised>`, suffixed `#n` for the n-th identical one in
+   * the file, so a predicate that is added, or whose statuses change, must be registered again.
+   *
+   * Each carries a verdict, and the verdict is checked against the predicate itself:
+   * - `answered`: it names `awaiting_countersign`;
+   * - `excludes: <why>`: it leaves the value out, and that is right for an approval the architect
+   *   has yet to countersign; it must NOT name the value;
+   * - `owed by <unit>: <what>`: the unit that owns the arm (A5, A7, A8a, 4d-ii-b), which records its
+   *   verdict when it lands;
+   * - `not a decision status: <what>`: the literal is another entity's status.
+   */
+  type Verdict = 'answered' | `excludes: ${string}` | `owed by ${string}` | `not a decision status: ${string}`;
+  const OWED_CLIENT: Verdict = 'owed by 4d-ii-b: the plan’s §A.2 web arms';
+  const STATUS_PREDICATES: Record<string, Verdict> = {
+    // shared
+    "packages/shared/src/domain/types.ts :: ['pending', 'approved', 'change', 'withdrawn', 'recorded', 'awaiting_countersign']": 'answered',
+    "packages/shared/src/domain/readiness.ts :: decisionStatus === 'recorded'": 'excludes: a record, not an approval',
+    "packages/shared/src/domain/readiness.ts :: decisionStatus === 'approved'": 'excludes: the gate reads ok only on a FINAL approval; an uncountersigned one waits',
+    "packages/shared/src/domain/readiness.ts :: decisionStatus === 'approved' #2": 'excludes: the reading’s approved arm; the awaiting arm is its own (below)',
+    "packages/shared/src/domain/readiness.ts :: decisionStatus === 'change'": 'excludes: the reopened arm',
+    "packages/shared/src/domain/readiness.ts :: decisionStatus === 'awaiting_countersign'": 'answered',
+    "packages/shared/src/domain/readiness.ts :: decisionStatus === 'withdrawn'": 'excludes: the withdrawn arm',
+    // API
+    "apps/api/src/domain/transitions.ts :: decisionStatus === 'approved'": 'excludes: the legacy gate reads ok only on a FINAL approval; an uncountersigned one waits',
+    "apps/api/src/common/recorded-compat.interceptor.ts :: d?.status !== 'recorded'": 'excludes: the recorded-compat strip; an awaiting row is the countersign-v1 interceptor’s to strip (A5)',
+    "apps/api/src/decisions/consultation-open.ts :: ['pending', 'change', 'awaiting_countersign']": 'answered',
+    "apps/api/src/decisions/decision-notice.ts :: decision.status === 'withdrawn'": 'excludes: the withdrawn suppression',
+    "apps/api/src/decisions/decision-serialize.ts :: d.status === 'change'": 'excludes: the open change request, shown only while reopened',
+    "apps/api/src/decisions/decision-serialize.ts :: d.status === 'withdrawn'": 'excludes: the withdrawal reason',
+    "apps/api/src/decisions/decision-serialize.ts :: d.status === 'withdrawn' #2": 'excludes: the withdrawn audience (pmc-only)',
+    "apps/api/src/decisions/decision-serialize.ts :: d.status === 'pending'": 'owed by A8a: an awaiting decision’s audience, decided where the value is first written (the approve under a chain)',
+    "apps/api/src/decisions/decisions.participant.ts :: ['pending', 'change']": 'owed by A5: the open-holder answer’s architect arm (the DESIGNATION fan-out)',
+    "apps/api/src/decisions/decisions.query.ts :: d.status !== 'pending' && d.status !== 'change'": 'owed by A7: the decider push target’s architect arm',
+    "apps/api/src/decisions/decisions.query.ts :: rows[0]!.status === 'withdrawn'": 'excludes: the linkability of a withdrawn decision',
+    "apps/api/src/decisions/decisions.query.ts :: row.status as string) === 'withdrawn'": 'excludes: the linkability of a withdrawn decision',
+    "apps/api/src/decisions/decisions.query.ts :: d.status !== 'approved'": 'excludes: only a FINAL approval anchors requirement provenance (A4b refuses a provisional head too)',
+    "apps/api/src/decisions/decisions.service.ts :: d.status === 'approved'": 'excludes: approve’s already-locked refusal; an awaiting decision is refused by the open-question arm below',
+    "apps/api/src/decisions/decisions.service.ts :: d.status === 'recorded'": 'excludes: a record has nothing to approve',
+    "apps/api/src/decisions/decisions.service.ts :: d.status !== 'pending' && d.status !== 'change'": 'excludes: approve acts on an open question; an awaiting approval is the architect’s to countersign (A8b), never re-approved',
+    "apps/api/src/decisions/decisions.service.ts :: prior === 'change'": 'excludes: approved vs reapproved, from the status approve admitted',
+    "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #2": 'excludes: approved vs reapproved, from the status approve admitted',
+    "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #3": 'excludes: approved vs reapproved, from the status approve admitted',
+    "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #4": 'excludes: approved vs reapproved, from the status approve admitted',
+    "apps/api/src/decisions/decisions.service.ts :: d.status !== 'approved'": 'excludes: a change request reopens a FINAL approval; an awaiting one is reopened only by the architect’s disagreement (A8b)',
+    "apps/api/src/decisions/decisions.service.ts :: d.status !== 'change'": 'excludes: only an open change request can be withdrawn',
+    "apps/api/src/decisions/decisions.service.ts :: cur.status === 'recorded'": 'excludes: a draft’s record/pending flip; a draft is never awaiting',
+    "apps/api/src/decisions/decisions.service.ts :: d.status === 'approved' || d.status === 'change' || d.status === 'awaiting_countersign'": 'answered',
+    "apps/api/src/decisions/decisions.service.ts :: d.status === 'withdrawn'": 'excludes: already withdrawn',
+    "apps/api/src/snapshot/snapshot.service.ts :: d.status === 'pending'": 'owed by A5: the shell summary reads `countPending`, which gains the countersign obligations',
+    "apps/api/src/labour/labour-procurement.service.ts :: req.status !== 'approved'": 'not a decision status: a labour requisition',
+    "apps/api/src/labour/labour-procurement.service.ts :: req.status !== 'approved' #2": 'not a decision status: a labour requisition',
+    "apps/api/src/labour/labour-procurement.service.ts :: comparison.status !== 'approved'": 'not a decision status: a labour quote comparison',
+    "apps/api/src/procurement/procurement.service.ts :: req.status !== 'approved'": 'not a decision status: a material requisition',
+    "apps/api/src/procurement/purchase-orders.service.ts :: req.status !== 'approved'": 'not a decision status: a material requisition',
+    "apps/api/src/procurement/purchase-orders.service.ts :: comparison.status !== 'approved'": 'not a decision status: a material quote comparison',
+    // web
+    "apps/web/src/data/apiGateway.ts :: entry.status !== 'pending'": 'not a decision status: an evidence upload entry',
+    "apps/web/src/store/store.ts :: e.status === 'pending'": 'not a decision status: an evidence upload entry',
+    "apps/web/src/components/ConsultationThread.tsx :: decision.status === 'pending' || decision.status === 'change'": OWED_CLIENT,
+    "apps/web/src/layout/RouteBridge.tsx :: d.status === 'pending' || d.status === 'change'": OWED_CLIENT,
+    "apps/web/src/screens/ClientDecisionsScreen.tsx :: d.status === 'change'": OWED_CLIENT,
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'pending'": OWED_CLIENT,
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'approved'": OWED_CLIENT,
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'recorded'": OWED_CLIENT,
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'pending' || d.status === 'withdrawn'": OWED_CLIENT,
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'withdrawn'": OWED_CLIENT,
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'withdrawn' #2": OWED_CLIENT,
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'change'": OWED_CLIENT,
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'change' #2": OWED_CLIENT,
+    "apps/web/src/screens/PortfolioScreen.tsx :: d.status === 'pending'": OWED_CLIENT,
+    "apps/web/src/screens/ScheduleScreen.tsx :: d.status !== 'withdrawn'": OWED_CLIENT,
+    "apps/web/src/screens/TeamAccessScreen.tsx :: d.status === 'approved'": OWED_CLIENT,
+    "apps/web/src/screens/modals/AddMaterialModal.tsx :: d.status !== 'withdrawn'": OWED_CLIENT,
+    "apps/web/src/store/selectors.ts :: d.status === 'pending'": OWED_CLIENT,
+    "apps/web/src/store/selectors.ts :: d.status === 'change'": OWED_CLIENT,
+    "apps/web/src/store/selectors.ts :: d.status !== 'withdrawn'": OWED_CLIENT,
+    "apps/web/src/store/selectors.ts :: d.status !== 'pending'": OWED_CLIENT,
+    "apps/web/src/store/selectors.ts :: d.status !== 'withdrawn' #2": OWED_CLIENT,
+    "apps/web/src/store/selectors.ts :: d.status !== 'pending' #2": OWED_CLIENT,
+    "apps/web/src/store/selectors.ts :: d.status === 'approved'": OWED_CLIENT,
+    "apps/web/src/store/selectors.ts :: d.status === 'pending' #2": OWED_CLIENT,
+    "apps/web/src/store/selectors.ts :: d.status === 'change' #2": OWED_CLIENT,
+    "apps/web/src/store/store.ts :: d.status === 'change'": OWED_CLIENT,
+    "apps/web/src/store/store.ts :: d.status === 'pending'": OWED_CLIENT,
+    "apps/web/src/store/store.ts :: o.status === 'pending'": OWED_CLIENT,
+  };
+
+  it('every status predicate in shared, API and web is registered with a verdict the predicate bears out', () => {
+    const one = `[\\w.!?\\[\\]]*(?:status|Status|\\bprior)\\b(?:\\s+as\\s+\\w+\\))?\\s*[!=]==?\\s*'(?:${ALT})'`;
+    const chain = new RegExp(`${one}(?:\\s*(?:&&|\\|\\|)\\s*${one})*`, 'g');
+    const found: string[] = [];
+    for (const { file, src } of sources(['packages/shared/src', 'apps/api/src', 'apps/web/src'])) {
+      const seen = new Map<string, number>();
+      const add = (expr: string) => {
+        const norm = expr.replace(/\s+/g, ' ').trim();
+        const n = (seen.get(norm) ?? 0) + 1;
+        seen.set(norm, n);
+        found.push(`${file} :: ${norm}${n > 1 ? ` #${n}` : ''}`);
+      };
+      for (const m of src.matchAll(chain)) add(m[0]);
+      for (const m of src.matchAll(/\[([^[\]]*)\]/g)) {
+        const items = m[1]!.replace(/\s+as\s+[^,\]]+/g, '').split(',').map((x) => x.trim()).filter(Boolean);
+        if (items.length >= 2 && items.every((x) => /^'[^']*'$/.test(x) && (DECISION_STATUSES as readonly string[]).includes(x.slice(1, -1)))) add(m[0]);
+      }
+    }
+
+    expect(found.filter((id) => !(id in STATUS_PREDICATES)), 'register every status predicate here, with its verdict').toEqual([]);
+    for (const id of found) {
+      const verdict = STATUS_PREDICATES[id]!;
+      const names = id.split(' :: ')[1]!.includes("'awaiting_countersign'");
+      if (verdict === 'answered') expect(names, `${id} is ANSWERED only if it names the value`).toBe(true);
+      if (verdict.startsWith('excludes:')) expect(names, `${id} EXCLUDES the value, so it must not name it`).toBe(false);
+    }
+    // and no registration outlives its predicate
+    expect(Object.keys(STATUS_PREDICATES).filter((id) => !found.includes(id))).toEqual([]);
   });
 });

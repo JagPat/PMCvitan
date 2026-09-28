@@ -9,6 +9,7 @@ import type { DecisionDto } from '../snapshot/types';
 import { serializeDecision, decisionVisibleToViewer, hydrateStoredDecisionDto } from './decision-serialize';
 import { kindedDecisionNoticeServed, renderKindedDecisionNotice, type KindedNoticeEvent } from './decision-notice';
 import { DECISIONS_PROJECTION } from './decisions.projection';
+import { consultationOpen } from './consultation-open';
 import { readServableGeneration, stillServableAfterRead } from '../platform/projections/generation';
 
 /**
@@ -361,7 +362,7 @@ export class DecisionsQueryService {
       // membership active, the consultation unanswered and the decision un-withdrawn, so a
       // not-withdrawn test would send a request-to-respond push for a question the respond
       // command now answers with a 409: a push inviting an action the server refuses.
-      if (!d || d.publishedAt === null || (d.status !== 'pending' && d.status !== 'change')) return { actionable: false };
+      if (!d || d.publishedAt === null || !consultationOpen(d.status)) return { actionable: false };
 
       // (4) …and NOW the standing consultation, re-read under that lock: the frozen cycle must
       // still be current (a `requestChange` reopen would otherwise resurrect a delivery the

@@ -192,6 +192,14 @@ and no new ones. The first is fixed here; the rest are recorded as each opens:
   map and predicate and scans shared, API and web for status-keyed literals, each of which must be
   registered. The web's `locationTree` counter answers (it had to, to compile); its label and rank,
   and the other web readers §A.2 names, are registered as OWED BY 4d-ii-b, the client unit.
+  #652's review widened the tripwire to EVERY status predicate in shared, API and web, registered
+  per occurrence with a verdict the predicate must bear out (names the value, rightly excludes it,
+  owed by a named unit, or another entity's status). A4d answers three server predicates itself: the
+  consultation open set (`CONSULTATION_OPEN_STATUSES`, read by the eligibility carve-out and the
+  request push's claim, pinned to the database seals' set) and the withdraw's refusal. So A5's
+  consultation item shrinks to the architect requester and the roster. The arms the registry names
+  as owed: A5 the open-holder answer and the shell summary's `countPending`, A7 the decider push
+  target, A8a an awaiting decision's audience, and 4d-ii-b every web reader.
   **With A4d, A4 is complete.**
 
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
