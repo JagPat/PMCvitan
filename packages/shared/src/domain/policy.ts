@@ -24,31 +24,31 @@ export const ROLE_POLICY = {
   // the SERVICE narrows to the decision's ACTUAL decider (named member / role / pmc-on-behalf),
   // so a same-role non-decider is refused there. Pre-4b behavior is preserved by the default
   // `client` decider on every existing decision.
-  'decision.approve': ['client', 'pmc', 'contractor', 'engineer', 'consultant'],
+  'decision.approve': ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'],
   // Phase 6 task 4b (§A.1/§A.2 round 8) — editing an UNPUBLISHED draft's decider/kind/options:
   // the author's own drafting freedom (the service narrows to the draft's AUTHOR or a pmc).
   // Round-7 Codex F1 — the route CEILING admits every role an author can be REASSIGNED to
   // (a pmc who authored a draft and was later re-roled must still reach their own private
   // draft); the identity narrowing lives in the service, exactly like `decision.withdrawChange`.
-  'decision.updateDraft': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  'decision.updateDraft': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
   // consultants raise change requests to flag a conflict in their discipline (read-mostly otherwise)
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // withdraw an open change request — endpoint allowlist; the SERVICE narrows it to the
   // actual requester or the PMC, so the UI must also check requestedById (Phase 1 Task 2)
-  'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;
   // that is the practice's call alone (the client never had authority over the asking either).
   'decision.withdraw': ['pmc'],
-  // Phase 6 unit 4c-ii (§A) — CONSULTATION. Asking is the practice's call: `pmc` in 4c, with
-  // `architect` joining the requesting set in 4d WITH the role, the same staging rule the decider
-  // value followed.
-  'consultation.request': ['pmc'],
+  // Phase 6 unit 4c-ii (§A) — CONSULTATION. Asking is the practice's call: `pmc` in 4c, and
+  // `architect` joining the requesting set with the role (4d-ii-a / A5a). No token can carry the
+  // role while 4d-i's reservation doors stand, so the row is unreachable until 4d-iii.
+  'consultation.request': ['pmc', 'architect'],
   // The RESPOND ceiling admits EVERY role a consultee can hold — any active member in the
   // existing project-role vocabulary — because the SERVICE narrows to the ONE named consultee
   // (the delivered 4b widen-ceiling-narrow-in-service rule: a route ceiling tighter than the
   // eligible set makes the guard reject a legitimately named consultee before the service's own
   // check can admit them). 4c introduces NO role; any future role is its own staged unit.
-  'consultation.respond': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  'consultation.respond': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
   // Phase 3 Task 1 — the ActivityRequirement demand contract is authored by the PMC (plan §H matrix)
   'requirement.manage': ['pmc'],
   // the full requirement register read (§H): pmc + engineer; the client sees only the readiness
@@ -224,9 +224,9 @@ export const ROLE_POLICY = {
   // SEC-02 / P1-2). The API GETs derive their allowlist from here too (Phase 2 Task 2),
   // so the whole role-gated surface — reads and writes — has ONE source of truth. The web
   // UI does not currently gate these reads, so `can()` simply isn't called for them.
-  'project.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
-  'members.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
-  'companies.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
+  'project.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant', 'architect'],
+  'members.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant', 'architect'],
+  'companies.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant', 'architect'],
 } as const satisfies Record<string, readonly TokenRole[]>;
 
 /** A permissioned project action, e.g. `'drawing.acknowledge'`. */

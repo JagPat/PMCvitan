@@ -188,3 +188,29 @@ describe('role allowlists are sourced from the shared ROLE_POLICY via @RolesFor 
     expect(unused, `ROLE_POLICY actions with no @RolesFor route:\n${unused.join('\n')}`).toEqual([]);
   });
 });
+
+/**
+ * Phase 6 task 4d (§A.1; P28) — the ARCHITECT's action set, pinned by EQUALITY: `architect` is in an
+ * action's role list iff the action is one of the architect's, so an accidental widening onto a
+ * commercial or payment action and an omitted read both fail. §A.1 grants ELEVEN; eight have routes
+ * today (4d-ii-a / A5a). The other three — `decision.forward` (A8a), `decision.countersign` and
+ * `decision.disagree` (A8b) — join this list with their routes, since a policy entry with no route is
+ * refused above. Deliberately NOT: `decision.change` (the architect's change path is the countersign
+ * disagreement), `decision.create`, `decision.publish`, `decision.withdraw`, `org.create`, and every
+ * requirement, procurement, stock, labour, commercial, activity, inspection, daily-log, media and
+ * drawing action.
+ */
+describe('the architect action set (Phase 6 task 4d, §A.1; P28)', () => {
+  const ARCHITECT_ACTIONS = [
+    'project.read', 'members.read', 'companies.read',
+    'decision.approve', 'decision.updateDraft', 'decision.withdrawChange',
+    'consultation.request', 'consultation.respond',
+  ];
+
+  it('architect holds exactly its actions, no other', () => {
+    const held = Object.entries(ROLE_POLICY)
+      .filter(([, roles]) => (roles as readonly string[]).includes('architect'))
+      .map(([action]) => action);
+    expect(held.sort()).toEqual([...ARCHITECT_ACTIONS].sort());
+  });
+});

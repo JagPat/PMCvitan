@@ -12,8 +12,19 @@ import type { SwatchKey } from '../tokens/swatches';
  * Every role a bearer token can carry — including the account-less `worker` device
  * token the API issues for QR job-card onboarding. This is the canonical role set the
  * authorization policy (`domain/policy.ts`) and the API's tokens are keyed on.
+ *
+ * `architect` (Phase 6 task 4d, §A.1) is in the vocabulary from 4d-ii-a / A5a, delivered DARK: 4d-i's
+ * reservation doors refuse any `Membership` or `User` row carrying it until 4d-iii, so no token can
+ * carry it yet. Every mirror of this list answers for it: the role tripwire
+ * (`apps/api/src/common/role-vocabulary-tripwire.test.ts`) walks {@link TOKEN_ROLES} against each.
  */
-export type TokenRole = 'pmc' | 'client' | 'engineer' | 'contractor' | 'consultant' | 'worker';
+export type TokenRole = 'pmc' | 'client' | 'engineer' | 'contractor' | 'consultant' | 'architect' | 'worker';
+
+/** Every {@link TokenRole} value, at runtime, held equal to the type as {@link DECISION_STATUSES} is. */
+export const TOKEN_ROLES = ['pmc', 'client', 'engineer', 'contractor', 'consultant', 'architect', 'worker'] as const satisfies readonly TokenRole[];
+type _AllTokenRolesListed = Exclude<TokenRole, (typeof TOKEN_ROLES)[number]> extends never ? true : never;
+const _allTokenRolesListed: _AllTokenRolesListed = true;
+void _allTokenRolesListed;
 
 /**
  * Disciplines a consultant can be responsible for. This is a LABEL on the membership,

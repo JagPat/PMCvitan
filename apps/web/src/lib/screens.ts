@@ -144,6 +144,9 @@ export function screensFor(role: Role): ScreenMeta[] {
     contractor: ['inbox', 'drawings', 'places', 'team-access', 'decision-log'],
     // a discipline consultant: read-mostly reviewer — drawings, the register, the Site Map, project health
     consultant: ['inbox', 'drawings', 'decision-log', 'places', 'client-health'],
+    // Phase 6 task 4d — the role is in the vocabulary from 4d-ii-a (A5a) so this map answers for it,
+    // but no session can carry it until 4d-iii and its screens are the client unit's (4d-ii-b)
+    architect: [],
   };
   return keys[role].map((k) => SCREEN_META[k]);
 }
@@ -193,7 +196,14 @@ export const ROLE_LABEL: Record<Role, string> = {
   engineer: 'Engineer',
   contractor: 'Contractor',
   consultant: 'Consultant',
+  architect: 'Architect',
 };
+
+/** Phase 6 task 4d — roles in the vocabulary that the product does not render a session for YET.
+ *  `architect` joined the shared role type in 4d-ii-a (A5a) with its label, so every `Record<Role, …>`
+ *  answers for it; its persona, its screens and the Team role pickers are the client unit's
+ *  (4d-ii-b), which empties this list. Registered in the API's role tripwire. */
+export const PERSONAS_OWED: readonly Role[] = ['architect'];
 
 /**
  * THE persona list — every role the product renders a session for, in switcher order.
@@ -210,7 +220,7 @@ export const ROLE_LABEL: Record<Role, string> = {
  * a label here and BOTH switchers gain the option with no further edit. A hand-written array
  * would just be the same defect waiting for the next role.
  */
-export const ROLES = Object.keys(ROLE_LABEL) as Role[];
+export const ROLES = (Object.keys(ROLE_LABEL) as Role[]).filter((r) => !PERSONAS_OWED.includes(r));
 
 export const ROLE_SUBTITLE: Record<Role, string> = {
   pmc: 'Architect · full access',
@@ -218,4 +228,5 @@ export const ROLE_SUBTITLE: Record<Role, string> = {
   engineer: 'Site Engineer · Ramesh',
   contractor: 'Contractor · read-only',
   consultant: 'Discipline consultant · reviews',
+  architect: 'Architect · countersigns decisions',
 };

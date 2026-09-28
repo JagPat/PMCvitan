@@ -21,7 +21,7 @@ import { ProjectAccessService } from './project-access.service';
 export const IDENTITY_SCOPED = 'auth:identityScoped';
 export const IdentityScoped = () => SetMetadata(IDENTITY_SCOPED, true);
 
-export type Role = 'pmc' | 'client' | 'engineer' | 'contractor' | 'consultant' | 'worker';
+export type Role = 'pmc' | 'client' | 'engineer' | 'contractor' | 'consultant' | 'architect' | 'worker';
 
 export interface AuthUser {
   sub: string;

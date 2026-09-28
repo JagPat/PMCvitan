@@ -18,8 +18,9 @@ import type { DomainEventType } from '@vitan/shared';
  * push, so the outbox never sends an external effect for private or already-applied work.
  */
 
-/** The project roles a push may target. A subset of the app's project roles. */
-export type PushRole = 'pmc' | 'client' | 'contractor' | 'engineer' | 'consultant';
+/** The project roles a push may target. A subset of the app's project roles. `architect` is in the
+ *  vocabulary from 4d-ii-a / A5a; no catalog ceiling admits it until A7 widens the targeted ones. */
+export type PushRole = 'pmc' | 'client' | 'contractor' | 'engineer' | 'consultant' | 'architect';
 
 export interface ExternalEffectDef {
   /** The domain event type this key is emitted as — validated against the shared catalog. */

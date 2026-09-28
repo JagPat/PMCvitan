@@ -67,5 +67,5 @@ export const decisionsManifest: ModuleManifest = {
     'POST /projects/:projectId/decisions/:decisionId/consultations',
     'POST /projects/:projectId/decisions/:decisionId/consultations/respond',
   ],
-  permissions: ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  permissions: ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
 };

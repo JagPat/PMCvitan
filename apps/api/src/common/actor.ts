@@ -7,6 +7,7 @@ export const ROLE_LABEL: Record<string, string> = {
   engineer: 'Site Engineer',
   contractor: 'Contractor',
   consultant: 'Consultant',
+  architect: 'Architect',
   worker: 'Worker',
 };
 
