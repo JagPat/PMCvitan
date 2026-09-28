@@ -42,7 +42,39 @@ export interface MemberDto {
  */
 export function rethrowHolderSealViolation(e: unknown, message: string): never {
   if (e instanceof Error && /phase6-4b/.test(e.message)) throw new ConflictException(message);
+  if (e instanceof Error) {
+    const translated = holderGuard4dRefusal(e.message);
+    if (translated) throw new ConflictException(translated);
+  }
   throw e;
+}
+
+/** The refusal a member command gives for the named holder of a decision awaiting countersign. */
+const awaitingNamedHolderRefusal = (architects: number) =>
+  `This member is the named holder of a decision awaiting countersign — resolve or forward it first (the project still has ${architects} active architect(s), so the countersign is still pending)`;
+/** …for the last holder of a role an open (`pending`/`change`) decision is designated to. */
+const heldRoleRefusal = (role: string) =>
+  `An open decision is held by the ${role} role and this change would leave it without a holder — withdraw and reissue the decision first`;
+/** …for the last holder of a role a decision awaiting countersign is designated to. */
+const awaitingRoleRefusal = (role: string) =>
+  `A decision awaiting countersign is designated to the ${role} role and this change would leave it without a holder — cover it first`;
+
+/**
+ * Phase 6 task 4d (§A.2, P39) — 4d-i's `Membership_t4d_holder_guard` is, like the 4b seal above, an
+ * immediate AFTER-row trigger: on the service path it refuses at the membership WRITE STATEMENT,
+ * before the command's post-write judgement runs. It judges the same rule, so each of its three
+ * refusal arms is the command's own refusal, answered with the command's 409 text. Its readiness
+ * arm is unreachable behind the command's readiness key and is left raw, as is any other raise.
+ */
+function holderGuard4dRefusal(message: string): string | null {
+  const named = /phase6 4d-i: membership \S+ is the named holder of a decision awaiting countersign[\s\S]*still holds (\d+) active architect/.exec(message);
+  if (named) return awaitingNamedHolderRefusal(Number(named[1]));
+  if (/phase6 4d-i: this change leaves NO active architect while a published OPEN decision is designated to that role/.test(message)) {
+    return heldRoleRefusal('architect');
+  }
+  const role = /phase6 4d-i: this change leaves NO effective (\S+) holder while a decision awaiting countersign is designated to that role/.exec(message);
+  if (role) return awaitingRoleRefusal(role[1]!);
+  return null;
 }
 
 /**
@@ -119,9 +151,7 @@ export class MembersService {
     for (const role of heldRoles) {
       if (!atRisk.has(role)) continue;
       if ((await holders(role)) === 0) {
-        throw new ConflictException(
-          `An open decision is held by the ${role} role and this change would leave it without a holder — withdraw and reissue the decision first`,
-        );
+        throw new ConflictException(heldRoleRefusal(role));
       }
     }
     // …and a decision AWAITING COUNTERSIGN designated to a role (4d-i's widened guard). The architect
@@ -131,9 +161,7 @@ export class MembersService {
     for (const role of awaitingRoles) {
       if (role === 'architect' || !atRisk.has(role)) continue;
       if ((await holders(role)) === 0) {
-        throw new ConflictException(
-          `A decision awaiting countersign is designated to the ${role} role and this change would leave it without a holder — cover it first`,
-        );
+        throw new ConflictException(awaitingRoleRefusal(role));
       }
     }
   }
@@ -143,7 +171,8 @@ export class MembersService {
    * AWAITING COUNTERSIGN, unless this is the LAST architect leaving: that departure deactivates the
    * chain and strands the decision for `decisions.resolveStrandedCountersign`, so it is permitted.
    * Called AFTER the membership write, so the architect count read is the post-write one the
-   * database guard judges.
+   * database guard judges. Where that guard is installed it refuses first, at the write statement,
+   * and `rethrowHolderSealViolation` answers it with this same 409.
    */
   private async refuseAwaitingHolderOrphan(
     tx: Prisma.TransactionClient,
@@ -155,9 +184,7 @@ export class MembersService {
     if (!namedAwaiting) return;
     const architects = await RoleStandingQuery.activeCount(tx, projectId, 'architect');
     if (lostRole === 'architect' && architects === 0) return;
-    throw new ConflictException(
-      `This member is the named holder of a decision awaiting countersign — resolve or forward it first (the project still has ${architects} active architect(s), so the countersign is still pending)`,
-    );
+    throw new ConflictException(awaitingNamedHolderRefusal(architects));
   }
 
   /** True if the requester may manage this project's team (project PMC or org owner/admin). */
