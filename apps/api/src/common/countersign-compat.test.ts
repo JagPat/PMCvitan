@@ -143,13 +143,27 @@ describe('the countersign-v1 completeness tripwire (4d-ii-a / A5e)', () => {
     expect([...TOKEN_ROLES].sort()).toEqual(Object.keys(TOKEN_ROLE).sort());
   });
 
-  it('every field of the Decision DTO, and of its change request, is classified', () => {
-    const decision = withoutComments(block(sharedTypes, 'export interface Decision {'));
-    const top = [...decision.matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]!);
-    expect(top.sort()).toEqual(Object.keys(DECISION_FIELD).sort());
-    const cr = withoutComments(decision.slice(decision.indexOf('changeRequest?: {'), decision.indexOf('\n  };', decision.indexOf('changeRequest?: {'))));
-    const nested = [...cr.slice(cr.indexOf('{') + 1).matchAll(/(\w+)\??:/g)].map((m) => m[1]!);
-    expect(nested.sort()).toEqual(Object.keys(CHANGE_REQUEST_FIELD).sort());
+  /**
+   * Both declarations of the wire shape are scanned: the shared `Decision` the client reads, and the
+   * API's `DecisionDto` the serializer returns and the projection stores (#657's review round 1: a
+   * field the serializer emits must be declared on the DTO it returns, or the canonical type cannot
+   * represent the wire the boundary depends on).
+   */
+  const DTO_DECLARATIONS: Array<[string, string]> = [
+    ['packages/shared/src/domain/types.ts', 'export interface Decision {'],
+    ['apps/api/src/snapshot/types.ts', 'export interface DecisionDto {'],
+  ];
+
+  it('every field of the Decision DTO, and of its change request, is classified, in both declarations', () => {
+    for (const [file, opener] of DTO_DECLARATIONS) {
+      const decision = withoutComments(block(readFileSync(join(REPO, file), 'utf8'), opener));
+      const top = [...decision.matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]!);
+      expect(top.sort(), file).toEqual(Object.keys(DECISION_FIELD).sort());
+      const at = decision.indexOf('changeRequest?: {');
+      const cr = decision.slice(at + 'changeRequest?: {'.length, decision.indexOf('}', at));
+      const nested = [...cr.matchAll(/(\w+)\??:/g)].map((m) => m[1]!);
+      expect(nested.sort(), `${file} changeRequest`).toEqual(Object.keys(CHANGE_REQUEST_FIELD).sort());
+    }
   });
 
   it('a 4d DTO a later unit serves is classified before it exists', () => {
