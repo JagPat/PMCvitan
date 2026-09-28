@@ -103,6 +103,7 @@ import { ExternalEffectDispatcher } from './platform/outbox/external-effect-disp
 import { OutboxBootstrap } from './platform/outbox/outbox.bootstrap';
 import { ReleaseLeaseService } from './platform/release-lease.service';
 import { OutboxOperationsService } from './platform/outbox/outbox-operations.service';
+import { OutboxConsumerActivationService } from './platform/outbox/consumer-activation.service';
 import { ProjectionRebuilder } from './platform/projections/rebuilder.service';
 import { ModuleRegistryService } from './platform/module-registry/module-registry.service';
 import { ActivityParticipant } from './activities/activity.participant';
@@ -236,6 +237,8 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     // 4d-ii-a — the serving process's ReleaseLease, registered by the bootstrap after the catalog sync.
     ReleaseLeaseService,
     OutboxOperationsService,
+    // 4d-ii-a / A6b — the `outbox:consumer` activation protocol (the mirror's only supported writer).
+    OutboxConsumerActivationService,
     // Task 9 — the projection rebuild + final-activation-barrier protocol (generation swap).
     ProjectionRebuilder,
     ModuleRegistryService,

@@ -7,6 +7,8 @@ import { registerConsumer, unregisterConsumer, syncConsumerCatalog, type OutboxC
 import type { Actor } from '../../src/common/actor';
 
 import { sanctionedReset, sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
+import { OutboxConsumerActivationService } from '../../src/platform/outbox/consumer-activation.service';
+import { randomUUID } from 'node:crypto';
 /**
  * Phase 2 fix-forward PR B Task 3 — continuous gap expansion + ordered no-ops (live PG).
  *
@@ -35,12 +37,14 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
   let relay: OutboxRelay;
+  let activation: OutboxConsumerActivationService;
   let seq = 0;
 
   beforeAll(async () => {
     t = await createTestApp();
     f = await createTwoProjectFixture(t.prisma);
     relay = t.app.get(OutboxRelay);
+    activation = t.app.get(OutboxConsumerActivationService);
     human.actorId = f.memberUser.id;
     registerConsumer(filtered);
     await syncConsumerCatalog(t.prisma);
@@ -168,7 +172,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     const off: OutboxConsumer = { name: OFF, kind: 'unordered', effect: 'external', catalogVersion: 1, deliveryFor: () => ({ action: 'dispatch' }), handle: async () => {} };
     registerConsumer(off);
     await syncConsumerCatalog(t.prisma);
-    await t.prisma.outboxConsumerCatalog.update({ where: { consumer: OFF }, data: { active: false } });
+    await activation.request({ consumer: OFF, active: false, reason: 'probe: deactivate before the event through the activation protocol', actorId: 'outbox-scanner.test', requestToken: randomUUID() });
     await emit(p, 'GO-off');
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: OFF } })).toBe(0);
     unregisterConsumer(OFF);
@@ -191,11 +195,11 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     await syncConsumerCatalog(t.prisma);
     const { eventId } = await emit(p, 'GO-pause'); // pos 0 → pending dispatch row
     const d = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer: PAUSE, eventId } });
-    await t.prisma.outboxConsumerCatalog.update({ where: { consumer: PAUSE }, data: { active: false } });
+    await activation.request({ consumer: PAUSE, active: false, reason: 'probe: pause after the delivery exists through the activation protocol', actorId: 'outbox-scanner.test', requestToken: randomUUID() });
     expect(await relay.dispatchOne(d.id)).toBe('skip');
     expect(await ran()).toBe(0); // handler never invoked for a deactivated contract
     expect((await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: d.id } })).status).toBe('pending'); // recoverable, not dead-lettered
-    await t.prisma.outboxConsumerCatalog.update({ where: { consumer: PAUSE }, data: { active: true } });
+    await activation.request({ consumer: PAUSE, active: true, reason: 'probe: resume the paused consumer through the activation protocol', actorId: 'outbox-scanner.test', requestToken: randomUUID() });
     expect(await relay.dispatchOne(d.id)).toBe('succeeded'); // reactivation resumes the pending work
     expect(await ran()).toBe(1);
     unregisterConsumer(PAUSE);
