@@ -21,7 +21,17 @@ function envelopeReads(opts: { holds: boolean }) {
   });
 }
 
-function make(orgRole: string | null = null, opts: { holds?: boolean } = {}) {
+interface HolderOpts {
+  holds?: boolean;
+  /** 4d-ii-a / A5d — the decisions participant's open-holder answer (default: nothing held) */
+  holders?: Partial<{ named: boolean; heldRoles: string[]; namedAwaiting: boolean; awaitingRoles: string[] }>;
+  /** the kernel register's post-write architect count (`RoleStandingQuery.activeCount`) */
+  architects?: number;
+  /** the delivered orgs standing for client/pmc (`effectiveRoleStanding`) */
+  standing?: number;
+}
+
+function make(orgRole: string | null = null, opts: HolderOpts = {}) {
   const users: U[] = [];
   const memberships: M[] = [];
   const transitions: T[] = [];
@@ -74,6 +84,8 @@ function make(orgRole: string | null = null, opts: { holds?: boolean } = {}) {
     },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
+    // 4d-ii-a / A5d — the kernel register's architect count (`platform_role_standing`)
+    $queryRawUnsafe: vi.fn(async () => [{ n: opts.architects ?? 0 }]),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   };
@@ -84,8 +96,8 @@ function make(orgRole: string | null = null, opts: { holds?: boolean } = {}) {
   const notify = vi.fn(async () => undefined);
   const svc = new MembersService(
     prisma as unknown as PrismaService,
-    { holdsOpenDecisions: vi.fn(async () => ({ named: false, heldRoles: [] as string[] })) } as unknown as DecisionsParticipant,
-    { effectiveRoleStanding: vi.fn(async () => 1) } as unknown as OrgsParticipant,
+    { holdsOpenDecisions: vi.fn(async () => ({ named: false, heldRoles: [] as string[], namedAwaiting: false, awaitingRoles: [] as string[], ...opts.holders })) } as unknown as DecisionsParticipant,
+    { effectiveRoleStanding: vi.fn(async () => opts.standing ?? 1) } as unknown as OrgsParticipant,
     { notify } as unknown as InvitationsService,
   );
   return { svc, users, memberships, transitions, receipts, notify, prisma };
@@ -341,5 +353,61 @@ describe('MembersService — 4d-ii-a / A3b member commands', () => {
     await expect(svc.updateRole('p1', pmc, uid, { role: 'engineer' }, 'K')).resolves.toMatchObject({ role: 'contractor' });
     expect(memberships[0].role).toBe('contractor');
     expect(transitions).toHaveLength(facts);
+  });
+});
+
+// 4d-ii-a / A5d (§A.2, P39) — the holder-orphan guard's widened open set and its one named exemption,
+// mirrored at the command from 4d-i's `phase6_t4d_membership_guard`. The database guard is 4d-i's and
+// probed there; these pin the service's 409s, which answer before the guard would refuse.
+describe('MembersService — the designation fan-out of the holder guard (4d-ii-a / A5d)', () => {
+  const seat = (m: ReturnType<typeof make>, role: string) => {
+    m.users.push({ id: 'u9', name: 'Holder', email: 'h@vitan.in', phone: null, role: 'engineer', projectId: 'p1', passwordHash: null, emailVerifiedAt: null });
+    m.memberships.push({ id: 'm9', projectId: 'p1', userId: 'u9', role, status: 'active' });
+  };
+
+  it('removing the NAMED holder of an awaiting decision is refused, naming the pending countersign', async () => {
+    const m = make(null, { holders: { namedAwaiting: true }, architects: 1 });
+    seat(m, 'engineer');
+    await expect(m.svc.remove('p1', pmc, 'u9')).rejects.toThrow(/awaiting countersign/);
+  });
+
+  it('an ARCHITECT named holder who is not the last architect is refused too', async () => {
+    const m = make(null, { holders: { namedAwaiting: true }, architects: 1 });
+    seat(m, 'architect');
+    await expect(m.svc.remove('p1', pmc, 'u9')).rejects.toThrow(/awaiting countersign/);
+  });
+
+  it('THE EXEMPTION: the LAST architect, named holder of an awaiting decision, may leave (the chain deactivates)', async () => {
+    const m = make(null, { holders: { namedAwaiting: true, awaitingRoles: ['architect'] }, architects: 0 });
+    seat(m, 'architect');
+    await expect(m.svc.remove('p1', pmc, 'u9')).resolves.toEqual({ ok: true });
+    expect(m.memberships.find((x) => x.id === 'm9')?.status).toBe('removed');
+  });
+
+  it('the last architect may NOT leave while a pending/change decision is designated to the role', async () => {
+    const m = make(null, { holders: { heldRoles: ['architect'] }, architects: 0 });
+    seat(m, 'architect');
+    await expect(m.svc.remove('p1', pmc, 'u9')).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('the last client may not leave while a decision awaiting countersign is designated to the client role', async () => {
+    const m = make(null, { holders: { awaitingRoles: ['client'] }, standing: 0 });
+    seat(m, 'client');
+    await expect(m.svc.remove('p1', pmc, 'u9')).rejects.toThrow(/awaiting countersign is designated to the client role/);
+  });
+
+  it('re-roling the named holder of an awaiting decision is refused; the last architect re-roled away is exempt', async () => {
+    const refused = make(null, { holders: { namedAwaiting: true }, architects: 2 });
+    seat(refused, 'architect');
+    await expect(refused.svc.updateRole('p1', pmc, 'u9', { role: 'engineer' })).rejects.toThrow(/awaiting countersign/);
+    const exempt = make(null, { holders: { namedAwaiting: true }, architects: 0 });
+    seat(exempt, 'architect');
+    await expect(exempt.svc.updateRole('p1', pmc, 'u9', { role: 'engineer' })).resolves.toMatchObject({ role: 'engineer' });
+  });
+
+  it('with nothing awaiting, every delivered path is unchanged', async () => {
+    const m = make(null, { architects: 0 });
+    seat(m, 'engineer');
+    await expect(m.svc.remove('p1', pmc, 'u9')).resolves.toEqual({ ok: true });
   });
 });

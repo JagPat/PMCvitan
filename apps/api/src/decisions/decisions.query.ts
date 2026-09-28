@@ -503,15 +503,39 @@ export class DecisionsQueryService {
    *  (they manage the register); every other viewer counts only the decisions THEY decide — the
    *  `client`-held rows for a client, the rows NAMING them for a member-decider — so a named
    *  engineer-decider's portfolio card reports their obligation and a same-role non-decider's
-   *  reports zero. */
-  countPending(projectId: string, viewer: { role: Role; userId?: string }): Promise<number> {
-    const base: Prisma.DecisionWhereInput = { projectId, status: 'pending', publishedAt: { not: null } };
-    if (viewer.role === 'pmc') return this.prisma.decision.count({ where: base });
+   *  reports zero.
+   *  Phase 6 task 4d (§A.1) — the count ALSO serves the project shell's badge (`shellSummary`), so the
+   *  badge and the Portfolio tile agree; it gains the `architect` role arm (an architect counts the
+   *  pending decisions designated to the role) and the viewer's COUNTERSIGN obligations: every
+   *  decision awaiting countersign is an architect's, and while the chain is INACTIVE (no active
+   *  architect) each one is STRANDED and is the PMC's to resolve. */
+  async countPending(projectId: string, viewer: { role: Role; userId?: string }): Promise<number> {
+    const published = { projectId, publishedAt: { not: null } };
+    const base: Prisma.DecisionWhereInput = { ...published, status: 'pending' };
+    const awaiting: Prisma.DecisionWhereInput = { ...published, status: 'awaiting_countersign' };
+    if (viewer.role === 'pmc') {
+      const [pending, stranded] = await Promise.all([
+        this.prisma.decision.count({ where: base }),
+        this.countStranded(projectId, awaiting),
+      ]);
+      return pending + stranded;
+    }
     const decides: Prisma.DecisionWhereInput[] = [];
     if (viewer.role === 'client') decides.push({ deciderKind: 'client' });
+    if (viewer.role === 'architect') decides.push({ deciderKind: 'architect' });
     if (viewer.userId) decides.push({ deciderKind: 'member', deciderMembership: { userId: viewer.userId } });
-    if (decides.length === 0) return Promise.resolve(0);
-    return this.prisma.decision.count({ where: { ...base, OR: decides } });
+    const [pending, countersigns] = await Promise.all([
+      decides.length === 0 ? Promise.resolve(0) : this.prisma.decision.count({ where: { ...base, OR: decides } }),
+      viewer.role === 'architect' ? this.prisma.decision.count({ where: awaiting }) : Promise.resolve(0),
+    ]);
+    return pending + countersigns;
+  }
+
+  /** The decisions awaiting a countersign no active architect can give: all of them while the chain
+   *  is inactive (the kernel register reads no architect), none while it is active. */
+  private async countStranded(projectId: string, awaiting: Prisma.DecisionWhereInput): Promise<number> {
+    if ((await RoleStandingQuery.activeCount(this.prisma, projectId, 'architect')) > 0) return 0;
+    return this.prisma.decision.count({ where: awaiting });
   }
   /**
    * Phase 3 Task 1 correction round 2 (finding 2) — the AUTHORITATIVE, immutable decision

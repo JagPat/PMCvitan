@@ -743,9 +743,11 @@ describe('OrgsService.portfolio', () => {
       inspection: { count: vi.fn(async () => 1) },
       // Phase 6 task 4b (§A.3) — countPending is viewer-scoped: a pmc counts everything (no
       // OR narrowing); every other viewer counts only what THEY decide, and this fixture holds
-      // no member-held or client-held rows for them.
-      decision: { count: vi.fn(async ({ where }: { where?: { OR?: unknown[] } } = {}) => (where?.OR ? 0 : 3)) },
+      // no member-held or client-held rows for them. Phase 6 task 4d — and no decision awaiting a
+      // countersign, so the PMC's stranded obligations (read against the kernel register) add none.
+      decision: { count: vi.fn(async ({ where }: { where?: { OR?: unknown[]; status?: string } } = {}) => (where?.OR || where?.status === 'awaiting_countersign' ? 0 : 3)) },
       phase: { count: vi.fn(async () => 3) },
+      $queryRawUnsafe: vi.fn(async () => [{ n: 0 }]),
     };
     return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma };
   }
