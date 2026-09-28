@@ -198,8 +198,9 @@ and no new ones. The first is fixed here; the rest are recorded as each opens:
   consultation open set (`CONSULTATION_OPEN_STATUSES`, read by the eligibility carve-out and the
   request push's claim, pinned to the database seals' set) and the withdraw's refusal. So A5's
   consultation item shrinks to the architect requester and the roster. The arms the registry names
-  as owed: A5 the open-holder answer and the shell summary's `countPending`, A7 the decider push
-  target, A8a an awaiting decision's audience, and 4d-ii-b every web reader.
+  as owed: A5 the open-holder answer, `countPending`'s filter and the shell summary that should
+  read it; A7 the decider push target; A8a an awaiting decision's audience and whether an awaiting
+  sibling still carries the legacy pending text the withdraw retires; 4d-ii-b every web reader.
   **With A4d, A4 is complete.**
 
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms

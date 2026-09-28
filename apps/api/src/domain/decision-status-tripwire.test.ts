@@ -155,8 +155,11 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
   /**
    * Every status PREDICATE in shared, API and web, one registration per occurrence (#652's review,
    * findings 4117700813 and 4117700814). A predicate is a comparison of a status with a status
-   * literal (`d.status !== 'pending' && d.status !== 'change'` is ONE predicate, the whole chain), or
-   * an array literal made only of statuses (an open set, a Prisma `in`). Its id is
+   * literal (`d.status !== 'pending' && d.status !== 'change'` is ONE predicate, the whole chain), an
+   * array literal made only of statuses (an open set, a Prisma `in`), or a Prisma filter in object
+   * form, `status: '<status>'` (or `{ not | equals: … }`) inside a `where` or a `…WhereInput` object
+   * (finding 4117838732: `countPending`'s filter), or a raw-SQL filter on a quoted `"status"` column
+   * (`= '<status>'`, `IN (…)`); a `data:` write and a seed row are not predicates. Its id is
    * `<file> :: <the predicate, whitespace-normalised>`, suffixed `#n` for the n-th identical one in
    * the file, so a predicate that is added, or whose statuses change, must be registered again.
    *
@@ -205,6 +208,28 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/api/src/decisions/decisions.service.ts :: cur.status === 'recorded'": 'excludes: a draft’s record/pending flip; a draft is never awaiting',
     "apps/api/src/decisions/decisions.service.ts :: d.status === 'approved' || d.status === 'change' || d.status === 'awaiting_countersign'": 'answered',
     "apps/api/src/decisions/decisions.service.ts :: d.status === 'withdrawn'": 'excludes: already withdrawn',
+    "apps/api/src/decisions/decisions.query.ts :: status: 'pending'": 'owed by A5: `countPending` (the portfolio’s and the shell’s pending count) gains the countersign obligations',
+    "apps/api/src/decisions/decisions.service.ts :: status: 'approved'": 'excludes: the change request’s compare-and-set from a FINAL approval',
+    "apps/api/src/decisions/decisions.service.ts :: status: 'change'": 'excludes: the change withdrawal’s compare-and-set from an open change request',
+    "apps/api/src/decisions/decisions.service.ts :: status: 'pending'": 'excludes: the withdraw’s compare-and-set, only from a never-approved pending decision',
+    "apps/api/src/decisions/decisions.service.ts :: status: 'pending' #2": 'owed by A8a: whether a sibling awaiting countersign still carries the legacy pending text the withdraw retires',
+    "apps/api/src/labour/labour-procurement.service.ts :: status: 'approved'": 'not a decision status: a labour requisition',
+    "apps/api/src/labour/labour-procurement.service.ts :: status: 'recorded'": 'not a decision status: a labour quote',
+    "apps/api/src/labour/labour-procurement.service.ts :: status: 'recorded' #2": 'not a decision status: a labour quote',
+    "apps/api/src/labour/labour-procurement.service.ts :: status: 'recorded' #3": 'not a decision status: a labour quote',
+    "apps/api/src/procurement/procurement.service.ts :: status: 'approved'": 'not a decision status: a material requisition',
+    "apps/api/src/procurement/procurement.service.ts :: status: 'recorded'": 'not a decision status: a vendor quote',
+    "apps/api/src/procurement/procurement.service.ts :: status: 'recorded' #2": 'not a decision status: a vendor quote',
+    "apps/api/src/procurement/procurement.service.ts :: status: 'recorded' #3": 'not a decision status: a vendor quote',
+    "apps/api/src/platform/outbox/cancellation.ts :: status: 'pending'": 'not a decision status: an outbox delivery',
+    "apps/api/src/platform/outbox/external-effect-dispatcher.ts :: status: 'pending'": 'not a decision status: an outbox delivery',
+    "apps/api/src/platform/outbox/external-effect-dispatcher.ts :: status: 'pending' #2": 'not a decision status: an outbox delivery',
+    "apps/api/src/platform/outbox/outbox-operations.service.ts :: status: 'pending'": 'not a decision status: an outbox delivery',
+    "apps/api/src/platform/outbox/relay.service.ts :: status: 'pending'": 'not a decision status: an outbox delivery',
+    'apps/api/src/platform/outbox/relay.service.ts :: "status" = \'pending\'': 'not a decision status: an outbox delivery',
+    'apps/api/src/platform/outbox/relay.service.ts :: "status" = \'pending\' #2': 'not a decision status: an outbox delivery',
+    'apps/api/src/platform/outbox/relay.service.ts :: "status" = \'pending\' #3': 'not a decision status: an outbox delivery',
+    'apps/api/src/platform/outbox/outbox-operations.service.ts :: "status" IN (\'pending\', \'leased\')': 'not a decision status: an outbox delivery',
     "apps/api/src/snapshot/snapshot.service.ts :: d.status === 'pending'": 'owed by A5: the shell summary reads `countPending`, which gains the countersign obligations',
     "apps/api/src/labour/labour-procurement.service.ts :: req.status !== 'approved'": 'not a decision status: a labour requisition',
     "apps/api/src/labour/labour-procurement.service.ts :: req.status !== 'approved' #2": 'not a decision status: a labour requisition',
@@ -244,6 +269,22 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/web/src/store/store.ts :: o.status === 'pending'": OWED_CLIENT,
   };
 
+  /** Whether the object literal around `idx`, or one enclosing it, is a Prisma filter: the value of
+   *  a `where:` key, or a variable typed `…WhereInput`. */
+  const inWhere = (src: string, idx: number): boolean => {
+    let depth = 0;
+    for (let i = idx - 1, opened = 0; i >= 0 && opened < 8; i--) {
+      if (src[i] === '}') depth++;
+      else if (src[i] === '{') {
+        if (depth > 0) { depth--; continue; }
+        opened++;
+        const key = src.slice(Math.max(0, i - 80), i).match(/(\w+)\s*[:=]\s*$/)?.[1] ?? '';
+        if (key === 'where' || /WhereInput$/.test(key)) return true;
+      }
+    }
+    return false;
+  };
+
   it('every status predicate in shared, API and web is registered with a verdict the predicate bears out', () => {
     const one = `[\\w.!?\\[\\]]*(?:status|Status|\\bprior)\\b(?:\\s+as\\s+\\w+\\))?\\s*[!=]==?\\s*'(?:${ALT})'`;
     const chain = new RegExp(`${one}(?:\\s*(?:&&|\\|\\|)\\s*${one})*`, 'g');
@@ -257,6 +298,10 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
         found.push(`${file} :: ${norm}${n > 1 ? ` #${n}` : ''}`);
       };
       for (const m of src.matchAll(chain)) add(m[0]);
+      for (const m of src.matchAll(new RegExp(`\\bstatus:\\s*(?:\\{\\s*(?:not|equals):\\s*)?'(?:${ALT})'`, 'g'))) {
+        if (inWhere(src, m.index!)) add(m[0]);
+      }
+      for (const m of src.matchAll(new RegExp(`"status"(?:::text)?\\s*(?:(?:=|<>|!=)\\s*'(?:${ALT})'|(?:NOT\\s+)?IN\\s*\\([^)]*'(?:${ALT})'[^)]*\\))`, 'g'))) add(m[0]);
       for (const m of src.matchAll(/\[([^[\]]*)\]/g)) {
         const items = m[1]!.replace(/\s+as\s+[^,\]]+/g, '').split(',').map((x) => x.trim()).filter(Boolean);
         if (items.length >= 2 && items.every((x) => /^'[^']*'$/.test(x) && (DECISION_STATUSES as readonly string[]).includes(x.slice(1, -1)))) add(m[0]);
