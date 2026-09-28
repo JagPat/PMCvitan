@@ -1013,10 +1013,12 @@ const REGISTER: Record<string, SealContract> = {
   platform_t4d_server_generation_raised: {
     rule: 'the persisted server-generation minimum is written only inside a migration transaction — the '
       + 'DDL transition platform_t4d_server_generation_migration_open, created by the current transaction '
-      + '— and only ever RAISED, whoever writes; an UPDATE that raises nothing rewrites neither raisedBy nor raisedAt',
-    plan: 'staging document "The drain"; #640 Codex finding 4110816159; #661 round 1, finding 1 (the DDL transition)',
+      + '— and only ever RAISED, whoever writes; a raise records its own provenance (a new raisedBy, a later '
+      + 'raisedAt); an UPDATE that raises nothing rewrites neither raisedBy nor raisedAt',
+    plan: 'staging document "The drain"; #640 Codex finding 4110816159; #661 round 1, finding 1 (the DDL transition); #663 round 1, finding 1',
     on: { 'ServerGeneration.ServerGeneration_t4d_raised': B('I U') },
-    must: ['platform_t4d_server_generation_migration_open', 'txid_status', 'NEW."minimumGeneration" < OLD."minimumGeneration"', 'RAISE EXCEPTION'],
+    must: ['platform_t4d_server_generation_migration_open', 'txid_status', 'NEW."minimumGeneration" < OLD."minimumGeneration"',
+      'NEW."raisedBy" IS NOT DISTINCT FROM OLD."raisedBy"', 'NEW."raisedAt" <= OLD."raisedAt"', 'RAISE EXCEPTION'],
   },
   platform_t4d_server_generation_retained: {
     rule: 'the persisted server-generation minimum is never deleted: a process that reads no minimum is refused, '

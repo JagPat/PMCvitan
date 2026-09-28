@@ -33,11 +33,12 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
   - Migration `20280101000000_phase6_t4d_ii_a6e_generation_fence` (on `ALWAYS_EXECUTE`): the
     `ServerGeneration` singleton register — the persisted minimum, written only inside a migration's DDL
     transition (`platform_t4d_server_generation_migration_open`, A6c's shape), only ever raised (`GREATEST`
-    on re-apply), never deleted or truncated — set to this build's generation (1), so nothing running is
-    refused; A8b's migration raises it.
+    on re-apply, each raise recording its own provenance), never deleted or truncated — set to this build's
+    generation (1), so nothing running is refused; A8b's migration raises it.
   - `src/platform/server-generation.ts`: the compiled `SERVER_GENERATION` (pinned to the migration's
     literal) and the startup fence the outbox bootstrap runs FIRST, refusing a build below the persisted
-    minimum and a database carrying none.
+    minimum and a database carrying none; the admission read locks the row `FOR SHARE` and the bootstrap
+    holds it until the process serves, so a raise serializes after every admission in flight.
   - `rollout:drain-evidence` (`src/platform/rollout/`): reads the Coolify application resource and the
     running-deployment queue, and the `ReleaseLease` register; places each release against the minimum by
     git ancestry, fail closed on anything it cannot place, `not-drained` dominating; renders the

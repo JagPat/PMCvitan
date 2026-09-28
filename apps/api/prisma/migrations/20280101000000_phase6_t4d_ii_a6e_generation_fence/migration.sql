@@ -27,9 +27,18 @@
 --     exists AND was created by the current transaction (A6c's DDL transition, #661's review round
 --     1, finding 1: a transaction-local setting is ordinary session state any DML writer can set
 --     first; a function is DDL, which a DML-only writer cannot create, and one created by another
---     session is invisible here until committed, at which point it is no longer in progress). An
---     UPDATE that raises nothing may rewrite neither `raisedBy` nor `raisedAt`: the evidence of the
---     last raise stands.
+--     session is invisible here until committed, at which point it is no longer in progress). A
+--     RAISE MUST RECORD ITS OWN PROVENANCE (#663's review round 1, finding 1): a new `raisedBy` and a
+--     later `raisedAt`, or the row would attribute the raised fence to the migration that last
+--     raised it, and every startup refusal and DRAIN-EVIDENCE would report that stale provenance. An
+--     UPDATE that raises nothing may rewrite neither: the evidence of the last raise stands.
+--   · THE READ IS SERIALIZED WITH THE RAISE (#663's review round 1, finding 2). A process reads the
+--     row `FOR SHARE` inside a transaction it holds until it SERVES (its lease registered), so a
+--     raise — whose UPDATE takes the row FOR NO KEY UPDATE, which conflicts with FOR SHARE — cannot
+--     commit between a process's admission and its serving: it waits for every process in that
+--     window, and every process that starts after it reads the raised minimum and is refused. A
+--     plain READ COMMITTED select would have let an older image read the old minimum, have the raise
+--     commit under it, and go on to serve.
 --   · `ServerGeneration_t4d_retained` (BEFORE DELETE) and `ServerGeneration_t4d_no_truncate`
 --     (BEFORE TRUNCATE): the minimum, once persisted, is never removed — a process reading no row
 --     is refused (the fence fails closed on an absent minimum), and a removed row would be the one
@@ -80,6 +89,13 @@ DECLARE
      WHERE n.nspname = 'public' AND p.proname = 'platform_t4d_server_generation_migration_open'
        AND txid_status(((txid_current() >> 32) << 32) + p.xmin::text::bigint) = 'in progress');
 BEGIN
+  -- WRITTEN ONLY BY A MIGRATION: the DDL transition, never a DML writer and never startup — asked
+  -- first, so a direct write is refused by the name of what it is, whatever shape it carries
+  IF NOT v_migration THEN
+    RAISE EXCEPTION
+      'phase6 4d-ii: "ServerGeneration" is written only inside a versioned migration''s own transaction (the one that created platform_t4d_server_generation_migration_open) and by nothing else — this % (migration transition closed) is refused. A process reads the minimum at startup and never writes it; to raise it, ship a migration (the staging document, "The drain").',
+      TG_OP;
+  END IF;
   IF TG_OP = 'UPDATE' THEN
     -- ONLY EVER RAISED, whoever writes: a migration that lowered it would re-admit every build the
     -- raise refused
@@ -88,6 +104,16 @@ BEGIN
         'phase6 4d-ii: the persisted server-generation minimum is only ever RAISED — % -> % is refused, whoever writes it (a migration raises with GREATEST; the staging document, "The drain"). Lowering it would re-admit every build the raise fenced out.',
         OLD."minimumGeneration", NEW."minimumGeneration";
     END IF;
+    -- a RAISE records its own provenance: the raising migration's name and a later timestamp — the
+    -- row must never attribute a raised fence to an earlier raise (#663's review round 1, finding 1)
+    IF NEW."minimumGeneration" > OLD."minimumGeneration"
+       AND (NEW."raisedBy" IS NOT DISTINCT FROM OLD."raisedBy"
+            OR NEW."raisedAt" IS NULL
+            OR NEW."raisedAt" <= OLD."raisedAt") THEN
+      RAISE EXCEPTION
+        'phase6 4d-ii: a raise of the persisted server-generation minimum (% -> %) must record its own provenance — a new "raisedBy" (the raising migration''s name, not the last raise''s %) and a "raisedAt" later than the last raise''s (%) — or the row would attribute the raised fence to an earlier migration in every startup refusal and drain evidence (#663 round 1, finding 1).',
+        OLD."minimumGeneration", NEW."minimumGeneration", OLD."raisedBy", OLD."raisedAt";
+    END IF;
     -- an UPDATE that raises nothing is a no-op re-apply; it may not rewrite the evidence of the raise
     IF NEW."minimumGeneration" = OLD."minimumGeneration"
        AND (NEW."raisedBy" IS DISTINCT FROM OLD."raisedBy" OR NEW."raisedAt" IS DISTINCT FROM OLD."raisedAt") THEN
@@ -95,12 +121,6 @@ BEGIN
         'phase6 4d-ii: the persisted server-generation minimum was not raised by this UPDATE (still %), so "raisedBy" / "raisedAt" — the evidence of the last raise (% at %) — may not move.',
         OLD."minimumGeneration", OLD."raisedBy", OLD."raisedAt";
     END IF;
-  END IF;
-  -- WRITTEN ONLY BY A MIGRATION: the DDL transition, never a DML writer and never startup
-  IF NOT v_migration THEN
-    RAISE EXCEPTION
-      'phase6 4d-ii: "ServerGeneration" is written only inside a versioned migration''s own transaction (the one that created platform_t4d_server_generation_migration_open) and by nothing else — this % (migration transition closed) is refused. A process reads the minimum at startup and never writes it; to raise it, ship a migration (the staging document, "The drain").',
-      TG_OP;
   END IF;
   RETURN NEW;
 END $$;

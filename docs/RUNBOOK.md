@@ -1259,9 +1259,13 @@ the database every run and cannot wipe this table. It is honored only when `NODE
 Phase 6 unit **4d-ii-a / A6e** installs the second drain fence (the staging document, "The drain").
 Every build compiles a monotone server generation (`src/platform/server-generation.ts`,
 `SERVER_GENERATION`); the singleton `ServerGeneration` row is the persisted minimum, written only by
-a migration inside its DDL transition and only ever raised. At startup, before the consumer catalog
-is synced or anything is written, the outbox bootstrap reads the minimum and refuses the process when
-it exceeds the build's generation. A6e's migration `20280101000000_phase6_t4d_ii_a6e_generation_fence`
+a migration inside its DDL transition and only ever raised, each raise recording the raising
+migration's name and time. At startup, before the consumer catalog is synced or anything is written,
+the outbox bootstrap reads the minimum and refuses the process when it exceeds the build's generation.
+The read locks the row `FOR SHARE` and the bootstrap holds that lock until the process serves (its
+lease registered), so a raise cannot commit between a process's admission and its serving: a raising
+migration waits for every process in that window, and a process that starts after it reads the
+raised minimum and is refused. A6e's migration `20280101000000_phase6_t4d_ii_a6e_generation_fence`
 sets the minimum to A6e's generation, so nothing running is refused; A8b's migration raises it, and
 from then on every A6-to-A8a build — an A7 image restarted after A8b included — is refused at
 startup, exactly as a stale `catalogVersion` is. The fence is not a consumer contract version.
@@ -1276,6 +1280,12 @@ or truncated). Deploy the release carrying the named migration, or a later one.
 migration has not run on this database: `scripts/migrate.sh` runs every migration before the process
 starts, and `20280101000000` is on `ALWAYS_EXECUTE`, so this is a database the runner did not
 migrate (a hand-started process, a wrong `DATABASE_URL`). Run the migrations and start again.
+
+A raising migration copies A6e's raise block with its own literal and name. Its UPDATE takes the row
+FOR NO KEY UPDATE and so waits behind every process currently between admission and serving; that is
+by design, and a deploy whose migration step appears to pause there is waiting for a process that is
+still booting. The admission hold is bounded (`SERVER_GENERATION_FENCE_HOLD_MS`, ten minutes): a
+boot that outlives it is rolled back and refused, and the container restarts it.
 
 ### Recording the drain's autonomous corroboration: `rollout:drain-evidence`
 

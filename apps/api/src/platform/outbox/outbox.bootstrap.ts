@@ -21,7 +21,7 @@ import { CommercialBudgetQuery } from '../../commercial/commercial-budget.query'
 import { OrgsParticipant } from '../../orgs/orgs.participant';
 import { effectCoverageVersion } from '../external-effects';
 import { ReleaseLeaseService } from '../release-lease.service';
-import { assertServerGenerationAdmitted } from '../server-generation';
+import { SERVER_GENERATION_FENCE_HOLD_MS, assertServerGenerationAdmitted } from '../server-generation';
 
 /**
  * Phase 2 Task 6 — outbox lifecycle bootstrap. At app start it registers the socket + push
@@ -62,7 +62,26 @@ export class OutboxBootstrap implements OnModuleInit {
     // 4d-ii-a / A6e — THE SERVER-GENERATION FENCE, first: a build whose compiled generation is below
     // the persisted, migration-written minimum is refused before it registers, syncs or writes
     // anything (the staging document, "The drain"). Fail-closed on an absent minimum.
-    await assertServerGenerationAdmitted(this.prisma, this.log);
+    //
+    // The admission read locks the singleton row FOR SHARE, and this transaction HOLDS that lock
+    // until the process serves — its catalog synced, its lease registered — so a raising migration
+    // (whose UPDATE conflicts with FOR SHARE) cannot commit between the read and the serving, and a
+    // process that starts after the raise reads the raised minimum and is refused (#663's review
+    // round 1, finding 2). The serving steps use the pooled client on their own connections; only
+    // the lock lives on this one. If the hold outlives `SERVER_GENERATION_FENCE_HOLD_MS`, Prisma
+    // rolls the transaction back and boot aborts — fail closed, and the container restarts it.
+    await this.prisma.$transaction(
+      async (fence) => {
+        await assertServerGenerationAdmitted(fence, this.log);
+        await this.serveBehindFence();
+      },
+      { maxWait: SERVER_GENERATION_FENCE_HOLD_MS, timeout: SERVER_GENERATION_FENCE_HOLD_MS },
+    );
+    this.relay.start();
+  }
+
+  /** Everything between admission and serving, run while the fence's SHARE lock is held. */
+  private async serveBehindFence(): Promise<void> {
     registerConsumer(makeSocketConsumer(this.realtime));
     registerConsumer(
       makePushConsumer(this.push, {
@@ -158,6 +177,5 @@ export class OutboxBootstrap implements OnModuleInit {
     // 4d-ii-a — the serving process's `ReleaseLease`, written only once the catalog is synced and
     // the sender gate has passed, so a process refused above never claims one (a no-op under test).
     await this.releaseLease.register();
-    this.relay.start();
   }
 }

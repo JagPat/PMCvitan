@@ -5367,6 +5367,12 @@ SQL
 assert_rejects "4d-ii-a / A6e: inside the transition the minimum is still only ever RAISED" \
   "DO \$\$ BEGIN EXECUTE 'CREATE FUNCTION platform_t4d_server_generation_migration_open() RETURNS void LANGUAGE sql AS ''SELECT'''; UPDATE \"ServerGeneration\" SET \"minimumGeneration\" = 2 WHERE \"key\" = 'singleton'; END \$\$" \
   "only ever RAISED"
+assert_rejects "4d-ii-a / A6e: a raise must record its own provenance — the same raiser is refused (#663 round 1, finding 1)" \
+  "DO \$\$ BEGIN EXECUTE 'CREATE FUNCTION platform_t4d_server_generation_migration_open() RETURNS void LANGUAGE sql AS ''SELECT'''; UPDATE \"ServerGeneration\" SET \"minimumGeneration\" = 4, \"raisedAt\" = clock_timestamp() WHERE \"key\" = 'singleton'; END \$\$" \
+  "must record its own provenance"
+assert_rejects "4d-ii-a / A6e: a raise must record its own provenance — a backdated raisedAt is refused" \
+  "DO \$\$ BEGIN EXECUTE 'CREATE FUNCTION platform_t4d_server_generation_migration_open() RETURNS void LANGUAGE sql AS ''SELECT'''; UPDATE \"ServerGeneration\" SET \"minimumGeneration\" = 4, \"raisedBy\" = 'upgrade-proof: backdated', \"raisedAt\" = \"raisedAt\" - interval '1 day' WHERE \"key\" = 'singleton'; END \$\$" \
+  "must record its own provenance"
 assert_rejects "4d-ii-a / A6e: an UPDATE that raises nothing may not rewrite the evidence of the raise" \
   "DO \$\$ BEGIN EXECUTE 'CREATE FUNCTION platform_t4d_server_generation_migration_open() RETURNS void LANGUAGE sql AS ''SELECT'''; UPDATE \"ServerGeneration\" SET \"raisedBy\" = 'rewritten' WHERE \"key\" = 'singleton'; END \$\$" \
   "may not move"
