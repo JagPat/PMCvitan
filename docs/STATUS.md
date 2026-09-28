@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a6a-activation-register
 reviewed_merge: 0f84ecc
-open_pr: none
+open_pr: 659
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
@@ -27,7 +27,7 @@ updated: 2026-09-28
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A6a (`work_item: phase-6-task-4d-ii-a-a6a-activation-register`, branch
+- **Now, A6a, `open_pr: 659` (`work_item: phase-6-task-4d-ii-a-a6a-activation-register`, branch
   `claude/4d-ii-a6-delivery-substrate`, from `main` at `0f84ecc`).** A6 is delivered as five sub-units
   (the staging document, 2026-09-28); this is the first: the `OutboxConsumerActivation` register the
   companion document specifies and §D said 4d-i installed.
