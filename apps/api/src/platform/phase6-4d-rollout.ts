@@ -1,5 +1,4 @@
 import { ConflictException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a / A5b — the ONE read of the architect chain's rollout state (§A.1,
@@ -33,13 +32,17 @@ export const PHASE6_4D_RESERVATION_DOORS = [
   'DecisionEvent_t4d_kind_reserved',
 ] as const;
 
-type CatalogReader = Pick<Prisma.TransactionClient, '$queryRaw'>;
+/** Any client that can run a parameterized raw read: the Prisma client, a transaction, or a participant's. */
+interface CatalogReader {
+  $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T>;
+}
 
 /** The rollout state, read from the catalog on `client` (the caller's transaction, when it holds one). */
 export async function readPhase6_4dRollout(client: CatalogReader): Promise<Phase6_4dRollout> {
-  const rows = await client.$queryRaw<Array<{ doors: number }>>(Prisma.sql`
-    SELECT count(*)::int AS doors FROM pg_trigger t
-     WHERE NOT t.tgisinternal AND t.tgname IN (${Prisma.join([...PHASE6_4D_RESERVATION_DOORS])})`);
+  const rows = await client.$queryRawUnsafe<Array<{ doors: number }>>(
+    `SELECT count(*)::int AS doors FROM pg_trigger t WHERE NOT t.tgisinternal AND t.tgname = ANY($1::text[])`,
+    [...PHASE6_4D_RESERVATION_DOORS],
+  );
   return (rows[0]?.doors ?? 0) > 0 ? 'reserved' : 'open';
 }
 

@@ -328,7 +328,7 @@ describe('AuthService.session (dev auth)', () => {
 
   // Phase 6 task 4d (§A.1; P28b's alternate-token-producer arm) — the rollout read is the one catalog
   // read the service path judges (`platform/phase6-4d-rollout.ts`), faked here by its door count
-  const withDoors = (doors: number, seed: FakeUser[] = []) => ({ ...fakePrisma(seed), $queryRaw: async () => [{ doors }] });
+  const withDoors = (doors: number, seed: FakeUser[] = []) => ({ ...fakePrisma(seed), $queryRawUnsafe: async () => [{ doors }] });
 
   it('4d: refuses the architect role 409 BEFORE either branch while the reservation stands', async () => {
     const seed = [{ id: 'real-arch', projectId: 'ambli', role: 'architect', name: 'Ar. Seeded' }];

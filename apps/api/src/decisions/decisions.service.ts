@@ -20,6 +20,7 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { consultationOpen } from './consultation-open';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
+import { RoleStandingQuery } from '../platform/role-standing.query';
 
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
 function requireIdempotencyKey(key: string | undefined, commandType: string): string {
@@ -46,6 +47,23 @@ async function lockDecisionForConsultation(
      WHERE "projectId" = ${projectId} AND "id" = ${decisionId}
      FOR SHARE`;
   return rows[0] ?? null;
+}
+
+/**
+ * Whether `userId` may ASK for advice on the project: the delivered `pmc` standing (orgs truth, locked,
+ * unchanged), or — Phase 6 task 4d (§A.2) — the ARCHITECT role through the KERNEL read
+ * (`platform_user_holds_role`), never an orgs table. No request in the 4d-i → 4d-iii window can take the
+ * architect arm, since the reservation keeps every architect unrepresentable, so service and seal agree
+ * in the window (the delivered predicate) and after it (the register).
+ */
+export async function consultationRequesterStanding(
+  orgs: Pick<OrgsParticipant, 'hasProjectRoleStanding'>,
+  tx: Prisma.TransactionClient,
+  projectId: string,
+  userId: string,
+): Promise<boolean> {
+  if (await orgs.hasProjectRoleStanding(tx, projectId, userId, ['pmc'], { forUpdate: true })) return true;
+  return RoleStandingQuery.holdsRole(tx, projectId, userId, 'architect');
 }
 
 /**
@@ -642,9 +660,9 @@ export class DecisionsService {
         if (!consultee) throw new ConflictException('That member is not an active member of this project');
         // the 4b round-11 LIVE-STANDING rule: `user.role` was established by JwtGuard BEFORE this
         // transaction, so the authority to ASK is re-validated inside it, under the row lock.
-        const standing = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, user.sub, ['pmc'], { forUpdate: true });
+        const standing = await consultationRequesterStanding(this.orgsParticipant, tx, projectId, user.sub);
         if (!standing) {
-          throw new ForbiddenException('Your project standing changed — asking for advice on this decision is a PMC authority');
+          throw new ForbiddenException('Your project standing changed — asking for advice on this decision is a PMC or architect authority');
         }
         // (4) `Decision`, last, under its own row lock, so a withdrawal committing concurrently
         // either waits or is seen.

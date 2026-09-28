@@ -10,6 +10,7 @@ import { serializeDecision, decisionVisibleToViewer, hydrateStoredDecisionDto } 
 import { kindedDecisionNoticeServed, renderKindedDecisionNotice, type KindedNoticeEvent } from './decision-notice';
 import { DECISIONS_PROJECTION } from './decisions.projection';
 import { consultationOpen } from './consultation-open';
+import { RoleStandingQuery, type KernelReadClient } from '../platform/role-standing.query';
 import { readServableGeneration, stillServableAfterRead } from '../platform/projections/generation';
 
 /**
@@ -48,7 +49,7 @@ export class DecisionsQueryService {
     userId?: string,
     /** 4d-ii-a / A4c — the snapshot passes its REPEATABLE READ transaction, so the slice and the
      *  notification feed judged against it are one snapshot. */
-    client: Pick<Prisma.TransactionClient, 'decision'> = this.prisma,
+    client: Pick<Prisma.TransactionClient, 'decision'> & KernelReadClient = this.prisma,
   ): Promise<{ decisions: DecisionDto[]; statuses: Map<string, DecisionStatus>; drafts: Set<string>; deciders: Map<string, DeciderKind> }> {
     const rows = await client.decision.findMany({
       where: { projectId },
@@ -87,7 +88,20 @@ export class DecisionsQueryService {
       )
       .map(serializeDecision);
 
-    return { decisions, statuses, drafts, deciders };
+    return { decisions: await this.overlayCountersign(client, projectId, decisions), statuses, drafts, deciders };
+  }
+
+  /**
+   * Phase 6 task 4d (§A.2) — the `countersignRequired` overlay, applied by BOTH read paths at read
+   * time (it is never stored in the projection, so no fold needs refreshing when the standing
+   * changes): one keyed lookup per response through the kernel register the approve CAS and the seals
+   * judge the chain by. Serialized only when true, so a project with no active architect is served
+   * exactly the DTO it was served before.
+   */
+  private async overlayCountersign(client: KernelReadClient, projectId: string, decisions: DecisionDto[]): Promise<DecisionDto[]> {
+    if (decisions.length === 0) return decisions;
+    if ((await RoleStandingQuery.activeCount(client, projectId, 'architect')) === 0) return decisions;
+    return decisions.map((d) => ({ ...d, countersignRequired: true as const }));
   }
 
   /**
@@ -230,7 +244,7 @@ export class DecisionsQueryService {
         ),
       )
       .map(({ dto }) => dto);
-    return { decisions, statuses, generation: gen.generation };
+    return { decisions: await this.overlayCountersign(this.prisma, projectId, decisions), statuses, generation: gen.generation };
   }
 
   /**

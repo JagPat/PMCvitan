@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { readinessLockKey } from '../common/readiness-lock';
+import { readPhase6_4dRollout } from '../platform/phase6-4d-rollout';
+import { RoleStandingQuery } from '../platform/role-standing.query';
 
 /** The narrow client surface the standing check needs — satisfied by both a `$transaction` client
  *  and a top-level Prisma client, so non-DI callers (operator CLIs) can construct this directly. */
@@ -293,6 +295,15 @@ export class OrgsParticipant {
     projectId: string,
     role: string,
   ): Promise<string[]> {
+    // Phase 6 task 4d (§A.2, the WINDOW RULE) — the `architect` audience is the KERNEL register from
+    // 4d-ii (no architect can exist before 4d-iii, so the two implementations never coexist for a
+    // reachable set); `pmc`/`client` keep this delivered orgs-truth SQL while `rollout.phase6_4d` reads
+    // `reserved`, because a racing membership-less owner may lack their fanned-out `pmc` row in the
+    // window, and move to the register once it reads `open` (4d-iii flips it after the re-projection)
+    const client = tx as OrgsParticipantClient;
+    if (role === 'architect' || ((role === 'pmc' || role === 'client') && (await readPhase6_4dRollout(client)) === 'open')) {
+      return RoleStandingQuery.holderUserIds(client, projectId, role);
+    }
     const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ userId: string }>>(
       `SELECT m."userId" FROM "Membership" m
         WHERE m."projectId" = $1 AND m."status" = 'active' AND m."role" = $2

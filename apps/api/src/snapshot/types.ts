@@ -107,6 +107,13 @@ export interface DecisionDto {
    * predicate needs the pair. `0` before the first approval; an absent value reads as 0.
    */
   approvalCycle?: number;
+  /**
+   * Phase 6 task 4d (§A.2) — the project's countersign chain is ACTIVE: an active architect holds the
+   * role, so an approval lands `awaiting_countersign` rather than `approved`. A KERNEL overlay
+   * (`RoleStandingQuery.activeCount`), applied by both read paths at read time and never stored in
+   * the projection. SERIALIZED ONLY WHEN TRUE, so a project with no chain serves exactly today's DTO.
+   */
+  countersignRequired?: true;
 }
 
 /** One consultation and, once given, its single answer (Phase 6 unit 4c-ii §A). Both facts are
