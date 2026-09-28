@@ -4945,7 +4945,7 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*) continue ;; esac
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5342,6 +5342,44 @@ assert "4d-ii-a / A6d: the mark and the legacy neutralization stand, payloads pr
   "SELECT (SELECT \"deliveryAction\" || '/' || \"status\" || '/' || (\"cancelledAt\" IS NOT NULL)::text FROM \"OutboxDelivery\" WHERE \"id\" = 'UP4D-A6D-D-upgrade.proof.flip') || '|' || (SELECT \"deliveryAction\" || '/' || \"status\" || '/' || (\"payload\" IS NOT NULL)::text FROM \"OutboxDelivery\" WHERE \"id\" = 'UP4A-DEL1');" \
   "noop/succeeded/true|noop/succeeded/true"
 
+# ── 4d-ii-a / A6e: the server-generation fence ──────────────────────────────────────────────
+# Over the ledger this database ran: the register holds this file's generation under its three
+# seals; a write outside a migration transition is refused; inside one the minimum is still only
+# ever RAISED and the evidence of a raise is not rewritten; the row is never deleted or truncated.
+# The proof then RAISES the minimum the way a later fence-raising migration would (A8b's stand-in),
+# so the ledger-lost replay below re-runs A6e's file over a raised minimum and must not lower it.
+assert "4d-ii-a / A6e: the persisted server-generation minimum is this migration's, under its three seals" \
+  "SELECT (SELECT \"minimumGeneration\"::text || '|' || \"raisedBy\" FROM \"ServerGeneration\" WHERE \"key\" = 'singleton') || '|' || (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('ServerGeneration_t4d_raised','ServerGeneration_t4d_retained','ServerGeneration_t4d_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_server_generation_migration_open')::text;" \
+  "1|20280101000000_phase6_t4d_ii_a6e_generation_fence|3|0"
+assert_rejects "4d-ii-a / A6e: the minimum is written only inside a migration transition — a direct UPDATE is refused" \
+  "UPDATE \"ServerGeneration\" SET \"minimumGeneration\" = 9 WHERE \"key\" = 'singleton'" \
+  "migration transition closed"
+assert_rejects "4d-ii-a / A6e: a direct INSERT is refused too" \
+  "INSERT INTO \"ServerGeneration\" (\"key\",\"minimumGeneration\",\"raisedBy\") VALUES ('other', 1, 'proof')" \
+  "migration transition closed"
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-ii-a / A6e: the raise inside the transition was refused"; FAIL=1; }
+DO $$ BEGIN
+  EXECUTE 'CREATE FUNCTION platform_t4d_server_generation_migration_open() RETURNS void LANGUAGE sql AS ''SELECT''';
+  UPDATE "ServerGeneration" SET "minimumGeneration" = 3, "raisedBy" = 'upgrade-proof: a later fence-raising migration', "raisedAt" = CURRENT_TIMESTAMP WHERE "key" = 'singleton';
+  EXECUTE 'DROP FUNCTION platform_t4d_server_generation_migration_open()';
+END $$;
+SQL
+assert_rejects "4d-ii-a / A6e: inside the transition the minimum is still only ever RAISED" \
+  "DO \$\$ BEGIN EXECUTE 'CREATE FUNCTION platform_t4d_server_generation_migration_open() RETURNS void LANGUAGE sql AS ''SELECT'''; UPDATE \"ServerGeneration\" SET \"minimumGeneration\" = 2 WHERE \"key\" = 'singleton'; END \$\$" \
+  "only ever RAISED"
+assert_rejects "4d-ii-a / A6e: an UPDATE that raises nothing may not rewrite the evidence of the raise" \
+  "DO \$\$ BEGIN EXECUTE 'CREATE FUNCTION platform_t4d_server_generation_migration_open() RETURNS void LANGUAGE sql AS ''SELECT'''; UPDATE \"ServerGeneration\" SET \"raisedBy\" = 'rewritten' WHERE \"key\" = 'singleton'; END \$\$" \
+  "may not move"
+assert_rejects "4d-ii-a / A6e: the row is never deleted" \
+  "DELETE FROM \"ServerGeneration\"" \
+  "never deleted"
+assert_rejects "4d-ii-a / A6e: the row is never truncated" \
+  "TRUNCATE \"ServerGeneration\"" \
+  "never truncated"
+assert "4d-ii-a / A6e: the proof's later raise stands with its evidence, and the transition marker is gone" \
+  "SELECT (SELECT \"minimumGeneration\"::text || '|' || \"raisedBy\" FROM \"ServerGeneration\" WHERE \"key\" = 'singleton') || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_server_generation_migration_open')::text;" \
+  "3|upgrade-proof: a later fence-raising migration|0"
+
 # ── the replay a LEDGER-LOST RESTORE takes, before and after this release serves (#646's review,
 #    finding 4114478871) ─────────────────────────────────────────────────────────────────────────
 # A really-migrated database restored without `_prisma_migrations` is the one kind that reaches
@@ -5359,7 +5397,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20271224000000_phase6_t4d_i_b_u3_pairing_flip 20271225000000_phase6_project_row_lock_no_key
 20271226000000_phase6_t4d_ii_release_lease_writer 20271227000000_phase6_t4d_ii_consultation_finalized_cycle
 20271228000000_phase6_t4d_ii_a6a_activation_register 20271229000000_phase6_t4d_ii_a6b_activation_rules
-20271230000000_phase6_t4d_ii_a6c_catalog_rules 20271231000000_phase6_t4d_ii_a6d_delivery_seals"
+20271230000000_phase6_t4d_ii_a6c_catalog_rules 20271231000000_phase6_t4d_ii_a6d_delivery_seals
+20280101000000_phase6_t4d_ii_a6e_generation_fence"
 t4d_replay() {
   local m
   for m in $T4D_REPLAY; do
@@ -5464,6 +5503,11 @@ assert "4d-ii-a / A6c: the replay re-issued the barrier and rewrote no rule" \
 assert "4d-ii-a / A6d: the replay re-issued the four delivery seals and moved no row" \
   "SELECT (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('DomainEvent_t4d_deliveries','OutboxDelivery_t4d_bound','OutboxDelivery_t4d_frozen','OutboxDelivery_t4d_retained'))::text || '|' || (SELECT string_agg(\"consumer\" || ':' || \"deliveryAction\", ',' ORDER BY \"consumer\") FROM \"OutboxDelivery\" WHERE \"eventId\" = 'UP4D-LL-E0');" \
   "4|socket.invalidation:dispatch,upgrade.proof.flip:dispatch,webpush.notify:noop"
+# A6e — the replay re-ran the fence migration over the minimum the proof raised to 3: its raise is
+# GREATEST, so the later raise and its evidence stand, and the three seals are re-issued.
+assert "4d-ii-a / A6e: the replay re-issued the fence's seals and did not lower the raised minimum" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('ServerGeneration_t4d_raised','ServerGeneration_t4d_retained','ServerGeneration_t4d_no_truncate'))::text || '|' || (SELECT \"minimumGeneration\"::text || '|' || \"raisedBy\" FROM \"ServerGeneration\" WHERE \"key\" = 'singleton');" \
+  "3|3|upgrade-proof: a later fence-raising migration"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

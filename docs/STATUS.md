@@ -14,36 +14,39 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a6d-delivery-seals
-reviewed_merge: 25e8531
-open_pr: 662
+work_item: phase-6-task-4d-ii-a-a6e-generation-fence
+reviewed_merge: b44a629
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
 ```
 
-### Now — Phase 6 task 4d: A6d, the delivery rows and their seals
+### Now — Phase 6 task 4d: A6e, the server-generation fence and the drain evidence
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A6d, `open_pr: 662` (`work_item: phase-6-task-4d-ii-a-a6d-delivery-seals`, branch
-  `claude/4d-ii-a6d-delivery-seals`, from `main` at `25e8531`).** The fourth A6 sub-unit: the delivery
-  rows as a pure function of the event and the persisted catalog, and the three seals that demand them.
-  - Migration `20271231000000_phase6_t4d_ii_a6d_delivery_seals` (on `ALWAYS_EXECUTE`): the kernel's
-    derivation `platform_t4d_delivery_action` and projection `platform_t4d_push_payload`;
-    `DomainEvent_t4d_deliveries` (deferred: every ACTIVE, RULED catalog row's same-transaction row at
-    commit, the registration key taken SHARED by the seal itself, every catalog row `FOR SHARE` before
-    the active filter); `OutboxDelivery_t4d_bound` (every row's action is its rule's derivation, a
-    push row carries the intent's projection and `subject = entityId`, a rule-less consumer's row is
-    refused, the born-cancelled tombstone admitted); `OutboxDelivery_t4d_frozen` (identity and payload
-    frozen, the subject stamp, the mark, the completion, the legacy neutralization).
-  - `deliveryRowsFor(meta, catalogRows)` called by `materializeDeliveries` (the catalog read under the
-    SHARE key and `FOR SHARE`, consulting no registry) and by `expandMissingDeliveries` (no longer gated
-    on the process-local code); `deliveryFor` retired from the consumer contract; the rebuilder judges
-    by the declared rule. The direct-writer fixtures (`insertRawEventVia`, the bundle suites, the
-    upgrade proof's hand-run event) write their rows from the catalog through the kernel's derivation.
-    P37 and P38's barrier arms in both orderings, through the emitter and a direct writer.
+- **Now, A6e, `open_pr: none` (`work_item: phase-6-task-4d-ii-a-a6e-generation-fence`, branch
+  `claude/4d-ii-a6e-generation-fence`, from `main` at `b44a629`).** The fifth and last A6 sub-unit: the
+  server-generation fence and the drain's autonomous corroboration (the staging document, "The drain").
+  - Migration `20280101000000_phase6_t4d_ii_a6e_generation_fence` (on `ALWAYS_EXECUTE`): the
+    `ServerGeneration` singleton register — the persisted minimum, written only inside a migration's DDL
+    transition (`platform_t4d_server_generation_migration_open`, A6c's shape), only ever raised (`GREATEST`
+    on re-apply), never deleted or truncated — set to this build's generation (1), so nothing running is
+    refused; A8b's migration raises it.
+  - `src/platform/server-generation.ts`: the compiled `SERVER_GENERATION` (pinned to the migration's
+    literal) and the startup fence the outbox bootstrap runs FIRST, refusing a build below the persisted
+    minimum and a database carrying none.
+  - `rollout:drain-evidence` (`src/platform/rollout/`): reads the Coolify application resource and the
+    running-deployment queue, and the `ReleaseLease` register; places each release against the minimum by
+    git ancestry, fail closed on anything it cannot place, `not-drained` dominating; renders the
+    `DRAIN-EVIDENCE` comment body for the runner to record. An observer: the gate still clears only on
+    the human `OPERATOR-ATTESTATION`.
+- **A6d merged as #662** (`b44a629`): `deliveryRowsFor` over the persisted catalog called by
+  `materializeDeliveries` and `expandMissingDeliveries`, `deliveryFor` retired; the kernel's derivation
+  and projection; `DomainEvent_t4d_deliveries` (deferred, the SHARE half of the barrier), the binding,
+  the freeze and the retention on `OutboxDelivery`; the direct-writer fixtures writing their rows.
 - **A6c merged as #661** (`25e8531`): `dispatchRule` / `subscribedEventTypes` on the catalog under three
   CHECKs, written by the migration inside the DDL rule-migration transition and frozen outside it;
   the compiled consumers declare their rule, `syncConsumerCatalog` initializes and verifies it;

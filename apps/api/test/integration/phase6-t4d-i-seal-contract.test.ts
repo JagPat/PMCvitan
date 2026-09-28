@@ -1010,6 +1010,27 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'OutboxDelivery.OutboxDelivery_t4d_retained': B('D') },
     must: ['never deleted', 'RAISE EXCEPTION'],
   },
+  platform_t4d_server_generation_raised: {
+    rule: 'the persisted server-generation minimum is written only inside a migration transaction — the '
+      + 'DDL transition platform_t4d_server_generation_migration_open, created by the current transaction '
+      + '— and only ever RAISED, whoever writes; an UPDATE that raises nothing rewrites neither raisedBy nor raisedAt',
+    plan: 'staging document "The drain"; #640 Codex finding 4110816159; #661 round 1, finding 1 (the DDL transition)',
+    on: { 'ServerGeneration.ServerGeneration_t4d_raised': B('I U') },
+    must: ['platform_t4d_server_generation_migration_open', 'txid_status', 'NEW."minimumGeneration" < OLD."minimumGeneration"', 'RAISE EXCEPTION'],
+  },
+  platform_t4d_server_generation_retained: {
+    rule: 'the persisted server-generation minimum is never deleted: a process that reads no minimum is refused, '
+      + 'and a removed row is the one way to lower a minimum that is only ever raised',
+    plan: 'staging document "The drain"',
+    on: { 'ServerGeneration.ServerGeneration_t4d_retained': B('D') },
+    must: ['never deleted', 'RAISE EXCEPTION'],
+  },
+  platform_t4d_server_generation_no_truncate: {
+    rule: 'the persisted server-generation minimum is never truncated (a statement seal; a row trigger never sees TRUNCATE)',
+    plan: 'staging document "The drain"',
+    on: { 'ServerGeneration.ServerGeneration_t4d_no_truncate': S('T') },
+    must: ['never truncated', 'RAISE EXCEPTION'],
+  },
   platform_t4d_delivery_frozen: {
     rule: 'id, eventId, projectId, streamPosition, consumer, consumerKind and payload never move; subject '
       + 'moves only NULL -> the row\'s own event\'s entityId; cancelledAt only NULL -> a timestamp, never '

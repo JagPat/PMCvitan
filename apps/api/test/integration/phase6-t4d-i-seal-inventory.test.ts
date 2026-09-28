@@ -180,6 +180,9 @@ const INVENTORY: Record<string, string[]> = {
   // 4d-ii-a's writers witness (20271226) stands the dark window's INSERT reservation down: the
   // startup lease writer is the sanctioned writer it was waiting for.
   ReleaseLease: ['ReleaseLease_t4d_frozen', 'ReleaseLease_t4d_no_truncate'],
+  // 4d-ii-a / A6e (20280101): the server-generation fence's persisted minimum — written only inside
+  // a migration's DDL transition, only ever raised, never deleted or truncated.
+  ServerGeneration: ['ServerGeneration_t4d_no_truncate', 'ServerGeneration_t4d_raised', 'ServerGeneration_t4d_retained'],
   RolloutRetirement: [
     'RolloutRetirement_t4d_frozen',
     'RolloutRetirement_t4d_gate',
@@ -271,6 +274,9 @@ const FUNCTIONS = [
   'platform_t4d_delivery_retained',
   'platform_t4d_delivery_action',
   'platform_t4d_push_payload',
+  'platform_t4d_server_generation_raised',
+  'platform_t4d_server_generation_retained',
+  'platform_t4d_server_generation_no_truncate',
 ];
 
 describe('Phase 6 units 4d-i and 4d-i-b — every seal the migrations name is INSTALLED (live PG)', () => {

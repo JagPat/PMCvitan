@@ -161,6 +161,9 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // 4d-ii-a / A6a — P-A6's hostile TRUNCATE of the activation register, asserted refused under a
       // savepoint on a rolled-back transaction.
       'phase6-t4d-ii-a6a-activation-register.test.ts': 1,
+      // 4d-ii-a / A6e — the hostile TRUNCATE of the server-generation register, asserted refused under
+      // a savepoint on a rolled-back transaction: once directly, once inside the migration transition.
+      'phase6-t4d-ii-a6e-generation-fence.test.ts': 2,
     };
 
     const offenders: string[] = [];

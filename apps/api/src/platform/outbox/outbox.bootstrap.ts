@@ -21,6 +21,7 @@ import { CommercialBudgetQuery } from '../../commercial/commercial-budget.query'
 import { OrgsParticipant } from '../../orgs/orgs.participant';
 import { effectCoverageVersion } from '../external-effects';
 import { ReleaseLeaseService } from '../release-lease.service';
+import { assertServerGenerationAdmitted } from '../server-generation';
 
 /**
  * Phase 2 Task 6 — outbox lifecycle bootstrap. At app start it registers the socket + push
@@ -58,6 +59,10 @@ export class OutboxBootstrap implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    // 4d-ii-a / A6e — THE SERVER-GENERATION FENCE, first: a build whose compiled generation is below
+    // the persisted, migration-written minimum is refused before it registers, syncs or writes
+    // anything (the staging document, "The drain"). Fail-closed on an absent minimum.
+    await assertServerGenerationAdmitted(this.prisma, this.log);
     registerConsumer(makeSocketConsumer(this.realtime));
     registerConsumer(
       makePushConsumer(this.push, {

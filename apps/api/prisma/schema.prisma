@@ -3214,6 +3214,19 @@ model ReleaseLease {
   @@index([release])
 }
 
+// Phase 6 task 4d unit 4d-ii-a / A6e — the SERVER-GENERATION FENCE's persisted minimum (the staging
+// document, "The drain"). A SINGLETON (`key = 'singleton'`, CHECK in the migration), written ONLY by
+// a migration inside the DDL transition `platform_t4d_server_generation_migration_open()` and only
+// ever RAISED (`ServerGeneration_t4d_raised`); never deleted or truncated. Every fenced build reads
+// it at startup and refuses to start when it exceeds the build's compiled `SERVER_GENERATION`.
+model ServerGeneration {
+  key               String   @id
+  minimumGeneration Int
+  /// the migration that last raised the minimum — evidence, never a setting
+  raisedBy          String
+  raisedAt          DateTime @default(now())
+}
+
 // Phase 6 task 4d unit 4d-i (§A.3) — the GENERIC pairing register. Exactly ONE fact per event
 // branch supplies the claim, and the per-event primary key is what makes that exclusive: a
 // second claimant meets a constraint rather than a rule someone has to remember. A blanket

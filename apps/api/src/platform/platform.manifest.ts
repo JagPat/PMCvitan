@@ -61,6 +61,8 @@ export const platformManifest: ModuleManifest = {
     // are DARK: nothing reads or writes them until 4d-ii.
     'externalEffectCatalog',
     'releaseLease',
+    // 4d-ii-a / A6e — the server-generation fence's persisted minimum (platform-owned, migration-written)
+    'serverGeneration',
     'domainEventPairingClaim',
   ],
   dependsOn: [],
