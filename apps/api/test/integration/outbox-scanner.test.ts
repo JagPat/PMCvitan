@@ -6,7 +6,7 @@ import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { registerConsumer, unregisterConsumer, syncConsumerCatalog, type OutboxConsumer } from '../../src/platform/outbox/registry';
 import type { Actor } from '../../src/common/actor';
 
-import { sanctionedReset, sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
+import { sanctionedReset, sanctionedConsumerRemoval, plantDeliveryGap } from '../../prisma/sanctioned-reset';
 import { OutboxConsumerActivationService } from '../../src/platform/outbox/consumer-activation.service';
 import { randomUUID } from 'node:crypto';
 /**
@@ -114,7 +114,6 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     expect(created).toBeGreaterThanOrEqual(2);
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: LATE, projectId: p } })).toBe(2);
     unregisterConsumer(LATE);
-    await t.prisma.outboxDelivery.deleteMany({ where: { consumer: LATE } });
     await sanctionedConsumerRemoval(t.prisma, [LATE]);
   });
 
@@ -124,7 +123,8 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     await emit(p, 'NP-y');
     await emit(p, 'GO-z');
     // clear the auto-materialized rows so both scanners must (re)create them, racing on the unique
-    await t.prisma.outboxDelivery.deleteMany({ where: { consumer: FILTERED, projectId: p } });
+    // (4d-ii-a / A6d — a delivery is never deleted; the gap is planted by name)
+    await plantDeliveryGap(t.prisma, { consumer: FILTERED, projectId: p });
     await Promise.all([relay.expandMissingDeliveries(), relay.expandMissingDeliveries()]);
     const rows = await t.prisma.outboxDelivery.findMany({ where: { consumer: FILTERED, projectId: p } });
     expect(rows).toHaveLength(3); // exactly one per event — no duplicates
@@ -165,7 +165,6 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     await relay.expandMissingDeliveries(2);
     expect(await owed()).toBe(5); // drained over successive passes
     unregisterConsumer(LATE);
-    await t.prisma.outboxDelivery.deleteMany({ where: { consumer: LATE } });
     await sanctionedConsumerRemoval(t.prisma, [LATE]);
   });
 
@@ -209,7 +208,6 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     expect(await ran()).toBe(1);
     unregisterConsumer(PAUSE);
     await t.prisma.auditLog.deleteMany({ where: { action: 'test.pause' } });
-    await t.prisma.outboxDelivery.deleteMany({ where: { consumer: PAUSE } });
     await sanctionedConsumerRemoval(t.prisma, [PAUSE]);
   });
 
@@ -234,7 +232,6 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     expect(byEvent[eGo]).toBe('dispatch'); // persisted GO- envelope → dispatch
     expect(byEvent[eNp]).toBe('noop'); // persisted NP- envelope → recorded no-op
     unregisterConsumer(LATEF);
-    await t.prisma.outboxDelivery.deleteMany({ where: { consumer: LATEF } });
     await sanctionedConsumerRemoval(t.prisma, [LATEF]);
   });
 
@@ -257,11 +254,10 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     expect(Object.fromEntries(emitted.map((r) => [r.eventId, r.deliveryAction]))).toEqual({ [eGo]: 'dispatch', [eNp]: 'noop' });
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: NORULE } })).toBe(0);
     // the scanner: nothing is missing for ABSENT (the emitter wrote it), nothing is ever owed to NORULE
-    await t.prisma.outboxDelivery.deleteMany({ where: { consumer: ABSENT, projectId: p } }); // a crash gap
+    await plantDeliveryGap(t.prisma, { consumer: ABSENT, projectId: p }); // a crash gap, planted by name
     await relay.expandMissingDeliveries();
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: ABSENT, projectId: p } })).toBe(2); // repaired from the persisted rule, code still absent
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: NORULE } })).toBe(0);
-    await t.prisma.outboxDelivery.deleteMany({ where: { consumer: ABSENT } });
     await sanctionedConsumerRemoval(t.prisma, [ABSENT, NORULE]);
   });
 });

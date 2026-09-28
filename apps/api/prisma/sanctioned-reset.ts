@@ -200,6 +200,8 @@ export async function sanctionedReset(
 
 /** The activation register's append-only seal, the one seal the row-scoped removal disables. */
 const ACTIVATION_APPEND_ONLY = { table: 'OutboxConsumerActivation', trigger: 'OutboxConsumerActivation_t4d_append_only' } as const;
+/** 4d-ii-a / A6d — the delivery retention seal, declared by name for a consumer's removal and a gap plant. */
+const DELIVERY_RETAINED = { table: 'OutboxDelivery', trigger: 'OutboxDelivery_t4d_retained' } as const;
 
 /**
  * Phase 6 task 4d-ii-a / A6a — remove exactly the named outbox consumers, with their activation
@@ -228,8 +230,46 @@ export async function sanctionedConsumerRemoval(
   const names = [...consumers];
   await prisma.$transaction([
     prisma.$executeRawUnsafe(toggleSeal('DISABLE', ACTIVATION_APPEND_ONLY)),
+    // 4d-ii-a / A6d — a consumer's delivery rows leave with it: the catalog FK is RESTRICT, and
+    // `OutboxDelivery_t4d_retained` refuses every DELETE (a delivery is a durable obligation),
+    // so the removal declares the retention seal by name for exactly these rows, as it declares
+    // the register's append-only seal for the consumer's facts.
+    prisma.$executeRawUnsafe(toggleSeal('DISABLE', DELIVERY_RETAINED)),
+    prisma.$executeRawUnsafe(`DELETE FROM "OutboxDelivery" WHERE "consumer" = ANY($1::text[])`, names),
+    prisma.$executeRawUnsafe(toggleSeal('ENABLE', DELIVERY_RETAINED)),
     prisma.$executeRawUnsafe(`DELETE FROM "OutboxConsumerActivation" WHERE "consumer" = ANY($1::text[])`, names),
     prisma.$executeRawUnsafe(`DELETE FROM "OutboxConsumerCatalog" WHERE "consumer" = ANY($1::text[])`, names),
     prisma.$executeRawUnsafe(toggleSeal('ENABLE', ACTIVATION_APPEND_ONLY)),
   ]);
+}
+
+/**
+ * Phase 6 task 4d-ii-a / A6d — the NAMED BYPASS for a DELIVERY GAP plant. `OutboxDelivery_t4d_retained`
+ * refuses every DELETE, because a delivery is the durable obligation the event was admitted on. The
+ * crash / rolling-deploy gap the expansion scanner and the 4a tombstone exist to repair — an event
+ * committed with a delivery row missing — is therefore a state no writer can reach, and a probe that
+ * needs it declares the seal BY NAME for exactly its statement, inside one transaction that puts the
+ * seal back in `finally`. Guarded on the trigger's existence, because a suite may run against an
+ * earlier migration point.
+ */
+export async function plantDeliveryGap(
+  prisma: TruncateCapableClient | null | undefined,
+  where: { id?: string; eventId?: string | { in: string[] }; consumer?: string; projectId?: string },
+): Promise<number> {
+  if (!prisma) return 0;
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  const add = (column: string, value: unknown): void => { params.push(value); clauses.push(`"${column}" = $${params.length}`); };
+  if (where.id !== undefined) add('id', where.id);
+  if (typeof where.eventId === 'string') add('eventId', where.eventId);
+  else if (where.eventId !== undefined) { params.push(where.eventId.in); clauses.push(`"eventId" = ANY($${params.length}::text[])`); }
+  if (where.consumer !== undefined) add('consumer', where.consumer);
+  if (where.projectId !== undefined) add('projectId', where.projectId);
+  if (clauses.length === 0) throw new Error('plantDeliveryGap: a gap is planted for named rows, never for the whole table');
+  const [, deleted] = await prisma.$transaction([
+    prisma.$executeRawUnsafe(toggleSeal('DISABLE', DELIVERY_RETAINED)),
+    prisma.$executeRawUnsafe(`DELETE FROM "OutboxDelivery" WHERE ${clauses.join(' AND ')}`, ...params),
+    prisma.$executeRawUnsafe(toggleSeal('ENABLE', DELIVERY_RETAINED)),
+  ]);
+  return Number(deleted);
 }

@@ -12,7 +12,7 @@ import {
 } from '../../src/platform/outbox/registry';
 import { PUSH_CONSUMER, SOCKET_CONSUMER } from '../../src/platform/outbox/consumers';
 import { effectCoverageVersion } from '../../src/platform/external-effects';
-import { sanctionedReset, sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
+import { sanctionedReset, sanctionedConsumerRemoval, plantDeliveryGap } from '../../prisma/sanctioned-reset';
 import type { Actor } from '../../src/common/actor';
 
 /**
@@ -156,7 +156,7 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
   afterAll(async () => {
     for (const c of AD_HOC) unregisterConsumer(c);
     await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
-    await sanctionedConsumerRemoval(t?.prisma, [...AD_HOC, 'test.a6d.late', 'test.a6d.reg', 'test.a6d.reg2', 'test.a6d.hold']);
+    await sanctionedConsumerRemoval(t?.prisma, [...AD_HOC, 'test.a6d.late', 'test.a6d.reg', 'test.a6d.reg2', 'test.a6d.hold', 'test.a6d.unhandled']);
     await f?.cleanup();
     await t?.close();
   });
@@ -242,7 +242,11 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
     // the scanner: every row deleted, every row re-created identically (payload and subject included)
     const { eventId: pushed } = await publish(entity());
     const expectedPush = await expectedRowsOf(pushed);
-    await t.prisma.outboxDelivery.deleteMany({ where: { eventId: { in: [eventId, pushed] } } });
+    // a delivery is never DELETED (`OutboxDelivery_t4d_retained`): the gap is planted by name
+    await expect(t.prisma.outboxDelivery.deleteMany({ where: { eventId } })).rejects.toThrow(/durable delivery obligation — cancelled and RECORDED, never deleted/);
+    expect(await rowsOf(eventId)).toEqual(expected);
+    await plantDeliveryGap(t.prisma, { eventId: { in: [eventId, pushed] } });
+    expect(await rowsOf(eventId)).toEqual([]);
     await relay.expandMissingDeliveries();
     expect(await rowsOf(eventId)).toEqual(expected);
     expect(await rowsOf(pushed)).toEqual(expectedPush);
@@ -265,20 +269,27 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
     await expect(t.prisma.$transaction(async (tx) => { await rawEvent(tx, id); }, { timeout: 30_000 }))
       .rejects.toThrow(/owes consumer "activities\.material-readiness" a delivery row — its catalog row is ACTIVE and carries rule types/);
     expect(await t.prisma.domainEvent.findUnique({ where: { eventId: id } })).toBeNull();
-    // every row but the socket's
+    // every row but the socket's (a writer's own row cannot be deleted either — the rows are written without it)
     await expect(t.prisma.$transaction(async (tx) => {
       await rawEvent(tx, id);
-      await tx.$executeRawUnsafe(rawDeliveryRowsSql(id));
-      await tx.$executeRawUnsafe(`DELETE FROM "OutboxDelivery" WHERE "eventId" = $1 AND "consumer" = $2`, id, SOCKET_CONSUMER);
+      await tx.$executeRawUnsafe(rawDeliveryRowsSql(id, { except: SOCKET_CONSUMER }));
     }, { timeout: 30_000 })).rejects.toThrow(/owes consumer "socket\.invalidation" a delivery row — its catalog row is ACTIVE and carries rule invalidate/);
     // a wrong action — the binding refuses it at the row, before the obligation ever judges
     await expect(t.prisma.$transaction(async (tx) => {
       await rawEvent(tx, id);
-      await tx.$executeRawUnsafe(rawDeliveryRowsSql(id));
-      await tx.$executeRawUnsafe(`DELETE FROM "OutboxDelivery" WHERE "eventId" = $1 AND "consumer" = $2`, id, SOCKET_CONSUMER);
+      await tx.$executeRawUnsafe(rawDeliveryRowsSql(id, { except: SOCKET_CONSUMER }));
       await tx.$executeRawUnsafe(
         `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","updatedAt")
          SELECT gen_random_uuid()::text, e."eventId", e."projectId", $2, 'unordered', 'noop', e."streamPosition", 'succeeded', now() FROM "DomainEvent" e WHERE e."eventId" = $1`, id, SOCKET_CONSUMER);
+    }, { timeout: 30_000 })).rejects.toThrow(/carries action `noop`, but the consumer's persisted rule invalidate derives `dispatch`/);
+    // (#662 round 1, finding 1) a forged cancellation — the socket's row written as a marked `noop` — is
+    // refused: the tombstone shape is the push rule's alone, so no bundle suppresses an invalidation
+    await expect(t.prisma.$transaction(async (tx) => {
+      await rawEvent(tx, id);
+      await tx.$executeRawUnsafe(rawDeliveryRowsSql(id, { except: SOCKET_CONSUMER }));
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","cancelledAt","updatedAt")
+         SELECT gen_random_uuid()::text, e."eventId", e."projectId", $2, 'unordered', 'noop', e."streamPosition", 'succeeded', now(), now() FROM "DomainEvent" e WHERE e."eventId" = $1`, id, SOCKET_CONSUMER);
     }, { timeout: 30_000 })).rejects.toThrow(/carries action `noop`, but the consumer's persisted rule invalidate derives `dispatch`/);
     // the complete set commits
     await t.prisma.$transaction(async (tx) => {
@@ -286,6 +297,28 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
       await tx.$executeRawUnsafe(rawDeliveryRowsSql(id));
     }, { timeout: 30_000 });
     expect(await rowsOf(id)).toEqual(await expectedRowsOf(id));
+  });
+
+  // (#662 round 1, finding 3) a consumer with rows but no handler in this process
+  it('the relay CLAIMS the rows of an active consumer whose code this process lacks and dead-letters them by name — never leaves them pending in silence', async () => {
+    const UNHANDLED = 'test.a6d.unhandled';
+    await sanctionedConsumerRemoval(t.prisma, [UNHANDLED]);
+    // an ORDERED consumer: always the relay's to claim, whatever the sender mode (an external one's
+    // fresh first attempt belongs to the immediate dispatcher in legacy mode, and reaches the relay
+    // only as recovery)
+    await t.prisma.outboxConsumerCatalog.create({ data: { consumer: UNHANDLED, consumerKind: 'ordered', consumerEffect: 'db', catalogVersion: 1, dispatchRule: 'all' } });
+    try {
+      const { eventId } = await draft(entity());
+      const before = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { eventId, consumer: UNHANDLED } });
+      expect(before).toMatchObject({ deliveryAction: 'dispatch', status: 'pending', consumerKind: 'ordered' });
+      await relay.runOnce();
+      const after = await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: before.id } });
+      expect(after.status).toBe('dead');
+      expect(after.lastError).toMatch(/no consumer registered: test\.a6d\.unhandled/);
+    } finally {
+      await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
+      await sanctionedConsumerRemoval(t.prisma, [UNHANDLED]);
+    }
   });
 
   it('the obligation is the ACTIVE, RULED set: nothing is owed to an inactive row or a rule-less row, and a row written for the inactive consumer is admitted — the seal never forbids one', async () => {
@@ -322,8 +355,8 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
     }
     expect(await rowsOf(eventId)).toEqual(before);
     const triggers = await t.prisma.$queryRaw<{ tgname: string }[]>`
-      SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('DomainEvent_t4d_deliveries','OutboxDelivery_t4d_bound','OutboxDelivery_t4d_frozen') ORDER BY tgname`;
-    expect(triggers.map((x) => x.tgname)).toEqual(['DomainEvent_t4d_deliveries', 'OutboxDelivery_t4d_bound', 'OutboxDelivery_t4d_frozen']);
+      SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('DomainEvent_t4d_deliveries','OutboxDelivery_t4d_bound','OutboxDelivery_t4d_frozen','OutboxDelivery_t4d_retained') ORDER BY tgname`;
+    expect(triggers.map((x) => x.tgname)).toEqual(['DomainEvent_t4d_deliveries', 'OutboxDelivery_t4d_bound', 'OutboxDelivery_t4d_frozen', 'OutboxDelivery_t4d_retained']);
   });
 
   // ── the binding: OutboxDelivery_t4d_bound ───────────────────────────────────────────────────
@@ -343,6 +376,10 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
       // the inactive `all` consumer: the action is judged all the same
       expect(await plantRow(tx, eventId, OFF, 'unordered', 'noop')).toMatch(/carries action `noop`, but the consumer's persisted rule all derives `dispatch`/);
       expect(await plantRow(tx, eventId, OFF, 'unordered', 'dispatch')).toBeNull();
+      // (#662 round 1, finding 1) the born-cancelled tombstone is the PUSH rule's alone: a marked `noop`
+      // for an `all` or `types` consumer is a forged cancellation of a socket invalidation or a projection
+      expect(await plantRow(tx, eventId, OFF, 'unordered', 'noop', { status: 'succeeded', cancelled: true })).toMatch(/persisted rule all derives `dispatch`/);
+      expect(await plantRow(tx, eventId, OFF, 'unordered', 'noop', { status: 'succeeded', cancelled: true, subject: id })).toMatch(/persisted rule all derives `dispatch`/);
       // a rule-less consumer derives nothing: refused by name
       expect(await plantRow(tx, eventId, NORULE, 'unordered', 'dispatch')).toMatch(/consumer "test\.a6d\.norule" carries NO persisted dispatch rule/);
       expect(await plantRow(tx, eventId, NORULE, 'unordered', 'noop')).toMatch(/NO persisted dispatch rule/);
@@ -362,7 +399,9 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
       expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'noop')).toMatch(/carries action `noop`, but the consumer's persisted rule push derives `dispatch`/);
       // the born-cancelled tombstone: noop, marked, succeeded, no payload, its subject — admitted
       expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'noop', { status: 'succeeded', subject: id, cancelled: true })).toBeNull();
-      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'noop', { status: 'succeeded', subject: id, cancelled: true, payload: projection })).toMatch(/no-op push delivery .* carries a payload or a foreign subject/);
+      // a marked noop carrying a payload, or a foreign subject, is not the tombstone shape: the action arm refuses it
+      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'noop', { status: 'succeeded', subject: id, cancelled: true, payload: projection })).toMatch(/persisted rule push derives `dispatch`/);
+      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'noop', { status: 'succeeded', subject: 'D-other', cancelled: true })).toMatch(/persisted rule push derives `dispatch`/);
       expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'noop', { status: 'pending', subject: id, cancelled: true })).toMatch(/derives `dispatch`/);
       // any other rule: neither payload nor subject
       expect(await plantRow(tx, eventId, OFF, 'unordered', 'dispatch', { payload: '{"legacy":"body"}' })).toMatch(/carries a payload or a subject — only a push-rule delivery projects the intent/);

@@ -161,7 +161,7 @@ const INVENTORY: Record<string, string[]> = {
   OutboxConsumerCatalog: ['OutboxConsumerCatalog_t4d_registration_barrier', 'OutboxConsumerCatalog_t4d_registration_head', 'OutboxConsumerCatalog_t4d_rules'],
   // 4d-ii-a / A6d (20271231): every delivery row bound to its consumer's persisted rule and its
   // event's intent at insert, and frozen afterwards but for the relay's own transitions.
-  OutboxDelivery: ['OutboxDelivery_t4d_bound', 'OutboxDelivery_t4d_frozen'],
+  OutboxDelivery: ['OutboxDelivery_t4d_bound', 'OutboxDelivery_t4d_frozen', 'OutboxDelivery_t4d_retained'],
   Project: ['Project_t4d_deleting', 'Project_t4d_project_org', 'Project_t4d_user_standing'],
   ProjectEventStream: [
     // §A.2 names FIVE objects here and the first version of this unit installed two, with the
@@ -268,6 +268,7 @@ const FUNCTIONS = [
   'platform_t4d_event_deliveries',
   'platform_t4d_delivery_bound',
   'platform_t4d_delivery_frozen',
+  'platform_t4d_delivery_retained',
   'platform_t4d_delivery_action',
   'platform_t4d_push_payload',
 ];

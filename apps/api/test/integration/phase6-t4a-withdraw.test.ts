@@ -21,7 +21,7 @@ import { pendingDecisionNotice, withdrawnDecisionNotice, isWithdrawnDecisionNoti
 import { deriveDecisionReading } from '@vitan/shared';
 import type { AuthUser } from '../../src/common/auth';
 
-import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { sanctionedReset, plantDeliveryGap } from '../../prisma/sanctioned-reset';
 /**
  * Phase 6 unit 4a — `decisions.withdraw` (plan §A), proven live against PostgreSQL through the
  * REAL application. The owner's live defect: a wrongly-published decision had no honest exit.
@@ -832,7 +832,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       const id = await seed({ title: 'Recovered push' });
       const deliveryId = await emitQueuedPush(id, 'Recovered push');
       // the documented crash/rolling-deploy gap: the event committed but its delivery row is missing
-      await t.prisma.outboxDelivery.delete({ where: { id: deliveryId } });
+      await plantDeliveryGap(t.prisma, { id: deliveryId }); // 4d-ii-a / A6d: a delivery is never deleted; the gap is planted by name
       await relay.expandMissingDeliveries();
       const recovered = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer: PUSH_CONSUMER, projectId: f.projectA.id, status: 'pending' } });
       expect(recovered.subject).toBe(id);
@@ -955,7 +955,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       const deliveryId = await emitQueuedPush(id, 'Gap push');
       // the rolling-deploy/crash gap the recovery scanner exists to repair: the
       // `decision.published` event committed but NO push delivery row exists yet
-      await t.prisma.outboxDelivery.delete({ where: { id: deliveryId } });
+      await plantDeliveryGap(t.prisma, { id: deliveryId }); // 4d-ii-a / A6d: a delivery is never deleted; the gap is planted by name
       await svc.withdraw(f.projectA.id, id, { reason: 'withdrawn inside the gap' }, pmc());
       // the cancellation materialized the missing row ITSELF — already cancelled (no payload
       // was ever built), so the gap is closed at the only moment the domain knows it went stale
@@ -1039,7 +1039,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       const id = await seed({ title: 'Interleaved scanner' });
       const deliveryId = await emitQueuedPush(id, 'Interleaved scanner');
       // the recovery gap: the event exists, its delivery row does not
-      await t.prisma.outboxDelivery.delete({ where: { id: deliveryId } });
+      await plantDeliveryGap(t.prisma, { id: deliveryId }); // 4d-ii-a / A6d: a delivery is never deleted; the gap is planted by name
       const ev = await t.prisma.domainEvent.findFirstOrThrow({ where: { projectId: f.projectA.id, eventType: 'decision.published', entityId: id } });
 
       const blockedWaiters = async (queryLike: string): Promise<number> => {
@@ -1444,7 +1444,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     it('R10-F2 (refuted): the recovery-gap tombstone id lands as canonical uuid text', async () => {
       const id = await seed({ title: 'Tombstone cast' });
       const deliveryId = await emitQueuedPush(id, 'Tombstone cast');
-      await t.prisma.outboxDelivery.delete({ where: { id: deliveryId } });
+      await plantDeliveryGap(t.prisma, { id: deliveryId }); // 4d-ii-a / A6d: a delivery is never deleted; the gap is planted by name
       await svc.withdraw(f.projectA.id, id, { reason: 'cast probe' }, pmc());
       const tomb = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer: PUSH_CONSUMER, projectId: f.projectA.id, subject: id } });
       expect(tomb.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);

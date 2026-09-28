@@ -10,7 +10,7 @@ import { SOCKET_CONSUMER, PUSH_CONSUMER, makeSocketConsumer, makePushConsumer } 
 import { effectCoverageVersion } from '../../src/platform/external-effects';
 import type { Actor } from '../../src/common/actor';
 
-import { sanctionedReset, sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
+import { sanctionedReset, sanctionedConsumerRemoval, plantDeliveryGap } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 6 — the per-consumer transactional outbox, proven against live PostgreSQL.
  *
@@ -267,7 +267,8 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
     const p = await freshProject();
     // an event whose PROJECTION delivery was never written (simulate a pre-consumer / crash-gap event)
     const { eventId } = await emit(p, 'D-backfill');
-    await t.prisma.outboxDelivery.deleteMany({ where: { consumer: PROJECTION, eventId } });
+    // 4d-ii-a / A6d — a delivery is never deleted (`OutboxDelivery_t4d_retained`); the gap is planted by name
+    await plantDeliveryGap(t.prisma, { consumer: PROJECTION, eventId });
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: PROJECTION, eventId } })).toBe(0);
 
     const created = await relay.expandMissingDeliveries();

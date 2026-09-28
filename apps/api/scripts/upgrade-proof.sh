@@ -5256,9 +5256,9 @@ assert "4d-ii-a / A6c: the rewrite inside the transition stands, the marker is g
 # does not derive, and a row for the rule-less planted history, are refused at the row; the frozen
 # columns and the mark hold; a legacy (null-intent) row still takes the relay's neutralization; and a
 # complete hand-run bundle — event and rows from the kernel's own derivation — commits.
-assert "4d-ii-a / A6d: the three delivery seals and the two kernel reads they judge by are installed" \
-  "SELECT (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('DomainEvent_t4d_deliveries','OutboxDelivery_t4d_bound','OutboxDelivery_t4d_frozen'))::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname IN ('platform_t4d_delivery_action','platform_t4d_push_payload','platform_t4d_event_deliveries','platform_t4d_delivery_bound','platform_t4d_delivery_frozen'))::text;" \
-  "3|5"
+assert "4d-ii-a / A6d: the four delivery seals and the two kernel reads they judge by are installed" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('DomainEvent_t4d_deliveries','OutboxDelivery_t4d_bound','OutboxDelivery_t4d_frozen','OutboxDelivery_t4d_retained'))::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname IN ('platform_t4d_delivery_action','platform_t4d_push_payload','platform_t4d_event_deliveries','platform_t4d_delivery_bound','platform_t4d_delivery_frozen','platform_t4d_delivery_retained'))::text;" \
+  "4|6"
 assert "4d-ii-a / A6d: the kernel's derivation over this database's rules — invalidate follows the intent, push needs a body, all always, types by name" \
   "SELECT platform_t4d_delivery_action('invalidate', NULL, 'x', '{\"invalidate\":true}') || '|' || platform_t4d_delivery_action('invalidate', NULL, 'x', NULL) || '|' || platform_t4d_delivery_action('push', NULL, 'x', '{\"push\":{\"body\":\"\"}}') || '|' || platform_t4d_delivery_action('push', NULL, 'x', '{\"push\":{\"body\":\"hi\"}}') || '|' || platform_t4d_delivery_action('all', NULL, 'x', NULL) || '|' || platform_t4d_delivery_action('types', ARRAY['x'], 'x', NULL) || '|' || platform_t4d_delivery_action('types', ARRAY['x'], 'y', NULL) || '|' || coalesce(platform_t4d_delivery_action(NULL, NULL, 'x', NULL), '-');" \
   "dispatch|noop|noop|dispatch|dispatch|dispatch|noop|-"
@@ -5302,6 +5302,15 @@ assert "4d-ii-a / A6d: the bundle's rows are the active ruled set's — the sock
 assert_rejects "4d-ii-a / A6d: a delivery row carrying an action its consumer's rule does not derive is refused at the row" \
   "INSERT INTO \"OutboxDelivery\" (\"id\",\"eventId\",\"projectId\",\"consumer\",\"consumerKind\",\"deliveryAction\",\"streamPosition\",\"status\",\"updatedAt\") VALUES ('UP4D-A6D-BAD','UP4D-A6D-E0','UP4D-A6D-P','upgrade.proof.flip','unordered','noop',0,'succeeded',now())" \
   "persisted rule all derives .dispatch."
+# (#662 round 1, finding 1) the born-cancelled tombstone is the PUSH rule's alone: a marked `noop` for a
+# consumer whose `all` rule derives `dispatch` is a forged cancellation, refused at the row
+assert_rejects "4d-ii-a / A6d: a marked noop for a non-push consumer is refused — the tombstone is the push rule's alone" \
+  "INSERT INTO \"OutboxDelivery\" (\"id\",\"eventId\",\"projectId\",\"consumer\",\"consumerKind\",\"deliveryAction\",\"streamPosition\",\"status\",\"cancelledAt\",\"updatedAt\") VALUES ('UP4D-A6D-BAD','UP4D-A6D-E0','UP4D-A6D-P','upgrade.proof.flip','unordered','noop',0,'succeeded',now(),now())" \
+  "persisted rule all derives .dispatch."
+# (#662 round 1, finding 2) a delivery is never deleted
+assert_rejects "4d-ii-a / A6d: a delivery row is never DELETED — it is the durable obligation the event was admitted on" \
+  "DELETE FROM \"OutboxDelivery\" WHERE \"id\" = 'UP4D-A6D-D-socket.invalidation'" \
+  "never deleted"
 assert_rejects "4d-ii-a / A6d: a delivery row for the rule-less planted history is refused — nothing derives for it" \
   "INSERT INTO \"OutboxDelivery\" (\"id\",\"eventId\",\"projectId\",\"consumer\",\"consumerKind\",\"deliveryAction\",\"streamPosition\",\"status\",\"updatedAt\") VALUES ('UP4D-A6D-BAD','UP4D-A6D-E0','UP4D-A6D-P','upgrade.proof.history','unordered','dispatch',0,'pending',now())" \
   "NO persisted dispatch rule"
@@ -5452,9 +5461,9 @@ assert "4d-ii-a / A6c: the replay re-issued the barrier and rewrote no rule" \
   "1|socket.invalidation:invalidate,upgrade.proof.flip:all,upgrade.proof.history:-,webpush.notify:push"
 # A6d — the replay re-ran the delivery seals' migration (CREATE OR REPLACE, DROP TRIGGER IF EXISTS):
 # the three seals stand and no delivery row moved.
-assert "4d-ii-a / A6d: the replay re-issued the three delivery seals and moved no row" \
-  "SELECT (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('DomainEvent_t4d_deliveries','OutboxDelivery_t4d_bound','OutboxDelivery_t4d_frozen'))::text || '|' || (SELECT string_agg(\"consumer\" || ':' || \"deliveryAction\", ',' ORDER BY \"consumer\") FROM \"OutboxDelivery\" WHERE \"eventId\" = 'UP4D-LL-E0');" \
-  "3|socket.invalidation:dispatch,upgrade.proof.flip:dispatch,webpush.notify:noop"
+assert "4d-ii-a / A6d: the replay re-issued the four delivery seals and moved no row" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('DomainEvent_t4d_deliveries','OutboxDelivery_t4d_bound','OutboxDelivery_t4d_frozen','OutboxDelivery_t4d_retained'))::text || '|' || (SELECT string_agg(\"consumer\" || ':' || \"deliveryAction\", ',' ORDER BY \"consumer\") FROM \"OutboxDelivery\" WHERE \"eventId\" = 'UP4D-LL-E0');" \
+  "4|socket.invalidation:dispatch,upgrade.proof.flip:dispatch,webpush.notify:noop"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

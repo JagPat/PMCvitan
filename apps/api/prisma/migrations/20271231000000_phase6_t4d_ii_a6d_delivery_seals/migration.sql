@@ -4,7 +4,7 @@
 -- pure function of the event and the persisted catalog, so EVERY emitter writes the same rows",
 -- "BOTH halves are taken in the DATABASE, by the seals, not by the callers").
 --
--- WHAT THIS FILE INSTALLS. Three seals and the two functions they judge by:
+-- WHAT THIS FILE INSTALLS. Four seals and the two functions they judge by:
 --
 --   platform_t4d_delivery_action(rule, types, eventType, intent) — THE derivation. One SQL function,
 --     the persisted rule applied to an event: `all` dispatches every event; `invalidate` dispatches
@@ -37,9 +37,18 @@
 --     (#560's round 1, findings 4 and 6: a correctly sealed event could carry a delivery rewritten to
 --     one chosen architect or a foreign body); a `noop` row of that consumer carries no payload; a
 --     row of any other rule carries neither payload nor subject. One row is admitted with an action
---     the rule does not derive: a `noop` BORN CANCELLED (`cancelledAt` set, `succeeded`) for an event
---     whose rule derives `dispatch` — the 4a recovery-gap tombstone, which `cancelQueuedPushBySubject`
---     writes so a later expansion finds the row present and materializes no stale push.
+--     the rule does not derive, and for the `push` rule ALONE: a `noop` BORN CANCELLED (`cancelledAt`
+--     set, `succeeded`, no payload, `subject = entityId`) for an event whose rule derives `dispatch` —
+--     the 4a recovery-gap tombstone, which `cancelQueuedPushBySubject` writes for the push consumer so
+--     a later expansion finds the row present and materializes no stale push. No other rule has a
+--     cancellation (#662's review round 1, finding 1: admitting the shape for every rule let a hand-run
+--     writer suppress a socket invalidation or an ordered projection by forging a mark).
+--   `OutboxDelivery_t4d_retained` (BEFORE DELETE) — a delivery row is a durable obligation: cancelled
+--     and RECORDED, never deleted. Every DELETE is refused (#662's review round 1, finding 2: with the
+--     obligation judged at the event's INSERT alone, a writer could commit a complete bundle and delete
+--     a consumer's row in a later transaction, leaving the event with no durable delivery work and an
+--     ordered cursor stalled at its position until the scanner's eventual repair). A disposable reset
+--     TRUNCATEs the table through the sanctioned seam, which a row trigger does not see.
 --   `OutboxDelivery_t4d_frozen` (BEFORE UPDATE) — `id`, `eventId`, `projectId`, `streamPosition`,
 --     `consumer`, `consumerKind` and `payload` never move; `subject` moves only NULL → the row's own
 --     event's `entityId` (the 4a subject stamp for a row an old instance wrote subjectless);
@@ -58,7 +67,7 @@
 -- the rows are a function of the event and the catalog and of nothing process-local.
 --
 -- RE-RUNNABLE (on `ALWAYS_EXECUTE`): `CREATE OR REPLACE FUNCTION`, `DROP TRIGGER IF EXISTS`. No
--- column, no data change: the three seals judge writes from the moment they exist and rewrite no
+-- column, no data change: the four seals judge writes from the moment they exist and rewrite no
 -- row that already exists.
 
 -- ── 1. the derivation and the projection ─────────────────────────────────────────────────────────
@@ -119,8 +128,9 @@ BEGIN
         'phase6 4d-ii: event % (type `%`) owes consumer "%" a delivery row — its catalog row is ACTIVE and carries rule % — and none was written in this transaction. An event''s delivery obligations are demanded in the authorizing transaction, never left to a background pass: the row set is `deliveryRowsFor(event, catalog)`, a function of the event and the persisted catalog alone (4d plan §A.3 obligation 7; #558 round 1, finding 7).',
         NEW."eventId", NEW."eventType", r."consumer", r."dispatchRule";
     END IF;
+    -- the one admitted deviation is the PUSH rule's born-cancelled tombstone (the binding judged its shape)
     IF v_row."deliveryAction" IS DISTINCT FROM v_action
-       AND NOT (v_action = 'dispatch' AND v_row."deliveryAction" = 'noop' AND v_row."cancelledAt" IS NOT NULL) THEN
+       AND NOT (r."dispatchRule" = 'push' AND v_action = 'dispatch' AND v_row."deliveryAction" = 'noop' AND v_row."cancelledAt" IS NOT NULL) THEN
       RAISE EXCEPTION
         'phase6 4d-ii: event % (type `%`) carries a delivery row for consumer "%" whose action is `%`, but the row''s persisted rule % derives `%` for this event (4d plan §A.3 obligation 7).',
         NEW."eventId", NEW."eventType", r."consumer", v_row."deliveryAction", r."dispatchRule", v_action;
@@ -162,9 +172,12 @@ BEGIN
 
   v_action := platform_t4d_delivery_action(v_rule, v_types, v_event_type, v_intent);
   IF NEW."deliveryAction" IS DISTINCT FROM v_action
-     -- born cancelled: the 4a recovery-gap tombstone — `noop`, marked, done, for an event whose rule
+     -- born cancelled: the 4a recovery-gap tombstone — the PUSH rule's alone (no other rule has a
+     -- cancellation): `noop`, marked, done, no payload, its own subject, for an event whose rule
      -- derives `dispatch`; it exists so a later expansion finds the row present and writes no stale push
-     AND NOT (v_action = 'dispatch' AND NEW."deliveryAction" = 'noop' AND NEW."cancelledAt" IS NOT NULL AND NEW."status" = 'succeeded') THEN
+     AND NOT (v_rule = 'push' AND v_action = 'dispatch' AND NEW."deliveryAction" = 'noop'
+              AND NEW."cancelledAt" IS NOT NULL AND NEW."status" = 'succeeded'
+              AND NEW."payload" IS NULL AND NEW."subject" = v_entity) THEN
     RAISE EXCEPTION
       'phase6 4d-ii: delivery for consumer "%" of event % (type `%`) carries action `%`, but the consumer''s persisted rule % derives `%` for this event — every delivery row, active consumer or not, carries the action its rule derives (4d plan §A.3 obligation 7; #563 round 1, finding 3).',
       NEW."consumer", NEW."eventId", v_event_type, NEW."deliveryAction", v_rule, v_action;
@@ -277,3 +290,15 @@ END $$;
 DROP TRIGGER IF EXISTS "OutboxDelivery_t4d_frozen" ON "OutboxDelivery";
 CREATE TRIGGER "OutboxDelivery_t4d_frozen" BEFORE UPDATE ON "OutboxDelivery"
   FOR EACH ROW EXECUTE FUNCTION platform_t4d_delivery_frozen();
+
+-- ── 5. the retention: OutboxDelivery_t4d_retained (BEFORE DELETE) ────────────────────────────────
+CREATE OR REPLACE FUNCTION platform_t4d_delivery_retained() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION
+    'phase6 4d-ii: "OutboxDelivery" % (consumer "%", event %) is a durable delivery obligation — cancelled and RECORDED, never deleted. Its event was admitted at commit on the strength of this row; a delivery that could be deleted afterwards would leave the event with no durable delivery work and an ordered cursor stalled at its position. A disposable reset truncates the table through the sanctioned seam (4d plan §A.3 obligation 7; #662 round 1, finding 2).',
+    OLD."id", OLD."consumer", OLD."eventId";
+END $$;
+
+DROP TRIGGER IF EXISTS "OutboxDelivery_t4d_retained" ON "OutboxDelivery";
+CREATE TRIGGER "OutboxDelivery_t4d_retained" BEFORE DELETE ON "OutboxDelivery"
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_delivery_retained();

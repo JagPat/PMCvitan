@@ -1,7 +1,7 @@
 import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma.service';
-import { deliveryRowsFor, getConsumer, listConsumers, outboxSenderMode, type EmittedEventMeta, type OutboxConsumer } from './registry';
+import { deliveryRowsFor, getConsumer, outboxSenderMode, type EmittedEventMeta, type OutboxConsumer } from './registry';
 import { lockActiveGeneration } from '../projections/generation';
 
 /**
@@ -67,7 +67,11 @@ export class OutboxRelay implements OnModuleDestroy {
     await this.expandMissingDeliveries();
     // catalog.active is authoritative: a deactivated contract is never claimed (its pending rows stay
     // recoverable for reactivation). Read once per pass; the dispatch guard covers a mid-pass change.
-    const active = await this.activeConsumerNames();
+    // 4d-ii-a / A6d — the claim loop walks the ACTIVE CATALOG, not the process-local registry: from
+    // A6d the rows derive from the persisted catalog, so a consumer whose code is absent in this
+    // process still has rows, and they must be CLAIMED for `dispatchOne` to dead-letter them by name
+    // ("no consumer registered") rather than left pending in silence (#662's review round 1, finding 3).
+    const active = await this.activeConsumers();
     // PR C fix-forward — the delivery LEASE is the single arbiter of who sends. In `outbox` mode the
     // relay owns ALL external dispatch. In `legacy`/`shadow` the immediate ExternalEffectDispatcher
     // owns the FIRST attempt of a fresh delivery (it claims the lease before sending — see
@@ -78,12 +82,11 @@ export class OutboxRelay implements OnModuleDestroy {
     const mode = outboxSenderMode();
     for (let guard = 0; guard < 1000; guard++) {
       let progressed = false;
-      for (const consumer of listConsumers()) {
-        if (!active.has(consumer.name)) continue; // deactivated contract — do not claim
+      for (const consumer of active) {
         const ids =
-          consumer.effect === 'external' && mode !== 'outbox'
-            ? await this.claimExternalRecovery(consumer.name) // the dispatcher owns fresh first attempts
-            : await this.claim(consumer.name);
+          consumer.consumerEffect === 'external' && mode !== 'outbox'
+            ? await this.claimExternalRecovery(consumer.consumer) // the dispatcher owns fresh first attempts
+            : await this.claim(consumer.consumer);
         for (const id of ids) {
           const outcome = await this.dispatchOne(id);
           if (outcome === 'succeeded' || outcome === 'duplicate' || outcome === 'dead' || outcome === 'retry') progressed = true;
@@ -93,10 +96,10 @@ export class OutboxRelay implements OnModuleDestroy {
     }
   }
 
-  /** The set of consumer names whose durable catalog contract is currently active. */
-  private async activeConsumerNames(): Promise<Set<string>> {
-    const rows = await this.prisma.outboxConsumerCatalog.findMany({ where: { active: true }, select: { consumer: true } });
-    return new Set(rows.map((r) => r.consumer));
+  /** The consumers whose durable catalog contract is currently active, with the effect the claim
+   *  path is chosen by — from the CATALOG, so a consumer this process has no code for is claimed too. */
+  private async activeConsumers(): Promise<Array<{ consumer: string; consumerEffect: string }>> {
+    return this.prisma.outboxConsumerCatalog.findMany({ where: { active: true }, select: { consumer: true, consumerEffect: true }, orderBy: { consumer: 'asc' } });
   }
 
   /** Atomically lease up to CLAIM_BATCH due deliveries for a consumer, in stream order. */

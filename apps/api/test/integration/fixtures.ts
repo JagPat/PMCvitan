@@ -529,7 +529,9 @@ export async function insertRawEventVia(
  * judge the emitter's rows — and it never touches the platform's TypeScript helper, so a suite that
  * uses it proves the DIRECT-writer path, not the emitter's. Plain SQL: usable through Prisma and psql.
  */
-export function rawDeliveryRowsSql(eventId: string): string {
+export function rawDeliveryRowsSql(eventId: string, opts: { except?: string } = {}): string {
+  // a probe may leave ONE consumer's row unwritten (an incomplete bundle the deferred seal refuses)
+  const except = opts.except !== undefined ? ` AND c."consumer" <> '${opts.except}'` : '';
   return `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","payload","subject","updatedAt")
     SELECT gen_random_uuid()::text, e."eventId", e."projectId", c."consumer", c."consumerKind", a.action, e."streamPosition",
            CASE WHEN a.action = 'dispatch' OR c."consumerKind" = 'ordered' THEN 'pending' ELSE 'succeeded' END,
@@ -539,7 +541,7 @@ export function rawDeliveryRowsSql(eventId: string): string {
       FROM "DomainEvent" e
       CROSS JOIN "OutboxConsumerCatalog" c
       CROSS JOIN LATERAL (SELECT platform_t4d_delivery_action(c."dispatchRule", c."subscribedEventTypes", e."eventType", e."dispatchIntent") AS action) a
-     WHERE e."eventId" = '${eventId}' AND c."active" AND c."dispatchRule" IS NOT NULL`;
+     WHERE e."eventId" = '${eventId}' AND c."active" AND c."dispatchRule" IS NOT NULL${except}`;
 }
 
 /**
