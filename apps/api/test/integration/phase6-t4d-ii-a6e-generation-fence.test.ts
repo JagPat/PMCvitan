@@ -5,8 +5,9 @@ import { join } from 'node:path';
 import type { Prisma } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import {
-  SERVER_GENERATION, SERVER_GENERATION_MIGRATION, assertServerGenerationAdmitted, readServerMinimum,
+  SERVER_GENERATION, SERVER_GENERATION_MIGRATION, assertServerGenerationAdmitted, holdAdmission, readServerMinimum,
 } from '../../src/platform/server-generation';
+import { OutboxBootstrap } from '../../src/platform/outbox/outbox.bootstrap';
 import { judgeDrain, readDrainInputsFromDatabase, readLiveLeases, readPersistedCatalogMaximum } from '../../src/platform/rollout/drain-evidence';
 import { newInstanceId, writeLease } from '../../src/platform/release-lease.service';
 
@@ -25,7 +26,9 @@ import { newInstanceId, writeLease } from '../../src/platform/release-lease.serv
  *     changes nothing (GREATEST);
  *   - the admission read is serialized with the raise: a raise in flight blocks an admission, which
  *     then reads the raised minimum and is refused; an admission held to serving blocks the raise
- *     (#663's review round 1, finding 2);
+ *     (#663's review round 1, finding 2); the bootstrap's hold (`holdAdmission`) keeps the row's
+ *     SHARE lock past the serving steps until it is released, and the booted application's hold
+ *     was released by the harness (round 2, finding 1);
  *   - the row is never deleted or truncated;
  *   - the migration is on `ALWAYS_EXECUTE` and re-applied over the migrated database moves nothing;
  *   - `rollout:drain-evidence`'s reads: the LIVE leases (an expired one is not), the persisted catalog
@@ -222,16 +225,14 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
       }
     }
 
-    // (b) an admission HELD to serving blocks the raise; the raise proceeds only once the admission's
-    //     transaction ends
+    // (b) an admission HELD to serving — the bootstrap's own primitive over the real client — blocks
+    //     the raise; the serving steps have completed and `admitted` has resolved while the lock is
+    //     still held; the raise proceeds only once the hold is released
     {
-      let releaseAdmission!: () => void;
-      const served = new Promise<void>((r) => { releaseAdmission = r; });
-      const admitted = t.prisma.$transaction(async (b) => {
-        const minimum = await assertServerGenerationAdmitted(b);
-        await served; // "serving": the lock is held for the whole boot
-        return minimum;
-      }, { timeout: 60_000 });
+      let served = false;
+      const hold = holdAdmission(t.prisma, async () => { served = true; });
+      await expect(hold.admitted).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION });
+      expect(served).toBe(true);
       let raising: Promise<void> | null = null;
       try {
         await waitFor('the admission to hold the row', async () => (await tableLocks('RowShareLock')) >= 1);
@@ -241,14 +242,18 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
         }, { timeout: 60_000 }).catch((e) => { if (e !== SENTINEL) throw e; });
         await waitFor('the raise to block behind the admission', async () => (await blockedOn(RAISE_STATEMENT)) === 1);
         await new Promise((r) => setTimeout(r, 200));
-        expect(await blockedOn(RAISE_STATEMENT), 'the raise is still waiting').toBe(1);
+        expect(await blockedOn(RAISE_STATEMENT), 'the raise is still waiting after the serving steps completed').toBe(1);
       } finally {
-        releaseAdmission();
+        hold.release();
       }
-      await expect(admitted).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION });
-      await raising; // proceeded once the admission ended, then rolled back
+      await hold.ended;
+      await raising; // proceeded once the hold ended, then rolled back
       expect(await blockedOn(RAISE_STATEMENT)).toBe(0);
     }
+    // the booted application released its own hold after init (the harness stands in for main.ts's
+    // release after listen), so the register is free; a second release is a no-op
+    t.app.get(OutboxBootstrap).releaseAdmission();
+    expect(await tableLocks('RowShareLock')).toBe(0);
     expect(await row(t.prisma)).toMatchObject({ minimumGeneration: SERVER_GENERATION, raisedBy: SERVER_GENERATION_MIGRATION });
   });
 

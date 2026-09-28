@@ -19,14 +19,17 @@ import { Prisma } from '@prisma/client';
  * cannot start around it): a fenced build whose database carries no minimum has not had its own
  * migration run, and `scripts/migrate.sh` runs every migration before the process starts.
  *
- * THE READ IS SERIALIZED WITH THE RAISE (#663's review round 1, finding 2). The admission read takes
- * the singleton row `FOR SHARE` inside a transaction the bootstrap holds until the process SERVES —
- * its catalog synced, its lease registered. A raising migration's UPDATE takes the row FOR NO KEY
- * UPDATE, which conflicts with FOR SHARE, so a raise cannot commit between a process's admission and
- * its serving: it waits for every process in that window, and a process that starts after it blocks
- * on the row, then reads the raised minimum and is refused. A plain READ COMMITTED select let an
- * older image read the old minimum, have the raise commit under it, and go on to serve — exactly
- * the stale image the fence exists to exclude.
+ * THE READ IS SERIALIZED WITH THE RAISE (#663's review round 1, finding 2; round 2, finding 1). The
+ * admission read takes the singleton row `FOR SHARE` inside a transaction ({@link holdAdmission})
+ * the process holds until it ACTUALLY SERVES — its catalog synced, its lease registered, its relay
+ * started and its HTTP listener open, which `main.ts` reports by releasing the hold after
+ * `app.listen()`. A raising migration's UPDATE takes the row FOR NO KEY UPDATE, which conflicts with
+ * FOR SHARE, so a raise cannot commit between a process's admission and its serving: it waits for
+ * every process in that window, and a process that starts after it blocks on the row, then reads
+ * the raised minimum and is refused. A plain READ COMMITTED select let an older image read the old
+ * minimum, have the raise commit under it, and go on to serve — exactly the stale image the fence
+ * exists to exclude; a hold released at the end of `onModuleInit` left the same gap between the
+ * commit and the relay start and the listener.
  */
 
 /**
@@ -92,6 +95,7 @@ export function judgeServerGeneration(compiled: number, minimum: PersistedServer
  *
  * `db` MUST be a transaction client the caller holds open until the process serves: the read locks
  * the row `FOR SHARE`, and that lock is what keeps a raise from committing under the admission.
+ * {@link holdAdmission} is that caller.
  */
 export async function assertServerGenerationAdmitted(
   db: GenerationDb,
@@ -102,4 +106,63 @@ export async function assertServerGenerationAdmitted(
   if (!verdict.admitted) throw new Error(`server-generation fence: ${verdict.reason}`);
   log.log(`server generation ${compiled} admitted (persisted minimum ${verdict.minimum.minimumGeneration}, raised by ${verdict.minimum.raisedBy})`);
   return verdict.minimum;
+}
+
+type AdmissionDb = {
+  $transaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>, options?: { maxWait?: number; timeout?: number }): Promise<T>;
+};
+
+/** An admission held open: the row's SHARE lock lives until {@link AdmissionHold.release}. */
+export interface AdmissionHold {
+  /** Resolves with the persisted minimum once the process is admitted AND `serve` has completed; rejects when either refuses. */
+  readonly admitted: Promise<PersistedServerMinimum>;
+  /** Let the admission transaction commit: the process is actually serving. Idempotent. */
+  release(): void;
+  /** Settles once the admission transaction has ended (committed, or rolled back on a refusal or a lapsed hold). */
+  readonly ended: Promise<void>;
+}
+
+/**
+ * Admit this process and HOLD the admission until it serves. One interactive transaction: the
+ * `FOR SHARE` read, then `serve` (the bootstrap's serving steps, on the pooled client — only the lock
+ * lives on this connection), then the transaction stays open until {@link AdmissionHold.release}. A
+ * refusal, or a `serve` that throws, rejects `admitted` and rolls the transaction back; nothing
+ * `serve` wrote on the pooled client is undone by that, and nothing is lost by a hold that lapses
+ * after admission ({@link SERVER_GENERATION_FENCE_HOLD_MS}): the transaction holds no write.
+ */
+export function holdAdmission(
+  db: AdmissionDb,
+  serve: (minimum: PersistedServerMinimum) => Promise<void>,
+  log: { log(message: string): void; warn?(message: string): void } = { log: () => {} },
+  compiled: number = SERVER_GENERATION,
+): AdmissionHold {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let resolveAdmitted!: (minimum: PersistedServerMinimum) => void;
+  let rejectAdmitted!: (reason: unknown) => void;
+  const admitted = new Promise<PersistedServerMinimum>((resolve, reject) => { resolveAdmitted = resolve; rejectAdmitted = reject; });
+  let settled = false;
+  const ended = db.$transaction(async (fence) => {
+    let minimum: PersistedServerMinimum;
+    try {
+      minimum = await assertServerGenerationAdmitted(fence, log, compiled);
+      await serve(minimum);
+    } catch (e) {
+      settled = true;
+      rejectAdmitted(e);
+      throw e;
+    }
+    settled = true;
+    resolveAdmitted(minimum);
+    await held;
+  }, { maxWait: SERVER_GENERATION_FENCE_HOLD_MS, timeout: SERVER_GENERATION_FENCE_HOLD_MS }).catch((e: unknown) => {
+    // before admission the failure is `admitted`'s; after it, the hold lapsed (the bounded timeout)
+    // or the transaction was closed under us — the lock is gone, the serving steps committed on their own
+    if (!settled) rejectAdmitted(e);
+    else log.warn?.(`the admission hold ended before it was released: ${(e as Error).message}`);
+    release();
+  });
+  // `admitted` is always awaited by the caller; `ended` may not be, so it never rejects
+  admitted.catch(() => {});
+  return { admitted, release: () => release(), ended };
 }

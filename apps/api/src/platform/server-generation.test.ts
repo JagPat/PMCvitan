@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  SERVER_GENERATION, SERVER_GENERATION_MIGRATION, assertServerGenerationAdmitted, judgeServerGeneration, readServerMinimum,
+  SERVER_GENERATION, SERVER_GENERATION_MIGRATION, assertServerGenerationAdmitted, holdAdmission, judgeServerGeneration, readServerMinimum,
 } from './server-generation';
 
 /**
@@ -51,5 +51,41 @@ describe('the server-generation fence (4d-ii-a / A6e)', () => {
     await expect(assertServerGenerationAdmitted(db as never, log, 1)).rejects.toThrow(/server-generation fence: this build compiles server generation 1, below the persisted minimum 5/);
     expect(await readServerMinimum({ $queryRaw: async () => [] } as never)).toBeNull();
     await expect(assertServerGenerationAdmitted({ $queryRaw: async () => [] } as never, log, 1)).rejects.toThrow(/no persisted server-generation minimum/);
+  });
+
+  it('holdAdmission keeps the admission transaction open past the serving steps until released, and rejects on a refusal or a failed serve (#663 round 2, finding 1)', async () => {
+    const rows = [{ minimumGeneration: 1, raisedBy: 'm', raisedAt: new Date() }];
+    let txSettled = false;
+    const db = {
+      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+        try { return await fn({ $queryRaw: async () => rows }); } finally { txSettled = true; }
+      }),
+    };
+    const order: string[] = [];
+    const hold = holdAdmission(db as never, async (minimum) => { order.push(`serve@${minimum.minimumGeneration}`); }, { log: (m) => order.push(m) }, 1);
+    await expect(hold.admitted).resolves.toMatchObject({ minimumGeneration: 1 });
+    expect(order).toEqual([expect.stringMatching(/server generation 1 admitted/), 'serve@1']);
+    // admitted and served, yet the transaction is still open: the lock outlives the hook
+    await new Promise((r) => setTimeout(r, 10));
+    expect(txSettled).toBe(false);
+    hold.release();
+    hold.release(); // idempotent
+    await hold.ended;
+    expect(txSettled).toBe(true);
+    expect(db.$transaction.mock.calls[0]![1]).toMatchObject({ timeout: 600_000, maxWait: 600_000 });
+
+    // a refusal: serve never runs, the transaction is rolled back, `admitted` rejects
+    rows[0]!.minimumGeneration = 2;
+    const serve = vi.fn(async () => {});
+    const refused = holdAdmission(db as never, serve, undefined, 1);
+    await expect(refused.admitted).rejects.toThrow(/below the persisted minimum 2/);
+    await refused.ended;
+    expect(serve).not.toHaveBeenCalled();
+
+    // a serve that throws: `admitted` rejects with its error and the transaction ends
+    rows[0]!.minimumGeneration = 1;
+    const failing = holdAdmission(db as never, async () => { throw new Error('sender gate refused'); }, undefined, 1);
+    await expect(failing.admitted).rejects.toThrow(/sender gate refused/);
+    await failing.ended;
   });
 });

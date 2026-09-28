@@ -32,8 +32,9 @@
 --     later `raisedAt`, or the row would attribute the raised fence to the migration that last
 --     raised it, and every startup refusal and DRAIN-EVIDENCE would report that stale provenance. An
 --     UPDATE that raises nothing may rewrite neither: the evidence of the last raise stands.
---   · THE READ IS SERIALIZED WITH THE RAISE (#663's review round 1, finding 2). A process reads the
---     row `FOR SHARE` inside a transaction it holds until it SERVES (its lease registered), so a
+--   · THE READ IS SERIALIZED WITH THE RAISE (#663's review round 1, finding 2; round 2, finding 1). A
+--     process reads the row `FOR SHARE` inside a transaction it holds until it ACTUALLY SERVES (its
+--     lease registered, its relay started, its listener open — `main.ts` releases the hold), so a
 --     raise — whose UPDATE takes the row FOR NO KEY UPDATE, which conflicts with FOR SHARE — cannot
 --     commit between a process's admission and its serving: it waits for every process in that
 --     window, and every process that starts after it reads the raised minimum and is refused. A

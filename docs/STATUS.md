@@ -37,8 +37,9 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
     generation (1), so nothing running is refused; A8b's migration raises it.
   - `src/platform/server-generation.ts`: the compiled `SERVER_GENERATION` (pinned to the migration's
     literal) and the startup fence the outbox bootstrap runs FIRST, refusing a build below the persisted
-    minimum and a database carrying none; the admission read locks the row `FOR SHARE` and the bootstrap
-    holds it until the process serves, so a raise serializes after every admission in flight.
+    minimum and a database carrying none; the admission read locks the row `FOR SHARE` and the process
+    holds it until it actually serves (`main.ts` releases after `app.listen()`), so a raise serializes
+    after every start in flight.
   - `rollout:drain-evidence` (`src/platform/rollout/`): reads the Coolify application resource and the
     running-deployment queue, and the `ReleaseLease` register; places each release against the minimum by
     git ancestry, fail closed on anything it cannot place, `not-drained` dominating; renders the
