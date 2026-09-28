@@ -5,14 +5,15 @@ import { ROLE_LABEL, ROLES } from '@/lib/screens';
 import type { Role } from '@vitan/shared';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { useProjectSwitch } from './useProjectSwitch';
-import { ProjectSheet } from './MobileSheet';
+import { LanguageSheet, ProjectSheet } from './MobileSheet';
+import { LANG_SWITCH, shellLabels } from '@vitan/shared';
 import logo from '@/assets/vitan-logo.jpeg';
 import styles from './TopBar.module.css';
 
 /**
  * Compact top bar — mobile only (<640px). Holds the ACTIVE PROJECT (the mobile equivalent of
- * the rail's `ProjectSwitcher`, and the fastest way to change project), the persona switch and
- * the bell. The project name is the bar's primary text so "which site am I in?" is answered
+ * the rail's `ProjectSwitcher`, and the fastest way to change project), the language, the persona
+ * switch and the bell. The project name is the bar's primary text so "which site am I in?" is answered
  * without navigating; it truncates with an ellipsis rather than pushing the controls off-screen.
  */
 export function TopBar() {
@@ -23,6 +24,9 @@ export function TopBar() {
   const notifCount = useStore((s) => s.notifications.length);
   const { label, canSwitch } = useProjectSwitch();
   const [switching, setSwitching] = useState(false);
+  const lang = useStore((s) => s.lang);
+  const [choosingLang, setChoosingLang] = useState(false);
+  const current = LANG_SWITCH.find((l) => l.key === lang) ?? LANG_SWITCH[0];
 
   return (
     <header className={styles.bar}>
@@ -44,6 +48,18 @@ export function TopBar() {
         </button>
       </div>
       <div className={styles.right}>
+        {/* every role, every screen: the language is one tap from anywhere on the phone */}
+        <button
+          className={styles.lang}
+          data-testid="lang-switch"
+          lang={current.key}
+          onClick={() => setChoosingLang(true)}
+          aria-haspopup="dialog"
+          aria-expanded={choosingLang}
+          aria-label={`${shellLabels.language[lang]}: ${current.name}`}
+        >
+          {current.mark}
+        </button>
         {DEV_AUTH ? (
           // API-less deployments expose this demo selector to real users too.
           <label className={styles.selectWrap} data-testid="mobile-role-switcher">
@@ -67,6 +83,7 @@ export function TopBar() {
         </button>
       </div>
       {switching && <ProjectSheet onClose={() => setSwitching(false)} />}
+      {choosingLang && <LanguageSheet onClose={() => setChoosingLang(false)} />}
     </header>
   );
 }

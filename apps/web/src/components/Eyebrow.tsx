@@ -1,10 +1,14 @@
 import type { CSSProperties, ReactNode } from 'react';
 
+/** The critical-label floor (owner GO): an eyebrow names the screen or section, so it never
+ *  renders below 13px, whatever size a caller asks for. */
+export const EYEBROW_MIN_SIZE = 13;
+
 /** Mono, uppercase, tracked eyebrow label used above section/screen titles. */
 export function Eyebrow({
   children,
   color = 'var(--amber-text)',
-  size = 10,
+  size = EYEBROW_MIN_SIZE,
   style,
 }: {
   children: ReactNode;
@@ -14,13 +18,16 @@ export function Eyebrow({
 }) {
   return (
     <div
+      data-eyebrow=""
       style={{
         fontFamily: 'var(--font-mono)',
-        fontSize: size,
-        letterSpacing: '.22em',
+        letterSpacing: '.14em',
         textTransform: 'uppercase',
+        overflowWrap: 'anywhere',
         color,
         ...style,
+        // after the spread, so no caller style can push a critical label under the floor
+        fontSize: Math.max(size, EYEBROW_MIN_SIZE),
       }}
     >
       {children}

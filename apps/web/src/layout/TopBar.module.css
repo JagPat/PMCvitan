@@ -141,3 +141,19 @@
   align-items: center;
   justify-content: center;
 }
+/* UX foundations — the language control. It shows the current language's own mark (ગુજ / हिं /
+   EN) and opens the language sheet; 44×44 like every other shell control. */
+.lang {
+  flex: none;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 8px;
+  border: 1px solid rgba(237, 231, 218, 0.2);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sidebar-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}

@@ -1,0 +1,30 @@
+/* the rail is an ink surface: the options sit on a faint well, the current one is filled paper */
+.group {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 12px;
+  background: rgba(237, 231, 218, 0.08);
+  border: 1px solid rgba(237, 231, 218, 0.16);
+}
+.option {
+  flex: 1;
+  min-width: 44px;
+  min-height: 44px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--sidebar-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.option:hover {
+  background: rgba(237, 231, 218, 0.08);
+}
+.optionOn,
+.optionOn:hover {
+  background: var(--sidebar-text);
+  color: var(--ink);
+}

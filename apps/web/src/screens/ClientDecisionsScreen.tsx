@@ -24,7 +24,7 @@ export function ClientDecisionsScreen() {
   return (
     <div className={styles.clientScreen}>
       <div style={{ padding: '10px 0 16px' }}>
-        <Eyebrow size={9}>{short.toUpperCase()}</Eyebrow>
+        <Eyebrow>{short.toUpperCase()}</Eyebrow>
         <div style={{ fontFamily: 'var(--font-serif)', fontSize: 27, fontWeight: 500, marginTop: 4, lineHeight: 1.15 }}>
           Decisions waiting for you
         </div>

@@ -1151,6 +1151,12 @@ test('Places create-menu transitions expose usable inherited-location controls',
 test('phone and worker OTP recovery actions meet the target floor', async ({ page }) => {
   await page.goto('/');
   await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  // an engineer lands in Gujarati (UX foundations); this arm asserts the English copy, so it
+  // chooses English through the top bar's language switch — which must itself hold the floor
+  await sweepActionTargets(page, 'Engineer shell with the language switch');
+  await page.getByTestId('lang-switch').click();
+  await sweepActionTargets(page, 'Language sheet');
+  await page.getByTestId('lang-option-en').click();
   await page.getByTestId('tab-more').click();
   await page.getByTestId('more-item-team-access').click();
   for (const step of ['phone', 'otp']) {

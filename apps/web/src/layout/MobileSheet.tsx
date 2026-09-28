@@ -5,6 +5,8 @@ import { useProjectSwitch } from './useProjectSwitch';
 import { CreateProjectModal } from './ProjectSwitcher';
 import { Check, Plus, X, LayoutGrid } from '@/lib/icons';
 import { ROLE_LABEL } from '@/lib/screens';
+import { navLabelFor } from '@/lib/mobileNav';
+import { LANG_SWITCH, shellLabels } from '@vitan/shared';
 import { useNavItems, type NavItem } from './useNavItems';
 import styles from './MobileSheet.module.css';
 
@@ -70,8 +72,10 @@ export function MobileSheet({
  */
 export function MoreSheet({ items, onClose }: { items: NavItem[]; onClose: () => void }) {
   const setScreen = useStore((s) => s.setScreen);
+  const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   return (
-    <MobileSheet title="More" onClose={onClose} testId="more-sheet">
+    <MobileSheet title={shellLabels.more[lang]} onClose={onClose} testId="more-sheet">
       {items.map((n) => (
         <button
           key={n.key}
@@ -84,7 +88,8 @@ export function MoreSheet({ items, onClose }: { items: NavItem[]; onClose: () =>
           }}
         >
           <n.icon size={18} />
-          <span className={styles.rowLabel}>{n.label}</span>
+          {/* English keeps the full screen name; hi/gu read the same word the tab bar uses */}
+          <span className={styles.rowLabel}>{lang === 'en' ? n.label : navLabelFor(n.key, role, lang)}</span>
           {n.badge > 0 && <span className={styles.rowBadge}>{n.badge}</span>}
         </button>
       ))}
@@ -151,6 +156,39 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
           <span className={styles.rowLabel}>New project</span>
         </button>
       )}
+    </MobileSheet>
+  );
+}
+
+/**
+ * The phone's language picker. Each language is written in its own script, so a reader finds
+ * theirs without reading the others; the current one is marked with a check AND `aria-pressed`,
+ * never colour alone. Choosing one applies it at once and closes the sheet.
+ */
+export function LanguageSheet({ onClose }: { onClose: () => void }) {
+  const lang = useStore((s) => s.lang);
+  const setLang = useStore((s) => s.setLang);
+  return (
+    <MobileSheet title={shellLabels.language[lang]} onClose={onClose} testId="language-sheet">
+      {LANG_SWITCH.map((l) => {
+        const on = l.key === lang;
+        return (
+          <button
+            key={l.key}
+            lang={l.key}
+            data-testid={`lang-option-${l.key}`}
+            className={on ? `${styles.row} ${styles.rowActive}` : styles.row}
+            aria-pressed={on}
+            onClick={() => {
+              setLang(l.key);
+              onClose();
+            }}
+          >
+            <span className={styles.rowLabel}>{l.name}</span>
+            {on && <Check size={18} aria-hidden="true" />}
+          </button>
+        );
+      })}
     </MobileSheet>
   );
 }
