@@ -196,6 +196,7 @@ function buildBase(): void {
     // its own live probes (`phase6-t4d-ii-a6a-activation-register.test.ts`); this harness stays a
     // 4d-i-only database, so it is excluded with the other units built after 4d-i.
     '20271228000000_phase6_t4d_ii_a6a_activation_register',
+    '20271229000000_phase6_t4d_ii_a6b_activation_rules',
     // 4d-ii-a / A4a's consultation-cycle seals are 4d-i's bodies re-issued, guarded on 4d-i's
     // retirement marker, so they too apply only on top of 4d-i.
     '20271227000000_phase6_t4d_ii_consultation_finalized_cycle']);

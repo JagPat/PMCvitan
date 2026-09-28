@@ -3862,7 +3862,10 @@ $PSQL --single-transaction -q -f "$MIG_DIR/$PHASE6_T4B_DECIDER_NAME/migration.sq
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-ii-a / A6a: the pre-register catalog history was refused"; FAIL=1; }
 INSERT INTO "OutboxConsumerCatalog" ("consumer","consumerKind","consumerEffect","catalogVersion","active","updatedAt")
 VALUES ('upgrade.proof.history','unordered','external',1,true,now()),
-       ('upgrade.proof.inactive','unordered','external',1,false,now())
+       ('upgrade.proof.inactive','unordered','external',1,false,now()),
+       -- A6b's arms flip THIS one through the register's apply, so A6a's assertions over the other two
+       -- keep their exact expectations
+       ('upgrade.proof.flip','unordered','external',1,false,now())
 ON CONFLICT DO NOTHING;
 SQL
 for d in "${phase6_t4b_decider_dirs[@]}"; do
@@ -4942,7 +4945,7 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*) continue ;; esac
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5191,6 +5194,27 @@ assert_rejects "4d-ii-a / A6a: the register cannot be truncated away" \
   "TRUNCATE \"OutboxConsumerActivation\"" \
   "never truncated"
 
+# ── 4d-ii-a / A6b: the mirror's sole writer (the companion document's write seam) ────────────
+# Over the ledger this database ran, the catalog's `active` / `activationSeq` move only through the
+# register's AFTER INSERT: a direct UPDATE is refused at depth 1 (P-A6's freeze arm), `registeredAt`
+# is frozen, and an appended operator fact moves the mirror through the seam.
+assert_rejects "4d-ii-a / A6b: a direct UPDATE of the catalog's active is refused — the mirror has one writer" \
+  "UPDATE \"OutboxConsumerCatalog\" SET \"active\" = true WHERE \"consumer\" = 'upgrade.proof.flip'" \
+  "MIRROR|direct UPDATE"
+assert_rejects "4d-ii-a / A6b: a direct UPDATE of activationSeq is refused" \
+  "UPDATE \"OutboxConsumerCatalog\" SET \"activationSeq\" = 7 WHERE \"consumer\" = 'upgrade.proof.flip'" \
+  "MIRROR|direct UPDATE"
+assert_rejects "4d-ii-a / A6b: registeredAt is frozen" \
+  "UPDATE \"OutboxConsumerCatalog\" SET \"registeredAt\" = now() WHERE \"consumer\" = 'upgrade.proof.flip'" \
+  "FROZEN"
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-ii-a / A6b: the operator fact through the seam was refused"; FAIL=1; }
+INSERT INTO "OutboxConsumerActivation" ("consumer","seq","active","reason","actorKind","actorId","requestToken")
+VALUES ('upgrade.proof.flip', 2, true, 'upgrade proof: activated through the register', 'operator', 'upgrade-proof', 'upgrade-proof-flip-1');
+SQL
+assert "4d-ii-a / A6b: the appended fact moved the mirror through the seam (active true, head 2)" \
+  "SELECT \"active\"::text || '|' || \"activationSeq\"::text FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.flip';" \
+  "true|2"
+
 # ── the replay a LEDGER-LOST RESTORE takes, before and after this release serves (#646's review,
 #    finding 4114478871) ─────────────────────────────────────────────────────────────────────────
 # A really-migrated database restored without `_prisma_migrations` is the one kind that reaches
@@ -5207,7 +5231,7 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20271222000000_phase6_t4d_i_b_u1_bound_event_actor 20271223000000_phase6_t4d_i_b_u2_change_bundle_seals
 20271224000000_phase6_t4d_i_b_u3_pairing_flip 20271225000000_phase6_project_row_lock_no_key
 20271226000000_phase6_t4d_ii_release_lease_writer 20271227000000_phase6_t4d_ii_consultation_finalized_cycle
-20271228000000_phase6_t4d_ii_a6a_activation_register"
+20271228000000_phase6_t4d_ii_a6a_activation_register 20271229000000_phase6_t4d_ii_a6b_activation_rules"
 t4d_replay() {
   local m
   for m in $T4D_REPLAY; do
@@ -5285,6 +5309,9 @@ assert "4d-ii-a: the replay did not put the lease door back" \
 assert "4d-ii-a / A6a: the replayed register migration appended no second baseline and moved no mirror" \
   "SELECT (SELECT count(*) FROM \"OutboxConsumerActivation\" WHERE \"consumer\" IN ('upgrade.proof.history','upgrade.proof.inactive'))::text || '|' || (SELECT \"active\"::text || \"activationSeq\"::text FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.inactive');" \
   "2|false1"
+assert "4d-ii-a / A6b: the replay re-issued the freeze and left the operator's fact and mirror as they were" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE tgname = 'OutboxConsumerCatalog_t4d_rules' AND NOT tgisinternal)::text || '|' || (SELECT count(*) FROM \"OutboxConsumerActivation\" WHERE \"consumer\" = 'upgrade.proof.flip')::text || '|' || (SELECT \"active\"::text || \"activationSeq\"::text FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.flip');" \
+  "1|2|true2"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

@@ -950,6 +950,14 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'OutboxConsumerCatalog.OutboxConsumerCatalog_t4d_registration_head': A('I') },
     must: ["'registration'", 'NEW."active"', 'system:outbox-registration'],
   },
+  platform_t4d_catalog_rules: {
+    rule: 'the catalog mirror (`active`, `activationSeq`) is written only by the activation register\'s '
+      + 'apply — a NESTED update under the transaction-local marker; every depth-1 update is refused '
+      + 'whatever it carries — and `registeredAt` is frozen and selects nothing',
+    plan: 'companion document "The register" (the mirror\'s write seam); #580 round 1, findings 6 and 9',
+    on: { 'OutboxConsumerCatalog.OutboxConsumerCatalog_t4d_rules': B('U') },
+    must: ['pg_trigger_depth() > 1', 'vitan.outbox_activation_applying', '"registeredAt"', 'MIRROR'],
+  },
   platform_t4d_project_org_frozen: {
     rule: 'a project\'s tenancy never moves once registered',
     plan: '§A.2 the ProjectOrg register',

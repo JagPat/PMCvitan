@@ -9,6 +9,8 @@ import { effectCoverageVersion } from '../../src/platform/external-effects';
 import type { Actor } from '../../src/common/actor';
 
 import { sanctionedReset, sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
+import { OutboxConsumerActivationService } from '../../src/platform/outbox/consumer-activation.service';
+import { randomUUID } from 'node:crypto';
 /**
  * Phase 2 fix-forward PR B Task 4 — audited dead-letter operations (live PG). status aggregates +
  * truncates errors (no payloads); retry accepts only a dead delivery, requires operator+reason,
@@ -24,12 +26,13 @@ const ordered: OutboxConsumer = {
 };
 
 describe('PR B Task 4 — outbox operations (live PG)', () => {
-  let t: TestApp; let f: TwoProjectFixture; let ops: OutboxOperationsService; let relay: OutboxRelay; let seq = 0;
+  let t: TestApp; let f: TwoProjectFixture; let ops: OutboxOperationsService; let relay: OutboxRelay; let activation: OutboxConsumerActivationService; let seq = 0;
   beforeAll(async () => {
     t = await createTestApp();
     f = await createTwoProjectFixture(t.prisma);
     ops = t.app.get(OutboxOperationsService);
     relay = t.app.get(OutboxRelay);
+    activation = t.app.get(OutboxConsumerActivationService);
     human.actorId = f.memberUser.id;
     registerConsumer(ordered);
     await syncConsumerCatalog(t.prisma);
@@ -119,13 +122,13 @@ describe('PR B Task 4 — outbox operations (live PG)', () => {
     const { eventId } = await emit(p, 'D-off');
     const d = await deliveryFor(eventId);
     await t.prisma.outboxDelivery.update({ where: { id: d.id }, data: { status: 'dead', lastError: 'boom' } });
-    await t.prisma.outboxConsumerCatalog.update({ where: { consumer: ORD }, data: { active: false } });
+    await activation.request({ consumer: ORD, active: false, reason: 'probe: deactivate before the retry through the activation protocol', actorId: 'outbox-operations.test', requestToken: randomUUID() });
     try {
       await expect(ops.retry({ deliveryId: d.id, operatorIdentity: 'op', reason: 'r' })).rejects.toThrow(/active catalog contract/i);
       expect((await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: d.id } })).status).toBe('dead'); // unchanged
       expect(await t.prisma.outboxOperatorAction.count()).toBe(0); // no audit mutation
     } finally {
-      await t.prisma.outboxConsumerCatalog.update({ where: { consumer: ORD }, data: { active: true } }); // restore for later tests
+      await activation.request({ consumer: ORD, active: true, reason: 'probe: restore for later tests through the activation protocol', actorId: 'outbox-operations.test', requestToken: randomUUID() });
     }
   });
 
