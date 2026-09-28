@@ -10,7 +10,7 @@ import {
 } from '@/store/selectors';
 import { withDeciderRoute } from '@/lib/screens';
 import { jwtSub } from '@/lib/jwt';
-import { viewerIsDecider, type Decision, type Role } from '@vitan/shared';
+import { deciderNoun, viewerIsDecider, type Decision, type Role } from '@vitan/shared';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { DraftsScreen } from '@/screens/DraftsScreen';
 
@@ -61,6 +61,12 @@ describe('P22 (web half): the pending audience follows the decider on every clie
     expect(viewerIsDecider({ deciderKind: 'member', deciderUserId: 'u1' }, 'engineer', 'u2')).toBe(false);
     expect(viewerIsDecider({ deciderKind: 'member', deciderUserId: 'u1' }, 'engineer', null)).toBe(false);
     expect(viewerIsDecider({ deciderKind: 'none' }, 'pmc', 'u1')).toBe(false);
+    // Phase 6 task 4d — `architect` designates the ROLE, the client/pmc shape (unrepresentable until 4d-iii)
+    expect(viewerIsDecider({ deciderKind: 'architect' }, 'architect')).toBe(true);
+    expect(viewerIsDecider({ deciderKind: 'architect' }, 'pmc')).toBe(false);
+    expect(viewerIsDecider({ deciderKind: 'client' }, 'architect')).toBe(false);
+    // …and the gate's reading names it, where the catch-all would have said "the client"
+    expect(deciderNoun('architect')).toBe('the architect');
   });
 
   it('the log + the shared visible-decisions rule show a member-held pending row ONLY to its named decider (and pmc)', () => {

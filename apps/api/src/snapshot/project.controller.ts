@@ -5,6 +5,8 @@ import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY, COMMERCIA
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
 import type { ProjectShellDto } from './types';
+import { PrismaService } from '../prisma.service';
+import { readPhase6_4dRollout } from '../platform/phase6-4d-rollout';
 
 @Controller('projects/:projectId')
 @UseGuards(JwtGuard, RolesGuard)
@@ -15,6 +17,8 @@ export class ProjectController {
     private readonly registry: ModuleRegistryService,
     // Phase 3 Task 7 (§D) — the PER-PROJECT pilot capabilities, so the client can gate Materials.
     private readonly capabilities: CapabilitiesService,
+    // Phase 6 task 4d — the catalog read behind `rollout.phase6_4d`
+    private readonly prisma: PrismaService,
   ) {}
 
   /** Phase 2 Task 9 — the PROJECT-SHELL summary: identity + `enabledModules` + projection counts, the
@@ -28,11 +32,12 @@ export class ProjectController {
   @Get('shell')
   @RolesFor('project.read')
   async shell(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser): Promise<ProjectShellDto> {
-    const [summary, materials, labour, commercial] = await Promise.all([
+    const [summary, materials, labour, commercial, phase6_4d] = await Promise.all([
       this.snapshot.shellSummary(projectId, user.role, user.sub),
       this.capabilities.isEnabled(projectId, MATERIALS_CAPABILITY),
       this.capabilities.isEnabled(projectId, LABOUR_CAPABILITY),
       this.capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY),
+      readPhase6_4dRollout(this.prisma),
     ]);
     // Phase 6 unit 4c-iv — `consultation` is deliberately NOT here any more. 4c-ii advertised it
     // so the client could read the same per-project gate the write surface did; 4c-iv retires
@@ -44,7 +49,7 @@ export class ProjectController {
       ...(labour ? [LABOUR_CAPABILITY] : []),
       ...(commercial ? [COMMERCIAL_CAPABILITY] : []),
     ];
-    return { ...summary, enabledModules: this.registry.enabledModules, capabilities };
+    return { ...summary, enabledModules: this.registry.enabledModules, capabilities, rollout: { phase6_4d } };
   }
 
   /** Full project snapshot the frontend hydrates its store from (RBAC-filtered by role).

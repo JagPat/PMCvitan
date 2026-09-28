@@ -19,6 +19,7 @@ import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../p
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { consultationOpen } from './consultation-open';
+import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
 function requireIdempotencyKey(key: string | undefined, commandType: string): string {
@@ -94,9 +95,14 @@ export class DecisionsService {
    *  never a role fan-out that would reach every same-role device). */
   private deciderPush(
     body: string,
-    kind: 'client' | 'pmc' | 'member' | 'none',
+    kind: 'client' | 'pmc' | 'member' | 'none' | 'architect',
     member: { userId: string; role: string } | null,
   ): { body: string; roles?: readonly ('pmc' | 'client' | 'contractor' | 'engineer' | 'consultant')[]; targetUserId?: string } {
+    // Phase 6 task 4d — an architect-designated decision pushes at the architect role, an arm that
+    // lands with its widened catalog ceiling (A7). The fall-through below would push it at the
+    // CLIENTS, so the kind is refused here outright: the create and draft edits already refuse the
+    // designation 409 while 4d-i's reservation stands, and A7 lands before 4d-iii opens it.
+    if (kind === 'architect') throw new Error('invariant: the architect decider push lands with A7');
     if (kind === 'member' && member) {
       return { body, roles: [member.role as 'contractor'], targetUserId: member.userId };
     }
@@ -167,6 +173,13 @@ export class DecisionsService {
         // activity start, a membership command) would make the trigger's try-acquire fail an
         // otherwise valid create instead of serializing behind it.
         if (input.publish || record) await lockProjectReadiness(tx, projectId);
+        // Phase 6 task 4d (§A.1) — the architect DESIGNATION is reserved until 4d-iii: refused 409
+        // with the drain directive before the draft is born (4d-i's door would refuse the INSERT
+        // below mid-transaction), judged under the readiness key like every designation write
+        if (input.deciderKind === 'architect') {
+          if (!(input.publish || record)) await lockProjectReadiness(tx, projectId);
+          await assertPhase6_4dOpen(tx, 'A decision designated to the architect role');
+        }
         // 4b (§A.1): a NAMED decider must be an ACTIVE membership of THIS project, answered and
         // LOCKED by the owner through the declared participant edge — the FK alone proves too
         // little (existence is not standing).
@@ -1039,7 +1052,10 @@ export class DecisionsService {
         const cur = lockedRows[0]!;
         if (cur.publishedAt !== null) throw new ConflictException('The draft was published while editing — its content and holder are now frozen');
         // the RESULTING kind decides status coherence and option handling — from the LOCKED row
-        const curKind = cur.deciderKind as 'client' | 'pmc' | 'member' | 'none';
+        const curKind = cur.deciderKind as 'client' | 'pmc' | 'member' | 'none' | 'architect';
+        // Phase 6 task 4d (§A.1) — re-pointing a draft at the architect role is reserved until
+        // 4d-iii: refused 409 with the drain directive, under the readiness key, before any write
+        if (input.deciderKind === 'architect') await assertPhase6_4dOpen(tx, 'A decision designated to the architect role');
         const nextKind = input.deciderKind ?? curKind;
         const nextStatus = nextKind === 'none' ? 'recorded' : cur.status === 'recorded' ? 'pending' : cur.status;
         if (input.deciderKind === 'member') {

@@ -132,8 +132,10 @@ const _allDecisionStatusesListed: _AllDecisionStatusesListed = true;
 void _allDecisionStatusesListed;
 
 /** Phase 6 task 4b — WHO decides a decision. `none` is the record-only issue (born terminal
- *  `recorded`, approvable by nobody); `member` names an active project membership. */
-export type DeciderKind = 'client' | 'pmc' | 'member' | 'none';
+ *  `recorded`, approvable by nobody); `member` names an active project membership. `architect`
+ *  (Phase 6 task 4d) designates the architect ROLE, the `client`/`pmc` shape; 4d-i's door refuses
+ *  any `Decision` row carrying it until 4d-iii, and the service refuses it 409 before that. */
+export type DeciderKind = 'client' | 'pmc' | 'member' | 'none' | 'architect';
 /** `awaiting-signoff` = a completion CLAIM parked until the PMC approves the
  *  linked closing inspection (Phase 1 Task 5) — counted as NOT done everywhere. */
 export type ActivityStatus = 'not-started' | 'in-progress' | 'awaiting-signoff' | 'done' | 'blocked';

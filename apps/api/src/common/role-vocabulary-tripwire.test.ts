@@ -90,8 +90,8 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     'apps/api/src/common/actor.ts :: map ROLE_LABEL': 'answered',
     'apps/api/src/decisions/decisions.manifest.ts :: list permissions': 'answered',
     'apps/api/src/platform/external-effects.ts :: union PushRole': 'answered',
-    'apps/api/src/contracts.ts :: list role': 'owed by A5b: the session request’s role enum, widened with the 409 refusal of the dev session while the reservation stands',
-    'apps/api/src/contracts.ts :: list projectRole': 'owed by A5b: the member role enum, widened with the 409 refusals of the add and the role update',
+    'apps/api/src/contracts.ts :: list role': 'answered',
+    'apps/api/src/contracts.ts :: list projectRole': 'answered',
     'apps/api/src/platform/external-effects.ts :: list decision.published': 'owed by A7: the targeted ceiling, widened with the catalog version',
     'apps/api/src/platform/external-effects.ts :: list decision.consultation_requested': 'owed by A7: the targeted ceiling, widened with the catalog version',
     // web

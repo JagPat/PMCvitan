@@ -208,7 +208,7 @@ export function awaitingCountersignReason(kind: DeciderKind): string {
  *  byte-identical; `none` never reaches these arms (none ⟺ recorded takes the recorded arm),
  *  and falls back to the client noun rather than inventing one. */
 export function deciderNoun(kind: DeciderKind): string {
-  return kind === 'pmc' ? 'the PMC' : kind === 'member' ? 'the named decider' : 'the client';
+  return kind === 'pmc' ? 'the PMC' : kind === 'member' ? 'the named decider' : kind === 'architect' ? 'the architect' : 'the client';
 }
 
 /** The two viewer-dependent texts of the withdrawn decision gate (round 11, Codex): ONE source

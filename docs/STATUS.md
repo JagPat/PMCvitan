@@ -14,29 +14,32 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a5a-role-vocabulary
-reviewed_merge: 9d58b44
-open_pr: 653
+work_item: phase-6-task-4d-ii-a-a5b-service-doors
+reviewed_merge: 2afc0be
+open_pr: 654
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
 ```
 
-### Now — Phase 6 task 4d: A5a, the role vocabulary
+### Now — Phase 6 task 4d: A5b, the doors on the service path
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A5a, `open_pr: 653` (`work_item: phase-6-task-4d-ii-a-a5a-role-vocabulary`, branch
-  `claude/4d-ii-a5a-role-vocabulary`, from `main` at `9d58b44`).** The first A5 sub-unit: §A.1's role
-  vocabulary, delivered dark.
-  - `architect` joins the shared `TokenRole` (with a runtime `TOKEN_ROLES`), the API's `Role`,
-    `PushRole`, the registry's `KNOWN_ROLES`, the decisions manifest, the audit label and the membership
-    comment; `ROLE_POLICY` grants it the eight routed actions of §A.1's eleven, pinned by equality (P28).
-  - A role tripwire registers every role vocabulary in shared, API and web with a verdict; the zod
-    enums are owed by A5b with the 409 refusals, the targeted ceilings by A7, the web persona and its
-    pickers by 4d-ii-b. The web answers the role in its maps and holds the persona back. No token can
-    carry the role (4d-i's doors), so nothing is reachable. No migration (`migration-scope: n/a`).
+- **Now, A5b, `open_pr: 654` (`work_item: phase-6-task-4d-ii-a-a5b-service-doors`, branch
+  `claude/4d-ii-a5b-service-doors`, from `main` at `2afc0be`).** The second A5 sub-unit: §A.1's doors on
+  the service path.
+  - The zod role enums and `DECIDER_KINDS` admit `architect`, and every command naming it refuses 409
+    with `phase-6-4d-previous-release-drained` before any write: the member add and role update, a
+    decision created or re-pointed at the architect designation, and the dev session (whose synthetic
+    fallback never mints the role). One catalog read of 4d-i's doors judges each, and the shell's
+    `rollout.phase6_4d` is baked from it.
+  - The shared `DeciderKind` gains the value, with `viewerIsDecider`'s and `deciderNoun`'s explicit
+    arms. No migration (`migration-scope: n/a`).
+- **A5a merged as #653** (`2afc0be`): `architect` joins the role vocabulary and every mirror of it,
+  delivered dark; `ROLE_POLICY` grants the eight routed actions, pinned by equality; a role tripwire
+  registers every role vocabulary in shared, API and web.
 - **A4d merged as #652** (`9d58b44`): `awaiting_countersign` joins the shared `DecisionStatus`; every
   status map and predicate in shared, API and web is registered per occurrence with a checked verdict;
   the consultation open set and the withdraw's refusal answer the value.

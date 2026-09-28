@@ -224,8 +224,9 @@ so the enums move with the 409 refusals, never before them.
   `rollout.phase6_4d` on the shell payload.
 - **A5c, the kernel standing reads and the designation fan-out:** `RoleStandingQuery` and the
   `countersignRequired` overlay; `effectiveRoleHolderUserIds` wrapping `platform_role_holder_user_ids`;
-  the designation's `architect` arms (the shared `DeciderKind`, `viewerIsDecider`, `deciderNoun`, the
-  open-holder answer, the holder-orphan rule's register arm); `countPending`'s architect arm and
+  the designation's `architect` arms (the open-holder answer, the holder-orphan rule's register arm;
+  the shared `DeciderKind`, `viewerIsDecider` and `deciderNoun` answer it from A5b, which widened the
+  type with `DECIDER_KINDS`); `countPending`'s architect arm and
   countersign obligations, with the shell summary reading it; the architect as consultation requester
   and the roster on the consultation surface (server).
 - **A5d, the client boundary:** the `countersign-v1` interceptor, its in-command refusals and its
