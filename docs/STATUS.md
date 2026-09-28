@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a5e-countersign-boundary
 reviewed_merge: 5b4e55a
-open_pr: none
+open_pr: 657
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
@@ -27,7 +27,7 @@ updated: 2026-09-28
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A5e (`work_item: phase-6-task-4d-ii-a-a5e-countersign-boundary`, branch
+- **Now, A5e, `open_pr: 657` (`work_item: phase-6-task-4d-ii-a-a5e-countersign-boundary`, branch
   `claude/4d-ii-a5e-countersign-boundary`, from `main` at `5b4e55a`).** The fifth and last A5 sub-unit:
   the server half of the `countersign-v1` client boundary.
   - A transport interceptor beside the 4b one: a request declaring less than `countersign-v1` has the
