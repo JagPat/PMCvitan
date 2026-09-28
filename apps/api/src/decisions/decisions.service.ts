@@ -18,6 +18,7 @@ import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { OrgsParticipant } from '../orgs/orgs.participant';
+import { consultationOpen } from './consultation-open';
 
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
 function requireIdempotencyKey(key: string | undefined, commandType: string): string {
@@ -49,17 +50,17 @@ async function lockDecisionForConsultation(
 /**
  * The ELIGIBILITY carve-out, applied identically at the request and at the response.
  *
- * A consultation belongs only to a decision whose question is still OPEN — `pending` or `change`
- * in 4c (the `awaiting_countersign` arm is ADDED BY 4d with the status itself) — AND PUBLISHED.
- * Status alone would admit an author-private DRAFT whose status is `pending`. Never `withdrawn`,
- * whose title and reason are pmc-only: a consultation there would leak exactly what 4a hides.
- * Never `approved` or `recorded`: there is nothing left to inform.
+ * A consultation belongs only to a decision whose question is still OPEN
+ * (`CONSULTATION_OPEN_STATUSES`) AND PUBLISHED. Status alone would admit an author-private
+ * DRAFT whose status is `pending`. Never `withdrawn`, whose title and reason are pmc-only: a
+ * consultation there would leak exactly what 4a hides. Never `approved` or `recorded`: there is
+ * nothing left to inform.
  */
 function assertConsultationEligible(d: { status: string; publishedAt: Date | null }, decisionId: string): void {
   if (d.publishedAt === null) {
     throw new ConflictException(`Decision ${decisionId} is an unpublished draft — there is nobody to consult about it yet`);
   }
-  if (d.status !== 'pending' && d.status !== 'change') {
+  if (!consultationOpen(d.status)) {
     throw new ConflictException(
       `Decision ${decisionId} is ${d.status} — advice can only be asked for, or given, while the question is still open`,
     );
@@ -1159,7 +1160,8 @@ export class DecisionsService {
     if (d.publishedAt === null) throw new ConflictException('A draft cannot be withdrawn — it was never issued (publish or discard it from Drafts)');
     // an approved/reopened decision carries attributable approvals the register must keep
     // authoritative — the honest path to revisit it is a change request
-    if (d.status === 'approved' || d.status === 'change') {
+    // (4d-ii-a / A4d: an approval awaiting the architect's countersign carries one too)
+    if (d.status === 'approved' || d.status === 'change' || d.status === 'awaiting_countersign') {
       throw new ConflictException('This decision carries an approval — raise a change request instead; withdraw applies only to a never-approved pending decision');
     }
     if (d.status === 'withdrawn') throw new ConflictException('Decision is already withdrawn');

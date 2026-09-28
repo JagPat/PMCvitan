@@ -14,28 +14,29 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a4c-kinded-feed
-reviewed_merge: c904ef9
-open_pr: 651
+work_item: phase-6-task-4d-ii-a-a4d-reader-enumeration
+reviewed_merge: 14ca82f
+open_pr: 652
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-27
 ```
 
-### Now — Phase 6 task 4d: A4c, the kinded feed readers
+### Now — Phase 6 task 4d: A4d, the reader enumeration
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A4c, `open_pr: 651` (`work_item: phase-6-task-4d-ii-a-a4c-kinded-feed`, branch `claude/4d-ii-a4c-kinded-feed`,
-  from `main` at `c904ef9`).** How the feed reads a KINDED notice (one bound to its event):
-  - the snapshot reads the viewer's decision slice and the feed (with the bound events) in ONE
-    REPEATABLE READ transaction, through the decisions module's and the platform's own queries;
-  - a kinded notice is rendered from its kind and event, never its stored text, and served only when
-    its decision is in the viewer's slice; its actionable kinds are suppressed once the decision is
-    withdrawn, and the withdraw deletes kind-less notices only;
-  - A4c's renderer arms are the published (pending and record) and withdrawn notices; the others join
-    with their writers (A7, A8). No migration (`migration-scope: n/a`).
+- **Now, A4d, `open_pr: 652` (`work_item: phase-6-task-4d-ii-a-a4d-reader-enumeration`, branch
+  `claude/4d-ii-a4d-reader-enumeration`, from `main` at `14ca82f`).** The last A4 sub-unit: §A.2's
+  reader enumeration, server and shared arms, and the shared status tripwire.
+  - `awaiting_countersign` joins the shared `DecisionStatus`; the shared status maps and the decision
+    gate's reading answer it explicitly; the API's status copies point at the shared type.
+  - The tripwire registers every status-keyed map and predicate and fails on an unregistered one; the
+    web maps' arms are registered as owed by 4d-ii-b. No migration (`migration-scope: n/a`).
+- **A4c merged as #651** (`14ca82f`): the snapshot reads kinded notices by rendering, visibility and
+  withdrawal in one REPEATABLE READ snapshot; a publication notice's audience is its decision's to say
+  (review finding 4117114385).
 - **A4b merged as #650** (`c904ef9`): `decisions.approvedRef` refuses a provisional head and returns
   `revisionFinalized`, every spec writer states it, and a writer sweep pins the four INSERT sites.
 - **A4a merged as #649** (`1f4f228`): the consultation cycle counts FINALIZED approvals at every site

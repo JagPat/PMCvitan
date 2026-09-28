@@ -453,3 +453,19 @@ describe('DecisionsService — change control & mandatory re-approval (Phase 1 T
     expect(dispatchedIntents(behalf.dispatcher)[0]).toMatchObject({ effectKey: 'decision.approved', invalidate: true, push: { body: expect.stringContaining('on behalf of the client'), roles: ['pmc', 'contractor', 'engineer'] } });
   });
 });
+
+// 4d-ii-a / A4d — the withdraw's refusal answers `awaiting_countersign` (#652's review, finding
+// 4117700813's sweep): an approval the architect has yet to countersign is still an approval act,
+// which the register must keep (the plan's "withdraw refuses it"; the delivered
+// `phase6_t4a_no_approval_after_withdraw` seal refuses the same at the database).
+describe('DecisionsService — withdraw refuses an approval awaiting countersign (4d-ii-a / A4d)', () => {
+  it('409, before any write, exactly as for an approved or reopened decision', async () => {
+    const pmc = { sub: 'u-pmc', role: 'pmc' } as AuthUser;
+    for (const status of ['approved', 'change', 'awaiting_countersign']) {
+      const { svc, prisma } = makeLifecycle(status);
+      await expect(svc.withdraw('proj-1', 'DL-1', { reason: 'Scope changed' }, pmc), status)
+        .rejects.toThrow(/carries an approval/);
+      expect((prisma as unknown as { $transaction: { mock: { calls: unknown[] } } }).$transaction.mock.calls, status).toHaveLength(0);
+    }
+  });
+});

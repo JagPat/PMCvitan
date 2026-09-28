@@ -186,12 +186,21 @@ export function deriveDecisionReading(decisionStatus: DecisionStatus | null, wit
         ? 'Decision approved and locked'
         : decisionStatus === 'change'
           ? `Change requested — awaiting ${deciderNoun(deciderKind)}’s re-approval`
+          // Phase 6 task 4d (§A.2's reader enumeration) — an approval is not final until the
+          // architect countersigns it, so work waits; the text says who acts next
+          : decisionStatus === 'awaiting_countersign'
+            ? awaitingCountersignReason(deciderKind)
           : decisionStatus === 'withdrawn'
             ? withdrawnReasonVisible
               ? WITHDRAWN_REASON_HONEST
               : WITHDRAWN_REASON_REDACTED
             : `Awaiting ${deciderNoun(deciderKind)}’s approval`;
   return { v, source: 'derived', reason };
+}
+
+/** Phase 6 task 4d — the decision gate's text for an approval awaiting the architect's countersign. */
+export function awaitingCountersignReason(kind: DeciderKind): string {
+  return `Approved by ${deciderNoun(kind)} — awaiting the architect’s countersign`;
 }
 
 /** Replacement round (Codex R2-F3) — the responsibility noun of the decision gate's waiting
