@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXTERNAL_EFFECTS, effectCoverageVersion } from '../../src/platform/external-effects';
+import { rawDeliveryRowsSql } from './fixtures';
 
 /**
  * Phase 6 unit 4d-i-b — THE BUNDLE PROOF MATRIX (#590's review round 2, six P1s, and the
@@ -157,7 +158,8 @@ const EV = (o: {
              ${o.payload ?? "'{}'::jsonb"},
              jsonb_build_object('effectKey','${o.type}','coverageVersion',c."coverageVersion",'invalidate',c."invalidate"${o.push ?? ''})
         FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
-       WHERE s."projectId" = '${p.id}' AND c."effectKey" = '${o.type}' AND c."coverageVersion" = '${o.version}';`;
+       WHERE s."projectId" = '${p.id}' AND c."effectKey" = '${o.type}' AND c."coverageVersion" = '${o.version}';
+    ${rawDeliveryRowsSql(o.id)};`;
 };
 /** the audit register row the delivered writer appends beside its fact */
 const AU = (dec: string, type: string) =>

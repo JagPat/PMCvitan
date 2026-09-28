@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DOMAIN_EVENT_TYPES } from '@vitan/shared';
 import {
-  dispatchActionFor, persistedRule, eventTypesUnder, DISPATCH_RULE_KINDS,
+  dispatchActionFor, deliveryRowsFor, pushPayloadFor, persistedRule, eventTypesUnder, DISPATCH_RULE_KINDS,
   type DispatchRule, type EmittedEventMeta, type OutboxConsumer,
 } from './registry';
 import { makeSocketConsumer, makePushConsumer } from './consumers';
@@ -20,10 +20,11 @@ import { makeCashForecastProjectionConsumer } from '../../commercial/cash-foreca
  * Phase 6 task 4d-ii-a / A6c — the persisted dispatch rules are TWO COPIES OF ONE TRUTH, three
  * times over, and each pair is pinned here:
  *
- *   1. the compiled consumer's DECLARED rule (`dispatchRule`) against its delivered `deliveryFor`,
- *      over the closed event-type list and every intent shape — until A6d derives the rows from the
- *      persisted rule, `deliveryFor` still decides, and a declaration that disagreed with it would
- *      persist a rule the seals later judge by while the relay wrote something else;
+ *   1. the compiled consumer's DECLARED rule (`dispatchRule`) against the rows `deliveryRowsFor`
+ *      derives from the same rule PERSISTED, over the closed event-type list and every intent shape
+ *      (A6d retired `deliveryFor`: the persisted rule is the one source, and this arm holds that the
+ *      declaration, once persisted through `persistedRule`, round-trips to the action the code
+ *      derives — the database's own derivation is held equal to it in the live A6d suite);
  *   2. the MIGRATION LITERAL (the rule the catalog-data migration writes for every row that already
  *      exists) against the compiled consumers — read from the migration TEXT, as 4d-i's catalog seed
  *      is, because the migration is the artifact that ships and a database can be repaired by hand;
@@ -35,8 +36,8 @@ import { makeCashForecastProjectionConsumer } from '../../commercial/cash-foreca
 const MIGRATION = join(__dirname, '..', '..', '..', 'prisma', 'migrations', '20271230000000_phase6_t4d_ii_a6c_catalog_rules', 'migration.sql');
 const BOOTSTRAP = join(__dirname, 'outbox.bootstrap.ts');
 
-/** The compiled consumers the bootstrap registers, built over inert deps (`deliveryFor` and
- *  `dispatchRule` read nothing but the event). */
+/** The compiled consumers the bootstrap registers, built over inert deps (`dispatchRule` is a
+ *  declaration and reads nothing). */
 const compiled = (): OutboxConsumer[] => [
   makeSocketConsumer({} as never),
   makePushConsumer({} as never),
@@ -100,12 +101,22 @@ describe('4d-ii-a / A6c — the persisted dispatch rule', () => {
     expect(eventTypesUnder('activity.')).not.toContain('activity_output.recorded');
   });
 
-  it('every compiled consumer\'s declared rule agrees with its delivered `deliveryFor` over the closed event list and every intent shape', () => {
+  it('every compiled consumer\'s declared rule, PERSISTED and read back, derives the same row `deliveryRowsFor` writes over the closed event list and every intent shape', () => {
     for (const c of compiled()) {
+      const persisted = persistedRule(c.dispatchRule);
+      const catalogRow = { consumer: c.name, consumerKind: c.kind, active: true, ...persisted };
       for (const t of DOMAIN_EVENT_TYPES) {
         for (const intent of INTENTS) {
           const m = meta(t, intent);
-          expect(dispatchActionFor(c.dispatchRule, m), `${c.name}: ${t} under ${JSON.stringify(intent)}`).toBe(c.deliveryFor(m).action);
+          const [row] = deliveryRowsFor(m, [catalogRow]);
+          expect(row?.deliveryAction, `${c.name}: ${t} under ${JSON.stringify(intent)}`).toBe(dispatchActionFor(c.dispatchRule, m));
+          // the push consumer's dispatch carries the projection and the subject; nobody else carries either
+          if (persisted.dispatchRule === 'push' && row?.deliveryAction === 'dispatch') {
+            expect(row).toMatchObject({ payload: pushPayloadFor(intent), subject: 'x' });
+          } else {
+            expect(row).not.toHaveProperty('payload');
+            expect(row).not.toHaveProperty('subject');
+          }
         }
       }
     }

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, rawDeliveryRowsSql } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { EXTERNAL_EFFECTS, effectCoverageVersion } from '../../src/platform/external-effects';
 
@@ -257,6 +257,8 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
            FROM "ProjectEventStream" s WHERE s."projectId" = $3`,
         eventId, org, proj, version,
       );
+      // 4d-ii-a / A6d — a direct writer owes the event's delivery rows in its own transaction
+      await tx.$executeRawUnsafe(rawDeliveryRowsSql(eventId));
     });
 
     // the outgoing release's event — this is the write round 8 found refused
@@ -300,6 +302,9 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
            FROM "ProjectEventStream" s WHERE s."projectId" = $3`,
         eventId, org, proj, version, f.memberUser.id,
       );
+      // 4d-ii-a / A6d — the delivery rows the event owes, so the arm reaches the CLAIM seal it is
+      // about rather than being refused by the delivery seal beside it
+      await tx.$executeRawUnsafe(rawDeliveryRowsSql(eventId));
     });
     // a still-serving 4d-i process emits under its own generation, where the flag is false: the
     // mechanism is dark for it, exactly as 4d-i left it, so the drain stays open.

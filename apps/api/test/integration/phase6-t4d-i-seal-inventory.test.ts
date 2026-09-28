@@ -100,7 +100,11 @@ const INVENTORY: Record<string, string[]> = {
     'DecisionStrandedResolution_t4d_provenance_bound',
     'DecisionStrandedResolution_t4d_seal',
   ],
-  DomainEvent: ['DomainEvent_t4d_envelope',
+  DomainEvent: [
+    // 4d-ii-a / A6d (20271231): the deferred delivery obligation — every active ruled catalog row
+    // has its same-transaction delivery row at commit; the seal takes the registration key SHARED
+    'DomainEvent_t4d_deliveries',
+    'DomainEvent_t4d_envelope',
     // #582's review round 24, the sweep behind finding 2 — the stream carried four ROW triggers
     // and no statement-level arm, while every register derived from it was already sealed.
     // 4d-i-b U1 adds the kernel actor seal beside the claim seal — a pairingRequired event must
@@ -155,6 +159,9 @@ const INVENTORY: Record<string, string[]> = {
   // 4d-ii-a / A6b (20271229): the mirror's sole-writer freeze beside the registration head;
   // A6c (20271230): the registration barrier (the EXCLUSIVE half of the one shared key).
   OutboxConsumerCatalog: ['OutboxConsumerCatalog_t4d_registration_barrier', 'OutboxConsumerCatalog_t4d_registration_head', 'OutboxConsumerCatalog_t4d_rules'],
+  // 4d-ii-a / A6d (20271231): every delivery row bound to its consumer's persisted rule and its
+  // event's intent at insert, and frozen afterwards but for the relay's own transitions.
+  OutboxDelivery: ['OutboxDelivery_t4d_bound', 'OutboxDelivery_t4d_frozen', 'OutboxDelivery_t4d_retained'],
   Project: ['Project_t4d_deleting', 'Project_t4d_project_org', 'Project_t4d_user_standing'],
   ProjectEventStream: [
     // §A.2 names FIVE objects here and the first version of this unit installed two, with the
@@ -256,6 +263,14 @@ const FUNCTIONS = [
   'platform_t4d_catalog_rules',
   // 4d-ii-a / A6c — the registration barrier
   'platform_t4d_registration_barrier',
+  // 4d-ii-a / A6d — the three delivery seals and the two kernel reads they judge by: the derivation
+  // (the persisted rule applied to an event) and the push projection (the intent into a payload)
+  'platform_t4d_event_deliveries',
+  'platform_t4d_delivery_bound',
+  'platform_t4d_delivery_frozen',
+  'platform_t4d_delivery_retained',
+  'platform_t4d_delivery_action',
+  'platform_t4d_push_payload',
 ];
 
 describe('Phase 6 units 4d-i and 4d-i-b — every seal the migrations name is INSTALLED (live PG)', () => {

@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { CashForecastDto, CostHeadPositionDto, DomainEventType } from '@vitan/shared';
-import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
+import type { EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
 import type { EventActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { CommercialBudgetQuery } from './commercial-budget.query';
@@ -231,10 +231,6 @@ export const FORECAST_EVENT_TYPES: readonly DomainEventType[] = [
 ];
 const FORECAST_EVENTS = new Set<string>(FORECAST_EVENT_TYPES);
 
-function deliveryFor(meta: EmittedEventMeta): DeliveryPlan {
-  return FORECAST_EVENTS.has(meta.eventType) ? { action: 'dispatch' } : { action: 'noop' };
-}
-
 /** Build the `commercial.cash-forecast` projection consumer. */
 export function makeCashForecastProjectionConsumer(): OutboxConsumer {
   return {
@@ -242,10 +238,9 @@ export function makeCashForecastProjectionConsumer(): OutboxConsumer {
     kind: 'ordered',
     effect: 'db',
     catalogVersion: 1,
-    // 4d-ii-a / A6c — the persisted rule the catalog row carries; the unit tripwire holds it equal
-    // to `deliveryFor` over the closed event-type list until A6d derives the rows from it.
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries; from A6d it is what derives this
+    // consumer's delivery rows (`deliveryRowsFor`), so a rule change is a contract change.
     dispatchRule: { kind: 'types', eventTypes: FORECAST_EVENT_TYPES },
-    deliveryFor,
     projection: {
       rebuildSeed: async (tx, target) => {
         // The head is read BEFORE the compute, and the order is the correctness argument. Under

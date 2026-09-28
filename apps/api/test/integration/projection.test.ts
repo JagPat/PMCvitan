@@ -7,7 +7,7 @@ import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.se
 import { registerConsumer, unregisterConsumer, syncConsumerCatalog, type OutboxConsumer, type ProjectionTarget } from '../../src/platform/outbox/registry';
 import type { Actor } from '../../src/common/actor';
 
-import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { sanctionedReset, sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 9 Step 1 — the projection base: generation-swap rebuild + the FINAL ACTIVATION
  * BARRIER, proven against live PostgreSQL.
@@ -31,7 +31,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  *  row count and the generation-scoping is directly observable. */
 const projConsumer: OutboxConsumer = {
   name: PROJ, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
-  deliveryFor: () => ({ action: 'dispatch' }),
   projection: {
     dropGeneration: async (tx, target: ProjectionTarget) => {
       await tx.auditLog.deleteMany({ where: { action: PROJ, entityId: target.generationId } });
@@ -52,7 +51,6 @@ const projConsumer: OutboxConsumer = {
 let seedThrough = -1n; // set per-test; -1 ⇒ nothing seeded (replay from 0)
 const seededConsumer: OutboxConsumer = {
   name: SEEDED, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
-  deliveryFor: () => ({ action: 'dispatch' }),
   projection: {
     rebuildSeed: async (tx, target: ProjectionTarget) => {
       if (seedThrough < 0n) return null;
@@ -90,6 +88,10 @@ describe('Phase 2 Task 9 — projection generations + activation barrier (live P
     unregisterConsumer(PROJ);
     unregisterConsumer(SEEDED);
     await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration'], { cascade: true });
+    // 4d-ii-a / A6d — the two ad-hoc consumers' catalog rows leave with the suite: from A6d the
+    // delivery rows derive from the PERSISTED catalog, so ACTIVE, RULED rows left behind would give
+    // every later suite's events deliveries for consumers no process handles.
+    await sanctionedConsumerRemoval(t?.prisma, [PROJ, SEEDED]);
     await f?.cleanup();
     await t?.close();
   });

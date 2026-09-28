@@ -38,7 +38,7 @@ describe('4d-ii-a / A6c — the persisted rules and the registration barrier (li
   type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
   const consumer = (name: string, dispatchRule: DispatchRule = RULE): OutboxConsumer => ({
     name, kind: 'unordered', effect: 'external', catalogVersion: 1, dispatchRule,
-    deliveryFor: () => ({ action: 'noop' }), handle: async () => {},
+    handle: async () => {},
   });
   const compiled = (): OutboxConsumer[] => [
     makeSocketConsumer({} as never), makePushConsumer({} as never),
