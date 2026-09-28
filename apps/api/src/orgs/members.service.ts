@@ -13,6 +13,7 @@ import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant } from './orgs.participant';
 import { InvitationsService } from './invitations.service';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
+import { RoleStandingQuery } from '../platform/role-standing.query';
 
 export interface MemberDto {
   userId: string;
@@ -108,15 +109,55 @@ export class MembersService {
     atRisk: ReadonlySet<string>,
   ): Promise<void> {
     if (atRisk.size === 0) return;
-    const { heldRoles } = await this.decisionHolders.holdsOpenDecisions(tx, { projectId });
+    const { heldRoles, awaitingRoles } = await this.decisionHolders.holdsOpenDecisions(tx, { projectId });
+    // Phase 6 task 4d (§A.2, P39) — the architect's standing is the KERNEL register's (the
+    // delivered orgs derivation knows nothing of the role); `client`/`pmc` stay on it
+    const holders = (role: string) =>
+      role === 'architect'
+        ? RoleStandingQuery.activeCount(tx, projectId, 'architect')
+        : this.standing.effectiveRoleStanding(tx, projectId, role);
     for (const role of heldRoles) {
       if (!atRisk.has(role)) continue;
-      if ((await this.standing.effectiveRoleStanding(tx, projectId, role)) === 0) {
+      if ((await holders(role)) === 0) {
         throw new ConflictException(
           `An open decision is held by the ${role} role and this change would leave it without a holder — withdraw and reissue the decision first`,
         );
       }
     }
+    // …and a decision AWAITING COUNTERSIGN designated to a role (4d-i's widened guard). The architect
+    // role is never refused here: an architect remaining still holds it, and the LAST architect
+    // leaving deactivates the chain and strands the decision for the stranded resolution (the one
+    // named exemption).
+    for (const role of awaitingRoles) {
+      if (role === 'architect' || !atRisk.has(role)) continue;
+      if ((await holders(role)) === 0) {
+        throw new ConflictException(
+          `A decision awaiting countersign is designated to the ${role} role and this change would leave it without a holder — cover it first`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Phase 6 task 4d (§A.2, P39) — refuse removing or re-roling the NAMED holder of a decision
+   * AWAITING COUNTERSIGN, unless this is the LAST architect leaving: that departure deactivates the
+   * chain and strands the decision for `decisions.resolveStrandedCountersign`, so it is permitted.
+   * Called AFTER the membership write, so the architect count read is the post-write one the
+   * database guard judges.
+   */
+  private async refuseAwaitingHolderOrphan(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    membershipId: string,
+    lostRole: string,
+  ): Promise<void> {
+    const { namedAwaiting } = await this.decisionHolders.holdsOpenDecisions(tx, { projectId, membershipId });
+    if (!namedAwaiting) return;
+    const architects = await RoleStandingQuery.activeCount(tx, projectId, 'architect');
+    if (lostRole === 'architect' && architects === 0) return;
+    throw new ConflictException(
+      `This member is the named holder of a decision awaiting countersign — resolve or forward it first (the project still has ${architects} active architect(s), so the countersign is still pending)`,
+    );
   }
 
   /** True if the requester may manage this project's team (project PMC or org owner/admin). */
@@ -435,6 +476,7 @@ export class MembersService {
             ),
           );
         await this.refuseHolderOrphan(tx, projectId, new Set([cur.role]));
+        await this.refuseAwaitingHolderOrphan(tx, projectId, cur.id, cur.role);
         const events = [await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role }, effectKey: 'membership.role_changed', dispatch: {} })];
         // a consultant's discipline moving is its own fact
         if ((cur.discipline ?? null) !== (m.discipline ?? null)) {
@@ -545,12 +587,25 @@ export class MembersService {
               `An open decision is held by the ${cur.role} role and removing its last active holder would leave it undecidable — withdraw and reissue the decision first`,
             ),
           );
-        if (cur.status === 'active' && holders.heldRoles.includes(cur.role)) {
-          if ((await this.standing.effectiveRoleStanding(tx, projectId, cur.role)) === 0) {
+        if (cur.status === 'active') {
+          // Phase 6 task 4d (§A.2, P39) — the architect's standing is the KERNEL register's
+          const remaining = () =>
+            cur.role === 'architect'
+              ? RoleStandingQuery.activeCount(tx, projectId, 'architect')
+              : this.standing.effectiveRoleStanding(tx, projectId, cur.role);
+          if (holders.heldRoles.includes(cur.role) && (await remaining()) === 0) {
             throw new ConflictException(
               `An open decision is held by the ${cur.role} role and removing its last active holder would leave it undecidable — withdraw and reissue the decision first`,
             );
           }
+          // a decision AWAITING COUNTERSIGN designated to the role; never the architect role, whose
+          // last member leaving deactivates the chain instead (the one named exemption)
+          if (cur.role !== 'architect' && holders.awaitingRoles.includes(cur.role) && (await remaining()) === 0) {
+            throw new ConflictException(
+              `A decision awaiting countersign is designated to the ${cur.role} role and removing its last active holder would leave it without a holder — cover it first`,
+            );
+          }
+          await this.refuseAwaitingHolderOrphan(tx, projectId, cur.id, cur.role);
         }
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
         return { resultRef: cur.id, events: [ev] };

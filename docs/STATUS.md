@@ -14,27 +14,31 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a5c-standing-reads
-reviewed_merge: 8797a91
-open_pr: 655
+work_item: phase-6-task-4d-ii-a-a5d-designation-fanout
+reviewed_merge: 2f68d6c
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
 ```
 
-### Now — Phase 6 task 4d: A5c, the kernel standing reads
+### Now — Phase 6 task 4d: A5d, the designation fan-out
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A5c, `open_pr: 655` (`work_item: phase-6-task-4d-ii-a-a5c-standing-reads`, branch
-  `claude/4d-ii-a5c-standing-reads`, from `main` at `8797a91`).** The third A5 sub-unit: §A.2's kernel
-  standing reads.
-  - `RoleStandingQuery` asks 4d-i's registers through the kernel SQL the seals use; both decision read
-    paths overlay `countersignRequired` when an active architect holds the role (absent otherwise);
-    the orgs participant's role audience answers `architect` from the register, `pmc`/`client` from it
-    once the rollout reads `open`; the consultation requester set admits the architect through it.
-  - Nothing is reachable while the doors stand. No migration (`migration-scope: n/a`).
+- **Now, A5d (`work_item: phase-6-task-4d-ii-a-a5d-designation-fanout`, branch
+  `claude/4d-ii-a5d-designation-fanout`, from `main` at `2f68d6c`).** The fourth A5 sub-unit: the
+  architect designation's fan-out on the server.
+  - The open-holder answer names the architect role and a separate awaiting-countersign set; the member
+    commands refuse orphaning either, with the last architect's one named exemption (P39), mirroring
+    4d-i's widened guard; the architect's standing is the kernel register's.
+  - `countPending` gains the architect arm and the countersign obligations (stranded ones the PMC's
+    while no architect is active), and the project shell's badge now reads it, so badge and Portfolio
+    tile agree. No migration (`migration-scope: n/a`).
+- **A5c merged as #655** (`2f68d6c`): `RoleStandingQuery` asks 4d-i's registers through the kernel SQL;
+  both read paths overlay `countersignRequired`; the role audience and the consultation requester read
+  the register for the architect.
 - **A5b merged as #654** (`8797a91`): the zod enums admit `architect` and every command naming it refuses
   409 with the drain directive before any write; one catalog read of 4d-i's doors judges each and feeds
   the shell's `rollout.phase6_4d`.

@@ -12,35 +12,51 @@ import type { Prisma } from '@prisma/client';
  * (§B.2), called by the orgs-owned membership seal — mirroring this bidirectional TS channel.
  */
 export interface OpenHolderAnswer {
-  /** a published open decision NAMES this membership as its decider */
+  /** a published open (`pending`/`change`) decision NAMES this membership as its decider */
   named: boolean;
-  /** the roles ('client' | 'pmc') any published open decision currently holds as decider */
+  /** the roles (`client` | `pmc` | `architect`) any published open (`pending`/`change`) decision
+   *  currently holds as decider */
   heldRoles: string[];
+  /** Phase 6 task 4d (P39) — a decision AWAITING COUNTERSIGN names this membership as its holder */
+  namedAwaiting: boolean;
+  /** Phase 6 task 4d (P39) — the roles any decision awaiting countersign is designated to */
+  awaitingRoles: string[];
 }
 
 @Injectable()
 export class DecisionsParticipant {
-  /** Answer on the CALLER's transaction so the refusal and the write it guards are one unit. */
+  /**
+   * Answer on the CALLER's transaction so the refusal and the write it guards are one unit.
+   *
+   * Two open sets, because two guards judge them: `pending`/`change` is the delivered one (the
+   * 4b guard, `phase6_decisions_hold_role` / `phase6_decisions_name_membership`), and
+   * `awaiting_countersign` is 4d-i's widened arm (`phase6_t4d_membership_guard`), which carries the
+   * one named exemption for the last architect. The caller composes them with standing; the two
+   * are answered apart so the exemption can apply to the second and never the first.
+   */
   async holdsOpenDecisions(
     tx: Prisma.TransactionClient,
     args: { projectId: string; membershipId?: string },
   ): Promise<OpenHolderAnswer> {
-    const open = {
-      publishedAt: { not: null },
-      status: { in: ['pending', 'change'] as ('pending' | 'change')[] },
-    };
-    const [named, kinds] = await Promise.all([
+    const published = { projectId: args.projectId, publishedAt: { not: null } };
+    const open = { ...published, status: { in: ['pending', 'change'] as ('pending' | 'change')[] } };
+    const awaiting = { ...published, status: 'awaiting_countersign' as const };
+    const roleKinds = { in: ['client', 'pmc', 'architect'] as ('client' | 'pmc' | 'architect')[] };
+    const [named, kinds, namedAwaiting, awaitingKinds] = await Promise.all([
       args.membershipId
-        ? tx.decision
-            .count({ where: { projectId: args.projectId, deciderMembershipId: args.membershipId, ...open } })
-            .then((n) => n > 0)
+        ? tx.decision.count({ where: { ...open, deciderMembershipId: args.membershipId } }).then((n) => n > 0)
         : Promise.resolve(false),
-      tx.decision.findMany({
-        where: { projectId: args.projectId, deciderKind: { in: ['client', 'pmc'] }, ...open },
-        select: { deciderKind: true },
-        distinct: ['deciderKind'],
-      }),
+      tx.decision.findMany({ where: { ...open, deciderKind: roleKinds }, select: { deciderKind: true }, distinct: ['deciderKind'] }),
+      args.membershipId
+        ? tx.decision.count({ where: { ...awaiting, deciderMembershipId: args.membershipId } }).then((n) => n > 0)
+        : Promise.resolve(false),
+      tx.decision.findMany({ where: { ...awaiting, deciderKind: roleKinds }, select: { deciderKind: true }, distinct: ['deciderKind'] }),
     ]);
-    return { named, heldRoles: kinds.map((k) => k.deciderKind as string) };
+    return {
+      named,
+      heldRoles: kinds.map((k) => k.deciderKind as string),
+      namedAwaiting,
+      awaitingRoles: awaitingKinds.map((k) => k.deciderKind as string),
+    };
   }
 }

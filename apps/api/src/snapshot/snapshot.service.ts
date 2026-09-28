@@ -52,7 +52,10 @@ export class SnapshotService {
     // decisions projection now servability-gated (readServableGeneration), a lagging/blocked
     // generation must fall back to the always-current live slice rather than serving zero counts.
     const decisions = await this.decisionsQuery.moduleDecisions(projectId, role, userId);
-    const pendingDecisions = decisions.decisions.filter((d) => d.status === 'pending' && !d.draft).length;
+    // Phase 6 task 4d (§A.1) — the badge is the decisions module's `countPending`, the SAME count the
+    // Portfolio tile shows: the published decisions awaiting THIS viewer, countersign obligations
+    // included (#561's review round 1, finding 6: the shell used to count visible pending rows itself)
+    const pendingDecisions = await this.decisionsQuery.countPending(projectId, { role, userId });
     return {
       id: project.id,
       name: project.name,
