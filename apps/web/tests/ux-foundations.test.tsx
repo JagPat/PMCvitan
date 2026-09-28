@@ -197,6 +197,27 @@ describe('LangPreference — restores and remembers the viewer’s language', ()
     expect(useStore.getState().lang).toBe('hi');
   });
 
+  it('a project switch that changes the role, same user, applies the new role default when nothing is saved', async () => {
+    const { useStore, LangPreference } = await loadShell({ role: 'engineer', sessionUserId: 'u-x', lang: 'en' });
+    const r = render(<LangPreference />);
+    expect(useStore.getState().lang).toBe('gu');
+    // same JWT subject, re-issued as PMC on another project
+    useStore.setState({ role: 'pmc' });
+    r.rerender(<LangPreference />);
+    expect(useStore.getState().lang).toBe('en');
+    expect(readLangPreference('user:u-x')).toBeNull();
+  });
+
+  it('a saved choice survives that same role change', async () => {
+    writeLangPreference('user:u-y', 'hi');
+    const { useStore, LangPreference } = await loadShell({ role: 'engineer', sessionUserId: 'u-y', lang: 'en' });
+    const r = render(<LangPreference />);
+    expect(useStore.getState().lang).toBe('hi');
+    useStore.setState({ role: 'pmc' });
+    r.rerender(<LangPreference />);
+    expect(useStore.getState().lang).toBe('hi');
+  });
+
   it('a change is saved under this person, and another person keeps their own', async () => {
     const { useStore, LangPreference } = await loadShell({ role: 'client', sessionUserId: 'u-a', lang: 'en' });
     const r = render(<LangPreference />);
