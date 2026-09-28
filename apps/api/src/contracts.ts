@@ -3,7 +3,9 @@ import { parseCivilDate } from './common/civil-date';
 import { DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SOD_RULES } from '@vitan/shared';
 
 export const sessionSchema = z.object({
-  role: z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant']),
+  // `architect` (Phase 6 task 4d): admitted here so the SERVICE can refuse it 409 with the drain
+  // directive while the reservation stands, and never mint it synthetically (AuthService.session)
+  role: z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant', 'architect']),
   projectId: z.string().min(1),
 });
 export type SessionInput = z.infer<typeof sessionSchema>;
@@ -481,8 +483,9 @@ const decisionOptionInput = z.object({
 // byte-identical (P15). 'member' requires the named ACTIVE membership; 'none' is the
 // record-only issue whose contract requires EXACTLY ZERO options (§A.2 round 15: options are
 // the approvable alternatives of a CHOICE — an optioned record is a category error), while
-// every choice kind keeps the 2–4 floor. 'architect' joins IN UNIT 4d with the role.
-const DECIDER_KINDS = ['client', 'pmc', 'member', 'none'] as const;
+// every choice kind keeps the 2–4 floor. 'architect' (Phase 6 task 4d) designates the ROLE: create
+// and updateDraft refuse it 409 with the drain directive while 4d-i's reservation stands.
+const DECIDER_KINDS = ['client', 'pmc', 'member', 'none', 'architect'] as const;
 const deciderFields = {
   deciderKind: z.enum(DECIDER_KINDS).default('client'),
   deciderMembershipId: z.string().trim().min(1).optional(),
@@ -701,7 +704,9 @@ export type AddMaterialInput = z.infer<typeof addMaterialSchema>;
 export const switchProjectSchema = z.object({ projectId: z.string().min(1) });
 export type SwitchProjectInput = z.infer<typeof switchProjectSchema>;
 
-const projectRole = z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant']);
+// `architect` (Phase 6 task 4d): the member commands refuse it 409 with the drain directive, before
+// any write, while 4d-i's reservation stands (MembersService.add / updateRole)
+const projectRole = z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant', 'architect']);
 // A consultant's discipline is a free-ish label (a new consultant type needs no code);
 // trimmed, capped, optional. Only meaningful for role === 'consultant'.
 const disciplineField = z.string().trim().min(1).max(40).optional();

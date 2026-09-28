@@ -1,6 +1,7 @@
 /** API response shapes — aligned with the frontend domain model so the client
  *  hydrates its store directly from a snapshot. */
 import type { Drawing, Checklist, Review, PlacedInspection, DecisionStatus } from '@vitan/shared';
+import type { Phase6_4dRollout } from '../platform/phase6-4d-rollout';
 
 /** Phase 2 Task 9 — the project-shell summary (identity + projection counts), the light payload the
  *  app loads first. `enabledModules` is added by the controller from the module registry. */
@@ -20,6 +21,11 @@ export interface ProjectShellDto extends ProjectShellCounts {
    *  `'materials'`); `[]` for a non-pilot project. The frontend gates the Materials surfaces on this,
    *  so a non-pilot project shows no Materials nav/screens — matching the server's 404 stance. */
   capabilities: string[];
+  /** Phase 6 task 4d (§A.1) — the architect chain's rollout state, `reserved` while 4d-i's doors stand
+   *  and `open` once 4d-iii drops them, read from the catalog exactly as the service's 409 refusals
+   *  judge it (`platform/phase6-4d-rollout.ts`). The client's Forward affordance and Team role pickers
+   *  follow this one value (4d-ii-b), so no client offers what the server refuses. */
+  rollout: { phase6_4d: Phase6_4dRollout };
 }
 
 export interface OptionDto {

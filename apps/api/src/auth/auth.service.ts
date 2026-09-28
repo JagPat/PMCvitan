@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
@@ -7,6 +7,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { SmsService } from './sms.service';
 import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
+import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import type { Role } from '../common/auth';
 import type {
   SessionInput,
@@ -189,9 +190,18 @@ export class AuthService {
    * for the pure local demo and for roles without a seeded account (e.g. engineer).
    */
   async session(input: SessionInput): Promise<TokenResult> {
+    // Phase 6 task 4d (§A.1) — no token carries the architect role until 4d-iii: the dev session is a
+    // token producer too, so it refuses the role 409 with the drain directive BEFORE EITHER BRANCH
+    if (input.role === 'architect') await assertPhase6_4dOpen(this.prisma, 'A session in the architect role');
     const real = await this.prisma.user.findFirst({ where: { role: input.role, projectId: input.projectId } });
     if (real) {
       return { token: this.issueNamedUser(real, real.role as Role, real.projectId), role: real.role as Role, projectId: real.projectId, name: real.name };
+    }
+    // …and the SYNTHETIC fallback never mints it, even once the rollout is open: a synthetic actor has
+    // no account, so no fact it wrote could carry a truthful frozen name. A dev architect is a seeded
+    // `User` fixture, which the branch above serves.
+    if (input.role === 'architect') {
+      throw new ConflictException('There is no architect account on this project to sign in as; the dev session never mints the architect role');
     }
     return {
       token: this.issue(`dev-${input.role}`, input.role, input.projectId),

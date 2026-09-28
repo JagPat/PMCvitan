@@ -14,13 +14,15 @@ export interface DeciderSlice {
 }
 
 /**
- * Is this viewer THE DECIDER of the decision? `client`/`pmc` designate the ROLE (any member of
- * it decides); `member` designates ONE user, so a same-role non-decider is NOT the decider;
- * `none` is a record — nobody decides it.
+ * Is this viewer THE DECIDER of the decision? `client`/`pmc`/`architect` designate the ROLE (any
+ * member of it decides; `architect` from Phase 6 task 4d, unrepresentable until 4d-iii); `member`
+ * designates ONE user, so a same-role non-decider is NOT the decider; `none` is a record — nobody
+ * decides it.
  */
 export function viewerIsDecider(d: DeciderSlice, role: TokenRole | string, userId?: string | null): boolean {
   if (d.deciderKind === 'client') return role === 'client';
   if (d.deciderKind === 'pmc') return role === 'pmc';
+  if (d.deciderKind === 'architect') return role === 'architect';
   if (d.deciderKind === 'member') return !!userId && d.deciderUserId === userId;
   return false;
 }

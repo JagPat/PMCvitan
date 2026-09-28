@@ -12,6 +12,7 @@ import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../p
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant } from './orgs.participant';
 import { InvitationsService } from './invitations.service';
+import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 
 export interface MemberDto {
   userId: string;
@@ -282,6 +283,10 @@ export class MembersService {
         // (re)activating a member can shrink a frozen distribution's outstanding set —
         // a readiness write (gate finding 1), serialized against start()
         await lockProjectReadiness(tx, projectId);
+        // Phase 6 task 4d (§A.1) — the architect role is reserved until 4d-iii: refused 409 with the
+        // drain directive BEFORE ANY WRITE, the invited identity's provisioning included (4d-i's doors
+        // would refuse the `User` or `Membership` INSERT mid-transaction instead)
+        if (input.role === 'architect') await assertPhase6_4dOpen(tx, 'Adding a member in the architect role');
         let user =
           (email && (await tx.user.findUnique({ where: { email } }))) ||
           (phone && (await tx.user.findUnique({ where: { phone } }))) ||
@@ -405,6 +410,9 @@ export class MembersService {
         // Phase 6 task 4b (§A.1/§B.1) — a role change is a standing write behind the decider
         // gate: serialized on the readiness key so the seal's try-acquire sees one writer.
         await lockProjectReadiness(tx, projectId);
+        // Phase 6 task 4d (§A.1) — moving a member into the architect role is reserved until 4d-iii:
+        // refused 409 with the drain directive before any write
+        if (input.role === 'architect') await assertPhase6_4dOpen(tx, 'Moving a member into the architect role');
         const cur = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { user: true } });
         if (!cur) throw new NotFoundException('Member not found on this project');
         if (await this.priorPatchReceipt(tx, projectId, actor.actorId, 'members.updateDiscipline', idempotencyKey, requestHash)) {

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
-import { ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
 import { SmsService } from './sms.service';
@@ -324,6 +324,28 @@ describe('AuthService.session (dev auth)', () => {
     const res = await auth.session({ role: 'pmc', projectId: 'ambli' });
     expect(res.name).toBe('Ar. Vitan');
     expect(jwt.verify<{ sub: string; role: string }>(res.token)).toMatchObject({ sub: 'real-pmc', role: 'pmc', projectId: 'ambli' });
+  });
+
+  // Phase 6 task 4d (§A.1; P28b's alternate-token-producer arm) — the rollout read is the one catalog
+  // read the service path judges (`platform/phase6-4d-rollout.ts`), faked here by its door count
+  const withDoors = (doors: number, seed: FakeUser[] = []) => ({ ...fakePrisma(seed), $queryRaw: async () => [{ doors }] });
+
+  it('4d: refuses the architect role 409 BEFORE either branch while the reservation stands', async () => {
+    const seed = [{ id: 'real-arch', projectId: 'ambli', role: 'architect', name: 'Ar. Seeded' }];
+    const { auth } = make(withDoors(6, seed));
+    await expect(auth.session({ role: 'architect', projectId: 'ambli' })).rejects.toThrow(/phase-6-4d-previous-release-drained/);
+  });
+
+  it('4d: once the rollout is open, the synthetic fallback still NEVER mints the architect role', async () => {
+    const { auth } = make(withDoors(0));
+    await expect(auth.session({ role: 'architect', projectId: 'ambli' })).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('4d: once the rollout is open, a SEEDED architect account is served by the real-user branch', async () => {
+    const seed = [{ id: 'real-arch', projectId: 'ambli', role: 'architect', name: 'Ar. Seeded' }];
+    const { auth, jwt } = make(withDoors(0, seed));
+    const res = await auth.session({ role: 'architect', projectId: 'ambli' });
+    expect(jwt.verify<{ sub: string; role: string }>(res.token)).toMatchObject({ sub: 'real-arch', role: 'architect' });
   });
 });
 
