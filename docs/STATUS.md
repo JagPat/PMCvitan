@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a6d-delivery-seals
 reviewed_merge: 25e8531
-open_pr: none
+open_pr: 662
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-28
@@ -27,7 +27,7 @@ updated: 2026-09-28
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A6d, `open_pr: none` (`work_item: phase-6-task-4d-ii-a-a6d-delivery-seals`, branch
+- **Now, A6d, `open_pr: 662` (`work_item: phase-6-task-4d-ii-a-a6d-delivery-seals`, branch
   `claude/4d-ii-a6d-delivery-seals`, from `main` at `25e8531`).** The fourth A6 sub-unit: the delivery
   rows as a pure function of the event and the persisted catalog, and the three seals that demand them.
   - Migration `20271231000000_phase6_t4d_ii_a6d_delivery_seals` (on `ALWAYS_EXECUTE`): the kernel's
