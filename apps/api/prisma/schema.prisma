@@ -313,6 +313,14 @@ model OutboxConsumerCatalog {
   // the head's sequence (0 = no fact yet, which the catalog-INSERT trigger ends in the same statement)
   activationSeq  Int              @default(0)
   registeredAt   DateTime         @default(now())
+  // Phase 6 task 4d-ii-a / A6c — the PERSISTED dispatch rule (the 4d plan, §A.3 obligation 7): `all`,
+  // `invalidate`, `push` or `types` (with the sorted `subscribedEventTypes`), written at the row's
+  // birth from the compiled contract, verified at every startup, and frozen by
+  // `OutboxConsumerCatalog_t4d_rules` against every writer but a versioned catalog-data migration
+  // under the rule gate. NULL on a row no migration knew (planted history, test residue): a compiled
+  // consumer meeting such a row is refused at startup.
+  dispatchRule         String?
+  subscribedEventTypes String[]         @default([])
   updatedAt      DateTime         @updatedAt
   deliveries     OutboxDelivery[]
   activations    OutboxConsumerActivation[]

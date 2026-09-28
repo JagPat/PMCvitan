@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
+import { eventTypesUnder } from '../platform/outbox/registry';
 import { serializeDecision, type DecisionRow } from './decision-serialize';
 
 /**
@@ -148,6 +149,9 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
     // the drain durable — a rolled-back or newly-scheduled old worker is fenced out on EVERY
     // start, not merely at the one moment an operator looked.
     catalogVersion: 2,
+    // 4d-ii-a / A6c — the persisted rule the catalog row carries; the unit tripwire holds it equal
+    // to `deliveryFor` over the closed event-type list until A6d derives the rows from it.
+    dispatchRule: { kind: 'types', eventTypes: eventTypesUnder('decision.') },
     deliveryFor,
     projection: {
       // Seed the replacement generation from the CONSISTENT canonical snapshot. Read the max committed

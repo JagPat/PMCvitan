@@ -953,10 +953,28 @@ const REGISTER: Record<string, SealContract> = {
   platform_t4d_catalog_rules: {
     rule: 'the catalog mirror (`active`, `activationSeq`) is written only by the activation register\'s '
       + 'apply — a NESTED update under the transaction-local marker; every depth-1 update is refused '
-      + 'whatever it carries — and `registeredAt` is frozen and selects nothing',
-    plan: 'companion document "The register" (the mirror\'s write seam); #580 round 1, findings 6 and 9',
+      + 'whatever it carries — `registeredAt` is frozen and selects nothing, and (A6c) the persisted '
+      + 'rule columns are sealed evidence: rewritten only inside a versioned catalog-data migration\'s '
+      + 'own transaction — the DDL transition (the marker function it creates, whose creating '
+      + 'transaction must still be in progress), never a session setting a DML writer could set, never startup',
+    plan: 'companion document "The register" (the mirror\'s write seam); #580 round 1, findings 6 and 9; '
+      + '4d plan §A.3 obligation 7 ("The rules are sealed evidence, not startup state"); #558 round 2, finding 7; '
+      + '#661 round 1, finding 1',
     on: { 'OutboxConsumerCatalog.OutboxConsumerCatalog_t4d_rules': B('U') },
-    must: ['pg_trigger_depth() > 1', 'vitan.outbox_activation_applying', '"registeredAt"', 'MIRROR'],
+    must: ['pg_trigger_depth() > 1', 'vitan.outbox_activation_applying', '"registeredAt"', 'MIRROR',
+      '"dispatchRule"', '"subscribedEventTypes"', 'platform_t4d_catalog_rule_migration_open', 'pg_proc',
+      "txid_status(", "'in progress'", 'SEALED EVIDENCE'],
+    forbid: ['vitan.outbox_catalog_rule_migration'],
+  },
+  platform_t4d_registration_barrier: {
+    rule: 'every catalog INSERT takes the ONE catalog-registration key EXCLUSIVE, whoever inserts — the '
+      + 'half of the event-vs-registration barrier a named trigger installs; the event\'s delivery seal '
+      + 'takes the same key SHARED before it scans (A6d), so a registration serializes against every '
+      + 'in-flight event without events serializing against each other',
+    plan: '4d plan §A.3 obligation 7 ("The EXCLUSIVE half is installed by a named trigger"); #572 round 25, '
+      + 'finding 7; round 26, finding 1',
+    on: { 'OutboxConsumerCatalog.OutboxConsumerCatalog_t4d_registration_barrier': B('I') },
+    must: ['pg_advisory_xact_lock', "hashtext('OutboxConsumerCatalog:registration')"],
   },
   platform_t4d_project_org_frozen: {
     rule: 'a project\'s tenancy never moves once registered',

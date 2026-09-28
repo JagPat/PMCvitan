@@ -36,7 +36,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
   /** An ordered database consumer whose side effect is one AuditLog row per event, so
    *  "applied exactly once" is a row count and its ordered cursor can be observed directly. */
   const orderedConsumer: OutboxConsumer = {
-    name: PROJECTION, kind: 'ordered', effect: 'db', catalogVersion: 1,
+    name: PROJECTION, kind: 'ordered', effect: 'db', catalogVersion: 1, dispatchRule: { kind: 'all' },
     deliveryFor: () => ({ action: 'dispatch' }),
     handle: async (ctx) => {
       if (control.failMode !== 'none') {
