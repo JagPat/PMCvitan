@@ -954,13 +954,17 @@ const REGISTER: Record<string, SealContract> = {
     rule: 'the catalog mirror (`active`, `activationSeq`) is written only by the activation register\'s '
       + 'apply — a NESTED update under the transaction-local marker; every depth-1 update is refused '
       + 'whatever it carries — `registeredAt` is frozen and selects nothing, and (A6c) the persisted '
-      + 'rule columns are sealed evidence: rewritten only under the rule gate a versioned '
-      + 'catalog-data migration sets, never by startup or a direct writer',
+      + 'rule columns are sealed evidence: rewritten only inside a versioned catalog-data migration\'s '
+      + 'own transaction — the DDL transition (the marker function it creates, whose creating '
+      + 'transaction must still be in progress), never a session setting a DML writer could set, never startup',
     plan: 'companion document "The register" (the mirror\'s write seam); #580 round 1, findings 6 and 9; '
-      + '4d plan §A.3 obligation 7 ("The rules are sealed evidence, not startup state"); #558 round 2, finding 7',
+      + '4d plan §A.3 obligation 7 ("The rules are sealed evidence, not startup state"); #558 round 2, finding 7; '
+      + '#661 round 1, finding 1',
     on: { 'OutboxConsumerCatalog.OutboxConsumerCatalog_t4d_rules': B('U') },
     must: ['pg_trigger_depth() > 1', 'vitan.outbox_activation_applying', '"registeredAt"', 'MIRROR',
-      '"dispatchRule"', '"subscribedEventTypes"', 'vitan.outbox_catalog_rule_migration', 'SEALED EVIDENCE'],
+      '"dispatchRule"', '"subscribedEventTypes"', 'platform_t4d_catalog_rule_migration_open', 'pg_proc',
+      "txid_status(", "'in progress'", 'SEALED EVIDENCE'],
+    forbid: ['vitan.outbox_catalog_rule_migration'],
   },
   platform_t4d_registration_barrier: {
     rule: 'every catalog INSERT takes the ONE catalog-registration key EXCLUSIVE, whoever inserts — the '

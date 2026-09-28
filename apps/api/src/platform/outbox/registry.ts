@@ -146,7 +146,10 @@ export function dispatchActionFor(rule: DispatchRule, meta: Pick<EmittedEventMet
   switch (rule.kind) {
     case 'all': return 'dispatch';
     case 'invalidate': return meta.dispatchIntent?.invalidate ? 'dispatch' : 'noop';
-    case 'push': return meta.dispatchIntent?.push ? 'dispatch' : 'noop';
+    // a push WITH a body — the predicate the push consumer's `deliveryFor` uses, so an intent
+    // carrying `push: { body: '' }` (which `buildDispatchIntent` admits) is a no-op under both
+    // (#661's review round 1, finding 2); A6d's seal mirrors this exact predicate
+    case 'push': return meta.dispatchIntent?.push?.body ? 'dispatch' : 'noop';
     case 'types': return rule.eventTypes.includes(meta.eventType) ? 'dispatch' : 'noop';
   }
 }

@@ -15,16 +15,33 @@
 --     the same act as `consumerKind`/`consumerEffect`/`catalogVersion`, the same source startup
 --     verification compares against, so that write can introduce no drift;
 --   - the rule of a row that already EXISTS belongs to the versioned catalog-data migration: THIS file
---     writes the compiled rule of every consumer it knows, under the transaction-local RULE GATE
---     `vitan.outbox_catalog_rule_migration`, guarded on the ABSENCE of a rule so a re-run (this file is
---     on `ALWAYS_EXECUTE`) rewrites nothing; a CHANGED rule is a contract change and ships in its own
---     migration under the same gate;
+--     writes the compiled rule of every consumer it knows, inside the RULE-MIGRATION TRANSITION below,
+--     guarded on the ABSENCE of a rule so a re-run (this file is on `ALWAYS_EXECUTE`) rewrites
+--     nothing; a CHANGED rule is a contract change and ships in its own migration through the same
+--     transition;
 --   - nobody else: `OutboxConsumerCatalog_t4d_rules` refuses every UPDATE of the rule columns outside
---     the gate, and `syncConsumerCatalog` VERIFIES an existing row's rule against the compiled contract
---     at every startup, refusing the process on drift exactly as it refuses a `catalogVersion` mismatch,
---     and never rewrites it.
+--     the transition, and `syncConsumerCatalog` VERIFIES an existing row's rule against the compiled
+--     contract at every startup, refusing the process on drift exactly as it refuses a
+--     `catalogVersion` mismatch, and never rewrites it.
 -- A row this file does not know (a consumer no compiled contract names: planted history, a test's
 -- residue) keeps NO rule; a compiled consumer meeting such a row is refused at startup by name.
+--
+-- THE RULE-MIGRATION TRANSITION IS NOT A SESSION SETTING (#661's review round 1, finding 1). A
+-- transaction-local setting is ordinary session state: any writer that can issue the UPDATE can
+-- `set_config` it first, so a setting-gated freeze admits a depth-1 rewrite by anyone. The rule
+-- columns are sealed EVIDENCE, and evidence must not be rewritable by the class of writer the seal
+-- exists to refuse. So the transition is a DDL object: the freeze admits a rule-column UPDATE only
+-- while the function `platform_t4d_catalog_rule_migration_open()` EXISTS AND WAS CREATED BY THE
+-- CURRENT TRANSACTION — its `pg_proc` row is visible to this transaction and its creating
+-- transaction is still IN PROGRESS (`txid_status`), which only this transaction (or one of its own
+-- subtransactions) can satisfy: another session's uncommitted DDL is invisible here, and a committed
+-- marker is not in progress. A migration creates it, rewrites, and drops it, all inside one
+-- transaction (the DO block below is one statement, so it is one transaction on every apply path —
+-- Prisma's deploy and `migrate.sh`'s psql replay alike). A DML-only writer cannot create a function;
+-- a writer who can is the class that could drop the seal itself — the one trust boundary every 4d
+-- seal lives on. A marker left behind by an aborted apply opens nothing: the in-progress arm admits
+-- only the transaction that created it, and the next apply's CREATE fails loudly on the leftover
+-- rather than silently reopening the gate.
 --
 -- THE BARRIER (#572's review round 25, finding 7; round 26, finding 1). An event's obligation set is
 -- read from the catalog, and a consumer registered between that read and the event's commit is a row
@@ -38,41 +55,45 @@
 -- it early for lock-ordering hygiene, and the lock is reentrant. The key is the literal both halves
 -- carry: hashtext('OutboxConsumerCatalog:registration').
 --
--- RE-RUNNABLE (on `ALWAYS_EXECUTE`): `ADD COLUMN IF NOT EXISTS`, guarded constraints, `CREATE OR
--- REPLACE FUNCTION`, `DROP TRIGGER IF EXISTS`, and a backfill guarded on absence.
+-- RE-RUNNABLE (on `ALWAYS_EXECUTE`): `ADD COLUMN IF NOT EXISTS`, constraints dropped and re-added by
+-- name (so a corrected CHECK replaces its predecessor on replay), `CREATE OR REPLACE FUNCTION`,
+-- `DROP TRIGGER IF EXISTS`, and a backfill guarded on absence.
 
 -- ── 1. the rule columns ──────────────────────────────────────────────────────────────────────────
 ALTER TABLE "OutboxConsumerCatalog" ADD COLUMN IF NOT EXISTS "dispatchRule" TEXT;
 ALTER TABLE "OutboxConsumerCatalog" ADD COLUMN IF NOT EXISTS "subscribedEventTypes" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
 
-DO $$
-BEGIN
-  -- the closed vocabulary (NULL = no rule persisted for this row)
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OutboxConsumerCatalog_t4d_rule_kind') THEN
-    ALTER TABLE "OutboxConsumerCatalog" ADD CONSTRAINT "OutboxConsumerCatalog_t4d_rule_kind"
-      CHECK ("dispatchRule" IS NULL OR "dispatchRule" IN ('all', 'invalidate', 'push', 'types'));
-  END IF;
-  -- a subscription list belongs to `types` alone (NULL and the other three carry none)
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OutboxConsumerCatalog_t4d_rule_types') THEN
-    ALTER TABLE "OutboxConsumerCatalog" ADD CONSTRAINT "OutboxConsumerCatalog_t4d_rule_types"
-      CHECK (coalesce("dispatchRule", '') = 'types' OR cardinality("subscribedEventTypes") = 0);
-  END IF;
-  -- every subscribed type is a name: no empty element, no whitespace anywhere
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OutboxConsumerCatalog_t4d_rule_type_names') THEN
-    ALTER TABLE "OutboxConsumerCatalog" ADD CONSTRAINT "OutboxConsumerCatalog_t4d_rule_type_names"
-      CHECK (array_position("subscribedEventTypes", '') IS NULL AND array_to_string("subscribedEventTypes", ',') !~ '\s');
-  END IF;
-END $$;
+-- the closed vocabulary (NULL = no rule persisted for this row)
+ALTER TABLE "OutboxConsumerCatalog" DROP CONSTRAINT IF EXISTS "OutboxConsumerCatalog_t4d_rule_kind";
+ALTER TABLE "OutboxConsumerCatalog" ADD CONSTRAINT "OutboxConsumerCatalog_t4d_rule_kind"
+  CHECK ("dispatchRule" IS NULL OR "dispatchRule" IN ('all', 'invalidate', 'push', 'types'));
+-- a subscription list belongs to `types` alone (NULL and the other three carry none)
+ALTER TABLE "OutboxConsumerCatalog" DROP CONSTRAINT IF EXISTS "OutboxConsumerCatalog_t4d_rule_types";
+ALTER TABLE "OutboxConsumerCatalog" ADD CONSTRAINT "OutboxConsumerCatalog_t4d_rule_types"
+  CHECK (coalesce("dispatchRule", '') = 'types' OR cardinality("subscribedEventTypes") = 0);
+-- every subscribed type is a NAME: no NULL element (#661 round 1, finding 3 — `array_to_string`
+-- skips NULLs and `array_position(…, '')` does not see them), no empty element, no whitespace anywhere
+ALTER TABLE "OutboxConsumerCatalog" DROP CONSTRAINT IF EXISTS "OutboxConsumerCatalog_t4d_rule_type_names";
+ALTER TABLE "OutboxConsumerCatalog" ADD CONSTRAINT "OutboxConsumerCatalog_t4d_rule_type_names"
+  CHECK (array_position("subscribedEventTypes", NULL) IS NULL
+     AND array_position("subscribedEventTypes", '') IS NULL
+     AND array_to_string("subscribedEventTypes", ',') !~ '\s');
 
--- ── 2. the rules trigger, re-issued with the rule columns under the SET LOCAL gate ──────────────
+-- ── 2. the rules trigger, re-issued with the rule columns under the rule-migration transition ───
 -- A6b's function, one column family wider (the trigger's name and operations do not change). The
--- mirror seam and the `registeredAt` freeze are as A6b stated them; the rule columns are admitted
--- on exactly one condition, the transaction-local rule gate a catalog-data migration sets around
--- its own statement — `set_config('vitan.outbox_catalog_rule_migration', 'on', true)`.
+-- mirror seam and the `registeredAt` freeze are as A6b stated them; the rule columns are admitted on
+-- exactly one condition, the DDL transition described above.
 CREATE OR REPLACE FUNCTION platform_t4d_catalog_rules() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_applying BOOLEAN := coalesce(current_setting('vitan.outbox_activation_applying', true), '') = 'on';
-  v_rule_gate BOOLEAN := coalesce(current_setting('vitan.outbox_catalog_rule_migration', true), '') = 'on';
+  -- the rule-migration transition: the marker function exists (visible to this transaction) AND its
+  -- creating transaction is still in progress — only this transaction, or one of its own
+  -- subtransactions, can have created it (the epoch is taken from txid_current, whose upper 32 bits
+  -- carry it, so the 32-bit xmin is judged in the same era)
+  v_rule_migration BOOLEAN := EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public' AND p.proname = 'platform_t4d_catalog_rule_migration_open'
+       AND txid_status(((txid_current() >> 32) << 32) + p.xmin::text::bigint) = 'in progress');
 BEGIN
   -- frozen, and part of no rule
   IF NEW."registeredAt" IS DISTINCT FROM OLD."registeredAt" THEN
@@ -93,14 +114,14 @@ BEGIN
     END IF;
   END IF;
 
-  -- the persisted RULE: sealed evidence, rewritten only by a versioned catalog-data migration under
-  -- the rule gate — never by startup, never by a direct writer
+  -- the persisted RULE: sealed evidence, rewritten only inside a versioned catalog-data migration's
+  -- own transaction (the DDL transition) — never by startup, never by a DML writer
   IF NEW."dispatchRule" IS DISTINCT FROM OLD."dispatchRule" OR NEW."subscribedEventTypes" IS DISTINCT FROM OLD."subscribedEventTypes" THEN
-    IF NOT v_rule_gate THEN
+    IF NOT v_rule_migration THEN
       RAISE EXCEPTION
-        'phase6 4d-ii: the persisted dispatch RULE ("dispatchRule" / "subscribedEventTypes") of consumer "%" is SEALED EVIDENCE, written by a versioned catalog-data migration under the transaction-local rule gate (vitan.outbox_catalog_rule_migration) and by nothing else — this UPDATE (gate %) is refused. A changed rule is a contract change: ship it as a migration; startup verifies a rule and never writes one that exists (4d plan §A.3 obligation 7; #558 round 2, finding 7).',
+        'phase6 4d-ii: the persisted dispatch RULE ("dispatchRule" / "subscribedEventTypes") of consumer "%" is SEALED EVIDENCE, rewritten only inside a versioned catalog-data migration''s own transaction (the one that created platform_t4d_catalog_rule_migration_open) and by nothing else — this UPDATE (rule-migration transition %) is refused. A changed rule is a contract change: ship it as a migration; startup verifies a rule and never writes one that exists (4d plan §A.3 obligation 7; #558 round 2, finding 7; #661 round 1, finding 1).',
         OLD."consumer",
-        CASE WHEN v_rule_gate THEN 'on' ELSE 'off' END;
+        CASE WHEN v_rule_migration THEN 'open' ELSE 'closed' END;
     END IF;
   END IF;
 
@@ -131,10 +152,11 @@ CREATE TRIGGER "OutboxConsumerCatalog_t4d_registration_barrier" BEFORE INSERT ON
 -- text against the module, as 4d-i's catalog seed is): a rule changed in code without its migration,
 -- or a literal that drifts from the code, fails there. Guarded on the ABSENCE of a rule: a re-run
 -- rewrites nothing, and a row `syncConsumerCatalog` created after this file (rule at birth) is left
--- as born. Under the rule gate, which the rules trigger requires and which is local to this block.
+-- as born. Inside the rule-migration transition: this ONE statement creates the marker function,
+-- rewrites, and drops it, so the transition is open exactly for this transaction.
 DO $$
 BEGIN
-  PERFORM set_config('vitan.outbox_catalog_rule_migration', 'on', true);
+  EXECUTE 'CREATE FUNCTION platform_t4d_catalog_rule_migration_open() RETURNS void LANGUAGE sql AS ''SELECT''';
   UPDATE "OutboxConsumerCatalog" AS c
      SET "dispatchRule" = r.rule, "subscribedEventTypes" = r.types
     FROM (VALUES
@@ -151,5 +173,5 @@ BEGIN
     ) AS r(consumer, rule, types)
    WHERE c."consumer" = r.consumer
      AND c."dispatchRule" IS NULL;
-  PERFORM set_config('vitan.outbox_catalog_rule_migration', 'off', true);
+  EXECUTE 'DROP FUNCTION platform_t4d_catalog_rule_migration_open()';
 END $$;

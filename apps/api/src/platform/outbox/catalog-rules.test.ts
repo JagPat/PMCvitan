@@ -62,6 +62,8 @@ const INTENTS: EmittedEventMeta['dispatchIntent'][] = [
   { effectKey: 'k', coverageVersion: 'v', invalidate: true },
   { effectKey: 'k', coverageVersion: 'v', invalidate: false, push: { body: 'hi' } },
   { effectKey: 'k', coverageVersion: 'v', invalidate: true, push: { body: 'hi', roles: ['client'] } },
+  // a push object with an EMPTY body — admitted by `buildDispatchIntent`, a no-op to the push consumer
+  { effectKey: 'k', coverageVersion: 'v', invalidate: true, push: { body: '' } },
 ];
 
 describe('4d-ii-a / A6c — the persisted dispatch rule', () => {
@@ -74,6 +76,8 @@ describe('4d-ii-a / A6c — the persisted dispatch rule', () => {
     expect(dispatchActionFor({ kind: 'invalidate' }, meta('x.y', null))).toBe('noop');
     expect(dispatchActionFor({ kind: 'push' }, meta('x.y', i(true, true)))).toBe('dispatch');
     expect(dispatchActionFor({ kind: 'push' }, meta('x.y', i(true)))).toBe('noop');
+    // the rule is "a push WITH a body", as the push consumer decides it: an empty body is a no-op
+    expect(dispatchActionFor({ kind: 'push' }, meta('x.y', { effectKey: 'k', coverageVersion: 'v', invalidate: true, push: { body: '' } }))).toBe('noop');
     expect(dispatchActionFor({ kind: 'push' }, meta('x.y', null))).toBe('noop');
     expect(dispatchActionFor({ kind: 'types', eventTypes: ['a.b'] }, meta('a.b', null))).toBe('dispatch');
     expect(dispatchActionFor({ kind: 'types', eventTypes: ['a.b'] }, meta('a.c', i(true, true)))).toBe('noop');

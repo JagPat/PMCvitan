@@ -64,7 +64,10 @@ describe('4d-ii-a / A6c — the persisted rules and the registration barrier (li
       await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${sp}`);
       return null;
     } catch (e) {
+      // ROLLBACK TO leaves the savepoint ESTABLISHED (the session stays inside a fresh subtransaction
+      // of that name), so it is released too: every later statement runs at the level it started at
       await tx.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT ${sp}`);
+      await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${sp}`);
       return e instanceof Error ? e.message : String(e);
     }
   };
@@ -163,12 +166,19 @@ describe('4d-ii-a / A6c — the persisted rules and the registration barrier (li
   });
 
   // ── the freeze: rewritten only under the rule gate ───────────────────────────────────────
-  it('a direct UPDATE of dispatchRule or subscribedEventTypes is refused; the same UPDATE under the rule gate is admitted; A6b\'s arms stand on the re-issued function', async () => {
+  const OPEN = `CREATE FUNCTION platform_t4d_catalog_rule_migration_open() RETURNS void LANGUAGE sql AS 'SELECT'`;
+  const CLOSE = `DROP FUNCTION platform_t4d_catalog_rule_migration_open()`;
+
+  it('a direct UPDATE of dispatchRule or subscribedEventTypes is refused, a SETTING opens nothing; the same UPDATE inside the DDL transition is admitted; A6b\'s arms stand on the re-issued function', async () => {
     await rolledBack(async (tx) => {
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = 'all', "subscribedEventTypes" = ARRAY[]::TEXT[] WHERE "consumer" = $1`, C))
-        .toMatch(/SEALED EVIDENCE[\s\S]*this UPDATE \(gate off\) is refused/);
+        .toMatch(/SEALED EVIDENCE[\s\S]*this UPDATE \(rule-migration transition closed\) is refused/);
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "subscribedEventTypes" = ARRAY['decision.published'] WHERE "consumer" = $1`, C))
-        .toMatch(/SEALED EVIDENCE[\s\S]*gate off/);
+        .toMatch(/SEALED EVIDENCE[\s\S]*transition closed/);
+      // #661 round 1, finding 1 — a session setting is forgeable by any DML writer and opens NOTHING
+      await tx.$executeRawUnsafe(`SELECT set_config('vitan.outbox_catalog_rule_migration', 'on', true)`);
+      expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = 'all', "subscribedEventTypes" = ARRAY[]::TEXT[] WHERE "consumer" = $1`, C))
+        .toMatch(/SEALED EVIDENCE[\s\S]*transition closed/);
       // a column outside the seal still moves
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "updatedAt" = now() WHERE "consumer" = $1`, C)).toBeNull();
       // A6b's arms, on the function this unit re-issues
@@ -176,24 +186,46 @@ describe('4d-ii-a / A6c — the persisted rules and the registration barrier (li
         .toMatch(/MIRROR[\s\S]*direct UPDATE \(trigger depth 1, marker off\)/);
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "registeredAt" = now() WHERE "consumer" = $1`, C))
         .toMatch(/"registeredAt"[\s\S]*FROZEN/);
-      // the gate: the migration's own path
-      await tx.$executeRawUnsafe(`SELECT set_config('vitan.outbox_catalog_rule_migration', 'on', true)`);
+      // the transition: the migration's own path — DDL in THIS transaction, and it holds from a
+      // SUBTRANSACTION of it too (a migration's EXCEPTION block is one), so the marker is created
+      // inside a savepoint here and judged from another
+      await tx.$executeRawUnsafe(`SAVEPOINT a6c_open`);
+      await tx.$executeRawUnsafe(OPEN);
+      await tx.$executeRawUnsafe(`RELEASE SAVEPOINT a6c_open`);
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = 'all', "subscribedEventTypes" = ARRAY[]::TEXT[] WHERE "consumer" = $1`, C)).toBeNull();
       expect(await ruleOf(tx, C)).toEqual({ dispatchRule: 'all', subscribedEventTypes: [] });
-      // the gate admits the RULE columns alone: the mirror stays the register's
+      // the transition admits the RULE columns alone: the mirror stays the register's
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "active" = false WHERE "consumer" = $1`, C)).toMatch(/MIRROR/);
-      await tx.$executeRawUnsafe(`SELECT set_config('vitan.outbox_catalog_rule_migration', 'off', true)`);
-      expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = 'push' WHERE "consumer" = $1`, C)).toMatch(/SEALED EVIDENCE/);
+      await tx.$executeRawUnsafe(CLOSE);
+      expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = 'push' WHERE "consumer" = $1`, C)).toMatch(/SEALED EVIDENCE[\s\S]*transition closed/);
     });
     expect(await ruleOf(prisma, C)).toEqual({ dispatchRule: 'types', subscribedEventTypes: ['decision.approved', 'decision.published'] });
   });
 
-  it('the CHECKs hold the vocabulary even under the gate: an unknown kind, a list outside `types`, a blank or whitespace type name', async () => {
+  it('a marker function left behind by an EARLIER transaction opens nothing: the transition is bound to the transaction that created it', async () => {
+    // committed on its own (a leftover an aborted apply could never leave, since the apply is one
+    // transaction — but a hostile DDL-capable writer could), then judged from another transaction
+    await prisma.$executeRawUnsafe(OPEN);
+    try {
+      await rolledBack(async (tx) => {
+        expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = 'all', "subscribedEventTypes" = ARRAY[]::TEXT[] WHERE "consumer" = $1`, C))
+          .toMatch(/SEALED EVIDENCE[\s\S]*transition closed/);
+      });
+    } finally {
+      await prisma.$executeRawUnsafe(CLOSE);
+    }
+  });
+
+  it('the CHECKs hold the vocabulary even inside the transition: an unknown kind, a list outside `types`, a NULL, blank or whitespace type name', async () => {
     await rolledBack(async (tx) => {
-      await tx.$executeRawUnsafe(`SELECT set_config('vitan.outbox_catalog_rule_migration', 'on', true)`);
+      await tx.$executeRawUnsafe(OPEN);
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = 'sometimes', "subscribedEventTypes" = ARRAY[]::TEXT[] WHERE "consumer" = $1`, C)).toMatch(/OutboxConsumerCatalog_t4d_rule_kind/);
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = 'all' WHERE "consumer" = $1`, C)).toMatch(/OutboxConsumerCatalog_t4d_rule_types/);
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = NULL WHERE "consumer" = $1`, C)).toMatch(/OutboxConsumerCatalog_t4d_rule_types/);
+      // #661 round 1, finding 3 — a NULL element is not a name: `array_to_string` skips it and
+      // `array_position(…, '')` does not see it, so it is refused by its own arm
+      expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "subscribedEventTypes" = ARRAY[NULL]::TEXT[] WHERE "consumer" = $1`, C)).toMatch(/OutboxConsumerCatalog_t4d_rule_type_names/);
+      expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "subscribedEventTypes" = ARRAY['decision.published', NULL]::TEXT[] WHERE "consumer" = $1`, C)).toMatch(/OutboxConsumerCatalog_t4d_rule_type_names/);
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "subscribedEventTypes" = ARRAY['decision.published',''] WHERE "consumer" = $1`, C)).toMatch(/OutboxConsumerCatalog_t4d_rule_type_names/);
       expect(await attempt(tx, `UPDATE "OutboxConsumerCatalog" SET "subscribedEventTypes" = ARRAY['decision.published',' decision.approved'] WHERE "consumer" = $1`, C)).toMatch(/OutboxConsumerCatalog_t4d_rule_type_names/);
       // well-formed shapes are admitted: an empty subscription, and no rule with no list

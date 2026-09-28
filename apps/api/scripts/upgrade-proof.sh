@@ -5226,22 +5226,29 @@ assert "4d-ii-a / A6c: the migration wrote the compiled rules it knows and no ru
   "socket.invalidation:invalidate:0,upgrade.proof.flip:-:0,upgrade.proof.history:-:0,upgrade.proof.inactive:-:0,webpush.notify:push:0"
 assert_rejects "4d-ii-a / A6c: a direct UPDATE of dispatchRule is refused — the rule is sealed evidence" \
   "UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'all' WHERE \"consumer\" = 'webpush.notify'" \
-  "SEALED EVIDENCE|gate off"
+  "SEALED EVIDENCE|transition closed"
 assert_rejects "4d-ii-a / A6c: a direct UPDATE of subscribedEventTypes is refused" \
   "UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'types', \"subscribedEventTypes\" = ARRAY['decision.published'] WHERE \"consumer\" = 'upgrade.proof.flip'" \
-  "SEALED EVIDENCE|gate off"
-assert_rejects "4d-ii-a / A6c: an unknown rule kind is refused by the CHECK even under the gate" \
-  "DO \$\$ BEGIN PERFORM set_config('vitan.outbox_catalog_rule_migration', 'on', true); UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'sometimes' WHERE \"consumer\" = 'upgrade.proof.flip'; END \$\$" \
+  "SEALED EVIDENCE|transition closed"
+assert_rejects "4d-ii-a / A6c: a session setting opens nothing — the transition is DDL, not state a DML writer can set" \
+  "DO \$\$ BEGIN PERFORM set_config('vitan.outbox_catalog_rule_migration', 'on', true); UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'all' WHERE \"consumer\" = 'upgrade.proof.flip'; END \$\$" \
+  "SEALED EVIDENCE|transition closed"
+assert_rejects "4d-ii-a / A6c: an unknown rule kind is refused by the CHECK even inside the transition" \
+  "DO \$\$ BEGIN EXECUTE 'CREATE FUNCTION platform_t4d_catalog_rule_migration_open() RETURNS void LANGUAGE sql AS ''SELECT'''; UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'sometimes' WHERE \"consumer\" = 'upgrade.proof.flip'; END \$\$" \
   "OutboxConsumerCatalog_t4d_rule_kind"
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-ii-a / A6c: the rule rewrite under the gate was refused"; FAIL=1; }
+assert_rejects "4d-ii-a / A6c: a NULL subscription element is refused by the CHECK even inside the transition" \
+  "DO \$\$ BEGIN EXECUTE 'CREATE FUNCTION platform_t4d_catalog_rule_migration_open() RETURNS void LANGUAGE sql AS ''SELECT'''; UPDATE \"OutboxConsumerCatalog\" SET \"dispatchRule\" = 'types', \"subscribedEventTypes\" = ARRAY[NULL]::TEXT[] WHERE \"consumer\" = 'upgrade.proof.flip'; END \$\$" \
+  "OutboxConsumerCatalog_t4d_rule_type_names"
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-ii-a / A6c: the rule rewrite inside the transition was refused"; FAIL=1; }
 DO $$ BEGIN
-  PERFORM set_config('vitan.outbox_catalog_rule_migration', 'on', true);
+  EXECUTE 'CREATE FUNCTION platform_t4d_catalog_rule_migration_open() RETURNS void LANGUAGE sql AS ''SELECT''';
   UPDATE "OutboxConsumerCatalog" SET "dispatchRule" = 'all' WHERE "consumer" = 'upgrade.proof.flip';
+  EXECUTE 'DROP FUNCTION platform_t4d_catalog_rule_migration_open()';
 END $$;
 SQL
-assert "4d-ii-a / A6c: the rewrite under the gate stands, and the barrier trigger is on the catalog" \
-  "SELECT (SELECT \"dispatchRule\" FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.flip') || '|' || (SELECT count(*) FROM pg_trigger WHERE tgname = 'OutboxConsumerCatalog_t4d_registration_barrier' AND NOT tgisinternal)::text;" \
-  "all|1"
+assert "4d-ii-a / A6c: the rewrite inside the transition stands, the marker is gone, and the barrier trigger is on the catalog" \
+  "SELECT (SELECT \"dispatchRule\" FROM \"OutboxConsumerCatalog\" WHERE \"consumer\" = 'upgrade.proof.flip') || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_catalog_rule_migration_open')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgname = 'OutboxConsumerCatalog_t4d_registration_barrier' AND NOT tgisinternal)::text;" \
+  "all|0|1"
 
 # ── the replay a LEDGER-LOST RESTORE takes, before and after this release serves (#646's review,
 #    finding 4114478871) ─────────────────────────────────────────────────────────────────────────
