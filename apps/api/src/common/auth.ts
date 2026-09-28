@@ -10,6 +10,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { ProjectAccessService } from './project-access.service';
+import { declaredDecisionsContract, type DecisionsContract } from './decisions-contract';
 
 /**
  * Marks routes that authorize by IDENTITY, not project access: the /me discovery
@@ -34,6 +35,10 @@ export interface AuthUser {
    *  (§A.3 round 15) records it on a push-subscription link so an abandoned shared browser's
    *  link lapses with the session even when the credential version never changes */
   exp?: number;
+  /** Phase 6 task 4d-ii-a / A5e — the decisions client contract THIS REQUEST declared, set by
+   *  `JwtGuard` from the header (never carried in the token), so the commands that must re-judge a
+   *  lesser client under their lock (`assertCountersignClient`) receive it with the actor. */
+  decisionsContract?: DecisionsContract;
 }
 
 /**
@@ -77,7 +82,8 @@ export class JwtGuard implements CanActivate {
     // destructive access anywhere. Identity-scoped routes (/me, org admin) opt
     // out because their services check live org/membership rows themselves.
     const identityScoped = this.reflector.getAllAndOverride<boolean>(IDENTITY_SCOPED, [ctx.getHandler(), ctx.getClass()]);
-    req.user = identityScoped ? user : await this.projectAccess.authorize(user, routeProject ?? user.projectId);
+    const authorized = identityScoped ? user : await this.projectAccess.authorize(user, routeProject ?? user.projectId);
+    req.user = { ...authorized, decisionsContract: declaredDecisionsContract(req.headers) };
     return true;
   }
 }

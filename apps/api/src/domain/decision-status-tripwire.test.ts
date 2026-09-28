@@ -190,6 +190,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     // shared
     "packages/shared/src/domain/types.ts :: ['pending', 'approved', 'change', 'withdrawn', 'recorded', 'awaiting_countersign']": 'answered',
     "packages/shared/src/domain/readiness.ts :: decisionStatus === 'recorded'": 'excludes: a record, not an approval',
+    "apps/api/src/common/countersign-compat.interceptor.ts :: d.status === 'awaiting_countersign'": 'answered',
     "packages/shared/src/domain/readiness.ts :: decisionStatus === 'approved'": 'excludes: the gate reads ok only on a FINAL approval; an uncountersigned one waits',
     "packages/shared/src/domain/readiness.ts :: decisionStatus === 'approved' #2": 'excludes: the reading’s approved arm; the awaiting arm is its own (below)',
     "packages/shared/src/domain/readiness.ts :: decisionStatus === 'change'": 'excludes: the reopened arm',
