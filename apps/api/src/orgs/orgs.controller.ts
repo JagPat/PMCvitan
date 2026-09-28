@@ -5,6 +5,7 @@ import { ZodPipe } from '../common/zod.pipe';
 import { addOrgMemberSchema, correctInvitationEmailSchema, createModuleSchema, createOrgSchema, createProjectSchema, createTemplateSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { CurrentUser, IdentityScoped, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, RolesFor, RolesGuard } from '../common/roles';
+import { StripsArchitectRows } from '../common/countersign-compat.interceptor';
 
 /** Org owner/admin authority is enforced per-route inside OrgsService (these are org-role
  *  checks, not project-role checks, so they can't be a simple @Roles allowlist). */
@@ -25,6 +26,7 @@ export class OrgsController {
 
   /** Projects the current user can access (their memberships) — drives the project switcher. */
   @Get('me/memberships')
+  @StripsArchitectRows()
   memberships(@CurrentUser() user: AuthUser) {
     return this.auth.listMemberships(user.sub);
   }
@@ -37,6 +39,7 @@ export class OrgsController {
 
   /** Cross-project monitoring rollup — one row per project the user can access. */
   @Get('me/portfolio')
+  @StripsArchitectRows()
   portfolio(@CurrentUser() user: AuthUser) {
     return this.orgs.portfolio(user.sub);
   }

@@ -198,7 +198,12 @@ export interface Decision {
   /** 'client' when someone other than the client locked the decision on their behalf (Phase 1 Task 2) */
   onBehalfOf?: string;
   /** the OPEN change request while status='change' — why the lock is being revisited (Phase 1 Task 2) */
-  changeRequest?: { reason: string; costImpact: number; timeImpactDays: number; requestedById?: string };
+  changeRequest?: {
+    reason: string; costImpact: number; timeImpactDays: number; requestedById?: string;
+    /** Phase 6 task 4d (§A.2) — present only when the request is NOT a `standard` change (4d-iii's
+     *  countersign rejection); a client below `countersign-v1` never receives such a row. */
+    origin?: string;
+  };
   /** withdrawal evidence while status='withdrawn' (Phase 6 task 4a) — pmc audience only:
    *  the server never serializes a withdrawn decision to any other role. */
   withdrawnAt?: string;

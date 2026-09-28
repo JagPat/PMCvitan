@@ -65,6 +65,10 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
             costImpact: d.changeRequests[0].costImpact,
             timeImpactDays: d.changeRequests[0].timeImpactDays,
             requestedById: d.changeRequests[0].requestedById ?? undefined,
+            // Phase 6 task 4d-ii-a / A5e — a request that is not a `standard` change (4d-iii's
+            // countersign rejection) names its origin, so the `countersign-v1` boundary can strip it
+            // from a client that would offer Withdraw for it. Absent for `standard`: today's bytes.
+            ...(d.changeRequests[0].origin !== 'standard' ? { origin: d.changeRequests[0].origin } : {}),
           }
         : undefined,
     // Phase 6 task 4a — the withdrawal evidence travels through the CONTRACT (not just the
