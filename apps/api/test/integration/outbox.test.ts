@@ -10,7 +10,7 @@ import { SOCKET_CONSUMER, PUSH_CONSUMER, makeSocketConsumer, makePushConsumer } 
 import { effectCoverageVersion } from '../../src/platform/external-effects';
 import type { Actor } from '../../src/common/actor';
 
-import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { sanctionedReset, sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 6 — the per-consumer transactional outbox, proven against live PostgreSQL.
  *
@@ -60,6 +60,10 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
   afterAll(async () => {
     unregisterConsumer(PROJECTION);
     await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
+    // 4d-ii-a / A6d — the ad-hoc consumer's catalog row leaves with the suite: from A6d the delivery
+    // rows derive from the PERSISTED catalog, so an ACTIVE, RULED row left behind would give every
+    // later suite's events a delivery for a consumer no process handles.
+    await sanctionedConsumerRemoval(t?.prisma, [PROJECTION]);
     await f?.cleanup();
     await t?.close();
   });

@@ -7,7 +7,7 @@ import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.se
 import { registerConsumer, unregisterConsumer, syncConsumerCatalog, type OutboxConsumer, type ProjectionTarget } from '../../src/platform/outbox/registry';
 import type { Actor } from '../../src/common/actor';
 
-import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { sanctionedReset, sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 9 Step 1 — the projection base: generation-swap rebuild + the FINAL ACTIVATION
  * BARRIER, proven against live PostgreSQL.
@@ -88,6 +88,10 @@ describe('Phase 2 Task 9 — projection generations + activation barrier (live P
     unregisterConsumer(PROJ);
     unregisterConsumer(SEEDED);
     await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration'], { cascade: true });
+    // 4d-ii-a / A6d — the two ad-hoc consumers' catalog rows leave with the suite: from A6d the
+    // delivery rows derive from the PERSISTED catalog, so ACTIVE, RULED rows left behind would give
+    // every later suite's events deliveries for consumers no process handles.
+    await sanctionedConsumerRemoval(t?.prisma, [PROJ, SEEDED]);
     await f?.cleanup();
     await t?.close();
   });
