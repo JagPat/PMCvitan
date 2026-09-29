@@ -28,7 +28,8 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
 - **Now, A7a, `open_pr: 665` (`work_item: phase-6-task-4d-ii-a-a7a-kinded-notice-writers`, branch
-  `claude/4d-ii-a7-catalog-unit`, from `main` at `faaf233`).** A7 is delivered as four sub-units
+  `claude/4d-ii-a7-catalog-unit`, from `main` at `faaf233`; `origin/main` at `363177c`, #658, merged in
+  as `d05a85a`).** A7 is delivered as four sub-units
   (the staging document's dated note of 2026-09-29): A7a the kinded notice writers, A7b the send
   boundary, A7c `decisions.inbox` v3, A7d the catalog change. A7a: every decisions notice writer
   (the one-step issue, publish, approve, withdraw) mints its event id, emits the event first and
