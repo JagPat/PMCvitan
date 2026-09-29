@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { navLabels, engineerNavLabels, LANG_SWITCH, type Lang, type Role, type ScreenKey } from '@vitan/shared';
 import { Eyebrow, EYEBROW_MIN_SIZE } from '@/components/Eyebrow';
 import { splitMobileNav, navLabelFor, MOBILE_ROLE_PRIMARY } from '@/lib/mobileNav';
@@ -260,9 +260,13 @@ describe('LangPreference — restores and remembers the viewer’s language', ()
   });
 
   it('a change is saved under this person, and another person keeps their own', async () => {
-    const { useStore, LangPreference } = await loadShell({ role: 'client', sessionUserId: 'u-a', lang: 'en' });
+    const { useStore, LangPreference, pref } = await loadShell({ role: 'client', sessionUserId: 'u-a', lang: 'en' });
     const r = render(<LangPreference />);
-    useStore.getState().setLang('gu');
+    // what every picker does: note the choice, then apply it (a bare setLang is not a choice)
+    act(() => {
+      pref.noteLangChoice('gu');
+      useStore.getState().setLang('gu');
+    });
     r.rerender(<LangPreference />);
     expect(readLangPreference('user:u-a')).toBe('gu');
     // a different person signs in on the same device: their (absent) choice applies, not u-a's
@@ -271,6 +275,199 @@ describe('LangPreference — restores and remembers the viewer’s language', ()
     expect(useStore.getState().lang).toBe('en');
     expect(readLangPreference('user:u-a')).toBe('gu');
     expect(readLangPreference('user:u-b')).toBeNull();
+  });
+});
+
+describe('a guest picking a language on the in-console Team Access screen', () => {
+  beforeEach(() => localStorage.clear());
+
+  // Team Access is a normal engineer screen: the host hands the phone to a worker who picks THEIR
+  // language on the sign-in step. That pick is the guest's, not the host's saved preference.
+  async function loadTeamAccess(overrides: Record<string, unknown> = {}) {
+    const shell = await loadShell({ role: 'engineer', sessionUserId: 'u-host', screen: 'team-access', ...overrides });
+    const { TeamAccessScreen } = await import('@/screens/TeamAccessScreen');
+    return { ...shell, TeamAccessScreen };
+  }
+
+  it('does not overwrite the signed-in host’s saved language', async () => {
+    writeLangPreference('user:u-host', 'gu');
+    const { useStore, LangPreference, TeamAccessScreen } = await loadTeamAccess({ lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <TeamAccessScreen />
+      </>,
+    );
+    expect(useStore.getState().lang).toBe('gu');
+    fireEvent.click(r.getByRole('button', { name: 'हिंदी' }));
+    // the guest sees their language while they sign in…
+    expect(useStore.getState().lang).toBe('hi');
+    // …but the host's saved choice is untouched
+    expect(readLangPreference('user:u-host')).toBe('gu');
+  });
+
+  it('gives the host their own language back when they leave Team Access', async () => {
+    writeLangPreference('user:u-host', 'gu');
+    const { useStore, LangPreference, TeamAccessScreen } = await loadTeamAccess({ lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <TeamAccessScreen />
+      </>,
+    );
+    fireEvent.click(r.getByRole('button', { name: 'हिंदी' }));
+    expect(useStore.getState().lang).toBe('hi');
+    useStore.setState({ screen: 'daily-log' });
+    r.rerender(<LangPreference />);
+    expect(useStore.getState().lang).toBe('gu');
+    expect(readLangPreference('user:u-host')).toBe('gu');
+  });
+
+  it('a guest pick is not carried to the next identity either', async () => {
+    const { useStore, LangPreference, TeamAccessScreen } = await loadTeamAccess({ role: 'client', sessionUserId: 'u-host', lang: 'en', screen: 'team-access' });
+    const r = render(
+      <>
+        <LangPreference />
+        <TeamAccessScreen />
+      </>,
+    );
+    fireEvent.click(r.getByRole('button', { name: 'ગુજરાતી' }));
+    useStore.setState({ sessionUserId: 'u-next', screen: 'inbox' });
+    r.rerender(<LangPreference />);
+    // u-next chose nothing: the client default, not the guest's Gujarati
+    expect(useStore.getState().lang).toBe('en');
+    expect(readLangPreference('user:u-next')).toBeNull();
+  });
+
+  it('a guest tapping the host’s own language leaves nothing to carry into a persona switch', async () => {
+    writeLangPreference('persona:engineer', 'gu');
+    const { useStore, LangPreference, TeamAccessScreen } = await loadTeamAccess({ sessionUserId: null, lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <TeamAccessScreen />
+      </>,
+    );
+    expect(useStore.getState().lang).toBe('gu');
+    fireEvent.click(r.getByRole('button', { name: 'ગુજરાતી' }));
+    // the dev persona switch to a PMC: the pmc default, not the guest's tap
+    useStore.setState({ role: 'pmc', screen: 'inbox' });
+    r.rerender(<LangPreference />);
+    expect(useStore.getState().lang).toBe('en');
+    expect(readLangPreference('persona:pmc')).toBeNull();
+  });
+
+  it('at the sign-in gate a guest IS the person signing in: their pick is still carried', async () => {
+    const { useStore, LangPreference, pref } = await loadShell({ role: 'contractor', sessionUserId: 'u-c', lang: 'hi' });
+    pref.noteLangChoice('hi', 'guest');
+    render(<LangPreference />);
+    expect(useStore.getState().lang).toBe('hi');
+    expect(readLangPreference('user:u-c')).toBe('hi');
+  });
+
+  it('the host explicitly picking back their default after a guest session is saved', async () => {
+    // Codex on #666: no saved choice, the engineer default gu on screen, a guest shows hi, and the
+    // host then picks ગુજ on the rail — an explicit choice, even though it equals the default
+    const { useStore, LangPreference, TeamAccessScreen, LanguageSwitch } = await loadTeamAccess({ lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <LanguageSwitch />
+        <TeamAccessScreen />
+      </>,
+    );
+    expect(useStore.getState().lang).toBe('gu');
+    fireEvent.click(r.getByRole('button', { name: 'हिंदी' }));
+    fireEvent.click(r.getByTestId('lang-seg-gu'));
+    expect(readLangPreference('user:u-host')).toBe('gu');
+    // so a later same-user project switch to PMC keeps it rather than the PMC default
+    useStore.setState({ role: 'pmc', screen: 'inbox' });
+    r.rerender(
+      <>
+        <LangPreference />
+        <LanguageSwitch />
+      </>,
+    );
+    expect(useStore.getState().lang).toBe('gu');
+  });
+
+  it('the host explicitly picking the language already on screen is saved (no guest involved)', async () => {
+    const { useStore, LangPreference, LanguageSwitch } = await loadShell({ role: 'engineer', sessionUserId: 'u-e', lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <LanguageSwitch />
+      </>,
+    );
+    expect(useStore.getState().lang).toBe('gu'); // the default, applied, not saved
+    expect(readLangPreference('user:u-e')).toBeNull();
+    fireEvent.click(r.getByTestId('lang-seg-gu'));
+    expect(readLangPreference('user:u-e')).toBe('gu');
+  });
+
+  it('the host changing language on the rail while a guest is on Team Access is still saved', async () => {
+    writeLangPreference('user:u-host', 'gu');
+    const { useStore, LangPreference, TeamAccessScreen, LanguageSwitch } = await loadTeamAccess({ lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <LanguageSwitch />
+        <TeamAccessScreen />
+      </>,
+    );
+    fireEvent.click(r.getByRole('button', { name: 'हिंदी' }));
+    fireEvent.click(r.getByTestId('lang-seg-en'));
+    expect(useStore.getState().lang).toBe('en');
+    expect(readLangPreference('user:u-host')).toBe('en');
+  });
+});
+
+describe('the sign-in gate picker — carried only to the team member who signs in', () => {
+  beforeEach(() => localStorage.clear());
+
+  // the gate: no session, LangPreference not mounted; the WHO step's picker notes the choice
+  async function loadGate() {
+    const shell = await loadShell({ role: 'client', sessionUserId: null, lang: 'en' });
+    const { TeamAccessScreen } = await import('@/screens/TeamAccessScreen');
+    return { ...shell, TeamAccessScreen };
+  }
+
+  it('a worker’s pick at the gate is not saved for the next person who signs in', async () => {
+    const { useStore, LangPreference, TeamAccessScreen } = await loadGate();
+    const gate = render(<TeamAccessScreen />);
+    fireEvent.click(gate.getByRole('button', { name: 'हिंदी' }));
+    // the worker flow: terminal inside the gate, never takes a token
+    fireEvent.click(gate.getByRole('button', { name: /मज़दूर/ }));
+    gate.unmount();
+    // later, a client signs in on the same phone without touching the picker
+    act(() => useStore.setState({ sessionUserId: 'u-client', role: 'client', screen: 'inbox' }));
+    render(<LangPreference />);
+    expect(readLangPreference('user:u-client')).toBeNull();
+    expect(useStore.getState().lang).toBe('en');
+  });
+
+  it('a trade in-charge’s pick at the gate is not carried either', async () => {
+    const { useStore, LangPreference, TeamAccessScreen } = await loadGate();
+    const gate = render(<TeamAccessScreen />);
+    fireEvent.click(gate.getByRole('button', { name: 'ગુજરાતી' }));
+    fireEvent.click(gate.getByRole('button', { name: /મિસ્ત્રી/ }));
+    gate.unmount();
+    act(() => useStore.setState({ sessionUserId: 'u-client', role: 'client', screen: 'inbox' }));
+    render(<LangPreference />);
+    expect(readLangPreference('user:u-client')).toBeNull();
+    expect(useStore.getState().lang).toBe('en');
+  });
+
+  it('a team member’s own pick at the gate is still carried and saved for them', async () => {
+    const { useStore, LangPreference, TeamAccessScreen } = await loadGate();
+    const gate = render(<TeamAccessScreen />);
+    fireEvent.click(gate.getByRole('button', { name: 'हिंदी' }));
+    fireEvent.click(gate.getByRole('button', { name: /टीम सदस्य/ }));
+    gate.unmount();
+    act(() => useStore.setState({ sessionUserId: 'u-client', role: 'client', screen: 'inbox' }));
+    render(<LangPreference />);
+    expect(useStore.getState().lang).toBe('hi');
+    expect(readLangPreference('user:u-client')).toBe('hi');
   });
 });
 
