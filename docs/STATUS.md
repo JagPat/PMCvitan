@@ -14,32 +14,45 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a7c-inbox-v3
-reviewed_merge: e069248
-open_pr: 670
+work_item: phase-6-task-4d-ii-a-a7d-catalog-change
+reviewed_merge: 582297b
+open_pr: 671
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
 ```
 
-### Now — Phase 6 task 4d: A7c, `decisions.inbox` v3
+### Now — Phase 6 task 4d: A7d, the catalog change
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A7c, `open_pr: 670` (`work_item: phase-6-task-4d-ii-a-a7c-inbox-v3`, branch
-  `claude/4d-ii-a7c-inbox-v3`, from `main` at `e069248`).** The third A7 sub-unit, `decisions.inbox`
-  v3: the projection's DURABLE contract version moves 2 → 3 (plan §D) for the meanings the stored DTO
-  gained since 4c-ii without a version of its own — the finalized-only cycle (A4a), the non-`standard`
-  origin (A5e), the awaiting state and the forward-installed holder (A8a's writers) — so a generation
-  a version-2 serializer built or a version-2 relay goes on writing is refused at the read (the
-  canonical fallback) and a previous-release process at its start; the writer fence's two functions
-  re-issued to read the declaration `3` (a version-2 declaration now stamps as an undeclared write
-  does), the verifier reading their canonical bodies from the re-issuing file; one migration
-  (`20280103000000_phase6_t4d_ii_a7c_inbox_v3`: the catalog row, guarded on the version it moves
-  from; the fence re-issue; fail-closed verification), on `ALWAYS_EXECUTE`. The fold, rebuild and
-  filter are proven to carry the three meanings identically (live == projection == rebuild) on
-  planted canonical rows. `webpush.notify` stays at 2: its bump is A7d's, with the catalog change.
+- **Now, A7d, `open_pr: 671` (`work_item: phase-6-task-4d-ii-a-a7d-catalog-change`, branch
+  `claude/4d-ii-a7d-catalog-change`, from `main` at `582297b`).** The last A7 sub-unit, the CATALOG
+  CHANGE (plan §D "4d-ii-a is a CATALOG CHANGE, staged as one"): the compiled external-effect catalog
+  widened — the three chain types (`decision.forwarded` and `decision.awaiting_countersign`, the two
+  FROZEN-audience push families with their constant bodies; `membership.standing_changed`), the
+  `architect` role in the three targeted ceilings — at a new coverage generation (`23f47cd9…`, the
+  preimage gaining `frozenAudience` and `pushBody`) seeded BESIDE U3's by
+  `20280104000000_phase6_t4d_ii_a7d_catalog_change`, audited key by key against the generation it
+  extends; `targetUserIds` admitted by `buildDispatchIntent` for the frozen families alone and sent to
+  by the push consumer intersected with the family predicate's current set (`forwardPushTarget`,
+  `countersignPushTarget`); the decider push's architect arm; `webpush.notify` 2 → 3; `decisions.inbox`'s
+  persisted rule rewritten under the rule transition for the two decision types; `decisions.effects`
+  registered INACTIVE (ordered, `types` over `membership.standing_changed`, its head from A6a's
+  catalog-INSERT trigger) with its handler — the last-architect cancellation, the activation
+  re-notification to the current architects, the stale-activation no-op — over
+  `EventStreamQuery.latestPosition`; `membership.standing_changed` emitted by the member commands on
+  an architect-standing flip, claimed by the `MembershipTransition`; the `DecisionForward` claimant and
+  the provisional-revision arm of the approval claimant; U1's kernel actor seal re-issued with the
+  re-notification's one system-act exemption; `ALWAYS_EXECUTE`. The reseal sequence is in the packet
+  (the build in `legacy`/`shadow`, `outbox:status` clean, `outbox:seal-external`, restart in `outbox`).
+- **A7c merged as #670** (`582297b`): `decisions.inbox` v3 — the projection's DURABLE contract version
+  moves 2 → 3 for the meanings the stored DTO gained since 4c-ii (the finalized-only cycle, the
+  non-`standard` origin, the awaiting state and the forward-installed holder); the writer fence's two
+  functions re-issued to read `3`; one migration (`20280103000000_phase6_t4d_ii_a7c_inbox_v3`) on
+  `ALWAYS_EXECUTE`; the fold, rebuild and filter proven to carry the three meanings identically on
+  planted canonical rows.
 - **A7b merged as #668** (`e069248`): the push consumer's FINAL per-recipient re-judge before each
   provider call; `deciderPushTarget` under the decision row lock in the canonical order; the
   responded family's widened requester set with the withdrawn-audience arm; `cancelQueuedPushBySubject`

@@ -11,6 +11,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
 import { APPROVED_DECISION_NOTICE_COLOR, PENDING_DECISION_NOTICE_COLOR, RECORDED_DECISION_NOTICE_COLOR, WITHDRAWN_DECISION_NOTICE_COLOR, approvedDecisionNotice, pendingDecisionNotice, recordedDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
 import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
+import type { PushRole } from '../platform/external-effects';
 import type { ApproveInput, ChangeInput, CreateDecisionInput, RequestConsultationInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
@@ -117,12 +118,12 @@ export class DecisionsService {
     body: string,
     kind: 'client' | 'pmc' | 'member' | 'none' | 'architect',
     member: { userId: string; role: string } | null,
-  ): { body: string; roles?: readonly ('pmc' | 'client' | 'contractor' | 'engineer' | 'consultant')[]; targetUserId?: string } {
-    // Phase 6 task 4d — an architect-designated decision pushes at the architect role, an arm that
-    // lands with its widened catalog ceiling (A7). The fall-through below would push it at the
-    // CLIENTS, so the kind is refused here outright: the create and draft edits already refuse the
-    // designation 409 while 4d-i's reservation stands, and A7 lands before 4d-iii opens it.
-    if (kind === 'architect') throw new Error('invariant: the architect decider push lands with A7');
+  ): { body: string; roles?: readonly PushRole[]; targetUserId?: string } {
+    // Phase 6 task 4d (4d-ii-a / A7d) — an architect-designated decision pushes at the ARCHITECT
+    // role, within the ceiling the catalog generation widened; the claim re-judges the role's
+    // current holders through the kernel register (`deciderPushTarget`'s architect arm). The create
+    // and draft edits still refuse the designation 409 while 4d-i's reservation stands.
+    if (kind === 'architect') return { body, roles: ['architect'] };
     if (kind === 'member' && member) {
       return { body, roles: [member.role as 'contractor'], targetUserId: member.userId };
     }

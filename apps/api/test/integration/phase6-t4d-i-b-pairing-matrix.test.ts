@@ -189,6 +189,9 @@ type Variant = {
 };
 type Branch = {
   key: string;
+  /** 4d-ii-a / A7d — a key the PRIOR generation never compiled: a still-serving previous release cannot
+   *  emit it at all, and the PRIOR arm asserts the envelope seal's refusal instead of a commit */
+  priorAbsent?: true;
   writer: string;
   fact: string;
   audit: string | null;
@@ -288,6 +291,49 @@ const RESPOND = (o: { dcr: string; dc: string; ev: string; version: string; orde
     payload: `jsonb_build_object('consultationId','${o.namedConsultation ?? o.dc}','responseId','${o.namedResponse ?? o.dcr}')`,
     push: `, 'push', jsonb_build_object('body','answered','roles', jsonb_build_array('pmc'),'targetUserId','${o.target ?? 'mx-pmc'}')` });
   return TX(RESERVE(cmd, 'consultations.respond', 'mx-eng'), o.order === 'event-first' ? event + fact : fact + event, COMPLETE(cmd, o.dcr));
+};
+
+/**
+ * 4d-ii-a / A7d — the delivered `members.add` of the FIRST architect (the doors dropped, as 4d-iii
+ * drops them): receipt, the transition fact FIRST, the membership write, and the standing event about
+ * the membership — `{ role, membershipId, transitionId, from, to, activeCount }` with the fact's
+ * frozen pair as the event's envelope — claimed by the transition. The event is written the way
+ * `emitEvent` writes it (allocate, insert at nextPosition - 1), with the generation named literally
+ * so the PRIOR arm can ask what a previous release's emission of a type it never compiled meets.
+ */
+const STANDING = (o: { mt: string; ev: string; version: string; order?: Order; event?: boolean; role?: string; eventRole?: string; count?: number; actor?: { id: string; role: string; name: string }; cmd?: string }) => {
+  const cmd = o.cmd ?? `${o.mt}-cmd`;
+  const role = o.role ?? 'architect';
+  const actor = o.actor ?? { id: 'mx-pmc', role: 'pmc', name: 'MX PMC' };
+  const fact = `INSERT INTO "MembershipTransition" ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+      VALUES ('${o.mt}','mx-proj','mx-mem-a','mx-arch',NULL,NULL,'${role}','active','mx-pmc','pmc','MX PMC','${cmd}');`;
+  const write = `INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ('mx-mem-a','mx-proj','mx-arch','${role}','active');`;
+  const event = o.event === false ? '' : `
+    UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'mx-proj';
+    INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","actorId","actorRole","actorName","entityType","entityId","payload","dispatchIntent")
+      SELECT '${o.ev}','membership.standing_changed',1,'mx-org','mx-proj',s."nextPosition" - 1,'human','${actor.id}','${actor.role}','${actor.name}','Membership','mx-mem-a',
+             jsonb_build_object('role','${o.eventRole ?? 'architect'}','membershipId','mx-mem-a','transitionId','${o.mt}',
+                                'from', jsonb_build_object('role', NULL, 'status', NULL),
+                                'to', jsonb_build_object('role','${role}','status','active'),
+                                'activeCount', ${o.count ?? 1}),
+             jsonb_build_object('effectKey','membership.standing_changed','coverageVersion','${o.version}','invalidate',true)
+        FROM "ProjectEventStream" s WHERE s."projectId" = 'mx-proj';
+    ${rawDeliveryRowsSql(o.ev)};`;
+  // the fact precedes the membership write (4d-i's fact-first seal); the event may precede the fact
+  return TX(RESERVE(cmd, 'members.add', 'mx-pmc'), o.order === 'event-first' ? event + fact + write : fact + write + event, COMPLETE(cmd, 'mx-mem-a'));
+};
+/** the world the standing bundle needs: the reservation door 4d-iii drops, and the person about to be seated */
+const STANDING_WORLD = `DROP TRIGGER IF EXISTS "Membership_t4d_architect_reserved" ON "Membership";
+  INSERT INTO "User" ("id","projectId","role","name","phone") VALUES ('mx-arch','mx-proj','engineer','MX Architect','+910000000106');`;
+
+/**
+ * 4d-ii-a / A7d — the two chain keys compiled `pairingRequired` whose WRITERS are A8a's (`decisions.forward`;
+ * the approve under a chain): their claimants are installed by A7d's migration (asserted here to stand)
+ * and their executable bundles join this matrix with the writer branch that produces them.
+ */
+const OWED_BUNDLES: Record<string, { unit: string; claimants: string[] }> = {
+  'decision.forwarded': { unit: 'A8a', claimants: ['DecisionForward_t4d_claim', 'DecisionForward_t4d_claim_deferred'] },
+  'decision.awaiting_countersign': { unit: 'A8a', claimants: ['DecisionApprovalRevision_t4d_claim', 'DecisionApprovalRevision_t4d_claim_deferred', 'DecisionEvent_t4d_renotified_claim'] },
 };
 
 /** a HAND: a write past every seal, for a world state no delivered writer produces */
@@ -578,6 +624,33 @@ const MATRIX: Branch[] = [
         refusal: /response .* with 0 `decision.consultation_responded` event/ },
     ],
   },
+  // 4d-ii-a / A7d — the architect-standing flip: the transition is the branch's primary fact
+  {
+    key: 'membership.standing_changed',
+    priorAbsent: true,
+    writer: 'members.add (the first architect — the chain activates)',
+    fact: 'MembershipTransition (NULL/NULL → architect/active)',
+    audit: null,
+    transition: 'Membership INSERT (architect, active) under a members.add receipt; the register head reads 1',
+    enforcedBy: ['MembershipTransition_t4d_claim', 'MembershipTransition_t4d_claim_deferred', 'Membership_t4d_architect_paired', 'DomainEvent_t4d_pairing_claimed'],
+    setup: STANDING_WORLD,
+    positive: (order, version) => STANDING({ mt: 'mx-mt', ev: 'mx-ev-st', version, order }),
+    claim: 'mx-ev-st:MembershipTransition:mx-mt',
+    negatives: [
+      { name: 'the flipping transition is written with NO standing event',
+        bundle: STANDING({ mt: 'mx-mt', ev: 'mx-ev-st', version: CURRENT, event: false }),
+        refusal: /flips the project's architect standing, and this transaction carries 0 `membership.standing_changed` event/ },
+      { name: 'the event records an activeCount that is not the register\'s head at commit',
+        bundle: STANDING({ mt: 'mx-mt', ev: 'mx-ev-st', version: CURRENT, count: 2 }),
+        refusal: /records an `activeCount` that is not the architect register's head at commit/ },
+      { name: 'the event is attributed to ANOTHER user than the transition\'s actor (wrong actor)',
+        bundle: STANDING({ mt: 'mx-mt', ev: 'mx-ev-st', version: CURRENT, actor: { id: 'mx-client', role: 'client', name: 'MX Client' } }),
+        refusal: /carries 0 `membership.standing_changed` event|requires a pairing claim and none was made/ },
+      { name: 'a transition that flips NOTHING (an engineer\'s add) is announced as a standing change',
+        bundle: STANDING({ mt: 'mx-mt', ev: 'mx-ev-st', version: CURRENT, role: 'engineer' }),
+        refusal: /flips no architect standing, yet this transaction carries 1|requires a pairing claim and none was made/ },
+    ],
+  },
 ];
 
 describe('phase 6 unit 4d-i-b — the bundle proof matrix: every pairingRequired type, both orders, every missing half', () => {
@@ -591,8 +664,14 @@ describe('phase 6 unit 4d-i-b — the bundle proof matrix: every pairingRequired
     const flagged = Object.entries(EXTERNAL_EFFECTS as Record<string, { pairingRequired?: true }>)
       .filter(([, d]) => d.pairingRequired === true).map(([k]) => k).sort();
     // a key may carry more than one WRITER BRANCH (`decision.change_requested`: the standard
-    // opening and the disagreement's `countersign_rejection`), so the set of keys is compared
-    expect([...new Set(MATRIX.map((b) => b.key))].sort(), 'a flipped type without executable bundle coverage fails here').toEqual(flagged);
+    // opening and the disagreement's `countersign_rejection`), so the set of keys is compared;
+    // 4d-ii-a / A7d: a key whose writer is a later unit's is OWED, its claimants asserted to stand
+    expect([...new Set([...MATRIX.map((b) => b.key), ...Object.keys(OWED_BUNDLES)])].sort(), 'a flipped type without executable bundle coverage fails here').toEqual(flagged);
+    for (const [key, owed] of Object.entries(OWED_BUNDLES)) {
+      expect(MATRIX.some((b) => b.key === key), `${key} is owed to ${owed.unit}: not yet in the matrix`).toBe(false);
+      const standing = psql(TEMPLATE, `SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled = 'O' AND tgname = ANY (ARRAY['${owed.claimants.join("','")}'])`);
+      expect(standing.output.trim(), `${key}'s claimants stand`).toMatch(new RegExp(`\\b${owed.claimants.length}\\b`));
+    }
     for (const b of MATRIX) {
       expect(b.negatives.length, `${b.key} needs at least a missing-counterpart variant`).toBeGreaterThan(0);
       expect(b.enforcedBy.length, `${b.key} names its enforcement`).toBeGreaterThan(0);
@@ -617,10 +696,18 @@ describe('phase 6 unit 4d-i-b — the bundle proof matrix: every pairingRequired
           expect(CLAIMS()).toContain(b.claim);
         }, 120_000);
       }
-      it(`${b.writer}: the complete bundle commits at the PRIOR generation — a still-serving 4d-i writer keeps working through the drain`, () => {
-        const r = run(b.setup, b.positive('fact-first', PRIOR));
-        expect(r.ok, `a previous-release writer's bundle must COMMIT:\n${r.output}`).toBe(true);
-      }, 120_000);
+      if (b.priorAbsent) {
+        it(`${b.writer}: at the PRIOR generation the type does not exist — a previous release cannot emit it, and the envelope seal says so`, () => {
+          const r = run(b.setup, b.positive('fact-first', PRIOR));
+          expect(r.ok, 'an emission under a generation that never carried the key must be REFUSED').toBe(false);
+          expect(r.output).toMatch(/which this database does not hold/);
+        }, 120_000);
+      } else {
+        it(`${b.writer}: the complete bundle commits at the PRIOR generation — a still-serving 4d-i writer keeps working through the drain`, () => {
+          const r = run(b.setup, b.positive('fact-first', PRIOR));
+          expect(r.ok, `a previous-release writer's bundle must COMMIT:\n${r.output}`).toBe(true);
+        }, 120_000);
+      }
       for (const v of b.negatives) {
         it(`${b.writer}: ${v.name} — refused at commit`, () => {
           const r = run([b.setup, v.setup].filter(Boolean).join('\n') || undefined, v.bundle);

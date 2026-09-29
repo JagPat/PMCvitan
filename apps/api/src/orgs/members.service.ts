@@ -7,6 +7,7 @@ import type { AuthUser } from '../common/auth';
 import type { AddMemberInput, UpdateMemberInput } from '../contracts';
 import { resolveActor, type Actor, type EventActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
+import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
@@ -256,12 +257,13 @@ export class MembersService {
     actor: EventActor,
     pair: ActorEnvelope,
     commandId: string | null,
-  ): Promise<void> {
+  ): Promise<string> {
     if (!commandId) throw new Error('members: a membership transition needs the receipt it cites');
+    const id = randomUUID();
     await tx.membershipTransition
       .create({
         data: {
-          id: randomUUID(),
+          id,
           ...fact,
           actorId: actor.actorId,
           actorRole: pair.actorRole,
@@ -271,6 +273,44 @@ export class MembersService {
         select: { id: true },
       })
       .catch(rethrowTransitionAuthority);
+    return id;
+  }
+
+  /**
+   * Phase 6 task 4d (4d-ii-a / A7d, §A.2) — the ARCHITECT-STANDING FLIP's event. A membership write
+   * that activates the chain (the first active architect arriving) or deactivates it (the last
+   * leaving) is announced ONCE, after the write, as `membership.standing_changed` about the
+   * MEMBERSHIP: `{ role: 'architect', membershipId, transitionId, from, to, activeCount }`, with the
+   * `activeCount` read through the kernel register under the readiness lock the command holds (the
+   * register's head at commit — `Membership_t4d_architect_provenance` admits one flipping write per
+   * project per transaction). The frozen pair the fact carries is the event's envelope, so the
+   * `MembershipTransition` claimant binds the two as ONE reading (§A.3 obligation 7). A write that
+   * flips nothing announces nothing: the claimant refuses a standing announced for a move that made
+   * none. `invalidate: true` — every open tab refetches the countersign overlay — and no push.
+   */
+  private async emitStandingFlip(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: EventActor,
+    pair: ActorEnvelope,
+    fact: TransitionFact,
+    transitionId: string,
+  ): Promise<EmittedEventMeta | null> {
+    const before = fact.fromRole === 'architect' && fact.fromStatus === 'active';
+    const after = fact.toRole === 'architect' && fact.toStatus === 'active';
+    if (before === after) return null;
+    const activeCount = await RoleStandingQuery.activeCount(tx, projectId, 'architect');
+    return emitEvent(tx, {
+      projectId, actor, actorEnvelope: pair,
+      eventType: 'membership.standing_changed', entityType: 'Membership', entityId: fact.membershipId,
+      payload: {
+        role: 'architect', membershipId: fact.membershipId, transitionId,
+        from: { role: fact.fromRole, status: fact.fromStatus },
+        to: { role: fact.toRole, status: fact.toStatus },
+        activeCount,
+      },
+      effectKey: 'membership.standing_changed', dispatch: {},
+    });
   }
 
   private toDto(m: MembershipWithUser): MemberDto {
@@ -392,11 +432,12 @@ export class MembersService {
         // the fact's membership FK is deferred to commit for exactly this order.
         const membershipId = prior?.id ?? randomUUID();
         const pair = await this.factPair(tx, projectId, actor);
-        await this.recordTransition(tx, {
+        const addFact: TransitionFact = {
           projectId, membershipId, userId: user.id,
           fromRole: prior?.role ?? null, fromStatus: prior?.status ?? null,
           toRole: input.role, toStatus: 'active',
-        }, actor, pair, commandId);
+        };
+        const transitionId = await this.recordTransition(tx, addFact, actor, pair, commandId);
         const holderRefusal = (e: unknown) =>
           rethrowHolderSealViolation(
             e,
@@ -409,7 +450,8 @@ export class MembersService {
         // The event's pair is resolved by `emitEvent` itself, AFTER the write: it records the
         // actor as they stand when the event is emitted, which the envelope seal judges live.
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
-        return { resultRef: m.id, value: { ...m, user }, events: [ev] };
+        const flip = await this.emitStandingFlip(tx, projectId, actor, pair, addFact, transitionId);
+        return { resultRef: m.id, value: { ...m, user }, events: flip ? [ev, flip] : [ev] };
       },
     });
 
@@ -491,10 +533,11 @@ export class MembersService {
         }
         if (cur.role === input.role) throw new ConflictException('This member\'s role changed while updating — reload and retry');
         const pair = await this.factPair(tx, projectId, actor);
-        await this.recordTransition(tx, {
+        const roleFact: TransitionFact = {
           projectId, membershipId: cur.id, userId,
           fromRole: cur.role, fromStatus: cur.status, toRole: input.role, toStatus: 'active',
-        }, actor, pair, commandId);
+        };
+        const transitionId = await this.recordTransition(tx, roleFact, actor, pair, commandId);
         const m = await tx.membership.update({ where: { id: cur.id }, data: { role: input.role, discipline }, include: { user: true } })
           .catch((e: unknown) =>
             rethrowHolderSealViolation(
@@ -509,6 +552,8 @@ export class MembersService {
         if ((cur.discipline ?? null) !== (m.discipline ?? null)) {
           events.push(await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: m.discipline ? { discipline: m.discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} }));
         }
+        const flip = await this.emitStandingFlip(tx, projectId, actor, pair, roleFact, transitionId);
+        if (flip) events.push(flip);
         return { resultRef: m.id, value: m, events };
       },
     });
@@ -603,10 +648,11 @@ export class MembersService {
           );
         }
         const pair = await this.factPair(tx, projectId, actor);
-        await this.recordTransition(tx, {
+        const removeFact: TransitionFact = {
           projectId, membershipId: cur.id, userId,
           fromRole: cur.role, fromStatus: cur.status, toRole: cur.role, toStatus: 'removed',
-        }, actor, pair, commandId);
+        };
+        const transitionId = await this.recordTransition(tx, removeFact, actor, pair, commandId);
         await tx.membership.update({ where: { id: cur.id }, data: { status: 'removed' } })
           .catch((e: unknown) =>
             rethrowHolderSealViolation(
@@ -635,7 +681,8 @@ export class MembersService {
           await this.refuseAwaitingHolderOrphan(tx, projectId, cur.id, cur.role);
         }
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
-        return { resultRef: cur.id, events: [ev] };
+        const flip = await this.emitStandingFlip(tx, projectId, actor, pair, removeFact, transitionId);
+        return { resultRef: cur.id, events: flip ? [ev, flip] : [ev] };
       },
     });
     return { ok: true };

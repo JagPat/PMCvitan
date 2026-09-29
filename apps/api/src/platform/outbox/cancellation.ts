@@ -155,3 +155,18 @@ export async function cancelQueuedPushBySubject(
     entombed,
   };
 }
+
+/**
+ * Phase 6 task 4d-ii-a / A7d — a consumer's RECORDED NO-OP on its own delivery row: the cancellation
+ * mark (`cancelledAt`, `deliveryAction: 'noop'`) written in one statement, which `OutboxDelivery_t4d_frozen`
+ * admits, with the reason on the row. The platform's narrow operation for an ordered handler that
+ * judged its delivery moot (`decisions.effects`' `stale_activation`: an activation the standing has
+ * since reversed) — the row completes as marked, never deleted, and the consumer writes no
+ * platform table itself. A row already marked is left as it is.
+ */
+export async function markDeliveryNoop(tx: Prisma.TransactionClient, deliveryId: string, reason: string): Promise<void> {
+  await tx.outboxDelivery.updateMany({
+    where: { id: deliveryId, cancelledAt: null },
+    data: { deliveryAction: 'noop', cancelledAt: new Date(), lastError: reason },
+  });
+}

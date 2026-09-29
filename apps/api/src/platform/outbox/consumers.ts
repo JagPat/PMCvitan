@@ -11,7 +11,12 @@ import { EXTERNAL_EFFECTS, type ExternalEffectDef, type ExternalEffectKey } from
  * `markCancelled` records a claim-time drop on the delivery's own row (the 4a cancellation mark),
  * so a dropped demand is evidence, never a silent skip.
  */
-export type PushClaimVerdict = { actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string };
+export type PushClaimVerdict =
+  | { actionable: false }
+  | { actionable: true; roles?: string[]; targetUserId?: string;
+      /** 4d-ii-a / A7d — a FROZEN-audience family's CURRENT set (the holders the subject still demands
+       *  of): a frozen recipient outside it is skipped, never re-targeted. */
+      targetUserIds?: string[] };
 
 /** The push families the catalog declares (`ExternalEffectDef.pushFamily`). */
 export type PushFamily = NonNullable<ExternalEffectDef['pushFamily']>;
@@ -39,6 +44,13 @@ export interface PushClaimDeps {
    *  then locks the decision before judging its status and cycle. */
   consultationRequestedTarget(projectId: string, decisionId: string, targetUserId: string | null): Promise<PushClaimVerdict>;
   consultationRespondedTarget(projectId: string, decisionId: string, targetUserId: string | null): Promise<PushClaimVerdict>;
+  /** 4d-ii-a / A7d (plan §A.2, the push families) — the two FROZEN-audience families. The recipients
+   *  were frozen at emission (`targetUserIds`); the bound predicate answers whether the SUBJECT still
+   *  demands the announcement and WHO it demands it of NOW (the forwarded decision's current holder's
+   *  users; every active architect), so the consumer sends to the frozen set intersected with the
+   *  current one and skips a frozen recipient who has since departed. */
+  forwardTarget(projectId: string, decisionId: string): Promise<PushClaimVerdict>;
+  countersignTarget(projectId: string, decisionId: string): Promise<PushClaimVerdict>;
   markCancelled(deliveryId: string): Promise<void>;
   /** round-1 Codex F5 — WHO currently holds a role's effective standing (orgs-owned answer):
    *  a role claim delivers to these users' valid links, never to a subscription's stored role. */
@@ -55,11 +67,13 @@ export interface PushClaimDeps {
 
 /** The family's own claim predicate, target-aware wherever the claim is. */
 function familyTarget(claims: PushClaimDeps, family: PushFamily, projectId: string, decisionId: string, targetUserId: string | null): Promise<PushClaimVerdict> {
-  return family === 'decider'
-    ? claims.deciderTarget(projectId, decisionId)
-    : family === 'consultation_requested'
-      ? claims.consultationRequestedTarget(projectId, decisionId, targetUserId)
-      : claims.consultationRespondedTarget(projectId, decisionId, targetUserId);
+  switch (family) {
+    case 'decider': return claims.deciderTarget(projectId, decisionId);
+    case 'consultation_requested': return claims.consultationRequestedTarget(projectId, decisionId, targetUserId);
+    case 'consultation_responded': return claims.consultationRespondedTarget(projectId, decisionId, targetUserId);
+    case 'forward': return claims.forwardTarget(projectId, decisionId);
+    case 'countersign': return claims.countersignTarget(projectId, decisionId);
+  }
 }
 
 /**
@@ -81,6 +95,8 @@ export async function preSendVerdict(
   const again = await familyTarget(claims, input.family, input.projectId, input.decisionId, input.role === null ? input.recipient : null);
   if (!again.actionable) return 'drop';
   if (again.targetUserId !== undefined) return again.targetUserId === input.recipient ? 'send' : 'skip';
+  // 4d-ii-a / A7d — a frozen recipient is sent only while the CURRENT set still names them
+  if (again.targetUserIds !== undefined) return again.targetUserIds.includes(input.recipient) ? 'send' : 'skip';
   // a role fan-out: the recipient must hold one of the roles the CURRENT verdict names — the role
   // they were resolved by at claim, and that role must still be the demand's audience
   if (input.role === null || !(again.roles ?? []).includes(input.role)) return 'skip';
@@ -133,7 +149,12 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
     //
     // The SOCKET consumer is deliberately NOT bumped: it carries no consultation contract — it
     // tells a room to refetch and has nothing new to understand.
-    catalogVersion: 2,
+    //
+    // 4d-ii-a / A7d — BUMPED again (2 → 3) for the two FROZEN-audience families (`forward`,
+    // `countersign`) and the `targetUserIds` recipient set they carry: a version-2 process would
+    // meet a frozen delivery it cannot judge and fall through to a send no predicate re-judged.
+    // The persisted row moves with it in `20280104000000_phase6_t4d_ii_a7d_catalog_change`.
+    catalogVersion: 3,
     // 4d-ii-a / A6c — the persisted rule the catalog row carries: dispatch iff the intent carries a
     // push WITH a body (a null-intent legacy event has no push, so it is always a no-op — the outbox
     // never invents a historical push from an old payload). From A6d the persisted rule derives the
@@ -142,7 +163,7 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
     // task 4a): the domain that later learns this announcement went stale cancels by this key.
     dispatchRule: { kind: 'push' },
     handle: async (ctx) => {
-      const p = (ctx.delivery.payload ?? null) as { body?: string; roles?: string[] | null; targetUserId?: string | null } | null;
+      const p = (ctx.delivery.payload ?? null) as { body?: string; roles?: string[] | null; targetUserId?: string | null; targetUserIds?: string[] | null } | null;
       if (!p?.body) return;
       const payload = { title: 'Vitan PMC', body: p.body };
       // Phase 6 task 4b (§A.3) — a catalog entry carrying a pushFamily is re-judged AT CLAIM
@@ -166,6 +187,11 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
         const recipients: Array<{ userId: string; role: string | null }> = [];
         if (target.targetUserId) {
           recipients.push({ userId: target.targetUserId, role: null });
+        } else if (target.targetUserIds !== undefined) {
+          // 4d-ii-a / A7d — a FROZEN-audience family: the recipients are the set the emitter froze in
+          // the intent (`targetUserIds`, canonical on the delivery payload) and nobody else — a
+          // holder who arrived since is not this demand's; the pre-send hook skips one who left.
+          for (const userId of p.targetUserIds ?? []) recipients.push({ userId, role: null });
         } else {
           const seen = new Set<string>();
           for (const role of target.roles ?? []) {

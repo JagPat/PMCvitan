@@ -19,17 +19,22 @@ import { EXTERNAL_EFFECTS, effectCoverageVersion } from '../../src/platform/exte
  * an outage lasting the whole drain. So ANY migration that changes `effectCoverageVersion()` must
  * seed beside the generations still being emitted, never over them.
  *
- * THREE GENERATIONS NOW, and each is DERIVED from this source rather than transcribed:
+ * FOUR GENERATIONS NOW (4d-ii-a / A7d added the fourth), and each is DERIVED from this source rather
+ * than transcribed:
  *
  *   · OUTGOING `6313b00c…` — the pre-4d-i release: the five-element preimage over this catalog
  *     minus the keys 4d-i added, with the DECLARED policy divergence below (rounds 13 and 18).
  *   · PRIOR `842cc9fc…` — the 4d-i release: the same five-element preimage over the whole key set.
  *     4d-i seeded it with `pairingRequired` false on every row and named it
  *     `_t4d_catalog_incoming`.
- *   · CURRENT — the 4d-i-b release: the SIX-element preimage, `pairingRequired` normalised to a
- *     boolean as the sixth element, `true` on exactly the plan's six types. 4d-i-b seeds it
- *     BESIDE the prior one, every other column of every key equal, and it is the ONE successor
- *     shape 4d-i's `_t4d_catalog_successor` derivation admits.
+ *   · PAIRING `7dac2bd5…` — the 4d-i-b release: the SIX-element preimage, `pairingRequired`
+ *     normalised to a boolean as the sixth element, `true` on exactly the plan's six types. 4d-i-b
+ *     seeds it BESIDE the prior one, every other column of every key equal, and it is the ONE
+ *     successor shape 4d-i's `_t4d_catalog_successor` derivation admits.
+ *   · CURRENT — the 4d-ii-a / A7d release: the EIGHT-element preimage (`frozenAudience` and the
+ *     frozen family's `pushBody` joined) over the catalog WIDENED by the three chain keys and the
+ *     `architect` role in three targeted ceilings. A7d seeds it beside the pairing generation,
+ *     every shared key equal in every column but those three ceilings.
  *
  * WHAT THIS SUITE HOLDS. `licences the seeds` RE-DERIVES all three from source on every run, so
  * neither migration's literal can outlive its proof: a key added without its row, a policy that
@@ -39,6 +44,15 @@ import { EXTERNAL_EFFECTS, effectCoverageVersion } from '../../src/platform/exte
 
 /** The version this source computes — the generation a CURRENT writer emits under. */
 const CURRENT = effectCoverageVersion();
+
+/** The pairing generation, as U3's migration names it (`_t4dib_catalog_seed`'s one version). */
+const PAIRING = (() => {
+  const sql = readFileSync(join(__dirname, '..', '..', 'prisma', 'migrations',
+    '20271224000000_phase6_t4d_i_b_u3_pairing_flip', 'migration.sql'), 'utf8');
+  const m = sql.match(/INSERT INTO "_t4dii_catalog_prior"|INSERT INTO "_t4dib_catalog_seed"[^\n]*\n\s+\('([0-9a-f]{64})'/);
+  if (!m?.[1]) throw new Error('the 4d-i-b pairing coverage generation could not be read from its migration');
+  return m[1]!;
+})();
 
 /**
  * The generation 4d-i compiled, as 4d-i's migration names it. Not transcribed from the deployed
@@ -69,6 +83,11 @@ const PAIRING_REQUIRED = [
   'decision.change_requested', 'decision.change_withdrawn',
   'decision.consultation_requested', 'decision.consultation_responded',
 ];
+/** Phase 6 unit 4d-ii-a / A7d — the three keys the widened catalog ADDS (each pairing-required) and
+ *  the three targeted ceilings the `architect` role JOINS; the two frozen families among the added. */
+const ADDED_BY_A7D = ['decision.forwarded', 'decision.awaiting_countersign', 'membership.standing_changed'];
+const WIDENED_BY_A7D = ['decision.published', 'decision.consultation_requested', 'decision.consultation_responded'];
+const FROZEN_BY_A7D = ['decision.awaiting_countersign', 'decision.forwarded'];
 
 /**
  * THE DECLARED DIVERGENCE between the outgoing and the prior generations (#582 rounds 13 and 18).
@@ -104,20 +123,25 @@ const REQUIRES_PUSH_DIVERGENCE = new Map<string, boolean>([
   ['inspection.approved', false],
 ]);
 
-type Def = { eventType: string; invalidate: boolean; push: readonly string[] | null; pushFamily?: string; pairingRequired?: true };
+type Def = { eventType: string; invalidate: boolean; push: readonly string[] | null; pushFamily?: string; pairingRequired?: true; frozenAudience?: true; pushBody?: string };
 
 /**
- * `canonicalCatalog()`, replicated with two knobs: keys to skip, and whether the sixth
- * (`pairingRequired`) element is present. Five elements is the shape both earlier releases
- * hashed; six is this one's. The knobs are what make each generation a DERIVATION of this source.
+ * `canonicalCatalog()`, replicated with three knobs: keys to skip, whether the sixth
+ * (`pairingRequired`) element is present, and whether the A7d elements (the seventh and eighth) and
+ * the A7d role widening are present. Five elements is the shape the two 4d-i releases hashed; six
+ * is 4d-i-b's; eight, over the widened catalog, is this one's. The knobs are what make each
+ * generation a DERIVATION of this source.
  */
-function canonical(skip: readonly string[] = [], withPairing = false): string {
+function canonical(skip: readonly string[] = [], withPairing = false, withA7d = false): string {
   const keys = Object.keys(EXTERNAL_EFFECTS).filter((k) => !skip.includes(k)).sort();
   return JSON.stringify(
     keys.map((k) => {
       const d = (EXTERNAL_EFFECTS as Record<string, Def>)[k]!;
-      const five = [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
-      return withPairing ? [...five, d.pairingRequired === true] : five;
+      const push = d.push === null ? null : [...d.push].filter((r) => withA7d || !WIDENED_BY_A7D.includes(k) || r !== 'architect').sort();
+      const five = [k, d.eventType, d.invalidate, push, d.pushFamily ?? null];
+      if (!withPairing) return five;
+      const six = [...five, d.pairingRequired === true];
+      return withA7d ? [...six, d.frozenAudience === true, d.pushBody ?? null] : six;
     }),
   );
 }
@@ -151,52 +175,86 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
     pairingRequired: r.pairingRequired,
   });
 
-  it('licences the seeds — all three generations fall out of THIS catalog, and only the declared bends separate them', () => {
-    // 4d-i-b's generation: the six-element preimage, which is what `effectCoverageVersion()` is.
-    expect(sha(canonical([], true))).toBe(CURRENT);
+  it('licences the seeds — all four generations fall out of THIS catalog, and only the declared bends separate them', () => {
+    // A7d's generation: the eight-element preimage over the widened catalog, which is what
+    // `effectCoverageVersion()` is.
+    expect(sha(canonical([], true, true))).toBe(CURRENT);
+    // 4d-i-b's generation: six elements, the three A7d keys absent, the architect out of the three
+    // ceilings it joined.
+    expect(sha(canonical(ADDED_BY_A7D, true))).toBe(PAIRING);
     // 4d-i's generation: the same catalog, five elements. The flag's normalisation is what makes
     // "remove the element" reproduce the older preimage exactly.
-    expect(sha(canonical([], false))).toBe(PRIOR);
+    expect(sha(canonical(ADDED_BY_A7D, false))).toBe(PRIOR);
     // the pre-4d-i generation: five elements, minus the keys 4d-i added.
-    expect(sha(canonical(ADDED_BY_4D_I, false))).toBe(OUTGOING);
-    expect(new Set([CURRENT, PRIOR, OUTGOING]).size, 'three DISTINCT generations').toBe(3);
-    // and the flip is EXACTLY the plan's six — a seventh flag, or a missing one, moves CURRENT
-    // and fails the first assertion; this arm says WHICH key did it.
+    expect(sha(canonical([...ADDED_BY_A7D, ...ADDED_BY_4D_I], false))).toBe(OUTGOING);
+    expect(new Set([CURRENT, PAIRING, PRIOR, OUTGOING]).size, 'four DISTINCT generations').toBe(4);
+    // and the flags are EXACTLY the plan's six plus A7d's three — a tenth flag, or a missing one,
+    // moves CURRENT and fails the first assertion; this arm says WHICH key did it.
     const flagged = Object.entries(EXTERNAL_EFFECTS as Record<string, Def>)
       .filter(([, d]) => d.pairingRequired === true).map(([k]) => k).sort();
-    expect(flagged).toEqual([...PAIRING_REQUIRED].sort());
+    expect(flagged).toEqual([...PAIRING_REQUIRED, ...ADDED_BY_A7D].sort());
   });
 
-  it('seeds ALL THREE generations, over the right key sets', async () => {
+  it('seeds ALL FOUR generations, over the right key sets', async () => {
     const current = await rowsAt(CURRENT);
+    const pairing = await rowsAt(PAIRING);
     const prior = await rowsAt(PRIOR);
     const outgoing = await rowsAt(OUTGOING);
 
     expect(current.length, `no rows at the current generation ${CURRENT}`).toBeGreaterThan(0);
     expect(current.length).toBe(Object.keys(EXTERNAL_EFFECTS).length);
+    // A7d extends the pairing generation by exactly its three keys
+    expect(pairing.map((r) => r.effectKey)).toEqual(current.map((r) => r.effectKey).filter((k) => !ADDED_BY_A7D.includes(k)));
     // 4d-i-b extends 4d-i's generation over the SAME keys, both directions
-    expect(prior.map((r) => r.effectKey)).toEqual(current.map((r) => r.effectKey));
+    expect(prior.map((r) => r.effectKey)).toEqual(pairing.map((r) => r.effectKey));
     // A generation seeded PARTIALLY is worse than one not seeded at all: the drain would then
     // reject exactly the keys nobody thought to copy, and only for the events that use them. The
     // outgoing set is the key set minus what 4d-i added — asserted as that subtraction, so a key
     // going missing for any OTHER reason still fails.
     expect(outgoing.map((r) => r.effectKey)).toEqual(
-      current.map((r) => r.effectKey).filter((k) => !ADDED_BY_4D_I.includes(k)),
+      pairing.map((r) => r.effectKey).filter((k) => !ADDED_BY_4D_I.includes(k)),
     );
   });
 
-  it('4d-i-b: the current generation is the prior one with `pairingRequired` flipped on EXACTLY the six, column for column', async () => {
-    const current = await rowsAt(CURRENT);
+  it('4d-i-b: the pairing generation is the prior one with `pairingRequired` flipped on EXACTLY the six, column for column', async () => {
+    const pairing = await rowsAt(PAIRING);
     const prior = await rowsAt(PRIOR);
     // every column but the flag equal — the shape 4d-i's `_t4d_catalog_successor` admits and
     // nothing else; asserted from the live rows, not from the literal.
-    expect(current.map(policy)).toEqual(prior.map((r) => ({
+    expect(pairing.map(policy)).toEqual(prior.map((r) => ({
       ...policy(r), pairingRequired: PAIRING_REQUIRED.includes(r.effectKey),
     })));
     expect(prior.filter((r) => r.pairingRequired).map((r) => r.effectKey),
       '4d-i seeds the flag false on every row').toEqual([]);
-    expect(current.filter((r) => r.pairingRequired).map((r) => r.effectKey).sort())
+    expect(pairing.filter((r) => r.pairingRequired).map((r) => r.effectKey).sort())
       .toEqual([...PAIRING_REQUIRED].sort());
+  });
+
+  it('4d-ii-a / A7d: the current generation is the pairing one plus three keys, the architect in three ceilings, nothing else moved', async () => {
+    const current = await rowsAt(CURRENT);
+    const pairing = new Map((await rowsAt(PAIRING)).map((r) => [r.effectKey, r]));
+    for (const row of current) {
+      const before = pairing.get(row.effectKey);
+      if (ADDED_BY_A7D.includes(row.effectKey)) {
+        expect(before, `${row.effectKey} is A7d's`).toBeUndefined();
+        expect(row.pairingRequired).toBe(true);
+        expect(row.frozenAudience).toBe(FROZEN_BY_A7D.includes(row.effectKey));
+        if (row.frozenAudience) expect(row).toMatchObject({ audience: 'frozen', pushBody: expect.any(String) });
+        continue;
+      }
+      expect(before, `the pairing generation carries ${row.effectKey}`).toBeDefined();
+      const { pushRoles: rolesNow, ...now } = policy(row);
+      const { pushRoles: rolesThen, ...then } = policy(before!);
+      expect(now, `${row.effectKey}: only a ceiling may move`).toEqual(then);
+      if (WIDENED_BY_A7D.includes(row.effectKey)) {
+        expect(rolesNow, `${row.effectKey}: exactly the architect joined`).toEqual([...(rolesThen as string[]), 'architect'].sort());
+      } else {
+        expect(rolesNow, `${row.effectKey}: the ceiling stands`).toEqual(rolesThen);
+      }
+    }
+    expect(current.filter((r) => r.frozenAudience).map((r) => r.effectKey).sort()).toEqual([...FROZEN_BY_A7D].sort());
+    expect(current.filter((r) => r.pairingRequired).map((r) => r.effectKey).sort())
+      .toEqual([...PAIRING_REQUIRED, ...ADDED_BY_A7D].sort());
   });
 
   it('the outgoing rows say what the outgoing release means, column for column', async () => {
@@ -221,7 +279,7 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
   });
 
   it('no generation is born retired — a retired row may not back a new event', async () => {
-    for (const v of [CURRENT, PRIOR, OUTGOING]) {
+    for (const v of [CURRENT, PAIRING, PRIOR, OUTGOING]) {
       const rows = await rowsAt(v);
       // presence first, or an absent generation would make this arm vacuously green — which is
       // exactly what it did on the RED measurement of the unfixed head.
@@ -265,16 +323,19 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
     await emitAt(OUTGOING, 'cg-ev-outgoing');
     // the 4d-i release's, still serving through 4d-i-b's own drain
     await emitAt(PRIOR, 'cg-ev-prior');
+    // the 4d-i-b / A7c release's, still serving through A7d's drain
+    await emitAt(PAIRING, 'cg-ev-pairing');
     // and this release's own
     await emitAt(CURRENT, 'cg-ev-current');
     // all COMMITTED, and each carries the version its own emitter computed
     const landed = await t.prisma.$queryRawUnsafe<{ eventId: string; v: string }[]>(
       `SELECT "eventId", "dispatchIntent" ->> 'coverageVersion' AS v FROM "DomainEvent"
-        WHERE "eventId" IN ('cg-ev-outgoing','cg-ev-prior','cg-ev-current') ORDER BY "eventId"`,
+        WHERE "eventId" IN ('cg-ev-outgoing','cg-ev-prior','cg-ev-pairing','cg-ev-current') ORDER BY "eventId"`,
     );
     expect(landed).toEqual([
       { eventId: 'cg-ev-current', v: CURRENT },
       { eventId: 'cg-ev-outgoing', v: OUTGOING },
+      { eventId: 'cg-ev-pairing', v: PAIRING },
       { eventId: 'cg-ev-prior', v: PRIOR },
     ]);
     // while a generation this database never registered stays refused: seeding the drain's

@@ -26,8 +26,11 @@ import { EXTERNAL_EFFECTS, effectCoverageVersion } from './external-effects';
 const MIGRATIONS = join(__dirname, '..', '..', 'prisma', 'migrations');
 /** 4d-i's seed: the generation the 4d-i release compiled, `pairingRequired` false on every row. */
 const MIGRATION_4D_I = join(MIGRATIONS, '20271220000000_phase6_t4d_i_dark_migration', 'migration.sql');
-/** 4d-i-b's seed: the generation THIS source compiles, the flag true on exactly the plan's six. */
+/** 4d-i-b's seed: the pairing generation, the flag true on exactly the plan's six. */
 const MIGRATION_4D_I_B = join(MIGRATIONS, '20271224000000_phase6_t4d_i_b_u3_pairing_flip', 'migration.sql');
+/** 4d-ii-a / A7d's seed: the generation THIS source compiles — the three chain types added, the
+ *  architect in three targeted ceilings, the two frozen families with their constant bodies. */
+const MIGRATION_4D_II_A7D = join(MIGRATIONS, '20280104000000_phase6_t4d_ii_a7d_catalog_change', 'migration.sql');
 
 /**
  * Phase 6 unit 4d-i-b — TWO LITERALS, TWO GENERATIONS, ONE SOURCE. 4d-i's literal may not be
@@ -42,6 +45,18 @@ const PAIRING_REQUIRED = new Set([
   'decision.change_requested', 'decision.change_withdrawn',
   'decision.consultation_requested', 'decision.consultation_responded',
 ]);
+
+/**
+ * Phase 6 unit 4d-ii-a / A7d — THREE LITERALS NOW. A7d's generation is what this source compiles;
+ * U3's and 4d-i's are still being emitted under through the drain and are pinned here as the two
+ * PREVIOUS generations, each DERIVED from this source with the declared bends removed:
+ *   - the three keys A7d ADDED are absent from both;
+ *   - the `architect` role A7d admitted into three targeted ceilings is absent from both;
+ *   - U3's preimage is the six-element one (no `frozenAudience`/`pushBody` elements — no frozen
+ *     family existed), 4d-i's the five-element one with the flag false on every row.
+ */
+const ADDED_BY_A7D = new Set(['decision.forwarded', 'decision.awaiting_countersign', 'membership.standing_changed']);
+const WIDENED_BY_A7D = new Set(['decision.published', 'decision.consultation_requested', 'decision.consultation_responded']);
 
 type Row = {
   coverageVersion: string;
@@ -115,9 +130,26 @@ function seededRows(migration: string, seedTable: string): Row[] {
  * (the five-element preimage the 4d-i release hashed, the flag false everywhere) — the two
  * generations whose literals ship, both derived from ONE source.
  */
-function compiledRows(generation: 'current' | 'previous'): Row[] {
-  const catalog = EXTERNAL_EFFECTS as Record<string, { eventType: string; invalidate: boolean; push: readonly string[] | null; pushFamily?: string; pairingRequired?: true }>;
-  const coverageVersion = generation === 'current' ? effectCoverageVersion() : previousCoverageVersion();
+type Generation = 'current' | 'pairing' | 'previous';
+
+/** The catalog as a PREVIOUS generation saw it: A7d's keys removed, its role widening undone. */
+function catalogBefore(generation: Generation): Record<string, Def> {
+  const catalog = EXTERNAL_EFFECTS as Record<string, Def>;
+  if (generation === 'current') return catalog;
+  const out: Record<string, Def> = {};
+  for (const k of Object.keys(catalog)) {
+    if (ADDED_BY_A7D.has(k)) continue;
+    const d = catalog[k]!;
+    out[k] = WIDENED_BY_A7D.has(k) && d.push !== null ? { ...d, push: d.push.filter((r) => r !== 'architect') } : d;
+  }
+  return out;
+}
+
+type Def = { eventType: string; invalidate: boolean; push: readonly string[] | null; pushFamily?: string; pairingRequired?: true; frozenAudience?: true; pushBody?: string };
+
+function compiledRows(generation: Generation): Row[] {
+  const catalog = catalogBefore(generation);
+  const coverageVersion = generation === 'current' ? effectCoverageVersion() : previousCoverageVersion(generation);
   return Object.keys(catalog).sort().map((effectKey) => {
     const d = catalog[effectKey]!;
     // #582 round 2, finding 1 — PERMISSION and OBLIGATION are two questions, and deriving the
@@ -132,6 +164,9 @@ function compiledRows(generation: 'current' | 'previous'): Row[] {
     // obligation. `audience` follows PERMISSION and is unchanged.
     const mayPush = d.push !== null;
     const requiresPush = mayPush;
+    // 4d-ii-a / A7d — a FROZEN-audience family (the two chain families) seeds `audience = 'frozen'`
+    // with its constant body; the previous generations carried none.
+    const frozen = d.frozenAudience === true;
     return {
       coverageVersion,
       effectKey,
@@ -139,13 +174,11 @@ function compiledRows(generation: 'current' | 'previous'): Row[] {
       invalidate: d.invalidate,
       push: d.push === null ? null : [...d.push].sort(),
       pushFamily: d.pushFamily ?? null,
-      // nothing compiled today is a frozen-audience family — those are 4d-ii's — so every seeded
-      // row is false and carries no constant body.
-      frozenAudience: false,
+      frozenAudience: frozen,
       requiresPush,
-      audience: !mayPush ? null : d.pushFamily ? 'targeted' : 'broadcast',
-      pushBody: null,
-      pairingRequired: generation === 'current' ? d.pairingRequired === true : false,
+      audience: !mayPush ? null : frozen ? 'frozen' : d.pushFamily ? 'targeted' : 'broadcast',
+      pushBody: frozen ? d.pushBody ?? null : null,
+      pairingRequired: generation === 'previous' ? false : d.pairingRequired === true,
     };
   });
 }
@@ -154,17 +187,19 @@ function compiledRows(generation: 'current' | 'previous'): Row[] {
  *  sixth element. `phase6-t4d-i-catalog-generations.test.ts` pins the same derivation against
  *  the migration's own `_t4d_catalog_incoming` literal; here it is what the 4d-i literal is
  *  compared to, key by key. */
-function previousCoverageVersion(): string {
-  const catalog = EXTERNAL_EFFECTS as Record<string, { eventType: string; invalidate: boolean; push: readonly string[] | null; pushFamily?: string }>;
+function previousCoverageVersion(generation: 'pairing' | 'previous'): string {
+  const catalog = catalogBefore(generation);
   const preimage = JSON.stringify(Object.keys(catalog).sort().map((k) => {
     const d = catalog[k]!;
-    return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
+    const five = [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
+    return generation === 'pairing' ? [...five, d.pairingRequired === true] : five;
   }));
   return createHash('sha256').update(preimage).digest('hex');
 }
 
 const GENERATIONS = [
-  ['4d-i-b (current)', MIGRATION_4D_I_B, '_t4dib_catalog_seed', 'current'],
+  ['4d-ii-a A7d (current)', MIGRATION_4D_II_A7D, '_t4dii_catalog_seed', 'current'],
+  ['4d-i-b (pairing)', MIGRATION_4D_I_B, '_t4dib_catalog_seed', 'pairing'],
   ['4d-i (previous)', MIGRATION_4D_I, '_t4d_catalog_seed', 'previous'],
 ] as const;
 
@@ -208,6 +243,39 @@ describe('phase 6 unit 4d-i-b — the two literals are two generations of ONE ca
       expect(policyNow, `${row.effectKey}: a column other than the flag moved between the two literals`).toEqual(policyThen);
       expect(wasRequired, `${row.effectKey}: 4d-i seeds the flag false everywhere`).toBe(false);
       expect(row.pairingRequired, `${row.effectKey}: the flip is exactly the plan's six`).toBe(PAIRING_REQUIRED.has(row.effectKey));
+    }
+    expect(cur[0]!.coverageVersion).not.toBe(prev.values().next().value!.coverageVersion);
+  });
+});
+
+describe('phase 6 unit 4d-ii-a / A7d — the widened literal is U3\'s with exactly the declared bends', () => {
+  it('three keys added, `architect` joining three ceilings, two frozen families born with their bodies, nothing else moved', () => {
+    const prev = new Map(seededRows(MIGRATION_4D_I_B, '_t4dib_catalog_seed').map((r) => [r.effectKey, r]));
+    const cur = seededRows(MIGRATION_4D_II_A7D, '_t4dii_catalog_seed');
+    expect(cur.length).toBe(prev.size + ADDED_BY_A7D.size);
+    for (const row of cur) {
+      const before = prev.get(row.effectKey);
+      if (ADDED_BY_A7D.has(row.effectKey)) {
+        expect(before, `${row.effectKey} is NEW with A7d`).toBeUndefined();
+        expect(row.pairingRequired, `${row.effectKey} is claimed by its fact`).toBe(true);
+        expect(row.frozenAudience, `${row.effectKey} frozen ⇔ a chain push family`).toBe(row.effectKey !== 'membership.standing_changed');
+        if (row.frozenAudience) {
+          expect(row.audience).toBe('frozen');
+          expect(row.pushBody).toEqual(expect.any(String));
+        } else {
+          expect(row).toMatchObject({ push: null, audience: null, pushBody: null, invalidate: true });
+        }
+        continue;
+      }
+      expect(before, `U3 seeds no row for ${row.effectKey}`).toBeDefined();
+      const { coverageVersion: _v, push: pushNow, ...policyNow } = row;
+      const { coverageVersion: _u, push: pushThen, ...policyThen } = before!;
+      expect(policyNow, `${row.effectKey}: a column other than the ceiling moved between the two literals`).toEqual(policyThen);
+      if (WIDENED_BY_A7D.has(row.effectKey)) {
+        expect(pushNow, `${row.effectKey}: the ceiling gained exactly the architect`).toEqual([...pushThen!, 'architect'].sort());
+      } else {
+        expect(pushNow, `${row.effectKey}: the ceiling did not move`).toEqual(pushThen);
+      }
     }
     expect(cur[0]!.coverageVersion).not.toBe(prev.values().next().value!.coverageVersion);
   });
