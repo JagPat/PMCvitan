@@ -440,6 +440,10 @@ if echo "$out" | grep -q "P3005"; then
   # costs nothing when it has somehow already run, and its closing DO block still refuses to commit
   # unless every project carries the row.
   #
+  # 20280103000000_phase6_t4d_ii_a7c_inbox_v3 (4d-ii-a / A7c) re-issues the writer fence's two
+  # functions at decisions.inbox contract version 3 and moves the catalog row; it must replay AFTER
+  # 20271126000000 (which re-issues the version-2 bodies) so the ledger order stands, and it is
+  # guarded on the version it moves from, so a replay is a no-op for the row.
   # 20271126000000_phase6_4c_iiir_writer_fence is here for exactly the same reason as its sibling
   # below (Codex on `6b3ff9e6`, where it was MISSING from this list). Prisma's model of it is one
   # nullable column, which `prisma db push` and a resolve-as-applied both reproduce — while the two
@@ -511,7 +515,8 @@ if echo "$out" | grep -q "P3005"; then
 20271230000000_phase6_t4d_ii_a6c_catalog_rules
 20271231000000_phase6_t4d_ii_a6d_delivery_seals
 20280101000000_phase6_t4d_ii_a6e_generation_fence
-20280102000000_phase6_t4d_ii_a7a_revision_named"
+20280102000000_phase6_t4d_ii_a7a_revision_named
+20280103000000_phase6_t4d_ii_a7c_inbox_v3"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

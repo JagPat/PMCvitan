@@ -1801,6 +1801,15 @@ the marker seals, and the deploy refuses if either is absent, disabled, wrongly 
 `ALWAYS_EXECUTE`, so the P3005 baseline path installs them rather than recording them as applied —
 their triggers are raw SQL that a resolve-as-applied would not reproduce.
 
+**The fence follows the contract version** (Phase 6 task 4d-ii-a / A7c). `decisions.inbox` moved to
+contract version 3, and `20280103000000_phase6_t4d_ii_a7c_inbox_v3` `CREATE OR REPLACE`d the fence's
+two functions (`$fence$`, `$truncate$`) to read that declaration — a session declaring the previous
+release's `2` now stamps exactly as an undeclared write does, which is the drain, observed. The
+verifier compares those two bodies against the RE-ISSUING file's literal and the stamp seal's against
+the installing file's. So a restore replays BOTH files, in ledger order: `20271126000000` alone
+restores the trigger with the previous release's body, and the deploy refuses it as replaced, as it
+should. `20280103000000` is on `ALWAYS_EXECUTE` after `20271126000000` for the same reason.
+
 **ALL FIVE, or none.** Setting none of them is the fresh-install exemption — a database that has
 never served this register asserts nothing, which is what keeps a first deploy from being walled
 off and every sibling runner proof free of this configuration. Setting SOME of them is a

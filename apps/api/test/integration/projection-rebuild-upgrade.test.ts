@@ -7,7 +7,7 @@ import { ProjectionRebuildOperations, REBUILDABLE_PROJECTIONS } from '../../src/
 import { DrawingsService } from '../../src/drawings/drawings.service';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { serializeDecision } from '../../src/decisions/decision-serialize';
-import { DECISIONS_PROJECTION } from '../../src/decisions/decisions.projection';
+import { DECISIONS_PROJECTION, DECISIONS_INBOX_CATALOG_VERSION } from '../../src/decisions/decisions.projection';
 import { DAILY_LOG_PROJECTION } from '../../src/daily-log/daily-log.projection';
 import { DRAWINGS_PROJECTION } from '../../src/drawings/drawings.projection';
 import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projection';
@@ -189,21 +189,22 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
       // written EXPLICITLY rather than left to the stamp trigger so the fixture states its own
       // claim rather than inheriting one.
       //
-      // The value is the CURRENT version (2 — pinned by the catalog probe in
-      // `phase6-t4c-ii-consultation.test.ts`, which fails first if it is ever bumped again), and
+      // The value is the CURRENT version (`DECISIONS_INBOX_CATALOG_VERSION`, 3 since 4d-ii-a / A7c —
+      // pinned by the catalog probe in `phase6-t4c-ii-consultation.test.ts` and by
+      // `decisions-inbox-version.test.ts`, which fail first if it is ever bumped again), and
       // that is deliberate. What this probe is about is a COMPLETENESS defect — a caught-up
       // generation holding a non-empty SUBSET of the register — which is orthogonal to which
       // serializer wrote the rows, and the rows here are built by the CURRENT one. Stamping it 1
       // would make the round-30 serve-side version fence refuse it before the subset was ever
       // reached, quietly converting this into a test of a different thing. The version-stale case
       // has its own probe.
-      data: { consumer: DECISIONS_PROJECTION, projectId, generation: 1, status: 'active', cursorStatus: 'live', appliedPosition: stream.nextPosition - 1n, activatedAt: new Date(), catalogVersion: 2 },
+      data: { consumer: DECISIONS_PROJECTION, projectId, generation: 1, status: 'active', cursorStatus: 'live', appliedPosition: stream.nextPosition - 1n, activatedAt: new Date(), catalogVersion: DECISIONS_INBOX_CATALOG_VERSION },
     });
     // AND THE FIXTURE DECLARES THE SERIALIZER IT ACTUALLY USED (Phase 6 unit 4c-iii-r). The writer
     // fence (`20271126000000`) stamps `ProjectionGeneration.fencedAt` for any `DecisionProjection`
     // write whose session has not declared this release's serializer, and `readServableGeneration`
     // then refuses that generation. These rows are built by `serializeDecision` — the CURRENT
-    // serializer — so declaring version 2 is simply true of them, and it keeps this probe about the
+    // serializer — so declaring the current version is simply true of them, and it keeps this probe about the
     // COMPLETENESS defect it is named for. Not declaring would fence the generation before the
     // subset was ever reached: the same trap the `catalogVersion` note above already describes for
     // the round-30 serve-side version fence, quietly converting this into a test of a different
@@ -213,7 +214,7 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
     // One transaction, because `set_config(..., true)` is transaction-LOCAL: a per-statement
     // declaration outside a transaction would not reach the next statement.
     await t.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', '2', true)`;
+      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', ${String(DECISIONS_INBOX_CATALOG_VERSION)}, true)`;
       for (const id of storedIds) {
         const d = await tx.decision.findUniqueOrThrow({
         where: { id },
@@ -358,7 +359,7 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
     // Declared for the same reason the fixture above declares: this edits STORED STATE to exercise
     // the row-set diagnostic, it does not simulate a live previous-release relay.
     await t.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', '2', true)`;
+      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', ${String(DECISIONS_INBOX_CATALOG_VERSION)}, true)`;
       await tx.decisionProjection.update({
         where: { generationId_decisionId: { generationId: gen.id, decisionId: 'IT-UP-K1' } },
         data: { status: 'approved' },

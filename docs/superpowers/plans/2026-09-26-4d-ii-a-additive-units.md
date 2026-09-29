@@ -302,7 +302,21 @@ sub-unit is additive, dark and reviewable on its own.
   requester role is `pmc` on every row this unit can write.
 - **A7c, `decisions.inbox` v3:** the projection row, fold, rebuild and filter for the awaiting
   state, the forward holder and the non-standard origin; `catalogVersion` 3, the writer fence's
-  GUC and function; the `ProjectionGeneration` row; `ALWAYS_EXECUTE`.
+  GUC and function; the `ProjectionGeneration` row; `ALWAYS_EXECUTE`. Delivered as: the compiled
+  contract and the writer's declaration stated by ONE constant (`DECISIONS_INBOX_CATALOG_VERSION`);
+  one catalog-data migration (`20280103000000_phase6_t4d_ii_a7c_inbox_v3`, the 4c-ii and
+  inspections-v2 precedents) moving the persisted row 2 → 3 guarded on the version it moves from,
+  re-issuing the fence's two functions (`$fence$`, `$truncate$`) to read `'3'` with bodies otherwise
+  byte-identical to 20271126000000's, and verifying its own installation (the three triggers standing,
+  both bodies reading `3`, the row at 3) — the stamp seal is not re-issued; the repair-seal verifier
+  reads the two re-issued bodies from the RE-ISSUING file and the stamp seal's from the installing
+  one, with a unit pin holding the constant, the migration literal and that name to one another.
+  Existing `ProjectionGeneration` rows keep the version they were built at (a version-2 generation is
+  refused at the read and the canonical slice serves until the ordinary `projection:rebuild`). The
+  fold's three meanings are proven on PLANTED canonical rows (no shipped writer exists before A8a and
+  A8b): live == projection == rebuild for a `countersign_rejection` origin, a moved holder and an
+  `awaiting_countersign` status, each generation stamped 3. The filter's awaiting-audience arm stays
+  A8a's (the status tripwire's registration). `webpush.notify` stays at 2 until A7d.
 - **A7d, the catalog change:** the widened external-effect catalog at the new coverage version
   beside the old (the architect in the targeted entries, `decision.consultation_responded` to
   `['pmc','architect']`, the frozen-audience families, `membership.standing_changed`); `PushRole`,

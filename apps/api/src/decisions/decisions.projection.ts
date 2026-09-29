@@ -25,6 +25,27 @@ import { serializeDecision, type DecisionRow } from './decision-serialize';
 
 export const DECISIONS_PROJECTION = 'decisions.inbox';
 
+/**
+ * Phase 6 task 4d-ii-a / A7c — the `decisions.inbox` CONTRACT VERSION, the one number the compiled
+ * consumer, the writer fence's declaration and the catalog-data migration
+ * (`20280103000000_phase6_t4d_ii_a7c_inbox_v3`) all state. `syncConsumerCatalog` asserts it against
+ * the persisted row at every startup; `readServableGeneration` refuses a generation stamped below it;
+ * the fence stamps a generation written by a session declaring anything else.
+ *
+ * WHY 3. Version 2 (4c-ii) declared the consultation fold. Since then the DTO this consumer stores
+ * changed meaning without a version of its own: `approvalCycle` counts FINALIZED approvals (A4a), a
+ * non-`standard` change request names its `origin` (A5e), the status set admits
+ * `awaiting_countersign` and the holder a forward installs is re-derived from the canonical row on
+ * every fold (A8a's commands write them). A generation a version-2 serializer built, or a
+ * version-2 relay goes on writing, can therefore hold rows this release would not produce — an
+ * `approvalCycle` a provisional approval already advanced, a rejection served as a plain change, an
+ * awaiting decision read as approved — and nothing on the rows themselves says so. The bump is what
+ * makes that generation unservable (the read falls back to the canonical slice, which is always
+ * current) and what refuses a previous-release process at its start. The plan's §D names both
+ * durable bumps as 4d-ii-a's; `webpush.notify`'s is A7d's.
+ */
+export const DECISIONS_INBOX_CATALOG_VERSION = 3;
+
 /** The include the serializer needs: ordered options + the single OPEN change request. */
 const DECISION_INCLUDE = {
   options: { orderBy: { order: 'asc' } },
@@ -117,9 +138,10 @@ export async function storedDecisionRows(tx: Prisma.TransactionClient, generatio
  * Phase 6 unit 4c-iii-r — DECLARE this release's serializer to the writer fence.
  *
  * `20271126000000` puts a row trigger on `DecisionProjection` that stamps `ProjectionGeneration
- * .fencedAt` whenever the writing session has NOT set this GUC. Only this release's writer sets it,
- * so a previous-release relay that was already running when the migration landed marks the
- * generation unservable the moment it writes v1 rows into it — the read path falls back to canonical
+ * .fencedAt` whenever the writing session has NOT set this GUC. Only this release's writer sets it
+ * to THIS release's version (A7c re-issued the fence to read `3`; a version-2 declaration now stamps
+ * exactly as an undeclared write does), so a previous-release relay that was already running when
+ * the migration landed marks the generation unservable the moment it writes its rows into it — the read path falls back to canonical
  * and the next deploy's repair rebuilds. `set_config(..., true)` is transaction-LOCAL, so the
  * declaration cannot leak into another session's write.
  *
@@ -128,7 +150,9 @@ export async function storedDecisionRows(tx: Prisma.TransactionClient, generatio
  * canonical, which is always current), never corrupt.
  */
 async function declareSerializer(tx: Prisma.TransactionClient): Promise<void> {
-  await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', '2', true)`;
+  // A7c: the declaration IS the compiled version — one constant, so the fence (re-issued by the
+  // same migration that moves the catalog row) and this writer cannot name different numbers.
+  await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', ${String(DECISIONS_INBOX_CATALOG_VERSION)}, true)`;
 }
 
 /** Build the `decisions.inbox` projection consumer (reads canonical decisions to refresh its rows). */
@@ -143,7 +167,12 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
     // process cannot take up service at all: it never reaches the claim path. That is what makes
     // the drain durable — a rolled-back or newly-scheduled old worker is fenced out on EVERY
     // start, not merely at the one moment an operator looked.
-    catalogVersion: 2,
+    //
+    // 4d-ii-a / A7c — BUMPED again (2 → 3) for the meanings the fold gained since 4c-ii: the
+    // finalized-only cycle, the non-`standard` origin, the awaiting state and the installed holder.
+    // The persisted row moves with it in `20280103000000_phase6_t4d_ii_a7c_inbox_v3`, so an
+    // upgraded process syncs and a previous-release one is refused at its start.
+    catalogVersion: DECISIONS_INBOX_CATALOG_VERSION,
     // 4d-ii-a / A6c — the persisted rule the catalog row carries; from A6d it is what derives this
     // consumer's delivery rows (`deliveryRowsFor`), so a rule change is a contract change.
     dispatchRule: { kind: 'types', eventTypes: eventTypesUnder('decision.') },

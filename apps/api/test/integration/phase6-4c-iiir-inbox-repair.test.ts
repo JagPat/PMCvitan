@@ -10,7 +10,7 @@ import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
 import { ProjectionRebuildOperations, type RebuildRunReport } from '../../src/platform/projections/rebuild-operations';
-import { DECISIONS_PROJECTION } from '../../src/decisions/decisions.projection';
+import { DECISIONS_PROJECTION, DECISIONS_INBOX_CATALOG_VERSION } from '../../src/decisions/decisions.projection';
 import { lockActiveGeneration, readServableGeneration, stillServableAfterRead } from '../../src/platform/projections/generation';
 import {
   ANCHOR_ENV,
@@ -53,7 +53,7 @@ import {
   readMarkerSealMigrationSql,
   MARKER_SEAL_TABLE,
   repairMarkerSeals,
-  verifyMarkerSeals,
+  verifyMarkerSeals, WRITER_FENCE_REISSUE_MIGRATION,
 } from '../../src/platform/projections/inbox-repair-seals';
 
 /**
@@ -2401,7 +2401,7 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
 
     // planted WITH the declaration, so the insert itself does not stamp — the DELETE is the subject
     await t.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', '2', true)`;
+      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', ${String(DECISIONS_INBOX_CATALOG_VERSION)}, true)`;
       await tx.$executeRawUnsafe(
         `INSERT INTO "DecisionProjection" ("id","generationId","projectId","decisionId","status","dto","updatedAt")
          VALUES ($1,$2,$3,$4,'published','{}'::jsonb, now())`,
@@ -2462,13 +2462,17 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     const named = list![1].split('\n').map((l) => l.trim()).filter(Boolean);
     expect(named).toContain('20271125000000_phase6_4c_iiir_marker_seal');
     expect(named).toContain('20271126000000_phase6_4c_iiir_writer_fence');
+    // 4d-ii-a / A7c re-issued the fence's two functions at contract version 3: the re-issuing file
+    // must ALSO replay, AFTER the installing one, or a baseline would leave the fence reading '2'
+    expect(named).toContain(WRITER_FENCE_REISSUE_MIGRATION);
+    expect(named.indexOf(WRITER_FENCE_REISSUE_MIGRATION)).toBeGreaterThan(named.indexOf('20271126000000_phase6_4c_iiir_writer_fence'));
   });
 
   // ── R24: the five fence findings from `de9fa3b7` ─────────────────────────────────────────────
   const plantDeclared = async (generationId: string, id: string, decisionId: string) => {
     await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionProjection" WHERE "id" = $1`, id);
     await t.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', '2', true)`;
+      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', ${String(DECISIONS_INBOX_CATALOG_VERSION)}, true)`;
       await tx.$executeRawUnsafe(
         `INSERT INTO "DecisionProjection" ("id","generationId","projectId","decisionId","status","dto","updatedAt")
          VALUES ($1,$2,$3,$4,'published','{}'::jsonb, now())`,
