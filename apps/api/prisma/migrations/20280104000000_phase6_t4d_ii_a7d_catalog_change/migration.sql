@@ -786,8 +786,12 @@ BEGIN
   IF n <> 0 THEN
     RAISE EXCEPTION 'phase6 4d-ii-a A7d: the persisted webpush.notify contract is not at version 3 after this migration — syncConsumerCatalog would refuse every upgraded process at startup. The deploy is refused.';
   END IF;
+  -- a row that CARRIES a rule must carry this release's; a rule-less row (a restored 4c-era row on
+  -- the baseline path, before A6c's replay has reached it) is A6c's to rule, in ledger order, and
+  -- this file's rewrite meets it on the next replay — `syncConsumerCatalog` refuses either drift
   SELECT count(*) INTO n FROM "OutboxConsumerCatalog"
-   WHERE "consumer" = 'decisions.inbox' AND NOT ("subscribedEventTypes" @> ARRAY['decision.awaiting_countersign', 'decision.forwarded']::TEXT[]);
+   WHERE "consumer" = 'decisions.inbox' AND "dispatchRule" IS NOT NULL
+     AND NOT ("subscribedEventTypes" @> ARRAY['decision.awaiting_countersign', 'decision.forwarded']::TEXT[]);
   IF n <> 0 THEN
     RAISE EXCEPTION 'phase6 4d-ii-a A7d: the persisted decisions.inbox rule does not carry the two decision types this release compiles — syncConsumerCatalog would refuse every upgraded process at startup. The deploy is refused.';
   END IF;

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, rawDeliveryRowsSql, wipeDecisionEvents, wipeDecisionsVia, wipeMembershipTransitionsVia } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, insertRawEventVia, wipeDecisionEvents, wipeDecisionsVia, wipeMembershipTransitionsVia } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { DECISIONS_EFFECTS, MEMBERSHIP_STANDING_ACTOR, classifyCrossing } from '../../src/decisions/decisions.effects';
@@ -180,17 +180,20 @@ describe('4d-ii-a / A7d — the catalog change: the widened generation, the froz
   const plantDemand = async (decisionId: string, crossingEventId: string, transitionId: string, targetUserIds: string[]): Promise<string> => {
     const eventId = randomUUID();
     const body = EXTERNAL_EFFECTS['decision.awaiting_countersign'].pushBody;
+    const q = (v: string) => `'${v.replace(/'/g, "''")}'`;
     await t.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(`UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = $1`, f.projectA.id);
-      await tx.$executeRawUnsafe(
-        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","payload","dispatchIntent")
-         SELECT $1,'decision.awaiting_countersign',1,$2,$3,s."nextPosition" - 1,'system',$4,'Decision',$5,$6::jsonb,$7::jsonb
-           FROM "ProjectEventStream" s WHERE s."projectId" = $3`,
-        eventId, f.orgA.id, f.projectA.id, MEMBERSHIP_STANDING_ACTOR, decisionId,
-        JSON.stringify({ renotified: true, crossingEventId, transitionId }),
-        JSON.stringify({ effectKey: 'decision.awaiting_countersign', coverageVersion: effectCoverageVersion(), invalidate: true, push: { body, roles: ['architect'], targetUserIds: [...targetUserIds].sort() } }),
-      );
-      await tx.$executeRawUnsafe(rawDeliveryRowsSql(eventId));
+      // through the allocator (`insertRawEventVia`): the plant's own intent, the system actor the
+      // re-notification is attributed to, and the delivery rows a direct writer owes
+      await insertRawEventVia(tx, {
+        projectId: f.projectA.id, organizationId: f.orgA.id, eventId,
+        eventType: 'decision.awaiting_countersign', entityType: 'Decision', entityId: decisionId,
+        actor: { actorKind: 'system', systemActor: MEMBERSHIP_STANDING_ACTOR },
+        columns: ['"payload"', '"dispatchIntent"'],
+        values: [
+          `${q(JSON.stringify({ renotified: true, crossingEventId, transitionId }))}::jsonb`,
+          `${q(JSON.stringify({ effectKey: 'decision.awaiting_countersign', coverageVersion: effectCoverageVersion(), invalidate: true, push: { body, roles: ['architect'], targetUserIds: [...targetUserIds].sort() } }))}::jsonb`,
+        ],
+      });
       await tx.decisionEvent.create({ data: { decisionId, type: 'countersign_renotified', actor: 'Membership standing', actorName: 'Membership standing', actorRole: 'system', payload: { eventId, crossingEventId, transitionId } } });
     });
     return eventId;
@@ -219,20 +222,21 @@ describe('4d-ii-a / A7d — the catalog change: the widened generation, the froz
 
   // ── the seals ────────────────────────────────────────────────────────────────────────────────
 
+  /** A hostile raw plant through the allocator (`insertRawEventVia`), attributed to the actor the arm names. */
   const rawEvent = (spec: { type: string; key: string; actor: 'human' | 'system'; payload?: object; push?: object }) =>
     t.prisma.$transaction(async (tx) => {
       const eventId = randomUUID();
-      await tx.$executeRawUnsafe(`UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = $1`, f.projectA.id);
-      await tx.$executeRawUnsafe(
-        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","actorId","entityType","entityId","payload","dispatchIntent")
-         SELECT $1,$2,1,$3,$4,s."nextPosition" - 1,$5,$6,$7,'Decision','a7d-raw-dec',$8::jsonb,$9::jsonb
-           FROM "ProjectEventStream" s WHERE s."projectId" = $4`,
-        eventId, spec.type, f.orgA.id, f.projectA.id, spec.actor,
-        spec.actor === 'system' ? MEMBERSHIP_STANDING_ACTOR : null, spec.actor === 'human' ? f.memberUser.id : null,
-        JSON.stringify(spec.payload ?? {}),
-        JSON.stringify({ effectKey: spec.key, coverageVersion: effectCoverageVersion(), invalidate: true, ...(spec.push ? { push: spec.push } : {}) }),
-      );
-      await tx.$executeRawUnsafe(rawDeliveryRowsSql(eventId));
+      const q = (v: string) => `'${v.replace(/'/g, "''")}'`;
+      await insertRawEventVia(tx, {
+        projectId: f.projectA.id, organizationId: f.orgA.id, eventId,
+        eventType: spec.type, entityType: 'Decision', entityId: 'a7d-raw-dec',
+        actor: spec.actor === 'human' ? { actorKind: 'human', actorId: f.memberUser.id } : { actorKind: 'system', systemActor: MEMBERSHIP_STANDING_ACTOR },
+        columns: ['"payload"', '"dispatchIntent"'],
+        values: [
+          `${q(JSON.stringify(spec.payload ?? {}))}::jsonb`,
+          `${q(JSON.stringify({ effectKey: spec.key, coverageVersion: effectCoverageVersion(), invalidate: true, ...(spec.push ? { push: spec.push } : {}) }))}::jsonb`,
+        ],
+      });
     });
 
   it('the frozen recipient SET is refused on a non-frozen family; a standing event no transition claims is refused; a system re-notification bound to no crossing is refused', async () => {
