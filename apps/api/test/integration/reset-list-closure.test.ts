@@ -59,15 +59,21 @@ function psqlAdmin(raw: string, sql: string): void {
  * decision and user the seed just created. The INSERT seals belong to 4d-ii's writers; this plant
  * is about the RESET, so they are disabled by name for exactly these two statements and re-enabled
  * unconditionally — PostgreSQL DDL is transactional, so a failure rolls the disable back with it.
+ * 4d-ii-a / A7d added the two claimants (`_t4d_claim` and its deferred half) to each register: the
+ * deferred forward claimant demands the `decision.forwarded` event this plant never writes.
  */
 const PLANT = `
 BEGIN;
 ALTER TABLE "MembershipTransition" DISABLE TRIGGER "MembershipTransition_t4d_seal";
 ALTER TABLE "MembershipTransition" DISABLE TRIGGER "MembershipTransition_t4d_provenance_bound";
+ALTER TABLE "MembershipTransition" DISABLE TRIGGER "MembershipTransition_t4d_claim";
+ALTER TABLE "MembershipTransition" DISABLE TRIGGER "MembershipTransition_t4d_claim_deferred";
 ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_reserved";
 ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_seal";
 ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_paired";
 ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_provenance_bound";
+ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_claim";
+ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_claim_deferred";
 INSERT INTO "CommandExecution"
   ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
   SELECT 'RLC-CMD', 'project', p."orgId", m."projectId", m."userId", 'members.add',
@@ -94,10 +100,14 @@ INSERT INTO "DecisionForward"
 -- the FKs on both tables are deferrable, and PostgreSQL refuses ALTER TABLE while a table
 -- carries pending trigger events, so the queue is flushed before the seals go back on.
 SET CONSTRAINTS ALL IMMEDIATE;
+ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_claim_deferred";
+ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_claim";
 ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_provenance_bound";
 ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_paired";
 ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_seal";
 ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_reserved";
+ALTER TABLE "MembershipTransition" ENABLE TRIGGER "MembershipTransition_t4d_claim_deferred";
+ALTER TABLE "MembershipTransition" ENABLE TRIGGER "MembershipTransition_t4d_claim";
 ALTER TABLE "MembershipTransition" ENABLE TRIGGER "MembershipTransition_t4d_provenance_bound";
 ALTER TABLE "MembershipTransition" ENABLE TRIGGER "MembershipTransition_t4d_seal";
 COMMIT;
