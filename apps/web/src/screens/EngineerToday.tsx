@@ -52,7 +52,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
     return () => clearInterval(id);
   }, [timeZone]);
 
-  const path = todayPath(dailyLog, total, today, timeZone);
+  const path = todayPath(dailyLog, total, today);
   const overdueDate = path.overdue ? formatLogDate(LOCALE[lang], path.overdue) : null;
   const next = path.action === 'start' || path.action === 'done' ? null : path.action;
   const openSite = () => setScreen('daily-log');

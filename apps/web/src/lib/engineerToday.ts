@@ -1,5 +1,4 @@
 import type { DailyLog, EngineerTodayAction, EngineerTodayStep } from '@vitan/shared';
-import { todayCivil } from '@/lib/civilDate';
 
 export const TODAY_STEPS: readonly EngineerTodayStep[] = ['checkIn', 'crew', 'photos', 'send'];
 
@@ -27,7 +26,7 @@ export type TodayPath = {
  * earlier log never sent stays the one to finish, as it does on the Site screen, and is flagged
  * `overdue` with its own date.
  */
-export function todayPath(latest: DailyLog | null, totalWorkers: number, today?: string, timeZone?: string | null): TodayPath {
+export function todayPath(latest: DailyLog | null, totalWorkers: number, today?: string): TodayPath {
   // a sent log with no civil date (a legacy row) is history too: the server lets a new day start
   // over any submitted log, and the Site screen offers it
   const earlierDaySent = !!latest?.submitted && (!latest.logDate || (!!today && latest.logDate < today));
@@ -35,7 +34,7 @@ export function todayPath(latest: DailyLog | null, totalWorkers: number, today?:
   const done: Record<EngineerTodayStep, boolean> = {
     checkIn: !!log?.checkedIn,
     crew: !!log && totalWorkers > 0,
-    photos: !!log && hasPhotoEvidence(log, timeZone),
+    photos: !!log && hasPhotoEvidence(log),
     send: !!log?.submitted,
   };
   const doneCount = TODAY_STEPS.filter((k) => done[k]).length;
@@ -49,18 +48,14 @@ export function todayPath(latest: DailyLog | null, totalWorkers: number, today?:
 }
 
 /**
- * Photos taken for THIS log. `progress` counts photos added on this device before the send (it is
- * only persisted with the send), so it alone forgets them on a reload. The persisted evidence is
- * the progress media itself: `photos` is the project's recent progress media, which can belong to
- * earlier days, so a photo counts only when its own capture time falls on the log's civil date in
- * the project's zone. A photo with no capture time can't be placed on a day and isn't counted.
+ * Photos taken for THIS log: the log's own `progress` count, and nothing else. The log's `photos`
+ * list is the project's recent progress media — not linked to any log, and a second log can start
+ * on the same civil day — so no date rule can say which log a photo belongs to, and it is never
+ * counted. `progress` is persisted only with the send, so after a reload an unsent log's photos
+ * step reads as not done; that never withholds anything, because crew and photos are suggestions
+ * and the card always offers Send for a checked-in log. Exact per-log evidence needs the upload to
+ * carry its `dailyLogId` (an API change for a later unit).
  */
-function hasPhotoEvidence(log: DailyLog, timeZone?: string | null): boolean {
-  if (log.progress > 0) return true;
-  if (!log.logDate) return false;
-  return log.photos.some((p) => {
-    if (!p.takenAt) return false;
-    const at = new Date(p.takenAt);
-    return !Number.isNaN(at.getTime()) && todayCivil(timeZone, at) === log.logDate;
-  });
+function hasPhotoEvidence(log: DailyLog): boolean {
+  return log.progress > 0;
 }

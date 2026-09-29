@@ -311,17 +311,23 @@ describe('review round 7 — what the log really records, and what the server re
     expect(r.queryByTestId('today-send-anyway')).toBeNull();
   });
 
-  it('photos persisted for the log’s own day count after a reload, even with progress back at 0', () => {
+  it('only this log’s own photo count counts: project media is never evidence, even from the same day', () => {
     const taken = (iso: string) => [{ id: 'm1', url: 'data:x', takenAt: iso }] as DailyLog['photos'];
     const today = '2026-09-29';
-    const base = { checkedIn: true, progress: 0, logDate: today };
-    expect(todayPath(log({ ...base, photos: taken('2026-09-29T06:10:00Z') }), 3, today, 'Asia/Kolkata').done.photos).toBe(true);
-    // 20:30 UTC on the 28th is already the 29th on a Kolkata site
-    expect(todayPath(log({ ...base, photos: taken('2026-09-28T20:30:00Z') }), 3, today, 'Asia/Kolkata').done.photos).toBe(true);
-    // an earlier day's photo is not today's evidence
-    expect(todayPath(log({ ...base, photos: taken('2026-09-27T06:10:00Z') }), 3, today, 'Asia/Kolkata').done.photos).toBe(false);
-    // a photo with no capture time can't be placed on a day
-    expect(todayPath(log({ ...base, photos: [{ id: 'm2', url: 'data:y' }] }), 3, today, 'Asia/Kolkata').done.photos).toBe(false);
+    // a second log started the same day (the server allows it once the first is sent) sees the
+    // first log's same-day photo in the project gallery — it is not this log's photo
+    const secondLog = log({ checkedIn: true, progress: 0, logDate: today, photos: taken('2026-09-29T06:10:00Z') });
+    expect(todayPath(secondLog, 3, today).done.photos).toBe(false);
+    expect(todayPath(secondLog, 3, today).action).toBe('photos');
+    expect(todayPath(log({ checkedIn: true, progress: 1, logDate: today }), 3, today).done.photos).toBe(true);
+  });
+
+  it('a photos step that reads not-done (e.g. after a reload) never withholds Send', async () => {
+    const reloaded = log({ checkedIn: true, progress: 0, photos: [{ id: 'm1', url: 'data:x', takenAt: new Date().toISOString() }] });
+    reloaded.crew[0].count = 3;
+    const { r } = await loadToday({ dailyLog: reloaded });
+    expect(r.getByTestId('today-now').dataset.action).toBe('photos');
+    expect(r.getByTestId('today-send-anyway')).toBeTruthy();
   });
 
   it('an earlier day’s unsent log is named by its date, never as today’s', async () => {
