@@ -122,44 +122,126 @@ export interface AdmissionHold {
   readonly ended: Promise<void>;
 }
 
+export interface HoldAdmissionOptions {
+  /**
+   * THE HOLD WAS LOST BEFORE THE PROCESS SERVED (#663's review round 3, finding 1): the transaction
+   * reached its bound, or its connection failed, after admission but before `release`. The lock is
+   * gone, so a raise may have committed under this process; it must not go on to serve. The
+   * bootstrap TERMINATES the process here (the container restarts it into a fresh admission),
+   * exactly as a lapsed `ReleaseLease` fences its process. Required, so no caller can forget it.
+   */
+  onLost: (reason: string) => void;
+  log?: { log(message: string): void; error?(message: string): void };
+  compiled?: number;
+  /** The hold's bound; the default is {@link SERVER_GENERATION_FENCE_HOLD_MS}. The live probe shortens it to lapse on purpose. */
+  holdMs?: number;
+  /** How often the held connection is probed while waiting for the release; the default is {@link SERVER_GENERATION_FENCE_HEARTBEAT_MS}. */
+  heartbeatMs?: number;
+}
+
+/**
+ * How often a held admission probes its own connection (`SELECT 1` on the held transaction) while it
+ * waits for the release: a dropped connection is a lost hold, and Prisma reports nothing about an
+ * idle transaction on its own.
+ */
+export const SERVER_GENERATION_FENCE_HEARTBEAT_MS = 5_000;
+/** How long before the hold's bound the process gives up on being released: the lock is judged lost from then. */
+export const SERVER_GENERATION_FENCE_MARGIN_MS = 30_000;
+
 /**
  * Admit this process and HOLD the admission until it serves. One interactive transaction: the
  * `FOR SHARE` read, then `serve` (the bootstrap's serving steps, on the pooled client — only the lock
  * lives on this connection), then the transaction stays open until {@link AdmissionHold.release}. A
  * refusal, or a `serve` that throws, rejects `admitted` and rolls the transaction back; nothing
- * `serve` wrote on the pooled client is undone by that, and nothing is lost by a hold that lapses
- * after admission ({@link SERVER_GENERATION_FENCE_HOLD_MS}): the transaction holds no write.
+ * `serve` wrote on the pooled client is undone by that, because the transaction holds no write.
+ *
+ * THE HOLD WATCHES ITSELF (#663's review round 3, finding 1). Prisma rolls an interactive transaction
+ * back when its `timeout` passes, but tells an IDLE callback nothing: the lock would be gone while the
+ * process still believed it held it. So, once admitted and until released, the hold keeps a deadline
+ * on the process's monotonic clock — the bound less {@link SERVER_GENERATION_FENCE_MARGIN_MS} — and
+ * probes the held connection every {@link SERVER_GENERATION_FENCE_HEARTBEAT_MS}; reaching the
+ * deadline or failing a probe is a LOST admission: {@link HoldAdmissionOptions.onLost} is called
+ * once, and the transaction is rolled back rather than committed.
  */
 export function holdAdmission(
   db: AdmissionDb,
   serve: (minimum: PersistedServerMinimum) => Promise<void>,
-  log: { log(message: string): void; warn?(message: string): void } = { log: () => {} },
-  compiled: number = SERVER_GENERATION,
+  opts: HoldAdmissionOptions,
 ): AdmissionHold {
+  const log = opts.log ?? { log: () => {} };
+  const compiled = opts.compiled ?? SERVER_GENERATION;
+  const holdMs = opts.holdMs ?? SERVER_GENERATION_FENCE_HOLD_MS;
+  const heartbeatMs = opts.heartbeatMs ?? SERVER_GENERATION_FENCE_HEARTBEAT_MS;
+  const lostAfterMs = Math.max(1, holdMs - Math.min(SERVER_GENERATION_FENCE_MARGIN_MS, Math.floor(holdMs / 4)));
+
+  let state: 'pending' | 'admitted' | 'refused' = 'pending';
+  let released = false;
+  let lostReason: string | null = null;
   let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
+  const held = new Promise<void>((resolve) => { release = () => { released = true; resolve(); }; });
+  let signalLost!: () => void;
+  const lostSignal = new Promise<void>((resolve) => { signalLost = resolve; });
   let resolveAdmitted!: (minimum: PersistedServerMinimum) => void;
   let rejectAdmitted!: (reason: unknown) => void;
   const admitted = new Promise<PersistedServerMinimum>((resolve, reject) => { resolveAdmitted = resolve; rejectAdmitted = reject; });
-  let settled = false;
+
+  /** the ONE transition to lost: after admission, before release, once */
+  const lose = (why: string): void => {
+    if (state !== 'admitted' || released || lostReason) return;
+    lostReason = `the server-generation admission was lost before this process served: ${why}`;
+    log.error?.(`FENCED — ${lostReason}`);
+    signalLost();
+    opts.onLost(lostReason);
+  };
+
+  const startedAt = performance.now();
   const ended = db.$transaction(async (fence) => {
     let minimum: PersistedServerMinimum;
     try {
       minimum = await assertServerGenerationAdmitted(fence, log, compiled);
       await serve(minimum);
     } catch (e) {
-      settled = true;
+      state = 'refused';
       rejectAdmitted(e);
       throw e;
     }
-    settled = true;
+    state = 'admitted';
     resolveAdmitted(minimum);
-    await held;
-  }, { maxWait: SERVER_GENERATION_FENCE_HOLD_MS, timeout: SERVER_GENERATION_FENCE_HOLD_MS }).catch((e: unknown) => {
-    // before admission the failure is `admitted`'s; after it, the hold lapsed (the bounded timeout)
-    // or the transaction was closed under us — the lock is gone, the serving steps committed on their own
-    if (!settled) rejectAdmitted(e);
-    else log.warn?.(`the admission hold ended before it was released: ${(e as Error).message}`);
+    // watch the hold until it is released: the deadline on the monotonic clock, the probe on the connection
+    const deadline = setTimeout(
+      () => lose(`the hold reached its bound (${holdMs} ms less the margin) with the process not yet serving`),
+      Math.max(0, startedAt + lostAfterMs - performance.now()),
+    );
+    deadline.unref?.();
+    let probing = false;
+    const heartbeat = setInterval(() => {
+      if (probing || released || lostReason) return;
+      probing = true;
+      fence.$queryRaw(Prisma.sql`SELECT 1`).then(() => { probing = false; }, (e: unknown) => {
+        probing = false;
+        lose(`the held connection failed a probe: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    }, heartbeatMs);
+    heartbeat.unref?.();
+    try {
+      await Promise.race([held, lostSignal]);
+    } finally {
+      clearTimeout(deadline);
+      clearInterval(heartbeat);
+    }
+    // a lost hold is rolled back, never committed: the throw is the rollback
+    if (lostReason) throw new Error(lostReason);
+  }, { maxWait: holdMs, timeout: holdMs }).catch((e: unknown) => {
+    const message = e instanceof Error ? e.message : String(e);
+    if (state === 'pending') {
+      // the transaction ended before the admission could be judged: boot aborts on it
+      state = 'refused';
+      rejectAdmitted(e);
+    } else if (state === 'admitted') {
+      // ended under us after admission (a closed connection Prisma reported first): lost unless released
+      lose(`the admission transaction ended: ${message}`);
+    }
+    // refused, released, or already lost: nothing further; let the callback finish if it still waits
     release();
   });
   // `admitted` is always awaited by the caller; `ended` may not be, so it never rejects

@@ -34,6 +34,8 @@ export class OutboxBootstrap implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger('OutboxBootstrap');
   /** 4d-ii-a / A6e — the admission held open until the process actually serves. */
   private hold: AdmissionHold | null = null;
+  /** Stop serving on a lost admission. Replaced only by a probe; in a process, the container restarts it. */
+  protected terminate: (reason: string) => void = () => process.exit(1);
 
   constructor(
     private readonly relay: OutboxRelay,
@@ -74,9 +76,15 @@ export class OutboxBootstrap implements OnModuleInit, OnModuleDestroy {
     // with FOR SHARE, so it cannot commit inside that window, and a process that starts after the
     // raise reads the raised minimum and is refused. The serving steps use the pooled client on
     // their own connections; only the lock lives on the held one, and the transaction holds no
-    // write, so a hold that lapses (`SERVER_GENERATION_FENCE_HOLD_MS`) after admission loses nothing.
+    // write. A hold that ENDS after admission and before release (`SERVER_GENERATION_FENCE_HOLD_MS`
+    // lapsed, a closed connection) is a LOST admission: a raise may have committed under this
+    // process, so it must not go on to serve — it terminates, and the container restarts it into a
+    // fresh admission (round 3, finding 1; the same posture as a lapsed `ReleaseLease`).
     this.releaseAdmission(); // a re-entered boot (the suites drive this hook directly) holds one admission at a time
-    this.hold = holdAdmission(this.prisma, () => this.serveBehindFence(), this.log);
+    this.hold = holdAdmission(this.prisma, () => this.serveBehindFence(), {
+      log: this.log,
+      onLost: (reason) => this.terminate(reason),
+    });
     await this.hold.admitted;
   }
 

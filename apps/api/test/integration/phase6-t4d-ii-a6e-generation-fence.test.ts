@@ -230,7 +230,8 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
     //     still held; the raise proceeds only once the hold is released
     {
       let served = false;
-      const hold = holdAdmission(t.prisma, async () => { served = true; });
+      const lost: string[] = [];
+      const hold = holdAdmission(t.prisma, async () => { served = true; }, { onLost: (r) => lost.push(r) });
       await expect(hold.admitted).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION });
       expect(served).toBe(true);
       let raising: Promise<void> | null = null;
@@ -249,6 +250,22 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
       await hold.ended;
       await raising; // proceeded once the hold ended, then rolled back
       expect(await blockedOn(RAISE_STATEMENT)).toBe(0);
+      expect(lost).toEqual([]);
+    }
+    // (c) a hold that LAPSES after admission and before release is a LOST admission (#663 round 3,
+    //     finding 1): the bound is shortened so the transaction really expires on the database; the
+    //     lock is gone, and the process is fenced rather than left to serve
+    {
+      const lost: string[] = [];
+      const hold = holdAdmission(t.prisma, async () => {}, { onLost: (r) => lost.push(r), holdMs: 1_500 });
+      await expect(hold.admitted).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION });
+      expect(await tableLocks('RowShareLock')).toBeGreaterThanOrEqual(1);
+      await hold.ended; // ends on its own: the hold lapsed
+      expect(lost).toHaveLength(1);
+      expect(lost[0]).toMatch(/the server-generation admission was lost before this process served/);
+      await waitFor('the lapsed hold to have let the row go', async () => (await tableLocks('RowShareLock')) === 0);
+      hold.release(); // late, harmless: the process was already fenced
+      expect(lost).toHaveLength(1);
     }
     // the booted application released its own hold after init (the harness stands in for main.ts's
     // release after listen), so the register is free; a second release is a no-op

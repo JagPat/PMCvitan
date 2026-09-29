@@ -62,7 +62,8 @@ describe('the server-generation fence (4d-ii-a / A6e)', () => {
       }),
     };
     const order: string[] = [];
-    const hold = holdAdmission(db as never, async (minimum) => { order.push(`serve@${minimum.minimumGeneration}`); }, { log: (m) => order.push(m) }, 1);
+    const lost = vi.fn<(reason: string) => void>();
+    const hold = holdAdmission(db as never, async (minimum) => { order.push(`serve@${minimum.minimumGeneration}`); }, { log: { log: (m) => order.push(m) }, compiled: 1, onLost: lost });
     await expect(hold.admitted).resolves.toMatchObject({ minimumGeneration: 1 });
     expect(order).toEqual([expect.stringMatching(/server generation 1 admitted/), 'serve@1']);
     // admitted and served, yet the transaction is still open: the lock outlives the hook
@@ -72,20 +73,52 @@ describe('the server-generation fence (4d-ii-a / A6e)', () => {
     hold.release(); // idempotent
     await hold.ended;
     expect(txSettled).toBe(true);
+    expect(lost).not.toHaveBeenCalled();
     expect(db.$transaction.mock.calls[0]![1]).toMatchObject({ timeout: 600_000, maxWait: 600_000 });
 
     // a refusal: serve never runs, the transaction is rolled back, `admitted` rejects
     rows[0]!.minimumGeneration = 2;
     const serve = vi.fn(async () => {});
-    const refused = holdAdmission(db as never, serve, undefined, 1);
+    const refused = holdAdmission(db as never, serve, { compiled: 1, onLost: lost });
     await expect(refused.admitted).rejects.toThrow(/below the persisted minimum 2/);
     await refused.ended;
     expect(serve).not.toHaveBeenCalled();
 
     // a serve that throws: `admitted` rejects with its error and the transaction ends
     rows[0]!.minimumGeneration = 1;
-    const failing = holdAdmission(db as never, async () => { throw new Error('sender gate refused'); }, undefined, 1);
+    const failing = holdAdmission(db as never, async () => { throw new Error('sender gate refused'); }, { compiled: 1, onLost: lost });
     await expect(failing.admitted).rejects.toThrow(/sender gate refused/);
     await failing.ended;
+    expect(lost).not.toHaveBeenCalled();
+  });
+
+  it('a hold that ENDS after admission and before release is a LOST admission: the process is fenced, never left to serve (#663 round 3, finding 1)', async () => {
+    const rows = [{ minimumGeneration: 1, raisedBy: 'm', raisedAt: new Date() }];
+    // the transaction ends on its own (the bounded timeout, a closed connection) while the callback still waits for the release
+    let closeTx!: (e: Error) => void;
+    const db = {
+      $transaction: vi.fn((fn: (tx: unknown) => Promise<unknown>) => new Promise((_resolve, reject) => {
+        closeTx = reject;
+        // the callback's own rollback throw (a lost hold) is Prisma's to swallow in the real client
+        fn({ $queryRaw: async () => rows }).catch(() => {});
+      })),
+    };
+    const errors: string[] = [];
+    const lost = vi.fn<(reason: string) => void>();
+    const hold = holdAdmission(db as never, async () => {}, { compiled: 1, onLost: lost, log: { log: () => {}, error: (m) => errors.push(m) } });
+    await expect(hold.admitted).resolves.toMatchObject({ minimumGeneration: 1 });
+    closeTx(new Error('Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction'));
+    await hold.ended;
+    expect(lost).toHaveBeenCalledTimes(1);
+    expect(lost.mock.calls[0]![0]).toMatch(/admission was lost before this process served: .*expired transaction/);
+    expect(errors[0]).toMatch(/^FENCED — the server-generation admission was lost/);
+
+    // released first, then the transaction ends: the process is serving and the lock was let go on purpose
+    const releasedFirst = holdAdmission(db as never, async () => {}, { compiled: 1, onLost: lost });
+    await releasedFirst.admitted;
+    releasedFirst.release();
+    closeTx(new Error('closed after release'));
+    await releasedFirst.ended;
+    expect(lost).toHaveBeenCalledTimes(1);
   });
 });

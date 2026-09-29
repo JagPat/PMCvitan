@@ -1285,8 +1285,13 @@ migrate (a hand-started process, a wrong `DATABASE_URL`). Run the migrations and
 A raising migration copies A6e's raise block with its own literal and name. Its UPDATE takes the row
 FOR NO KEY UPDATE and so waits behind every process currently between admission and its open
 listener; that is by design, and a deploy whose migration step appears to pause there is waiting for
-a process that is still booting. The admission hold is bounded (`SERVER_GENERATION_FENCE_HOLD_MS`, ten minutes): a
-boot that outlives it is rolled back and refused, and the container restarts it.
+a process that is still booting. The admission hold is bounded (`SERVER_GENERATION_FENCE_HOLD_MS`, ten minutes). A
+boot that outlives it before admission is refused. A hold that ends AFTER admission and before the
+listener opens — the bound lapsed, a closed connection — is a LOST admission: a raise may have
+committed under the process, so it does not go on to serve; it logs `FENCED — the server-generation
+admission was lost before this process served` and exits, and the container restarts it into a
+fresh admission. A `FENCED` exit of this kind means the boot took longer than ten minutes or the
+database connection dropped during it: look there, not at the fence.
 
 ### Recording the drain's autonomous corroboration: `rollout:drain-evidence`
 
