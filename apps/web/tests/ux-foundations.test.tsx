@@ -171,7 +171,8 @@ async function loadShell(overrides: Record<string, unknown> = {}) {
   const { LanguageSwitch } = await import('@/layout/LanguageSwitch');
   const { LangPreference } = await import('@/layout/LangPreference');
   const pref = await import('@/lib/langPreference');
-  return { useStore, BottomTabs, TopBar, LanguageSwitch, LangPreference, pref };
+  const { LeftRail } = await import('@/layout/LeftRail');
+  return { useStore, BottomTabs, TopBar, LanguageSwitch, LangPreference, LeftRail, pref };
 }
 
 describe('LangPreference — restores and remembers the viewer’s language', () => {
@@ -498,6 +499,29 @@ describe('the language switch is visible and works for every role', () => {
     expect(r.getByTestId('lang-seg-gu')).toHaveAttribute('aria-pressed', 'true');
     expect(r.getByTestId('lang-seg-en')).toHaveAttribute('aria-pressed', 'false');
     expect(r.getByRole('group')).toHaveAccessibleName('ભાષા');
+  });
+});
+
+describe('LeftRail — the desktop nav follows the switch above it', () => {
+  it('in Gujarati the rail header and screen names are Gujarati; in English the full names return', async () => {
+    const { useStore, LeftRail } = await loadShell({ role: 'pmc', lang: 'en' });
+    const r = render(<LeftRail />);
+    expect(r.getByText('SCREENS')).toBeInTheDocument();
+    expect(r.getByRole('button', { name: /Site Schedule/ })).toBeInTheDocument();
+    fireEvent.click(r.getByTestId('lang-seg-gu'));
+    expect(useStore.getState().lang).toBe('gu');
+    expect(r.getByText('સ્ક્રીન')).toBeInTheDocument();
+    expect(r.getByRole('button', { name: /સમયપત્રક/ })).toBeInTheDocument();
+    expect(r.queryByRole('button', { name: /Site Schedule/ })).not.toBeInTheDocument();
+    fireEvent.click(r.getByTestId('lang-seg-en'));
+    expect(r.getByRole('button', { name: /Site Schedule/ })).toBeInTheDocument();
+  });
+
+  it('an engineer’s rail carries their day names, Today and Site, in their language', async () => {
+    const { LeftRail } = await loadShell({ role: 'engineer', lang: 'gu' });
+    const r = render(<LeftRail />);
+    expect(r.getByRole('button', { name: /આજે/ })).toBeInTheDocument();
+    expect(r.getByRole('button', { name: /સાઇટ/ })).toBeInTheDocument();
   });
 });
 
