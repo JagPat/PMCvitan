@@ -1,4 +1,4 @@
-import type { ScreenKey } from '@vitan/shared';
+import { engineerNavLabels, navLabels, type Lang, type Role, type ScreenKey } from '@vitan/shared';
 
 /**
  * Mobile information architecture: which of the role's permitted screens earn a permanent
@@ -20,6 +20,24 @@ export const MOBILE_PRIMARY_SLOTS = 4;
 /** With no overflow there is nothing for More to hold, so the bar may use all five slots. */
 export const MOBILE_MAX_TABS = MOBILE_PRIMARY_SLOTS + 1;
 
+/**
+ * UX foundations (owner design brief) — a role whose phone day has a fixed rhythm gets its own,
+ * shorter bar. The site engineer's is Today · Site · More: For You is their day, the daily site
+ * log is their site, and every other screen they hold stays one tap away behind More. This
+ * supersedes Unit E's single-preference-list recommendation (E3) for the engineer only; every
+ * other role keeps the shared rule.
+ */
+export const MOBILE_ROLE_PRIMARY: Partial<Record<Role, readonly ScreenKey[]>> = {
+  engineer: ['inbox', 'daily-log'],
+};
+
+/** The bar/More label for a screen, in the viewer's language (the engineer's two fixed tabs carry
+ *  their day names). English equals `SCREEN_META.short` for every other screen. */
+export function navLabelFor(key: ScreenKey, role: Role, lang: Lang): string {
+  const own = role === 'engineer' ? engineerNavLabels[key] : undefined;
+  return (own ?? navLabels[key])[lang];
+}
+
 export interface MobileNavSplit<T> {
   /** the bottom-bar destinations, preference order first */
   primary: T[];
@@ -36,7 +54,20 @@ export interface MobileNavSplit<T> {
  * meaningful bar rather than a preference list padded with gaps. When the whole list already
  * fits (<= 5), nothing is hidden and no More tab is needed.
  */
-export function splitMobileNav<T extends { key: ScreenKey }>(items: readonly T[]): MobileNavSplit<T> {
+export function splitMobileNav<T extends { key: ScreenKey }>(items: readonly T[], role?: Role): MobileNavSplit<T> {
+  const fixed = role ? MOBILE_ROLE_PRIMARY[role] : undefined;
+  if (fixed) {
+    // a role with its own bar keeps exactly those tabs it actually holds, in that order; a tab
+    // whose module is off is simply absent (never fabricated), and if none survive, the
+    // shared rule below applies
+    const primary = fixed
+      .map((key) => items.find((i) => i.key === key))
+      .filter((i): i is T => i !== undefined);
+    if (primary.length) {
+      const chosen = new Set(primary.map((i) => i.key));
+      return { primary, secondary: items.filter((i) => !chosen.has(i.key)) };
+    }
+  }
   if (items.length <= MOBILE_MAX_TABS) return { primary: [...items], secondary: [] };
 
   const preferred = MOBILE_PRIMARY_PREFERENCE

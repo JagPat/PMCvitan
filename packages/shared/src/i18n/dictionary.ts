@@ -7,7 +7,7 @@
  * objects and as an i18next `resources` bundle (namespaces: access, trades, workerTrades).
  */
 
-import type { Lang } from '../domain/types';
+import type { Lang, ScreenKey } from '../domain/types';
 
 export interface AccessStrings {
   who: string;
@@ -79,6 +79,52 @@ export const labourLabels: Record<string, Record<Lang, string>> = {
   shiftNight: { en: 'Night shift', hi: 'रात की पाली', gu: 'રાતની પાળી' },
   mismatch: { en: 'Crew ≠ allocated', hi: 'टोली ≠ आवंटित', gu: 'ટોળી ≠ ફાળવેલ' },
 };
+
+/** UX foundations — the mobile tab bar and More sheet in the viewer's language. English keeps the
+ *  existing short labels (`SCREEN_META.short`); hi/gu are plain words a site engineer uses. */
+export const navLabels: Record<ScreenKey, Record<Lang, string>> = {
+  inbox: { en: 'For You', hi: 'आपके लिए', gu: 'તમારા માટે' },
+  dashboard: { en: 'Dashboard', hi: 'डैशबोर्ड', gu: 'ડેશબોર્ડ' },
+  drafts: { en: 'Drafts', hi: 'ड्राफ़्ट', gu: 'ડ્રાફ્ટ' },
+  'site-schedule': { en: 'Schedule', hi: 'समय-सारणी', gu: 'સમયપત્રક' },
+  'decision-log': { en: 'Log', hi: 'निर्णय', gu: 'નિર્ણયો' },
+  'inspect-review': { en: 'Review', hi: 'जाँच', gu: 'ચકાસણી' },
+  'client-decisions': { en: 'Decisions', hi: 'मंज़ूरी', gu: 'મંજૂરી' },
+  'client-health': { en: 'Health', hi: 'प्रगति', gu: 'પ્રગતિ' },
+  'daily-log': { en: 'Daily', hi: 'रोज़ का लॉग', gu: 'રોજનો લોગ' },
+  'engineer-check': { en: 'Checklist', hi: 'चेकलिस्ट', gu: 'ચેકલિસ્ટ' },
+  drawings: { en: 'Drawings', hi: 'ड्रॉइंग', gu: 'ડ્રોઇંગ' },
+  places: { en: 'Places', hi: 'जगहें', gu: 'સ્થળો' },
+  team: { en: 'Team', hi: 'टीम', gu: 'ટીમ' },
+  portfolio: { en: 'Portfolio', hi: 'पोर्टफ़ोलियो', gu: 'પોર્ટફોલિયો' },
+  'team-access': { en: 'Access', hi: 'लॉगिन', gu: 'લૉગિન' },
+  materials: { en: 'Materials', hi: 'सामान', gu: 'માલસામાન' },
+  labour: { en: 'Labour', hi: 'मज़दूर', gu: 'મજૂરો' },
+  commercial: { en: 'Money', hi: 'हिसाब', gu: 'હિસાબ' },
+};
+
+/** The engineer's two permanent tabs name the day, not the screen: For You is their "Today", and
+ *  the daily site log is their "Site". */
+export const engineerNavLabels: Partial<Record<ScreenKey, Record<Lang, string>>> = {
+  inbox: { en: 'Today', hi: 'आज', gu: 'આજે' },
+  'daily-log': { en: 'Site', hi: 'साइट', gu: 'સાઇટ' },
+};
+
+/** Shell chrome shared by every role: the More tab and the language control. */
+export const shellLabels: Record<'more' | 'language' | 'close', Record<Lang, string>> = {
+  more: { en: 'More', hi: 'और', gu: 'વધુ' },
+  language: { en: 'Language', hi: 'भाषा', gu: 'ભાષા' },
+  close: { en: 'Close', hi: 'बंद करें', gu: 'બંધ કરો' },
+};
+
+/** The language switch's own labels: a short mark for the control, and each language's name
+ *  written in that language, so a reader finds theirs without reading the others. Ordered as the
+ *  switch shows them — Gujarati first, the site's default. */
+export const LANG_SWITCH: { key: Lang; mark: string; name: string }[] = [
+  { key: 'gu', mark: 'ગુજ', name: 'ગુજરાતી' },
+  { key: 'hi', mark: 'हिं', name: 'हिंदी' },
+  { key: 'en', mark: 'EN', name: 'English' },
+];
 
 export const LANGS: { key: Lang; label: string }[] = [
   { key: 'en', label: 'English' },

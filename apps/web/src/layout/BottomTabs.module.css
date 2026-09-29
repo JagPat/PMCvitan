@@ -34,6 +34,8 @@
 }
 .tabActive {
   color: var(--accent);
+  /* the current tab is marked by a bar as well as colour — never colour alone */
+  box-shadow: inset 0 3px 0 var(--accent);
 }
 .iconWrap {
   position: relative;
@@ -59,8 +61,8 @@
   justify-content: center;
 }
 .label {
-  /* legibility floor: 11px, not the compressed 10px a 13-tab bar forced */
-  font-size: 11px;
+  /* the critical-label floor (owner GO): a destination name is never below 13px */
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;

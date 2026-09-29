@@ -4,6 +4,7 @@ import { useNavItems } from './useNavItems';
 import { RolePicker } from './RolePicker';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { CreateRailButton } from './CreateControl';
+import { LanguageSwitch } from './LanguageSwitch';
 import { Bell, Power } from '@/lib/icons';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { ROLE_LABEL } from '@/lib/screens';
@@ -57,6 +58,10 @@ export function LeftRail() {
           </button>
         </div>
       )}
+
+      <div className={styles.persona} style={{ paddingTop: 4 }}>
+        <LanguageSwitch />
+      </div>
 
       {/* The DESKTOP create trigger. It cannot live in `TopBar`: that bar is display:none from
           640px upward, so a control mounted there is invisible at every desktop width. */}
