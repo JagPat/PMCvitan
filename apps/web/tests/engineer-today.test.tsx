@@ -44,6 +44,19 @@ describe('todayPath — the day read from the log', () => {
     expect(p.done).toEqual({ checkIn: true, crew: false, photos: true, send: true });
   });
 
+  it('a log sent on an earlier civil day is finished: today starts fresh', () => {
+    const sent = log({ checkedIn: true, submitted: true, progress: 2, logDate: '2026-09-28' });
+    const p = todayPath(sent, 5, '2026-09-29');
+    expect(p.action).toBe('start');
+    expect(p.doneCount).toBe(0);
+    // the same log on its own day is done
+    expect(todayPath(sent, 5, '2026-09-28').action).toBe('done');
+  });
+
+  it('an earlier log never sent is still the one to finish', () => {
+    expect(todayPath(log({ checkedIn: true, logDate: '2026-09-28' }), 0, '2026-09-29').action).toBe('crew');
+  });
+
   it('a photo on the log counts even before the progress tally catches up', () => {
     const p = todayPath(log({ checkedIn: true, photos: [{ id: 'm1', url: 'data:x' } as DailyLog['photos'][number]] }), 3);
     expect(p.done.photos).toBe(true);
@@ -151,12 +164,21 @@ describe('Engineer Today — the screen', () => {
     expect(r.getByTestId('today-retry')).toBeTruthy();
   });
 
-  it('a failed refresh over a last-good log pauses the send', async () => {
-    const withCrew = log({ checkedIn: true, progress: 2 });
-    withCrew.crew[0].count = 3;
-    const { r } = await loadToday({ dailyLog: withCrew, dailyLogLoad: 'error' }, { VITE_DAILYLOG_READ: 'moduleQuery' });
-    expect((r.getByTestId('today-action') as HTMLButtonElement).disabled).toBe(true);
-    expect(r.getByText(L.paused.en)).toBeTruthy();
+  it('a failed refresh over a last-known log shows the failure and a retry, never the log as done', async () => {
+    const sent = log({ checkedIn: true, progress: 2, submitted: true });
+    const { r } = await loadToday({ dailyLog: sent, dailyLogLoad: 'error' }, { VITE_DAILYLOG_READ: 'moduleQuery' });
+    expect(r.getByTestId('today-now').dataset.action).toBe('unavailable');
+    expect(r.getByText(L.staleDetail.en)).toBeTruthy();
+    expect(r.getByTestId('today-retry')).toBeTruthy();
+    expect(r.queryByText(L.action.done.en)).toBeNull();
+    expect(r.queryByTestId('today-action')).toBeNull();
+  });
+
+  it('the next morning, yesterday’s sent log leads to starting today’s', async () => {
+    const yesterday = log({ checkedIn: true, progress: 2, submitted: true, logDate: '2000-01-01' });
+    const { r } = await loadToday({ dailyLog: yesterday, timeZone: 'Asia/Kolkata' });
+    expect(r.getByTestId('today-now').dataset.action).toBe('start');
+    expect(r.getByTestId('today-count').textContent).toBe('0 of 4 done');
   });
 
   it('every step is a tap target at least 44px tall', async () => {

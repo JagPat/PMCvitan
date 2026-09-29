@@ -124,7 +124,7 @@ export const engineerTodayLabels = {
   unavailable: { en: "Today's log didn't load", hi: 'आज का लॉग नहीं खुला', gu: 'આજનો લોગ ખૂલ્યો નહીં' },
   unavailableDetail: { en: 'Check your signal, then try again.', hi: 'सिग्नल देखें, फिर दोबारा कोशिश करें।', gu: 'સિગ્નલ તપાસો, પછી ફરી પ્રયાસ કરો.' },
   retry: { en: 'Try again', hi: 'फिर कोशिश करें', gu: 'ફરી પ્રયાસ કરો' },
-  paused: { en: 'Paused until the latest log loads.', hi: 'नया लॉग आने तक रुका है।', gu: 'નવો લોગ આવે ત્યાં સુધી અટક્યું છે.' },
+  staleDetail: { en: 'Showing the last log we had. Check your signal, then try again.', hi: 'पिछला लॉग दिख रहा है। सिग्नल देखें, फिर दोबारा कोशिश करें।', gu: 'છેલ્લો લોગ દેખાય છે. સિગ્નલ તપાસો, પછી ફરી પ્રયાસ કરો.' },
   step: {
     checkIn: { en: 'Check in', hi: 'हाज़िरी', gu: 'હાજરી' },
     crew: { en: 'Crew & material', hi: 'टीम और सामान', gu: 'ટીમ અને માલ' },

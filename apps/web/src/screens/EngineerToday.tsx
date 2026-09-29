@@ -3,6 +3,7 @@ import { useStore } from '@/store/store';
 import { dailyLogReadMode } from '@/data/apiGateway';
 import { selectTotalWorkers } from '@/store/selectors';
 import { todayPath, TODAY_STEPS } from '@/lib/engineerToday';
+import { todayCivil } from '@/lib/civilDate';
 import { ArrowRight, Circle, CircleCheck, Crosshair, Plus, RefreshCw } from '@/lib/icons';
 import { can, engineerNavLabels, engineerTodayLabels as L, engineerTodayProgress, type Lang } from '@vitan/shared';
 import styles from './EngineerToday.module.css';
@@ -22,6 +23,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   const dailyLog = useStore((s) => s.dailyLog);
   const total = useStore(selectTotalWorkers);
   const dailyLogLoad = useStore((s) => s.dailyLogLoad);
+  const timeZone = useStore((s) => s.timeZone);
   const setScreen = useStore((s) => s.setScreen);
   const startDailyLog = useStore((s) => s.startDailyLog);
   const checkIn = useStore((s) => s.checkIn);
@@ -33,21 +35,22 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   const moduleOwned = dailyLogReadMode() === 'moduleQuery';
   const reading = moduleOwned && (dailyLogLoad === 'idle' || dailyLogLoad === 'loading');
   const unavailable = moduleOwned && dailyLogLoad === 'error';
-  const locked = reading || unavailable;
 
-  const path = todayPath(dailyLog, total);
+  const path = todayPath(dailyLog, total, todayCivil(timeZone));
   const next = path.action === 'start' || path.action === 'done' ? null : path.action;
   const openSite = () => setScreen('daily-log');
   const date = new Intl.DateTimeFormat(LOCALE[lang], { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
 
   let card;
-  if (!dailyLog && (reading || unavailable)) {
+  // a failed read is shown before anything derived from the log: a retained last-known log can't
+  // tell the engineer their day is done (or offer to act on it) when the latest read didn't land
+  if (unavailable || (reading && !dailyLog)) {
     card = (
       <div className={styles.now} data-surface="ink" data-testid="today-now" data-action={reading ? 'loading' : 'unavailable'}>
         <div className={styles.nowTitle}>{reading ? L.loading[lang] : L.unavailable[lang]}</div>
         {unavailable && (
           <>
-            <div className={styles.nowDetail}>{L.unavailableDetail[lang]}</div>
+            <div className={styles.nowDetail}>{dailyLog ? L.staleDetail[lang] : L.unavailableDetail[lang]}</div>
             <button className={styles.nowAction} onClick={requestFreshSnapshot} data-testid="today-retry">
               <RefreshCw size={18} /> {L.retry[lang]}
             </button>
@@ -80,11 +83,10 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
         {!canAct && <div className={styles.nowTitle}>{L.action[a][lang]}</div>}
         <div className={styles.nowDetail}>{L.actionDetail[a][lang]}</div>
         {canAct && (
-          <button className={styles.nowAction} onClick={run} disabled={mutates && locked} data-testid="today-action">
+          <button className={styles.nowAction} onClick={run} disabled={mutates && reading} data-testid="today-action">
             <Icon size={20} aria-hidden /> {L.action[a][lang]}
           </button>
         )}
-        {canAct && mutates && unavailable && <div className={styles.nowDetail}>{L.paused[lang]}</div>}
       </div>
     );
   }
