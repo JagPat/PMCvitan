@@ -11,6 +11,7 @@ import { ScreenView } from './ScreenView';
 import { RouteBridge } from './RouteBridge';
 import { ProjectLoadBoundary } from './ProjectLoadBoundary';
 import { AuthGate } from './AuthGate';
+import { LangPreference } from './LangPreference';
 import styles from './AppShell.module.css';
 
 export function AppShell() {
@@ -28,6 +29,7 @@ export function AppShell() {
   return (
     <div className={styles.shell}>
       <RouteBridge />
+      <LangPreference />
       <LeftRail />
       <div className={styles.main}>
         <TopBar />

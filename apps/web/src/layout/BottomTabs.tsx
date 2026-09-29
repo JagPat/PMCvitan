@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useStore } from '@/store/store';
 import { useNavItems } from './useNavItems';
-import { splitMobileNav } from '@/lib/mobileNav';
+import { navLabelFor, splitMobileNav } from '@/lib/mobileNav';
+import { shellLabels } from '@vitan/shared';
 import { MoreSheet } from './MobileSheet';
 import { MoreHorizontal } from '@/lib/icons';
 import styles from './BottomTabs.module.css';
@@ -13,13 +14,17 @@ import styles from './BottomTabs.module.css';
  * (For You), when (Schedule), where (Places), which project (Portfolio) — and hands the rest
  * to "More". `splitMobileNav` is a presentation split over the ALREADY permission-filtered
  * list from `useNavItems`, so a role that lacks Schedule or Portfolio gets its own screens in
- * those slots and nothing a role cannot reach appears in either half.
+ * those slots and nothing a role cannot reach appears in either half. The site engineer's bar is
+ * shorter — Today · Site · More (`MOBILE_ROLE_PRIMARY`) — and every label follows the viewer's
+ * language.
  */
 export function BottomTabs() {
   const items = useNavItems();
   const setScreen = useStore((s) => s.setScreen);
+  const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   const [moreOpen, setMoreOpen] = useState(false);
-  const { primary, secondary } = splitMobileNav(items);
+  const { primary, secondary } = splitMobileNav(items, role);
   // attention never hides behind More: the tab carries the overflow's badges, and it reads
   // "active" while any secondary screen is the one on stage
   const moreBadge = secondary.reduce((n, i) => n + i.badge, 0);
@@ -40,7 +45,7 @@ export function BottomTabs() {
               <n.icon size={20} />
               {n.badge > 0 && <span className={styles.badge}>{n.badge}</span>}
             </span>
-            <span className={styles.label}>{n.short}</span>
+            <span className={styles.label}>{navLabelFor(n.key, role, lang)}</span>
           </button>
         ))}
         {secondary.length > 0 && (
@@ -55,7 +60,7 @@ export function BottomTabs() {
               <MoreHorizontal size={20} />
               {moreBadge > 0 && <span className={styles.badge}>{moreBadge}</span>}
             </span>
-            <span className={styles.label}>More</span>
+            <span className={styles.label}>{shellLabels.more[lang]}</span>
           </button>
         )}
       </nav>
