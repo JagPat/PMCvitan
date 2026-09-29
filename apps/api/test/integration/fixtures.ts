@@ -456,6 +456,9 @@ export interface RawEventSpec {
      *  — no invalidation, no push, no pairing claim owed. Ignored when the caller supplies its
      *  own `"dispatchIntent"` column. */
     effectKey?: string;
+    /** 4d-ii-a / A7d — the actor the plant is attributed to (the columns are fixed in the INSERT, so
+     *  they cannot ride `columns`): a human by id, or a NAMED system actor. Default `system:seed`. */
+    actor?: { actorKind: 'human'; actorId: string } | { actorKind: 'system'; systemActor: string };
     /** extra column names, already quoted, e.g. `"actorRole"` */
     columns?: string[];
     /** matching SQL value expressions, e.g. `'pmc'` */
@@ -508,9 +511,13 @@ export async function insertRawEventVia(
     spec.projectId,
   );
   const at = Number(rows[0]!.at);
+  const actor = spec.actor ?? { actorKind: 'system', systemActor: 'system:seed' };
+  const who = actor.actorKind === 'human'
+    ? `'human',NULL,'${actor.actorId}'`
+    : `'system','${actor.systemActor}',NULL`;
   await tx.$executeRawUnsafe(
-    `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId"${cols})`
-    + ` VALUES ('${spec.eventId}','${spec.eventType ?? 'x'}',1,'${spec.organizationId}','${spec.projectId}',${at},'system','system:seed','${spec.entityType ?? 'Decision'}','${spec.entityId ?? 'x'}'${vals})`,
+    `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","actorId","entityType","entityId"${cols})`
+    + ` VALUES ('${spec.eventId}','${spec.eventType ?? 'x'}',1,'${spec.organizationId}','${spec.projectId}',${at},${who},'${spec.entityType ?? 'Decision'}','${spec.entityId ?? 'x'}'${vals})`,
   );
   // Phase 6 task 4d-ii-a / A6d — a plant is a DIRECT writer, and a direct writer owes the event's
   // delivery rows in its own transaction (`DomainEvent_t4d_deliveries`). It writes them the way a

@@ -17,6 +17,8 @@ function deps(over: Partial<PushClaimDeps> & { verdicts?: PushClaimVerdict[] } =
     deciderTarget: vi.fn(async () => next()),
     consultationRequestedTarget: vi.fn(async () => next()),
     consultationRespondedTarget: vi.fn(async () => next()),
+    forwardTarget: vi.fn(async () => next()),
+    countersignTarget: vi.fn(async () => next()),
     markCancelled: vi.fn(async () => {}),
     roleHolderUserIds: vi.fn(async () => ['u-a', 'u-b']),
     cancelled: vi.fn(async () => false),
@@ -105,5 +107,34 @@ describe('the push consumer sends per recipient behind the hook (4d-ii-a / A7b)'
     expect(await run(d)).toEqual([]);
     expect(d.markCancelled).toHaveBeenCalledTimes(1);
     expect(d.roleHolderUserIds).not.toHaveBeenCalled();
+  });
+});
+
+describe('the FROZEN-audience families send to the frozen set intersected with the current one (4d-ii-a / A7d)', () => {
+  const frozen = (family: 'forward' | 'countersign', current: string[], targetUserIds = ['u-a', 'u-b']) =>
+    run(deps({ verdicts: [{ actionable: true, targetUserIds: current }] }),
+      family === 'forward' ? 'decision.forwarded' : 'decision.awaiting_countersign',
+      { body: 'frozen', roles: ['architect'], targetUserId: null, targetUserIds });
+  it('every frozen recipient still in the current set is sent; nobody outside the frozen set is, whoever holds the role now', async () => {
+    expect(await frozen('countersign', ['u-a', 'u-b', 'u-new'])).toEqual(['u-a', 'u-b']);
+    expect(await frozen('forward', ['u-a', 'u-b'])).toEqual(['u-a', 'u-b']);
+  });
+  it('a frozen recipient who left the current set is skipped without the mark; every one gone → nothing sent, the delivery marked', async () => {
+    const d = deps({ verdicts: [{ actionable: true, targetUserIds: ['u-b'] }] });
+    expect(await run(d, 'decision.awaiting_countersign', { body: 'frozen', roles: ['architect'], targetUserId: null, targetUserIds: ['u-a', 'u-b'] })).toEqual(['u-b']);
+    expect(d.markCancelled).not.toHaveBeenCalled();
+    const gone = deps({ verdicts: [{ actionable: true, targetUserIds: [] }] });
+    expect(await run(gone, 'decision.forwarded', { body: 'frozen', roles: ['client'], targetUserId: null, targetUserIds: ['u-a'] })).toEqual([]);
+    expect(gone.markCancelled).toHaveBeenCalledTimes(1);
+  });
+  it('the subject leaving the actionable set drops the whole delivery with the mark; the pre-send verdict reads the current set', async () => {
+    const d = deps({ verdicts: [{ actionable: false }] });
+    expect(await run(d, 'decision.forwarded', { body: 'frozen', roles: ['client'], targetUserId: null, targetUserIds: ['u-a'] })).toEqual([]);
+    expect(d.markCancelled).toHaveBeenCalledTimes(1);
+    expect(await preSendVerdict(deps({ verdicts: [{ actionable: true, targetUserIds: ['u-a'] }] }), { deliveryId: 'del-1', projectId: 'p1', decisionId: 'd1', family: 'countersign', recipient: 'u-a', role: null })).toBe('send');
+    expect(await preSendVerdict(deps({ verdicts: [{ actionable: true, targetUserIds: ['u-z'] }] }), { deliveryId: 'del-1', projectId: 'p1', decisionId: 'd1', family: 'countersign', recipient: 'u-a', role: null })).toBe('skip');
+    const asked = deps({ verdicts: [{ actionable: true, targetUserIds: ['u-a'] }] });
+    await preSendVerdict(asked, { deliveryId: 'del-1', projectId: 'p1', decisionId: 'd1', family: 'forward', recipient: 'u-a', role: null });
+    expect(asked.forwardTarget).toHaveBeenCalledWith('p1', 'd1');
   });
 });

@@ -206,7 +206,13 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/api/src/decisions/decision-serialize.ts :: d.status === 'withdrawn' #2": 'excludes: the withdrawn audience (pmc-only)',
     "apps/api/src/decisions/decision-serialize.ts :: d.status === 'pending'": 'owed by A8a: an awaiting decision’s audience, decided where the value is first written (the approve under a chain)',
     "apps/api/src/decisions/decisions.participant.ts :: ['pending', 'change']": 'excludes: the delivered open set; a decision awaiting countersign is answered by its own set (`namedAwaiting`/`awaitingRoles`), which carries the last architect’s exemption',
-    "apps/api/src/decisions/decisions.query.ts :: d.status !== 'pending' && d.status !== 'change'": 'owed by A7: the decider push target’s architect arm',
+    // 4d-ii-a / A7d — the decider and forward push targets: the demand stands only while the decision
+    // awaits its DECIDER; an awaiting decision demands a countersign through its own family
+    "apps/api/src/decisions/decisions.query.ts :: d.status !== 'pending' && d.status !== 'change'": 'excludes: the decider push (an awaiting decision’s demand is the countersign family’s, `countersignPushTarget`)',
+    "apps/api/src/decisions/decisions.query.ts :: d.status !== 'pending' && d.status !== 'change' #2": 'excludes: the forward push (a hand-off announces an OPEN decision; one parked for a countersign is the architect’s)',
+    "apps/api/src/decisions/decisions.query.ts :: d.status !== 'awaiting_countersign'": 'answered',
+    "apps/api/src/decisions/decisions.effects.ts :: rows[0]?.status !== 'awaiting_countersign'": 'answered',
+    "apps/api/src/decisions/decisions.effects.ts :: status: 'awaiting_countersign'": 'answered',
     // 4d-ii-a / A7b — the responded push family's withdrawn-audience arm (pmc-only once withdrawn)
     "apps/api/src/decisions/decisions.query.ts :: d.status === 'withdrawn'": 'excludes: the withdrawn audience of the response push (pmc-only)',
     "apps/api/src/decisions/decisions.query.ts :: rows[0]!.status === 'withdrawn'": 'excludes: the linkability of a withdrawn decision',

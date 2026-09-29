@@ -694,17 +694,17 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     expect(live.decisions.find((d) => d.id === decisionId)?.consultations).toHaveLength(1);
   });
 
-  it('the two consultation-consuming consumers were bumped by 4c-ii (decisions.inbox again by 4d-ii-a / A7c, to 3), and the socket consumer is not', async () => {
+  it('the two consultation-consuming consumers were bumped by 4c-ii (both again by 4d-ii-a: decisions.inbox by A7c, webpush.notify by A7d, to 3), and the socket consumer is not', async () => {
     const rows = await t.prisma.outboxConsumerCatalog.findMany({
       where: { consumer: { in: ['decisions.inbox', 'webpush.notify', 'socket.invalidate'] } },
       select: { consumer: true, catalogVersion: true },
       orderBy: { consumer: 'asc' },
     });
     const byName = Object.fromEntries(rows.map((r) => [r.consumer, r.catalogVersion]));
-    // 4d-ii-a / A7c: `decisions.inbox` moved 2 → 3 (`20280103000000`); `webpush.notify`'s bump is A7d's
+    // 4d-ii-a / A7c: `decisions.inbox` moved 2 → 3 (`20280103000000`); A7d: `webpush.notify` 2 → 3 (`20280104000000`)
     expect(byName['decisions.inbox']).toBe(DECISIONS_INBOX_CATALOG_VERSION);
     expect(DECISIONS_INBOX_CATALOG_VERSION).toBe(3);
-    expect(byName['webpush.notify']).toBe(2);
+    expect(byName['webpush.notify']).toBe(3);
     // the socket consumer carries no consultation contract — it tells a room to refetch
     if (byName['socket.invalidate'] !== undefined) expect(byName['socket.invalidate']).toBe(1);
   });

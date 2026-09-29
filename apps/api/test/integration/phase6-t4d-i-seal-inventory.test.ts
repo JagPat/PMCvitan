@@ -87,6 +87,9 @@ const INVENTORY: Record<string, string[]> = {
     'DecisionEvent_t4d_no_truncate', 'DecisionEvent_t4d_renotified_claim'],
   DecisionForward: [
     'DecisionForward_t4d_append_only',
+    // 4d-ii-a / A7d (20280104): the forward fact's claimant, immediate and deferred.
+    'DecisionForward_t4d_claim',
+    'DecisionForward_t4d_claim_deferred',
     'DecisionForward_t4d_no_truncate',
     'DecisionForward_t4d_paired',
     'DecisionForward_t4d_provenance_bound',
@@ -129,6 +132,9 @@ const INVENTORY: Record<string, string[]> = {
   ],
   MembershipTransition: [
     'MembershipTransition_t4d_append_only',
+    // 4d-ii-a / A7d (20280104): the architect-standing flip's claimant, immediate and deferred.
+    'MembershipTransition_t4d_claim',
+    'MembershipTransition_t4d_claim_deferred',
     'MembershipTransition_t4d_no_truncate',
     'MembershipTransition_t4d_provenance_bound',
     'MembershipTransition_t4d_seal',

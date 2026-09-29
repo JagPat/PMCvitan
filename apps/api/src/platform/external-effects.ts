@@ -18,8 +18,8 @@ import type { DomainEventType } from '@vitan/shared';
  * push, so the outbox never sends an external effect for private or already-applied work.
  */
 
-/** The project roles a push may target. A subset of the app's project roles. `architect` is in the
- *  vocabulary from 4d-ii-a / A5a; no catalog ceiling admits it until A7 widens the targeted ones. */
+/** The project roles a push may target. A subset of the app's project roles. `architect` joined the
+ *  vocabulary with 4d-ii-a / A5a and the targeted ceilings with A7d (the catalog change). */
 export type PushRole = 'pmc' | 'client' | 'contractor' | 'engineer' | 'consultant' | 'architect';
 
 export interface ExternalEffectDef {
@@ -45,7 +45,17 @@ export interface ExternalEffectDef {
    *  own). `'decider'`: the target must still be the decision's holder AND the status must still
    *  demand their decision — re-judged at claim through the decisions-owned answer, re-targeting
    *  a changed holder or dropping with the cancellation mark. Absent = no claim-time predicate. */
-  readonly pushFamily?: 'decider' | 'consultation_requested' | 'consultation_responded';
+  readonly pushFamily?: 'decider' | 'consultation_requested' | 'consultation_responded' | 'forward' | 'countersign';
+  /** Phase 6 task 4d-ii-a / A7d (§A.2, the push families) — a FROZEN-AUDIENCE family: the emitting
+   *  command resolves the recipients under the readiness lock and freezes them in the intent as
+   *  `targetUserIds` (the plural sibling of `targetUserId`), which `buildDispatchIntent` admits for
+   *  these keys ALONE; the seeded row carries `audience = 'frozen'`, and the envelope seal refuses
+   *  the array on any other family. Declared `true` or omitted, like `pairingRequired`. */
+  readonly frozenAudience?: true;
+  /** A7d — the frozen family's CONSTANT, decision-free push body (the seeded `pushBody`, which the
+   *  transition seal compares a frozen push against). Present iff `frozenAudience`: a family whose
+   *  recipients are frozen announces one thing, so the text is catalog policy, not a caller's. */
+  readonly pushBody?: string;
   /* `pushOptional` WAS HERE, and the flag itself was the defect (#582's review round 18,
    * findings 1, 2 and 3 — one class).
    *
@@ -87,7 +97,9 @@ export const EXTERNAL_EFFECTS = {
   // nothing to approve and the bell notice is the announcement. One key with `pushOptional`
   // released both, so a direct or regressed non-record publication could seal a silent approval
   // demand. `decisions.service.ts` picks the key from the `record` arm it already branches on.
-  'decision.published': { eventType: 'decision.published', invalidate: true, push: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], pushFamily: 'decider' },
+  // 4d-ii-a / A7d — the ceiling gains `architect`: a decision may be DESIGNATED to the architect
+  // role (A5b's `DECIDER_KINDS`), and its approval demand pushes at that role's holders.
+  'decision.published': { eventType: 'decision.published', invalidate: true, push: ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'], pushFamily: 'decider' },
   'decision.published.record': { eventType: 'decision.published', invalidate: true, push: null },
   // Phase 6 unit 4d-i-b — THE SIX PAIRING-REQUIRED TYPES (§D's (c)). An event of one of these
   // records an ACT, and §A.3 obligation 7 says the act's FACT claims the event: the finalized
@@ -96,8 +108,7 @@ export const EXTERNAL_EFFECTS = {
   // the mechanism with every row `false`; this flag is what turns it on, and it does so by
   // compiling a new coverage generation (see `pairingRequired` on `ExternalEffectDef`). The three
   // 4d-ii types (`decision.forwarded`, `decision.awaiting_countersign`,
-  // `membership.standing_changed`) are not compiled yet and declare themselves, with their
-  // claimants, in the unit that adds them.
+  // `membership.standing_changed`) are compiled below, with their claimants, by 4d-ii-a / A7d.
   'decision.approved': { eventType: 'decision.approved', invalidate: true, push: ['pmc', 'contractor', 'engineer'], pairingRequired: true },
   'decision.reapproved': { eventType: 'decision.reapproved', invalidate: true, push: ['pmc', 'contractor', 'engineer'], pairingRequired: true },
   'decision.change_requested': { eventType: 'decision.change_requested', invalidate: true, push: null, pairingRequired: true },
@@ -115,8 +126,25 @@ export const EXTERNAL_EFFECTS = {
   // archived would otherwise still deliver decision content after project authorization refuses
   // access, since the decision stays open, the consultation stands, and memberships can stay
   // active.
-  'decision.consultation_requested': { eventType: 'decision.consultation_requested', invalidate: true, push: ['pmc', 'client', 'contractor', 'engineer', 'consultant'], pushFamily: 'consultation_requested', pairingRequired: true },
-  'decision.consultation_responded': { eventType: 'decision.consultation_responded', invalidate: true, push: ['pmc'], pushFamily: 'consultation_responded', pairingRequired: true },
+  // 4d-ii-a / A7d — both ceilings gain `architect`: a consultee may hold the role, and an architect
+  // may ASK (A5c's requester rule; the responded predicate re-judges the requester's standing).
+  'decision.consultation_requested': { eventType: 'decision.consultation_requested', invalidate: true, push: ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'], pushFamily: 'consultation_requested', pairingRequired: true },
+  'decision.consultation_responded': { eventType: 'decision.consultation_responded', invalidate: true, push: ['pmc', 'architect'], pushFamily: 'consultation_responded', pairingRequired: true },
+  // Phase 6 task 4d (4d-ii-a / A7d, §A.2 "the push families") — THE TWO FROZEN-AUDIENCE FAMILIES.
+  // Both are USER-TARGETED AT EMISSION with their recipients frozen in the record: the emitting
+  // command (`forward`, `approve` under a chain, the `decisions.effects` re-emit) resolves them
+  // under the readiness lock it holds and passes `dispatch.push.targetUserIds`; the consumer sends
+  // to the frozen set ONLY, each recipient re-judged before their own send through the family's
+  // claim predicate. The BODY is the catalog's constant (`pushBody`): the frozen row carries it,
+  // so a caller cannot vary what a frozen announcement says.
+  //   `forward` — at the NEW holder: a named member's user, or the current holders of the role
+  //   the decision was forwarded to (any decider role, so the ceiling is the whole vocabulary);
+  //   claimed by the `DecisionForward` fact (A8a writes it; the claimant lands here).
+  //   `countersign` — at EVERY active architect: the countersign demand raised by the provisional
+  //   approval (claimed by the provisional `DecisionApprovalRevision` birth) and re-raised by
+  //   `decisions.effects` on an activation (claimed by its `countersign_renotified` audit row).
+  'decision.forwarded': { eventType: 'decision.forwarded', invalidate: true, push: ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'], pushFamily: 'forward', frozenAudience: true, pushBody: 'A decision has been forwarded to you', pairingRequired: true },
+  'decision.awaiting_countersign': { eventType: 'decision.awaiting_countersign', invalidate: true, push: ['architect'], pushFamily: 'countersign', frozenAudience: true, pushBody: 'A decision awaits your countersign', pairingRequired: true },
   // ── activities ─────────────────────────────────────────────────────────────────────────────
   // TWO PRODUCERS, TWO KEYS (#582 review round 13, finding 3 — and the FIRST of the four sites of
   // one class; round 18 found the other three and removed the flag that made them expressible).
@@ -320,6 +348,13 @@ export const EXTERNAL_EFFECTS = {
   'membership.role_changed': { eventType: 'membership.role_changed', invalidate: false, push: null },
   'membership.discipline_changed': { eventType: 'membership.discipline_changed', invalidate: false, push: null },
   'membership.removed': { eventType: 'membership.removed', invalidate: false, push: null },
+  // Phase 6 task 4d (4d-ii-a / A7d, §A.2) — an ARCHITECT-STANDING FLIP. `invalidate: true`, unlike
+  // its four siblings: a `pending` decision loaded before the first architect arrived holds
+  // `countersignRequired` absent, and without a socket `changed` its tab could open the approval
+  // modal promising a final lock while the server lands `awaiting_countersign`. No push. Claimed
+  // by the `MembershipTransition` fact of the flipping write, so a standalone event of this type
+  // (one no fact records) is refused at commit.
+  'membership.standing_changed': { eventType: 'membership.standing_changed', invalidate: true, push: null, pairingRequired: true },
 } as const satisfies Record<string, ExternalEffectDef>;
 
 export type ExternalEffectKey = keyof typeof EXTERNAL_EFFECTS;
@@ -330,7 +365,7 @@ export interface DispatchIntent {
   readonly effectKey: ExternalEffectKey;
   readonly coverageVersion: string;
   readonly invalidate: boolean;
-  readonly push?: { body: string; roles: readonly PushRole[]; targetUserId?: string };
+  readonly push?: { body: string; roles: readonly PushRole[]; targetUserId?: string; targetUserIds?: readonly string[] };
 }
 
 /** The command-supplied part of an emit's dispatch: the push BODY plus, for a TARGETED push
@@ -339,7 +374,16 @@ export interface DispatchIntent {
  *  (a target only ever NARROWS the audience: delivery goes solely to currently-valid links of
  *  that user); a key whose catalog `push` is `null` must not carry a push at all. */
 export interface DispatchInput {
-  push?: { body: string; targetUserId?: string; roles?: readonly PushRole[] };
+  push?: {
+    body: string;
+    targetUserId?: string;
+    roles?: readonly PushRole[];
+    /** 4d-ii-a / A7d — the FROZEN recipient set of a `frozenAudience` family, resolved by the
+     *  emitting command under the readiness lock. Admitted for those keys alone, non-empty, every
+     *  entry a nonblank user id; persisted sorted and distinct (the canonical array the delivery
+     *  seal compares), so `[A, A]` cannot deliver twice. */
+    targetUserIds?: readonly string[];
+  };
 }
 
 /** A canonical, order-independent serialization of the whole catalog — the coverage-version preimage. */
@@ -355,8 +399,14 @@ function canonicalCatalog(): string {
       // Normalised the same way, so the generation 4d-i compiled (every key unflagged) is this
       // preimage with the element removed, which `phase6-t4d-i-catalog-generations.test.ts`
       // re-derives on every run.
+      // 4d-ii-a / A7d — the SEVENTH and EIGHTH elements: `frozenAudience` (normalised like the
+      // flag) and the frozen family's constant `pushBody`. Both are sealed catalog columns the
+      // transition and envelope seals read, so two releases disagreeing about either must not share
+      // a coverage version — the same reason the sixth element exists. The generations before A7d
+      // hashed six elements; `phase6-t4d-i-catalog-generations.test.ts` re-derives each from this
+      // source with the elements it lacked removed.
       return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(),
-        d.pushFamily ?? null, d.pairingRequired === true];
+        d.pushFamily ?? null, d.pairingRequired === true, d.frozenAudience === true, d.pushBody ?? null];
     }),
   );
 }
@@ -408,12 +458,46 @@ export function buildDispatchIntent(effectKey: ExternalEffectKey, eventType: Dom
       }
     }
   }
+  // 4d-ii-a / A7d — the FROZEN audience, at the same boundary. A frozen-audience family's push
+  // names its recipient SET and nothing else: `targetUserIds` is refused on every other key (the
+  // envelope seal refuses it there too — "a set of recipients no rule resolved"), a frozen family
+  // must carry it non-empty (an empty set is a demand addressed to nobody, which the consumer
+  // would complete as sent-to-none), every entry is a nonblank user id, the scalar `targetUserId`
+  // is not a second spelling of the set, and the BODY is the catalog's constant.
+  let frozen: string[] | undefined;
+  if (dispatch.push?.targetUserIds !== undefined) {
+    if (def.frozenAudience !== true) {
+      throw new Error(`effect key '${effectKey}' is not a frozen-audience family, but a push targetUserIds set was supplied`);
+    }
+    if (dispatch.push.targetUserId !== undefined) {
+      throw new Error(`effect key '${effectKey}' is a frozen-audience family: its recipients are the targetUserIds set, never a scalar targetUserId beside it`);
+    }
+    frozen = [...new Set(dispatch.push.targetUserIds)].sort();
+    if (frozen.length === 0 || frozen.some((u) => typeof u !== 'string' || u.trim() === '')) {
+      throw new Error(`effect key '${effectKey}' is a frozen-audience family: its targetUserIds must name at least one user, each a nonblank id`);
+    }
+  }
+  if (def.frozenAudience === true && dispatch.push) {
+    if (frozen === undefined) {
+      throw new Error(`effect key '${effectKey}' is a frozen-audience family: the emitter resolves and freezes its recipients as push targetUserIds`);
+    }
+    if (dispatch.push.body !== def.pushBody) {
+      throw new Error(`effect key '${effectKey}' announces its catalog body ${JSON.stringify(def.pushBody)}, not ${JSON.stringify(dispatch.push.body)}`);
+    }
+  }
   return {
     effectKey,
     coverageVersion: effectCoverageVersion(),
     invalidate: def.invalidate,
     ...(dispatch.push
-      ? { push: { body: dispatch.push.body, roles: dispatch.push.roles ?? def.push ?? [], ...(dispatch.push.targetUserId ? { targetUserId: dispatch.push.targetUserId } : {}) } }
+      ? {
+        push: {
+          body: dispatch.push.body,
+          roles: dispatch.push.roles ?? def.push ?? [],
+          ...(dispatch.push.targetUserId ? { targetUserId: dispatch.push.targetUserId } : {}),
+          ...(frozen ? { targetUserIds: frozen } : {}),
+        },
+      }
       : {}),
   };
 }

@@ -343,6 +343,10 @@ export class DecisionsQueryService {
       if (d.status !== 'pending' && d.status !== 'change') return { actionable: false };
       if (d.deciderKind === 'client') return { actionable: true, roles: ['client'] };
       if (d.deciderKind === 'pmc') return { actionable: true, roles: ['pmc'] };
+      // 4d-ii-a / A7d — the ARCHITECT arm: a decision designated to the architect role pushes its
+      // approval demand at that role's current holders (the kernel register answers the fan-out
+      // through `roleHolderUserIds`' architect arm, A5c). No architect holds standing before 4d-iii.
+      if (d.deciderKind === 'architect') return { actionable: true, roles: ['architect'] };
       if (d.deciderKind === 'member') {
         if (d.deciderMembershipId !== peek.deciderMembershipId) {
           // the holder moved between the lookup and the lock (a forward landed): locking the new
@@ -356,6 +360,75 @@ export class DecisionsQueryService {
         return { actionable: true, targetUserId: member.userId };
       }
       return { actionable: false };
+    });
+  }
+
+  /**
+   * Phase 6 task 4d-ii-a / A7d (plan §A.2, the push families) — the `decision.forwarded` family's
+   * claim-time predicate: is the "forwarded to you" announcement still actionable, and WHO holds the
+   * decision NOW? The recipients were FROZEN at emission (`targetUserIds`); this answers the current
+   * holder's users so the consumer sends to the frozen set intersected with the current one — a
+   * frozen recipient the decision has since left is skipped, never re-targeted, and a holder who
+   * arrived later is not this demand's. The lock order is `deciderPushTarget`'s (membership before
+   * the decision row, both under project operability). A8a's `decisions.forward` is the emitter.
+   */
+  async forwardPushTarget(
+    projectId: string,
+    decisionId: string,
+  ): Promise<{ actionable: false } | { actionable: true; targetUserIds: string[] }> {
+    return this.prisma.$transaction(async (tx) => {
+      if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) return { actionable: false };
+      const peek = await tx.decision.findFirst({ where: { id: decisionId, projectId }, select: { deciderKind: true, deciderMembershipId: true } });
+      if (!peek) return { actionable: false };
+      const member = peek.deciderKind === 'member' && peek.deciderMembershipId
+        ? await this.orgsParticipant.lockActiveMembershipById(tx, projectId, peek.deciderMembershipId)
+        : null;
+      const rows = await tx.$queryRaw<Array<{ status: string; publishedAt: Date | null; deciderKind: string; deciderMembershipId: string | null }>>`
+        SELECT "status"::text AS status, "publishedAt", "deciderKind"::text AS "deciderKind", "deciderMembershipId"
+          FROM "Decision" WHERE "projectId" = ${projectId} AND "id" = ${decisionId}
+           FOR SHARE`;
+      const d = rows[0];
+      if (!d || d.publishedAt === null) return { actionable: false };
+      // a forward hands over an OPEN decision; one that has since been decided, withdrawn or parked
+      // for a countersign no longer asks its holder to act
+      if (d.status !== 'pending' && d.status !== 'change') return { actionable: false };
+      if (d.deciderKind === 'member') {
+        if (d.deciderMembershipId !== peek.deciderMembershipId) {
+          throw new Error(`forward push claim for ${decisionId} contended: the holder moved during the claim — retried`);
+        }
+        return member ? { actionable: true, targetUserIds: [member.userId] } : { actionable: false };
+      }
+      if (d.deciderKind === 'client' || d.deciderKind === 'pmc' || d.deciderKind === 'architect') {
+        const holders = await this.orgsParticipant.effectiveRoleHolderUserIds(tx, projectId, d.deciderKind);
+        return holders.length ? { actionable: true, targetUserIds: holders } : { actionable: false };
+      }
+      return { actionable: false };
+    });
+  }
+
+  /**
+   * Phase 6 task 4d-ii-a / A7d (plan §A.2) — the `decision.awaiting_countersign` family's claim-time
+   * predicate: does the decision still await its countersign, and which architects hold the role NOW?
+   * The demand was frozen at every active architect at emission; a frozen recipient who has since
+   * left the role is skipped, and the last architect leaving deactivates the chain — the queued
+   * demands are then cancelled by `decisions.effects`, and this predicate drops what that consumer
+   * has not yet reached (an empty current set is a demand nobody can answer).
+   */
+  async countersignPushTarget(
+    projectId: string,
+    decisionId: string,
+  ): Promise<{ actionable: false } | { actionable: true; targetUserIds: string[] }> {
+    return this.prisma.$transaction(async (tx) => {
+      if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) return { actionable: false };
+      const rows = await tx.$queryRaw<Array<{ status: string; publishedAt: Date | null }>>`
+        SELECT "status"::text AS status, "publishedAt" FROM "Decision"
+         WHERE "projectId" = ${projectId} AND "id" = ${decisionId}
+         FOR SHARE`;
+      const d = rows[0];
+      if (!d || d.publishedAt === null) return { actionable: false };
+      if (d.status !== 'awaiting_countersign') return { actionable: false };
+      const architects = await RoleStandingQuery.holderUserIds(tx, projectId, 'architect');
+      return architects.length ? { actionable: true, targetUserIds: architects } : { actionable: false };
     });
   }
 

@@ -46,6 +46,14 @@ export const DOMAIN_EVENT_TYPES = [
   // targeted dispatch is user-keyed).
   'decision.consultation_requested',
   'decision.consultation_responded',
+  // Phase 6 task 4d (4d-ii-a / A7d, §A.2) — the architect chain's two decision types, compiled
+  // with the widened catalog generation. `forwarded`: the holder moved (A8a's `decisions.forward`
+  // writes it, at the NEW holder — a frozen-audience push family). `awaiting_countersign`: the
+  // countersign DEMAND — the decider's provisional approval under an active chain (A8a) and the
+  // `decisions.effects` re-notification on an architect activation, its architects frozen in the
+  // record as `targetUserIds`. Never `decision.approved`/`reapproved`, which announce FINALITY.
+  'decision.forwarded',
+  'decision.awaiting_countersign',
   // activities
   'activity.created',
   'activity.updated',
@@ -199,6 +207,14 @@ export const DOMAIN_EVENT_TYPES = [
   'membership.role_changed',
   'membership.discipline_changed',
   'membership.removed',
+  // Phase 6 task 4d (4d-ii-a / A7d, §A.2) — an ARCHITECT-STANDING FLIP: the membership write that
+  // activates or deactivates the chain (the first active architect arriving, the last leaving),
+  // emitted by the ledgered member commands beside their `MembershipTransition` fact; entityId is
+  // the MEMBERSHIP, payload `{ role: 'architect', membershipId, transitionId, from, to, activeCount }`.
+  // `invalidate: true` (every open tab refetches the countersign overlay), no push; consumed by
+  // the decisions-owned ORDERED `decisions.effects`, which derives the re-notification and the
+  // last-architect cancellation from it.
+  'membership.standing_changed',
   // Phase 5 Task 7A (§J) — the ONE commercial-owned event, and the whole of commercial's
   // `producesEvents`.
   //

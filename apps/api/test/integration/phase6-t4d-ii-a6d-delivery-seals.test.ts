@@ -213,7 +213,7 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
     expect(rows).toEqual(await expectedRowsOf(eventId));
     const by = Object.fromEntries(rows.map((r) => [r.consumer, r]));
     expect(by[SOCKET_CONSUMER]).toMatchObject({ deliveryAction: 'dispatch', status: 'pending' });
-    expect(by[PUSH_CONSUMER]).toMatchObject({ deliveryAction: 'dispatch', status: 'pending', subject: id, payload: { body: `Decision ${id} awaits you`, roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], targetUserId: null } });
+    expect(by[PUSH_CONSUMER]).toMatchObject({ deliveryAction: 'dispatch', status: 'pending', subject: id, payload: { body: `Decision ${id} awaits you`, roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'], targetUserId: null } });
     expect(by[ALL]).toMatchObject({ deliveryAction: 'dispatch', status: 'pending' });
     expect(by[TYPES]).toMatchObject({ deliveryAction: 'dispatch', status: 'pending', consumerKind: 'ordered' });
     expect(by['decisions.inbox']).toMatchObject({ deliveryAction: 'dispatch' });
@@ -371,7 +371,7 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
     const id = entity();
     const body = `Decision ${id} awaits you`;
     const { eventId } = await publish(id); // the compiled rows exist; PUSHY (inactive, push) and OFF (inactive, all) have none
-    const projection = JSON.stringify({ body, roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], targetUserId: null });
+    const projection = JSON.stringify({ body, roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'], targetUserId: null });
     await rolledBack(async (tx) => {
       // the inactive `all` consumer: the action is judged all the same
       expect(await plantRow(tx, eventId, OFF, 'unordered', 'noop')).toMatch(/carries action `noop`, but the consumer's persisted rule all derives `dispatch`/);
@@ -385,11 +385,11 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
       expect(await plantRow(tx, eventId, NORULE, 'unordered', 'noop')).toMatch(/NO persisted dispatch rule/);
       // the push-rule consumer: the projection, field by field
       expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: projection, subject: id })).toBeNull();
-      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: JSON.stringify({ body: 'a body of the writer\'s choosing', roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], targetUserId: null }), subject: id })).toMatch(/not the PROJECTION of the event's immutable intent/);
+      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: JSON.stringify({ body: 'a body of the writer\'s choosing', roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'], targetUserId: null }), subject: id })).toMatch(/not the PROJECTION of the event's immutable intent/);
       expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: JSON.stringify({ body, roles: ['client'], targetUserId: null }), subject: id })).toMatch(/not the PROJECTION/);
-      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: JSON.stringify({ body, roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], targetUserId: 'one-chosen-user' }), subject: id })).toMatch(/not the PROJECTION/);
-      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: JSON.stringify({ body, roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], targetUserId: null, targetUserIds: ['u'] }), subject: id })).toMatch(/not the PROJECTION/);
-      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: JSON.stringify({ body, roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], targetUserId: null, title: 'foreign' }), subject: id })).toMatch(/not the PROJECTION/);
+      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: JSON.stringify({ body, roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'], targetUserId: 'one-chosen-user' }), subject: id })).toMatch(/not the PROJECTION/);
+      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: JSON.stringify({ body, roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'], targetUserId: null, targetUserIds: ['u'] }), subject: id })).toMatch(/not the PROJECTION/);
+      expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: JSON.stringify({ body, roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'], targetUserId: null, title: 'foreign' }), subject: id })).toMatch(/not the PROJECTION/);
       expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: null, subject: id })).toMatch(/not the PROJECTION/);
       // the subject is the event's entityId
       expect(await plantRow(tx, eventId, PUSHY, 'unordered', 'dispatch', { payload: projection, subject: 'D-other' })).toMatch(/carries subject D-other but the event is about entity/);

@@ -444,6 +444,13 @@ if echo "$out" | grep -q "P3005"; then
   # functions at decisions.inbox contract version 3 and moves the catalog row; it must replay AFTER
   # 20271126000000 (which re-issues the version-2 bodies) so the ledger order stands, and it is
   # guarded on the version it moves from, so a replay is a no-op for the row.
+  # 20280104000000_phase6_t4d_ii_a7d_catalog_change (4d-ii-a / A7d) seeds the widened catalog's
+  # coverage generation beside the old, moves webpush.notify to 3, rewrites decisions.inbox's rule
+  # and registers decisions.effects inactive, and installs the three claimants — every one a raw
+  # seal or guarded data move a db-push baseline cannot reproduce; a restored pre-A7d database would
+  # keep its rows at the old version while the binaries declare the new, and syncConsumerCatalog
+  # would refuse every upgraded process. Replays after U3 (whose generation it extends) and A7a
+  # (whose claimant body it re-issues), in ledger order.
   # 20271126000000_phase6_4c_iiir_writer_fence is here for exactly the same reason as its sibling
   # below (Codex on `6b3ff9e6`, where it was MISSING from this list). Prisma's model of it is one
   # nullable column, which `prisma db push` and a resolve-as-applied both reproduce — while the two
@@ -516,7 +523,8 @@ if echo "$out" | grep -q "P3005"; then
 20271231000000_phase6_t4d_ii_a6d_delivery_seals
 20280101000000_phase6_t4d_ii_a6e_generation_fence
 20280102000000_phase6_t4d_ii_a7a_revision_named
-20280103000000_phase6_t4d_ii_a7c_inbox_v3"
+20280103000000_phase6_t4d_ii_a7c_inbox_v3
+20280104000000_phase6_t4d_ii_a7d_catalog_change"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -595,8 +603,56 @@ if echo "$out" | grep -q "P3005"; then
     exit 1
   fi
 
+  # Phase 6 task 4d-ii-a / A7d — A DATABASE THAT CARRIES A7d DOES NOT REPLAY THE CATALOG'S EARLIER OWNERS.
+  # 4d-i's two halves and 4d-i-b U3 are on ALWAYS_EXECUTE so a db-push baseline (no raw seals) really
+  # installs them. A database restored WITHOUT its ledger from a point after A7d was applied is the
+  # other kind that reaches this path, and each of those three files carries a foreign-generation
+  # audit written before A7d's coverage generation existed, inside an immutable file: 4d-i's is gated
+  # on 4d-iii's retirement marker alone and admits exactly its two seeds plus U3's successor by shape;
+  # U3's is gated on the marker OR the serving witness (`phase6_t4d_ii_installed()`: the writers
+  # declared AND a lease) and admits exactly three. Both refuse the generation A7d seeds beside the
+  # old ("neither seeds nor recognises"), and a database that was migrated through A7d but never
+  # started a process of this release holds no lease, so the witness cannot stand them down. Their
+  # replay is therefore impossible on such a database, and it is also unnecessary: A7d's own seals
+  # standing beside 4d-i's and U3's is the evidence those files ran to completion (A7d's fail-closed
+  # verification ran over them). docs/RUNBOOK.md's "A restored database that lost its migration
+  # ledger" states the rule: when the database CARRIES A7d — its two claimant seals and the re-issued
+  # actor seal standing, 4d-i's own seal functions standing — the three catalog owners are RESOLVED
+  # as applied, and every later ALWAYS_EXECUTE file replays as before (A7d's own catalog audit admits
+  # the four generations it knows, lease or no lease). A database that does not carry A7d — a db-push
+  # baseline, a restore from before A7d — leaves them pending exactly as before, so their raw guards
+  # and audits really apply. `scripts/upgrade-proof.sh` mirrors this rule in its ledger-lost replays.
+  T4D_CATALOG_OWNERS="20271220000000_phase6_t4d_i_dark_migration
+20271221000000_phase6_t4d_i_decision_facts
+20271224000000_phase6_t4d_i_b_u3_pairing_flip"
+  CARRIES_A7D=0
+  if carries_out=$(node -e '
+    const { PrismaClient } = require("@prisma/client");
+    const prisma = new PrismaClient();
+    prisma.$queryRawUnsafe(
+      "SELECT (to_regproc(\x27phase6_t4d_membership_transition_seal\x27) IS NOT NULL AND to_regproc(\x27platform_t4d_event_envelope\x27) IS NOT NULL AND to_regproc(\x27platform_t4d_event_pairing_actor\x27) IS NOT NULL) AS armed, (to_regproc(\x27phase6_t4d_transition_claims_standing\x27) IS NOT NULL AND to_regproc(\x27phase6_t4d_forward_claims_event\x27) IS NOT NULL AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = \x27platform_t4d_event_pairing_actor\x27 AND position(\x27system:membership-standing\x27 in prosrc) > 0)) AS a7d"
+    ).then((rows) => {
+      if (!rows[0] || rows[0].armed !== true) { console.log("unarmed"); return; }
+      console.log(rows[0].a7d === true ? "carries" : "before");
+    }).catch((e) => { console.log("error " + (e && e.message ? e.message.split("\n")[0] : e)); })
+      .finally(() => prisma.$disconnect());
+  ' 2>/dev/null); then
+    case "$carries_out" in
+      carries) CARRIES_A7D=1; echo "[migrate] this database CARRIES Phase 6 4d-ii-a / A7d (its claimant seals and the re-issued actor seal standing beside 4d-i's own) — 4d-i's two halves and 4d-i-b U3 will be resolved as applied rather than replayed (their catalog audits would refuse the generation A7d seeds)" ;;
+      before|unarmed) echo "[migrate] this database does not carry 4d-ii-a / A7d ($carries_out) — 4d-i's halves and U3 stay pending so their raw guards really apply" ;;
+      *) echo "[migrate] could not read the 4d-ii-a / A7d seals ($carries_out) — 4d-i's halves and U3 stay pending so their raw guards really apply" ;;
+    esac
+  else
+    echo "[migrate] could not read the 4d-ii-a / A7d seals — 4d-i's halves and U3 stay pending so their raw guards really apply"
+  fi
+
   for dir in prisma/migrations/*/; do
     name=$(basename "$dir")
+    if [ "$CARRIES_A7D" -eq 1 ] && printf '%s\n' "$T4D_CATALOG_OWNERS" | grep -qx "$name"; then
+      echo "[migrate] resolving $name as applied: a database carrying 4d-ii-a / A7d ran it (its catalog audit would refuse the generation A7d seeds; docs/RUNBOOK.md §P6T4D)"
+      npx prisma migrate resolve --applied "$name" || exit 1
+      continue
+    fi
     if [ "$SKIP_T3C_CORRECTION" -eq 1 ] && [ "$name" = "$T3C_CORRECTION" ]; then
       echo "[migrate] skipping resolve --applied for $name (it will be executed by the deploy below)"
       continue

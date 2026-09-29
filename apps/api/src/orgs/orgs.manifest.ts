@@ -41,6 +41,9 @@ export const orgsManifest: ModuleManifest = {
     'membership.role_changed',
     'membership.discipline_changed',
     'membership.removed',
+    // Phase 6 task 4d (4d-ii-a / A7d, §A.2) — an ARCHITECT-STANDING FLIP, emitted by the ledgered
+    // member commands beside the `MembershipTransition` fact that claims it.
+    'membership.standing_changed',
   ],
   consumesEvents: [],
   commands: [

@@ -73,6 +73,12 @@ export const DECISION_QUERIES = [
   // predicates, bound at bootstrap beside the decider family's.
   'decisions.consultationRequestedPushTarget',
   'decisions.consultationRespondedPushTarget',
+  // Phase 6 task 4d (4d-ii-a / A7d, §A.2 the push families) — the two FROZEN-audience families'
+  // claim-time predicates: the subject still demands the announcement, and of WHOM it demands it
+  // now (the forwarded decision's current holder's users; every active architect), so the frozen
+  // recipient set is intersected with the current one at send.
+  'decisions.forwardPushTarget',
+  'decisions.countersignPushTarget',
 ] as const;
 export type DecisionQuery = (typeof DECISION_QUERIES)[number];
 
