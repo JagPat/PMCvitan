@@ -124,6 +124,9 @@ export const engineerTodayLabels = {
   unavailable: { en: "Today's log didn't load", hi: 'आज का लॉग नहीं खुला', gu: 'આજનો લોગ ખૂલ્યો નહીં' },
   unavailableDetail: { en: 'Check your signal, then try again.', hi: 'सिग्नल देखें, फिर दोबारा कोशिश करें।', gu: 'સિગ્નલ તપાસો, પછી ફરી પ્રયાસ કરો.' },
   retry: { en: 'Try again', hi: 'फिर कोशिश करें', gu: 'ફરી પ્રયાસ કરો' },
+  pendingStart: { en: "Starting today's log…", hi: 'आज का लॉग शुरू हो रहा है…', gu: 'આજનો લોગ શરૂ થઈ રહ્યો છે…' },
+  pendingSend: { en: 'Sending to PMC…', hi: 'PMC को भेज रहे हैं…', gu: 'PMC ને મોકલી રહ્યા છીએ…' },
+  savedOffline: { en: 'Saved on this phone. It will go when signal returns.', hi: 'इस फ़ोन पर सेव है। सिग्नल आने पर चला जाएगा।', gu: 'આ ફોનમાં સેવ છે. સિગ્નલ આવશે ત્યારે જશે.' },
   staleDetail: { en: 'Showing the last log we had. Check your signal, then try again.', hi: 'पिछला लॉग दिख रहा है। सिग्नल देखें, फिर दोबारा कोशिश करें।', gu: 'છેલ્લો લોગ દેખાય છે. સિગ્નલ તપાસો, પછી ફરી પ્રયાસ કરો.' },
   step: {
     checkIn: { en: 'Check in', hi: 'हाज़िरी', gu: 'હાજરી' },

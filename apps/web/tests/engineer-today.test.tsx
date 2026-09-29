@@ -203,6 +203,24 @@ describe('Engineer Today — the screen', () => {
     expect(r.queryByTestId('today-count')).toBeNull();
   });
 
+  it('a send already queued is shown as sending — the button is not offered twice', async () => {
+    const ready = log({ checkedIn: true, progress: 2 });
+    ready.crew[0].count = 3;
+    const queued = { t: 'submitDailyLog' as const, log: { checkedIn: true, checkinTime: null, progress: 2, crew: ready.crew }, idempotencyKey: 'k1' };
+    const { r } = await loadToday({ dailyLog: ready, outbox: [queued], online: false });
+    expect(r.getByTestId('today-now').dataset.action).toBe('pending-send');
+    expect(r.getByText(L.pendingSend.en)).toBeTruthy();
+    expect(r.getByText(L.savedOffline.en)).toBeTruthy();
+    expect(r.queryByTestId('today-action')).toBeNull();
+  });
+
+  it('a start already queued is shown as starting — no second start', async () => {
+    const { r } = await loadToday({ dailyLog: null, outbox: [{ t: 'startDailyLog', idempotencyKey: 'k2' }], online: true });
+    expect(r.getByTestId('today-now').dataset.action).toBe('pending-start');
+    expect(r.queryByText(L.savedOffline.en)).toBeNull();
+    expect(r.queryByTestId('today-action')).toBeNull();
+  });
+
   it('the next morning, yesterday’s sent log leads to starting today’s', async () => {
     const yesterday = log({ checkedIn: true, progress: 2, submitted: true, logDate: '2000-01-01' });
     const { r } = await loadToday({ dailyLog: yesterday, timeZone: 'Asia/Kolkata' });

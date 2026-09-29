@@ -24,6 +24,12 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   const total = useStore(selectTotalWorkers);
   const dailyLogLoad = useStore((s) => s.dailyLogLoad);
   const timeZone = useStore((s) => s.timeZone);
+  const online = useStore((s) => s.online);
+  // a start or send already in this project's durable outbox (offline, or awaiting the server): the
+  // log only changes once the server confirms, so until then the card must not offer the same
+  // command again — a second tap would queue a second op under a fresh key
+  const pendingStart = useStore((s) => s.outbox.some((o) => o.t === 'startDailyLog'));
+  const pendingSend = useStore((s) => s.outbox.some((o) => o.t === 'submitDailyLog'));
   const setScreen = useStore((s) => s.setScreen);
   const startDailyLog = useStore((s) => s.startDailyLog);
   const checkIn = useStore((s) => s.checkIn);
@@ -69,6 +75,13 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
             </button>
           </>
         )}
+      </div>
+    );
+  } else if ((path.action === 'start' && pendingStart) || (path.action === 'send' && pendingSend)) {
+    card = (
+      <div className={styles.now} data-surface="ink" data-testid="today-now" data-action={path.action === 'start' ? 'pending-start' : 'pending-send'}>
+        <div className={styles.nowTitle} style={{ marginTop: 0 }}>{path.action === 'start' ? L.pendingStart[lang] : L.pendingSend[lang]}</div>
+        {!online && <div className={styles.nowDetail}>{L.savedOffline[lang]}</div>}
       </div>
     );
   } else if (path.action === 'done') {
