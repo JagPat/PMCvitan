@@ -327,13 +327,75 @@ const STANDING_WORLD = `DROP TRIGGER IF EXISTS "Membership_t4d_architect_reserve
   INSERT INTO "User" ("id","projectId","role","name","phone") VALUES ('mx-arch','mx-proj','engineer','MX Architect','+910000000106');`;
 
 /**
- * 4d-ii-a / A7d — the two chain keys compiled `pairingRequired` whose WRITERS are A8a's (`decisions.forward`;
- * the approve under a chain): their claimants are installed by A7d's migration (asserted here to stand)
- * and their executable bundles join this matrix with the writer branch that produces them.
+ * 4d-ii-a / A7d — a chain key compiled `pairingRequired` whose WRITER is a later unit's: its claimants are
+ * installed ahead (asserted here to stand) and its executable bundle joins this matrix with the writer branch
+ * that produces it. A8a delivered both of A7d's (`decisions.forward`; the approve under a chain), so the set
+ * is empty until 4d-iii's next flip, if any.
  */
-const OWED_BUNDLES: Record<string, { unit: string; claimants: string[] }> = {
-  'decision.forwarded': { unit: 'A8a', claimants: ['DecisionForward_t4d_claim', 'DecisionForward_t4d_claim_deferred'] },
-  'decision.awaiting_countersign': { unit: 'A8a', claimants: ['DecisionApprovalRevision_t4d_claim', 'DecisionApprovalRevision_t4d_claim_deferred', 'DecisionEvent_t4d_renotified_claim'] },
+const OWED_BUNDLES: Record<string, { unit: string; claimants: string[] }> = {};
+
+/**
+ * 4d-ii-a / A8a — a chain event written the way `emitEvent` writes it, with the generation named LITERALLY
+ * (so the PRIOR arm can ask what a previous release's emission of a type it never compiled meets) and the
+ * FROZEN-audience shape the two chain families carry: the catalog's constant body and `targetUserIds`.
+ */
+const CHAIN_EV = (o: { id: string; type: string; dec: string; version: string; actor: string; payload: string; targets: string[]; body: string }) => `
+    UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'mx-proj';
+    INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","actorId","entityType","entityId","payload","dispatchIntent")
+      SELECT '${o.id}','${o.type}',1,'mx-org','mx-proj',s."nextPosition" - 1,'human',NULL,'${o.actor}','Decision','${o.dec}',
+             ${o.payload},
+             jsonb_build_object('effectKey','${o.type}','coverageVersion','${o.version}','invalidate',true,
+                                'push', jsonb_build_object('body','${o.body}','roles', jsonb_build_array('architect'),'targetUserIds', jsonb_build_array(${o.targets.map((t) => `'${t}'`).join(',')})))
+        FROM "ProjectEventStream" s WHERE s."projectId" = 'mx-proj';
+    ${rawDeliveryRowsSql(o.id)};`;
+/** the world the forward bundle needs: the two doors 4d-iii drops (the fact's and the audit kind's) */
+const FORWARD_WORLD = `DROP TRIGGER IF EXISTS "DecisionForward_t4d_reserved" ON "DecisionForward";
+  DROP TRIGGER IF EXISTS "DecisionEvent_t4d_kind_reserved" ON "DecisionEvent";`;
+/**
+ * 4d-ii-a / A8a — the delivered `decisions.forward`: receipt, the FACT first (4d-i's seal compares it to the
+ * holder the decision carries at that instant), the holder mutation through the attribution seal's one door,
+ * the frozen-audience event naming the fact (`payload.forwardId`), attributed to the actor, the new holder's
+ * users frozen; the audit row; the completed receipt naming the fact. The PMC hands the client-held pending
+ * decision to the engineer's membership.
+ */
+const FORWARD = (o: { fwd: string; ev: string; version: string; order?: Order; event?: boolean; audit?: boolean; move?: boolean; named?: string; actor?: string; to?: { kind: string; membershipId: string | null }; cmd?: string }) => {
+  const cmd = o.cmd ?? `${o.fwd}-cmd`;
+  const to = o.to ?? { kind: 'member', membershipId: 'mx-mem-e' };
+  const toMem = to.membershipId === null ? 'NULL' : `'${to.membershipId}'`;
+  const fact = `INSERT INTO "DecisionForward" ("id","projectId","decisionId","fromDesignationKind","fromDesignationMembershipId","toDesignationKind","toDesignationMembershipId","forwardedById","forwardedByRole","forwardedByName","reason","sourceCommandId")
+      VALUES ('${o.fwd}','mx-proj','mx-dec','client',NULL,'${to.kind}',${toMem},'mx-pmc','pmc','MX PMC','the engineer decides finishes','${cmd}');`;
+  const move = o.move === false ? '' : `UPDATE "Decision" SET "deciderKind" = '${to.kind}', "deciderMembershipId" = ${toMem} WHERE "id" = 'mx-dec';`;
+  const event = o.event === false ? '' : CHAIN_EV({ id: o.ev, type: 'decision.forwarded', dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-pmc',
+    payload: `jsonb_build_object('forwardId','${o.named ?? o.fwd}','title','MX Pending','toLabel','MX Engineer')`,
+    targets: ['mx-eng'], body: 'A decision has been forwarded to you' });
+  const audit = o.audit === false ? '' : AU('mx-dec', 'forwarded');
+  // the fact precedes the holder mutation (the door compares the fact to the holder it displaces); the event may precede the fact
+  return TX(RESERVE(cmd, 'decisions.forward', 'mx-pmc'), o.order === 'event-first' ? event + fact + move : fact + move + event, audit, COMPLETE(cmd, o.fwd));
+};
+/** the world the provisional approve needs: the awaiting door dropped and an ACTIVE architect (the delivered
+ *  `members.add` bundle seats one, exactly as the standing branch above commits it) */
+const CHAIN_WORLD = `${STANDING_WORLD}
+  DROP TRIGGER IF EXISTS "Decision_t4d_awaiting_reserved" ON "Decision";
+  ${STANDING({ mt: 'mx-mt0', ev: 'mx-ev-st0', version: CURRENT })}`;
+/**
+ * 4d-ii-a / A8a — the delivered `decisions.approve` under an ACTIVE chain: receipt, the transition
+ * `pending → awaiting_countersign` writing the frozen approval tuple as the finalizing act would, the
+ * PROVISIONAL revision (`finalized = false`, `approvedFrom`, the approver's frozen pair), the audit row, and
+ * the countersign DEMAND naming the revision, attributed to the approver, the architects frozen.
+ */
+const PROVISIONAL = (o: { rev: string; ev: string; version: string; order?: Order; event?: boolean; audit?: boolean; named?: string; actor?: string; finalized?: boolean; cmd?: string }) => {
+  const cmd = o.cmd ?? `${o.rev}-cmd`;
+  // the frozen holder TUPLE is written by the provisional act "exactly as the finalizing act would"
+  // (4d-i's widened attribution seal; 4b's `Decision_t4b_approved_tuple_check` widened by A8a's migration)
+  const act = `UPDATE "Decision" SET "status" = 'awaiting_countersign', "approvedDeciderKind" = 'client', "approvedDeciderMembershipId" = NULL, "approvedDeciderLabel" = 'Client',
+      "approvedOption" = 'Option A', "material" = 'Granite', "approver" = 'MX PMC', "approvedById" = 'mx-pmc', "onBehalfOf" = 'client' WHERE "id" = 'mx-dec';
+    INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","onBehalfOf","sourceCommandId","finalized","approvedFrom","approvedByName","approvedByRole")
+      VALUES ('${o.rev}','mx-proj','mx-dec',1,'a',now(),'mx-pmc','client','${cmd}',${o.finalized === true ? 'TRUE' : 'FALSE'},'pending','MX PMC','pmc');`;
+  const event = o.event === false ? '' : CHAIN_EV({ id: o.ev, type: 'decision.awaiting_countersign', dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-pmc',
+    payload: `jsonb_build_object('revisionId','${o.named ?? o.rev}','approvedFrom','pending','title','MX Pending','deciderKind','client')`,
+    targets: ['mx-arch'], body: 'A decision awaits your countersign' });
+  const audit = o.audit === false ? '' : AU('mx-dec', 'approved');
+  return TX(RESERVE(cmd, 'decisions.approve', 'mx-pmc'), o.order === 'event-first' ? event + act : act + event, audit, COMPLETE(cmd, 'mx-dec'));
 };
 
 /** a HAND: a write past every seal, for a world state no delivered writer produces */
@@ -649,6 +711,71 @@ const MATRIX: Branch[] = [
       { name: 'a transition that flips NOTHING (an engineer\'s add) is announced as a standing change',
         bundle: STANDING({ mt: 'mx-mt', ev: 'mx-ev-st', version: CURRENT, role: 'engineer' }),
         refusal: /flips no architect standing, yet this transaction carries 1|requires a pairing claim and none was made/ },
+    ],
+  },
+  // 4d-ii-a / A8a — the hand-off: the forward fact is the branch's primary fact
+  {
+    key: 'decision.forwarded',
+    priorAbsent: true,
+    writer: 'decisions.forward (the PMC hands the client-held pending decision to the engineer)',
+    fact: 'DecisionForward (client/NULL → member/mx-mem-e, the actor\'s frozen pair)',
+    audit: 'DecisionEvent.forwarded',
+    transition: 'Decision holder client → member through the attribution seal\'s one door, under a decisions.forward receipt naming the fact',
+    enforcedBy: ['DecisionForward_t4d_claim', 'DecisionForward_t4d_claim_deferred', 'DecisionForward_t4d_seal', 'DecisionForward_t4d_paired',
+      'DecisionForward_t4d_provenance_bound', 'DecisionEvent_t4d_correspondence', 'DomainEvent_t4d_pairing_claimed'],
+    setup: FORWARD_WORLD,
+    positive: (order, version) => FORWARD({ fwd: 'mx-fwd', ev: 'mx-ev-fw', version, order }),
+    claim: 'mx-ev-fw:DecisionForward:mx-fwd',
+    negatives: [
+      { name: 'the forward is written with NO event',
+        bundle: FORWARD({ fwd: 'mx-fwd', ev: 'mx-ev-fw', version: CURRENT, event: false }),
+        refusal: /with 0 `decision.forwarded` event\(s\) that name it/ },
+      { name: 'the event names ANOTHER forward (wrong identity)',
+        bundle: FORWARD({ fwd: 'mx-fwd', ev: 'mx-ev-fw', version: CURRENT, named: 'mx-fwd-other' }),
+        refusal: /with 0 `decision.forwarded` event\(s\) that name it/ },
+      { name: 'the event is attributed to ANOTHER user than the forward\'s actor (wrong actor)',
+        bundle: FORWARD({ fwd: 'mx-fwd', ev: 'mx-ev-fw', version: CURRENT, actor: 'mx-client' }),
+        refusal: /with 0 `decision.forwarded` event\(s\) that name it|requires a pairing claim and none was made|names an actor other than/ },
+      { name: 'the fact is written and announced but the holder never moves (orphan evidence)',
+        bundle: FORWARD({ fwd: 'mx-fwd', ev: 'mx-ev-fw', version: CURRENT, move: false }),
+        refusal: /ORPHAN evidence of a hand-off that did not happen/ },
+      { name: 'the same-target no-op: the client-held decision is handed to the client role',
+        bundle: FORWARD({ fwd: 'mx-fwd', ev: 'mx-ev-fw', version: CURRENT, to: { kind: 'client', membershipId: null } }),
+        refusal: /DecisionForward_designation_moves_check/ },
+      // NOT a negative here: a forward bundle WITHOUT its `forwarded` audit row COMMITS under the delivered
+      // seals (the correspondence seal judges from the audit row's side, and no forward seal demands the
+      // row) — the service writes it, and the DB-side demand is a residual stated in A8a's packet.
+    ],
+  },
+  // 4d-ii-a / A8a — the countersign demand: the provisional revision is the branch's primary fact
+  {
+    key: 'decision.awaiting_countersign',
+    priorAbsent: true,
+    writer: 'decisions.approve under an ACTIVE chain (the provisional approve from pending)',
+    fact: 'DecisionApprovalRevision (provisional birth: finalized = false, approvedFrom = pending, the approver\'s frozen pair)',
+    audit: 'DecisionEvent.approved',
+    transition: 'Decision pending → awaiting_countersign, the tuple written as the finalizing act would (recorded by Decision_t4d_approval_transition)',
+    enforcedBy: ['DecisionApprovalRevision_t4d_claim', 'DecisionApprovalRevision_t4d_claim_deferred', 'DecisionApprovalRevision_t4d_birth',
+      'DecisionApprovalRevision_t4d_birth_paired', 'Decision_t4d_entry_seal', 'Decision_t4d_awaiting_paired', 'DecisionEvent_t4d_correspondence', 'DomainEvent_t4d_pairing_claimed'],
+    setup: CHAIN_WORLD,
+    positive: (order, version) => PROVISIONAL({ rev: 'mx-rev', ev: 'mx-ev-aw', version, order }),
+    claim: 'mx-ev-aw:DecisionApprovalRevision:mx-rev',
+    negatives: [
+      { name: 'the provisional revision is written with NO demand event',
+        bundle: PROVISIONAL({ rev: 'mx-rev', ev: 'mx-ev-aw', version: CURRENT, event: false }),
+        refusal: /carries 0 `decision.awaiting_countersign` event\(s\)/ },
+      { name: 'the demand names ANOTHER revision (wrong identity)',
+        bundle: PROVISIONAL({ rev: 'mx-rev', ev: 'mx-ev-aw', version: CURRENT, named: 'mx-rev-other' }),
+        refusal: /carries 0 `decision.awaiting_countersign` event\(s\)/ },
+      { name: 'the demand is attributed to ANOTHER user than the revision\'s approver (wrong actor)',
+        bundle: PROVISIONAL({ rev: 'mx-rev', ev: 'mx-ev-aw', version: CURRENT, actor: 'mx-client' }),
+        refusal: /carries 0 `decision.awaiting_countersign` event\(s\)|requires a pairing claim and none was made|names an actor other than/ },
+      { name: 'the provisional revision is written with its demand but NO audit row',
+        bundle: PROVISIONAL({ rev: 'mx-rev', ev: 'mx-ev-aw', version: CURRENT, audit: false }),
+        refusal: /born provisional in this transaction with 0 `approved` \/ `reapproved` audit row/ },
+      { name: 'a revision BORN finalized under an ACTIVE chain (the writer choosing the birth value)',
+        bundle: PROVISIONAL({ rev: 'mx-rev', ev: 'mx-ev-aw', version: CURRENT, finalized: true }),
+        refusal: /born finalized=t on a project whose architect chain is ACTIVE/ },
     ],
   },
 ];

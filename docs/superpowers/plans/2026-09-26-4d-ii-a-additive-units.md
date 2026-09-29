@@ -354,6 +354,60 @@ sub-unit is additive, dark and reviewable on its own.
 
 Order: A7a → A7b → A7c → A7d. A8a starts after A7d is on `main`.
 
+**A8a is delivered (2026-09-29)** with the table's items and one migration the delivered database
+forced:
+
+- **`decisions.forward`** on the ledger (`synthesizeKeyWhenAbsent`, the fact's provenance being
+  required), under `lockProjectReadiness` in the canonical order — the route's role re-validated live,
+  the holder arm (a named holder's own membership locked; a role holder through the delivered standing
+  read, the architect through the kernel register), then pmc, then the architect; the TARGET's standing
+  under its own lock (a named member's active membership; a role at least one active member holds) and
+  its users FROZEN as the push recipients; the actor's pair resolved (A2's seam); the subject's queued
+  decider and forward deliveries `FOR UPDATE` ascending, THEN the decision row — refusing 409 while
+  `DecisionForward_t4d_reserved` stands (`assertPhase6_4dOpen` under the readiness key), 409 to a lesser
+  client under an active chain, 409 on a draft, a record, a decision not `pending`/`change` (an
+  `awaiting_countersign` decision is the architect's action item), a same-target forward, a target that
+  cannot act, 403 to a non-holder. The fact FIRST, the holder moved through the attribution seal's one
+  door, the queued decider and forward demands cancelled by subject, the `forwarded` audit row, ONE
+  `decision.forwarded` naming the fact (`payload.forwardId`, the new holder's frozen label) with
+  `targetUserIds` frozen, and the kinded forwarded notice bound to it; the receipt names the fact.
+- **The approve under a chain:** the switch read under the readiness key through the kernel register
+  (`RoleStandingQuery.activeCount`, the read the seals judge by); the CAS lands `awaiting_countersign`
+  writing the frozen tuple as the finalizing act would; the revision born `finalized = false` with
+  `approvedFrom` (the status the act left) and the approver's frozen pair (`approvedByName`/`Role`,
+  the resolved envelope — REQUIRED under a chain, recorded when it resolves otherwise); the
+  `approved`/`reapproved` audit row as today; exactly ONE `decision.awaiting_countersign` (the act's
+  facts, `approvedFrom`, the approver pair, `revisionId`) to the architects FROZEN, never an approval
+  event; the PROVISIONAL notice ("X approved T — M — awaiting the architect's countersign", the
+  awaiting colour) bound to it; the decider and forward demands cancelled. With no chain the approve
+  lands `approved` as before, now recording `approvedFrom` and the pair on every revision and cancelling
+  the decider, forward and consultation-request demands (§A.4 (i)). An awaiting decision refuses a
+  second approve 409 and a generic forward 409.
+- **The registrations owed to A8a:** the two chain keys' executable bundles in the pairing matrix
+  (`decision.forwarded`: fact-first and event-first, the PRIOR generation refused, five refusals;
+  `decision.awaiting_countersign`: likewise, five refusals including a revision BORN finalized under
+  the chain); `decision.forward` in `ROLE_POLICY` (P28's set of nine) and the role tripwire; the status
+  tripwire's two A8a arms (the awaiting AUDIENCE — pmc, the decider, a standing consultee and the
+  architect, an architect seeing every pending decision too, in `decisionVisibleToViewer`; the
+  withdraw's legacy-text guard); the countersign-compat classification (A8a moves the delivered holder
+  fields; a forward-history DTO is 4d-ii-b's); the renderer arms for the forwarded and provisional
+  notices; the manifest and shared command lists; the call-graph and boundary pins.
+- **One migration, forced by the delivered database** (`20280105000000_phase6_t4d_ii_a8a_awaiting_tuple`,
+  one transaction, `ALWAYS_EXECUTE`): 4d-i widened `decision_t4b_attribution_seal`'s two approval
+  clauses for the provisional transition but not 4b's `Decision_t4b_approved_tuple_check` beside them,
+  which admits a non-NULL tuple on `approved`/`change` alone — so the provisional act could not write
+  the tuple §A.2 says it writes, and a decision whose tuple an EARLIER approval froze could never be
+  re-approved under a chain at all (`change → awaiting_countersign` moves a tuple-bearing row into a
+  status the CHECK refuses; A8a's live suite, the chain reapproval arm, RED at the delivered CHECK). The
+  file re-issues the CHECK with `awaiting_countersign` admitted, the 4b predicate otherwise byte for
+  byte, verified by the seal's own arm standing; the upgrade proof replays it twice and drives the
+  refusal it keeps (the tuple on a pending decision).
+- **Residuals stated:** a forward bundle WITHOUT its `forwarded` audit row commits under the delivered
+  seals (the correspondence seal judges from the audit row's side; no forward seal demands the row) —
+  the service writes it, and a DB-side demand is 4d-iii's with the other trailing seals; the frozen
+  set's DB-side shape and correspondence stay 4d-iii's (A7d's note); the forwarded notice's audience
+  is the pending demand's (pmc and the decider the decision now names).
+
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its
 packet which §C arms it carries. None may leave an arm unowned: the last 4d-ii-a unit to merge

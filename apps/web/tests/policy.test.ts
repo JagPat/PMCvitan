@@ -23,6 +23,10 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;
   // that is the practice's call alone.
   'decision.withdraw': ['pmc'],
+  // Phase 6 task 4d (4d-ii-a / A8a) — forward authority is the holder + pmc + architect: the route
+  // ceiling admits every role a holder can be designated in; the service narrows. No web surface
+  // yet (4d-ii-b's).
+  'decision.forward': ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'],
   'requirement.manage': ['pmc'],
   'requirement.read': ['pmc', 'engineer'],
   'substitution.manage': ['pmc'],

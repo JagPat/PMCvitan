@@ -70,6 +70,30 @@ import { PUSH_CONSUMER } from './consumers';
  * overlapping instances, the exposure is bounded to rows leased by old senders during the ONE
  * rollout that ships 4a — the same already-sent class as the check→send residual above.
  */
+/**
+ * 4d-ii-a / A8a (plan §A.4 (i), "every cancellation takes its locks in ONE order") — lock the subject's
+ * not-yet-cancelled push deliveries of the named families FOR UPDATE in ascending id, for a command that
+ * will take the decision row NEXT: the relay's claim leases a delivery first and then takes the decision
+ * lock through the family predicate, so a command holding the decision and then reaching for a delivery a
+ * claim holds would deadlock and abort one side toward dead-letter. Taken here, BEFORE the decision row,
+ * the command waits for an in-flight claim's short transaction instead; a delivery that claim has already
+ * LEASED and released is not waited for at all — the cancellation that follows marks it, and the sender's
+ * final pre-send re-read drops the send. The platform's own table, read only.
+ */
+export async function lockQueuedPushDeliveries(
+  tx: Prisma.TransactionClient,
+  args: { projectId: string; subject: string; eventTypes: readonly string[] },
+): Promise<void> {
+  if (args.eventTypes.length === 0) return;
+  await tx.$queryRaw`
+    SELECT d."id" FROM "OutboxDelivery" d
+      JOIN "DomainEvent" e ON e."eventId" = d."eventId"
+     WHERE d."consumer" = ${PUSH_CONSUMER} AND d."projectId" = ${args.projectId} AND d."subject" = ${args.subject}
+       AND d."cancelledAt" IS NULL
+       AND e."eventType" IN (${Prisma.join([...args.eventTypes])})
+     ORDER BY d."id" FOR UPDATE OF d`;
+}
+
 export async function cancelQueuedPushBySubject(
   tx: Prisma.TransactionClient,
   args: { projectId: string; subject: string; eventType: string; targetUserIds?: readonly string[] },

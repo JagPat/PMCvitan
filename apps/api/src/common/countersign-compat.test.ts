@@ -124,9 +124,12 @@ describe('the countersign-v1 completeness tripwire (4d-ii-a / A5e)', () => {
     reason: 'delivered', costImpact: 'delivered', timeImpactDays: 'delivered', requestedById: 'delivered',
     origin: 'strip: a decisions row whose open request is not standard (isCountersignShape)',
   };
-  /** The DTOs 4d introduces that a later unit serves. */
+  /** The DTOs 4d introduces that a later unit serves. 4d-ii-a / A8a serves the forward through the
+   *  DELIVERED holder fields (`deciderKind`/`deciderMembershipId`/`deciderUserId` move with it; a
+   *  forward to the architect role is stripped by the designation arm above) and adds no DTO; a
+   *  forward-history shape, if the client unit wants one, is 4d-ii-b's to classify. */
   const OWED_DTOS: Record<string, Classification> = {
-    DecisionForward: 'owed by A8a (it serves the forward, and classifies its DTO here)',
+    DecisionForward: 'owed by 4d-ii-b (a forward-history shape, if the client unit serves one; A8a moves the delivered holder fields)',
   };
 
   const sharedTypes = readFileSync(join(REPO, 'packages/shared/src/domain/types.ts'), 'utf8');

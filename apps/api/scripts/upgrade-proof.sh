@@ -4928,6 +4928,23 @@ assert "A7d: a second replay leaves webpush.notify at 3, the widened generation 
   "SELECT (SELECT \"catalogVersion\"::text FROM \"OutboxConsumerCatalog\" WHERE consumer = 'webpush.notify') || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c')::text || '|' || (SELECT count(*) FROM \"OutboxConsumerActivation\" WHERE consumer = 'decisions.effects')::text;" \
   "3|114|1"
 
+# ── 4d-ii-a / A8a: the frozen approval tuple admitted on awaiting_countersign ─────────────────────
+# 4b's CHECK admitted the tuple on approved/change alone; 4d-i widened the attribution SEAL's arm for
+# the provisional transition and not the CHECK, so the provisional act could not write the tuple and a
+# tuple-bearing decision could never be re-approved under a chain. A8a's file re-issues the CHECK, and
+# the legacy fixture's rows (every tuple on an approved or reopened decision) are admitted unchanged.
+if $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280105000000_phase6_t4d_ii_a8a_awaiting_tuple/migration.sql" >/dev/null 2>&1; then
+  echo "ok      A8a: the awaiting-tuple migration replays over a database that already carries it"
+else
+  echo "FAILED  A8a: the awaiting-tuple migration did not replay (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
+fi
+assert "A8a: Decision_t4b_approved_tuple_check admits the frozen tuple on approved, change AND awaiting_countersign, its 4b predicate otherwise intact" \
+  "SELECT (position('awaiting_countersign' in pg_get_constraintdef(oid)) > 0 AND position('btrim' in pg_get_constraintdef(oid)) > 0 AND position('approvedDeciderMembershipId' in pg_get_constraintdef(oid)) > 0)::text FROM pg_constraint WHERE conrelid = '\"Decision\"'::regclass AND conname = 'Decision_t4b_approved_tuple_check';" \
+  "true"
+assert_rejects "A8a: the tuple on a PENDING decision is still refused by the widened CHECK" \
+  "UPDATE \"Decision\" SET \"approvedDeciderKind\" = 'client', \"approvedDeciderLabel\" = 'Client' WHERE \"id\" = (SELECT \"id\" FROM \"Decision\" WHERE \"status\" = 'pending' AND \"approvedDeciderKind\" IS NULL ORDER BY \"id\" LIMIT 1)" \
+  "Decision_t4b_approved_tuple_check|frozen|approval transition"
+
 # ── and the marker table is CLOSED, not merely trigger-covered ──────────────────────────────────
 # A child created with INHERITS takes a marker row the PARENT lookup finds while none of the
 # parent's triggers fire for DML against it. Measured on this codebase; asserted here over the
@@ -5028,7 +5045,7 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*) continue ;; esac
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5499,7 +5516,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20271228000000_phase6_t4d_ii_a6a_activation_register 20271229000000_phase6_t4d_ii_a6b_activation_rules
 20271230000000_phase6_t4d_ii_a6c_catalog_rules 20271231000000_phase6_t4d_ii_a6d_delivery_seals
 20280101000000_phase6_t4d_ii_a6e_generation_fence 20280102000000_phase6_t4d_ii_a7a_revision_named
-20280103000000_phase6_t4d_ii_a7c_inbox_v3 20280104000000_phase6_t4d_ii_a7d_catalog_change"
+20280103000000_phase6_t4d_ii_a7c_inbox_v3 20280104000000_phase6_t4d_ii_a7d_catalog_change
+20280105000000_phase6_t4d_ii_a8a_awaiting_tuple"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each

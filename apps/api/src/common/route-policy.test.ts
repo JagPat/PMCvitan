@@ -192,8 +192,8 @@ describe('role allowlists are sourced from the shared ROLE_POLICY via @RolesFor 
 /**
  * Phase 6 task 4d (§A.1; P28) — the ARCHITECT's action set, pinned by EQUALITY: `architect` is in an
  * action's role list iff the action is one of the architect's, so an accidental widening onto a
- * commercial or payment action and an omitted read both fail. §A.1 grants ELEVEN; eight have routes
- * today (4d-ii-a / A5a). The other three — `decision.forward` (A8a), `decision.countersign` and
+ * commercial or payment action and an omitted read both fail. §A.1 grants ELEVEN; nine have routes
+ * today (4d-ii-a / A5a, and `decision.forward` with A8a). The other two — `decision.countersign` and
  * `decision.disagree` (A8b) — join this list with their routes, since a policy entry with no route is
  * refused above. Deliberately NOT: `decision.change` (the architect's change path is the countersign
  * disagreement), `decision.create`, `decision.publish`, `decision.withdraw`, `org.create`, and every
@@ -203,7 +203,7 @@ describe('role allowlists are sourced from the shared ROLE_POLICY via @RolesFor 
 describe('the architect action set (Phase 6 task 4d, §A.1; P28)', () => {
   const ARCHITECT_ACTIONS = [
     'project.read', 'members.read', 'companies.read',
-    'decision.approve', 'decision.updateDraft', 'decision.withdrawChange',
+    'decision.approve', 'decision.updateDraft', 'decision.withdrawChange', 'decision.forward',
     'consultation.request', 'consultation.respond',
   ];
 

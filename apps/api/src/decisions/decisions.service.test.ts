@@ -287,7 +287,9 @@ function makeLifecycle(status: string, opts: { architects?: number } = {}) {
     }),
     // 4d-ii-a / A5e — the kernel register the `countersign-v1` in-command check reads: no architect
     // unless the arm seats one, so the chain is inactive and every lifecycle below runs as before
-    $queryRawUnsafe: vi.fn(async (sql: string) => (sql.includes('platform_role_standing') ? [{ n: opts.architects ?? 0 }] : [])),
+    // 4d-ii-a / A8a — and the ARCHITECTS the provisional approve freezes on its demand (`holderUserIds`)
+    $queryRawUnsafe: vi.fn(async (sql: string) => sql.includes('platform_role_standing') ? [{ n: opts.architects ?? 0 }]
+      : sql.includes('platform_role_holder_user_ids') ? Array.from({ length: opts.architects ?? 0 }, (_, i) => ({ userId: `arch-${i + 1}` })) : []),
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
     // interactive form emulates the REAL transaction's rollback: on a thrown error the
@@ -540,10 +542,14 @@ describe('DecisionsService — the countersign-v1 client contract on approve (4d
     }
   });
 
-  it('a countersign-v1 client is not refused under an active chain', async () => {
-    const { svc, row } = makeLifecycle('pending', { architects: 1 });
+  it('a countersign-v1 client is not refused under an active chain — and (4d-ii-a / A8a) the approval lands PROVISIONAL', async () => {
+    const { svc, row, events, notices } = makeLifecycle('pending', { architects: 1 });
     await svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, as('countersign-v1'));
-    expect(row.status).not.toBe('pending');
+    expect(row.status).toBe('awaiting_countersign');
+    // the audit register keeps the act; the notice tells the truth about its finality
+    expect(events.map((e) => e.type)).toEqual(['approved']);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatch(/awaiting the architect's countersign$/);
   });
 
   it('with NO chain every client approves exactly as before', async () => {

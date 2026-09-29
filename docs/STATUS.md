@@ -34,7 +34,12 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
   chain with the provisional revision and notice, the frozen `approvedFrom`/`approvedByName`/
   `approvedByRole` and its `decider`/`forward` cancellations; the two chain keys' executable bundles
   owed to A8a in the pairing matrix; the status tripwire's two A8a arms; `decision.forward` in
-  `ROLE_POLICY` (P28). No consumer version, catalog row or door moves.
+  `ROLE_POLICY` (P28); the forwarded and provisional notices' renderer arms. One migration the delivered
+  database forced (`20280105000000_phase6_t4d_ii_a8a_awaiting_tuple`, `ALWAYS_EXECUTE`): 4b's
+  `Decision_t4b_approved_tuple_check` re-issued with `awaiting_countersign` admitted — 4d-i widened the
+  attribution seal's arm for the provisional transition and never the CHECK beside it, so the chain
+  reapproval of a tuple-bearing decision was unrepresentable. No consumer version, catalog row or door
+  moves.
 - **A7d merged as #671** (`7e12e7a`): the CATALOG CHANGE (plan §D "4d-ii-a is a CATALOG CHANGE, staged
   as one") — the compiled external-effect catalog widened (the three chain types, the two FROZEN-audience
   push families with their constant bodies, the `architect` role in the three targeted ceilings) at a new

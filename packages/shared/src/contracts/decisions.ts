@@ -38,6 +38,11 @@ export const DECISION_COMMANDS = [
   // second name for one fact, which is the drift the manifest exists to prevent.
   'consultations.request',
   'consultations.respond',
+  // Phase 6 task 4d (4d-ii-a / A8a, §A.2) — FORWARD: the current holder, the PMC or an architect hands
+  // an open, published decision to another designation. The `DecisionForward` fact is written first,
+  // the holder columns move with it (the one door in the holder freeze), and `decision.forwarded` is
+  // pushed at the new holder's users, frozen at emission. Refused 409 while 4d-i's reservation stands.
+  'decisions.forward',
 ] as const;
 export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 
@@ -131,6 +136,19 @@ export interface UpdateDecisionDraftInput {
 /** `decisions.approve` — the client chooses an option (locks the decision). */
 export interface ApproveDecisionInput {
   readonly optionIndex: number;
+}
+
+/**
+ * Phase 6 task 4d (4d-ii-a / A8a, §A.2) — `decisions.forward`. The target is a DESIGNATION exactly as
+ * the decider is designated at issue: a role (`client`, `pmc`, `architect`) or a NAMED active member
+ * (`member` with its membership id). `none` is not a holder and cannot be forwarded to. The reason is
+ * required and non-blank (the `DecisionForward.reason` discipline).
+ */
+export interface ForwardDecisionInput {
+  toDesignationKind: 'client' | 'pmc' | 'member' | 'architect';
+  /** required exactly when `toDesignationKind` is `member` */
+  toDesignationMembershipId?: string;
+  reason: string;
 }
 
 /** `decisions.requestChange` — reopen a locked decision with a reason + impacts. */

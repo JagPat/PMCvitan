@@ -451,6 +451,10 @@ if echo "$out" | grep -q "P3005"; then
   # keep its rows at the old version while the binaries declare the new, and syncConsumerCatalog
   # would refuse every upgraded process. Replays after U3 (whose generation it extends) and A7a
   # (whose claimant body it re-issues), in ledger order.
+  # 20280105000000_phase6_t4d_ii_a8a_awaiting_tuple (4d-ii-a / A8a) re-issues 4b's
+  # Decision_t4b_approved_tuple_check with awaiting_countersign admitted (4d-i widened the attribution
+  # SEAL's arm for the provisional transition, never the CHECK beside it). A CHECK is raw SQL a db-push
+  # baseline never carries and a resolve-as-applied never installs, so it replays, in ledger order.
   # 20271126000000_phase6_4c_iiir_writer_fence is here for exactly the same reason as its sibling
   # below (Codex on `6b3ff9e6`, where it was MISSING from this list). Prisma's model of it is one
   # nullable column, which `prisma db push` and a resolve-as-applied both reproduce — while the two
@@ -524,7 +528,8 @@ if echo "$out" | grep -q "P3005"; then
 20280101000000_phase6_t4d_ii_a6e_generation_fence
 20280102000000_phase6_t4d_ii_a7a_revision_named
 20280103000000_phase6_t4d_ii_a7c_inbox_v3
-20280104000000_phase6_t4d_ii_a7d_catalog_change"
+20280104000000_phase6_t4d_ii_a7d_catalog_change
+20280105000000_phase6_t4d_ii_a8a_awaiting_tuple"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

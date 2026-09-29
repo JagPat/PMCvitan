@@ -4,11 +4,15 @@ import { join } from 'node:path';
 import { ACTIONABLE_DECISION_NOTICE_KINDS, kindedDecisionNoticeServed, kindedNoticeRevisionId, renderKindedDecisionNotice } from './decision-notice';
 import {
   APPROVED_DECISION_NOTICE_COLOR,
+  AWAITING_COUNTERSIGN_NOTICE_COLOR,
+  FORWARDED_DECISION_NOTICE_COLOR,
   PENDING_DECISION_NOTICE_COLOR,
   RECORDED_DECISION_NOTICE_COLOR,
   WITHDRAWN_DECISION_NOTICE_COLOR,
   approvedDecisionNotice,
+  forwardedDecisionNotice,
   pendingDecisionNotice,
+  provisionalApprovalNotice,
   recordedDecisionNotice,
   withdrawnDecisionNotice,
 } from '../domain/notifications';
@@ -104,13 +108,45 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   });
 
   it('renders NOTHING it has no arm for, and never trusts a kind that disagrees with its event', () => {
-    for (const kind of ['decision.drafted', 'decision.forwarded', 'decision.awaiting_countersign', 'decision.change_requested', 'decision.consultation_requested', 'x.y']) {
+    for (const kind of ['decision.drafted', 'decision.change_requested', 'decision.consultation_requested', 'x.y']) {
       expect(render(kind, { eventType: kind, payload: { title: 'T' }, effectKey: kind, ...envelope }), kind).toBeNull();
     }
     expect(renderKindedDecisionNotice('decision.published', { ...published('T'), eventType: 'decision.withdrawn' })).toBeNull();
     expect(render('decision.approved', { ...approved(), eventType: 'decision.reapproved' })).toBeNull();
     expect(renderKindedDecisionNotice('decision.published', { eventType: 'decision.published', payload: {}, effectKey: 'decision.published', ...envelope })).toBeNull();
     expect(renderKindedDecisionNotice('decision.withdrawn', { eventType: 'decision.withdrawn', payload: { title: 'T' }, effectKey: 'decision.withdrawn', ...envelope })).toBeNull();
+  });
+
+  // 4d-ii-a / A8a — the forwarding notice and the provisional approval's notice
+  it('the forwarded notice renders the title and the new holder\'s frozen label from its event, and nothing without them', () => {
+    const forwarded = (payload: object) => ({ eventType: 'decision.forwarded', payload, effectKey: 'decision.forwarded', ...envelope });
+    expect(render('decision.forwarded', forwarded({ forwardId: 'dfw-1', title: 'Kitchen counter', toLabel: 'Ravi', reason: 'site engineer decides finishes' })))
+      .toEqual({ text: forwardedDecisionNotice('Kitchen counter', 'Ravi'), color: FORWARDED_DECISION_NOTICE_COLOR });
+    expect(render('decision.forwarded', forwarded({ title: 'Kitchen counter', toLabel: 'the architect' }))?.text).toBe('Decision forwarded: Kitchen counter → the architect');
+    expect(FORWARDED_DECISION_NOTICE_COLOR).toBe('#C08A2D');
+    expect(render('decision.forwarded', forwarded({ title: 'Kitchen counter' }))).toBeNull();
+    expect(render('decision.forwarded', forwarded({ toLabel: 'Ravi' }))).toBeNull();
+    expect(render('decision.forwarded', { ...forwarded({ title: 'T', toLabel: 'R' }), eventType: 'decision.published' })).toBeNull();
+    // the forwarded notice is the NEW holder's action item: pmc and the decider the decision now names
+    const held = { status: 'pending', deciderKind: 'member', deciderUserId: 'u-ravi' } as const;
+    expect(kindedDecisionNoticeServed('decision.forwarded', forwarded({ title: 'T', toLabel: 'R' }), held, 'pmc', 'u-pmc')).toBe(true);
+    expect(kindedDecisionNoticeServed('decision.forwarded', forwarded({ title: 'T', toLabel: 'R' }), held, 'engineer', 'u-ravi')).toBe(true);
+    expect(kindedDecisionNoticeServed('decision.forwarded', forwarded({ title: 'T', toLabel: 'R' }), held, 'engineer', 'u-other')).toBe(false);
+    expect(kindedDecisionNoticeServed('decision.forwarded', forwarded({ title: 'T', toLabel: 'R' }), { ...held, status: 'withdrawn' }, 'pmc', 'u-pmc')).toBe(false);
+  });
+
+  it('the provisional approval notice renders as the green one does, from the PROVISIONAL revision the demand names, with the countersign it awaits stated; a re-notification renders nothing', () => {
+    const demand = approved({ kind: 'decision.awaiting_countersign' });
+    expect(render('decision.awaiting_countersign', demand))
+      .toEqual({ text: provisionalApprovalNotice({ actorName: 'Client One', actorRole: 'client', title: 'Kitchen counter', material: 'Granite', deciderKind: 'client', onBehalfOf: null }), color: AWAITING_COUNTERSIGN_NOTICE_COLOR });
+    expect(render('decision.awaiting_countersign', demand)?.text).toBe("Client approved Kitchen counter — Granite — awaiting the architect's countersign");
+    expect(AWAITING_COUNTERSIGN_NOTICE_COLOR).toBe('#31567F');
+    expect(kindedNoticeRevisionId('decision.awaiting_countersign', demand)).toBe('dar-D1-v1');
+    // the `decisions.effects` re-notification: a system event naming no revision, with no human envelope
+    expect(render('decision.awaiting_countersign', { eventType: 'decision.awaiting_countersign', payload: { renotified: true, crossingEventId: 'e', transitionId: 't' }, effectKey: 'decision.awaiting_countersign', actorRole: null, actorName: null })).toBeNull();
+    expect(render('decision.awaiting_countersign', approved({ kind: 'decision.awaiting_countersign', actorRole: null, actorName: null }))).toBeNull();
+    expect(render('decision.awaiting_countersign', approved({ kind: 'decision.awaiting_countersign', revisionId: 'dar-D2-v1' }))).toBeNull();
+    expect(render('decision.approved', demand), 'a kind that disagrees with its event').toBeNull();
   });
 
   it('the ACTIONABLE set is exactly the four kinds that ask for an act', () => {
@@ -122,9 +158,11 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   it('the delivered decision writers cache with the SAME colour constants the renderer reads, and every one is KINDED (A7a)', () => {
     const src = readFileSync(join(__dirname, 'decisions.service.ts'), 'utf8');
     const creates = [...src.matchAll(/tx\.notification\.create\(\{ data: \{[^}]*\} \}\)/g)].map((m) => m[0]);
-    expect(creates.length).toBe(4);
+    // 4d-ii-a / A8a — six writers: the one-step issue, publish, the approve (green), the provisional
+    // approve (awaiting), the withdraw and the forward
+    expect(creates.length).toBe(6);
     // every notice names its colour by the constant its renderer arm reads; no literal is left
-    expect(creates.filter((c) => /PENDING_DECISION_NOTICE_COLOR|RECORDED_DECISION_NOTICE_COLOR|WITHDRAWN_DECISION_NOTICE_COLOR|APPROVED_DECISION_NOTICE_COLOR/.test(c))).toHaveLength(4);
+    expect(creates.filter((c) => /PENDING_DECISION_NOTICE_COLOR|RECORDED_DECISION_NOTICE_COLOR|WITHDRAWN_DECISION_NOTICE_COLOR|APPROVED_DECISION_NOTICE_COLOR|AWAITING_COUNTERSIGN_NOTICE_COLOR|FORWARDED_DECISION_NOTICE_COLOR/.test(c))).toHaveLength(6);
     expect(creates.filter((c) => /'#[0-9A-Fa-f]{6}'/.test(c))).toEqual([]);
     // 4d-ii-a / A7a — every decisions notice writer stamps the event it announces and its kind (the
     // binding pair; the seal refuses one half without the other), the event emitted first in the
@@ -133,8 +171,9 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
       expect(c, c).toMatch(/kind: /);
       expect(c, c).toMatch(/eventId \}/);
     }
-    expect(src.match(/const eventId = randomUUID\(\);/g)).toHaveLength(4);
-    expect(src.match(/emitEvent\(tx, \{\n\s+projectId, actor, eventId,/g)).toHaveLength(4);
+    // five event-id mints (the approve mints one for either landing) and six emitters
+    expect(src.match(/const eventId = randomUUID\(\);/g)).toHaveLength(5);
+    expect(src.match(/emitEvent\(tx, \{\n\s+projectId, actor, eventId,/g)).toHaveLength(6);
   });
 });
 
