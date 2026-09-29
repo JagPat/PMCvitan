@@ -427,3 +427,25 @@ describe('review round 9 — the pending card names the command actually on its 
     expect(r.queryByText(L.pendingStart.en)).toBeNull();
   });
 });
+
+describe('shadow review — a log already sent is never sent again', () => {
+  it('the store refuses to send a log that is already sent', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const scope = await import('@/store/projectScope');
+    useStore.setState(getInitialState());
+    const never = () => new Promise(() => {});
+    useStore.getState()._setGateway({ submitDailyLog: vi.fn(never), snapshot: vi.fn(never) } as never);
+    useStore.setState({ ...scope.emptyProjectData(), activeProjectId: 'villa-b', projectLoadState: 'ready', role: 'engineer', online: false, dailyLog: log({ checkedIn: true, submitted: true }) });
+    useStore.getState().submitDailyLog();
+    expect(useStore.getState().outbox.filter((o) => o.t === 'submitDailyLog')).toHaveLength(0);
+  });
+
+  it('the Site screen’s Submit is disabled once the log is sent', async () => {
+    await loadToday({ dailyLog: log({ checkedIn: true, submitted: true }) });
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+    expect((r.getAllByTestId('submit-daily-log').at(-1) as HTMLButtonElement).disabled).toBe(true);
+  });
+});

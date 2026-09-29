@@ -4466,6 +4466,12 @@ export const useStore = create<Store>()(
         get().flash('Please check in at site before submitting the daily log.');
         return;
       }
+      // a log already sent is never sent again: each send mints a fresh idempotency key, so the
+      // server would take a second tap as a second, independent submission
+      if (dl.submitted) {
+        get().flash('Today\u2019s log is already with PMC.');
+        return;
+      }
       // a send already on its way (queued, or committed but not yet read back) is never queued twice
       if (dailyLogCommandInFlight(get())) {
         get().flash('Today\u2019s log is already on its way to PMC.');
