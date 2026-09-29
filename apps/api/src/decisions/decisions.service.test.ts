@@ -239,14 +239,17 @@ function makeLifecycle(status: string, opts: { architects?: number } = {}) {
         changeRequests.push(rec);
         return rec;
       }),
-      findFirst: vi.fn(async ({ where }: { where: { decisionId: string; status: string } }) =>
-        changeRequests.find((c) => c.decisionId === where.decisionId && c.status === where.status) ?? null),
+      findFirst: vi.fn(async ({ where }: { where: { id?: string; decisionId?: string; status: string } }) =>
+        changeRequests.find((c) => (where.id ? c.id === where.id : c.decisionId === where.decisionId) && c.status === where.status) ?? null),
       updateMany: vi.fn(async ({ where, data }: { where: { id?: string; decisionId?: string; status: string }; data: Partial<CrRow> }) => {
         const hit = changeRequests.filter((c) => (where.id ? c.id === where.id : c.decisionId === where.decisionId) && c.status === where.status);
         hit.forEach((c) => Object.assign(c, data));
         return { count: hit.length };
       }),
     },
+    // 4d-ii-a / A7b — `withdrawChange` cancels the decision's queued consultation-request pushes
+    // by subject (the platform's own table); the in-memory register holds none
+    outboxDelivery: { updateMany: vi.fn(async () => ({ count: 0 })) },
     decisionEvent: {
       create: vi.fn((args: { data: (typeof events)[number] }) => { events.push(args.data); return Promise.resolve(args.data); }),
       count: vi.fn(async ({ where }: { where: { type: { in: string[] } } }) => events.filter((e) => where.type.in.includes(e.type)).length),
@@ -411,6 +414,16 @@ describe('DecisionsService — change control & mandatory re-approval (Phase 1 T
   it('withdraw with no open change request is a 409', async () => {
     const { svc } = makeLifecycle('approved');
     await expect(svc.withdrawChange('proj-1', 'DL-1', user)).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  // 4d-ii-a / A7b (plan §A.2, P33) — the ordinary escape hatch is closed for a disagreement
+  it('a countersign REJECTION request cannot be withdrawn — 409 naming re-approval; the decision stays in change', async () => {
+    const { svc, row, changeRequests } = makeLifecycle('approved');
+    await svc.requestChange('proj-1', 'DL-1', changeInput, engineer);
+    (changeRequests[0] as { origin?: string }).origin = 'countersign_rejection';
+    await expect(svc.withdrawChange('proj-1', 'DL-1', user)).rejects.toThrow(/countersign rejection.*re-approval/);
+    expect(row.status).toBe('change');
+    expect(changeRequests[0]).toMatchObject({ status: 'open' });
   });
 
   it('a CAS loser gets a deterministic 409 (the transition raced and lost)', async () => {

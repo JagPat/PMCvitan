@@ -207,6 +207,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/api/src/decisions/decision-serialize.ts :: d.status === 'pending'": 'owed by A8a: an awaiting decision’s audience, decided where the value is first written (the approve under a chain)',
     "apps/api/src/decisions/decisions.participant.ts :: ['pending', 'change']": 'excludes: the delivered open set; a decision awaiting countersign is answered by its own set (`namedAwaiting`/`awaitingRoles`), which carries the last architect’s exemption',
     "apps/api/src/decisions/decisions.query.ts :: d.status !== 'pending' && d.status !== 'change'": 'owed by A7: the decider push target’s architect arm',
+    // 4d-ii-a / A7b — the responded push family's withdrawn-audience arm (pmc-only once withdrawn)
+    "apps/api/src/decisions/decisions.query.ts :: d.status === 'withdrawn'": 'excludes: the withdrawn audience of the response push (pmc-only)',
     "apps/api/src/decisions/decisions.query.ts :: rows[0]!.status === 'withdrawn'": 'excludes: the linkability of a withdrawn decision',
     "apps/api/src/decisions/decisions.query.ts :: row.status as string) === 'withdrawn'": 'excludes: the linkability of a withdrawn decision',
     "apps/api/src/decisions/decisions.query.ts :: d.status !== 'approved'": 'excludes: only a FINAL approval anchors requirement provenance (A4b refuses a provisional head too)',

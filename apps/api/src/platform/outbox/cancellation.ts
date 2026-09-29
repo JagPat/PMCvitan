@@ -1,4 +1,4 @@
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PUSH_CONSUMER } from './consumers';
 
 /**
@@ -47,6 +47,13 @@ import { PUSH_CONSUMER } from './consumers';
  *     transaction commits. With the repeat pass, every interleaving of the scanner's create
  *     and this cancellation ends with the row cancelled or never created — proven by the
  *     deterministic barrier probe (R4-F3).
+ *   - a NARROWED cancellation (4d-ii-a / A7b, plan §A.4 (i)): `targetUserIds` restricts every arm
+ *     to the deliveries of events whose DURABLE dispatch intent targets one of the named users
+ *     (`dispatchIntent.push.targetUserId`, immutable on the event row; the delivery's payload is
+ *     bound to it by A6d's seals). The `withdraw` command cancels a withdrawn decision's
+ *     `consultation_responded` deliveries ONLY where the target lacks PMC standing — a withdrawn
+ *     decision is pmc-only, but a PMC may still be told advice was given. An empty list cancels
+ *     nothing, by construction.
  * NOT a new status value — the `OutboxDelivery_status_check` set is deliberately closed.
  *
  * The guarantee's true boundary, stated rather than overclaimed: a cancellation landing in the
@@ -65,15 +72,31 @@ import { PUSH_CONSUMER } from './consumers';
  */
 export async function cancelQueuedPushBySubject(
   tx: Prisma.TransactionClient,
-  args: { projectId: string; subject: string; eventType: string },
+  args: { projectId: string; subject: string; eventType: string; targetUserIds?: readonly string[] },
 ): Promise<{ neutralized: number; marked: number; entombed: number }> {
   const now = new Date();
+  // A7b — the narrowing resolves to the EVENTS whose durable intent names one of the targets,
+  // once: `DomainEvent` is append-only, so the set cannot change inside this transaction.
+  let narrowed: string[] | null = null;
+  if (args.targetUserIds !== undefined) {
+    if (args.targetUserIds.length === 0) return { neutralized: 0, marked: 0, entombed: 0 };
+    const rows = await tx.$queryRaw<Array<{ eventId: string }>>`
+      SELECT e."eventId" FROM "DomainEvent" e
+       WHERE e."projectId" = ${args.projectId}
+         AND e."eventType" = ${args.eventType}
+         AND e."entityId" = ${args.subject}
+         AND e."dispatchIntent" -> 'push' ->> 'targetUserId' IN (${Prisma.join([...args.targetUserIds])})`;
+    narrowed = rows.map((r) => r.eventId);
+    if (narrowed.length === 0) return { neutralized: 0, marked: 0, entombed: 0 };
+  }
+  const eventArm = narrowed === null ? Prisma.empty : Prisma.sql`AND e."eventId" IN (${Prisma.join(narrowed)})`;
   const scope = {
     consumer: PUSH_CONSUMER,
     projectId: args.projectId,
     subject: args.subject,
     cancelledAt: null,
     event: { is: { eventType: args.eventType } },
+    ...(narrowed === null ? {} : { eventId: { in: narrowed } }),
   } as const;
   // One pass of the three set-based mutations, over the platform's OWN tables only.
   // Round 14 (Codex, PR #337): NAMED so the boundary analyzer attributes the subject-stamp
@@ -89,7 +112,8 @@ export async function cancelQueuedPushBySubject(
          AND d."projectId" = ${args.projectId}
          AND d."subject" IS NULL
          AND e."eventType" = ${args.eventType}
-         AND e."entityId" = ${args.subject}`;
+         AND e."entityId" = ${args.subject}
+         ${eventArm}`;
     const neutralized = await tx.outboxDelivery.updateMany({
       where: { ...scope, status: 'pending' },
       data: { status: 'succeeded', deliveryAction: 'noop', cancelledAt: now, leaseOwner: null, leaseExpiresAt: null, lastError: null },
@@ -115,6 +139,7 @@ export async function cancelQueuedPushBySubject(
      WHERE e."projectId" = ${args.projectId}
        AND e."eventType" = ${args.eventType}
        AND e."entityId" = ${args.subject}
+       ${eventArm}
        AND EXISTS (SELECT 1 FROM "OutboxConsumerCatalog" c
                     WHERE c."consumer" = ${PUSH_CONSUMER} AND c."consumerKind" = 'unordered')
        AND NOT EXISTS (SELECT 1 FROM "OutboxDelivery" d

@@ -322,18 +322,38 @@ export class DecisionsQueryService {
   ): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }> {
     return this.prisma.$transaction(async (tx) => {
       if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) return { actionable: false };
-      const d = await tx.decision.findFirst({
-        where: { id: decisionId, projectId },
-        select: { status: true, publishedAt: true, deciderKind: true, deciderMembership: { select: { userId: true, status: true } } },
-      });
+      // 4d-ii-a / A7b (plan §A.4, "the decider push follows the forward AT CLAIM") — the delivered
+      // read was a plain `findFirst`, correct while the holder could not move after publication. A
+      // forward (A8a) moves it, so the holder is read UNDER THE DECISION ROW LOCK, in the canonical 4c
+      // order: this unlocked lookup chooses WHICH membership to lock (it decides nothing), the
+      // membership is locked FIRST (`decisions.approve` locks the named decider's membership before
+      // the decision row, so a decision-first claim would complete an AB-BA cycle against it), then
+      // the decision `FOR SHARE`, and every fact the verdict rests on is read under that lock.
+      const peek = await tx.decision.findFirst({ where: { id: decisionId, projectId }, select: { deciderKind: true, deciderMembershipId: true } });
+      if (!peek) return { actionable: false };
+      const member = peek.deciderKind === 'member' && peek.deciderMembershipId
+        ? await this.orgsParticipant.lockActiveMembershipById(tx, projectId, peek.deciderMembershipId)
+        : null;
+      const rows = await tx.$queryRaw<Array<{ status: string; publishedAt: Date | null; deciderKind: string; deciderMembershipId: string | null }>>`
+        SELECT "status"::text AS status, "publishedAt", "deciderKind"::text AS "deciderKind", "deciderMembershipId"
+          FROM "Decision" WHERE "projectId" = ${projectId} AND "id" = ${decisionId}
+           FOR SHARE`;
+      const d = rows[0];
       if (!d || d.publishedAt === null) return { actionable: false };
       if (d.status !== 'pending' && d.status !== 'change') return { actionable: false };
       if (d.deciderKind === 'client') return { actionable: true, roles: ['client'] };
       if (d.deciderKind === 'pmc') return { actionable: true, roles: ['pmc'] };
       if (d.deciderKind === 'member') {
-        const m = d.deciderMembership;
-        if (!m || m.status !== 'active') return { actionable: false };
-        return { actionable: true, targetUserId: m.userId };
+        if (d.deciderMembershipId !== peek.deciderMembershipId) {
+          // the holder moved between the lookup and the lock (a forward landed): locking the new
+          // holder's membership HERE would take it after the decision row — the AB-BA order — so the
+          // claim is refused as contended and the relay retries it, re-judging in the canonical order
+          throw new Error(`decider push claim for ${decisionId} contended: the holder moved during the claim — retried`);
+        }
+        // the STANDING arm: the named member's membership must still be ACTIVE (a "decide this"
+        // demand never reaches a revoked target); `lockActiveMembershipById` answers null otherwise
+        if (!member) return { actionable: false };
+        return { actionable: true, targetUserId: member.userId };
       }
       return { actionable: false };
     });
@@ -451,7 +471,11 @@ export class DecisionsQueryService {
       // concurrent approval holds a membership while waiting to update the decision. The
       // requester must STILL hold requesting standing — a demoted requester is dropped with the
       // recorded cancellation mark rather than told about advice they can no longer act on.
-      const standing = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, targetUserId, ['pmc'], { forUpdate: true });
+      // 4d-ii-a / A7b (plan §A.2, the consultation carve-out) — the requesting set is `pmc` OR the
+      // ARCHITECT role (the kernel register, A5c's `consultationRequesterStanding` rule), because
+      // an architect may ask; the PMC arm is remembered for the withdrawn-audience rule below.
+      const pmcStanding = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, targetUserId, ['pmc'], { forUpdate: true });
+      const standing = pmcStanding || (await RoleStandingQuery.holdsRole(tx, projectId, targetUserId, 'architect'));
       if (!standing) return { actionable: false };
 
       const rows = await tx.$queryRaw<Array<{ status: string; publishedAt: Date | null }>>`
@@ -465,7 +489,13 @@ export class DecisionsQueryService {
       // the invitation false. This one reports that advice was GIVEN — which stays true after an
       // approval, and is exactly what the person who asked wants to know. What must still be
       // re-judged is whether this user may see decision content at all, which the standing arm
-      // above covers; a withdrawn decision is pmc-only and the requesting set is pmc.
+      // above covers for every status but one:
+      // 4d-ii-a / A7b — THE WITHDRAWN-AUDIENCE ARM (plan §A.2). A withdrawn decision is pmc-only
+      // (§A.3), so its response push reaches a requester only while they hold PMC standing: a PMC
+      // requester keeps the delivered behaviour byte-for-byte, and any other requester (the
+      // architect) is dropped with the recorded mark, since the decision's very title is content
+      // they may no longer see.
+      if (d.status === 'withdrawn' && !pmcStanding) return { actionable: false };
       const asked = await tx.decisionConsultation.findFirst({
         where: { projectId, decisionId, requestedById: targetUserId, response: { isNot: null } },
         select: { id: true },
