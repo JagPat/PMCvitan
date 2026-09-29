@@ -44,14 +44,42 @@ export function writeLangPreference(key: string, lang: Lang): void {
  * default it applied — so a picker says so here. A choice made before the viewer has a console
  * identity (the sign-in screen) waits here until the next identity takes it and saves it; a choice
  * made inside the console is saved at once and the note is cleared.
+ *
+ * WHO chose it matters too. The Team Access picker is a GUEST's: inside a signed-in console it is the
+ * worker or trade in-charge about to sign in on the host's phone, so their pick is shown while they
+ * sign in but never saved as the host's preference (at the sign-in gate there is no host, and the
+ * guest is the person who signs in, so the pick is theirs and is carried as before).
  */
-let pendingChoice: Lang | null = null;
+export type LangChoiceSource = 'viewer' | 'guest';
 
-export function noteLangChoice(lang: Lang): void {
-  pendingChoice = lang;
+let pendingChoice: { lang: Lang; source: LangChoiceSource } | null = null;
+// every note bumps the version, so a pick that leaves the language unchanged (the host choosing the
+// language already on screen) still reaches `LangPreference` — it is a choice, not a no-op
+let choiceVersion = 0;
+const listeners = new Set<() => void>();
+
+export function noteLangChoice(lang: Lang, source: LangChoiceSource = 'viewer'): void {
+  pendingChoice = { lang, source };
+  choiceVersion += 1;
+  for (const listener of listeners) listener();
 }
 
-export function takeLangChoice(): Lang | null {
+/** Drop a pending pick that nobody will take: at the gate a worker's or trade in-charge's flow is
+ *  terminal (it never signs in), so a pick made for it must not wait for the next person who does. */
+export function discardLangChoice(): void {
+  pendingChoice = null;
+}
+
+export function subscribeLangChoice(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function langChoiceVersion(): number {
+  return choiceVersion;
+}
+
+export function takeLangChoice(): { lang: Lang; source: LangChoiceSource } | null {
   const choice = pendingChoice;
   pendingChoice = null;
   return choice;
