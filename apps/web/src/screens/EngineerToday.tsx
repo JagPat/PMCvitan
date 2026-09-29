@@ -52,9 +52,12 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   const date = formatDay(LOCALE[lang], timeZone);
 
   let card;
-  // a failed read is shown before anything derived from the log: a retained last-known log can't
-  // tell the engineer their day is done (or offer to act on it) when the latest read didn't land
-  if (unavailable || (reading && !dailyLog)) {
+  // an unsettled read (first load, a retry, or a failure) is shown before anything derived from
+  // the log: a retained last-known log can't tell the engineer their day is done, offer an action
+  // on it, or tick steps on the path until the latest read lands. Background refreshes over a
+  // ready log stay 'ready', so this never flashes on an ordinary update.
+  const unsettled = reading || unavailable;
+  if (unsettled) {
     card = (
       <div className={styles.now} data-surface="ink" data-testid="today-now" data-action={reading ? 'loading' : 'unavailable'}>
         <div className={styles.nowTitle}>{reading ? L.loading[lang] : L.unavailable[lang]}</div>
@@ -83,7 +86,6 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   } else {
     const a = path.action;
     const canAct = a === 'start' ? can('dailyLog.start', role) : a === 'send' ? can('dailyLog.submit', role) : true;
-    const mutates = a === 'start' || a === 'checkIn' || a === 'send';
     const run = a === 'start' ? startDailyLog : a === 'checkIn' ? checkIn : a === 'send' ? submitDailyLog : openSite;
     const Icon = a === 'start' ? Plus : a === 'checkIn' ? Crosshair : ArrowRight;
     card = (
@@ -93,7 +95,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
         {!canAct && <div className={styles.nowTitle}>{L.action[a][lang]}</div>}
         <div className={styles.nowDetail}>{L.actionDetail[a][lang]}</div>
         {canAct && (
-          <button className={styles.nowAction} onClick={run} disabled={mutates && reading} data-testid="today-action">
+          <button className={styles.nowAction} onClick={run} data-testid="today-action">
             <Icon size={20} aria-hidden /> {L.action[a][lang]}
           </button>
         )}
@@ -111,32 +113,36 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
 
       {card}
 
-      <div className={styles.pathHead}>
-        <h2 className={styles.pathTitle} style={{ margin: 0 }}>{L.path[lang]}</h2>
-        <span className={styles.pathCount} data-testid="today-count">{engineerTodayProgress(path.doneCount, TODAY_STEPS.length, lang)}</span>
-      </div>
-      <ol className={styles.steps}>
-        {TODAY_STEPS.map((k) => {
-          const isDone = path.done[k];
-          const isNext = k === next;
-          return (
-            <li key={k}>
-              <button
-                className={`${styles.step} ${isNext ? styles.stepNext : ''}`}
-                onClick={openSite}
-                data-testid={`today-step-${k}`}
-                data-state={isDone ? 'done' : isNext ? 'next' : 'todo'}
-              >
-                {isDone ? <CircleCheck size={22} color="var(--green-solid)" aria-hidden /> : <Circle size={22} color="var(--muted)" aria-hidden />}
-                <span className={styles.stepName}>{L.step[k][lang]}</span>
-                <span className={`${styles.stepState} ${isDone ? styles.stepStateDone : isNext ? styles.stepStateNext : ''}`}>
-                  {isDone ? L.done[lang] : isNext ? `${L.next[lang]} · ${L.estimate[k][lang]}` : L.estimate[k][lang]}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
+      {!unsettled && (
+        <>
+          <div className={styles.pathHead}>
+            <h2 className={styles.pathTitle} style={{ margin: 0 }}>{L.path[lang]}</h2>
+            <span className={styles.pathCount} data-testid="today-count">{engineerTodayProgress(path.doneCount, TODAY_STEPS.length, lang)}</span>
+          </div>
+          <ol className={styles.steps}>
+            {TODAY_STEPS.map((k) => {
+              const isDone = path.done[k];
+              const isNext = k === next;
+              return (
+                <li key={k}>
+                  <button
+                    className={`${styles.step} ${isNext ? styles.stepNext : ''}`}
+                    onClick={openSite}
+                    data-testid={`today-step-${k}`}
+                    data-state={isDone ? 'done' : isNext ? 'next' : 'todo'}
+                  >
+                    {isDone ? <CircleCheck size={22} color="var(--green-solid)" aria-hidden /> : <Circle size={22} color="var(--muted)" aria-hidden />}
+                    <span className={styles.stepName}>{L.step[k][lang]}</span>
+                    <span className={`${styles.stepState} ${isDone ? styles.stepStateDone : isNext ? styles.stepStateNext : ''}`}>
+                      {isDone ? L.done[lang] : isNext ? `${L.next[lang]} · ${L.estimate[k][lang]}` : L.estimate[k][lang]}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        </>
+      )}
 
       {also && (
         <>

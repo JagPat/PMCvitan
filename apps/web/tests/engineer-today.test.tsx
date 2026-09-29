@@ -187,6 +187,22 @@ describe('Engineer Today — the screen', () => {
     expect(r.queryByTestId('today-action')).toBeNull();
   });
 
+  it('while a retry is loading over a retained sent log, it shows loading — not the log as done', async () => {
+    const sent = log({ checkedIn: true, progress: 2, submitted: true });
+    const { r } = await loadToday({ dailyLog: sent, dailyLogLoad: 'loading' }, { VITE_DAILYLOG_READ: 'moduleQuery' });
+    expect(r.getByTestId('today-now').dataset.action).toBe('loading');
+    expect(r.queryByText(L.action.done.en)).toBeNull();
+    expect(r.queryByTestId('today-action')).toBeNull();
+    // the path would be read from the unconfirmed log, so it waits for the read too
+    expect(r.queryByTestId('today-step-send')).toBeNull();
+  });
+
+  it('a failed read hides the path read from the retained log', async () => {
+    const sent = log({ checkedIn: true, progress: 2, submitted: true });
+    const { r } = await loadToday({ dailyLog: sent, dailyLogLoad: 'error' }, { VITE_DAILYLOG_READ: 'moduleQuery' });
+    expect(r.queryByTestId('today-count')).toBeNull();
+  });
+
   it('the next morning, yesterday’s sent log leads to starting today’s', async () => {
     const yesterday = log({ checkedIn: true, progress: 2, submitted: true, logDate: '2000-01-01' });
     const { r } = await loadToday({ dailyLog: yesterday, timeZone: 'Asia/Kolkata' });
