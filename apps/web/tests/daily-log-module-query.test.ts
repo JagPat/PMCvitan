@@ -167,6 +167,58 @@ describe('Task 10 (correction, finding 2) — module-aware post-command reconcil
     expect(s().toast).toMatch(/New daily log started/i);    // command success announced
   });
 
+  it('a committed submit flags the log as awaiting its read in the SAME update that drops the op, until the reconcile read lands', async () => {
+    const unsent: ModuleDailyLog = { ...moduleRead(3, 'SEED-MAT'), dailyLog: { ...core(3), submitted: false } as DailyLogCoreView };
+    const reconcileRead = deferred<ModuleDailyLog>();
+    let dlCall = 0;
+    const gw = {
+      submitDailyLog: vi.fn().mockResolvedValue(poisonSnap()),
+      snapshot: vi.fn().mockResolvedValue(poisonSnap()),
+      dailyLog: vi.fn().mockImplementation(() => { dlCall += 1; return dlCall === 1 ? Promise.resolve(unsent) : reconcileRead.promise; }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.submitted).toBe(false);
+    expect(s().dailyLogReconcileAfter).toBeNull();
+
+    // every store update from here on: the op may never leave the outbox with the flag still clear
+    const gaps: string[] = [];
+    const unsub = useStore.subscribe((st) => {
+      if (st.outbox.length === 0 && !st.dailyLog?.submitted && st.dailyLogReconcileAfter === null) gaps.push('stale log offered');
+    });
+    useStore.setState((st) => { if (st.dailyLog) st.dailyLog.checkedIn = true; });
+    s().submitDailyLog();
+    await settles(() => s().outbox.length === 0 && gw.dailyLog.mock.calls.length >= 2); // committed; reconcile read in flight
+    expect(s().dailyLog?.submitted).toBe(false);          // the log on screen still predates the send…
+    expect(s().dailyLogReconcileAfter).not.toBeNull();     // …and says so,
+    expect(s().dailyLogReconcileKind).toBe('send');        // …naming the command it waits on
+
+    reconcileRead.release(moduleRead(3, 'MOD-MAT'));      // the committed truth: submitted
+    await settles(() => s().dailyLogReconcileAfter === null);
+    expect(s().dailyLogReconcileKind).toBeNull();
+    expect(s().dailyLog?.submitted).toBe(true);
+    unsub();
+    expect(gaps).toEqual([]);
+  });
+
+  it('a FAILED reconcile read also clears the flag — the read’s own error state takes over', async () => {
+    const unsent: ModuleDailyLog = { ...moduleRead(3, 'SEED-MAT'), dailyLog: { ...core(3), submitted: false } as DailyLogCoreView };
+    let dlCall = 0;
+    const gw = {
+      submitDailyLog: vi.fn().mockResolvedValue(poisonSnap()),
+      snapshot: vi.fn().mockResolvedValue(poisonSnap()),
+      dailyLog: vi.fn().mockImplementation(() => { dlCall += 1; return dlCall === 1 ? Promise.resolve(unsent) : Promise.reject(new Error('down')); }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    useStore.setState((st) => { if (st.dailyLog) st.dailyLog.checkedIn = true; });
+    s().submitDailyLog();
+    await settles(() => s().dailyLogLoad === 'error');
+    expect(s().dailyLogReconcileAfter).toBeNull();
+  });
+
   it('superseded command: a newer lease supersedes the command reply, yet the module read is STILL refreshed', async () => {
     const held = deferred<ApiSnapshot>();
     let dlCall = 0;
