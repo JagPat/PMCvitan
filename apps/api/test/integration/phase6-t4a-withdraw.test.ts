@@ -661,10 +661,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
 
       await svc.withdraw(f.projectA.id, id, { reason: 'wrong room entirely' }, pmc());
 
-      // the pending notice is RETIRED (stamp-based); the withdrawal notice replaces it
-      const remaining = await t.prisma.notification.findMany({ where: { projectId: f.projectA.id, decisionId: id } });
-      expect(remaining).toHaveLength(1);
-      expect(isWithdrawnDecisionNotice(remaining[0].text)).toBe(true);
+      // 4d-ii-a / A7a — the pending notice is KINDED (bound to its `decision.published` event), so
+      // it is no longer retired by deletion: the binding seal keeps it as evidence and the kinded
+      // readers hide it (an actionable kind of a withdrawn decision — the snapshot arms below). The
+      // withdrawal notice is appended, kinded too. The stamp-based delete still retires the
+      // previous release's kind-less pending rows (the legacy arm next).
+      const remaining = await t.prisma.notification.findMany({ where: { projectId: f.projectA.id, decisionId: id }, orderBy: { at: 'asc' } });
+      expect(remaining.map((n) => n.kind)).toEqual(['decision.published', 'decision.withdrawn']);
+      expect(isWithdrawnDecisionNotice(remaining[1].text)).toBe(true);
 
       // the serialized snapshot: pmc sees the row with its evidence; every other role sees NO row
       // and NO withdrawal notice; the client bell carries NO stale awaiting item
@@ -930,8 +934,10 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       // hostile SQL tries to clear the children first — the OPTION children now refuse on
       // their own (round 11: the frozen question includes its choices), so the child-clearing
       // step uses the sanctioned bypass; the Decision DELETE arm is then proven alone
-      // (BEFORE DELETE fires before FK evaluation, so it never depended on children anyway)
-      await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
+      // (BEFORE DELETE fires before FK evaluation, so it never depended on children anyway).
+      // 4d-ii-a / A7a — the notices are no longer cleared here: the withdrawal notice is KINDED
+      // (bound to its event, undeletable by row), and a notice is a stamp, never an FK child of
+      // the decision, so the DELETE arm below never depended on it.
       // Phase 6 unit 4d-i — through the sanctioned reset helper: `DecisionEvent_t4d_append_only`
       // now refuses every DELETE on the register, so a bare `deleteMany` here is the seal doing
       // its job, not a fixture detail.
@@ -1017,8 +1023,8 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       try {
         // children cleared so the RED capture demonstrates the real hole (the seal, once
         // installed, fires BEFORE any FK evaluation and needs no surviving children); the
-        // OPTION children need the sanctioned bypass since round 11 froze them
-        await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
+        // OPTION children need the sanctioned bypass since round 11 froze them (the notices are
+        // not cleared: kinded from A7a, and no FK child of the decision — see R3-F1)
         // Phase 6 unit 4d-i — through the sanctioned reset helper (see R3-F1 above).
         await wipeDecisionEvents(t.prisma, { decisionId: id });
         await t.prisma.$transaction([

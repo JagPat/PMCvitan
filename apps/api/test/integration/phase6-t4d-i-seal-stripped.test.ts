@@ -200,6 +200,9 @@ function buildBase(): void {
     '20271230000000_phase6_t4d_ii_a6c_catalog_rules',
     '20271231000000_phase6_t4d_ii_a6d_delivery_seals',
     '20280101000000_phase6_t4d_ii_a6e_generation_fence',
+    // 4d-ii-a / A7a re-issues 4d-i-b U3's revision claimant with the revision-naming arm: built on
+    // 4d-i-b, excluded with the other units built after 4d-i.
+    '20280102000000_phase6_t4d_ii_a7a_revision_named',
     // 4d-ii-a / A4a's consultation-cycle seals are 4d-i's bodies re-issued, guarded on 4d-i's
     // retirement marker, so they too apply only on top of 4d-i.
     '20271227000000_phase6_t4d_ii_consultation_finalized_cycle']);

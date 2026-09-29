@@ -4945,7 +4945,7 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*) continue ;; esac
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5386,6 +5386,17 @@ assert "4d-ii-a / A6e: the proof's later raise stands with its evidence, and the
   "SELECT (SELECT \"minimumGeneration\"::text || '|' || \"raisedBy\" FROM \"ServerGeneration\" WHERE \"key\" = 'singleton') || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_server_generation_migration_open')::text;" \
   "3|upgrade-proof: a later fence-raising migration|0"
 
+# ── 4d-ii-a / A7a: the green event names its revision ──────────────────────────────────────
+# Over the ledger this database ran: U3's revision claimant stands re-issued by 20280102 with the
+# revision-naming arm (`payload.revisionId`, when present, must be the head this transaction claims
+# for), on both of its triggers, enabled and unqualified. The hostile bundles themselves are driven
+# with the full world by `phase6-t4d-i-b-pairing-matrix.test.ts` (another decision's revision, an
+# older revision of this decision, a revision that does not exist — each refused at commit; the
+# previous-release shape without `revisionId` admitted).
+assert "4d-ii-a / A7a: the revision claimant carries the revision-naming arm on both of its triggers" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_revision_claims_approval' AND prosrc LIKE '%v_named IS DISTINCT FROM NEW.\"id\"%')::text || '|' || (SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND t.tgqual IS NULL AND p.proname = 'phase6_t4d_revision_claims_approval' AND t.tgname IN ('DecisionApprovalRevision_t4d_claim','DecisionApprovalRevision_t4d_claim_deferred'))::text;" \
+  "1|2"
+
 # ── the replay a LEDGER-LOST RESTORE takes, before and after this release serves (#646's review,
 #    finding 4114478871) ─────────────────────────────────────────────────────────────────────────
 # A really-migrated database restored without `_prisma_migrations` is the one kind that reaches
@@ -5404,7 +5415,7 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20271226000000_phase6_t4d_ii_release_lease_writer 20271227000000_phase6_t4d_ii_consultation_finalized_cycle
 20271228000000_phase6_t4d_ii_a6a_activation_register 20271229000000_phase6_t4d_ii_a6b_activation_rules
 20271230000000_phase6_t4d_ii_a6c_catalog_rules 20271231000000_phase6_t4d_ii_a6d_delivery_seals
-20280101000000_phase6_t4d_ii_a6e_generation_fence"
+20280101000000_phase6_t4d_ii_a6e_generation_fence 20280102000000_phase6_t4d_ii_a7a_revision_named"
 t4d_replay() {
   local m
   for m in $T4D_REPLAY; do
@@ -5514,6 +5525,11 @@ assert "4d-ii-a / A6d: the replay re-issued the four delivery seals and moved no
 assert "4d-ii-a / A6e: the replay re-issued the fence's seals and did not lower the raised minimum" \
   "SELECT (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('ServerGeneration_t4d_raised','ServerGeneration_t4d_retained','ServerGeneration_t4d_no_truncate'))::text || '|' || (SELECT \"minimumGeneration\"::text || '|' || \"raisedBy\" FROM \"ServerGeneration\" WHERE \"key\" = 'singleton');" \
   "3|3|upgrade-proof: a later fence-raising migration"
+# A7a — the replay re-runs U3 (20271224), which re-issues the revision claimant WITHOUT the
+# revision-naming arm, and then 20280102, which re-issues it WITH the arm. The later file must stand.
+assert "4d-ii-a / A7a: after the replay the revision claimant carries the revision-naming arm on both of its triggers" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_revision_claims_approval' AND prosrc LIKE '%v_named IS DISTINCT FROM NEW.\"id\"%')::text || '|' || (SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname = 'phase6_t4d_revision_claims_approval' AND t.tgname IN ('DecisionApprovalRevision_t4d_claim','DecisionApprovalRevision_t4d_claim_deferred'))::text;" \
+  "1|2"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

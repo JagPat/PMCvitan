@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ACTIONABLE_DECISION_NOTICE_KINDS, kindedDecisionNoticeServed, renderKindedDecisionNotice } from './decision-notice';
+import { ACTIONABLE_DECISION_NOTICE_KINDS, kindedDecisionNoticeServed, kindedNoticeRevisionId, renderKindedDecisionNotice } from './decision-notice';
 import {
+  APPROVED_DECISION_NOTICE_COLOR,
   PENDING_DECISION_NOTICE_COLOR,
   RECORDED_DECISION_NOTICE_COLOR,
   WITHDRAWN_DECISION_NOTICE_COLOR,
+  approvedDecisionNotice,
   pendingDecisionNotice,
   recordedDecisionNotice,
   withdrawnDecisionNotice,
@@ -16,8 +18,29 @@ import {
  * rendered from its kind and event, and the rendering must equal what the delivered writer caches in
  * `text`/`color` for the same act, so the kinded path and the kind-less cache cannot disagree.
  */
-const published = (title: string, effectKey = 'decision.published') => ({ eventType: 'decision.published', payload: { title }, effectKey });
-const withdrawn = (title: string, reason: string) => ({ eventType: 'decision.withdrawn', payload: { title, reason, pushIntentsCancelled: 0 }, effectKey: 'decision.withdrawn' });
+const envelope = { actorRole: 'pmc', actorName: 'Ar. Meghna' };
+const published = (title: string, effectKey = 'decision.published') => ({ eventType: 'decision.published', payload: { title }, effectKey, ...envelope });
+const withdrawn = (title: string, reason: string) => ({ eventType: 'decision.withdrawn', payload: { title, reason, pushIntentsCancelled: 0 }, effectKey: 'decision.withdrawn', ...envelope });
+/** 4d-ii-a / A7a — an approve event as the direct approve emits it: the option facts, the exact
+ *  revision it wrote, the title and the holder kind, under the actor's frozen envelope. */
+const approved = (over: Partial<{ kind: string; title: string; deciderKind: string; onBehalfOf: string; revisionId: string; actorRole: string | null; actorName: string | null }> = {}) => {
+  const kind = over.kind ?? 'decision.approved';
+  return {
+    eventType: kind,
+    payload: { option: 'Option A', material: 'Granite', ...(over.onBehalfOf ? { onBehalfOf: over.onBehalfOf } : {}), revisionId: over.revisionId ?? 'dar-D1-v1', title: over.title ?? 'Kitchen counter', deciderKind: over.deciderKind ?? 'client' },
+    effectKey: kind,
+    actorRole: over.actorRole === undefined ? 'client' : over.actorRole,
+    actorName: over.actorName === undefined ? 'Client One' : over.actorName,
+  };
+};
+const revisions = new Map([
+  ['dar-D1-v1', { decisionId: 'D1', material: 'Granite', onBehalfOf: null }],
+  ['dar-D1-v2', { decisionId: 'D1', material: 'Quartz', onBehalfOf: 'client' }],
+  // another decision's revision in the same project (#665's review round 1)
+  ['dar-D2-v1', { decisionId: 'D2', material: 'Marble', onBehalfOf: null }],
+]);
+/** the renderer for D1's notices: the revision the event names must be D1's */
+const render = (kind: string, event: Parameters<typeof renderKindedDecisionNotice>[1]) => renderKindedDecisionNotice(kind, event, revisions, 'D1');
 
 describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   it('renders each arm exactly as its writer caches it', () => {
@@ -27,6 +50,51 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
       .toEqual({ text: recordedDecisionNotice('Stair rail'), color: RECORDED_DECISION_NOTICE_COLOR });
     expect(renderKindedDecisionNotice('decision.withdrawn', withdrawn('Kitchen counter', 'Client changed scope')))
       .toEqual({ text: withdrawnDecisionNotice('Kitchen counter', 'Client changed scope'), color: WITHDRAWN_DECISION_NOTICE_COLOR });
+    // A7a — the green notice: the approver from the envelope, the option and on-behalf fact from
+    // the revision the event names, the title and holder kind from the payload
+    expect(render('decision.approved', approved()))
+      .toEqual({ text: approvedDecisionNotice({ actorName: 'Client One', actorRole: 'client', title: 'Kitchen counter', material: 'Granite', deciderKind: 'client', onBehalfOf: null }), color: APPROVED_DECISION_NOTICE_COLOR });
+    expect(render('decision.reapproved', approved({ kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client', actorRole: 'pmc', actorName: 'Ar. Meghna' })))
+      .toEqual({ text: approvedDecisionNotice({ actorName: 'Ar. Meghna', actorRole: 'pmc', title: 'Kitchen counter', material: 'Quartz', deciderKind: 'client', onBehalfOf: 'client' }), color: APPROVED_DECISION_NOTICE_COLOR });
+  });
+
+  it('the green notice, character for character (the three announcement shapes the delivered approve wrote inline)', () => {
+    expect(render('decision.approved', approved())?.text).toBe('Client approved Kitchen counter — Granite');
+    expect(render('decision.approved', approved({ deciderKind: 'member', actorRole: 'engineer', actorName: 'Ravi' }))?.text).toBe('Ravi approved Kitchen counter — Granite');
+    expect(render('decision.reapproved', approved({ kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client', actorRole: 'pmc', actorName: 'Ar. Meghna' })))
+      .toEqual({ text: 'Ar. Meghna (PMC) approved Kitchen counter on behalf of the client — Quartz', color: '#3F7A54' });
+    expect(approvedDecisionNotice({ actorName: 'Ar. Meghna', actorRole: 'pmc', title: 'T', material: 'M', deciderKind: 'member', onBehalfOf: 'member' })).toBe('Ar. Meghna (PMC) approved T on behalf of the named decider — M');
+  });
+
+  it('the green notice renders ITS revision, never the head, and nothing without the revision, the envelope or the payload facts', () => {
+    // a twice-approved decision: the older notice keeps its own option and approver
+    const older = approved();
+    const newer = approved({ kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client', actorRole: 'pmc', actorName: 'Ar. Meghna' });
+    expect(render('decision.approved', older)?.text).toContain('Granite');
+    expect(render('decision.reapproved', newer)?.text).toContain('Quartz');
+    expect(kindedNoticeRevisionId('decision.approved', older)).toBe('dar-D1-v1');
+    expect(kindedNoticeRevisionId('decision.reapproved', newer)).toBe('dar-D1-v2');
+    expect(kindedNoticeRevisionId('decision.published', published('T'))).toBeNull();
+    expect(kindedNoticeRevisionId('decision.approved', { ...older, eventType: 'decision.reapproved' })).toBeNull();
+    // the revision the event names is not in the snapshot (or the event names none): nothing
+    expect(render('decision.approved', approved({ revisionId: 'dar-D1-v9' }))).toBeNull();
+    expect(renderKindedDecisionNotice('decision.approved', approved(), new Map(), 'D1')).toBeNull();
+    expect(renderKindedDecisionNotice('decision.approved', approved())).toBeNull();
+    expect(render('decision.approved', { ...approved(), payload: { option: 'Option A', material: 'Granite' } }), 'a previous-release payload').toBeNull();
+    // a previous-release event through the drain carries no envelope: no kinded rendering
+    expect(render('decision.approved', approved({ actorRole: null, actorName: null }))).toBeNull();
+    expect(render('decision.approved', { ...approved(), payload: { ...approved().payload, title: '' } })).toBeNull();
+    expect(render('decision.approved', { ...approved(), payload: { ...approved().payload, deciderKind: undefined } })).toBeNull();
+  });
+
+  // #665's review round 1 (P1) — an event naming ANOTHER decision's revision renders nothing here,
+  // and the database refuses such a bundle at commit (`phase6_t4d_revision_claims_approval`)
+  it('the green notice renders only ITS decision\'s revision: another decision\'s revision, or no decision to judge by, renders nothing', () => {
+    const forged = approved({ revisionId: 'dar-D2-v1' });
+    expect(renderKindedDecisionNotice('decision.approved', forged, revisions, 'D1')).toBeNull();
+    expect(renderKindedDecisionNotice('decision.approved', forged, revisions, 'D2')?.text).toBe('Client approved Kitchen counter — Marble');
+    expect(renderKindedDecisionNotice('decision.approved', approved(), revisions, 'D2')).toBeNull();
+    expect(renderKindedDecisionNotice('decision.approved', approved(), revisions)).toBeNull();
   });
 
   it('the strings and colours are today\'s, character for character (the cache every kind-less row carries)', () => {
@@ -36,12 +104,13 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   });
 
   it('renders NOTHING it has no arm for, and never trusts a kind that disagrees with its event', () => {
-    for (const kind of ['decision.approved', 'decision.reapproved', 'decision.forwarded', 'decision.awaiting_countersign', 'decision.change_requested', 'decision.consultation_requested', 'x.y']) {
-      expect(renderKindedDecisionNotice(kind, { eventType: kind, payload: { title: 'T' }, effectKey: kind }), kind).toBeNull();
+    for (const kind of ['decision.drafted', 'decision.forwarded', 'decision.awaiting_countersign', 'decision.change_requested', 'decision.consultation_requested', 'x.y']) {
+      expect(render(kind, { eventType: kind, payload: { title: 'T' }, effectKey: kind, ...envelope }), kind).toBeNull();
     }
     expect(renderKindedDecisionNotice('decision.published', { ...published('T'), eventType: 'decision.withdrawn' })).toBeNull();
-    expect(renderKindedDecisionNotice('decision.published', { eventType: 'decision.published', payload: {}, effectKey: 'decision.published' })).toBeNull();
-    expect(renderKindedDecisionNotice('decision.withdrawn', { eventType: 'decision.withdrawn', payload: { title: 'T' }, effectKey: 'decision.withdrawn' })).toBeNull();
+    expect(render('decision.approved', { ...approved(), eventType: 'decision.reapproved' })).toBeNull();
+    expect(renderKindedDecisionNotice('decision.published', { eventType: 'decision.published', payload: {}, effectKey: 'decision.published', ...envelope })).toBeNull();
+    expect(renderKindedDecisionNotice('decision.withdrawn', { eventType: 'decision.withdrawn', payload: { title: 'T' }, effectKey: 'decision.withdrawn', ...envelope })).toBeNull();
   });
 
   it('the ACTIONABLE set is exactly the four kinds that ask for an act', () => {
@@ -50,14 +119,22 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
     ]);
   });
 
-  it('the delivered decision writers cache with the SAME colour constants the renderer reads', () => {
+  it('the delivered decision writers cache with the SAME colour constants the renderer reads, and every one is KINDED (A7a)', () => {
     const src = readFileSync(join(__dirname, 'decisions.service.ts'), 'utf8');
     const creates = [...src.matchAll(/tx\.notification\.create\(\{ data: \{[^}]*\} \}\)/g)].map((m) => m[0]);
     expect(creates.length).toBe(4);
-    // the three notices with a renderer arm name their colour by constant; the green approved notice
-    // (rendered from its revision from A7) is the one literal left
-    expect(creates.filter((c) => /PENDING_DECISION_NOTICE_COLOR|RECORDED_DECISION_NOTICE_COLOR|WITHDRAWN_DECISION_NOTICE_COLOR/.test(c))).toHaveLength(3);
-    expect(creates.filter((c) => /'#[0-9A-Fa-f]{6}'/.test(c))).toEqual([expect.stringContaining('#3F7A54')]);
+    // every notice names its colour by the constant its renderer arm reads; no literal is left
+    expect(creates.filter((c) => /PENDING_DECISION_NOTICE_COLOR|RECORDED_DECISION_NOTICE_COLOR|WITHDRAWN_DECISION_NOTICE_COLOR|APPROVED_DECISION_NOTICE_COLOR/.test(c))).toHaveLength(4);
+    expect(creates.filter((c) => /'#[0-9A-Fa-f]{6}'/.test(c))).toEqual([]);
+    // 4d-ii-a / A7a — every decisions notice writer stamps the event it announces and its kind (the
+    // binding pair; the seal refuses one half without the other), the event emitted first in the
+    // same transaction with the id the writer minted (`emitEvent(..., { eventId, ... })`)
+    for (const c of creates) {
+      expect(c, c).toMatch(/kind: /);
+      expect(c, c).toMatch(/eventId \}/);
+    }
+    expect(src.match(/const eventId = randomUUID\(\);/g)).toHaveLength(4);
+    expect(src.match(/emitEvent\(tx, \{\n\s+projectId, actor, eventId,/g)).toHaveLength(4);
   });
 });
 

@@ -1,8 +1,10 @@
 import { viewerIsDecider } from '@vitan/shared';
 import {
+  APPROVED_DECISION_NOTICE_COLOR,
   PENDING_DECISION_NOTICE_COLOR,
   RECORDED_DECISION_NOTICE_COLOR,
   WITHDRAWN_DECISION_NOTICE_COLOR,
+  approvedDecisionNotice,
   pendingDecisionNotice,
   recordedDecisionNotice,
   withdrawnDecisionNotice,
@@ -17,15 +19,17 @@ import type { DecisionDto } from '../snapshot/types';
  * event's type, both frozen by 4d-i's seals). Its stored `text`/`color` are a display cache a
  * previous-release replica still serves; every reader of THIS release renders the notice from the
  * kind and the event instead, so a row whose cache was forged, or whose decision's title later
- * changed, is still announced as the act happened. Nothing writes a kinded notice before A7, which
- * stamps the decision writers; until then these rules govern only planted rows.
+ * changed, is still announced as the act happened. From A7a every decisions notice writer (the
+ * one-step issue, publish, approve and withdraw) is kinded; the previous release's rows through the
+ * drain, and legacy rows, are the kind-less ones the cache path still serves.
  *
  * Two rules, both decisions-owned because they are decision semantics:
  * - {@link renderKindedDecisionNotice}: kind + event → text and colour. An arm exists only where the
  *   event carries everything the notice says; any other kind renders NOTHING (the row is omitted),
- *   never its stored text. Arms join as their writers do: the green approved notice renders from the
- *   revision its event names (A7, with A8a's `revisionId`), the forwarding and countersign notices
- *   with their commands.
+ *   never its stored text. Arms join as their writers do: the green approved notice (A7a) renders
+ *   the approver from the event's frozen actor envelope and the option and on-behalf fact from the
+ *   REVISION its event names (`payload.revisionId`, the exact revision the act wrote, never the head);
+ *   the forwarding and countersign notices join with their commands.
  * - {@link kindedDecisionNoticeServed}: whether the viewer may see it. The decision must be in the
  *   viewer's visible slice (`decisionVisibleToViewer`, read in the SAME snapshot as the notice);
  *   an ACTIONABLE kind of a withdrawn decision is suppressed, since it asks for an act the withdrawal
@@ -56,6 +60,33 @@ export interface KindedNoticeEvent {
   payload: unknown;
   /** `dispatchIntent.effectKey`: the catalog key the event was emitted under. */
   effectKey: string | null;
+  /** The frozen actor envelope (4d-i; 4d-ii-a / A1): who acted, in which role. NULL through the
+   *  drain for a previous-release event. */
+  actorRole: string | null;
+  actorName: string | null;
+}
+
+/** 4d-ii-a / A7a — what the green notice reads from the revision its event names. */
+export interface ApprovalRevisionFacts {
+  /** The decision the revision belongs to: a notice renders only its OWN decision's revision. */
+  decisionId: string;
+  /** The approved option's material. */
+  material: string;
+  /** The holder kind a PMC recorded consent on behalf of; `null` when the decider acted. */
+  onBehalfOf: string | null;
+}
+
+/** The kinds whose notice renders from a revision the event names (`payload.revisionId`). */
+const REVISION_NOTICE_KINDS: ReadonlySet<string> = new Set(['decision.approved', 'decision.reapproved']);
+
+/**
+ * 4d-ii-a / A7a — the revision a kinded notice's event NAMES, or `null` when the kind renders from
+ * the event alone or the event names none. The feed reader collects these before rendering, so the
+ * revisions are read in the SAME snapshot as the notices and their decisions.
+ */
+export function kindedNoticeRevisionId(kind: string, event: KindedNoticeEvent): string | null {
+  if (!REVISION_NOTICE_KINDS.has(kind) || event.eventType !== kind) return null;
+  return field(event.payload, 'revisionId');
 }
 
 /** The record-only issue's catalog key: a `decision.published` event that demands nothing. */
@@ -73,7 +104,19 @@ function field(payload: unknown, key: string): string | null {
  * are the writers' own functions and constants, so the kinded rendering and the kind-less cache
  * cannot disagree (pinned by `decision-notice.test.ts`).
  */
-export function renderKindedDecisionNotice(kind: string, event: KindedNoticeEvent): { text: string; color: string } | null {
+export function renderKindedDecisionNotice(
+  kind: string,
+  event: KindedNoticeEvent,
+  /** 4d-ii-a / A7a — the revisions the feed's events name, by id, read in the same snapshot. A green
+   *  notice whose revision is not here renders nothing. */
+  revisions?: ReadonlyMap<string, ApprovalRevisionFacts>,
+  /** The decision the notice is stamped with (its `decisionId`, bound to the event's entity by the
+   *  seal): the revision the event names must be THIS decision's, or the notice renders nothing
+   *  (#665's review round 1 — a payload naming another decision's revision, which the database
+   *  seal now refuses at commit for every new bundle, is refused here too for any row already
+   *  committed). */
+  decisionId?: string,
+): { text: string; color: string } | null {
   if (event.eventType !== kind) return null; // the seal binds them; a reader never trusts one for the other
   switch (kind) {
     case 'decision.published': {
@@ -88,6 +131,23 @@ export function renderKindedDecisionNotice(kind: string, event: KindedNoticeEven
       const reason = field(event.payload, 'reason');
       if (!title || !reason) return null;
       return { text: withdrawnDecisionNotice(title, reason), color: WITHDRAWN_DECISION_NOTICE_COLOR };
+    }
+    case 'decision.approved':
+    case 'decision.reapproved': {
+      // A7a — the approver is the event's frozen envelope (the pair the seal judged at the act);
+      // the option and the on-behalf fact are the REVISION's, the one the event names, never the
+      // head's. A previous-release event (no envelope, no `revisionId`) has no kinded notice to
+      // render — its notice is a kind-less row the cache path serves.
+      const title = field(event.payload, 'title');
+      const deciderKind = field(event.payload, 'deciderKind');
+      const revisionId = kindedNoticeRevisionId(kind, event);
+      const revision = revisionId ? revisions?.get(revisionId) : undefined;
+      if (!title || !deciderKind || !revision || !event.actorName || !event.actorRole) return null;
+      if (!decisionId || revision.decisionId !== decisionId) return null;
+      return {
+        text: approvedDecisionNotice({ actorName: event.actorName, actorRole: event.actorRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf }),
+        color: APPROVED_DECISION_NOTICE_COLOR,
+      };
     }
     default:
       return null;

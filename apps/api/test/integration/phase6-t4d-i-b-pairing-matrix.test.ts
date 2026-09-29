@@ -233,24 +233,34 @@ const WITHDRAWAL = (o: { cr: string; ev: string; version: string; order?: Order;
     o.order === 'event-first' ? event + closure : closure + event, audit);
 };
 /** the delivered `approve` from `pending`: receipt, transition, finalized revision, audit, event */
-const APPROVAL = (o: { rev: string; ev: string; version: string; order?: Order; audit?: boolean; event?: boolean; cmd?: string; actor?: string }) => {
+/**
+ * 4d-ii-a / A7a (#665's review round 1, P1) — the CURRENT writer's `decision.approved` /
+ * `decision.reapproved` payload NAMES the revision the act wrote (`revisionId`), and the claimant
+ * refuses an event naming any other; a PRIOR-generation writer (a still-serving previous release)
+ * names none and is admitted through the drain. `named` overrides the name the bundle carries.
+ */
+const REVISION_PAYLOAD = (version: string, rev: string, named?: string) =>
+  named !== undefined || version === CURRENT ? `jsonb_build_object('revisionId','${named ?? rev}')` : undefined;
+const APPROVAL = (o: { rev: string; ev: string; version: string; order?: Order; audit?: boolean; event?: boolean; cmd?: string; actor?: string; named?: string; revVersion?: number }) => {
   const cmd = o.cmd ?? `${o.rev}-cmd`;
   const act = `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'mx-dec';
     INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
-      VALUES ('${o.rev}','mx-proj','mx-dec',1,'a',now(),'mx-pmc','${cmd}');`;
+      VALUES ('${o.rev}','mx-proj','mx-dec',${o.revVersion ?? 1},'a',now(),'mx-pmc','${cmd}');`;
   const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.approved', dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-pmc',
+    payload: REVISION_PAYLOAD(o.version, o.rev, o.named),
     push: `, 'push', jsonb_build_object('body','approved','roles', c."pushRoles")` });
   const audit = o.audit === false ? '' : AU('mx-dec', 'approved');
   return TX(RESERVE(cmd, 'decisions.approve', 'mx-pmc'), o.order === 'event-first' ? event + act : act + event, audit, COMPLETE(cmd, 'mx-dec'));
 };
 /** the delivered `approve` from `change` — the reapproval: closes the open request `cr` as resolved */
-const REAPPROVAL = (o: { rev: string; ev: string; cr: string; version: string; order?: Order; audit?: boolean; event?: boolean; closure?: boolean; actor?: string }) => {
+const REAPPROVAL = (o: { rev: string; ev: string; cr: string; version: string; order?: Order; audit?: boolean; event?: boolean; closure?: boolean; actor?: string; named?: string }) => {
   const cmd = `${o.rev}-cmd`;
   const act = `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'mx-dec2';
     ${o.closure === false ? '' : `UPDATE "ChangeRequest" SET "status" = 'resolved', "resolution" = 'reapproved', "resolvedById" = 'mx-pmc', "resolvedAt" = now() WHERE "id" = '${o.cr}';`}
     INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
       VALUES ('${o.rev}','mx-proj','mx-dec2',1,'a',now(),'mx-pmc','${cmd}');`;
   const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.reapproved', dec: 'mx-dec2', version: o.version, actor: o.actor ?? 'mx-pmc',
+    payload: REVISION_PAYLOAD(o.version, o.rev, o.named),
     push: `, 'push', jsonb_build_object('body','reapproved','roles', c."pushRoles")` });
   const audit = o.audit === false ? '' : AU('mx-dec2', 'reapproved');
   return TX(RESERVE(cmd, 'decisions.approve', 'mx-pmc'), o.order === 'event-first' ? event + act : act + event, audit, COMPLETE(cmd, 'mx-dec2'));
@@ -339,6 +349,20 @@ const MATRIX: Branch[] = [
             push: `, 'push', jsonb_build_object('body','approved','roles', c."pushRoles")` }),
           COMPLETE('mx-c1', 'mx-dec'), COMPLETE('mx-c2', 'mx-dec')),
         refusal: /rows BORN in this transaction|approval revision/ },
+      // 4d-ii-a / A7a (#665's review round 1, P1): the payload's `revisionId` is bound to the head
+      { name: 'the approval event names ANOTHER decision\'s revision as the one this act wrote (A7a: the green notice would render that revision\'s option under this decision)',
+        setup: HAND(`INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+                       VALUES ('mx-rev-other','mx-proj','mx-dec2',1,'b',now(),'mx-pmc');`),
+        bundle: APPROVAL({ rev: 'mx-rev', ev: 'mx-ev-ap', version: CURRENT, named: 'mx-rev-other' }),
+        refusal: /names revision `mx-rev-other` as the one its act wrote, but the finalized head born in this transaction is mx-rev/ },
+      { name: 'the approval event names an OLDER revision of this decision, not the head this act wrote (A7a)',
+        setup: HAND(`INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+                       VALUES ('mx-rev-v1','mx-proj','mx-dec',1,'b',now(),'mx-pmc');`),
+        bundle: APPROVAL({ rev: 'mx-rev', ev: 'mx-ev-ap', version: CURRENT, named: 'mx-rev-v1', revVersion: 2 }),
+        refusal: /names revision `mx-rev-v1` as the one its act wrote, but the finalized head born in this transaction is mx-rev/ },
+      { name: 'the approval event names a revision that does not exist (A7a)',
+        bundle: APPROVAL({ rev: 'mx-rev', ev: 'mx-ev-ap', version: CURRENT, named: 'mx-rev-nowhere', order: 'event-first' }),
+        refusal: /names revision `mx-rev-nowhere` as the one its act wrote/ },
     ],
   },
   {
@@ -365,6 +389,12 @@ const MATRIX: Branch[] = [
       { name: 'the reapproval moves the decision and writes its revision but leaves the request OPEN (missing converse)',
         bundle: REAPPROVAL({ rev: 'mx-rev2', ev: 'mx-ev-re', cr: 'mx-cr', version: CURRENT, closure: false }),
         refusal: /change → approved.* with 0 change request\(s\) closed here/ },
+      // 4d-ii-a / A7a (#665's review round 1, P1)
+      { name: 'the reapproval event names ANOTHER decision\'s revision as the one this act wrote (A7a)',
+        setup: HAND(`INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+                       VALUES ('mx-rev-other','mx-proj','mx-dec',1,'b',now(),'mx-pmc');`),
+        bundle: REAPPROVAL({ rev: 'mx-rev2', ev: 'mx-ev-re', cr: 'mx-cr', version: CURRENT, named: 'mx-rev-other' }),
+        refusal: /names revision `mx-rev-other` as the one its act wrote, but the finalized head born in this transaction is mx-rev2/ },
     ],
   },
   {
