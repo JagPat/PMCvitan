@@ -120,6 +120,8 @@ export const engineerTodayLabels = {
   done: { en: 'Done', hi: 'हो गया', gu: 'થઈ ગયું' },
   next: { en: 'Next', hi: 'अगला', gu: 'હવે' },
   notRecorded: { en: 'Not recorded', hi: 'दर्ज नहीं', gu: 'નોંધાયું નથી' },
+  sendAnyway: { en: 'Nothing more today — send to PMC', hi: 'आज और कुछ नहीं — PMC को भेजें', gu: 'આજે બીજું કંઈ નથી — PMC ને મોકલો' },
+  sendThisLog: { en: 'Send this log to PMC', hi: 'यह लॉग PMC को भेजें', gu: 'આ લોગ PMC ને મોકલો' },
   alsoWaiting: { en: 'Also waiting on you', hi: 'यह भी आपका इंतज़ार कर रहा है', gu: 'આ પણ તમારી રાહ જુએ છે' },
   loading: { en: "Getting today's log…", hi: 'आज का लॉग आ रहा है…', gu: 'આજનો લોગ આવી રહ્યો છે…' },
   unavailable: { en: "Today's log didn't load", hi: 'आज का लॉग नहीं खुला', gu: 'આજનો લોગ ખૂલ્યો નહીં' },
@@ -158,6 +160,20 @@ export const engineerTodayLabels = {
     done: { en: 'Nothing more to log today.', hi: 'आज और कुछ लिखना नहीं है।', gu: 'આજે વધુ કંઈ લખવાનું નથી.' },
   } satisfies Record<EngineerTodayAction, Record<Lang, string>>,
 } as const;
+
+/** An earlier day's log that was never sent: named by its own date, never as today's. */
+export function engineerTodayOverdue(date: string, lang: Lang): string {
+  if (lang === 'hi') return `यह ${date} का लॉग है और अभी भेजा नहीं गया।`;
+  if (lang === 'gu') return `આ ${date} નો લોગ છે અને હજી મોકલાયો નથી.`;
+  return `This log is for ${date} and hasn't been sent.`;
+}
+
+/** The path's title for an earlier day's log. */
+export function engineerTodayLogFor(date: string, lang: Lang): string {
+  if (lang === 'hi') return `${date} का लॉग`;
+  if (lang === 'gu') return `${date} નો લોગ`;
+  return `Log for ${date}`;
+}
 
 /** "2 of 4 done", in the reader's language. */
 export function engineerTodayProgress(done: number, total: number, lang: Lang): string {

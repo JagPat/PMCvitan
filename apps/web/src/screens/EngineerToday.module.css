@@ -63,6 +63,25 @@
   opacity: 0.55;
   cursor: not-allowed;
 }
+.nowSecondary {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 10px;
+  border: 1px solid rgba(237, 231, 218, 0.4);
+  border-radius: 14px;
+  background: transparent;
+  color: var(--sidebar-text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.nowOverdue {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+  margin-top: 8px;
+}
 .nowDone {
   display: flex;
   align-items: center;

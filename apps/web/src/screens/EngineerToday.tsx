@@ -6,7 +6,7 @@ import { todayPath, TODAY_STEPS } from '@/lib/engineerToday';
 import { todayCivil } from '@/lib/civilDate';
 import { dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { ArrowRight, Circle, CircleCheck, Crosshair, Plus, RefreshCw } from '@/lib/icons';
-import { can, engineerNavLabels, engineerTodayLabels as L, engineerTodayProgress, type Lang } from '@vitan/shared';
+import { can, engineerNavLabels, engineerTodayLabels as L, engineerTodayLogFor, engineerTodayOverdue, engineerTodayProgress, type Lang } from '@vitan/shared';
 import styles from './EngineerToday.module.css';
 
 const LOCALE: Record<Lang, string> = { en: 'en-IN', hi: 'hi-IN', gu: 'gu-IN' };
@@ -52,7 +52,8 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
     return () => clearInterval(id);
   }, [timeZone]);
 
-  const path = todayPath(dailyLog, total, today);
+  const path = todayPath(dailyLog, total, today, timeZone);
+  const overdueDate = path.overdue ? formatLogDate(LOCALE[lang], path.overdue) : null;
   const next = path.action === 'start' || path.action === 'done' ? null : path.action;
   const openSite = () => setScreen('daily-log');
   const date = formatDay(LOCALE[lang], timeZone);
@@ -77,7 +78,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
         )}
       </div>
     );
-  } else if ((path.action === 'start' && pendingStart) || (path.action === 'send' && pendingSend)) {
+  } else if ((path.action === 'start' && pendingStart) || (path.action !== 'start' && path.action !== 'done' && pendingSend)) {
     card = (
       <div className={styles.now} data-surface="ink" data-testid="today-now" data-action={path.action === 'start' ? 'pending-start' : 'pending-send'}>
         <div className={styles.nowTitle} style={{ marginTop: 0 }}>{path.action === 'start' ? L.pendingStart[lang] : L.pendingSend[lang]}</div>
@@ -101,15 +102,27 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
     const canAct = a === 'start' ? can('dailyLog.start', role) : a === 'send' ? can('dailyLog.submit', role) : true;
     const run = a === 'start' ? startDailyLog : a === 'checkIn' ? checkIn : a === 'send' ? submitDailyLog : openSite;
     const Icon = a === 'start' ? Plus : a === 'checkIn' ? Crosshair : ArrowRight;
+    // an earlier day's unsent log is never called today's: its own date is named, and sending it
+    // says "this log"
+    const label = a === 'send' && overdueDate ? L.sendThisLog[lang] : L.action[a][lang];
+    // crew and photos are suggestions, never gates: the server sends any checked-in log, so a
+    // rain-day or holiday log can go with nothing more recorded
+    const sendAnyway = (a === 'crew' || a === 'photos') && path.canSend && can('dailyLog.submit', role);
     card = (
       <div className={styles.now} data-surface="ink" data-testid="today-now" data-action={a}>
         <div className={styles.nowLabel}>{L.doNow[lang]}</div>
+        {overdueDate && <div className={styles.nowOverdue} data-testid="today-overdue">{engineerTodayOverdue(overdueDate, lang)}</div>}
         {/* the action names itself once, on the button; a reader who can't act sees it as the title */}
-        {!canAct && <div className={styles.nowTitle}>{L.action[a][lang]}</div>}
+        {!canAct && <div className={styles.nowTitle}>{label}</div>}
         <div className={styles.nowDetail}>{L.actionDetail[a][lang]}</div>
         {canAct && (
           <button className={styles.nowAction} onClick={run} data-testid="today-action">
-            <Icon size={20} aria-hidden /> {L.action[a][lang]}
+            <Icon size={20} aria-hidden /> {label}
+          </button>
+        )}
+        {sendAnyway && (
+          <button className={styles.nowSecondary} onClick={submitDailyLog} data-testid="today-send-anyway">
+            {overdueDate ? L.sendThisLog[lang] : L.sendAnyway[lang]}
           </button>
         )}
       </div>
@@ -129,7 +142,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
       {!unsettled && (
         <>
           <div className={styles.pathHead}>
-            <h2 className={styles.pathTitle} style={{ margin: 0 }}>{L.path[lang]}</h2>
+            <h2 className={styles.pathTitle} style={{ margin: 0 }}>{overdueDate ? engineerTodayLogFor(overdueDate, lang) : L.path[lang]}</h2>
             <span className={styles.pathCount} data-testid="today-count">{engineerTodayProgress(path.doneCount, TODAY_STEPS.length, lang)}</span>
           </div>
           <ol className={styles.steps}>
@@ -182,4 +195,12 @@ function formatDay(locale: string, timeZone: string | null): string {
     }
   }
   return new Intl.DateTimeFormat(locale, opts).format(new Date());
+}
+
+/** A log's own civil date (ISO YYYY-MM-DD), as "28 September" in the reader's language. The date
+ *  is already the site's civil day, so it is formatted as-is (UTC), never shifted by a zone. */
+function formatLogDate(locale: string, iso: string): string {
+  const at = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(at.getTime())) return iso;
+  return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(at);
 }

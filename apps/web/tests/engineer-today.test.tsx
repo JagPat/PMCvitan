@@ -286,11 +286,58 @@ describe('Engineer Today — the screen', () => {
     const { r } = await loadToday({ dailyLog: log() });
     // CSS Modules don't compute in jsdom; the floor lives in the stylesheet and is asserted there
     const css = (await import('node:fs')).readFileSync('src/screens/EngineerToday.module.css', 'utf8');
-    for (const cls of ['step', 'nowAction']) {
+    for (const cls of ['step', 'nowAction', 'nowSecondary']) {
       const m = css.match(new RegExp(`\\.${cls} \\{[^}]*min-height: (\\d+)px`));
       expect(Number(m?.[1])).toBeGreaterThanOrEqual(44);
     }
     expect(r.getAllByRole('button').length).toBeGreaterThanOrEqual(5);
+  });
+});
+
+describe('review round 7 — what the log really records, and what the server really requires', () => {
+  it('a check-in-only log (a rain day) can be sent from the card: crew and photos never gate Send', async () => {
+    const { useStore, r } = await loadToday({ dailyLog: log({ checkedIn: true }) });
+    expect(r.getByTestId('today-now').dataset.action).toBe('crew');
+    const anyway = r.getByTestId('today-send-anyway');
+    expect(anyway.textContent).toContain(L.sendAnyway.en);
+    fireEvent.click(anyway);
+    expect(useStore.getState().dailyLog?.submitted).toBe(true);
+    expect(r.getByTestId('today-now').dataset.action).toBe('done');
+  });
+
+  it('Send-anyway needs a checked-in log and the send permission', async () => {
+    const { r } = await loadToday({ dailyLog: log() });
+    expect(r.getByTestId('today-now').dataset.action).toBe('checkIn');
+    expect(r.queryByTestId('today-send-anyway')).toBeNull();
+  });
+
+  it('photos persisted for the log’s own day count after a reload, even with progress back at 0', () => {
+    const taken = (iso: string) => [{ id: 'm1', url: 'data:x', takenAt: iso }] as DailyLog['photos'];
+    const today = '2026-09-29';
+    const base = { checkedIn: true, progress: 0, logDate: today };
+    expect(todayPath(log({ ...base, photos: taken('2026-09-29T06:10:00Z') }), 3, today, 'Asia/Kolkata').done.photos).toBe(true);
+    // 20:30 UTC on the 28th is already the 29th on a Kolkata site
+    expect(todayPath(log({ ...base, photos: taken('2026-09-28T20:30:00Z') }), 3, today, 'Asia/Kolkata').done.photos).toBe(true);
+    // an earlier day's photo is not today's evidence
+    expect(todayPath(log({ ...base, photos: taken('2026-09-27T06:10:00Z') }), 3, today, 'Asia/Kolkata').done.photos).toBe(false);
+    // a photo with no capture time can't be placed on a day
+    expect(todayPath(log({ ...base, photos: [{ id: 'm2', url: 'data:y' }] }), 3, today, 'Asia/Kolkata').done.photos).toBe(false);
+  });
+
+  it('an earlier day’s unsent log is named by its date, never as today’s', async () => {
+    const old = log({ checkedIn: true, progress: 2, logDate: '2000-01-01' });
+    old.crew[0].count = 3;
+    const { r } = await loadToday({ dailyLog: old, timeZone: 'Asia/Kolkata' });
+    expect(r.getByTestId('today-now').dataset.action).toBe('send');
+    expect(r.getByTestId('today-overdue').textContent).toContain('1 January');
+    expect(r.getByTestId('today-action').textContent).toContain(L.sendThisLog.en);
+    expect(r.getByTestId('today-action').textContent).not.toContain(L.action.send.en);
+    expect(r.getByText('Log for 1 January')).toBeTruthy();
+  });
+
+  it('today’s log carries no overdue line', async () => {
+    const { r } = await loadToday({ dailyLog: log({ checkedIn: true }) });
+    expect(r.queryByTestId('today-overdue')).toBeNull();
   });
 });
 
