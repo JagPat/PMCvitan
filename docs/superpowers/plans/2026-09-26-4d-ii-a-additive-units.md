@@ -402,6 +402,16 @@ forced:
   file re-issues the CHECK with `awaiting_countersign` admitted, the 4b predicate otherwise byte for
   byte, verified by the seal's own arm standing; the upgrade proof replays it twice and drives the
   refusal it keeps (the tuple on a pending decision).
+- **One latent A7b defect the approve's cancellation surfaced, fixed here:** the push consumer's
+  drop (`markCancelled`, the bootstrap's binding) re-wrote the cancellation mark unconditionally, and
+  `OutboxDelivery_t4d_frozen` writes the mark ONCE — so a cancellation landing on a LEASED row between
+  the pre-send hook's own mark read and the family predicate's read (the approve's now, the
+  withdraw's before) refused the drop and cost the delivery a failed attempt before the relay's own
+  re-read dropped it on the retry. The binding now writes the mark only where it is absent and
+  otherwise takes the noop action alone (the completion of a row already marked, which the seal
+  admits). The A7b send-boundary suite's two decider arms are re-pointed: an approval committed
+  before the claim has already NEUTRALIZED the pending demand (the claim finds nothing claimable),
+  and the pre-send single-recipient arm LEASES the row first — the race the hook exists for.
 - **Residuals stated:** a forward bundle WITHOUT its `forwarded` audit row commits under the delivered
   seals (the correspondence seal judges from the audit row's side; no forward seal demands the row) —
   the service writes it, and a DB-side demand is 4d-iii's with the other trailing seals; the frozen

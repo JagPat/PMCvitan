@@ -128,12 +128,25 @@ export class OutboxBootstrap implements OnModuleInit, OnModuleDestroy {
         },
         userHoldsRole: (projectId, userId, role) => this.orgsParticipant.hasProjectRoleStanding(this.prisma, projectId, userId, [role]),
         // the claim-time drop is recorded on the delivery's own row (the 4a cancellation mark) —
-        // a platform-internal write of the platform's own table
+        // a platform-internal write of the platform's own table.
+        // 4d-ii-a / A8a — the mark is written ONCE (`OutboxDelivery_t4d_frozen`: NULL -> a timestamp,
+        // never rewritten). A cancellation that lands on a LEASED row between the hook's own mark
+        // read and the family predicate's read (the approve's or the withdraw's, in the lease
+        // window) has already marked the row, and the drop the predicate then returns must not
+        // write the mark again — it takes the noop action alone, the COMPLETION of a row already
+        // marked, which the seal admits. Re-writing the mark was refused and cost the delivery a
+        // failed attempt before the relay's own re-read dropped it on the retry.
         markCancelled: async (deliveryId) => {
-          await this.prisma.outboxDelivery.update({
-            where: { id: deliveryId },
+          const marked = await this.prisma.outboxDelivery.updateMany({
+            where: { id: deliveryId, cancelledAt: null },
             data: { cancelledAt: new Date(), deliveryAction: 'noop' },
           });
+          if (marked.count === 0) {
+            await this.prisma.outboxDelivery.updateMany({
+              where: { id: deliveryId, cancelledAt: { not: null }, deliveryAction: 'dispatch' },
+              data: { deliveryAction: 'noop' },
+            });
+          }
         },
       }),
     );
