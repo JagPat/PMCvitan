@@ -7,6 +7,7 @@ import { configureApp } from '../../src/app-setup';
 import { PrismaService } from '../../src/prisma.service';
 import type { Role } from '../../src/common/auth';
 import { EmailService } from '../../src/platform/email.service';
+import { OutboxBootstrap } from '../../src/platform/outbox/outbox.bootstrap';
 
 export interface TestApp {
   app: NestExpressApplication;
@@ -44,6 +45,10 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
   const app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app);
   await app.init();
+  // 4d-ii-a / A6e — the harness opens no listener; the process counts as serving once initialized,
+  // so release the server-generation admission `OutboxBootstrap` held through boot (`main.ts` does
+  // this after `app.listen()`), or the row's SHARE lock would outlive the suite's boot.
+  app.get(OutboxBootstrap).releaseAdmission();
   const prisma = app.get(PrismaService);
   const jwt = app.get(JwtService);
   return {
