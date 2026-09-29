@@ -4,7 +4,7 @@ import { ProjectionRebuilder } from './rebuilder.service';
 import { ProjectionRebuildOperations } from './rebuild-operations';
 import { makeDecisionsProjectionConsumer, DECISIONS_PROJECTION } from '../../decisions/decisions.projection';
 import { runInboxRepairStep, singleConnectionUrl, summarizeForDeployLog } from './inbox-repair';
-import { MARKER_SEAL_TABLE, repairMarkerSeals, summarizeMarkerSeals, verifyMarkerSeals, verifyWriterFence } from './inbox-repair-seals';
+import { MARKER_SEAL_TABLE, WRITER_FENCE_MIGRATION, WRITER_FENCE_REISSUE_MIGRATION, repairMarkerSeals, summarizeMarkerSeals, verifyMarkerSeals, verifyWriterFence } from './inbox-repair-seals';
 
 /**
  * Phase 6 unit 4c-iii-r — the deploy-time `decisions.inbox` repair, as the COMPILED artifact
@@ -90,7 +90,9 @@ async function main(): Promise<void> {
           + `${fence.findings.map((f) => `  - ${f}`).join('\n')}\n\n`
           + 'Without it a previous-release relay that is already running can write v1 rows into a live '
           + 'generation and they will be SERVED. Re-apply '
-          + '20271126000000_phase6_4c_iiir_writer_fence. See docs/RUNBOOK.md §P64CIIIR.\n',
+          + `${WRITER_FENCE_MIGRATION} and then ${WRITER_FENCE_REISSUE_MIGRATION}, in that order (the `
+          + 'installing file alone restores the previous release\'s function bodies, which this verifier '
+          + 'refuses). See docs/RUNBOOK.md §P64CIIIR.\n',
         );
         process.exitCode = 3;
       }

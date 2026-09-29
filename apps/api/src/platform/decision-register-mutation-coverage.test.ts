@@ -95,6 +95,10 @@ const COVERAGE: Record<string, Class> = {
   // disagreement command that writes it is A8b's), to prove `withdrawChange` refuses it; teardown
   // by sanctionedReset.
   'test/integration/phase6-t4d-ii-a7b-send-boundary.test.ts': 'planted countersign_rejection origin under a named, single-transaction disable of ChangeRequest_t4d_evidence_frozen; teardown by sanctionedReset',
+  // 4d-ii-a / A7c — the `decisions.inbox` v3 suite plants the same `countersign_rejection` origin (A8b's
+  // disagreement command is the only writer) to prove the fold, the rebuild and the live slice carry
+  // the non-`standard` origin identically; the same whole-table, single-transaction shape as A7b's.
+  'test/integration/phase6-t4d-ii-a7c-inbox-v3.test.ts': 'planted countersign_rejection origin under a whole-table, single-transaction DISABLE TRIGGER USER on ChangeRequest (the A7b shape); teardown by wipeDecisionsVia',
   'test/integration/platform-command-receipt.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
   'test/integration/start-readiness-race.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
 

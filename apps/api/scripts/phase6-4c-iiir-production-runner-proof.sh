@@ -531,10 +531,24 @@ printf '%s\n' "$OUT" | grep -q 'WRITER FENCE' && ok "and the refusal NAMES the f
 # replaying it cannot drift from what a real deploy installs. This is the same lesson the coupling
 # mutation below already learned twice: never hand-copy what the thing under test owns.
 $PSQL -q -v ON_ERROR_STOP=1 -f "prisma/migrations/20271126000000_phase6_4c_iiir_writer_fence/migration.sql" >/dev/null
+# …AND THE RE-ISSUE, in ledger order (4d-ii-a / A7c). `20280103000000` moved `decisions.inbox` to
+# contract version 3 and CREATE OR REPLACEd the fence's two functions to read that declaration, so the
+# installing file alone restores the trigger with the PREVIOUS release's body — which the verifier
+# refuses as replaced, exactly as it should (a fence reading `2` would let a version-2 relay write
+# unfenced). A restore is therefore what `ALWAYS_EXECUTE` does on a baseline: both files, in order.
+# The intermediate state is asserted first, so a future re-issue that forgets this replay fails here.
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
        PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
-[ "$RC" = "0" ] && ok "and with the fence back the SAME runner deploys — the refusal was the fence and nothing else" \
+[ "$RC" != "0" ] && ok "A7c: with only the INSTALLING file replayed the fence reads the previous release's declaration and the runner still refuses" \
+                 || { bad "a fence restored to the previous release's body was accepted"; printf '%s\n' "$OUT" | tail -20; }
+printf '%s\n' "$OUT" | grep -q 'not the migration' && ok "and the refusal NAMES the replaced body" \
+                                                    || { bad "the refusal did not name the replaced fence body"; printf '%s\n' "$OUT" | tail -20; }
+$PSQL -q -v ON_ERROR_STOP=1 -f "prisma/migrations/20280103000000_phase6_t4d_ii_a7c_inbox_v3/migration.sql" >/dev/null
+OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       sh scripts/migrate.sh 2>&1)"; RC=$?
+[ "$RC" = "0" ] && ok "and with the fence back — both files, in ledger order — the SAME runner deploys; the refusal was the fence and nothing else" \
                 || { bad "the runner still refused after the fence was restored (exit $RC)"; printf '%s\n' "$OUT" | tail -20; }
 
 # ══ G. COUPLING ═══════════════════════════════════════════════════════════════════════════════
