@@ -217,6 +217,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #2": 'excludes: approved vs reapproved, from the status approve admitted',
     "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #3": 'excludes: approved vs reapproved, from the status approve admitted',
     "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #4": 'excludes: approved vs reapproved, from the status approve admitted',
+    // 4d-ii-a / A7a — the kinded notice's `kind` is the event's type, chosen by the same arm
+    "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #5": 'excludes: approved vs reapproved, from the status approve admitted',
     "apps/api/src/decisions/decisions.service.ts :: d.status !== 'approved'": 'excludes: a change request reopens a FINAL approval; an awaiting one is reopened only by the architect’s disagreement (A8b)',
     "apps/api/src/decisions/decisions.service.ts :: d.status !== 'change'": 'excludes: only an open change request can be withdrawn',
     "apps/api/src/decisions/decisions.service.ts :: cur.status === 'recorded'": 'excludes: a draft’s record/pending flip; a draft is never awaiting',

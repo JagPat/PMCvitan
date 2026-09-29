@@ -14,37 +14,33 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a6e-generation-fence
-reviewed_merge: b44a629
-open_pr: 663
+work_item: phase-6-task-4d-ii-a-a7a-kinded-notice-writers
+reviewed_merge: faaf233
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-28
+updated: 2026-09-29
 ```
 
-### Now — Phase 6 task 4d: A6e, the server-generation fence and the drain evidence
+### Now — Phase 6 task 4d: A7a, the kinded notice writers
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A6e, `open_pr: 663` (`work_item: phase-6-task-4d-ii-a-a6e-generation-fence`, branch
-  `claude/4d-ii-a6e-generation-fence`, from `main` at `b44a629`).** The fifth and last A6 sub-unit: the
-  server-generation fence and the drain's autonomous corroboration (the staging document, "The drain").
-  - Migration `20280101000000_phase6_t4d_ii_a6e_generation_fence` (on `ALWAYS_EXECUTE`): the
-    `ServerGeneration` singleton register — the persisted minimum, written only inside a migration's DDL
-    transition (`platform_t4d_server_generation_migration_open`, A6c's shape), only ever raised (`GREATEST`
-    on re-apply, each raise recording its own provenance), never deleted or truncated — set to this build's
-    generation (1), so nothing running is refused; A8b's migration raises it.
-  - `src/platform/server-generation.ts`: the compiled `SERVER_GENERATION` (pinned to the migration's
-    literal) and the startup fence the outbox bootstrap runs FIRST, refusing a build below the persisted
-    minimum and a database carrying none; the admission read locks the row `FOR SHARE` and the process
-    holds it until it actually serves (`main.ts` releases after `app.listen()`), so a raise serializes
-    after every start in flight; a hold lost before the listener opens fences the process.
-  - `rollout:drain-evidence` (`src/platform/rollout/`): reads the Coolify application resource and the
-    running-deployment queue, and the `ReleaseLease` register; places each release against the minimum by
-    git ancestry, fail closed on anything it cannot place, `not-drained` dominating; renders the
-    `DRAIN-EVIDENCE` comment body for the runner to record. An observer: the gate still clears only on
-    the human `OPERATOR-ATTESTATION`.
+- **Now, A7a (`work_item: phase-6-task-4d-ii-a-a7a-kinded-notice-writers`, branch
+  `claude/4d-ii-a7-catalog-unit`, from `main` at `faaf233`).** A7 is delivered as four sub-units
+  (the staging document's dated note of 2026-09-29): A7a the kinded notice writers, A7b the send
+  boundary, A7c `decisions.inbox` v3, A7d the catalog change. A7a: every decisions notice writer
+  (the one-step issue, publish, approve, withdraw) mints its event id, emits the event first and
+  writes the notice bound to it (`eventId`, `kind`) in the same transaction, as 4d-i's binding seal
+  demands; the green approved notice renders from the event's frozen envelope and the revision its
+  event names (`payload.revisionId` on the direct approve, moved forward from A8a's row); the hostile
+  late-kinded-insert probe against a committed no-notice event. No migration.
+- **A6e merged as #663** (`faaf233`): the `ServerGeneration` register and the startup fence the outbox
+  bootstrap runs first (the admission read held `FOR SHARE` until `main.ts` releases after
+  `app.listen()`, a lost hold fencing the process); `rollout:drain-evidence`, the observer that renders
+  the `DRAIN-EVIDENCE` body from Coolify's application resource and deployment queue, the
+  `ReleaseLease` register and git ancestry. **A6 is complete.**
 - **A6d merged as #662** (`b44a629`): `deliveryRowsFor` over the persisted catalog called by
   `materializeDeliveries` and `expandMissingDeliveries`, `deliveryFor` retired; the kernel's derivation
   and projection; `DomainEvent_t4d_deliveries` (deferred, the SHARE half of the barrier), the binding,

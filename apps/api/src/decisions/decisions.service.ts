@@ -1,14 +1,15 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, type $Enums } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
-import { resolveActor, ROLE_LABEL } from '../common/actor';
+import { resolveActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
-import { PENDING_DECISION_NOTICE_COLOR, RECORDED_DECISION_NOTICE_COLOR, WITHDRAWN_DECISION_NOTICE_COLOR, pendingDecisionNotice, recordedDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
+import { APPROVED_DECISION_NOTICE_COLOR, PENDING_DECISION_NOTICE_COLOR, RECORDED_DECISION_NOTICE_COLOR, WITHDRAWN_DECISION_NOTICE_COLOR, approvedDecisionNotice, pendingDecisionNotice, recordedDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
 import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
 import type { ApproveInput, ChangeInput, CreateDecisionInput, RequestConsultationInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
@@ -250,14 +251,14 @@ export class DecisionsService {
           await tx.decision.update({ where: { id }, data: { publishedAt: new Date() } });
         }
         await tx.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: input.title } } });
-        if (input.publish) {
-          // Phase 6 task 4a — decision-notice writers stamp `decisionId`, so a later withdrawal
-          // retires the pending notice by IDENTITY, never by matching display text.
-          await tx.notification.create({ data: { projectId, text: notice, color: record ? RECORDED_DECISION_NOTICE_COLOR : PENDING_DECISION_NOTICE_COLOR, time: 'just now', decisionId: id } });
-        }
         await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
+        // 4d-ii-a / A7a — the event id is MINTED HERE, before the event exists, because the notice
+        // below names it: the event is written first (the notice's binding key is a NOT DEFERRABLE
+        // foreign key onto it) and the notice second, in this one transaction, as the binding seal
+        // demands (`Notification_t4d_binding_bound`: the event must be this transaction's).
+        const eventId = randomUUID();
         const ev = await emitEvent(tx, {
-          projectId, actor, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title },
+          projectId, actor, eventId, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title },
           // #582 round 18, finding 1 — the RECORD arm has its own key. The obligation is a
           // property of the branch, and the branch is already decided here.
           effectKey: input.publish ? (record ? 'decision.published.record' : 'decision.published') : 'decision.drafted',
@@ -269,6 +270,15 @@ export class DecisionsService {
             ? { push: this.deciderPush(`New decision awaiting your approval: ${input.title}`, input.deciderKind, member) }
             : {},
         });
+        if (input.publish) {
+          // Phase 6 task 4a — decision-notice writers stamp `decisionId`, so a later withdrawal
+          // retires the pending notice by IDENTITY, never by matching display text.
+          // 4d-ii-a / A7a — and the notice is KINDED: bound to the event that announced the act
+          // (`eventId`, `kind` = its type), so every reader renders it from the event (A4c) and
+          // the row is evidence the binding seal keeps. `text`/`color` stay as the cache a
+          // previous-release replica still serves through the drain. A draft writes no notice.
+          await tx.notification.create({ data: { projectId, text: notice, color: record ? RECORDED_DECISION_NOTICE_COLOR : PENDING_DECISION_NOTICE_COLOR, time: 'just now', decisionId: id, kind: 'decision.published', eventId } });
+        }
         return { resultRef: id, events: [ev] };
       },
     });
@@ -368,10 +378,11 @@ export class DecisionsService {
         if (count === 0) throw new ConflictException('Decision is already published');
         const notice = record ? recordedDecisionNotice(d.title) : pendingDecisionNotice(d.title);
         await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } });
-        await tx.notification.create({ data: { projectId, text: notice, color: record ? RECORDED_DECISION_NOTICE_COLOR : PENDING_DECISION_NOTICE_COLOR, time: 'just now', decisionId } });
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
+        // 4d-ii-a / A7a — event first, then the kinded notice bound to it (see create()).
+        const eventId = randomUUID();
         const ev = await emitEvent(tx, {
-          projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
+          projectId, actor, eventId, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
           effectKey: record ? 'decision.published.record' : 'decision.published',   // #582 round 18, finding 1
           // §A.3: the approval demand pushes AT THE DECIDER; a record pushes at NOBODY (there
           // is nothing to approve — the bell notice above is the announcement).
@@ -379,6 +390,7 @@ export class DecisionsService {
             ? {}
             : { push: this.deciderPush(`New decision awaiting your approval: ${d.title}`, d.deciderKind as 'client', member) },
         });
+        await tx.notification.create({ data: { projectId, text: notice, color: record ? RECORDED_DECISION_NOTICE_COLOR : PENDING_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.published', eventId } });
         return { resultRef: decisionId, events: [ev] };
       },
     });
@@ -440,12 +452,8 @@ export class DecisionsService {
     // history even after a later forward re-homes the decision)
     const holderLabel =
       d.deciderKind === 'member' ? `Member ${d.deciderMembershipId}` : d.deciderKind === 'pmc' ? 'PMC' : 'Client';
-    // ...and the ANNOUNCEMENT says who exercised the authority (gate finding 7)
-    const announce = onBehalfOf
-      ? `${actor.actorName} (${ROLE_LABEL[actor.actorRole] ?? actor.actorRole}) approved ${d.title} on behalf of the ${onBehalfOf === 'member' ? 'named decider' : onBehalfOf} — ${o.material}`
-      : d.deciderKind === 'client'
-        ? `Client approved ${d.title} — ${o.material}`
-        : `${actor.actorName} approved ${d.title} — ${o.material}`;
+    // ...and the ANNOUNCEMENT says who exercised the authority (gate finding 7). Composed inside
+    // the transaction from A7a: see `announce` there.
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -559,9 +567,10 @@ export class DecisionsService {
           where: { decisionId, type: { in: ['approved', 'reapproved'] } },
         });
         const version = Math.max(registerHead?.version ?? 0, priorApprovals) + 1;
+        const revisionId = `dar-${decisionId}-v${version}`;
         await tx.decisionApprovalRevision.create({
           data: {
-            id: `dar-${decisionId}-v${version}`,
+            id: revisionId,
             projectId, decisionId, version,
             optionKey: o.optionKey,
             approvedAt: new Date(),
@@ -589,13 +598,29 @@ export class DecisionsService {
             payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) },
           },
         });
-        await tx.notification.create({ data: { projectId, text: announce, color: '#3F7A54', time: 'just now', decisionId } });
         await recordAudit(tx, { projectId, actor, action: 'decision.approve', entity: 'Decision', entityId: decisionId });
+        // 4d-ii-a / A7a — the green notice is KINDED, and a kinded notice is RENDERED by every reader
+        // from its event: the approver from the event's frozen actor envelope, the option and the
+        // on-behalf fact from the revision the event NAMES (`revisionId`, the exact revision this
+        // act wrote — never the head, so an older notice of a twice-approved decision keeps its own
+        // approver and option). So the envelope is resolved HERE (A2's seam: one reading for the
+        // event and the notice), the payload carries what the text needs beside the revision id,
+        // and the cached text is built from the same facts the renderer reads.
+        const envelope = await resolveActorEnvelope(tx, projectId, actor);
+        const announce = approvedDecisionNotice({
+          actorName: envelope?.actorName ?? actor.actorName,
+          actorRole: envelope?.actorRole ?? actor.actorRole,
+          title: d.title, material: o.material, deciderKind: d.deciderKind, onBehalfOf,
+        });
+        const eventId = randomUUID();
         const ev = await emitEvent(tx, {
-          projectId, actor, eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId, payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) },
+          projectId, actor, eventId, actorEnvelope: envelope,
+          eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId,
+          payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}), revisionId, title: d.title, deciderKind: d.deciderKind },
           effectKey: prior === 'change' ? 'decision.reapproved' : 'decision.approved',
           dispatch: { push: { body: announce } },
         });
+        await tx.notification.create({ data: { projectId, text: announce, color: APPROVED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: prior === 'change' ? 'decision.reapproved' : 'decision.approved', eventId } });
         return { resultRef: decisionId, events: [ev] };
       },
     });
@@ -1289,8 +1314,9 @@ export class DecisionsService {
           },
         });
         // the appended withdrawal notice — pmc-only: `isWithdrawnDecisionNotice` strips it from
-        // every non-pmc feed, the same mechanism that hides pending notices (§A.2/§A.3)
-        await tx.notification.create({ data: { projectId, text: withdrawnDecisionNotice(d.title, reason), color: WITHDRAWN_DECISION_NOTICE_COLOR, time: 'just now', decisionId } });
+        // every non-pmc feed, the same mechanism that hides pending notices (§A.2/§A.3).
+        // 4d-ii-a / A7a — KINDED, so it is written AFTER its event below (the binding key is a
+        // NOT DEFERRABLE foreign key onto the event); the kinded reader serves it to the pmc alone.
 
         // outrun the QUEUED past: a committed `decision.published` push intent the relay has
         // not yet delivered must not tell the client "awaiting your approval" about a decision
@@ -1301,14 +1327,16 @@ export class DecisionsService {
         const cancelled = await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.published' });
 
         await recordAudit(tx, { projectId, actor, action: 'decision.withdraw', entity: 'Decision', entityId: decisionId });
+        const eventId = randomUUID();
         const ev = await emitEvent(tx, {
-          projectId, actor, eventType: 'decision.withdrawn', entityType: 'Decision', entityId: decisionId,
+          projectId, actor, eventId, eventType: 'decision.withdrawn', entityType: 'Decision', entityId: decisionId,
           payload: { title: d.title, reason, pushIntentsCancelled: cancelled.neutralized + cancelled.marked + cancelled.entombed },
           effectKey: 'decision.withdrawn',
           // surfaces refresh; no push — the lifecycle-correction precedent (change_requested/
           // change_withdrawn), and the pmc who acted needs no announcement
           dispatch: {},
         });
+        await tx.notification.create({ data: { projectId, text: withdrawnDecisionNotice(d.title, reason), color: WITHDRAWN_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.withdrawn', eventId } });
         return { resultRef: decisionId, events: [ev] };
       },
     });

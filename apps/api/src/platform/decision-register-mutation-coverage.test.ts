@@ -86,6 +86,10 @@ const COVERAGE: Record<string, Class> = {
   'test/integration/phase6-t4d-ii-a2-request-change.test.ts': 'scoped request teardown; audit deletes through wipeDecisionEvents; swept by 4d-iii with the trailing ChangeRequest seals',
   'test/integration/phase6-t4d-ii-a5e-countersign-boundary.test.ts': 'scoped request teardown inside wipeDecisionsVia; audit deletes through wipeDecisionEvents; swept by 4d-iii with the trailing ChangeRequest seals',
   'test/integration/phase6-t4c-ii-consultation.test.ts': 'audit deletes through wipeDecisionEvents; notice deletes scoped teardown',
+  // 4d-ii-a / A7a — the kinded writers' suite: its ONLY notice mutations are the hostile arms
+  // asserting the binding seal's refusals (a direct DELETE, a re-kind and a re-point of a kinded
+  // row, each expected to throw); its teardown is the sanctioned TRUNCATE, never a row delete.
+  'test/integration/phase6-t4d-ii-a7a-kinded-notice-writers.test.ts': 'hostile arms only: a kinded row\'s DELETE/UPDATE asserted REFUSED by Notification_t4d_binding; teardown by sanctionedReset',
   'test/integration/platform-command-receipt.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
   'test/integration/start-readiness-race.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
 
