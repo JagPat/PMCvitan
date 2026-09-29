@@ -481,6 +481,8 @@ describe('review round 10 — a send on its way freezes the log, and a stalled o
     expect((r.getAllByLabelText(`Add ${trade}`).at(-1) as HTMLButtonElement).disabled).toBe(true);
     expect((r.getAllByLabelText(`Remove ${trade}`).at(-1) as HTMLButtonElement).disabled).toBe(true);
     expect((r.getAllByTestId('add-progress-photo').at(-1) as HTMLButtonElement).disabled).toBe(true);
+    // the send carries the check-in too, so checking out waits as well
+    expect((r.getAllByTestId('check-out').at(-1) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('the Site screen’s log stays editable when nothing is on its way', async () => {

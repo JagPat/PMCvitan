@@ -53,8 +53,8 @@ export function DailyLogScreen() {
   const starting = useStore(dailyLogStartPending);
   const sending = useStore(dailyLogSendPending);
   const inFlight = useStore(dailyLogCommandInFlight);
-  // a send on its way has already captured the crew and photo count it carries: edits made now
-  // would be dropped by the reconcile while the server keeps the sent values, so they wait too
+  // a send on its way has already captured what it carries (check-in, crew, photo count): edits
+  // made now would be dropped by the reconcile while the server keeps the sent values, so they wait
   // live project identity — never the seeded Ambli copy (Phase 0 Task 7)
   const short = useStore((s) => s.short);
   const location = useStore((s) => s.location);
@@ -192,13 +192,13 @@ export function DailyLogScreen() {
               <div style={{ fontWeight: 600, fontSize: 14 }}>Checked in · {dailyLog.checkinTime}</div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'rgba(237,231,218,.55)', marginTop: 2 }}>{siteLabel} · within 60 m · GPS + selfie</div>
             </div>
-            <button onClick={checkOut} data-testid="check-out" style={{ background: 'transparent', border: '1px solid rgba(237,231,218,.3)', color: 'var(--sidebar-text)', padding: '8px 11px', minHeight: 44, borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
+            <button onClick={checkOut} disabled={sending} data-testid="check-out" style={{ background: 'transparent', border: '1px solid rgba(237,231,218,.3)', color: 'var(--sidebar-text)', padding: '8px 11px', minHeight: 44, borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
               Check out
             </button>
           </div>
         ) : (
           <>
-            <button onClick={checkIn} data-testid="check-in" style={{ width: '100%', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 15, padding: 18, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9 }}>
+            <button onClick={checkIn} disabled={sending} data-testid="check-in" style={{ width: '100%', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 15, padding: 18, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9 }}>
               <Crosshair size={18} /> Check in at site
             </button>
             {/* the PRESENCE PROOF is not an eyebrow: it tells the worker what this button is about to
