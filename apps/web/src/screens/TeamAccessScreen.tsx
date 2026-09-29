@@ -114,7 +114,8 @@ export function TeamAccessScreen() {
         <div style={{ display: 'flex', gap: 7, marginTop: 9 }}>
           {LANGS.map((l) => (
             <button key={l.key} onClick={() => {
-              noteLangChoice(l.key as Lang);
+              // a guest's pick: the worker or trade in-charge signing in, never the console host
+              noteLangChoice(l.key as Lang, 'guest');
               setLang(l.key as Lang);
             }} style={langStyle(lang === l.key)}>
               {l.label}

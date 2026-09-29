@@ -274,6 +274,110 @@ describe('LangPreference — restores and remembers the viewer’s language', ()
   });
 });
 
+describe('a guest picking a language on the in-console Team Access screen', () => {
+  beforeEach(() => localStorage.clear());
+
+  // Team Access is a normal engineer screen: the host hands the phone to a worker who picks THEIR
+  // language on the sign-in step. That pick is the guest's, not the host's saved preference.
+  async function loadTeamAccess(overrides: Record<string, unknown> = {}) {
+    const shell = await loadShell({ role: 'engineer', sessionUserId: 'u-host', screen: 'team-access', ...overrides });
+    const { TeamAccessScreen } = await import('@/screens/TeamAccessScreen');
+    return { ...shell, TeamAccessScreen };
+  }
+
+  it('does not overwrite the signed-in host’s saved language', async () => {
+    writeLangPreference('user:u-host', 'gu');
+    const { useStore, LangPreference, TeamAccessScreen } = await loadTeamAccess({ lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <TeamAccessScreen />
+      </>,
+    );
+    expect(useStore.getState().lang).toBe('gu');
+    fireEvent.click(r.getByRole('button', { name: 'हिंदी' }));
+    // the guest sees their language while they sign in…
+    expect(useStore.getState().lang).toBe('hi');
+    // …but the host's saved choice is untouched
+    expect(readLangPreference('user:u-host')).toBe('gu');
+  });
+
+  it('gives the host their own language back when they leave Team Access', async () => {
+    writeLangPreference('user:u-host', 'gu');
+    const { useStore, LangPreference, TeamAccessScreen } = await loadTeamAccess({ lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <TeamAccessScreen />
+      </>,
+    );
+    fireEvent.click(r.getByRole('button', { name: 'हिंदी' }));
+    expect(useStore.getState().lang).toBe('hi');
+    useStore.setState({ screen: 'daily-log' });
+    r.rerender(<LangPreference />);
+    expect(useStore.getState().lang).toBe('gu');
+    expect(readLangPreference('user:u-host')).toBe('gu');
+  });
+
+  it('a guest pick is not carried to the next identity either', async () => {
+    const { useStore, LangPreference, TeamAccessScreen } = await loadTeamAccess({ role: 'client', sessionUserId: 'u-host', lang: 'en', screen: 'team-access' });
+    const r = render(
+      <>
+        <LangPreference />
+        <TeamAccessScreen />
+      </>,
+    );
+    fireEvent.click(r.getByRole('button', { name: 'ગુજરાતી' }));
+    useStore.setState({ sessionUserId: 'u-next', screen: 'inbox' });
+    r.rerender(<LangPreference />);
+    // u-next chose nothing: the client default, not the guest's Gujarati
+    expect(useStore.getState().lang).toBe('en');
+    expect(readLangPreference('user:u-next')).toBeNull();
+  });
+
+  it('a guest tapping the host’s own language leaves nothing to carry into a persona switch', async () => {
+    writeLangPreference('persona:engineer', 'gu');
+    const { useStore, LangPreference, TeamAccessScreen } = await loadTeamAccess({ sessionUserId: null, lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <TeamAccessScreen />
+      </>,
+    );
+    expect(useStore.getState().lang).toBe('gu');
+    fireEvent.click(r.getByRole('button', { name: 'ગુજરાતી' }));
+    // the dev persona switch to a PMC: the pmc default, not the guest's tap
+    useStore.setState({ role: 'pmc', screen: 'inbox' });
+    r.rerender(<LangPreference />);
+    expect(useStore.getState().lang).toBe('en');
+    expect(readLangPreference('persona:pmc')).toBeNull();
+  });
+
+  it('at the sign-in gate a guest IS the person signing in: their pick is still carried', async () => {
+    const { useStore, LangPreference, pref } = await loadShell({ role: 'contractor', sessionUserId: 'u-c', lang: 'hi' });
+    pref.noteLangChoice('hi', 'guest');
+    render(<LangPreference />);
+    expect(useStore.getState().lang).toBe('hi');
+    expect(readLangPreference('user:u-c')).toBe('hi');
+  });
+
+  it('the host changing language on the rail while a guest is on Team Access is still saved', async () => {
+    writeLangPreference('user:u-host', 'gu');
+    const { useStore, LangPreference, TeamAccessScreen, LanguageSwitch } = await loadTeamAccess({ lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <LanguageSwitch />
+        <TeamAccessScreen />
+      </>,
+    );
+    fireEvent.click(r.getByRole('button', { name: 'हिंदी' }));
+    fireEvent.click(r.getByTestId('lang-seg-en'));
+    expect(useStore.getState().lang).toBe('en');
+    expect(readLangPreference('user:u-host')).toBe('en');
+  });
+});
+
 describe('the language switch is visible and works for every role', () => {
   it('the phone top bar opens a language sheet; choosing Hindi applies it and closes', async () => {
     const { useStore, TopBar } = await loadShell({ role: 'client', lang: 'en' });

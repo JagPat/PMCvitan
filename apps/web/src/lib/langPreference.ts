@@ -44,14 +44,21 @@ export function writeLangPreference(key: string, lang: Lang): void {
  * default it applied — so a picker says so here. A choice made before the viewer has a console
  * identity (the sign-in screen) waits here until the next identity takes it and saves it; a choice
  * made inside the console is saved at once and the note is cleared.
+ *
+ * WHO chose it matters too. The Team Access picker is a GUEST's: inside a signed-in console it is the
+ * worker or trade in-charge about to sign in on the host's phone, so their pick is shown while they
+ * sign in but never saved as the host's preference (at the sign-in gate there is no host, and the
+ * guest is the person who signs in, so the pick is theirs and is carried as before).
  */
-let pendingChoice: Lang | null = null;
+export type LangChoiceSource = 'viewer' | 'guest';
 
-export function noteLangChoice(lang: Lang): void {
-  pendingChoice = lang;
+let pendingChoice: { lang: Lang; source: LangChoiceSource } | null = null;
+
+export function noteLangChoice(lang: Lang, source: LangChoiceSource = 'viewer'): void {
+  pendingChoice = { lang, source };
 }
 
-export function takeLangChoice(): Lang | null {
+export function takeLangChoice(): { lang: Lang; source: LangChoiceSource } | null {
   const choice = pendingChoice;
   pendingChoice = null;
   return choice;
