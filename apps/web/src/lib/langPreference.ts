@@ -64,6 +64,12 @@ export function noteLangChoice(lang: Lang, source: LangChoiceSource = 'viewer'):
   for (const listener of listeners) listener();
 }
 
+/** Drop a pending pick that nobody will take: at the gate a worker's or trade in-charge's flow is
+ *  terminal (it never signs in), so a pick made for it must not wait for the next person who does. */
+export function discardLangChoice(): void {
+  pendingChoice = null;
+}
+
 export function subscribeLangChoice(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);

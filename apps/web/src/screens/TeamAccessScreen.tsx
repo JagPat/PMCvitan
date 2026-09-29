@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { GoogleSignInButton } from '@/components';
 import { useStore } from '@/store/store';
 import { useT } from '@/i18n/useT';
-import { noteLangChoice } from '@/lib/langPreference';
+import { discardLangChoice, noteLangChoice } from '@/lib/langPreference';
 import { LANGS, swatch as swatchGradient, type Lang } from '@vitan/shared';
 import {
   Users,
@@ -125,7 +125,12 @@ export function TeamAccessScreen() {
         <div style={{ fontSize: 24, fontWeight: 700, margin: '28px 0 16px' }}>{t.who}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {cards.map((c) => (
-            <button key={c.key} onClick={() => accWho(c.key)} style={cardBtn}>
+            <button key={c.key} onClick={() => {
+              // only a team member signs in; a worker's or trade in-charge's flow is terminal at the
+              // gate, so their language pick must not be left for the next person who does
+              if (c.key !== 'team') discardLangChoice();
+              accWho(c.key);
+            }} style={cardBtn}>
               <div style={{ width: 52, height: 52, flex: 'none', borderRadius: 13, background: c.accent, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <c.Icon size={26} color="#fff" />
               </div>

@@ -422,6 +422,55 @@ describe('a guest picking a language on the in-console Team Access screen', () =
   });
 });
 
+describe('the sign-in gate picker — carried only to the team member who signs in', () => {
+  beforeEach(() => localStorage.clear());
+
+  // the gate: no session, LangPreference not mounted; the WHO step's picker notes the choice
+  async function loadGate() {
+    const shell = await loadShell({ role: 'client', sessionUserId: null, lang: 'en' });
+    const { TeamAccessScreen } = await import('@/screens/TeamAccessScreen');
+    return { ...shell, TeamAccessScreen };
+  }
+
+  it('a worker’s pick at the gate is not saved for the next person who signs in', async () => {
+    const { useStore, LangPreference, TeamAccessScreen } = await loadGate();
+    const gate = render(<TeamAccessScreen />);
+    fireEvent.click(gate.getByRole('button', { name: 'हिंदी' }));
+    // the worker flow: terminal inside the gate, never takes a token
+    fireEvent.click(gate.getByRole('button', { name: /मज़दूर/ }));
+    gate.unmount();
+    // later, a client signs in on the same phone without touching the picker
+    act(() => useStore.setState({ sessionUserId: 'u-client', role: 'client', screen: 'inbox' }));
+    render(<LangPreference />);
+    expect(readLangPreference('user:u-client')).toBeNull();
+    expect(useStore.getState().lang).toBe('en');
+  });
+
+  it('a trade in-charge’s pick at the gate is not carried either', async () => {
+    const { useStore, LangPreference, TeamAccessScreen } = await loadGate();
+    const gate = render(<TeamAccessScreen />);
+    fireEvent.click(gate.getByRole('button', { name: 'ગુજરાતી' }));
+    fireEvent.click(gate.getByRole('button', { name: /મિસ્ત્રી/ }));
+    gate.unmount();
+    act(() => useStore.setState({ sessionUserId: 'u-client', role: 'client', screen: 'inbox' }));
+    render(<LangPreference />);
+    expect(readLangPreference('user:u-client')).toBeNull();
+    expect(useStore.getState().lang).toBe('en');
+  });
+
+  it('a team member’s own pick at the gate is still carried and saved for them', async () => {
+    const { useStore, LangPreference, TeamAccessScreen } = await loadGate();
+    const gate = render(<TeamAccessScreen />);
+    fireEvent.click(gate.getByRole('button', { name: 'हिंदी' }));
+    fireEvent.click(gate.getByRole('button', { name: /टीम सदस्य/ }));
+    gate.unmount();
+    act(() => useStore.setState({ sessionUserId: 'u-client', role: 'client', screen: 'inbox' }));
+    render(<LangPreference />);
+    expect(useStore.getState().lang).toBe('hi');
+    expect(readLangPreference('user:u-client')).toBe('hi');
+  });
+});
+
 describe('the language switch is visible and works for every role', () => {
   it('the phone top bar opens a language sheet; choosing Hindi applies it and closes', async () => {
     const { useStore, TopBar } = await loadShell({ role: 'client', lang: 'en' });
