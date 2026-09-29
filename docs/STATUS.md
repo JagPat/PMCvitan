@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a7a-kinded-notice-writers
 reviewed_merge: faaf233
-open_pr: none
+open_pr: 665
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
@@ -27,7 +27,7 @@ updated: 2026-09-29
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A7a (`work_item: phase-6-task-4d-ii-a-a7a-kinded-notice-writers`, branch
+- **Now, A7a, `open_pr: 665` (`work_item: phase-6-task-4d-ii-a-a7a-kinded-notice-writers`, branch
   `claude/4d-ii-a7-catalog-unit`, from `main` at `faaf233`).** A7 is delivered as four sub-units
   (the staging document's dated note of 2026-09-29): A7a the kinded notice writers, A7b the send
   boundary, A7c `decisions.inbox` v3, A7d the catalog change. A7a: every decisions notice writer
