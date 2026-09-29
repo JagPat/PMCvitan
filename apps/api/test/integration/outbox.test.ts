@@ -321,6 +321,10 @@ describe('PR C Task 2 — the outbox consumers are the sole senders (unit)', () 
       deciderTarget: async () => ({ actionable: true, roles: ['client'] }),
       markCancelled,
       roleHolderUserIds,
+      // 4d-ii-a / A7b — the pre-send hook's reads: no canceller marked the row; every resolved
+      // holder still holds the role at the send
+      cancelled: async () => false,
+      userHoldsRole: async () => true,
     });
     const familyMeta = { ...meta, eventType: 'decision.published', dispatchIntent: { ...meta.dispatchIntent, effectKey: 'decision.published' } };
     const dispatch = { delivery: { id: 'd', consumer: '', projectId: 'p', streamPosition: 0n, payload: { body: 'b', roles: ['client'], targetUserId: null } }, meta: familyMeta, senderMode: 'outbox' };

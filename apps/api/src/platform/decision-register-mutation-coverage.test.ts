@@ -90,6 +90,11 @@ const COVERAGE: Record<string, Class> = {
   // asserting the binding seal's refusals (a direct DELETE, a re-kind and a re-point of a kinded
   // row, each expected to throw); its teardown is the sanctioned TRUNCATE, never a row delete.
   'test/integration/phase6-t4d-ii-a7a-kinded-notice-writers.test.ts': 'hostile arms only: a kinded row\'s DELETE/UPDATE asserted REFUSED by Notification_t4d_binding; teardown by sanctionedReset',
+  // 4d-ii-a / A7b — one planted state: a `countersign_rejection` origin on an open request, written
+  // under `ChangeRequest_t4d_evidence_frozen` disabled BY NAME inside one transaction (the
+  // disagreement command that writes it is A8b's), to prove `withdrawChange` refuses it; teardown
+  // by sanctionedReset.
+  'test/integration/phase6-t4d-ii-a7b-send-boundary.test.ts': 'planted countersign_rejection origin under a named, single-transaction disable of ChangeRequest_t4d_evidence_frozen; teardown by sanctionedReset',
   'test/integration/platform-command-receipt.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
   'test/integration/start-readiness-race.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
 

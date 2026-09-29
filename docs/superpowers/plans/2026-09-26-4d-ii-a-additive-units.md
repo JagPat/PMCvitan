@@ -291,9 +291,15 @@ sub-unit is additive, dark and reviewable on its own.
   4d-iii. Every other seal this unit writes against is 4d-i's.
 - **A7b, the send boundary:** the per-recipient pre-send hook in `makePushConsumer`;
   `deciderPushTarget`'s decision-row lock; `consultationRespondedPushTarget`'s withdrawn-audience
-  arm; `cancelQueuedPushBySubject` narrowing by `targetUserIds`; the `respond` emitter persisting
-  the requester's role and `consultation.request` writing `requestedByRole`; the `withdrawChange`
-  refusal; the withdraw's target-aware response cancellation.
+  arm (the requesting set widened to the architect, A5c's rule); `cancelQueuedPushBySubject`
+  narrowing by `targetUserIds`; the `respond` emitter persisting the requester's role (read from the
+  request's frozen `requestedByRole`) and both consultation writers stating their frozen pair;
+  the `withdrawChange` refusal of a `countersign_rejection`, and `withdrawChange`'s cancellation of
+  the queued consultation requests of the decision it closes (§A.4 (i): the standard `withdrawChange`
+  leaves the consultation-open set); the withdraw's target-aware response cancellation, with every
+  queued consultation request cancelled beside it. The catalog is untouched: the responded ceiling
+  stays `['pmc']` until A7d, and no architect can hold standing before 4d-iii, so the frozen
+  requester role is `pmc` on every row this unit can write.
 - **A7c, `decisions.inbox` v3:** the projection row, fold, rebuild and filter for the awaiting
   state, the forward holder and the non-standard origin; `catalogVersion` 3, the writer fence's
   GUC and function; the `ProjectionGeneration` row; `ALWAYS_EXECUTE`.

@@ -114,6 +114,14 @@ export class OutboxBootstrap implements OnModuleInit, OnModuleDestroy {
         consultationRespondedTarget: (projectId, decisionId, targetUserId) =>
           this.decisionsQuery.consultationRespondedPushTarget(projectId, decisionId, targetUserId),
         roleHolderUserIds: (projectId, role) => this.orgsParticipant.effectiveRoleHolderUserIds(this.prisma, projectId, role),
+        // 4d-ii-a / A7b — the pre-send hook's two reads: the delivery row's own mark (platform-
+        // internal) and a fan-out recipient's CURRENT standing in the role they were resolved by
+        // (the orgs-owned answer, the same rule `roleHolderUserIds` resolves the set by)
+        cancelled: async (deliveryId) => {
+          const row = await this.prisma.outboxDelivery.findUnique({ where: { id: deliveryId }, select: { cancelledAt: true } });
+          return row?.cancelledAt !== null && row?.cancelledAt !== undefined;
+        },
+        userHoldsRole: (projectId, userId, role) => this.orgsParticipant.hasProjectRoleStanding(this.prisma, projectId, userId, [role]),
         // the claim-time drop is recorded on the delivery's own row (the 4a cancellation mark) —
         // a platform-internal write of the platform's own table
         markCancelled: async (deliveryId) => {
