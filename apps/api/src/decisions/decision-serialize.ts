@@ -192,8 +192,14 @@ export function decisionVisibleToViewer(
   // only sight of the question they are being asked to inform. `withdrawn` is deliberately above
   // this line: withdrawal never widens an audience, and a consultation there would leak the
   // pmc-only title and reason 4a hides.
-  if (d.status === 'pending') {
-    return role === 'pmc' || viewerIsDecider(d, role, userId) || viewerIsConsultee(d.consultations, d.approvalCycle, userId);
+  // Phase 6 task 4d (4d-ii-a / A8a, §A.2, "the architect can SEE what the architect may forward"): an
+  // ARCHITECT sees every pending decision of the project (an architect token exists only while the
+  // chain is active — the role is unrepresentable before 4d-iii), gaining no authority by sight; and a
+  // decision AWAITING its countersign keeps the pending demand's audience — pmc, the decider whose
+  // provisional approval it carries, a standing consultee — plus the architect whose action item it is.
+  // `change`, `approved` and `recorded` stay as they were; `withdrawn` stays pmc-only above.
+  if (d.status === 'pending' || d.status === 'awaiting_countersign') {
+    return role === 'pmc' || role === 'architect' || viewerIsDecider(d, role, userId) || viewerIsConsultee(d.consultations, d.approvalCycle, userId);
   }
   return true;
 }

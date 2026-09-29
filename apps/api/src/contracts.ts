@@ -92,6 +92,21 @@ export type ApproveInput = z.infer<typeof approveSchema>;
 export const withdrawDecisionSchema = z.object({ reason: z.string().trim().min(1, 'A withdrawal needs a reason') });
 export type WithdrawDecisionInput = z.infer<typeof withdrawDecisionSchema>;
 
+/** Phase 6 task 4d (4d-ii-a / A8a, §A.2) — FORWARD a published, open decision to another designation.
+ *  The target mirrors the decider designation at issue (a role, or a NAMED active member); `none` is
+ *  not a holder. The reason is REQUIRED and non-blank at the contract, as the withdrawal's is, beside
+ *  the `DecisionForward.reason` CHECK. */
+export const forwardDecisionSchema = z
+  .object({
+    toDesignationKind: z.enum(['client', 'pmc', 'member', 'architect']),
+    toDesignationMembershipId: z.string().trim().min(1).optional(),
+    reason: z.string().trim().min(1, 'A forward needs a reason'),
+  })
+  .refine((v) => (v.toDesignationKind === 'member') === (v.toDesignationMembershipId !== undefined), {
+    message: 'toDesignationMembershipId is required exactly when toDesignationKind is member',
+  });
+export type ForwardDecisionInput = z.infer<typeof forwardDecisionSchema>;
+
 export const changeSchema = z.object({
   reason: z.string().min(1),
   costImpact: z.number().int(),

@@ -1,11 +1,15 @@
 import { viewerIsDecider } from '@vitan/shared';
 import {
   APPROVED_DECISION_NOTICE_COLOR,
+  AWAITING_COUNTERSIGN_NOTICE_COLOR,
+  FORWARDED_DECISION_NOTICE_COLOR,
   PENDING_DECISION_NOTICE_COLOR,
   RECORDED_DECISION_NOTICE_COLOR,
   WITHDRAWN_DECISION_NOTICE_COLOR,
   approvedDecisionNotice,
+  forwardedDecisionNotice,
   pendingDecisionNotice,
+  provisionalApprovalNotice,
   recordedDecisionNotice,
   withdrawnDecisionNotice,
 } from '../domain/notifications';
@@ -29,7 +33,10 @@ import type { DecisionDto } from '../snapshot/types';
  *   never its stored text. Arms join as their writers do: the green approved notice (A7a) renders
  *   the approver from the event's frozen actor envelope and the option and on-behalf fact from the
  *   REVISION its event names (`payload.revisionId`, the exact revision the act wrote, never the head);
- *   the forwarding and countersign notices join with their commands.
+ *   the forwarding notice (A8a) renders the title and the new holder's frozen label from its event, and
+ *   the PROVISIONAL approval notice (A8a, the countersign DEMAND) renders as the green one does from the
+ *   provisional revision its event names, with the finality it lacks stated; the finalizer's green
+ *   notice and the change-request notice join with A8b.
  * - {@link kindedDecisionNoticeServed}: whether the viewer may see it. The decision must be in the
  *   viewer's visible slice (`decisionVisibleToViewer`, read in the SAME snapshot as the notice);
  *   an ACTIONABLE kind of a withdrawn decision is suppressed, since it asks for an act the withdrawal
@@ -76,8 +83,10 @@ export interface ApprovalRevisionFacts {
   onBehalfOf: string | null;
 }
 
-/** The kinds whose notice renders from a revision the event names (`payload.revisionId`). */
-const REVISION_NOTICE_KINDS: ReadonlySet<string> = new Set(['decision.approved', 'decision.reapproved']);
+/** The kinds whose notice renders from a revision the event names (`payload.revisionId`). 4d-ii-a / A8a:
+ *  the countersign demand names the PROVISIONAL revision the act wrote (a `decisions.effects`
+ *  re-notification names none and renders nothing — it is a push, never a feed row). */
+const REVISION_NOTICE_KINDS: ReadonlySet<string> = new Set(['decision.approved', 'decision.reapproved', 'decision.awaiting_countersign']);
 
 /**
  * 4d-ii-a / A7a — the revision a kinded notice's event NAMES, or `null` when the kind renders from
@@ -149,6 +158,29 @@ export function renderKindedDecisionNotice(
         color: APPROVED_DECISION_NOTICE_COLOR,
       };
     }
+    case 'decision.awaiting_countersign': {
+      // A8a — the provisional approve's notice: the approver from the frozen envelope, the option and
+      // on-behalf fact from the PROVISIONAL revision the demand names, and the finality it lacks stated.
+      // The re-notification `decisions.effects` emits (`payload.renotified`) names no revision and has
+      // no human envelope: nothing to render, and it writes no feed row.
+      const title = field(event.payload, 'title');
+      const deciderKind = field(event.payload, 'deciderKind');
+      const revisionId = kindedNoticeRevisionId(kind, event);
+      const revision = revisionId ? revisions?.get(revisionId) : undefined;
+      if (!title || !deciderKind || !revision || !event.actorName || !event.actorRole) return null;
+      if (!decisionId || revision.decisionId !== decisionId) return null;
+      return {
+        text: provisionalApprovalNotice({ actorName: event.actorName, actorRole: event.actorRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf }),
+        color: AWAITING_COUNTERSIGN_NOTICE_COLOR,
+      };
+    }
+    case 'decision.forwarded': {
+      // A8a — the hand-off: the title and the NEW holder's label, frozen on the event at the act
+      const title = field(event.payload, 'title');
+      const toLabel = field(event.payload, 'toLabel');
+      if (!title || !toLabel) return null;
+      return { text: forwardedDecisionNotice(title, toLabel), color: FORWARDED_DECISION_NOTICE_COLOR };
+    }
     default:
       return null;
   }
@@ -177,6 +209,12 @@ export function kindedDecisionNoticeServed(
     if (!recordDecision && role !== 'pmc') {
       return viewerIsDecider({ deciderKind: decision.deciderKind, deciderUserId: decision.deciderUserId ?? null }, role, userId);
     }
+  }
+  // 4d-ii-a / A8a — the forwarded notice is the NEW holder's action item: the pending demand's audience
+  // (pmc and the decider the decision now names); the displaced holder and every other viewer of the
+  // decision see the decision itself move, not the demand addressed to someone else.
+  if (kind === 'decision.forwarded' && role !== 'pmc') {
+    return viewerIsDecider({ deciderKind: decision.deciderKind, deciderUserId: decision.deciderUserId ?? null }, role, userId);
   }
   return true;
 }

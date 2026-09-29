@@ -4,7 +4,7 @@ import { DecisionsQueryService } from './decisions.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
-import { approveSchema, changeSchema, createDecisionSchema, requestConsultationSchema, respondToConsultationSchema, updateDecisionDraftSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type RequestConsultationInput, type RespondToConsultationInput, type UpdateDecisionDraftInput, type WithdrawDecisionInput } from '../contracts';
+import { approveSchema, changeSchema, createDecisionSchema, forwardDecisionSchema, requestConsultationSchema, respondToConsultationSchema, updateDecisionDraftSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type ForwardDecisionInput, type RequestConsultationInput, type RespondToConsultationInput, type UpdateDecisionDraftInput, type WithdrawDecisionInput } from '../contracts';
 
 @Controller('projects/:projectId/decisions')
 @UseGuards(JwtGuard, RolesGuard)
@@ -78,6 +78,22 @@ export class DecisionsController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.decisions.approve(projectId, decisionId, body, user, idempotencyKey);
+  }
+
+  /** Phase 6 task 4d (4d-ii-a / A8a, §A.2) — FORWARD an open, published decision to another
+   *  designation. The route ceiling is every holder-capable role; the service narrows to the
+   *  decision's current holder, the PMC or an architect, and refuses 409 while 4d-i's reservation
+   *  stands. A retry with the same `Idempotency-Key` replays the same hand-off. */
+  @Post(':decisionId/forward')
+  @RolesFor('decision.forward')
+  forward(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @Body(new ZodPipe(forwardDecisionSchema)) body: ForwardDecisionInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.forward(projectId, decisionId, body, user, idempotencyKey);
   }
 
   /** Raise a change request against a decision — PMC, client, contractor, or the site
