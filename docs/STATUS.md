@@ -14,30 +14,37 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a7b-send-boundary
-reviewed_merge: fff49f8
-open_pr: 668
+work_item: phase-6-task-4d-ii-a-a7c-inbox-v3
+reviewed_merge: e069248
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
 ```
 
-### Now — Phase 6 task 4d: A7b, the send boundary
+### Now — Phase 6 task 4d: A7c, `decisions.inbox` v3
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A7b, `open_pr: 668` (`work_item: phase-6-task-4d-ii-a-a7b-send-boundary`, branch
-  `claude/4d-ii-a7b-send-boundary`, from `main` at `aa70f9d`).** The second A7 sub-unit, the send
-  boundary (plan §A.4): the push consumer's FINAL re-judge before EACH recipient's provider call
-  (the mark, the family's own predicate re-run, the recipient's standing); `deciderPushTarget`
-  reading the holder under the decision row lock in the canonical order; the responded family's
-  widened requester set with the withdrawn-audience arm; `cancelQueuedPushBySubject` narrowed by
-  `targetUserIds`; `withdraw` cancelling every queued consultation request and the responses whose
-  target lacks PMC standing, the targets' standing judged before the decision lock and re-validated
-  under it; `withdrawChange` refusing a `countersign_rejection` and cancelling the closed decision's
-  queued consultation requests; the consultation writers stating the frozen attribution pair and the
-  response intent recording the requester's actual role. No migration.
+- **Now, A7c, `open_pr: none` (`work_item: phase-6-task-4d-ii-a-a7c-inbox-v3`, branch
+  `claude/4d-ii-a7c-inbox-v3`, from `main` at `e069248`).** The third A7 sub-unit, `decisions.inbox`
+  v3: the projection's DURABLE contract version moves 2 → 3 (plan §D) for the meanings the stored DTO
+  gained since 4c-ii without a version of its own — the finalized-only cycle (A4a), the non-`standard`
+  origin (A5e), the awaiting state and the forward-installed holder (A8a's writers) — so a generation
+  a version-2 serializer built or a version-2 relay goes on writing is refused at the read (the
+  canonical fallback) and a previous-release process at its start; the writer fence's two functions
+  re-issued to read the declaration `3` (a version-2 declaration now stamps as an undeclared write
+  does), the verifier reading their canonical bodies from the re-issuing file; one migration
+  (`20280103000000_phase6_t4d_ii_a7c_inbox_v3`: the catalog row, guarded on the version it moves
+  from; the fence re-issue; fail-closed verification), on `ALWAYS_EXECUTE`. The fold, rebuild and
+  filter are proven to carry the three meanings identically (live == projection == rebuild) on
+  planted canonical rows. `webpush.notify` stays at 2: its bump is A7d's, with the catalog change.
+- **A7b merged as #668** (`e069248`): the push consumer's FINAL per-recipient re-judge before each
+  provider call; `deciderPushTarget` under the decision row lock in the canonical order; the
+  responded family's widened requester set with the withdrawn-audience arm; `cancelQueuedPushBySubject`
+  narrowed by `targetUserIds`; `withdraw` and `withdrawChange`'s consultation cancellations and the
+  `countersign_rejection` refusal; the consultation writers' frozen pairs. No migration.
 - **A7a merged as #665** (`fff49f8`): every decisions notice writer binds its notice to its event
   (`eventId`, `kind`), the green approved notice rendered from the event's frozen envelope and the
   revision its event names, the direct approve's payload carrying the exact `revisionId`, and

@@ -511,7 +511,8 @@ if echo "$out" | grep -q "P3005"; then
 20271230000000_phase6_t4d_ii_a6c_catalog_rules
 20271231000000_phase6_t4d_ii_a6d_delivery_seals
 20280101000000_phase6_t4d_ii_a6e_generation_fence
-20280102000000_phase6_t4d_ii_a7a_revision_named"
+20280102000000_phase6_t4d_ii_a7a_revision_named
+20280103000000_phase6_t4d_ii_a7c_inbox_v3"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

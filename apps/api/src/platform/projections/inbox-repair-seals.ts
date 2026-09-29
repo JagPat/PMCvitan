@@ -143,6 +143,18 @@ export function readMarkerSealMigrationSql(): string {
 // other check on this deploy path still reports healthy. So it is verified on EVERY start, by the
 // same closed-inventory rule the marker seals use, and the deploy refuses without it.
 export const WRITER_FENCE_MIGRATION = '20271126000000_phase6_4c_iiir_writer_fence';
+/**
+ * Phase 6 task 4d-ii-a / A7c — the fence's LATEST RE-ISSUE. `decisions.inbox` moved to contract
+ * version 3, and the two fence functions (`$fence$`, `$truncate$`) were `CREATE OR REPLACE`d by that
+ * unit's catalog-data migration to read the declaration `'3'`, bodies otherwise byte-identical. The
+ * canonical `prosrc` of those two is therefore the RE-ISSUING file's literal, not the installing
+ * one's — the installing file's is what a P3005 baseline replays first and this later file replaces
+ * (both are on `ALWAYS_EXECUTE`; the ledger order stands). The stamp seal (`$sealed$`) was never
+ * re-issued and stays the installing migration's. A future bump re-points this constant with its own
+ * migration; `decisions-inbox-version.test.ts` pins the three (the compiled version, the migration's
+ * literal and this name) to one another.
+ */
+export const WRITER_FENCE_REISSUE_MIGRATION = '20280103000000_phase6_t4d_ii_a7c_inbox_v3';
 export const WRITER_FENCE_TABLE = 'DecisionProjection';
 export const WRITER_FENCE_TRIGGER = 'DecisionProjection_4c_iiir_writer_fence';
 export const WRITER_FENCE_FUNCTION = 'phase6_4c_iiir_fence_decision_projection_write';
@@ -154,22 +166,29 @@ export const WRITER_FENCE_STAMP_FUNCTION = 'phase6_4c_iiir_fence_stamp_sealed';
 export const WRITER_FENCE_TRUNCATE_TRIGGER = 'DecisionProjection_4c_iiir_writer_fence_truncate';
 export const WRITER_FENCE_TRUNCATE_FUNCTION = 'phase6_4c_iiir_fence_decision_projection_truncate';
 
-export function readWriterFenceMigrationSql(): string {
+export function readWriterFenceMigrationSql(migration: string = WRITER_FENCE_MIGRATION): string {
   return readFileSync(
-    join(__dirname, '..', '..', '..', 'prisma', 'migrations', WRITER_FENCE_MIGRATION, 'migration.sql'),
+    join(__dirname, '..', '..', '..', 'prisma', 'migrations', migration, 'migration.sql'),
     'utf8',
   );
+}
+
+/** The migration whose literal is the CURRENT body of one of the fence's functions: the two the
+ *  A7c re-issue replaced come from the re-issuing file, the stamp seal from the installing one. */
+export function fenceBodyMigration(delimiter: 'fence' | 'sealed' | 'truncate'): string {
+  return delimiter === 'sealed' ? WRITER_FENCE_MIGRATION : WRITER_FENCE_REISSUE_MIGRATION;
 }
 
 /**
  * The canonical `prosrc` PostgreSQL stores for one of the fence's functions — read from the
  * migration's own literal rather than restated here, so a copy cannot quietly stop matching what is
- * actually deployed. Each function is dollar-quoted with its own delimiter.
+ * actually deployed. Each function is dollar-quoted with its own delimiter, and each is read from
+ * the migration that LAST issued it ({@link fenceBodyMigration}).
  */
 export function canonicalFenceBody(delimiter: 'fence' | 'sealed' | 'truncate'): string {
-  const sql = readWriterFenceMigrationSql();
+  const sql = readWriterFenceMigrationSql(fenceBodyMigration(delimiter));
   const match = new RegExp(`AS \\$${delimiter}\\$\\n([\\s\\S]*?)\\n\\$${delimiter}\\$;`, 'u').exec(sql);
-  if (!match) throw new Error(`${WRITER_FENCE_MIGRATION}: cannot extract the $${delimiter}$ function body`);
+  if (!match) throw new Error(`${fenceBodyMigration(delimiter)}: cannot extract the $${delimiter}$ function body`);
   return `\n${match[1]}\n`;
 }
 

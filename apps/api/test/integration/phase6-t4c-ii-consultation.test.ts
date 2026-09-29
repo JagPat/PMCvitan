@@ -4,7 +4,7 @@ import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
-import { DECISIONS_PROJECTION } from '../../src/decisions/decisions.projection';
+import { DECISIONS_PROJECTION, DECISIONS_INBOX_CATALOG_VERSION } from '../../src/decisions/decisions.projection';
 import { readServableGeneration } from '../../src/platform/projections/generation';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { plantLegacyApprovalRevision } from './fixtures';
@@ -676,7 +676,7 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     const head = stream ? stream.nextPosition - 1n : -1n;
     await t.prisma.projectionGeneration.update({
       where: { id: gen.id },
-      data: { cursorStatus: 'live', appliedPosition: head < 0n ? 0n : head, catalogVersion: 2 },
+      data: { cursorStatus: 'live', appliedPosition: head < 0n ? 0n : head, catalogVersion: DECISIONS_INBOX_CATALOG_VERSION },
     });
     expect(await readServableGeneration(t.prisma, DECISIONS_PROJECTION, projectId), 'at the CURRENT version it serves').not.toBeNull();
 
@@ -694,14 +694,16 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     expect(live.decisions.find((d) => d.id === decisionId)?.consultations).toHaveLength(1);
   });
 
-  it('the two consultation-consuming consumers are at catalog version 2, and the socket consumer is not', async () => {
+  it('the two consultation-consuming consumers were bumped by 4c-ii (decisions.inbox again by 4d-ii-a / A7c, to 3), and the socket consumer is not', async () => {
     const rows = await t.prisma.outboxConsumerCatalog.findMany({
       where: { consumer: { in: ['decisions.inbox', 'webpush.notify', 'socket.invalidate'] } },
       select: { consumer: true, catalogVersion: true },
       orderBy: { consumer: 'asc' },
     });
     const byName = Object.fromEntries(rows.map((r) => [r.consumer, r.catalogVersion]));
-    expect(byName['decisions.inbox']).toBe(2);
+    // 4d-ii-a / A7c: `decisions.inbox` moved 2 → 3 (`20280103000000`); `webpush.notify`'s bump is A7d's
+    expect(byName['decisions.inbox']).toBe(DECISIONS_INBOX_CATALOG_VERSION);
+    expect(DECISIONS_INBOX_CATALOG_VERSION).toBe(3);
     expect(byName['webpush.notify']).toBe(2);
     // the socket consumer carries no consultation contract — it tells a room to refetch
     if (byName['socket.invalidate'] !== undefined) expect(byName['socket.invalidate']).toBe(1);

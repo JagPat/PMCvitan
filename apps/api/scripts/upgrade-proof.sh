@@ -4822,27 +4822,67 @@ assert "4c-iii-r: the writer fence is installed and enabled on the upgraded data
   "1"
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-iii-r: could not plant the writer-fence fixture"; FAIL=1; }
 INSERT INTO "ProjectionGeneration" ("id","consumer","projectId","generation","status","catalogVersion","createdAt","updatedAt")
-VALUES ('up4ciiir-fence-undeclared','decisions.inbox','up4ciiir-fence-p1',1,'retired',2,now(),now()),
-       ('up4ciiir-fence-declared','decisions.inbox','up4ciiir-fence-p2',1,'retired',2,now(),now());
+VALUES ('up4ciiir-fence-undeclared','decisions.inbox','up4ciiir-fence-p1',1,'retired',3,now(),now()),
+       ('up4ciiir-fence-declared','decisions.inbox','up4ciiir-fence-p2',1,'retired',3,now(),now()),
+       ('up4ciiir-fence-previous','decisions.inbox','up4ciiir-fence-p3',1,'retired',3,now(),now());
 INSERT INTO "DecisionProjection" ("id","generationId","projectId","decisionId","status","dto","updatedAt")
 VALUES ('up4ciiir-fence-w1','up4ciiir-fence-undeclared','up4ciiir-fence-p1','d1','published','{}'::jsonb, now());
 SQL
 assert "4c-iii-r: an UNDECLARED write stamps the generation the fence protects" \
   "SELECT (\"fencedAt\" IS NOT NULL)::text FROM \"ProjectionGeneration\" WHERE id = 'up4ciiir-fence-undeclared';" \
   "true"
+# 4d-ii-a / A7c — `decisions.inbox` is at contract version 3 and the fence was RE-ISSUED to read it
+# (`20280103000000`): this release's writer declares 3 and is left alone; the PREVIOUS release's
+# declaration (2) now stamps exactly as an undeclared write does — the drain, observed. RED at the A7b
+# head, where the fence read '2' and the version-2 relay wrote unfenced.
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-iii-r: the declared write was refused"; FAIL=1; }
 BEGIN;
-SELECT set_config('vitan.decisions_inbox_catalog_version','2',true);
+SELECT set_config('vitan.decisions_inbox_catalog_version','3',true);
 INSERT INTO "DecisionProjection" ("id","generationId","projectId","decisionId","status","dto","updatedAt")
 VALUES ('up4ciiir-fence-w2','up4ciiir-fence-declared','up4ciiir-fence-p2','d2','published','{}'::jsonb, now());
 COMMIT;
 SQL
-assert "4c-iii-r: and a DECLARED write — this release's own projection writer — is left alone" \
+assert "4c-iii-r / A7c: and a DECLARED write — this release's own projection writer, declaring 3 — is left alone" \
   "SELECT (\"fencedAt\" IS NULL)::text FROM \"ProjectionGeneration\" WHERE id = 'up4ciiir-fence-declared';" \
   "true"
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A7c: the previous release's declared write was refused (it must be admitted and STAMPED)"; FAIL=1; }
+BEGIN;
+SELECT set_config('vitan.decisions_inbox_catalog_version','2',true);
+INSERT INTO "DecisionProjection" ("id","generationId","projectId","decisionId","status","dto","updatedAt")
+VALUES ('up4ciiir-fence-w3','up4ciiir-fence-previous','up4ciiir-fence-p3','d3','published','{}'::jsonb, now());
+COMMIT;
+SQL
+assert "A7c: the PREVIOUS release's declaration (2) STAMPS the generation it writes into — the fence follows the contract version" \
+  "SELECT (\"fencedAt\" IS NOT NULL)::text FROM \"ProjectionGeneration\" WHERE id = 'up4ciiir-fence-previous';" \
+  "true"
+# The catalog row itself. This database never booted an application, so `decisions.inbox` has no
+# catalog row here (`syncConsumerCatalog` creates it at the compiled version on a fresh install and
+# the migration leaves it alone). A RESTORED 4c-ii-era database holds the row at 2, which is the state
+# the migration exists for: plant that shape (inactive, ruleless — owed nothing by any delivery seal),
+# replay the file exactly as `ALWAYS_EXECUTE` does on a baseline, and the row reads 3; a second replay
+# is a no-op rather than a second bump (the guard is the version it moves FROM).
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A7c: could not plant the 4c-ii-era decisions.inbox catalog row"; FAIL=1; }
+INSERT INTO "OutboxConsumerCatalog" ("consumer","consumerKind","consumerEffect","catalogVersion","active","updatedAt")
+VALUES ('decisions.inbox','ordered','db',2,false,now()) ON CONFLICT DO NOTHING;
+SQL
+if $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280103000000_phase6_t4d_ii_a7c_inbox_v3/migration.sql" >/dev/null 2>&1; then
+  echo "ok      A7c: the re-issuing migration replays over a database that already carries it"
+else
+  echo "FAILED  A7c: the re-issuing migration did not replay (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
+fi
+assert "A7c: a 4c-ii-era decisions.inbox row (version 2) is moved to 3 by the replay" \
+  "SELECT \"catalogVersion\"::text FROM \"OutboxConsumerCatalog\" WHERE consumer = 'decisions.inbox';" \
+  "3"
+$PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280103000000_phase6_t4d_ii_a7c_inbox_v3/migration.sql" >/dev/null 2>&1 || { echo "FAILED  A7c: the second replay failed"; FAIL=1; }
+assert "A7c: a second replay leaves the row at 3 — guarded on the version it moves from, never a second bump" \
+  "SELECT \"catalogVersion\"::text FROM \"OutboxConsumerCatalog\" WHERE consumer = 'decisions.inbox';" \
+  "3"
+assert "A7c: both re-issued fence functions read the declaration 3, with no per-function configuration" \
+  "SELECT count(*)::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname IN ('phase6_4c_iiir_fence_decision_projection_write','phase6_4c_iiir_fence_decision_projection_truncate') AND p.prosrc LIKE '%declared = ''3''%' AND p.proconfig IS NULL;" \
+  "2"
 $PSQL -q >/dev/null <<'SQL' || true
-DELETE FROM "DecisionProjection" WHERE id IN ('up4ciiir-fence-w1','up4ciiir-fence-w2');
-DELETE FROM "ProjectionGeneration" WHERE id IN ('up4ciiir-fence-undeclared','up4ciiir-fence-declared');
+DELETE FROM "DecisionProjection" WHERE id IN ('up4ciiir-fence-w1','up4ciiir-fence-w2','up4ciiir-fence-w3');
+DELETE FROM "ProjectionGeneration" WHERE id IN ('up4ciiir-fence-undeclared','up4ciiir-fence-declared','up4ciiir-fence-previous');
 SQL
 
 # ── and the marker table is CLOSED, not merely trigger-covered ──────────────────────────────────
@@ -4945,7 +4985,7 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*) continue ;; esac
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5415,7 +5455,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20271226000000_phase6_t4d_ii_release_lease_writer 20271227000000_phase6_t4d_ii_consultation_finalized_cycle
 20271228000000_phase6_t4d_ii_a6a_activation_register 20271229000000_phase6_t4d_ii_a6b_activation_rules
 20271230000000_phase6_t4d_ii_a6c_catalog_rules 20271231000000_phase6_t4d_ii_a6d_delivery_seals
-20280101000000_phase6_t4d_ii_a6e_generation_fence 20280102000000_phase6_t4d_ii_a7a_revision_named"
+20280101000000_phase6_t4d_ii_a6e_generation_fence 20280102000000_phase6_t4d_ii_a7a_revision_named
+20280103000000_phase6_t4d_ii_a7c_inbox_v3"
 t4d_replay() {
   local m
   for m in $T4D_REPLAY; do

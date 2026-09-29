@@ -614,7 +614,7 @@ model DecisionProjection {
   generationId String
   projectId    String
   decisionId   String
-  status       String // 'pending' | 'approved' | 'change' — the readiness map + the pending filter
+  status       String // the decision's `DecisionStatus` as text (Phase 6 task 4d-ii-a / A7c: `awaiting_countersign` included) — the readiness map + the visibility filter's key
   publishedAt  DateTime? // NULL = a private DRAFT (author-only visibility)
   authorId     String? // the draft author (author-private visibility)
   dto          Json // the serialized DecisionDto (options + open changeRequest inlined), unfiltered
