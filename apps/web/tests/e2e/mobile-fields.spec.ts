@@ -977,6 +977,8 @@ test('the daily log offers no action target below the 44px floor', async ({ page
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/');
   await page.getByRole('button', { name: 'Engineer', exact: true }).click();
+  // an engineer lands in Gujarati: choose English on the rail before naming the screen
+  await page.getByTestId('lang-seg-en').click();
   await page.getByRole('button', { name: 'Daily Site Log' }).click();
   await expect(page.getByText('MATERIAL ON SITE')).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });

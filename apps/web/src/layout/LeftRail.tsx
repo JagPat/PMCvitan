@@ -8,6 +8,8 @@ import { LanguageSwitch } from './LanguageSwitch';
 import { Bell, Power } from '@/lib/icons';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { ROLE_LABEL } from '@/lib/screens';
+import { navLabelFor } from '@/lib/mobileNav';
+import { shellLabels } from '@vitan/shared';
 import logo from '@/assets/vitan-logo.jpeg';
 import styles from './LeftRail.module.css';
 
@@ -18,6 +20,7 @@ export function LeftRail() {
   const toggleNotif = useStore((s) => s.toggleNotif);
   const notifCount = useStore((s) => s.notifications.length);
   const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   const userName = useStore((s) => s.userName);
   const signOut = useStore((s) => s.signOut);
   const memberships = useStore(useShallow((s) => s.memberships));
@@ -70,7 +73,7 @@ export function LeftRail() {
       </div>
 
       <nav className={`${styles.nav} vscroll`}>
-        <div className={styles.navLabel}>SCREENS</div>
+        <div className={styles.navLabel}>{shellLabels.screens[lang]}</div>
         {items.map((n) => (
           <button
             key={n.key}
@@ -79,7 +82,9 @@ export function LeftRail() {
           >
             <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <n.icon size={16} />
-              {n.label}
+              {/* the rail follows the language switch above it: English keeps the full screen
+                  names, hi/gu read the same words as the phone's tab bar */}
+              {lang === 'en' ? n.label : navLabelFor(n.key, role, lang)}
             </span>
             {n.badge > 0 && <span className={n.active ? `${styles.badge} ${styles.badgeActive}` : styles.badge}>{n.badge}</span>}
           </button>

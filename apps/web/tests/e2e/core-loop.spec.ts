@@ -37,6 +37,9 @@ test('offline-first: daily-log mutations queue while offline and flush on reconn
 
   // become the engineer and open the Daily Site Log
   await page.getByRole('button', { name: 'Engineer', exact: true }).click();
+  // an engineer lands in Gujarati; this journey names the English screen, so it chooses English
+  // on the rail's own language switch first
+  await page.getByTestId('lang-seg-en').click();
   await page.getByRole('button', { name: 'Daily Site Log' }).click();
   await expect(page.getByTestId('conn-text')).toContainText('Online');
 

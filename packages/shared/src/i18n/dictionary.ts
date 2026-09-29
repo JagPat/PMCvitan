@@ -111,10 +111,11 @@ export const engineerNavLabels: Partial<Record<ScreenKey, Record<Lang, string>>>
 };
 
 /** Shell chrome shared by every role: the More tab and the language control. */
-export const shellLabels: Record<'more' | 'language' | 'close', Record<Lang, string>> = {
+export const shellLabels: Record<'more' | 'language' | 'close' | 'screens', Record<Lang, string>> = {
   more: { en: 'More', hi: 'और', gu: 'વધુ' },
   language: { en: 'Language', hi: 'भाषा', gu: 'ભાષા' },
   close: { en: 'Close', hi: 'बंद करें', gu: 'બંધ કરો' },
+  screens: { en: 'SCREENS', hi: 'स्क्रीन', gu: 'સ્ક્રીન' },
 };
 
 /** The language switch's own labels: a short mark for the control, and each language's name

@@ -24,6 +24,9 @@ const B = 'test-empty-site';
 
 /** Drive the real sign-in gate: who-are-you → team member → password login. */
 async function signIn(page: Page, email: string): Promise<void> {
+  // an engineer lands in Gujarati; these journeys name English screens, so the member chooses
+  // English on the gate's own picker, which is carried into their session and saved
+  await page.getByRole('button', { name: 'English', exact: true }).click();
   await page.getByRole('button', { name: /team member/i }).click();
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(email);
