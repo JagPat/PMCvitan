@@ -140,6 +140,18 @@ describe('Engineer Today — the screen', () => {
     expect(r.queryByTestId('today-action')).toBeNull();
   });
 
+  it('a sent log with no crew (a holiday) reads as a record: the crew step is "Not recorded", not an open step', async () => {
+    const { r } = await loadToday({ dailyLog: log({ checkedIn: true, progress: 1, submitted: true }) });
+    expect(r.getByTestId('today-now').dataset.action).toBe('done');
+    const crew = r.getByTestId('today-step-crew');
+    expect(crew.dataset.state).toBe('skipped');
+    expect(crew.textContent).toContain(L.notRecorded.en);
+    expect(crew.textContent).not.toContain(L.estimate.crew.en);
+    expect(r.getByTestId('today-count').textContent).toBe('3 of 4 done');
+    // no step on a sent log is ever an open to-do
+    for (const k of ['checkIn', 'crew', 'photos', 'send']) expect(r.getByTestId(`today-step-${k}`).dataset.state).not.toMatch(/todo|next/);
+  });
+
   it('done is shown in words, not colour alone', async () => {
     const { r } = await loadToday({ dailyLog: log({ checkedIn: true }) });
     expect(r.getByTestId('today-step-checkIn').textContent).toContain(L.done.en);

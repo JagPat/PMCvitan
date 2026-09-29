@@ -140,18 +140,21 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
             {TODAY_STEPS.map((k) => {
               const isDone = path.done[k];
               const isNext = k === next;
+              // once the log is sent it is a record, not a to-do list: a step it went without (no
+              // crew on a holiday) reads "Not recorded", never an open step beside "nothing more to log"
+              const skipped = !isDone && path.action === 'done';
               return (
                 <li key={k}>
                   <button
                     className={`${styles.step} ${isNext ? styles.stepNext : ''}`}
                     onClick={openSite}
                     data-testid={`today-step-${k}`}
-                    data-state={isDone ? 'done' : isNext ? 'next' : 'todo'}
+                    data-state={isDone ? 'done' : skipped ? 'skipped' : isNext ? 'next' : 'todo'}
                   >
                     {isDone ? <CircleCheck size={22} color="var(--green-solid)" aria-hidden /> : <Circle size={22} color="var(--muted)" aria-hidden />}
                     <span className={styles.stepName}>{L.step[k][lang]}</span>
                     <span className={`${styles.stepState} ${isDone ? styles.stepStateDone : isNext ? styles.stepStateNext : ''}`}>
-                      {isDone ? L.done[lang] : isNext ? `${L.next[lang]} · ${L.estimate[k][lang]}` : L.estimate[k][lang]}
+                      {isDone ? L.done[lang] : skipped ? L.notRecorded[lang] : isNext ? `${L.next[lang]} · ${L.estimate[k][lang]}` : L.estimate[k][lang]}
                     </span>
                   </button>
                 </li>

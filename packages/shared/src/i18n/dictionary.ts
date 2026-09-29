@@ -119,6 +119,7 @@ export const engineerTodayLabels = {
   path: { en: "Today's path", hi: 'आज के काम', gu: 'આજનાં કામ' },
   done: { en: 'Done', hi: 'हो गया', gu: 'થઈ ગયું' },
   next: { en: 'Next', hi: 'अगला', gu: 'હવે' },
+  notRecorded: { en: 'Not recorded', hi: 'दर्ज नहीं', gu: 'નોંધાયું નથી' },
   alsoWaiting: { en: 'Also waiting on you', hi: 'यह भी आपका इंतज़ार कर रहा है', gu: 'આ પણ તમારી રાહ જુએ છે' },
   loading: { en: "Getting today's log…", hi: 'आज का लॉग आ रहा है…', gu: 'આજનો લોગ આવી રહ્યો છે…' },
   unavailable: { en: "Today's log didn't load", hi: 'आज का लॉग नहीं खुला', gu: 'આજનો લોગ ખૂલ્યો નહીં' },
