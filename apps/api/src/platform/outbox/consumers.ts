@@ -13,6 +13,24 @@ import { EXTERNAL_EFFECTS, type ExternalEffectDef, type ExternalEffectKey } from
  */
 export type PushClaimVerdict = { actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string };
 
+/** The push families the catalog declares (`ExternalEffectDef.pushFamily`). */
+export type PushFamily = NonNullable<ExternalEffectDef['pushFamily']>;
+
+/**
+ * Phase 6 task 4d-ii-a / A7b (plan §A.4 (ii)) — what the FINAL re-judge before ONE recipient's provider
+ * call decided:
+ *   - `send`: the mark is clear, the subject and the project are still in the actionable set, and the
+ *     recipient still holds the standing the family's own rule names;
+ *   - `skip`: the RECIPIENT is stale (their standing ended, or the demand re-targeted to someone
+ *     else) — skipped without touching the mark, the delivery completes with the recipients sent;
+ *   - `drop`: the SUBJECT or the PROJECT left the actionable set — the whole delivery drops with the
+ *     recorded cancellation mark when nothing has been sent yet, and every remaining recipient is
+ *     skipped (no mark) when a send already happened;
+ *   - `cancelled`: a canceller already marked this delivery's row (the mark is never rewritten) —
+ *     nothing further is sent.
+ */
+export type PreSendVerdict = 'send' | 'skip' | 'drop' | 'cancelled';
+
 export interface PushClaimDeps {
   deciderTarget(projectId: string, decisionId: string): Promise<PushClaimVerdict>;
   /** Phase 6 unit 4c-ii (§B P38c/P40c) — the two consultation families. Both are TARGETED, so the
@@ -25,6 +43,48 @@ export interface PushClaimDeps {
   /** round-1 Codex F5 — WHO currently holds a role's effective standing (orgs-owned answer):
    *  a role claim delivers to these users' valid links, never to a subscription's stored role. */
   roleHolderUserIds(projectId: string, role: string): Promise<string[]>;
+  /** 4d-ii-a / A7b — the delivery row's own cancellation mark, re-read immediately before EACH
+   *  recipient's provider call (a platform-internal read of the platform's own table): a canceller
+   *  that committed between the claim and this recipient's send stops the remaining sends. */
+  cancelled(deliveryId: string): Promise<boolean>;
+  /** 4d-ii-a / A7b — does `userId` hold `role`'s effective standing on the project NOW (the
+   *  orgs-owned answer, the same rule `roleHolderUserIds` resolves the fan-out by)? A role fan-out
+   *  recipient resolved at claim is re-judged by it before their own send. */
+  userHoldsRole(projectId: string, userId: string, role: string): Promise<boolean>;
+}
+
+/** The family's own claim predicate, target-aware wherever the claim is. */
+function familyTarget(claims: PushClaimDeps, family: PushFamily, projectId: string, decisionId: string, targetUserId: string | null): Promise<PushClaimVerdict> {
+  return family === 'decider'
+    ? claims.deciderTarget(projectId, decisionId)
+    : family === 'consultation_requested'
+      ? claims.consultationRequestedTarget(projectId, decisionId, targetUserId)
+      : claims.consultationRespondedTarget(projectId, decisionId, targetUserId);
+}
+
+/**
+ * Phase 6 task 4d-ii-a / A7b (plan §A.4 (ii)) — the ONE pre-send hook for EVERY recipient of EVERY
+ * family, run immediately before that recipient's provider call:
+ *   1. the delivery row's cancellation mark (family-agnostic by construction);
+ *   2. the SUBJECT and the PROJECT — the family's OWN claim predicate re-run, target-aware wherever
+ *      the claim is (each predicate re-checks project operability FIRST, then the decision under
+ *      its row lock, then the person's standing for the user-targeted families);
+ *   3. the PERSON — a user-targeted family's predicate already judged them; a role fan-out
+ *      recipient must still hold the role the CURRENT verdict names, by the orgs-owned answer.
+ * Exported for the unit suite; the consumer below is its only production caller.
+ */
+export async function preSendVerdict(
+  claims: PushClaimDeps,
+  input: { deliveryId: string; projectId: string; decisionId: string; family: PushFamily; recipient: string; role: string | null },
+): Promise<PreSendVerdict> {
+  if (await claims.cancelled(input.deliveryId)) return 'cancelled';
+  const again = await familyTarget(claims, input.family, input.projectId, input.decisionId, input.role === null ? input.recipient : null);
+  if (!again.actionable) return 'drop';
+  if (again.targetUserId !== undefined) return again.targetUserId === input.recipient ? 'send' : 'skip';
+  // a role fan-out: the recipient must hold one of the roles the CURRENT verdict names — the role
+  // they were resolved by at claim, and that role must still be the demand's audience
+  if (input.role === null || !(again.roles ?? []).includes(input.role)) return 'skip';
+  return (await claims.userHoldsRole(input.projectId, input.recipient, input.role)) ? 'send' : 'skip';
 }
 
 /**
@@ -93,31 +153,54 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
       const effectKey = ctx.meta.dispatchIntent?.effectKey as ExternalEffectKey | undefined;
       const family = effectKey ? (EXTERNAL_EFFECTS[effectKey] as ExternalEffectDef | undefined)?.pushFamily : undefined;
       if (family && claims) {
-        const target =
-          family === 'decider'
-            ? await claims.deciderTarget(ctx.meta.projectId, ctx.meta.entityId)
-            : family === 'consultation_requested'
-              ? await claims.consultationRequestedTarget(ctx.meta.projectId, ctx.meta.entityId, p.targetUserId ?? null)
-              : await claims.consultationRespondedTarget(ctx.meta.projectId, ctx.meta.entityId, p.targetUserId ?? null);
+        const target = await familyTarget(claims, family, ctx.meta.projectId, ctx.meta.entityId, p.targetUserId ?? null);
         if (!target.actionable) {
           await claims.markCancelled(ctx.delivery.id);
           return;
         }
+        // the recipients this claim resolved: the ONE target of a user-targeted family, or —
+        // round-1 Codex F5 — a ROLE-held claim's CURRENT effective holders (the orgs-owned
+        // answer), delivered only to their currently-valid links: a stored subscription role is
+        // attribution at subscribe time, not standing at claim time, so a removed member's device
+        // receives nothing. Each holder remembers the role they were resolved by.
+        const recipients: Array<{ userId: string; role: string | null }> = [];
         if (target.targetUserId) {
-          await push.notifyTargetedUser(ctx.meta.projectId, payload, target.targetUserId);
-          return;
+          recipients.push({ userId: target.targetUserId, role: null });
+        } else {
+          const seen = new Set<string>();
+          for (const role of target.roles ?? []) {
+            for (const userId of await claims.roleHolderUserIds(ctx.meta.projectId, role)) {
+              if (!seen.has(userId)) { seen.add(userId); recipients.push({ userId, role }); }
+            }
+          }
         }
-        // round-1 Codex F5 — a ROLE-held claim resolves the role's CURRENT effective holders
-        // (the orgs-owned answer) and delivers only to their currently-valid links: a stored
-        // subscription role is attribution at subscribe time, not standing at claim time, so a
-        // removed member's device receives nothing.
-        const holders = new Set<string>();
-        for (const role of target.roles ?? []) {
-          for (const userId of await claims.roleHolderUserIds(ctx.meta.projectId, role)) holders.add(userId);
+        // 4d-ii-a / A7b (plan §A.4 (ii)) — the FINAL re-judge before EACH recipient's provider call
+        // (`preSendVerdict`). One rule for the outcome: a subject or project that left the
+        // actionable set BEFORE any send drops the WHOLE delivery with the recorded mark (the row
+        // carries one delivery-wide mark, so it is the right instrument only then); a stale
+        // RECIPIENT is skipped without touching the mark and the delivery completes with the
+        // recipients actually sent, the mark set only when EVERY resolved recipient failed (a
+        // user-targeted delivery has one recipient, so its failure IS the whole delivery); a
+        // subject or project that leaves BETWEEN sends skips every remaining recipient, no mark.
+        // The residual — a command committing after this re-read and before the provider accepts
+        // the send — is a stale push to a displaced recipient, stated as a disclosure bound.
+        let sent = 0;
+        let stopped = false;
+        for (const r of recipients) {
+          const verdict = await preSendVerdict(claims, {
+            deliveryId: ctx.delivery.id, projectId: ctx.meta.projectId, decisionId: ctx.meta.entityId, family, recipient: r.userId, role: r.role,
+          });
+          if (verdict === 'cancelled') { stopped = true; break; }
+          if (verdict === 'drop') {
+            if (sent === 0) await claims.markCancelled(ctx.delivery.id);
+            stopped = true;
+            break;
+          }
+          if (verdict === 'skip') continue;
+          await push.notifyTargetedUser(ctx.meta.projectId, payload, r.userId);
+          sent += 1;
         }
-        for (const userId of holders) {
-          await push.notifyTargetedUser(ctx.meta.projectId, payload, userId);
-        }
+        if (!stopped && recipients.length > 0 && sent === 0) await claims.markCancelled(ctx.delivery.id);
         return;
       }
       // A TARGETED intent outside any family still delivers only to the target's valid links

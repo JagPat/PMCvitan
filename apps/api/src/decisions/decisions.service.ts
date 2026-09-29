@@ -711,11 +711,17 @@ export class DecisionsService {
         // has not closed the cycle, so a question asked beside it belongs to the current one.
         const openCycle = await tx.decisionApprovalRevision.count({ where: { decisionId, finalized: true } });
 
+        // 4d-ii-a / A7b — the requester's FROZEN attribution pair (the role the seal judged, `pmc` or
+        // `architect`, and the account's registered name), resolved in this transaction through A2's
+        // seam and written on the fact AND handed to the event, so the row and its event are one
+        // reading; NULL when the resolver finds no standing (the drain shape 4d-i admits).
+        const pair = await resolveActorEnvelope(tx, projectId, actor);
         const id = `dc-${ctx.commandId}`;
         await tx.decisionConsultation.create({
           data: {
             id, projectId, decisionId,
             requestedById: actor.actorId,
+            requestedByRole: pair?.actorRole ?? null, requestedByName: pair?.actorName ?? null,
             consulteeMembershipId: input.consulteeMembershipId,
             // the DECISIONS-OWNED canonical audience, resolved by the owner in this transaction —
             // never folded from `Membership` at read time (a cross-module read) and never carried
@@ -730,7 +736,7 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: 'consultations.request', entity: 'Decision', entityId: decisionId });
         const body = `${actor.actorName} asked you about ${d.title}`;
         const ev = await emitEvent(tx, {
-          projectId, actor,
+          projectId, actor, actorEnvelope: pair,
           eventType: 'decision.consultation_requested',
           entityType: 'Decision', entityId: decisionId,
           payload: { consultationId: id, consulteeUserId: consultee.userId },
@@ -798,7 +804,7 @@ export class DecisionsService {
           // `openCycle` and `requestedById` are frozen at request time on an append-only row, so
           // reading them here rather than under the lock changes nothing; the ANSWERED state is
           // the volatile field, and that one is re-read below.
-          select: { id: true, consulteeMembershipId: true, openCycle: true, requestedById: true },
+          select: { id: true, consulteeMembershipId: true, openCycle: true, requestedById: true, requestedByRole: true },
         });
         if (!consultation) throw new NotFoundException('That consultation does not exist on this decision');
         // the consultee membership, RE-LOCKED and re-resolved: a consultee removed after their JWT
@@ -854,11 +860,14 @@ export class DecisionsService {
           recommendedOptionId = chosen.id;
         }
 
+        // 4d-ii-a / A7b — the responder's frozen pair, exactly as the request writes the requester's
+        const pair = await resolveActorEnvelope(tx, projectId, actor);
         const id = `dcr-${ctx.commandId}`;
         await tx.decisionConsultationResponse.create({
           data: {
             id, projectId, consultationId: consultation.id, decisionId,
             respondedById: actor.actorId,
+            respondedByRole: pair?.actorRole ?? null, respondedByName: pair?.actorName ?? null,
             response: input.response,
             recommendedOptionId,
             respondedAt: new Date(),
@@ -867,15 +876,21 @@ export class DecisionsService {
         });
         await recordAudit(tx, { projectId, actor, action: 'consultations.respond', entity: 'Decision', entityId: decisionId });
         const body = `${actor.actorName} answered your question about ${d.title}`;
+        // 4d-ii-a / A7b (plan §A.2, #557's review round 1 finding 2 / round 2 finding 4) — the intent
+        // RECORDS THE AUDIENCE THE SEND REACHES: the requester's ACTUAL role, read from the
+        // consultation row's FROZEN `requestedByRole` (never resolved at response time), so the
+        // immutable intent and the claim-time predicate agree. A legacy or drain-window request
+        // carries no frozen role, and only a `pmc` could have made one, so NULL reads as `pmc`.
+        const requesterRole = (consultation.requestedByRole ?? 'pmc') as 'pmc';
         const ev = await emitEvent(tx, {
-          projectId, actor,
+          projectId, actor, actorEnvelope: pair,
           eventType: 'decision.consultation_responded',
           entityType: 'Decision', entityId: decisionId,
           payload: { consultationId: consultation.id, responseId: id },
           effectKey: 'decision.consultation_responded',
           // TARGETED at the person who asked. The requester may be an org-admin USER with no
           // membership row on this project, which is exactly why the target is user-keyed.
-          dispatch: { push: { body, roles: ['pmc'], targetUserId: consultation.requestedById } },
+          dispatch: { push: { body, roles: [requesterRole], targetUserId: consultation.requestedById } },
         });
         return { resultRef: id, events: [ev] };
       },
@@ -1007,6 +1022,16 @@ export class DecisionsService {
     if (user.role !== 'pmc' && open.requestedById !== user.sub) {
       throw new ForbiddenException('Only the requester or the PMC can withdraw a change request');
     }
+    // 4d-ii-a / A7b (plan §A.2, P33) — THE ORDINARY ESCAPE HATCH IS CLOSED FOR A DISAGREEMENT. This
+    // command restores `change → approved`; on a `countersign_rejection` request that would complete
+    // an approval WITHOUT its countersign. Re-approval (which runs the chain again) is the only way
+    // forward. Refused here first with an answer, and re-judged under the lock below.
+    const refuseRejection = (origin: string): void => {
+      if (origin === 'countersign_rejection') {
+        throw new ConflictException('This change request is an architect\'s countersign rejection — it cannot be withdrawn; the decision moves forward only through re-approval, which runs the countersign again');
+      }
+    };
+    refuseRejection(open.origin);
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -1017,6 +1042,12 @@ export class DecisionsService {
       run: async (tx) => {
         // restoring the lock flips the decision gate back (gate finding 1)
         await lockProjectReadiness(tx, projectId);
+        // A7b — the origin re-judged on the row as it stands (the pre-read was a plain read; the
+        // seal freezes `origin`, so a row that was `standard` stays so, but the request the
+        // pre-read saw may have closed and another opened)
+        const openNow = await tx.changeRequest.findFirst({ where: { id: open.id, status: 'open' }, select: { origin: true } });
+        if (!openNow) throw new ConflictException('The change request changed while withdrawing — reload and retry');
+        refuseRejection(openNow.origin);
         const { count } = await tx.decision.updateMany({
           where: { id: decisionId, projectId, status: 'change' },
           data: { status: 'approved' },
@@ -1031,8 +1062,16 @@ export class DecisionsService {
         });
         if (closed.count !== 1) throw new ConflictException('The change request changed while withdrawing — reload and retry');
         await tx.decisionEvent.create({ data: { decisionId, type: 'change_withdrawn', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole } });
+        // 4d-ii-a / A7b (plan §A.4 (i)) — this transition LEAVES the consultation-open set, so the
+        // decision's not-yet-sent `consultation_requested` deliveries are cancelled by subject under
+        // the decision lock the CAS above took: an invitation `consultation.respond` now refuses.
+        // (`consultation_responded` deliveries are information, not invitations, and stand.)
+        const cancelled = await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.consultation_requested' });
         await recordAudit(tx, { projectId, actor, action: 'decision.change_withdraw', entity: 'Decision', entityId: decisionId });
-        const ev = await emitEvent(tx, { projectId, actor, eventType: 'decision.change_withdrawn', entityType: 'Decision', entityId: decisionId, effectKey: 'decision.change_withdrawn', dispatch: {} });
+        const ev = await emitEvent(tx, {
+          projectId, actor, eventType: 'decision.change_withdrawn', entityType: 'Decision', entityId: decisionId, effectKey: 'decision.change_withdrawn', dispatch: {},
+          payload: { pushIntentsCancelled: cancelled.neutralized + cancelled.marked + cancelled.entombed },
+        });
         return { resultRef: decisionId, events: [ev] };
       },
     });
@@ -1258,6 +1297,21 @@ export class DecisionsService {
         if (!attributable) {
           throw new BadRequestException('A withdrawal must be attributed to an ACTIVE member of this project — your account holds no active membership here (org-admin reach does not carry one; join the project to withdraw its decisions).');
         }
+        // 4d-ii-a / A7b (plan §A.4 (i), the `withdraw` command's target-aware response cancellation)
+        // — the RESPONSE TARGETS' standing, judged BEFORE the decision lock in the canonical order
+        // (Membership before Decision): the decision's answered consultations are read WITHOUT the
+        // decision lock, each requester's standing rows are locked in ascending requester order and
+        // their PMC standing judged (`hasProjectRoleStanding`, the same answer the responded push
+        // predicate re-applies), and the set is RE-VALIDATED under the decision lock below — an
+        // answer that landed between the two reads names a person whose standing this transaction
+        // did not lock in order, so the command refuses as contended rather than lock out of order.
+        const answeredBefore = await tx.decisionConsultation.findMany({
+          where: { projectId, decisionId, response: { isNot: null } }, select: { id: true, requestedById: true }, orderBy: { id: 'asc' },
+        });
+        const responseTargetsWithoutPmc: string[] = [];
+        for (const requester of [...new Set(answeredBefore.map((c) => c.requestedById))].sort()) {
+          if (!(await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, requester, ['pmc'], { forUpdate: true }))) responseTargetsWithoutPmc.push(requester);
+        }
         // belt-and-braces: the DB entry seal refuses this too (source-state + register), but a
         // 409 is an answer and a trigger error is a crash — refuse here first.
         // 4d-ii-a / A4a — DELIBERATELY every revision, not the finalized ones the consultation cycle
@@ -1325,12 +1379,28 @@ export class DecisionsService {
         // before this commit is caught by the sender's pre-send re-check of its own row; the
         // check→send in-flight residual is the documented boundary (§A.4).
         const cancelled = await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.published' });
+        // 4d-ii-a / A7b (plan §A.4 (i)) — and the CONSULTATION families, under the decision lock the
+        // CAS above took: EVERY `consultation_requested` delivery regardless of target (a request is
+        // an invitation to act that `consultation.respond` refuses on a withdrawn subject, for a PMC
+        // consultee exactly as for anyone else), and the `consultation_responded` deliveries ONLY
+        // where the target lacks PMC standing (a withdrawn decision is pmc-only, but a PMC may still
+        // be told advice was given) — the narrowing `targetUserIds` arm, judged against each event's
+        // own durable intent. The answered set is re-validated first (see the standing reads above).
+        const answeredNow = await tx.decisionConsultation.findMany({
+          where: { projectId, decisionId, response: { isNot: null } }, select: { id: true }, orderBy: { id: 'asc' },
+        });
+        if (answeredNow.length !== answeredBefore.length || answeredNow.some((c, i) => c.id !== answeredBefore[i]!.id)) {
+          throw new ConflictException('Advice was recorded on this decision while it was being withdrawn — reload and retry');
+        }
+        const cancelledRequests = await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.consultation_requested' });
+        const cancelledResponses = await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.consultation_responded', targetUserIds: responseTargetsWithoutPmc });
+        const pushIntentsCancelled = [cancelled, cancelledRequests, cancelledResponses].reduce((n, c) => n + c.neutralized + c.marked + c.entombed, 0);
 
         await recordAudit(tx, { projectId, actor, action: 'decision.withdraw', entity: 'Decision', entityId: decisionId });
         const eventId = randomUUID();
         const ev = await emitEvent(tx, {
           projectId, actor, eventId, eventType: 'decision.withdrawn', entityType: 'Decision', entityId: decisionId,
-          payload: { title: d.title, reason, pushIntentsCancelled: cancelled.neutralized + cancelled.marked + cancelled.entombed },
+          payload: { title: d.title, reason, pushIntentsCancelled },
           effectKey: 'decision.withdrawn',
           // surfaces refresh; no push — the lifecycle-correction precedent (change_requested/
           // change_withdrawn), and the pmc who acted needs no announcement

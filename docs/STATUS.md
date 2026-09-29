@@ -14,31 +14,35 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a7a-kinded-notice-writers
-reviewed_merge: faaf233
-open_pr: 665
+work_item: phase-6-task-4d-ii-a-a7b-send-boundary
+reviewed_merge: fff49f8
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
 ```
 
-### Now — Phase 6 task 4d: A7a, the kinded notice writers
+### Now — Phase 6 task 4d: A7b, the send boundary
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A7a, `open_pr: 665` (`work_item: phase-6-task-4d-ii-a-a7a-kinded-notice-writers`, branch
-  `claude/4d-ii-a7-catalog-unit`, from `main` at `faaf233`; `origin/main` at `363177c`, #658, merged in
-  as `d05a85a`).** A7 is delivered as four sub-units
-  (the staging document's dated note of 2026-09-29): A7a the kinded notice writers, A7b the send
-  boundary, A7c `decisions.inbox` v3, A7d the catalog change. A7a: every decisions notice writer
-  (the one-step issue, publish, approve, withdraw) mints its event id, emits the event first and
-  writes the notice bound to it (`eventId`, `kind`) in the same transaction, as 4d-i's binding seal
-  demands; the green approved notice renders from the event's frozen envelope and the revision its
-  event names (`payload.revisionId` on the direct approve, moved forward from A8a's row); the hostile
-  late-kinded-insert probe against a committed no-notice event. One migration
-  (`20280102000000_phase6_t4d_ii_a7a_revision_named`, on `ALWAYS_EXECUTE`): the revision claimant
-  re-issued so a green event's `revisionId` must name the head its act wrote (#665's review round 1).
+- **Now, A7b (`work_item: phase-6-task-4d-ii-a-a7b-send-boundary`, branch
+  `claude/4d-ii-a7b-send-boundary`, from `main` at `aa70f9d`).** The second A7 sub-unit, the send
+  boundary (plan §A.4): the push consumer's FINAL re-judge before EACH recipient's provider call
+  (the mark, the family's own predicate re-run, the recipient's standing); `deciderPushTarget`
+  reading the holder under the decision row lock in the canonical order; the responded family's
+  widened requester set with the withdrawn-audience arm; `cancelQueuedPushBySubject` narrowed by
+  `targetUserIds`; `withdraw` cancelling every queued consultation request and the responses whose
+  target lacks PMC standing, the targets' standing judged before the decision lock and re-validated
+  under it; `withdrawChange` refusing a `countersign_rejection` and cancelling the closed decision's
+  queued consultation requests; the consultation writers stating the frozen attribution pair and the
+  response intent recording the requester's actual role. No migration.
+- **A7a merged as #665** (`fff49f8`): every decisions notice writer binds its notice to its event
+  (`eventId`, `kind`), the green approved notice rendered from the event's frozen envelope and the
+  revision its event names, the direct approve's payload carrying the exact `revisionId`, and
+  migration `20280102000000_phase6_t4d_ii_a7a_revision_named` binding that name to the head the act
+  wrote (#665's review round 1).
 - **A6e merged as #663** (`faaf233`): the `ServerGeneration` register and the startup fence the outbox
   bootstrap runs first (the admission read held `FOR SHARE` until `main.ts` releases after
   `app.listen()`, a lost hold fencing the process); `rollout:drain-evidence`, the observer that renders
