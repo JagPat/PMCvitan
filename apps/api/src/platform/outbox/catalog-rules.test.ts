@@ -8,6 +8,7 @@ import {
 } from './registry';
 import { makeSocketConsumer, makePushConsumer } from './consumers';
 import { makeDecisionsProjectionConsumer } from '../../decisions/decisions.projection';
+import { makeDecisionsEffectsConsumer } from '../../decisions/decisions.effects';
 import { makeDailyLogProjectionConsumer } from '../../daily-log/daily-log.projection';
 import { makeDrawingsProjectionConsumer } from '../../drawings/drawings.projection';
 import { makeInspectionsProjectionConsumer } from '../../inspections/inspections.projection';
@@ -34,6 +35,10 @@ import { makeCashForecastProjectionConsumer } from '../../commercial/cash-foreca
  */
 
 const MIGRATION = join(__dirname, '..', '..', '..', 'prisma', 'migrations', '20271230000000_phase6_t4d_ii_a6c_catalog_rules', 'migration.sql');
+/** 4d-ii-a / A7d — the SECOND rule literal in the ledger: `decisions.inbox`'s rule rewritten for the two
+ *  decision types the closed list gained, and `decisions.effects` registered with its own. Applied
+ *  OVER A6c's in ledger order, the two literals must equal every compiled consumer's rule. */
+const MIGRATION_A7D = join(__dirname, '..', '..', '..', 'prisma', 'migrations', '20280104000000_phase6_t4d_ii_a7d_catalog_change', 'migration.sql');
 const BOOTSTRAP = join(__dirname, 'outbox.bootstrap.ts');
 
 /** The compiled consumers the bootstrap registers, built over inert deps (`dispatchRule` is a
@@ -42,6 +47,7 @@ const compiled = (): OutboxConsumer[] => [
   makeSocketConsumer({} as never),
   makePushConsumer({} as never),
   makeDecisionsProjectionConsumer(),
+  makeDecisionsEffectsConsumer({} as never),
   makeDailyLogProjectionConsumer(),
   makeDrawingsProjectionConsumer(),
   makeInspectionsProjectionConsumer(),
@@ -122,19 +128,39 @@ describe('4d-ii-a / A6c — the persisted dispatch rule', () => {
     }
   });
 
-  it('the migration literal writes, for every compiled consumer, exactly the rule the code declares — and no other row', () => {
-    const sql = readFileSync(MIGRATION, 'utf8');
-    const start = sql.indexOf('FROM (VALUES');
-    const end = sql.indexOf(') AS r(consumer, rule, types)');
-    expect(start, 'the migration carries the rule literal').toBeGreaterThan(-1);
-    expect(end).toBeGreaterThan(start);
-    const literal = sql.slice(start, end);
-    const rows = new Map<string, { dispatchRule: string; subscribedEventTypes: string[] }>();
-    for (const m of literal.matchAll(/\('([^']+)', '([^']+)', ARRAY\[([^\]]*)\]::TEXT\[\]\)/g)) {
-      const types = m[3].trim() === '' ? [] : m[3].split(',').map((s) => s.trim().replace(/^'|'$/g, ''));
-      expect(rows.has(m[1]), `${m[1]} appears once in the literal`).toBe(false);
-      rows.set(m[1], { dispatchRule: m[2], subscribedEventTypes: types });
+  /** Every `FROM (VALUES …) AS r(consumer, rule, types)` literal of one migration, in file order. */
+  const literalsOf = (migration: string): Map<string, { dispatchRule: string; subscribedEventTypes: string[] }>[] => {
+    const sql = readFileSync(migration, 'utf8');
+    const out: Map<string, { dispatchRule: string; subscribedEventTypes: string[] }>[] = [];
+    let from = 0;
+    for (;;) {
+      const start = sql.indexOf('FROM (VALUES', from);
+      if (start === -1) break;
+      const end = sql.indexOf(') AS r(consumer, rule, types)', start);
+      expect(end, 'a rule literal is closed by its alias').toBeGreaterThan(start);
+      const rows = new Map<string, { dispatchRule: string; subscribedEventTypes: string[] }>();
+      for (const m of sql.slice(start, end).matchAll(/\('([^']+)', '([^']+)', ARRAY\[([^\]]*)\]::TEXT\[\]\)/g)) {
+        const types = m[3].trim() === '' ? [] : m[3].split(',').map((s) => s.trim().replace(/^'|'$/g, ''));
+        expect(rows.has(m[1]), `${m[1]} appears once in the literal`).toBe(false);
+        rows.set(m[1], { dispatchRule: m[2], subscribedEventTypes: types });
+      }
+      out.push(rows);
+      from = end;
     }
+    expect(out.length, `${migration} carries at least one rule literal`).toBeGreaterThan(0);
+    return out;
+  };
+
+  it('the migration literals, applied in ledger order, write for every compiled consumer exactly the rule the code declares — and no other row', () => {
+    // A6c's literal (every row that existed at A6c), then A7d's two (the `decisions.inbox` rewrite
+    // and the `decisions.effects` registration), each later literal overriding the earlier by name.
+    const rows = new Map<string, { dispatchRule: string; subscribedEventTypes: string[] }>();
+    const [a6c] = literalsOf(MIGRATION);
+    expect(a6c!.size, 'A6c wrote every consumer that existed').toBeGreaterThan(5);
+    for (const [k, v] of a6c!) rows.set(k, v);
+    const a7d = literalsOf(MIGRATION_A7D);
+    expect(a7d.map((l) => [...l.keys()])).toEqual([['decisions.inbox'], ['decisions.effects']]);
+    for (const l of a7d) for (const [k, v] of l) rows.set(k, v);
     const consumers = compiled();
     expect([...rows.keys()].sort()).toEqual(consumers.map((c) => c.name).sort());
     for (const c of consumers) {

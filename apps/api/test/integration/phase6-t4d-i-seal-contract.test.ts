@@ -691,10 +691,15 @@ const REGISTER: Record<string, SealContract> = {
   // human who acted. Catalog-driven and dormant over 4d-i's generations, deferred beside the
   // claim seal so both judge the same event at commit.
   platform_t4d_event_pairing_actor: {
-    rule: 'an event of a pairing-required family names a HUMAN actor (actorKind = human, actorId not null)',
-    plan: '§A.3 obligation 7; 4d-i-b U1',
+    rule: 'an event of a pairing-required family names a HUMAN actor (actorKind = human, actorId not null) — '
+      + 'with ONE exemption, re-issued by 4d-ii-a / A7d (20280104): the `decisions.effects` re-notification '
+      + '(`decision.awaiting_countersign`, `payload.renotified`, the system actor `system:membership-standing`) '
+      + 'is admitted only when its payload names a `membership.standing_changed` crossing of the same project '
+      + 'and a `transitionId` (§A.2: the human act is recoverable from the fact the event names)',
+    plan: '§A.3 obligation 7; 4d-i-b U1; §A.2 the re-notification; A7d',
     on: { 'DomainEvent.DomainEvent_t4d_pairing_actor': C('I') },
-    must: ['pairingRequired', 'actorKind'],
+    must: ['pairingRequired', 'actorKind', 'system:membership-standing', "'renotified'", "'crossingEventId'", "'transitionId'",
+      'membership.standing_changed', 'never a system announcement'],
   },
   // 4d-i-b U2 (20271223000000) — the two transition recorders and the two change-request bundle
   // seals; and 4d-i-b U3 (20271224000000) — the flip, which gives the REQUEST-side seal its claims
@@ -774,8 +779,12 @@ const REGISTER: Record<string, SealContract> = {
       + 'U3 round 1) and exactly one `approved` / `reapproved` audit row at commit. 4d-ii-a / A7a '
       + '(20280102, #665 r1 P1): the event the head claims must, when its payload names a '
       + '`revisionId`, name THIS head — the green notice renders from the revision the event names; '
-      + 'absent, admitted through the drain (a previous-release writer; required at 4d-iii)',
-    plan: '§A.3 correspondence table (#572 r9 f1); §D 4d-i-b (b); 4d-i-b U3; #590 r2 f5; §A.3 P2 (revisionId); A7a',
+      + 'absent, admitted through the drain (a previous-release writer; required at 4d-iii). 4d-ii-a / A7d '
+      + '(20280104): the PROVISIONAL birth claims the decision\'s same-transaction `decision.awaiting_countersign` '
+      + 'attributed to its approver and naming THIS head (`payload.revisionId`), beside exactly one '
+      + '`approved` / `reapproved` audit row — the approve under a chain and the chain reapproval (whose '
+      + 'request closure verifies, never claims); the re-notification\'s demand is its audit row\'s to claim',
+    plan: '§A.3 correspondence table (#572 r9 f1); §D 4d-i-b (b); 4d-i-b U3; #590 r2 f5; §A.3 P2 (revisionId); A7a; A7d',
     on: {
       'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim': A('I'),
       'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim_deferred': C('I'),
@@ -784,7 +793,38 @@ const REGISTER: Record<string, SealContract> = {
       'NEW."approvedById"',
       'phase6_t4d_tx_audit_count', "ARRAY['approved', 'reapproved']",
       'platform_claim_event_pairing_once', 'decision.approved', 'decision.reapproved',
-      "'revisionId'", 'names revision', 'v_named IS DISTINCT FROM NEW."id"'],
+      "'revisionId'", 'names revision', 'v_named IS DISTINCT FROM NEW."id"',
+      'THE PROVISIONAL ARM', 'decision.awaiting_countersign', 'born PROVISIONAL'],
+  },
+  // 4d-ii-a / A7d (20280104000000) — the claimants of the three types the widened catalog compiles
+  // `pairingRequired`: the transition of an architect-standing flip, the forward fact. (The
+  // provisional revision's arm is on `phase6_t4d_revision_claims_approval` above; the
+  // re-notification's claimant is 4d-i's `phase6_t4d_renotified_claims_event`.)
+  phase6_t4d_transition_claims_standing: {
+    rule: 'a `MembershipTransition` that FLIPS active architect standing (exactly one end of the move is '
+      + '`(architect, active)`) claims the decision-free `membership.standing_changed` event of its '
+      + 'membership written in the same transaction — naming it (`payload.transitionId`), describing the '
+      + 'same move (`membershipId`, `role`, `from`, `to`), attributed to its actor and frozen pair — and the '
+      + 'DEFERRED half demands exactly one such event, with `payload.activeCount` equal to the architect '
+      + 'register\'s head at commit; a transition that flips nothing refuses any such event naming it',
+    plan: '§A.2 the membership paragraph (the crossing-capable write carries its event); §A.3 obligation 7; A7d',
+    on: {
+      'MembershipTransition.MembershipTransition_t4d_claim': A('I'),
+      'MembershipTransition.MembershipTransition_t4d_claim_deferred': C('I'),
+    },
+    must: ['membership.standing_changed', "'transitionId'", "'membershipId'", "'activeCount'", 'platform_role_standing',
+      'NEW."actorRole"', 'NEW."actorName"', 'platform_claim_event_pairing_once', 'TG_NAME', 'flips no architect standing'],
+  },
+  phase6_t4d_forward_claims_event: {
+    rule: 'a `DecisionForward` fact claims the decision\'s same-transaction `decision.forwarded` whose payload '
+      + 'names THIS row (`forwardId`) and whose `actorId` is `forwardedById`; the DEFERRED half demands '
+      + 'exactly one (the frozen recipient set\'s correspondence to the new holder is 4d-iii\'s trailing seal)',
+    plan: '§A.2 the push families (`forward`); §A.3 obligation 7; A7d',
+    on: {
+      'DecisionForward.DecisionForward_t4d_claim': A('I'),
+      'DecisionForward.DecisionForward_t4d_claim_deferred': C('I'),
+    },
+    must: ['decision.forwarded', "'forwardId'", 'NEW."forwardedById"', 'platform_claim_event_pairing_once', 'TG_NAME'],
   },
   phase6_t4d_consultation_claims_event: {
     rule: 'a consultation request claims its `decision.consultation_requested`, a response its '

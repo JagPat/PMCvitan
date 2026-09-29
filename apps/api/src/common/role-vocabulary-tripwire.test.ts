@@ -92,8 +92,10 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     'apps/api/src/platform/external-effects.ts :: union PushRole': 'answered',
     'apps/api/src/contracts.ts :: list role': 'answered',
     'apps/api/src/contracts.ts :: list projectRole': 'answered',
-    'apps/api/src/platform/external-effects.ts :: list decision.published': 'owed by A7: the targeted ceiling, widened with the catalog version',
-    'apps/api/src/platform/external-effects.ts :: list decision.consultation_requested': 'owed by A7: the targeted ceiling, widened with the catalog version',
+    // 4d-ii-a / A7d — the targeted ceilings, widened with the catalog generation
+    'apps/api/src/platform/external-effects.ts :: list decision.published': 'answered',
+    'apps/api/src/platform/external-effects.ts :: list decision.consultation_requested': 'answered',
+    'apps/api/src/platform/external-effects.ts :: list decision.forwarded': 'answered',
     // web
     'apps/web/src/lib/screens.ts :: map keys': 'answered',
     'apps/web/src/lib/screens.ts :: map ROLE_LABEL': 'answered',

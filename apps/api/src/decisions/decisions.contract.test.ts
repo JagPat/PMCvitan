@@ -48,6 +48,9 @@ describe('Task 8 — the decisions module implements its shared command/query co
         // Phase 6 unit 4c-ii — consultation signals (they move no status, gate nothing)
         'decision.consultation_requested',
         'decision.consultation_responded',
+        // Phase 6 task 4d (4d-ii-a / A7d) — the chain's forward and countersign demand
+        'decision.forwarded',
+        'decision.awaiting_countersign',
       ].sort(),
     );
     // an extracted module reaches no other module's persistence — it depends on nothing

@@ -327,6 +327,30 @@ sub-unit is additive, dark and reviewable on its own.
   `EventStreamQuery.latestPosition`, its activation handler recording a stale activation `noop`;
   `membership.standing_changed` emitted on an architect-standing flip; `ALWAYS_EXECUTE`; the
   reseal sequence in the packet.
+  Delivered as: the three keys compiled `pairingRequired` with their claimants in the SAME unit
+  (the `MembershipTransition` of a flip, immediate + deferred; the `DecisionForward` fact,
+  immediate + deferred; the PROVISIONAL arm of `phase6_t4d_revision_claims_approval`, A7a's
+  finalized arm byte-identical; the re-notification's is 4d-i's `DecisionEvent_t4d_renotified_claim`),
+  because a `pairingRequired` key with no claimant refuses every legitimate event of its type at
+  commit and a later flip would cost another coverage generation; `frozenAudience` and the frozen
+  family's constant `pushBody` join the preimage as its seventh and eighth elements (both sealed
+  columns); one migration (`20280104000000_phase6_t4d_ii_a7d_catalog_change`, one transaction):
+  the generation seeded beside U3's and audited against it (the prior present over the seed's keys
+  minus the three adds, the adds as declared, every shared key equal but `pushRoles`, which moves on
+  exactly three targeted keys by `architect` joining, the admitted set now four, the seed read back
+  — nine flagged, two frozen), `webpush.notify` guarded on 2, the `decisions.inbox` rule rewritten
+  inside the rule-migration transition guarded on its A6c shape, `decisions.effects` registered
+  guarded on absence, and U1's `platform_t4d_event_pairing_actor` re-issued with the ONE exemption
+  §A.2 states — the `decisions.effects` re-emit is a system act, admitted only bound to a
+  `membership.standing_changed` crossing of its project and a `transitionId` (U1 was written
+  before the type was compiled and would refuse the plan's own re-notification). The emitter
+  announces a PER-MEMBERSHIP flip (one end of the transition is `(architect, active)`) and the
+  consumer classifies the crossing from `activeCount`; the stale activation is recorded as the
+  delivery's own cancellation mark (`markDeliveryNoop`, `lastError = stale_activation`). Not carried
+  here, by design: the DB-side demand of the frozen shape on a frozen-family event (`targetUserIds`
+  present, non-empty, canonical, the body the catalog's) and the frozen set's correspondence to the
+  new holder / the architect set — 4d-iii's trailing correspondence seals; the compiled boundary
+  enforces the shape now and no frozen-family emitter exists before A8a.
 
 Order: A7a → A7b → A7c → A7d. A8a starts after A7d is on `main`.
 

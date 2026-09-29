@@ -48,14 +48,23 @@ export const decisionsManifest: ModuleManifest = {
     // Phase 6 unit 4c-ii (§A) — consultation SIGNALS: advice that informs without gating.
     'decision.consultation_requested',
     'decision.consultation_responded',
+    // Phase 6 task 4d (4d-ii-a / A7d, §A.2) — the chain's two decision types: the forward (A8a's
+    // `decisions.forward`) and the countersign DEMAND (A8a's provisional approve; the
+    // `decisions.effects` re-notification below).
+    'decision.forwarded',
+    'decision.awaiting_countersign',
   ],
-  consumesEvents: [],
+  // Phase 6 task 4d (4d-ii-a / A7d, §A.2) — the SECOND non-empty `consumesEvents` in the registry
+  // (after labour's): the decisions-owned ORDERED consumer `decisions.effects` derives the
+  // countersign re-notification and the last-architect cancellation from the orgs-owned
+  // architect-standing flip — an async channel, never a `dependsOn` edge.
+  consumesEvents: ['membership.standing_changed'],
   // Phase 6 task 4b (§A.1/§A.2) — `decisions.updateDraft` re-points an UNPUBLISHED draft's
   // decider/kind/options as one coherent pair (the write-once holder freeze starts at publication).
   commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw', 'decisions.updateDraft', 'consultations.request', 'consultations.respond'],
   // 4b adds: `statusAndDraftMap`/`statusAndDraftOf` (the recorded gate arm's draft flag),
   // `deciderPushTarget` (the decider push family's claim-time predicate, bound at bootstrap).
-  queries: ['decisions.snapshotSlice', 'decisions.renderKindedNotice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef', 'decisions.statusAndDraftMap', 'decisions.statusAndDraftOf', 'decisions.deciderPushTarget', 'decisions.consultationRequestedPushTarget', 'decisions.consultationRespondedPushTarget'],
+  queries: ['decisions.snapshotSlice', 'decisions.renderKindedNotice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef', 'decisions.statusAndDraftMap', 'decisions.statusAndDraftOf', 'decisions.deciderPushTarget', 'decisions.consultationRequestedPushTarget', 'decisions.consultationRespondedPushTarget', 'decisions.forwardPushTarget', 'decisions.countersignPushTarget'],
   routes: [
     'POST /projects/:projectId/decisions',
     'POST /projects/:projectId/decisions/:decisionId/publish',

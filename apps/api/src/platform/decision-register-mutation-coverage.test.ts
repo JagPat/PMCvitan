@@ -99,6 +99,12 @@ const COVERAGE: Record<string, Class> = {
   // disagreement command is the only writer) to prove the fold, the rebuild and the live slice carry
   // the non-`standard` origin identically; the same whole-table, single-transaction shape as A7b's.
   'test/integration/phase6-t4d-ii-a7c-inbox-v3.test.ts': 'planted countersign_rejection origin under a whole-table, single-transaction DISABLE TRIGGER USER on ChangeRequest (the A7b shape); teardown by wipeDecisionsVia',
+  // 4d-ii-a / A7d — the catalog-change suite plants the re-notification's CLAIMANT (a
+  // `countersign_renotified` audit row beside a planted countersign demand — 4d-i's claim trigger is
+  // the writer the plan names, and the demand it claims is A7d's frozen family) with the six
+  // reservation doors dropped for the suite (captured and re-created after); `decisions.effects`
+  // writes the same row through its own handler. Teardown by wipeDecisionEvents.
+  'test/integration/phase6-t4d-ii-a7d-catalog-change.test.ts': 'planted countersign_renotified audit rows (the 4d-i claimant) beside planted countersign demands, the reservation doors dropped for the suite and re-created after; teardown by wipeDecisionEvents',
   'test/integration/platform-command-receipt.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
   'test/integration/start-readiness-race.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
 

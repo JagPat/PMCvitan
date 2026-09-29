@@ -68,10 +68,12 @@ describe('PR C — external-effect catalog', () => {
             // how the round-5 omission was caught here in the first place.
             // Phase 6 unit 4d-i-b — `pairingRequired` is the SIXTH element: it decides the sealed
             // catalog column the kernel's pairing seal reads, so it moves the version too.
+            // Phase 6 unit 4d-ii-a / A7d — `frozenAudience` and `pushBody` are the SEVENTH and
+            // EIGHTH: both are sealed catalog columns the seals read.
             const d = EXTERNAL_EFFECTS[k] as (typeof EXTERNAL_EFFECTS)[ExternalEffectKey]
-              & { pushFamily?: string; pairingRequired?: true };
+              & { pushFamily?: string; pairingRequired?: true; frozenAudience?: true; pushBody?: string };
             return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(),
-              d.pushFamily ?? null, d.pairingRequired === true];
+              d.pushFamily ?? null, d.pairingRequired === true, d.frozenAudience === true, d.pushBody ?? null];
           }),
       );
     const reversed = createHash('sha256').update(preimage([...keys].reverse())).digest('hex');
@@ -87,7 +89,51 @@ describe('PR C — external-effect catalog', () => {
         effectKey: 'decision.published',
         coverageVersion: effectCoverageVersion(),
         invalidate: true,
-        push: { body: 'hi', roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant'] },
+        push: { body: 'hi', roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'] },
+      });
+    });
+
+    describe('4d-ii-a / A7d — the frozen-audience families and `targetUserIds`', () => {
+      it('a frozen family carries its recipients as the canonical (sorted, distinct) set and the catalog body', () => {
+        const intent = buildDispatchIntent('decision.awaiting_countersign', 'decision.awaiting_countersign', {
+          push: { body: 'A decision awaits your countersign', targetUserIds: ['u-b', 'u-a', 'u-b'] },
+        });
+        expect(intent.push).toEqual({ body: 'A decision awaits your countersign', roles: ['architect'], targetUserIds: ['u-a', 'u-b'] });
+        expect(EXTERNAL_EFFECTS['decision.forwarded'].frozenAudience).toBe(true);
+        expect(EXTERNAL_EFFECTS['decision.awaiting_countersign'].frozenAudience).toBe(true);
+      });
+      it('the set is refused on every non-frozen family, and a frozen family refuses an empty, blank, scalar-targeted or re-worded push', () => {
+        expect(() => buildDispatchIntent('decision.published', 'decision.published', { push: { body: 'hi', targetUserIds: ['u-a'] } }))
+          .toThrow(/not a frozen-audience family/);
+        expect(() => buildDispatchIntent('decision.consultation_requested', 'decision.consultation_requested', { push: { body: 'hi', targetUserId: 'u-a', targetUserIds: ['u-a'] } }))
+          .toThrow(/not a frozen-audience family/);
+        expect(() => buildDispatchIntent('decision.forwarded', 'decision.forwarded', { push: { body: 'A decision has been forwarded to you', targetUserIds: [] } }))
+          .toThrow(/at least one user/);
+        expect(() => buildDispatchIntent('decision.forwarded', 'decision.forwarded', { push: { body: 'A decision has been forwarded to you', targetUserIds: ['u-a', ' '] } }))
+          .toThrow(/at least one user, each a nonblank id/);
+        expect(() => buildDispatchIntent('decision.forwarded', 'decision.forwarded', { push: { body: 'A decision has been forwarded to you', targetUserId: 'u-a', targetUserIds: ['u-a'] } }))
+          .toThrow(/never a scalar targetUserId/);
+        expect(() => buildDispatchIntent('decision.forwarded', 'decision.forwarded', { push: { body: 'A decision has been forwarded to you' } }))
+          .toThrow(/freezes its recipients/);
+        expect(() => buildDispatchIntent('decision.forwarded', 'decision.forwarded', { push: { body: 'Please look', targetUserIds: ['u-a'] } }))
+          .toThrow(/announces its catalog body/);
+      });
+      it('every frozen family declares a constant body, no other key does, and both are pairing-required', () => {
+        for (const k of keys) {
+          const d = EXTERNAL_EFFECTS[k] as { frozenAudience?: true; pushBody?: string; pairingRequired?: true; push: unknown };
+          expect(d.frozenAudience === true, `${k} frozenAudience ⇔ pushBody`).toBe(typeof d.pushBody === 'string');
+          if (d.frozenAudience) {
+            expect(d.push, `${k} a frozen family pushes`).not.toBeNull();
+            expect(d.pairingRequired, `${k} a frozen family is claimed by its fact`).toBe(true);
+          }
+        }
+        expect(keys.filter((k) => (EXTERNAL_EFFECTS[k] as { frozenAudience?: true }).frozenAudience).sort())
+          .toEqual(['decision.awaiting_countersign', 'decision.forwarded']);
+      });
+      it('the three A7d types are compiled, pairing-required, and `membership.standing_changed` invalidates without a push', () => {
+        expect(EXTERNAL_EFFECTS['membership.standing_changed']).toEqual({ eventType: 'membership.standing_changed', invalidate: true, push: null, pairingRequired: true });
+        expect(EXTERNAL_EFFECTS['decision.consultation_responded'].push).toEqual(['pmc', 'architect']);
+        expect(EXTERNAL_EFFECTS['decision.consultation_requested'].push).toContain('architect');
       });
     });
 

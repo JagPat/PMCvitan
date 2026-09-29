@@ -6,6 +6,7 @@ import { OutboxRelay } from './relay.service';
 import { registerConsumer, syncConsumerCatalog, outboxSenderMode } from './registry';
 import { makeSocketConsumer, makePushConsumer } from './consumers';
 import { makeDecisionsProjectionConsumer } from '../../decisions/decisions.projection';
+import { makeDecisionsEffectsConsumer } from '../../decisions/decisions.effects';
 import { makeDailyLogProjectionConsumer } from '../../daily-log/daily-log.projection';
 import { makeDrawingsProjectionConsumer } from '../../drawings/drawings.projection';
 import { makeInspectionsProjectionConsumer } from '../../inspections/inspections.projection';
@@ -113,6 +114,10 @@ export class OutboxBootstrap implements OnModuleInit, OnModuleDestroy {
           this.decisionsQuery.consultationRequestedPushTarget(projectId, decisionId, targetUserId),
         consultationRespondedTarget: (projectId, decisionId, targetUserId) =>
           this.decisionsQuery.consultationRespondedPushTarget(projectId, decisionId, targetUserId),
+        // 4d-ii-a / A7d — the two frozen-audience families' predicates (the current holder set the
+        // frozen recipients are intersected with)
+        forwardTarget: (projectId, decisionId) => this.decisionsQuery.forwardPushTarget(projectId, decisionId),
+        countersignTarget: (projectId, decisionId) => this.decisionsQuery.countersignPushTarget(projectId, decisionId),
         roleHolderUserIds: (projectId, role) => this.orgsParticipant.effectiveRoleHolderUserIds(this.prisma, projectId, role),
         // 4d-ii-a / A7b — the pre-send hook's two reads: the delivery row's own mark (platform-
         // internal) and a fan-out recipient's CURRENT standing in the role they were resolved by
@@ -138,6 +143,10 @@ export class OutboxBootstrap implements OnModuleInit, OnModuleDestroy {
     // projection cursor advances contiguously. Additive: the live snapshot slice stays authoritative
     // until the frontend is switched to the projection query (the capability-versioned XOR cutover).
     registerConsumer(makeDecisionsProjectionConsumer());
+    // 4d-ii-a / A7d — the decisions-owned ORDERED consumer of the architect-standing flip (plan
+    // §A.2): registered here so its compiled contract is verified against the row the catalog-data
+    // migration registered INACTIVE; 4d-iii activates it after the drain.
+    registerConsumer(makeDecisionsEffectsConsumer({ log: (m) => this.log.log(m) }));
     // Task 10 — the daily-log module's rebuildable read path: the daily-log projection consumer
     // maintains the per-project DailyLogProjection slice from `dailylog.*`/`material.*` events (ordered,
     // effectively-once). Same additive cutover — the live snapshot slice stays authoritative until the

@@ -163,14 +163,14 @@ describe('4d-ii-a / A7c — decisions.inbox v3: the contract version, the fence 
 
   // ── the contract version ──────────────────────────────────────────────────────────────────────
 
-  it('the persisted decisions.inbox contract reads 3, the compiled consumer and the lease agree, and webpush.notify stays at 2 until A7d', async () => {
+  it('the persisted decisions.inbox contract reads 3, the compiled consumer and the lease agree, and webpush.notify reads 3 since A7d', async () => {
     const rows = await t.prisma.outboxConsumerCatalog.findMany({
       where: { consumer: { in: [DECISIONS_PROJECTION, 'webpush.notify'] } },
       select: { consumer: true, catalogVersion: true, consumerKind: true, consumerEffect: true },
     });
     const byName = Object.fromEntries(rows.map((r) => [r.consumer, r]));
     expect(byName[DECISIONS_PROJECTION]).toMatchObject({ catalogVersion: 3, consumerKind: 'ordered', consumerEffect: 'db' });
-    expect(byName['webpush.notify']?.catalogVersion).toBe(2);
+    expect(byName['webpush.notify']?.catalogVersion).toBe(3);
     // the app booted, so `syncConsumerCatalog` accepted the row: compiled == persisted
     expect(catalogVersionFor(DECISIONS_PROJECTION)).toBe(DECISIONS_INBOX_CATALOG_VERSION);
     expect(listConsumers().find((c) => c.name === DECISIONS_PROJECTION)?.catalogVersion).toBe(3);
