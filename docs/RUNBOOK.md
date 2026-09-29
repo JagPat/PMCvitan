@@ -1340,15 +1340,21 @@ baseline it before anything replays (t3c seals exit 5; see §P4T3C3).
   in the backup, so the replay stands the audits down and the deploy completes. Nothing to do.
   **From 4d-ii-a / A7d** the runner keeps that promise by a rule rather than by 4d-i's audits alone:
   4d-i's catalog audit is gated on 4d-iii's retirement marker (it was written before 4d-ii computed a
-  generation, inside an immutable file) and refuses the coverage generation A7d seeds beside the old,
-  so on a database that READS as served by 4d-ii — `phase6_t4d_ii_installed()` true, 4d-i's own seal
-  functions standing — `scripts/migrate.sh` resolves 4d-i's two halves as applied instead of replaying
-  them (they ran; their seals stand; the witness could not exist without them) and replays every later
-  `ALWAYS_EXECUTE` file, whose catalog audits are witness-gated. The runner prints which branch it took.
-  A database that does not read so — a db-push baseline, an A1/A2-era restore — leaves them pending
-  exactly as before.
-- **Restored from a point when only A1/A2-era processes had served** (from `9235a9a` up to the
-  release carrying `20271226000000_phase6_t4d_ii_release_lease_writer`): those processes wrote
+  generation, inside an immutable file) and 4d-i-b U3's on the marker OR the witness, and both refuse
+  the coverage generation A7d seeds beside the old. So on a database that CARRIES A7d — its two
+  claimant seals and the re-issued actor seal standing beside 4d-i's own seal functions —
+  `scripts/migrate.sh` resolves 4d-i's two halves and U3 as applied instead of replaying them (they
+  ran; their seals stand; A7d's fail-closed verification ran over them) and replays every later
+  `ALWAYS_EXECUTE` file (A7d's own catalog audit admits the four generations it knows, lease or no
+  lease). The runner prints which branch it took. A database that does not carry A7d — a db-push
+  baseline, a restore from before A7d — leaves them pending exactly as before.
+- **Restored from a point after A7d was applied but before any process of this release served:** the
+  same rule applies — A7d's seals are on the database, a lease is not — so the deploy completes with
+  4d-i and U3 resolved. The residual: 4d-i's replay audits do not judge that database's rows; the live
+  seals, which every row met when it was written, are what stands. `scripts/upgrade-proof.sh` proves
+  this arm and the served one.
+- **Restored from a point when only A1/A2-era processes had served and A7d had not been applied**
+  (from `9235a9a` up to the release carrying `20271226000000_phase6_t4d_ii_release_lease_writer`): those processes wrote
   event actor pairs and change-request provenance, under the live seals, and wrote no lease — the
   writer did not exist yet. The replay's audits refuse those rows, and the deploy stops at
   `20271220000000_phase6_t4d_i_dark_migration`. Nothing this release installs can evidence that an
@@ -1366,8 +1372,9 @@ baseline it before anything replays (t3c seals exit 5; see §P4T3C3).
   as in §P4T3C3, and it belongs to the owner. The legacy-shape repair is for rows no sanctioned
   writer produced.
 
-`scripts/upgrade-proof.sh` proves both arms: the same A1-shaped event, written through every live
-seal, is refused by a replay with no lease and adopted by the replay once a lease exists.
+`scripts/upgrade-proof.sh` proves the arms on a database carrying A7d: the same A1-shaped event,
+written through every live seal, survives the ledger-lost replay with no lease and with one, 4d-i and
+U3 resolved as applied both times.
 
 **This matters for recovery.** Prisma records each migration separately, so a
 `migrate resolve --rolled-back` must name THE HALF THAT FAILED. Resolving the other one leaves the

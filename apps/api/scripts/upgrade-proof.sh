@@ -5501,19 +5501,20 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280101000000_phase6_t4d_ii_a6e_generation_fence 20280102000000_phase6_t4d_ii_a7a_revision_named
 20280103000000_phase6_t4d_ii_a7c_inbox_v3 20280104000000_phase6_t4d_ii_a7d_catalog_change"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
-# that READS as served by 4d-ii (the writers witness AND a lease, 4d-i's own seal functions standing)
-# 4d-i's two halves are resolved as applied rather than replayed, because 4d-i's catalog audit — gated on
-# 4d-iii's retirement marker alone, inside an immutable file written before 4d-ii's generation existed —
-# refuses the coverage generation A7d seeds beside the old, while every other 4d-i audit stands down on
-# the witness. Every later file replays as before (U3's and A7d's catalog audits are witness-gated).
-served_4d_ii() {
-  [ "$($PSQL -tAc "SELECT (to_regprocedure('phase6_t4d_ii_installed()') IS NOT NULL AND to_regproc('phase6_t4d_membership_transition_seal') IS NOT NULL AND to_regproc('platform_t4d_event_envelope') IS NOT NULL AND phase6_t4d_ii_installed())::text" 2>/dev/null)" = "true" ]
+# that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
+# functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
+# carries a foreign-generation audit written before A7d's generation existed, inside an immutable file —
+# 4d-i's gated on 4d-iii's retirement marker alone, U3's on the marker OR the serving witness (which a
+# database migrated through A7d but never served cannot show) — and both refuse the generation A7d seeds
+# beside the old. Every later file replays as before; A7d's own audit admits the four generations it knows.
+carries_a7d() {
+  [ "$($PSQL -tAc "SELECT (to_regproc('phase6_t4d_membership_transition_seal') IS NOT NULL AND to_regproc('platform_t4d_event_envelope') IS NOT NULL AND to_regproc('platform_t4d_event_pairing_actor') IS NOT NULL AND to_regproc('phase6_t4d_transition_claims_standing') IS NOT NULL AND to_regproc('phase6_t4d_forward_claims_event') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'platform_t4d_event_pairing_actor' AND position('system:membership-standing' in prosrc) > 0))::text" 2>/dev/null)" = "true" ]
 }
 t4d_replay() {
   local m
   for m in $T4D_REPLAY; do
     case "$m" in
-      20271220000000_*|20271221000000_*) if served_4d_ii; then continue; fi ;;
+      20271220000000_*|20271221000000_*|20271224000000_*) if carries_a7d; then continue; fi ;;
     esac
     psql -X -q -v ON_ERROR_STOP=1 -d "$DB" -f "$MIG_DIR/$m/migration.sql" 2>&1 >/dev/null || { echo "[$m]"; return 1; }
   done
@@ -5546,23 +5547,28 @@ SELECT gen_random_uuid()::text, e."eventId", e."projectId", c."consumer", c."con
  WHERE e."eventId" = 'UP4D-LL-E0' AND c."active" AND c."dispatchRule" IS NOT NULL;
 COMMIT;
 SQL
-# BEFORE any process of this release has served: declared, no lease. Nothing this release installs
-# can evidence that an A1/A2-era process served, so 4d-i REPLAYS (the runner's rule reads "unserved")
-# and its audits refuse the database — the residual the RUNBOOK's "A restored database that lost its
-# migration ledger" recovers through its ledger. 4d-ii-a / A7d: the FIRST audit to fire is now the
-# catalog one, on the generation A7d seeds (it stands before the legacy-shape audit in 4d-i's body and
-# is gated on retirement alone); the A1 pair behind it is refused exactly as before once the catalog
-# is admitted, which the lease-bearing replay below proves by resolving 4d-i as the runner does.
-if served_4d_ii; then
-  echo "FAILED  4d-ii-a: with NO lease the database reads as SERVED — the runner's rule would skip 4d-i's replay on an unserved database"; FAIL=1
+# BEFORE any process of this release has served: declared, no lease. Up to A7c this was the residual
+# the RUNBOOK's "A restored database that lost its migration ledger" recovered through its ledger:
+# nothing this release installs could evidence that an A1/A2-era process served, so 4d-i REPLAYED and
+# its audits refused the A1 pair. 4d-ii-a / A7d closes that path for a database that CARRIES A7d: 4d-i's
+# and U3's catalog audits would refuse the generation A7d seeds whether or not a lease exists (4d-i's is
+# gated on retirement alone, U3's on the witness this unserved database cannot show), so the runner
+# resolves the three catalog owners as applied — their seals stand beside A7d's, which verified them —
+# and replays the rest. The A1 pair is then judged by the LIVE seals, not by 4d-i's replay audits; the
+# RUNBOOK states that residual. The lease-bearing replay below runs the same way.
+if carries_a7d; then
+  echo "ok      4d-ii-a / A7d: with NO lease the database still reads as CARRYING A7d (its seals beside 4d-i's) — the runner resolves 4d-i's two halves and U3 as applied"
+else
+  echo "FAILED  4d-ii-a / A7d: the database does not read as carrying A7d although 20280104 ran on it — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
 fi
 if t4d_out="$(t4d_replay)"; then
-  echo "FAILED  4d-ii-a: with NO lease the 4d-i replay ADOPTED the A1 pair — the serving witness is not what gates it"; FAIL=1
-elif printf '%s' "$t4d_out" | grep -q 'neither seeds nor recognises' && printf '%s' "$t4d_out" | grep -q '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c'; then
-  echo "ok      4d-ii-a: a ledger-lost replay with NO lease is refused by 4d-i's catalog audit, naming the generation A7d seeds (the documented residual: restore the ledger)"
+  echo "ok      4d-ii-a / A7d: a ledger-lost replay with NO lease runs 20271222–20280104 through on a database carrying A7d (4d-i and U3 resolved as applied, as the runner does)"
 else
-  echo "FAILED  4d-ii-a: the lease-less replay failed, but not by 4d-i's catalog audit on A7d's generation; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
+  echo "FAILED  4d-ii-a / A7d: the lease-less replay on a database carrying A7d failed; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi
+assert "4d-ii-a / A7d: the lease-less replay kept the A1 pair (the live seals judged it), and the witness still reads unserved" \
+  "SELECT \"actorRole\" || '|' || \"actorName\" || '|' || phase6_t4d_ii_installed()::text FROM \"DomainEvent\" WHERE \"eventId\" = 'UP4D-LL-E0';" \
+  "pmc|Restored Pmc|false"
 
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: a serving process could not register its lease"; FAIL=1; }
 INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil")
@@ -5591,15 +5597,15 @@ assert_rejects "4d-i P38: the lease register cannot be truncated away" \
   "never truncated|truncate"
 
 # AFTER a process of this release served: the witness and a lease are both on the database, and a
-# restore carries both, so the same replay adopts the A1 pair. The witness does not have to sort
+# restore carries both; the same replay runs through and keeps the A1 pair. The witness does not have to sort
 # before 4d-i on this path — 20271226 already ran here, and the restore brought its function with it.
-if served_4d_ii; then
-  echo "ok      4d-ii-a / A7d: once this release has served, the database reads as SERVED — the runner resolves 4d-i's two halves as applied and replays the rest"
+if carries_a7d; then
+  echo "ok      4d-ii-a / A7d: once this release has served, the database still reads as carrying A7d — the runner resolves 4d-i's two halves and U3 as applied and replays the rest"
 else
-  echo "FAILED  4d-ii-a / A7d: the served database does not read as served (witness + lease + 4d-i's seals) — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
+  echo "FAILED  4d-ii-a / A7d: the served database does not read as carrying A7d — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
 fi
 if t4d_out="$(t4d_replay)"; then
-  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271222–20280104 through (4d-i resolved as applied, as the runner does)"
+  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271222–20280104 through (4d-i and U3 resolved as applied, as the runner does)"
 else
   echo "FAILED  4d-ii-a: the replay refused a database this release served; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi

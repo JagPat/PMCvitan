@@ -603,49 +603,53 @@ if echo "$out" | grep -q "P3005"; then
     exit 1
   fi
 
-  # Phase 6 task 4d-ii-a / A7d — A SERVED 4d-ii DATABASE DOES NOT REPLAY 4d-i. 4d-i's two halves are on
-  # ALWAYS_EXECUTE so a db-push baseline (no raw seals) really installs them. A database restored
-  # WITHOUT its ledger from a point after 4d-ii served is the other kind that reaches this path, and
-  # 4d-i's catalog audit — gated on 4d-iii's retirement marker alone, written before 4d-ii's generation
-  # existed and inside an immutable file — refuses the coverage generation A7d seeds beside the old
-  # ("neither seeds nor recognises"), while every OTHER 4d-i audit stands down on the witness
-  # (`phase6_t4d_ii_installed()`: 4d-ii's writers declared AND a lease). docs/RUNBOOK.md's "A restored
-  # database that lost its migration ledger" promises that restore "nothing to do", so the runner keeps
-  # the promise the way the witness already keeps it for the data audits: when the database READS as
-  # served by 4d-ii and carries 4d-i's own seal function, 4d-i's two halves are RESOLVED as applied
-  # (they ran; their seals stand; the witness they gate on could not exist without them) and every
-  # later ALWAYS_EXECUTE file replays as before (U3's and A7d's catalog audits are witness-gated). A
-  # database that does not read so — a db-push baseline, an A1/A2-era restore with no lease — leaves
-  # them pending exactly as before. `scripts/upgrade-proof.sh` mirrors this rule in its ledger-lost
-  # replays.
-  T4D_I_HALVES="20271220000000_phase6_t4d_i_dark_migration
-20271221000000_phase6_t4d_i_decision_facts"
-  SERVED_4D_II=0
-  if served_out=$(node -e '
+  # Phase 6 task 4d-ii-a / A7d — A DATABASE THAT CARRIES A7d DOES NOT REPLAY THE CATALOG'S EARLIER OWNERS.
+  # 4d-i's two halves and 4d-i-b U3 are on ALWAYS_EXECUTE so a db-push baseline (no raw seals) really
+  # installs them. A database restored WITHOUT its ledger from a point after A7d was applied is the
+  # other kind that reaches this path, and each of those three files carries a foreign-generation
+  # audit written before A7d's coverage generation existed, inside an immutable file: 4d-i's is gated
+  # on 4d-iii's retirement marker alone and admits exactly its two seeds plus U3's successor by shape;
+  # U3's is gated on the marker OR the serving witness (`phase6_t4d_ii_installed()`: the writers
+  # declared AND a lease) and admits exactly three. Both refuse the generation A7d seeds beside the
+  # old ("neither seeds nor recognises"), and a database that was migrated through A7d but never
+  # started a process of this release holds no lease, so the witness cannot stand them down. Their
+  # replay is therefore impossible on such a database, and it is also unnecessary: A7d's own seals
+  # standing beside 4d-i's and U3's is the evidence those files ran to completion (A7d's fail-closed
+  # verification ran over them). docs/RUNBOOK.md's "A restored database that lost its migration
+  # ledger" states the rule: when the database CARRIES A7d — its two claimant seals and the re-issued
+  # actor seal standing, 4d-i's own seal functions standing — the three catalog owners are RESOLVED
+  # as applied, and every later ALWAYS_EXECUTE file replays as before (A7d's own catalog audit admits
+  # the four generations it knows, lease or no lease). A database that does not carry A7d — a db-push
+  # baseline, a restore from before A7d — leaves them pending exactly as before, so their raw guards
+  # and audits really apply. `scripts/upgrade-proof.sh` mirrors this rule in its ledger-lost replays.
+  T4D_CATALOG_OWNERS="20271220000000_phase6_t4d_i_dark_migration
+20271221000000_phase6_t4d_i_decision_facts
+20271224000000_phase6_t4d_i_b_u3_pairing_flip"
+  CARRIES_A7D=0
+  if carries_out=$(node -e '
     const { PrismaClient } = require("@prisma/client");
     const prisma = new PrismaClient();
     prisma.$queryRawUnsafe(
-      "SELECT (to_regprocedure(\x27phase6_t4d_ii_installed()\x27) IS NOT NULL AND to_regproc(\x27phase6_t4d_membership_transition_seal\x27) IS NOT NULL AND to_regproc(\x27platform_t4d_event_envelope\x27) IS NOT NULL) AS armed"
-    ).then(async (rows) => {
+      "SELECT (to_regproc(\x27phase6_t4d_membership_transition_seal\x27) IS NOT NULL AND to_regproc(\x27platform_t4d_event_envelope\x27) IS NOT NULL AND to_regproc(\x27platform_t4d_event_pairing_actor\x27) IS NOT NULL) AS armed, (to_regproc(\x27phase6_t4d_transition_claims_standing\x27) IS NOT NULL AND to_regproc(\x27phase6_t4d_forward_claims_event\x27) IS NOT NULL AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = \x27platform_t4d_event_pairing_actor\x27 AND position(\x27system:membership-standing\x27 in prosrc) > 0)) AS a7d"
+    ).then((rows) => {
       if (!rows[0] || rows[0].armed !== true) { console.log("unarmed"); return; }
-      const v = await prisma.$queryRawUnsafe("SELECT phase6_t4d_ii_installed() AS served");
-      console.log(v[0] && v[0].served === true ? "served" : "unserved");
+      console.log(rows[0].a7d === true ? "carries" : "before");
     }).catch((e) => { console.log("error " + (e && e.message ? e.message.split("\n")[0] : e)); })
       .finally(() => prisma.$disconnect());
   ' 2>/dev/null); then
-    case "$served_out" in
-      served) SERVED_4D_II=1; echo "[migrate] this database reads as SERVED by Phase 6 4d-ii (writers witness + lease, 4d-i's seals standing) — 4d-i's two halves will be resolved as applied rather than replayed" ;;
-      unserved|unarmed) echo "[migrate] this database does not read as served by 4d-ii ($served_out) — 4d-i's halves stay pending so their raw guards really apply" ;;
-      *) echo "[migrate] could not read the 4d-ii witness ($served_out) — 4d-i's halves stay pending so their raw guards really apply" ;;
+    case "$carries_out" in
+      carries) CARRIES_A7D=1; echo "[migrate] this database CARRIES Phase 6 4d-ii-a / A7d (its claimant seals and the re-issued actor seal standing beside 4d-i's own) — 4d-i's two halves and 4d-i-b U3 will be resolved as applied rather than replayed (their catalog audits would refuse the generation A7d seeds)" ;;
+      before|unarmed) echo "[migrate] this database does not carry 4d-ii-a / A7d ($carries_out) — 4d-i's halves and U3 stay pending so their raw guards really apply" ;;
+      *) echo "[migrate] could not read the 4d-ii-a / A7d seals ($carries_out) — 4d-i's halves and U3 stay pending so their raw guards really apply" ;;
     esac
   else
-    echo "[migrate] could not read the 4d-ii witness — 4d-i's halves stay pending so their raw guards really apply"
+    echo "[migrate] could not read the 4d-ii-a / A7d seals — 4d-i's halves and U3 stay pending so their raw guards really apply"
   fi
 
   for dir in prisma/migrations/*/; do
     name=$(basename "$dir")
-    if [ "$SERVED_4D_II" -eq 1 ] && printf '%s\n' "$T4D_I_HALVES" | grep -qx "$name"; then
-      echo "[migrate] resolving $name as applied: a served 4d-ii database ran it (its catalog audit would refuse the generation 4d-ii computed; docs/RUNBOOK.md §P6T4D)"
+    if [ "$CARRIES_A7D" -eq 1 ] && printf '%s\n' "$T4D_CATALOG_OWNERS" | grep -qx "$name"; then
+      echo "[migrate] resolving $name as applied: a database carrying 4d-ii-a / A7d ran it (its catalog audit would refuse the generation A7d seeds; docs/RUNBOOK.md §P6T4D)"
       npx prisma migrate resolve --applied "$name" || exit 1
       continue
     fi
