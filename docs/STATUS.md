@@ -36,7 +36,9 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
   writes the notice bound to it (`eventId`, `kind`) in the same transaction, as 4d-i's binding seal
   demands; the green approved notice renders from the event's frozen envelope and the revision its
   event names (`payload.revisionId` on the direct approve, moved forward from A8a's row); the hostile
-  late-kinded-insert probe against a committed no-notice event. No migration.
+  late-kinded-insert probe against a committed no-notice event. One migration
+  (`20280102000000_phase6_t4d_ii_a7a_revision_named`, on `ALWAYS_EXECUTE`): the revision claimant
+  re-issued so a green event's `revisionId` must name the head its act wrote (#665's review round 1).
 - **A6e merged as #663** (`faaf233`): the `ServerGeneration` register and the startup fence the outbox
   bootstrap runs first (the admission read held `FOR SHARE` until `main.ts` releases after
   `app.listen()`, a lost hold fencing the process); `rollout:drain-evidence`, the observer that renders

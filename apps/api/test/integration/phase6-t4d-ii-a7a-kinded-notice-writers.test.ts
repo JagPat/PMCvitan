@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, plantUnpairedDecisionState, rawDeliveryRowsSql, wipeDecisionEvents, wipeDecisionsVia } from './fixtures';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 import { readFeedEvents, readNotificationFeed } from '../../src/platform/notification-feed';
 import { renderKindedDecisionNotice } from '../../src/decisions/decision-notice';
@@ -101,7 +101,7 @@ describe('4d-ii-a / A7a — the decisions notice writers bind every notice to it
     // rendered from the event (and, for a green notice, the revision it names), as the feed reads it
     const events = await readFeedEvents(t.prisma, f.projectA.id, [event.eventId]);
     const revisions = await t.app.get(DecisionsQueryService).kindedNoticeRevisions(t.prisma, f.projectA.id, events);
-    expect(renderKindedDecisionNotice(notice.kind!, events.get(event.eventId)!, revisions)).toEqual(cached);
+    expect(renderKindedDecisionNotice(notice.kind!, events.get(event.eventId)!, revisions, decisionId)).toEqual(cached);
     return { event, notice };
   };
 
@@ -227,6 +227,43 @@ describe('4d-ii-a / A7a — the decisions notice writers bind every notice to it
       }),
     ).rejects.toThrow(/Unique constraint failed|EARLIER transaction/);
     expect(await t.prisma.notification.count({ where: { eventId: published.eventId } })).toBe(1);
+  });
+
+  // #665's review round 1 (P1) — the database's revision claimant (20280102) refuses a green event
+  // naming another decision's revision at commit (the pairing matrix drives those bundles); the
+  // READER refuses it too, for any row that reached the feed past the seal
+  it('HOSTILE: a green event naming ANOTHER decision\'s revision renders nothing — the reader renders only the notice\'s own decision\'s revision', async () => {
+    const victim = await create();
+    const other = await create();
+    expect((await asClient()(`/projects/${f.projectA.id}/decisions/${other.id}/approve`, { optionIndex: 1 })).status).toBe(201);
+    const otherRevision = await t.prisma.decisionApprovalRevision.findFirstOrThrow({ where: { decisionId: other.id } });
+    const real = await eventOf(other.id, 'decision.approved');
+    // planted past the seals by name (no head is born, so the claimant never runs; the kernel's
+    // pairing check is disabled for exactly this plant) with `insertRawEvent`'s protocol written
+    // inline — the position allocated from the stream in the same transaction, the delivery rows
+    // from the persisted catalog — because the helper writes a `system` actor and this plant must
+    // be the client's own human-attributed event: the genuine envelope pair and intent, the
+    // event with the genuine envelope pair and intent, the victim's title and a forged name — so
+    // the ONLY thing the renderer can refuse it for is the revision belonging to another decision
+    const eventId = randomUUID();
+    await plantUnpairedDecisionState(t.prisma, async (tx) => {
+      const rows = await tx.$queryRawUnsafe<Array<{ at: bigint }>>(
+        `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = $1 RETURNING "nextPosition" - 1 AS "at"`, f.projectA.id);
+      const payload = JSON.stringify({ option: 'Option B', material: 'Quartz', revisionId: otherRevision.id, title: victim.title, deciderKind: 'client' });
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","actorId","actorRole","actorName","entityType","entityId","payload","dispatchIntent")
+         VALUES ($1,'decision.approved',1,$2,$3,$4,'human',$5,$6,$7,'Decision',$8,$9::jsonb,$10::jsonb)`,
+        eventId, f.orgA.id, f.projectA.id, Number(rows[0]!.at), f.clientUser.id, real.actorRole, real.actorName, victim.id, payload, JSON.stringify(real.dispatchIntent));
+      await tx.$executeRawUnsafe(rawDeliveryRowsSql(eventId));
+      await tx.notification.create({
+        data: { projectId: f.projectA.id, text: `FORGED-${run}`, color: '#000000', time: 'just now', decisionId: victim.id, eventId, kind: 'decision.approved' },
+      });
+    });
+    const feed = (await feedOf('pmc', f.memberUser.id)).map((n) => n.text);
+    expect(feed).not.toContain(`FORGED-${run}`);
+    expect(feed.some((x) => x.includes(victim.title) && x.includes('approved'))).toBe(false);
+    // the genuine notice of the other decision still renders its own revision
+    expect(feed).toContain(`Client approved ${other.title} — Quartz`);
   });
 
   it('a kinded notice is FROZEN and undeletable: the writers\' rows cannot be re-pointed, re-kinded or retired by a direct DELETE', async () => {

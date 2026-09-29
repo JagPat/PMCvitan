@@ -30,7 +30,7 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
       snapshotSlice: vi.fn(async () => ({ decisions: [{ id: 'd1', status: 'pending', deciderKind: 'client' }], statuses: new Map(), drafts: new Set(), deciders: new Map() })),
       renderKindedNotice: vi.fn(() => ({ text: 'rendered', color: '#C08A2D' })),
       // 4d-ii-a / A7a — the revisions the kinded events name, read on the same transaction
-      kindedNoticeRevisions: vi.fn(async () => new Map([['dar-d1-v1', { material: 'Granite', onBehalfOf: null }]])),
+      kindedNoticeRevisions: vi.fn(async () => new Map([['dar-d1-v1', { decisionId: 'd1', material: 'Granite', onBehalfOf: null }]])),
     };
     const svc = new SnapshotService(
       prisma as unknown as PrismaService,
@@ -61,7 +61,7 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
       'decision.published', { eventType: 'decision.published', payload: { title: 'T' }, effectKey: 'decision.published', actorRole: 'pmc', actorName: 'P' },
       expect.objectContaining({ id: 'd1' }), 'pmc', 'u1', expect.any(Map),
     );
-    expect((decisionsQuery.renderKindedNotice.mock.calls[0]![5] as Map<string, unknown>).get('dar-d1-v1')).toEqual({ material: 'Granite', onBehalfOf: null });
+    expect((decisionsQuery.renderKindedNotice.mock.calls[0]![5] as Map<string, unknown>).get('dar-d1-v1')).toEqual({ decisionId: 'd1', material: 'Granite', onBehalfOf: null });
     expect(out.notifications).toEqual([{ text: 'rendered', time: 'now', color: '#C08A2D' }]);
   });
 });

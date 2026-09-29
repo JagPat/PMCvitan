@@ -68,6 +68,8 @@ export interface KindedNoticeEvent {
 
 /** 4d-ii-a / A7a — what the green notice reads from the revision its event names. */
 export interface ApprovalRevisionFacts {
+  /** The decision the revision belongs to: a notice renders only its OWN decision's revision. */
+  decisionId: string;
   /** The approved option's material. */
   material: string;
   /** The holder kind a PMC recorded consent on behalf of; `null` when the decider acted. */
@@ -108,6 +110,12 @@ export function renderKindedDecisionNotice(
   /** 4d-ii-a / A7a — the revisions the feed's events name, by id, read in the same snapshot. A green
    *  notice whose revision is not here renders nothing. */
   revisions?: ReadonlyMap<string, ApprovalRevisionFacts>,
+  /** The decision the notice is stamped with (its `decisionId`, bound to the event's entity by the
+   *  seal): the revision the event names must be THIS decision's, or the notice renders nothing
+   *  (#665's review round 1 — a payload naming another decision's revision, which the database
+   *  seal now refuses at commit for every new bundle, is refused here too for any row already
+   *  committed). */
+  decisionId?: string,
 ): { text: string; color: string } | null {
   if (event.eventType !== kind) return null; // the seal binds them; a reader never trusts one for the other
   switch (kind) {
@@ -135,6 +143,7 @@ export function renderKindedDecisionNotice(
       const revisionId = kindedNoticeRevisionId(kind, event);
       const revision = revisionId ? revisions?.get(revisionId) : undefined;
       if (!title || !deciderKind || !revision || !event.actorName || !event.actorRole) return null;
+      if (!decisionId || revision.decisionId !== decisionId) return null;
       return {
         text: approvedDecisionNotice({ actorName: event.actorName, actorRole: event.actorRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf }),
         color: APPROVED_DECISION_NOTICE_COLOR,

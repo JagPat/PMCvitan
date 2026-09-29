@@ -34,9 +34,13 @@ const approved = (over: Partial<{ kind: string; title: string; deciderKind: stri
   };
 };
 const revisions = new Map([
-  ['dar-D1-v1', { material: 'Granite', onBehalfOf: null }],
-  ['dar-D1-v2', { material: 'Quartz', onBehalfOf: 'client' }],
+  ['dar-D1-v1', { decisionId: 'D1', material: 'Granite', onBehalfOf: null }],
+  ['dar-D1-v2', { decisionId: 'D1', material: 'Quartz', onBehalfOf: 'client' }],
+  // another decision's revision in the same project (#665's review round 1)
+  ['dar-D2-v1', { decisionId: 'D2', material: 'Marble', onBehalfOf: null }],
 ]);
+/** the renderer for D1's notices: the revision the event names must be D1's */
+const render = (kind: string, event: Parameters<typeof renderKindedDecisionNotice>[1]) => renderKindedDecisionNotice(kind, event, revisions, 'D1');
 
 describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   it('renders each arm exactly as its writer caches it', () => {
@@ -48,16 +52,16 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
       .toEqual({ text: withdrawnDecisionNotice('Kitchen counter', 'Client changed scope'), color: WITHDRAWN_DECISION_NOTICE_COLOR });
     // A7a — the green notice: the approver from the envelope, the option and on-behalf fact from
     // the revision the event names, the title and holder kind from the payload
-    expect(renderKindedDecisionNotice('decision.approved', approved(), revisions))
+    expect(render('decision.approved', approved()))
       .toEqual({ text: approvedDecisionNotice({ actorName: 'Client One', actorRole: 'client', title: 'Kitchen counter', material: 'Granite', deciderKind: 'client', onBehalfOf: null }), color: APPROVED_DECISION_NOTICE_COLOR });
-    expect(renderKindedDecisionNotice('decision.reapproved', approved({ kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client', actorRole: 'pmc', actorName: 'Ar. Meghna' }), revisions))
+    expect(render('decision.reapproved', approved({ kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client', actorRole: 'pmc', actorName: 'Ar. Meghna' })))
       .toEqual({ text: approvedDecisionNotice({ actorName: 'Ar. Meghna', actorRole: 'pmc', title: 'Kitchen counter', material: 'Quartz', deciderKind: 'client', onBehalfOf: 'client' }), color: APPROVED_DECISION_NOTICE_COLOR });
   });
 
   it('the green notice, character for character (the three announcement shapes the delivered approve wrote inline)', () => {
-    expect(renderKindedDecisionNotice('decision.approved', approved(), revisions)?.text).toBe('Client approved Kitchen counter — Granite');
-    expect(renderKindedDecisionNotice('decision.approved', approved({ deciderKind: 'member', actorRole: 'engineer', actorName: 'Ravi' }), revisions)?.text).toBe('Ravi approved Kitchen counter — Granite');
-    expect(renderKindedDecisionNotice('decision.reapproved', approved({ kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client', actorRole: 'pmc', actorName: 'Ar. Meghna' }), revisions))
+    expect(render('decision.approved', approved())?.text).toBe('Client approved Kitchen counter — Granite');
+    expect(render('decision.approved', approved({ deciderKind: 'member', actorRole: 'engineer', actorName: 'Ravi' }))?.text).toBe('Ravi approved Kitchen counter — Granite');
+    expect(render('decision.reapproved', approved({ kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client', actorRole: 'pmc', actorName: 'Ar. Meghna' })))
       .toEqual({ text: 'Ar. Meghna (PMC) approved Kitchen counter on behalf of the client — Quartz', color: '#3F7A54' });
     expect(approvedDecisionNotice({ actorName: 'Ar. Meghna', actorRole: 'pmc', title: 'T', material: 'M', deciderKind: 'member', onBehalfOf: 'member' })).toBe('Ar. Meghna (PMC) approved T on behalf of the named decider — M');
   });
@@ -66,21 +70,31 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
     // a twice-approved decision: the older notice keeps its own option and approver
     const older = approved();
     const newer = approved({ kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client', actorRole: 'pmc', actorName: 'Ar. Meghna' });
-    expect(renderKindedDecisionNotice('decision.approved', older, revisions)?.text).toContain('Granite');
-    expect(renderKindedDecisionNotice('decision.reapproved', newer, revisions)?.text).toContain('Quartz');
+    expect(render('decision.approved', older)?.text).toContain('Granite');
+    expect(render('decision.reapproved', newer)?.text).toContain('Quartz');
     expect(kindedNoticeRevisionId('decision.approved', older)).toBe('dar-D1-v1');
     expect(kindedNoticeRevisionId('decision.reapproved', newer)).toBe('dar-D1-v2');
     expect(kindedNoticeRevisionId('decision.published', published('T'))).toBeNull();
     expect(kindedNoticeRevisionId('decision.approved', { ...older, eventType: 'decision.reapproved' })).toBeNull();
     // the revision the event names is not in the snapshot (or the event names none): nothing
-    expect(renderKindedDecisionNotice('decision.approved', approved({ revisionId: 'dar-D1-v9' }), revisions)).toBeNull();
-    expect(renderKindedDecisionNotice('decision.approved', approved(), new Map())).toBeNull();
+    expect(render('decision.approved', approved({ revisionId: 'dar-D1-v9' }))).toBeNull();
+    expect(renderKindedDecisionNotice('decision.approved', approved(), new Map(), 'D1')).toBeNull();
     expect(renderKindedDecisionNotice('decision.approved', approved())).toBeNull();
-    expect(renderKindedDecisionNotice('decision.approved', { ...approved(), payload: { option: 'Option A', material: 'Granite' } }, revisions), 'a previous-release payload').toBeNull();
+    expect(render('decision.approved', { ...approved(), payload: { option: 'Option A', material: 'Granite' } }), 'a previous-release payload').toBeNull();
     // a previous-release event through the drain carries no envelope: no kinded rendering
-    expect(renderKindedDecisionNotice('decision.approved', approved({ actorRole: null, actorName: null }), revisions)).toBeNull();
-    expect(renderKindedDecisionNotice('decision.approved', { ...approved(), payload: { ...approved().payload, title: '' } }, revisions)).toBeNull();
-    expect(renderKindedDecisionNotice('decision.approved', { ...approved(), payload: { ...approved().payload, deciderKind: undefined } }, revisions)).toBeNull();
+    expect(render('decision.approved', approved({ actorRole: null, actorName: null }))).toBeNull();
+    expect(render('decision.approved', { ...approved(), payload: { ...approved().payload, title: '' } })).toBeNull();
+    expect(render('decision.approved', { ...approved(), payload: { ...approved().payload, deciderKind: undefined } })).toBeNull();
+  });
+
+  // #665's review round 1 (P1) — an event naming ANOTHER decision's revision renders nothing here,
+  // and the database refuses such a bundle at commit (`phase6_t4d_revision_claims_approval`)
+  it('the green notice renders only ITS decision\'s revision: another decision\'s revision, or no decision to judge by, renders nothing', () => {
+    const forged = approved({ revisionId: 'dar-D2-v1' });
+    expect(renderKindedDecisionNotice('decision.approved', forged, revisions, 'D1')).toBeNull();
+    expect(renderKindedDecisionNotice('decision.approved', forged, revisions, 'D2')?.text).toBe('Client approved Kitchen counter — Marble');
+    expect(renderKindedDecisionNotice('decision.approved', approved(), revisions, 'D2')).toBeNull();
+    expect(renderKindedDecisionNotice('decision.approved', approved(), revisions)).toBeNull();
   });
 
   it('the strings and colours are today\'s, character for character (the cache every kind-less row carries)', () => {
@@ -91,10 +105,10 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
 
   it('renders NOTHING it has no arm for, and never trusts a kind that disagrees with its event', () => {
     for (const kind of ['decision.drafted', 'decision.forwarded', 'decision.awaiting_countersign', 'decision.change_requested', 'decision.consultation_requested', 'x.y']) {
-      expect(renderKindedDecisionNotice(kind, { eventType: kind, payload: { title: 'T' }, effectKey: kind, ...envelope }, revisions), kind).toBeNull();
+      expect(render(kind, { eventType: kind, payload: { title: 'T' }, effectKey: kind, ...envelope }), kind).toBeNull();
     }
     expect(renderKindedDecisionNotice('decision.published', { ...published('T'), eventType: 'decision.withdrawn' })).toBeNull();
-    expect(renderKindedDecisionNotice('decision.approved', { ...approved(), eventType: 'decision.reapproved' }, revisions)).toBeNull();
+    expect(render('decision.approved', { ...approved(), eventType: 'decision.reapproved' })).toBeNull();
     expect(renderKindedDecisionNotice('decision.published', { eventType: 'decision.published', payload: {}, effectKey: 'decision.published', ...envelope })).toBeNull();
     expect(renderKindedDecisionNotice('decision.withdrawn', { eventType: 'decision.withdrawn', payload: { title: 'T' }, effectKey: 'decision.withdrawn', ...envelope })).toBeNull();
   });

@@ -283,7 +283,12 @@ sub-unit is additive, dark and reviewable on its own.
   so the cached text and the event are one reading. The withdraw's retirement stays kind-less-only
   (A4c): the kinded pending notice of a withdrawn decision is hidden by the readers and kept as
   evidence, so the suites that deleted notices by row after a withdrawal reset them by the
-  sanctioned TRUNCATE instead. No migration: 4d-i installed every seal this needs.
+  sanctioned TRUNCATE instead. One migration (`20280102000000_phase6_t4d_ii_a7a_revision_named`,
+  #665's review round 1): 4d-i-b U3's revision claimant re-issued with the arm §A.3's P2 correction
+  names — the green event's `payload.revisionId`, when present, must be the same-transaction head
+  the claimant is claiming for (another decision's revision, an older one of this decision, or one
+  that does not exist, refused at commit); absent, admitted through the drain and required at
+  4d-iii. Every other seal this unit writes against is 4d-i's.
 - **A7b, the send boundary:** the per-recipient pre-send hook in `makePushConsumer`;
   `deciderPushTarget`'s decision-row lock; `consultationRespondedPushTarget`'s withdrawn-audience
   arm; `cancelQueuedPushBySubject` narrowing by `targetUserIds`; the `respond` emitter persisting

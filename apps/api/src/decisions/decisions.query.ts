@@ -120,8 +120,8 @@ export class DecisionsQueryService {
     /** 4d-ii-a / A7a — the revisions the feed's events name, from {@link kindedNoticeRevisions}. */
     revisions?: ReadonlyMap<string, ApprovalRevisionFacts>,
   ): { text: string; color: string } | null {
-    if (!kindedDecisionNoticeServed(kind, event, decision, role, userId)) return null;
-    return renderKindedDecisionNotice(kind, event, revisions);
+    if (!decision || !kindedDecisionNoticeServed(kind, event, decision, role, userId)) return null;
+    return renderKindedDecisionNotice(kind, event, revisions, decision.id);
   }
 
   /**
@@ -130,7 +130,9 @@ export class DecisionsQueryService {
    * and the on-behalf fact the green notice renders. A decisions-owned read (the revision register is
    * this module's), run by the snapshot on the SAME REPEATABLE READ transaction as the feed and the
    * decision slice, so a notice, its decision and its revision are one snapshot. An event naming a
-   * revision this project does not hold gets none, and its notice renders nothing.
+   * revision this project does not hold gets none, and its notice renders nothing; one naming another
+   * decision's revision is refused by the renderer (the facts carry `decisionId`), as the database's
+   * revision claimant refuses it at commit (#665's review round 1).
    */
   async kindedNoticeRevisions(
     client: Pick<Prisma.TransactionClient, 'decisionApprovalRevision'>,
@@ -145,9 +147,9 @@ export class DecisionsQueryService {
     if (ids.size === 0) return new Map();
     const rows = await client.decisionApprovalRevision.findMany({
       where: { projectId, id: { in: [...ids] } },
-      select: { id: true, onBehalfOf: true, option: { select: { material: true } } },
+      select: { id: true, decisionId: true, onBehalfOf: true, option: { select: { material: true } } },
     });
-    return new Map(rows.map((r) => [r.id, { material: r.option.material, onBehalfOf: r.onBehalfOf }]));
+    return new Map(rows.map((r) => [r.id, { decisionId: r.decisionId, material: r.option.material, onBehalfOf: r.onBehalfOf }]));
   }
 
   /**
