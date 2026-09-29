@@ -6,6 +6,8 @@ import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wi
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { PushService } from '../../src/push/push.service';
+import { OrgsParticipant } from '../../src/orgs/orgs.participant';
+import { ExternalEffectDispatcher } from '../../src/platform/outbox/external-effect-dispatcher';
 import { PUSH_CONSUMER } from '../../src/platform/outbox/consumers';
 import { cancelQueuedPushBySubject } from '../../src/platform/outbox/cancellation';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -51,6 +53,11 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
 
   beforeAll(async () => {
     t = await createTestApp();
+    // the BACKGROUND RELAY owns external dispatch in these arms: the immediate post-commit
+    // dispatcher (the legacy sender mode the test app boots in) would otherwise send every push at
+    // the command's commit and leave nothing pending to claim and hold at the pre-send barrier, so
+    // it is stubbed to send nothing — the deliveries stay `pending` for `relay.dispatchOne`
+    vi.spyOn(t.app.get(ExternalEffectDispatcher), 'dispatchCommitted').mockResolvedValue(undefined);
     f = await createTwoProjectFixture(t.prisma);
     query = t.app.get(DecisionsQueryService);
     relay = t.app.get(OutboxRelay);
@@ -71,10 +78,6 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
   afterEach(() => {
     sends = [];
     sendSpy.mockImplementation(async (projectId: string, payload: { body: string }, userId: string) => { sends.push({ projectId, userId, body: payload.body }); });
-    vi.restoreAllMocks();
-    sendSpy = vi.spyOn(push, 'notifyTargetedUser').mockImplementation(async (projectId: string, payload: { body: string }, userId: string) => {
-      sends.push({ projectId, userId, body: payload.body });
-    });
   });
 
   afterAll(async () => {
@@ -90,9 +93,10 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
       await tx.decision.deleteMany({ where: { projectId } });
     });
     await t.prisma.projectionGeneration.deleteMany({ where: { projectId } });
-    await wipeMembershipTransitionsVia(t.prisma, [eng.id, clientB.id]);
-    await t.prisma.membership.deleteMany({ where: { userId: { in: [eng.id, clientB.id] } } });
-    await t.prisma.user.deleteMany({ where: { id: { in: [eng.id, clientB.id] } } });
+    const tmpIds = [eng.id, clientB.id, `a7b-tmp-${run}`];
+    await wipeMembershipTransitionsVia(t.prisma, tmpIds);
+    await t.prisma.membership.deleteMany({ where: { userId: { in: tmpIds } } });
+    await t.prisma.user.deleteMany({ where: { id: { in: tmpIds } } });
     await f?.cleanup();
     await t?.close();
   });
@@ -143,30 +147,47 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
     expect(row.cancelledAt).not.toBeNull();
   });
 
-  it('PRE-SEND, the fan-out arm: a client who LOSES standing while the other is being sent is SKIPPED — one send, no mark', async () => {
-    const did = await issue();
-    const d = await pushDelivery(did, 'decision.published');
-    // the first recipient's provider call removes the OTHER client's membership (a members command
-    // through the shipped service), so the second recipient's own re-judge finds no standing
-    let removed = false;
-    sendSpy.mockImplementation(async (projectId: string, payload: { body: string }, userId: string) => {
-      sends.push({ projectId, userId, body: payload.body });
-      if (!removed) {
-        removed = true;
-        const other = userId === clientB.id ? f.clientUser.id : clientB.id;
-        const r = await request(t.app.getHttpServer()).delete(`/projects/${f.projectA.id}/members/${other}`)
-          .set('Authorization', `Bearer ${pmcToken}`).set('Idempotency-Key', randomUUID());
-        expect(r.status, r.text).toBe(200);
-      }
-    });
-    expect(await relay.dispatchOne(d.id)).toBe('succeeded');
-    expect(sends).toHaveLength(1);
-    expect(await deliveryRow(d.id)).toMatchObject({ status: 'succeeded', deliveryAction: 'dispatch', cancelledAt: null });
-    // restore the removed client for the arms below (a members command, so the register agrees)
-    const gone = sends[0]!.userId === clientB.id ? f.clientUser.id : clientB.id;
-    const back = await request(t.app.getHttpServer()).post(`/projects/${f.projectA.id}/members`)
-      .set('Authorization', `Bearer ${pmcToken}`).set('Idempotency-Key', randomUUID()).send({ userId: gone, role: 'client' });
-    expect([200, 201], back.text).toContain(back.status);
+  it('PRE-SEND, the fan-out arm: a client who LOSES standing while the others are being sent is SKIPPED — the rest sent, no mark', async () => {
+    // two temporary clients beside the fixture's two: FOUR holders resolved at claim
+    const temps = [`a7b-c1-${run}`, `a7b-c2-${run}`];
+    for (const id of temps) {
+      await t.prisma.user.create({ data: { id, projectId: f.projectA.id, role: 'client', name: `A7b ${id}`, email: `${id}@test.local` } });
+      await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: id, role: 'client', status: 'active' } });
+    }
+    const orgs = t.app.get(OrgsParticipant);
+    const originalStanding = orgs.hasProjectRoleStanding.bind(orgs);
+    let removedUser: string | null = null;
+    try {
+      const did = await issue();
+      const d = await pushDelivery(did, 'decision.published');
+      // the FIRST recipient's own pre-send re-judge removes a temporary client who is NOT that
+      // recipient (a members command through the shipped service); every later recipient is
+      // re-judged after that commit, and the removed one finds no standing
+      vi.spyOn(orgs, 'hasProjectRoleStanding').mockImplementation(async (tx, projectId: string, userId: string, roles: readonly string[], opts?: { forUpdate?: boolean }) => {
+        if (removedUser === null && roles.length === 1 && roles[0] === 'client') {
+          removedUser = userId === temps[0] ? temps[1]! : temps[0]!;
+          const r = await request(t.app.getHttpServer()).delete(`/projects/${f.projectA.id}/members/${removedUser}`)
+            .set('Authorization', `Bearer ${pmcToken}`).set('Idempotency-Key', randomUUID());
+          expect(r.status, r.text).toBe(200);
+        }
+        return originalStanding(tx, projectId, userId, roles, opts);
+      });
+      expect(await relay.dispatchOne(d.id)).toBe('succeeded');
+      expect(removedUser).not.toBeNull();
+      const removedMembership = await t.prisma.membership.findFirst({ where: { projectId: f.projectA.id, userId: removedUser! }, select: { status: true } });
+      expect(removedMembership?.status).toBe('removed');
+      const sentTo = sends.map((s) => s.userId).sort();
+      expect(sentTo, `removed=${removedUser} sends=${JSON.stringify(sends)}`).toHaveLength(3);
+      expect(sentTo).not.toContain(removedUser);
+      expect(sentTo).toContain(f.clientUser.id);
+      expect(sentTo).toContain(clientB.id);
+      expect(await deliveryRow(d.id)).toMatchObject({ status: 'succeeded', deliveryAction: 'dispatch', cancelledAt: null });
+    } finally {
+      vi.mocked(orgs.hasProjectRoleStanding).mockRestore();
+      await wipeMembershipTransitionsVia(t.prisma, temps);
+      await t.prisma.membership.deleteMany({ where: { userId: { in: temps } } });
+      await t.prisma.user.deleteMany({ where: { id: { in: temps } } });
+    }
   });
 
   it('PRE-SEND, the single-recipient arm: a member-held demand claimed, the decision APPROVED at the pre-send barrier → nothing sent, the delivery marked', async () => {
@@ -190,7 +211,9 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
     // the PMC approves on the member's behalf while the consumer stands at the barrier
     expect((await post(pmcToken)(`${base()}/${did}/approve`, { optionIndex: 1 })).status).toBe(201);
     release();
-    expect(await dispatching).toBe('succeeded');
+    const outcome = await dispatching;
+    vi.mocked(query.deciderPushTarget).mockRestore();
+    expect(outcome).toBe('succeeded');
     expect(sends).toEqual([]);
     const row = await deliveryRow(d.id);
     expect(row.deliveryAction).toBe('noop');
@@ -198,12 +221,13 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
     expect(calls).toBe(2);
   });
 
-  it('PRE-SEND, the member-held demand whose holder\'s standing ENDS at the barrier: nothing sent, the delivery marked (the one recipient IS the delivery)', async () => {
+  it('PRE-SEND, a named holder at the barrier: the holder guard REFUSES removing the decider of an open decision, so the demand stands and is sent to them', async () => {
     const tmp = { id: `a7b-tmp-${run}` };
     await t.prisma.user.create({ data: { id: tmp.id, projectId: f.projectA.id, role: 'engineer', name: 'A7b Temp', email: `${tmp.id}@test.local` } });
     const m = await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: tmp.id, role: 'engineer', status: 'active' } });
+    let did = '';
     try {
-      const did = await issue({ deciderKind: 'member', deciderMembershipId: m.id });
+      did = await issue({ deciderKind: 'member', deciderMembershipId: m.id });
       const d = await pushDelivery(did, 'decision.published');
       const original = query.deciderPushTarget.bind(query);
       let calls = 0;
@@ -218,30 +242,24 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
       });
       const dispatching = relay.dispatchOne(d.id);
       await barrier;
-      // the holder is REMOVED at the barrier (the holder guard admits it: a named-member decision's
-      // pending demand does not pin the member — the PMC re-homes the draft; here the decision is
-      // published, so the removal is the shipped members command's own answer)
+      // the removal attempted at the barrier is refused by 4b's holder guard (the member is the
+      // named decider of a published open decision): the standing the hook re-judges cannot end
+      // while the demand stands, which is the guard's whole point
       const r = await request(t.app.getHttpServer()).delete(`/projects/${f.projectA.id}/members/${tmp.id}`)
         .set('Authorization', `Bearer ${pmcToken}`).set('Idempotency-Key', randomUUID());
+      expect(r.status, r.text).toBe(409);
       release();
       const outcome = await dispatching;
-      if (r.status === 200) {
-        expect(outcome).toBe('succeeded');
-        expect(sends).toEqual([]);
-        const row = await deliveryRow(d.id);
-        expect(row.deliveryAction).toBe('noop');
-        expect(row.cancelledAt).not.toBeNull();
-      } else {
-        // the holder guard refused the removal (the member holds a pending decision): the demand
-        // stands and the send happens — either way the send follows the standing, never a stale read
-        expect(outcome).toBe('succeeded');
-        expect(sends.map((s) => s.userId)).toEqual([tmp.id]);
-      }
+      vi.mocked(query.deciderPushTarget).mockRestore();
+      expect(outcome).toBe('succeeded');
+      expect(sends.map((s) => s.userId)).toEqual([tmp.id]);
+      expect(await deliveryRow(d.id)).toMatchObject({ status: 'succeeded', deliveryAction: 'dispatch', cancelledAt: null });
+      expect(calls).toBe(2);
     } finally {
-      await wipeMembershipTransitionsVia(t.prisma, [tmp.id]);
-      await t.prisma.commandExecution.deleteMany({ where: { projectId: f.projectA.id, requestHash: { not: '' }, commandType: 'members.remove' } }).catch(() => {});
-      await t.prisma.membership.deleteMany({ where: { userId: tmp.id } });
-      await t.prisma.user.deleteMany({ where: { id: tmp.id } });
+      // the guard also refuses touching the membership while the decision stands open: withdraw it;
+      // the decision row keeps its FK onto the membership, so the row and the user go with the
+      // suite's teardown (after the decisions are wiped)
+      if (did) expect((await post(pmcToken)(`${base()}/${did}/withdraw`, { reason: 'A7b teardown' })).status).toBe(201);
     }
   });
 
@@ -350,13 +368,19 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
     expect((await post(clientToken)(`${base()}/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
     expect((await post(engToken)(`${base()}/${did}/change`, { reason: 'Disagree', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
     const open = await t.prisma.changeRequest.findFirstOrThrow({ where: { decisionId: did, status: 'open' } });
-    // the origin is FROZEN by 4d-i's evidence seal; the disagreement command that writes it is A8b's,
-    // so the state is planted under the seal disabled BY NAME inside one transaction (the sanctioned
-    // bypass shape) — the only way a `countersign_rejection` request can exist before A8b
+    const head = await t.prisma.decisionApprovalRevision.findFirstOrThrow({ where: { decisionId: did }, orderBy: { version: 'desc' } });
+    // the origin and the revision it answers are FROZEN by 4d-i's evidence seal; the disagreement
+    // command that writes them is A8b's, so the state is planted under the seal disabled BY NAME
+    // inside one transaction (the sanctioned bypass shape) — the only way a `countersign_rejection`
+    // request can exist before A8b. The row keeps every CHECK 4d-i put on the shape (a rejection
+    // names the revision it rejects).
+    // `DISABLE TRIGGER USER`, the whole-table form the coverage tripwire sanctions: naming the freeze
+    // alone leaves the table's deferred seals queuing events on the UPDATE, and PostgreSQL refuses to
+    // re-enable a trigger while trigger events are pending in the same transaction.
     await t.prisma.$transaction([
-      t.prisma.$executeRawUnsafe('ALTER TABLE "ChangeRequest" DISABLE TRIGGER "ChangeRequest_t4d_evidence_frozen"'),
-      t.prisma.$executeRawUnsafe(`UPDATE "ChangeRequest" SET "origin" = 'countersign_rejection' WHERE "id" = '${open.id}'`),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "ChangeRequest" ENABLE TRIGGER "ChangeRequest_t4d_evidence_frozen"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "ChangeRequest" DISABLE TRIGGER USER'),
+      t.prisma.$executeRawUnsafe(`UPDATE "ChangeRequest" SET "origin" = 'countersign_rejection', "revisionId" = '${head.id}' WHERE "id" = '${open.id}'`),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "ChangeRequest" ENABLE TRIGGER USER'),
     ]);
     const w = await post(pmcToken)(`${base()}/${did}/change/withdraw`, {});
     expect(w.status).toBe(409);
