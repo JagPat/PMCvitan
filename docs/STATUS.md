@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a8b-countersign-disagree-stranded
 reviewed_merge: 39c3bf6
-open_pr: none
+open_pr: 673
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
@@ -27,7 +27,7 @@ updated: 2026-09-29
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A8b, `open_pr: none` (`work_item: phase-6-task-4d-ii-a-a8b-countersign-disagree-stranded`,
+- **Now, A8b, `open_pr: 673` (`work_item: phase-6-task-4d-ii-a-a8b-countersign-disagree-stranded`,
   branch `claude/4d-ii-a8b-countersign`, from `main` at `39c3bf6`).** The last A-unit (the staging note's
   table): the chain's three remaining writers on the ledger, each FACT FIRST under `lockProjectReadiness`
   in the canonical order with the actor's frozen pair, its audit row, ONE event naming the fact and the

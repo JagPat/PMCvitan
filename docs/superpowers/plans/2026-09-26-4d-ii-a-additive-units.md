@@ -476,7 +476,7 @@ forced:
   revision's frozen pair, an unknown finalization or an unfrozen pair rendering nothing); three writer
   branches in the pairing matrix (`decision.approved` by the countersign and by the `completed`
   resolution; `decision.change_requested` by the `returned` resolution — fact-first and event-first,
-  the PRIOR generation committing for the families it carries, twenty-two refusals); the status
+  the PRIOR generation committing for the families it carries, twenty-three refusals); the status
   tripwire's six A8b registrations; the seal contract's two claimants and the birth pairing's widened
   tokens; the inventory's four triggers; the call-graph, route and boundary pins.
 - **One migration** (`20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence`, one transaction,
