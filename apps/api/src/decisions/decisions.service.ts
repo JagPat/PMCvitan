@@ -540,8 +540,15 @@ export class DecisionsService {
         // decision row — the decider and forward demands this act outdates and, when the approval leaves
         // the consultation-open set (no chain), the open invitations too
         await lockQueuedPushDeliveries(tx, { projectId, subject: decisionId, eventTypes: ['decision.published', 'decision.forwarded', ...(chainActive ? [] : ['decision.consultation_requested'])] });
+        // #672 round 1 (Codex): the CAS names the HOLDER the authority above was judged against, beside
+        // the status — the pre-read is taken before the readiness key, and a forward committing in
+        // between leaves the status where it was (`pending` stays `pending`, `change` stays `change`)
+        // while moving the holder, so a status-only CAS would let a DISPLACED holder's approval land
+        // with its stale authorization and freeze a tuple naming a holder the decision no longer
+        // carries (a first tuple is refused by nothing; a frozen one is not compared again). Count 0
+        // is the same deterministic 409, no side effects.
         const { count } = await tx.decision.updateMany({
-          where: { id: decisionId, projectId, status: prior },
+          where: { id: decisionId, projectId, status: prior, deciderKind: d.deciderKind, deciderMembershipId: d.deciderMembershipId ?? null },
           data: {
             status: landing,
             approvedOption: o.label,
@@ -567,7 +574,7 @@ export class DecisionsService {
               : {}),
           },
         });
-        if (count === 0) throw new ConflictException('The decision changed while approving — reload and retry');
+        if (count === 0) throw new ConflictException('The decision changed while approving (its status or its holder moved) — reload and retry');
         if (prior === 'change') {
           // mandatory re-approval CLOSES the reopening — EXACTLY ONE open request must
           // resolve, or 'reapproved' would lie about what happened (gate finding 1):

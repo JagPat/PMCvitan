@@ -412,6 +412,16 @@ forced:
   admits). The A7b send-boundary suite's two decider arms are re-pointed: an approval committed
   before the claim has already NEUTRALIZED the pending demand (the claim finds nothing claimable),
   and the pre-send single-recipient arm LEASES the row first — the race the hook exists for.
+- **#672 round 1 (Codex, P1) — the approve's CAS names the holder:** the approve reads the decision (the
+  holder it judges the caller against) BEFORE `executeCommand` takes the readiness key, and a forward
+  committing in that window leaves the status where it was while moving the holder — so the status-only
+  CAS landed a DISPLACED holder's approval with its stale authorization: a first approval froze a tuple
+  naming a holder the decision no longer carried (4b's seal refused that as a raw error), and a
+  reapproval from `change` on a decision whose tuple an earlier act had frozen committed silently
+  (nothing compares a frozen tuple again). The CAS now names `deciderKind`/`deciderMembershipId`
+  beside the status, count 0 the same deterministic 409 with nothing written; two live arms drive the
+  forward to commit at the approve's pre-read (the `change-control` barrier device), the first
+  approval and the reviewer's exact reapproval case, both RED at the delivered CAS.
 - **Residuals stated:** a forward bundle WITHOUT its `forwarded` audit row commits under the delivered
   seals (the correspondence seal judges from the audit row's side; no forward seal demands the row) —
   the service writes it, and a DB-side demand is 4d-iii's with the other trailing seals; the frozen

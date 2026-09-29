@@ -301,6 +301,77 @@ describe('4d-ii-a / A8a — forward and approve: the hand-off and the provisiona
     approvedNoChain = d;
   });
 
+  /** #672 round 1 (Codex) — the approve reads the decision (its holder, the authority it judges) BEFORE
+   *  `executeCommand` takes the readiness key. This device (the same as `change-control`'s) runs a PMC
+   *  forward to the engineer to COMMIT while the approver's pre-read is returning: the approve then
+   *  continues into its transaction judged for a holder the decision no longer carries. */
+  const approveWithForwardAtPreRead = async (decisionId: string, approverToken: string, optionIndex: number) => {
+    const delegate = t.prisma.decision as unknown as { findUnique: (args: { where: { id?: string } }) => Promise<unknown> };
+    const original = delegate.findUnique.bind(t.prisma.decision);
+    let armed = true;
+    let forwarded: request.Response | null = null;
+    delegate.findUnique = async (args: { where: { id?: string } }) => {
+      const row = await original(args);
+      if (armed && args?.where?.id === decisionId) {
+        armed = false; // the forward's own pre-read passes straight through
+        forwarded = await forward(pmcToken, decisionId, { toDesignationKind: 'member', toDesignationMembershipId: eng.membershipId, reason: 'Displaced under the approve' });
+      }
+      return row;
+    };
+    try {
+      const r = await approve(approverToken, decisionId, optionIndex);
+      expect(forwarded, 'the forward ran at the barrier').not.toBeNull();
+      expect(forwarded!.status, forwarded!.text).toBe(201);
+      return r;
+    } finally {
+      delegate.findUnique = original;
+    }
+  };
+
+  it('#672 round 1: a forward committing between the approve\'s pre-read and its readiness key DISPLACES the holder the approve was judged for — the FIRST approval refuses 409 with nothing written, and the new holder\'s approve lands', async () => {
+    // a status-only CAS would land the displaced holder's approval (`pending` stays `pending` across a
+    // forward) and freeze a tuple naming a holder the decision no longer carries; the CAS names the
+    // holder beside the status, so the refusal is the deterministic 409, not a seal's raw error
+    const d = await issue();
+    const r = await approveWithForwardAtPreRead(d.id, clientToken, 0);
+    expect(r.status, r.text).toBe(409);
+    expect(r.body.message).toMatch(/changed while approving/);
+    const row = await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } });
+    expect(row).toMatchObject({ status: 'pending', deciderKind: 'member', deciderMembershipId: eng.membershipId, approvedDeciderKind: null });
+    expect(await t.prisma.decisionApprovalRevision.count({ where: { decisionId: d.id } })).toBe(0);
+    expect(await eventsOf(d.id, 'decision.approved')).toHaveLength(0);
+    expect(await t.prisma.decisionEvent.count({ where: { decisionId: d.id, type: { in: ['approved', 'reapproved'] } } })).toBe(0);
+    expect(await t.prisma.notification.count({ where: { decisionId: d.id, kind: 'decision.approved' } })).toBe(0);
+    // the holder the decision NOW carries approves, and the tuple freezes them
+    const ok = await approve(engToken, d.id);
+    expect(ok.status, ok.text).toBe(201);
+    expect(await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } })).toMatchObject({ status: 'approved', approvedDeciderKind: 'member', approvedDeciderMembershipId: eng.membershipId });
+  });
+
+  it('#672 round 1, the reviewer\'s exact case: a REAPPROVAL from `change` on a decision whose tuple an earlier approval FROZE — the forward committing under the displaced holder\'s reapproval makes it refuse 409 with nothing written (no seal compares a frozen tuple again)', async () => {
+    const d = await issue();
+    expect((await approve(clientToken, d.id, 0)).status).toBe(201); // the tuple freezes the client
+    const rc = await http().post(`/projects/${f.projectA.id}/decisions/${d.id}/change`).set('Authorization', `Bearer ${clientToken}`).set('Idempotency-Key', randomUUID())
+      .set('x-vitan-decisions-contract', CONTRACT).send({ reason: 'second thoughts', costImpact: 0, timeImpactDays: 0 });
+    expect(rc.status, rc.text).toBe(201);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } })).status).toBe('change');
+    const r = await approveWithForwardAtPreRead(d.id, clientToken, 1);
+    expect(r.status, r.text).toBe(409);
+    expect(r.body.message).toMatch(/changed while approving/);
+    const row = await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } });
+    expect(row).toMatchObject({ status: 'change', deciderKind: 'member', deciderMembershipId: eng.membershipId, approvedDeciderKind: 'client' });
+    expect(await t.prisma.decisionApprovalRevision.count({ where: { decisionId: d.id } })).toBe(1);
+    expect(await t.prisma.changeRequest.count({ where: { decisionId: d.id, status: 'open' } })).toBe(1);
+    expect(await eventsOf(d.id, 'decision.reapproved')).toHaveLength(0);
+    expect(await t.prisma.decisionEvent.count({ where: { decisionId: d.id, type: 'reapproved' } })).toBe(0);
+    // the new holder's reapproval resolves the request; the first act's tuple stays frozen
+    const ok = await approve(engToken, d.id, 1);
+    expect(ok.status, ok.text).toBe(201);
+    expect(await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } })).toMatchObject({ status: 'approved', approvedDeciderKind: 'client' });
+    expect(await t.prisma.changeRequest.count({ where: { decisionId: d.id, status: 'open' } })).toBe(0);
+    expect(await t.prisma.decisionApprovalRevision.count({ where: { decisionId: d.id } })).toBe(2);
+  });
+
   // ═══ THE CHAIN: THE PROVISIONAL APPROVE (P31) ═══════════════════════════════════════════════════
   it('the FIRST architect is seated (4d-iii\'s act, rehearsed): the chain is active', async () => {
     const r = await addMember({ name: `A8a Architect ${run}`, role: 'architect', email: `a8a-arch-${run}@test.local` });
