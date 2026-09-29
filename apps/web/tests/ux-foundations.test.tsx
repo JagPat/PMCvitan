@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { navLabels, engineerNavLabels, LANG_SWITCH, type Lang, type Role, type ScreenKey } from '@vitan/shared';
 import { Eyebrow, EYEBROW_MIN_SIZE } from '@/components/Eyebrow';
 import { splitMobileNav, navLabelFor, MOBILE_ROLE_PRIMARY } from '@/lib/mobileNav';
@@ -260,9 +260,13 @@ describe('LangPreference — restores and remembers the viewer’s language', ()
   });
 
   it('a change is saved under this person, and another person keeps their own', async () => {
-    const { useStore, LangPreference } = await loadShell({ role: 'client', sessionUserId: 'u-a', lang: 'en' });
+    const { useStore, LangPreference, pref } = await loadShell({ role: 'client', sessionUserId: 'u-a', lang: 'en' });
     const r = render(<LangPreference />);
-    useStore.getState().setLang('gu');
+    // what every picker does: note the choice, then apply it (a bare setLang is not a choice)
+    act(() => {
+      pref.noteLangChoice('gu');
+      useStore.getState().setLang('gu');
+    });
     r.rerender(<LangPreference />);
     expect(readLangPreference('user:u-a')).toBe('gu');
     // a different person signs in on the same device: their (absent) choice applies, not u-a's
@@ -359,6 +363,46 @@ describe('a guest picking a language on the in-console Team Access screen', () =
     render(<LangPreference />);
     expect(useStore.getState().lang).toBe('hi');
     expect(readLangPreference('user:u-c')).toBe('hi');
+  });
+
+  it('the host explicitly picking back their default after a guest session is saved', async () => {
+    // Codex on #666: no saved choice, the engineer default gu on screen, a guest shows hi, and the
+    // host then picks ગુજ on the rail — an explicit choice, even though it equals the default
+    const { useStore, LangPreference, TeamAccessScreen, LanguageSwitch } = await loadTeamAccess({ lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <LanguageSwitch />
+        <TeamAccessScreen />
+      </>,
+    );
+    expect(useStore.getState().lang).toBe('gu');
+    fireEvent.click(r.getByRole('button', { name: 'हिंदी' }));
+    fireEvent.click(r.getByTestId('lang-seg-gu'));
+    expect(readLangPreference('user:u-host')).toBe('gu');
+    // so a later same-user project switch to PMC keeps it rather than the PMC default
+    useStore.setState({ role: 'pmc', screen: 'inbox' });
+    r.rerender(
+      <>
+        <LangPreference />
+        <LanguageSwitch />
+      </>,
+    );
+    expect(useStore.getState().lang).toBe('gu');
+  });
+
+  it('the host explicitly picking the language already on screen is saved (no guest involved)', async () => {
+    const { useStore, LangPreference, LanguageSwitch } = await loadShell({ role: 'engineer', sessionUserId: 'u-e', lang: 'en' });
+    const r = render(
+      <>
+        <LangPreference />
+        <LanguageSwitch />
+      </>,
+    );
+    expect(useStore.getState().lang).toBe('gu'); // the default, applied, not saved
+    expect(readLangPreference('user:u-e')).toBeNull();
+    fireEvent.click(r.getByTestId('lang-seg-gu'));
+    expect(readLangPreference('user:u-e')).toBe('gu');
   });
 
   it('the host changing language on the rail while a guest is on Team Access is still saved', async () => {

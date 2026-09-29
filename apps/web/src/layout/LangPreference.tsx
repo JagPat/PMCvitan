@@ -1,7 +1,15 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import type { Lang } from '@vitan/shared';
 import { useStore } from '@/store/store';
-import { defaultLangFor, langPreferenceKey, readLangPreference, takeLangChoice, writeLangPreference } from '@/lib/langPreference';
+import {
+  defaultLangFor,
+  langChoiceVersion,
+  langPreferenceKey,
+  readLangPreference,
+  subscribeLangChoice,
+  takeLangChoice,
+  writeLangPreference,
+} from '@/lib/langPreference';
 
 /**
  * Applies and remembers the viewer's language. It acts on an EXPLICIT choice (`noteLangChoice`, set by
@@ -26,6 +34,8 @@ export function LangPreference() {
   const lang = useStore((s) => s.lang);
   const setLang = useStore((s) => s.setLang);
   const screen = useStore((s) => s.screen);
+  // a pick re-runs the effect even when it leaves the language unchanged
+  const choice = useSyncExternalStore(subscribeLangChoice, langChoiceVersion);
   const key = langPreferenceKey(userId, role);
   const applied = useRef<{ key: string; role: string; lang: Lang } | null>(null);
   // the language a guest picked and is looking at; null when the host's own language is on screen
@@ -47,28 +57,28 @@ export function LangPreference() {
       if (next !== lang) setLang(next);
       return;
     }
+    // with the identity stable, act on the pick that just happened — never infer one from a
+    // language change: every language change here is either a picker's (noted) or this
+    // component's own restore, and a pick may leave the language exactly as it was
+    const noted = takeLangChoice();
+    if (noted?.source === 'viewer') {
+      applied.current = { key, role, lang: noted.lang };
+      guestLang.current = null;
+      writeLangPreference(key, noted.lang);
+      if (lang !== noted.lang) setLang(noted.lang);
+      return;
+    }
+    if (noted?.source === 'guest') {
+      // shown for the guest, never saved as the host's preference
+      guestLang.current = noted.lang === applied.current.lang ? null : noted.lang;
+      return;
+    }
     // the guest has left Team Access: the host's own language comes back
     if (guestLang.current !== null && screen !== 'team-access') {
       guestLang.current = null;
       if (lang !== applied.current.lang) setLang(applied.current.lang);
-      return;
     }
-    if (lang !== applied.current.lang && lang !== guestLang.current) {
-      const chosen = takeLangChoice();
-      if (chosen?.source === 'guest') {
-        // shown for the guest, never saved as the host's preference
-        guestLang.current = lang;
-        return;
-      }
-      applied.current = { key, role, lang };
-      guestLang.current = null;
-      writeLangPreference(key, lang);
-    } else if (lang === applied.current.lang && guestLang.current !== null) {
-      // the guest picked the host's own language back: nothing of theirs is on screen any more
-      guestLang.current = null;
-      takeLangChoice();
-    }
-  }, [key, lang, role, screen, setLang]);
+  }, [key, lang, role, screen, choice, setLang]);
 
   return null;
 }

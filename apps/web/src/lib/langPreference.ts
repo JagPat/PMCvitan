@@ -53,9 +53,24 @@ export function writeLangPreference(key: string, lang: Lang): void {
 export type LangChoiceSource = 'viewer' | 'guest';
 
 let pendingChoice: { lang: Lang; source: LangChoiceSource } | null = null;
+// every note bumps the version, so a pick that leaves the language unchanged (the host choosing the
+// language already on screen) still reaches `LangPreference` — it is a choice, not a no-op
+let choiceVersion = 0;
+const listeners = new Set<() => void>();
 
 export function noteLangChoice(lang: Lang, source: LangChoiceSource = 'viewer'): void {
   pendingChoice = { lang, source };
+  choiceVersion += 1;
+  for (const listener of listeners) listener();
+}
+
+export function subscribeLangChoice(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function langChoiceVersion(): number {
+  return choiceVersion;
 }
 
 export function takeLangChoice(): { lang: Lang; source: LangChoiceSource } | null {
