@@ -1,0 +1,138 @@
+/* The engineer's Today: one dark "do this now" card, then the day's four-step path.
+   Every tap target is at least 44px; every label at least 13px; done is shown by
+   an icon AND a word, never colour alone. */
+
+.head {
+  margin-bottom: 16px;
+}
+.date {
+  font-family: var(--font-serif);
+  font-size: 26px;
+  font-weight: 500;
+  line-height: 1.2;
+  margin-top: 4px;
+}
+
+.now {
+  background: var(--ink);
+  color: var(--sidebar-text);
+  border-radius: 18px;
+  padding: 20px 18px 18px;
+}
+.nowLabel {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(237, 231, 218, 0.75);
+}
+/* no letter-spacing on these labels: tracking pulls Gujarati and Devanagari glyphs apart */
+.dayLabel {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.nowTitle {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.25;
+  margin-top: 8px;
+}
+.nowDetail {
+  font-size: 16px;
+  line-height: 1.4;
+  color: rgba(237, 231, 218, 0.8);
+  margin-top: 6px;
+}
+.nowAction {
+  width: 100%;
+  min-height: 56px;
+  margin-top: 16px;
+  border: none;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.nowAction:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.nowDone {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pathHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 26px 0 10px;
+}
+.pathTitle {
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: 500;
+}
+.pathCount {
+  font-size: 14px;
+  color: var(--muted);
+}
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.step {
+  width: 100%;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #fff;
+  border: 1px solid var(--hairline);
+  border-radius: 13px;
+  font-family: var(--font-sans);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.stepNext {
+  border: 1.5px solid var(--ink);
+}
+.stepName {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 600;
+}
+.stepState {
+  font-size: 14px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.stepStateDone {
+  color: var(--green-text);
+  font-weight: 600;
+}
+.stepStateNext {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.also {
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: 500;
+  margin: 28px 0 10px;
+}

@@ -110,6 +110,58 @@ export const engineerNavLabels: Partial<Record<ScreenKey, Record<Lang, string>>>
   'daily-log': { en: 'Site', hi: 'साइट', gu: 'સાઇટ' },
 };
 
+/** The engineer's Today screen: one "do this now" action and the day's four-step path. Plain
+ *  words a site engineer reads at a glance; Gujarati and Hindi copy awaits a native speaker's check. */
+export type EngineerTodayStep = 'checkIn' | 'crew' | 'photos' | 'send';
+export type EngineerTodayAction = 'start' | EngineerTodayStep | 'done';
+export const engineerTodayLabels = {
+  doNow: { en: 'Do this now', hi: 'अभी यह करें', gu: 'હમણાં આ કરો' },
+  path: { en: "Today's path", hi: 'आज के काम', gu: 'આજનાં કામ' },
+  done: { en: 'Done', hi: 'हो गया', gu: 'થઈ ગયું' },
+  next: { en: 'Next', hi: 'अगला', gu: 'હવે' },
+  alsoWaiting: { en: 'Also waiting on you', hi: 'यह भी आपका इंतज़ार कर रहा है', gu: 'આ પણ તમારી રાહ જુએ છે' },
+  loading: { en: "Getting today's log…", hi: 'आज का लॉग आ रहा है…', gu: 'આજનો લોગ આવી રહ્યો છે…' },
+  unavailable: { en: "Today's log didn't load", hi: 'आज का लॉग नहीं खुला', gu: 'આજનો લોગ ખૂલ્યો નહીં' },
+  unavailableDetail: { en: 'Check your signal, then try again.', hi: 'सिग्नल देखें, फिर दोबारा कोशिश करें।', gu: 'સિગ્નલ તપાસો, પછી ફરી પ્રયાસ કરો.' },
+  retry: { en: 'Try again', hi: 'फिर कोशिश करें', gu: 'ફરી પ્રયાસ કરો' },
+  paused: { en: 'Paused until the latest log loads.', hi: 'नया लॉग आने तक रुका है।', gu: 'નવો લોગ આવે ત્યાં સુધી અટક્યું છે.' },
+  step: {
+    checkIn: { en: 'Check in', hi: 'हाज़िरी', gu: 'હાજરી' },
+    crew: { en: 'Crew & material', hi: 'टीम और सामान', gu: 'ટીમ અને માલ' },
+    photos: { en: 'Progress photos', hi: 'काम की फ़ोटो', gu: 'કામના ફોટા' },
+    send: { en: 'Send to PMC', hi: 'PMC को भेजें', gu: 'PMC ને મોકલો' },
+  } satisfies Record<EngineerTodayStep, Record<Lang, string>>,
+  estimate: {
+    checkIn: { en: 'About 1 min', hi: 'लगभग 1 मिनट', gu: 'લગભગ 1 મિનિટ' },
+    crew: { en: 'About 2 min', hi: 'लगभग 2 मिनट', gu: 'લગભગ 2 મિનિટ' },
+    photos: { en: 'About 2 min', hi: 'लगभग 2 मिनट', gu: 'લગભગ 2 મિનિટ' },
+    send: { en: 'One tap', hi: 'एक टैप', gu: 'એક ટેપ' },
+  } satisfies Record<EngineerTodayStep, Record<Lang, string>>,
+  action: {
+    start: { en: "Start today's log", hi: 'आज का लॉग शुरू करें', gu: 'આજનો લોગ શરૂ કરો' },
+    checkIn: { en: 'Check in at site', hi: 'साइट पर हाज़िरी लगाएँ', gu: 'સાઇટ પર હાજરી પૂરો' },
+    crew: { en: "Add today's crew", hi: 'आज की टीम जोड़ें', gu: 'આજની ટીમ ઉમેરો' },
+    photos: { en: 'Take progress photos', hi: 'काम की फ़ोटो लें', gu: 'કામના ફોટા લો' },
+    send: { en: "Send today's log to PMC", hi: 'आज का लॉग PMC को भेजें', gu: 'આજનો લોગ PMC ને મોકલો' },
+    done: { en: "Today's log is with PMC", hi: 'आज का लॉग PMC के पास है', gu: 'આજનો લોગ PMC પાસે છે' },
+  } satisfies Record<EngineerTodayAction, Record<Lang, string>>,
+  actionDetail: {
+    start: { en: 'Begin when work starts on site.', hi: 'साइट पर काम शुरू होते ही शुरू करें।', gu: 'સાઇટ પર કામ શરૂ થાય ત્યારે શરૂ કરો.' },
+    checkIn: { en: "Uses this phone's location and a selfie.", hi: 'यह फ़ोन आपकी जगह और एक सेल्फ़ी लेगा।', gu: 'આ ફોન તમારું સ્થાન અને એક સેલ્ફી લેશે.' },
+    crew: { en: 'Who came today, and what material arrived.', hi: 'आज कौन आया और कौन सा सामान आया।', gu: 'આજે કોણ આવ્યું અને કયો માલ આવ્યો.' },
+    photos: { en: "A few photos of today's work.", hi: 'आज के काम की कुछ फ़ोटो।', gu: 'આજના કામના થોડા ફોટા.' },
+    send: { en: 'One tap. PMC sees it straight away.', hi: 'एक टैप। PMC को तुरंत दिखेगा।', gu: 'એક ટેપ. PMC ને તરત દેખાશે.' },
+    done: { en: 'Nothing more to log today.', hi: 'आज और कुछ लिखना नहीं है।', gu: 'આજે વધુ કંઈ લખવાનું નથી.' },
+  } satisfies Record<EngineerTodayAction, Record<Lang, string>>,
+} as const;
+
+/** "2 of 4 done", in the reader's language. */
+export function engineerTodayProgress(done: number, total: number, lang: Lang): string {
+  if (lang === 'hi') return `${total} में से ${done} हो गए`;
+  if (lang === 'gu') return `${total} માંથી ${done} થયાં`;
+  return `${done} of ${total} done`;
+}
+
 /** Shell chrome shared by every role: the More tab and the language control. */
 export const shellLabels: Record<'more' | 'language' | 'close' | 'screens', Record<Lang, string>> = {
   more: { en: 'More', hi: 'और', gu: 'વધુ' },
