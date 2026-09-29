@@ -5511,10 +5511,14 @@ carries_a7d() {
   [ "$($PSQL -tAc "SELECT (to_regproc('phase6_t4d_membership_transition_seal') IS NOT NULL AND to_regproc('platform_t4d_event_envelope') IS NOT NULL AND to_regproc('platform_t4d_event_pairing_actor') IS NOT NULL AND to_regproc('phase6_t4d_transition_claims_standing') IS NOT NULL AND to_regproc('phase6_t4d_forward_claims_event') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'platform_t4d_event_pairing_actor' AND position('system:membership-standing' in prosrc) > 0))::text" 2>/dev/null)" = "true" ]
 }
 t4d_replay() {
-  local m
+  # the runner reads the evidence ONCE, before anything replays: U1's replay re-creates the actor seal
+  # with U1's body (A7d re-issues it with the exemption when its own file replays last), so a per-file
+  # read would stop seeing A7d halfway through the ledger and replay U3 into its refusal.
+  local m skip=0
+  if carries_a7d; then skip=1; fi
   for m in $T4D_REPLAY; do
     case "$m" in
-      20271220000000_*|20271221000000_*|20271224000000_*) if carries_a7d; then continue; fi ;;
+      20271220000000_*|20271221000000_*|20271224000000_*) if [ "$skip" -eq 1 ]; then continue; fi ;;
     esac
     psql -X -q -v ON_ERROR_STOP=1 -d "$DB" -f "$MIG_DIR/$m/migration.sql" 2>&1 >/dev/null || { echo "[$m]"; return 1; }
   done
