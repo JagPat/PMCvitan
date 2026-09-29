@@ -8,7 +8,7 @@ import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { PUSH_CONSUMER } from '../../src/platform/outbox/consumers';
 import { EXTERNAL_EFFECTS } from '../../src/platform/external-effects';
 import { PHASE6_4D_RESERVATION_DOORS } from '../../src/platform/phase6-4d-rollout';
-import { APPROVED_DECISION_NOTICE_COLOR, FORWARDED_DECISION_NOTICE_COLOR } from '../../src/domain/notifications';
+import { APPROVED_DECISION_NOTICE_COLOR, CHANGE_REQUESTED_NOTICE_COLOR, FORWARDED_DECISION_NOTICE_COLOR } from '../../src/domain/notifications';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a / A8b — THE CHAIN'S THREE REMAINING WRITERS, driven live through the shipped
@@ -347,6 +347,9 @@ describe('4d-ii-a / A8b — countersign, disagree, stranded: the chain\'s three 
     expect(evs[0]!).toMatchObject({ actorId: architect.id, actorRole: 'architect', actorName: architect.name });
     expect(evs[0]!.payload).toMatchObject({ path: 'reject_back', origin: 'countersign_rejection', revisionId: provisional.id, requestId: req.id, title: d.title });
     expect(await claimOf(evs[0]!.eventId)).toMatchObject({ claimedBy: 'ChangeRequest', claimedById: req.id });
+    // the change-request notice (#673 round 1), bound to the event, the reason frozen on it
+    const notice = await t.prisma.notification.findFirstOrThrow({ where: { decisionId: d.id, kind: 'decision.change_requested' } });
+    expect(notice).toMatchObject({ eventId: evs[0]!.eventId, text: `Change requested: ${d.title} — the wear rating is wrong for a kitchen`, color: CHANGE_REQUESTED_NOTICE_COLOR });
     expect(await eventsOf(d.id, 'decision.forwarded')).toHaveLength(0);
     expect(await t.prisma.decisionForward.count({ where: { decisionId: d.id } })).toBe(0);
     expect(await audits(d.id)).toEqual(['approved', 'change_requested']);
@@ -390,6 +393,8 @@ describe('4d-ii-a / A8b — countersign, disagree, stranded: the chain\'s three 
     expect(cr).toHaveLength(1);
     expect(cr[0]!.payload).toMatchObject({ path: 'forward_on', requestId: req.id, revisionId: provisional.id });
     expect(await claimOf(cr[0]!.eventId)).toMatchObject({ claimedBy: 'ChangeRequest', claimedById: req.id });
+    expect(await t.prisma.notification.findFirstOrThrow({ where: { decisionId: d.id, kind: 'decision.change_requested' } }))
+      .toMatchObject({ eventId: cr[0]!.eventId, text: `Change requested: ${d.title} — the engineer should decide this one` });
     const fw = await eventsOf(d.id, 'decision.forwarded');
     expect(fw).toHaveLength(1);
     expect(fw[0]!).toMatchObject({ actorId: architect.id, actorRole: 'architect' });
@@ -533,6 +538,8 @@ describe('4d-ii-a / A8b — countersign, disagree, stranded: the chain\'s three 
     expect(evs[0]!.payload).toMatchObject({ resolutionId: fact.id, outcome: 'returned', origin: 'countersign_rejection', revisionId: provisional.id, requestId: req.id });
     // the RESOLUTION claims the reopening; the request verifies and never claims
     expect(await claimOf(evs[0]!.eventId)).toMatchObject({ claimedBy: 'DecisionStrandedResolution', claimedById: fact.id });
+    expect(await t.prisma.notification.findFirstOrThrow({ where: { decisionId: d.id, kind: 'decision.change_requested' } }))
+      .toMatchObject({ eventId: evs[0]!.eventId, text: `Change requested: ${d.title} — choose again with the new samples`, color: CHANGE_REQUESTED_NOTICE_COLOR });
     expect(await audits(d.id)).toEqual(['approved', 'stranded_resolved', 'change_requested']);
     expect(await t.prisma.decisionForward.count({ where: { decisionId: d.id } })).toBe(0);
     const rw = await withdrawChange(pmcToken, d.id);

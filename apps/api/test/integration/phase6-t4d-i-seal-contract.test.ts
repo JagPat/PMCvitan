@@ -739,9 +739,10 @@ const REGISTER: Record<string, SealContract> = {
       + 'exactly ONE `decision.change_requested` event attributed to its `requestedById` (4d-i\'s '
       + 'correspondence skips a NULL requester, so the request binds the actor itself — Codex U3 '
       + 'round 1); for '
-      + '`countersign_rejection` the EXACT `awaiting_countersign → change` move and exactly ONE '
-      + 'event attributed to its `requestedById` (no audit row is declared for that branch, so '
-      + '4d-i\'s correspondence cannot bind the actor there); a request written '
+      + '`countersign_rejection` the EXACT `awaiting_countersign → change` move, exactly ONE '
+      + '`change_requested` audit row appended here (4d-ii-a / A8b, #673 round 1: the plan\'s '
+      + 'correspondence table gives both producers of the origin the row) and exactly ONE '
+      + 'event attributed to its `requestedById`; a request written '
       + '`withdrawn` rides the `change → approved` restoration, exactly one `change_withdrawn` '
       + 'audit row, and claims its one `decision.change_withdrawn`; a request written `resolved` '
       + 'rides the reapproval\'s landing with exactly one revision born here and its event present '
@@ -753,6 +754,7 @@ const REGISTER: Record<string, SealContract> = {
       'phase6_t4d_change_pairing_active',
       'txid_current', 'change_from_approved', 'approved_from_change', 'awaiting_from_change', 'change_from_awaiting',
       'phase6_t4d_tx_audit_count', "ARRAY['change_requested']", "ARRAY['change_withdrawn']",
+      'countersign_rejection request % was opened in this transaction with % `change_requested` audit row(s)',
       'phase6_t4d_tx_actor_event_count', 'NEW."requestedById"',
       'decision.change_requested', 'decision.change_withdrawn',
       'decision.approved', 'decision.reapproved', 'decision.awaiting_countersign',

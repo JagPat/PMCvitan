@@ -4964,6 +4964,9 @@ assert "A8b: the provenance seal admits the returned request under the stranded 
 assert "A8b: the one-open-approval count excludes the disposed revisions (a rejection request's, a returned resolution's) beside 4d-i's own clauses, its trigger standing deferred" \
   "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_revision_birth_paired' AND prosrc LIKE '%c.\"origin\" = ''countersign_rejection'' AND c.\"revisionId\" = r.\"id\"%' AND prosrc LIKE '%s.\"outcome\" = ''returned'' AND s.\"revisionId\" = r.\"id\"%' AND prosrc LIKE '%v_open > 1%' AND prosrc LIKE '%v_births <> 1%')::text || '|' || (SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname = 'phase6_t4d_revision_birth_paired' AND t.tgname = 'DecisionApprovalRevision_t4d_birth_paired' AND t.tgdeferrable AND t.tginitdeferred)::text;" \
   "1|1"
+assert "A8b: the request pairing demands the rejection's change_requested audit row beside 4d-i-b's own clauses, its trigger standing deferred (#673 round 1)" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_change_request_paired' AND prosrc LIKE '%countersign_rejection request %% was opened in this transaction with %% \`change_requested\` audit row(s)%' AND prosrc LIKE '%change_from_awaiting%' AND prosrc LIKE '%platform_claim_event_pairing_once%')::text || '|' || (SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname = 'phase6_t4d_change_request_paired' AND t.tgname = 'ChangeRequest_t4d_paired' AND t.tgdeferrable AND t.tginitdeferred)::text;" \
+  "1|1"
 assert "A8b: the persisted server-generation minimum is 2, raised by this file, and a second replay keeps it" \
   "SELECT \"minimumGeneration\"::text || '|' || \"raisedBy\" FROM \"ServerGeneration\" WHERE \"key\" = 'singleton';" \
   "2|20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence"

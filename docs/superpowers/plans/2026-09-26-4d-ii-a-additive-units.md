@@ -453,9 +453,12 @@ forced:
   this receipt (the request is the bundle's primary; the forward cites the same receipt through the
   provenance seal's bundle arm), append the `change_requested` (and `forwarded`) audit rows, cancel the
   countersign demand (and, re-homing, any queued hand-off), emit ONE `decision.change_requested`
-  (`path`, `origin`, `revisionId`, `requestId`) and, re-homing, the frozen-audience `decision.forwarded`
-  with its notice. The request's ONLY closure is the re-approval (`withdrawChange` refuses it, A7b);
-  the decider — or the new holder — re-approves and the chain runs again.
+  (`path`, `origin`, `revisionId`, `requestId`, the title and the reason) with the CHANGE-REQUEST NOTICE
+  bound to it ("Change requested: T — <reason>", the pending amber; the plan's correspondence table owes
+  it to the `countersign_rejection` origin only, and the kinded renderer's arm renders nothing for any
+  other origin — #673's review round 1) and, re-homing, the frozen-audience `decision.forwarded` with
+  its notice. The request's ONLY closure is the re-approval (`withdrawChange` refuses it, A7b); the
+  decider — or the new holder — re-approves and the chain runs again.
 - **`decisions.resolveStrandedCountersign`** (the PMC, `hasProjectRoleStanding` under the standing row's
   lock): legal ONLY while the decision awaits AND the chain is inactive, both re-judged under the
   readiness key (`RoleStandingQuery.activeCount(architect) > 0` → 409, the countersign being the legal
@@ -476,7 +479,9 @@ forced:
   revision's frozen pair, an unknown finalization or an unfrozen pair rendering nothing); three writer
   branches in the pairing matrix (`decision.approved` by the countersign and by the `completed`
   resolution; `decision.change_requested` by the `returned` resolution — fact-first and event-first,
-  the PRIOR generation committing for the families it carries, twenty-three refusals); the status
+  the PRIOR generation committing for the families it carries, twenty-three refusals, and the
+  disagreement branch's audit row with its no-audit-row refusal); the kinded renderer's change-request
+  arm and its audience (pmc and the decider); the status
   tripwire's six A8b registrations; the seal contract's two claimants and the birth pairing's widened
   tokens; the inventory's four triggers; the call-graph, route and boundary pins.
 - **One migration** (`20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence`, one transaction,
@@ -496,7 +501,11 @@ forced:
   approval (A8b's live suite, the reject-back and forward-on arms, RED at the delivered seal); (4) the
   persisted server-generation minimum RAISED to 2 with this file's name (A6e's raise block, `GREATEST`),
   `SERVER_GENERATION` moving with it — from here every A6-to-A8a build is refused at startup ("The
-  drain"). No consumer version, catalog row or door moves.
+  drain"); (5) 4d-i-b's `phase6_t4d_change_request_paired` re-issued with its `countersign_rejection`
+  arm demanding exactly one `change_requested` audit row, as its `standard` arm does and as the plan's
+  correspondence table gives both producers of the origin (#673's review round 1: a receipt-backed
+  hand-run rejection bundle with its claimed event and no audit row committed evidence the decision
+  log could not show), otherwise byte-identical. No consumer version, catalog row or door moves.
 - **§C arms not carried by any A-unit: none.** A8b carries P31 (the atomic countersign, the orphan
   fact, the split), P32 (the self-countersign as two keys), P33 (both disagreement paths, the
   withdrawal refused), P25d/P41 (a question beside the countersign, both orderings), P29b and P36 (the

@@ -9,7 +9,7 @@ import type { AuthUser } from '../common/auth';
 import { resolveActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
-import { APPROVED_DECISION_NOTICE_COLOR, AWAITING_COUNTERSIGN_NOTICE_COLOR, DESIGNATION_ROLE_LABEL, FORWARDED_DECISION_NOTICE_COLOR, PENDING_DECISION_NOTICE_COLOR, RECORDED_DECISION_NOTICE_COLOR, WITHDRAWN_DECISION_NOTICE_COLOR, approvedDecisionNotice, finalizedApprovalNotice, forwardedDecisionNotice, pendingDecisionNotice, provisionalApprovalNotice, recordedDecisionNotice, withdrawnDecisionNotice, type ApprovalFinalization } from '../domain/notifications';
+import { APPROVED_DECISION_NOTICE_COLOR, AWAITING_COUNTERSIGN_NOTICE_COLOR, DESIGNATION_ROLE_LABEL, FORWARDED_DECISION_NOTICE_COLOR, PENDING_DECISION_NOTICE_COLOR, RECORDED_DECISION_NOTICE_COLOR, WITHDRAWN_DECISION_NOTICE_COLOR, approvedDecisionNotice, finalizedApprovalNotice, forwardedDecisionNotice, pendingDecisionNotice, provisionalApprovalNotice, recordedDecisionNotice, withdrawnDecisionNotice, changeRequestedNotice, CHANGE_REQUESTED_NOTICE_COLOR, type ApprovalFinalization } from '../domain/notifications';
 import { cancelQueuedPushBySubject, lockQueuedPushDeliveries } from '../platform/outbox/cancellation';
 import { EXTERNAL_EFFECTS, type PushRole } from '../platform/external-effects';
 import type { ApproveInput, ChangeInput, CreateDecisionInput, DisagreeDecisionInput, ForwardDecisionInput, RequestConsultationInput, ResolveStrandedCountersignInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
@@ -1251,8 +1251,9 @@ export class DecisionsService {
    * forward (through the ONE forward door — the fact first, the holder moved), `awaiting_countersign →
    * change`, the open `countersign_rejection` request citing the exact provisional head with the actor's
    * frozen pair and this receipt, the audit rows, the demands the rejection outdates cancelled, and the
-   * events: exactly one `decision.change_requested` (the request's, or the returned resolution's), and
-   * the frozen-audience `decision.forwarded` with its notice when the bundle re-homes the decision.
+   * events: exactly one `decision.change_requested` (the request's, or the returned resolution's) with the
+   * change-request notice bound to it (the title and the reason), and the frozen-audience
+   * `decision.forwarded` with its notice when the bundle re-homes the decision.
    * Neither path touches `pending`; the decider (or the new holder) answers by re-approving.
    */
   private async rejectProvisionalApproval(
@@ -1367,14 +1368,18 @@ export class DecisionsService {
     // re-homed — any earlier hand-off still queued (the new forward supersedes it)
     await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.awaiting_countersign' });
     const cancelledForwards = forward ? await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.forwarded' }) : null;
+    // the change-request NOTICE (the plan's correspondence table owes it to the `countersign_rejection`
+    // origin; #673 round 1): the reopening and its reason, bound to the event that announces it
+    const eventId = randomUUID();
     events.push(await emitEvent(tx, {
-      projectId, actor, actorEnvelope: envelope,
+      projectId, actor, eventId, actorEnvelope: envelope,
       eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId,
       payload: { ...args.requestPayload, reason: args.reason, costImpact: args.costImpact, timeImpactDays: args.timeImpactDays, origin: 'countersign_rejection', revisionId: head.id, requestId, title: cur.title },
       effectKey: 'decision.change_requested', dispatch: {},
     }));
+    await tx.notification.create({ data: { projectId, text: changeRequestedNotice(cur.title, args.reason), color: CHANGE_REQUESTED_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.change_requested', eventId } });
     if (forward) {
-      const eventId = randomUUID();
+      const eventId = randomUUID(); // the forward's own, in its own block
       events.push(await emitEvent(tx, {
         projectId, actor, eventId, actorEnvelope: envelope,
         eventType: 'decision.forwarded', entityType: 'Decision', entityId: decisionId,

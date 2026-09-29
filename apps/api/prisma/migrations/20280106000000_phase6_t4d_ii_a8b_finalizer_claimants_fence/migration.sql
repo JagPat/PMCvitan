@@ -43,6 +43,15 @@
 --      byte-identical. The seals that act on the head are untouched: `phase6_t4d_provisional_head` takes
 --      the highest version, and a finalizer citing a disposed one is refused there as superseded.
 --
+--   2c. THE REJECTION'S AUDIT ROW, DEMANDED (#673's review round 1). 4d-i-b's `phase6_t4d_change_request_paired`
+--      demanded the `change_requested` audit row for the `standard` origin alone and declared the
+--      `countersign_rejection` branch audit-less, while the plan's correspondence table gives both producers
+--      of that origin an audit row (`change_requested`; `stranded_resolved` + `change_requested`) and the
+--      delivered writers append it. A receipt-backed hand-run bundle could therefore insert a rejection
+--      request with its correctly claimed event and no audit row. The function is re-issued with that one
+--      arm demanding exactly one `change_requested` audit row, as the `standard` arm does; every other
+--      clause is byte-identical.
+--
 --   3. THE FENCE, RAISED. A6e installed the server-generation fence and set the persisted minimum to 1
 --      (its own generation), so nothing running was refused. A8b is the last 4d-ii-a server unit — the
 --      release the drain's minimum names — so this file raises the minimum to 2, A8b's compiled
@@ -62,7 +71,7 @@ BEGIN
   IF to_regclass('"DecisionCountersign"') IS NULL OR to_regclass('"DecisionStrandedResolution"') IS NULL
      OR to_regclass('"ServerGeneration"') IS NULL
      OR to_regproc('phase6_t4d_provenance_bound') IS NULL OR to_regproc('platform_claim_event_pairing_once') IS NULL
-     OR to_regproc('phase6_t4d_revision_birth_paired') IS NULL
+     OR to_regproc('phase6_t4d_revision_birth_paired') IS NULL OR to_regproc('phase6_t4d_change_request_paired') IS NULL
      OR to_regproc('phase6_t4d_tx_audit_count') IS NULL OR to_regproc('platform_t4d_server_generation_raised') IS NULL THEN
     RAISE EXCEPTION
       'phase6 4d-ii-a A8b ABORT: this unit installs claimants on 4d-i''s two finalizer fact tables, re-issues 4d-i''s provenance seal and raises A6e''s server-generation minimum, and this database does not hold all of them. Those files apply before this one in the ledger; on the P3005 baseline path they are on ALWAYS_EXECUTE.';
@@ -437,6 +446,190 @@ BEGIN
   RETURN NULL;
 END $function$;
 
+-- ── 2c. the request pairing, re-issued to demand the rejection's audit row (#673 round 1) ──────
+-- 4d-i-b's body, byte-identical but for the `countersign_rejection` arm's audit-row demand and the two
+-- comments it retires (the four `ChangeRequest_t4d_paired` triggers stand as installed and are not
+-- touched here).
+CREATE OR REPLACE FUNCTION public.phase6_t4d_change_request_paired()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+  d RECORD;
+  v_event  TEXT;
+  v_events BIGINT;
+  v_audits BIGINT;
+  v_births BIGINT;
+BEGIN
+  IF NOT phase6_t4d_change_pairing_active() THEN RETURN NULL; END IF;   -- active once U3's flip flags the change keys (the gate U2 installed; the flip below makes it TRUE)
+
+  IF TG_OP = 'INSERT' THEN
+    IF NEW."status" IS DISTINCT FROM 'open' THEN RETURN NULL; END IF;   -- the evidence freeze's refusal
+
+    SELECT "status"::text AS status, "xmin" = txid_current()::text::xid AS here
+      INTO d FROM "Decision" WHERE "projectId" = NEW."projectId" AND "id" = NEW."decisionId";
+    IF NOT FOUND OR d.status IS DISTINCT FROM 'change' OR NOT COALESCE(d.here, FALSE) THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: change request % was opened in this transaction, but decision % is `%` at commit and was % — the OPENING is one bundle in both directions: the request and the decision''s move into `change` commit together or neither does. A request beside an untouched decision occupies the one-open-request slot and strands the decision where it stands',
+        NEW."id", NEW."decisionId", COALESCE(d.status, '<missing>'),
+        CASE WHEN COALESCE(d.here, FALSE) THEN 'written here' ELSE 'NOT written in this transaction' END;
+    END IF;
+    IF NEW."origin" = 'standard' THEN
+      IF NOT phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'change_from_approved') THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: standard change request % was opened in this transaction, but no `approved → change` move of decision % was performed in it — the standard request pairs with EXACTLY that transition (the delivered `requestChange` performs the CAS and the insert together), and a decision written into `change` from any other state carries a request no act opened',
+          NEW."id", NEW."decisionId";
+      END IF;
+      v_audits := phase6_t4d_tx_audit_count(NEW."decisionId", ARRAY['change_requested']);
+      IF v_audits <> 1 THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: standard change request % was opened in this transaction with % `change_requested` audit row(s) for decision % — the delivered `requestChange` appends the audit row beside the request and the event, and the register, the fact and the stream record the SAME act: a request with no audit row is an opening the decision log cannot show, and one with two is an act registered twice',
+          NEW."id", v_audits, NEW."decisionId";
+      END IF;
+      -- ONE act, ONE actor (#590 round 4; Codex U3 round 1). A `standard` request carries a
+      -- `change_requested` audit row, but 4d-i's `DecisionEvent_t4d_correspondence` binds the
+      -- event's actor to the request's `requestedById` only when it is non-null (it SKIPS NULL,
+      -- made total at 4d-iii), so a request opened with a NULL requester and a human-attributed
+      -- event would commit with the opening bound to nobody. The request binds its own actor here,
+      -- exactly as the `countersign_rejection` arm below does: exactly ONE same-transaction
+      -- `decision.change_requested` attributed to `requestedById`, and that requester present.
+      v_events := phase6_t4d_tx_actor_event_count(NEW."projectId", NEW."decisionId",
+                                                   ARRAY['decision.change_requested'], NEW."requestedById");
+      IF NEW."requestedById" IS NULL OR v_events <> 1 THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: standard change request % of decision % names % as its requester, and this transaction carries % `decision.change_requested` event(s) attributed to that person (`actorId`) — the opening is ONE act with ONE actor: the request records who asked and the event announces who did, and a request that names no requester, or whose event is attributed to someone else, is an opening the register cannot pin to a person',
+          NEW."id", NEW."decisionId", COALESCE(NEW."requestedById", '<nobody>'), v_events;
+      END IF;
+    ELSIF NEW."origin" = 'countersign_rejection' THEN
+      IF NOT phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'change_from_awaiting') THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: countersign_rejection request % was opened in this transaction, but no `awaiting_countersign → change` move of decision % was performed in it — the rejection request pairs with EXACTLY the disagreement''s transition (`Decision_t4d_disagreement_paired` demands the request when that move happens; this is its converse), and a decision that merely sits in `change` at commit, its `xmin` supplied by a no-op UPDATE, has not been disagreed with here',
+          NEW."id", NEW."decisionId";
+      END IF;
+      -- 4d-ii-a / A8b (#673 round 1) — THE AUDIT ROW, as the plan's correspondence table states it
+      -- for both producers (`awaiting_countersign → change` by disagreement: `change_requested`; by
+      -- the `returned` resolution: `stranded_resolved` + `change_requested`): the delivered writers
+      -- append it beside the request and the event, and a receipt-backed hand-run bundle that
+      -- inserts a rejection request with its correctly claimed event and NO audit row would commit
+      -- immutable evidence the decision log cannot show. Exactly one, as the `standard` arm demands.
+      v_audits := phase6_t4d_tx_audit_count(NEW."decisionId", ARRAY['change_requested']);
+      IF v_audits <> 1 THEN
+        RAISE EXCEPTION
+          'phase6 4d-ii-a A8b: countersign_rejection request % was opened in this transaction with % `change_requested` audit row(s) for decision % — the disagreement (reject-back, forward-on) and the `returned` resolution append the audit row beside the request and the event, and the register, the fact and the stream record the SAME act: a rejection with no audit row is a reopening the decision log cannot show, and one with two is an act registered twice',
+          NEW."id", v_audits, NEW."decisionId";
+      END IF;
+      -- ONE act, ONE actor (#590 round 4). The request binds its own actor (and does it for the
+      -- `returned` resolution's request too: the PMC who returned the decision is the requester that
+      -- request records); with A8b's audit row 4d-i's `DecisionEvent_t4d_correspondence` binds the
+      -- same pair through the register as well.
+      v_events := phase6_t4d_tx_actor_event_count(NEW."projectId", NEW."decisionId",
+                                                   ARRAY['decision.change_requested'], NEW."requestedById");
+      IF NEW."requestedById" IS NULL OR v_events <> 1 THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: countersign_rejection request % of decision % names % as its requester, and this transaction carries % `decision.change_requested` event(s) attributed to that person (`actorId`) — the disagreement is ONE act with ONE actor: the request records who disagreed and the event announces who did, and two immutable records that disagree about who reopened the decision leave a register that cannot say',
+          NEW."id", NEW."decisionId", COALESCE(NEW."requestedById", '<nobody>'), v_events;
+      END IF;
+    END IF;
+
+    v_events := platform_tx_event_count(NEW."projectId", 'Decision', NEW."decisionId",
+                                        ARRAY['decision.change_requested']);
+    IF v_events <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: change request % was opened in this transaction with % `decision.change_requested` event(s) for decision % — the act that opens a request announces it exactly ONCE, in the same transaction; a request with no event is an act nobody can see, and one with two is an act recorded twice',
+        NEW."id", v_events, NEW."decisionId";
+    END IF;
+
+    -- the `returned` stranded resolution's bundle: the resolution is the primary fact and the
+    -- claimant; this request verifies only. Decided at commit, where the whole bundle is visible.
+    -- The immediate half claims a rejection request's event when no resolution is visible yet, so
+    -- the one order it cannot judge — event, request, THEN resolution — arrives here with the
+    -- request holding a claim the resolution owns, and is refused by name (#590 round 3): the
+    -- returned bundle writes its resolution before its request, or its event after both.
+    IF NEW."origin" = 'countersign_rejection' AND EXISTS (
+         SELECT 1 FROM "DecisionStrandedResolution" s
+          WHERE s."projectId" = NEW."projectId" AND s."decisionId" = NEW."decisionId"
+            AND s."outcome" = 'returned' AND s."xmin" = txid_current()::text::xid) THEN
+      IF EXISTS (SELECT 1 FROM "DomainEventPairingClaim" k
+                  WHERE k."projectId" = NEW."projectId" AND k."claimedBy" = 'ChangeRequest' AND k."claimedById" = NEW."id") THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: countersign_rejection request % of decision % claimed its `decision.change_requested` event, but this transaction also carries a `returned` DecisionStrandedResolution for the decision — in the returned bundle the RESOLUTION is the branch''s primary fact and its claimant (§A.3), and the request verifies only. The request claimed because the event was already written when it was inserted and no resolution was visible yet: write the resolution before the request, or the event after both',
+          NEW."id", NEW."decisionId";
+      END IF;
+      RETURN NULL;
+    END IF;
+
+    v_event := platform_tx_event(NEW."projectId", 'Decision', NEW."decisionId",
+                                 ARRAY['decision.change_requested']);
+    PERFORM platform_claim_event_pairing_once(NEW."projectId", v_event, 'ChangeRequest', NEW."id");
+    RETURN NULL;
+  END IF;
+
+  -- UPDATE: only the CLOSURE — the row LEAVING `open` — is a pairing question.
+  IF OLD."status" IS DISTINCT FROM 'open' OR NEW."status" IS NOT DISTINCT FROM 'open' THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT "status"::text AS status, "xmin" = txid_current()::text::xid AS here
+    INTO d FROM "Decision" WHERE "projectId" = NEW."projectId" AND "id" = NEW."decisionId";
+
+  IF NEW."status" = 'withdrawn' THEN
+    IF NOT COALESCE(d.here, FALSE) OR d.status IS DISTINCT FROM 'approved'
+       OR NOT phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'approved_from_change') THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: change request % was WITHDRAWN in this transaction, but decision % is `%` at commit and its `change → approved` restoration was % — the closure and the restoration are ONE bundle in both directions (#558 round 1, finding 2): a withdrawn request beside a decision still in `change` leaves it stranded with nothing to withdraw and no state to approve from',
+        NEW."id", NEW."decisionId", COALESCE(d.status, '<missing>'),
+        CASE WHEN phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'approved_from_change')
+             THEN 'performed here' ELSE 'NOT performed in this transaction' END;
+    END IF;
+    v_audits := phase6_t4d_tx_audit_count(NEW."decisionId", ARRAY['change_withdrawn']);
+    IF v_audits <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: change request % was withdrawn in this transaction with % `change_withdrawn` audit row(s) for decision % — the delivered `withdrawChange` appends the audit row beside the closure and the event, and a withdrawal the decision log cannot show is a closure nobody registered',
+        NEW."id", v_audits, NEW."decisionId";
+    END IF;
+    v_events := platform_tx_event_count(NEW."projectId", 'Decision', NEW."decisionId",
+                                        ARRAY['decision.change_withdrawn']);
+    IF v_events <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: change request % was withdrawn in this transaction with % `decision.change_withdrawn` event(s) for decision % — a withdrawal announces itself exactly ONCE in the same transaction',
+        NEW."id", v_events, NEW."decisionId";
+    END IF;
+    v_event := platform_tx_event(NEW."projectId", 'Decision', NEW."decisionId",
+                                 ARRAY['decision.change_withdrawn']);
+    PERFORM platform_claim_event_pairing_once(NEW."projectId", v_event, 'ChangeRequest', NEW."id");
+    RETURN NULL;
+  END IF;
+
+  IF NEW."status" = 'resolved' THEN
+    IF NOT COALESCE(d.here, FALSE)
+       OR NOT (   (d.status = 'approved'             AND phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'approved_from_change'))
+               OR (d.status = 'awaiting_countersign' AND phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'awaiting_from_change'))) THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: change request % was RESOLVED in this transaction, but decision % is `%` at commit and did not leave `change` for `approved` (no chain) or `awaiting_countersign` (chain) here — a resolution is the reapproval''s closure and pairs with the reapproval''s own transition (#558 round 2, finding 6); a request resolved beside a decision that stays in `change` records an approval nobody made',
+        NEW."id", NEW."decisionId", COALESCE(d.status, '<missing>');
+    END IF;
+    SELECT count(*) INTO v_births FROM "DecisionApprovalRevision" r
+     WHERE r."projectId" = NEW."projectId" AND r."decisionId" = NEW."decisionId"
+       AND r."xmin" = txid_current()::text::xid;
+    IF v_births <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: change request % was resolved by a reapproval of decision % that wrote % approval revision(s) in this transaction — the reapproval IS the act that closes the request, and its revision is that act''s immutable record and the claimant of its event; a closure with no head behind it is a request closed by nobody',
+        NEW."id", NEW."decisionId", v_births;
+    END IF;
+    v_events := platform_tx_event_count(NEW."projectId", 'Decision', NEW."decisionId",
+                                        ARRAY['decision.approved', 'decision.reapproved', 'decision.awaiting_countersign']);
+    IF v_events <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: change request % was resolved in this transaction with % approval-family event(s) for decision % — the reapproval that closes a request announces itself exactly ONCE (claimed by its revision, never by this closure)',
+        NEW."id", v_events, NEW."decisionId";
+    END IF;
+    RETURN NULL;
+  END IF;
+
+  -- any other way out of `open` is refused by the evidence freeze; nothing to pair.
+  RETURN NULL;
+END $function$;
+
 -- ── 3. THE RAISE, inside the migration transition (A6e's block with this file's literal and name) ──
 DO $$
 BEGIN
@@ -491,6 +684,17 @@ BEGIN
      AND t.tgdeferrable AND t.tginitdeferred;
   IF n <> 1 THEN
     RAISE EXCEPTION 'phase6 4d-ii-a A8b: the birth pairing trigger is not standing deferred on the re-issued body (found %). The deploy is refused.', n;
+  END IF;
+  SELECT p.prosrc INTO v_src FROM pg_proc p WHERE p.proname = 'phase6_t4d_change_request_paired';
+  IF v_src IS NULL OR position('countersign_rejection request % was opened in this transaction with % `change_requested` audit row(s)' in v_src) = 0
+     OR position('change_from_awaiting' in v_src) = 0 OR position('platform_claim_event_pairing_once' in v_src) = 0 THEN
+    RAISE EXCEPTION 'phase6 4d-ii-a A8b: the request pairing does not demand the rejection''s audit row beside 4d-i-b''s own clauses after this file ran. The deploy is refused.';
+  END IF;
+  SELECT count(*) INTO n FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid JOIN pg_class c ON c.oid = t.tgrelid
+   WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname = 'phase6_t4d_change_request_paired'
+     AND c.relname = 'ChangeRequest' AND t.tgname = 'ChangeRequest_t4d_paired' AND t.tgdeferrable AND t.tginitdeferred;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'phase6 4d-ii-a A8b: the request pairing trigger is not standing deferred on the re-issued body (found %). The deploy is refused.', n;
   END IF;
   SELECT "minimumGeneration" INTO v_min FROM "ServerGeneration" WHERE "key" = 'singleton';
   IF v_min IS NULL OR v_min < 2 THEN

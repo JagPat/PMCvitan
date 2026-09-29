@@ -11,7 +11,7 @@ import {
   pendingDecisionNotice,
   provisionalApprovalNotice,
   recordedDecisionNotice,
-  withdrawnDecisionNotice, finalizedApprovalNotice } from '../domain/notifications';
+  withdrawnDecisionNotice, finalizedApprovalNotice, changeRequestedNotice, CHANGE_REQUESTED_NOTICE_COLOR } from '../domain/notifications';
 import type { DecisionDto } from '../snapshot/types';
 
 /**
@@ -201,6 +201,18 @@ export function renderKindedDecisionNotice(
       if (!title || !toLabel) return null;
       return { text: forwardedDecisionNotice(title, toLabel), color: FORWARDED_DECISION_NOTICE_COLOR };
     }
+    case 'decision.change_requested': {
+      // A8b — the countersign REJECTION's notice (#673 round 1): the disagreement's two paths and the
+      // `returned` stranded resolution announce the reopening with the title and the reason frozen on
+      // the event. The standard `requestChange` writes no notice (the plan's correspondence table owes
+      // the change-request notice to the `countersign_rejection` origin ONLY), so an event of any other
+      // origin renders nothing — a kinded row bound to one is a forgery the renderer does not serve.
+      if (field(event.payload, 'origin') !== 'countersign_rejection') return null;
+      const title = field(event.payload, 'title');
+      const reason = field(event.payload, 'reason');
+      if (!title || !reason) return null;
+      return { text: changeRequestedNotice(title, reason), color: CHANGE_REQUESTED_NOTICE_COLOR };
+    }
     default:
       return null;
   }
@@ -233,7 +245,9 @@ export function kindedDecisionNoticeServed(
   // 4d-ii-a / A8a — the forwarded notice is the NEW holder's action item: the pending demand's audience
   // (pmc and the decider the decision now names); the displaced holder and every other viewer of the
   // decision see the decision itself move, not the demand addressed to someone else.
-  if (kind === 'decision.forwarded' && role !== 'pmc') {
+  // A8b — the rejection's notice is likewise the decider's action item (the re-approval): pmc and the
+  // decider the decision names (after a forward-on, the NEW holder).
+  if ((kind === 'decision.forwarded' || kind === 'decision.change_requested') && role !== 'pmc') {
     return viewerIsDecider({ deciderKind: decision.deciderKind, deciderUserId: decision.deciderUserId ?? null }, role, userId);
   }
   return true;

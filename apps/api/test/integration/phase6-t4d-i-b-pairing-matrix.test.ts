@@ -217,14 +217,16 @@ const OPENING = (o: { cr: string; ev: string; version: string; order?: Order; au
     o.order === 'event-first' ? event + fact : fact + event, audit);
 };
 /** the disagreement (4d-ii's `decisions.disagree`) on a decision parked in `awaiting_countersign` with the provisional head `mx-rev-park` */
-const REJECT = (o: { cr: string; ev: string; version: string; order?: Order; actor?: string }) => {
+const REJECT = (o: { cr: string; ev: string; version: string; order?: Order; actor?: string; audit?: boolean }) => {
   // the disagreeing party is the request's `requestedById` AND the event's actor (no seal under
   // test judges that party's standing; 4d-ii's `decisions.disagree` binds it to the architect)
   const fact = `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId","requestedById")
       VALUES ('${o.cr}','mx-proj','mx-dec','the architect disagrees',0,0,'open','countersign_rejection','mx-rev-park','mx-client');`;
   const event = EV({ id: o.ev, type: 'decision.change_requested', dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-client' });
+  // 4d-ii-a / A8b (#673 round 1) — the rejection's `change_requested` audit row, demanded by the re-issued request pairing
+  const audit = o.audit === false ? '' : AU('mx-dec', 'change_requested');
   return TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`,
-    o.order === 'event-first' ? event + fact : fact + event);
+    o.order === 'event-first' ? event + fact : fact + event, audit);
 };
 /** the delivered `withdrawChange` on the reopened decision */
 const WITHDRAWAL = (o: { cr: string; ev: string; version: string; order?: Order; audit?: boolean; dec?: string; actor?: string }) => {
@@ -629,10 +631,10 @@ const MATRIX: Branch[] = [
     key: 'decision.change_requested',
     writer: 'decisions.disagree (countersign_rejection)',
     fact: 'ChangeRequest (origin countersign_rejection, citing the provisional revision)',
-    audit: null,
+    audit: 'DecisionEvent.change_requested (demanded since A8b, #673 round 1)',
     transition: 'Decision awaiting_countersign → change (recorded as change_from_awaiting)',
     enforcedBy: ['ChangeRequest_t4d_paired', 'ChangeRequest_t4d_claim', 'Decision_t4d_disagreement_paired',
-      'Decision_t4d_change_transition', 'DomainEvent_t4d_pairing_claimed'],
+      'Decision_t4d_change_transition', 'DecisionEvent_t4d_correspondence', 'DomainEvent_t4d_pairing_claimed'],
     setup: HAND(`UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'mx-dec';
       INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","finalized","approvedFrom")
         VALUES ('mx-rev-park','mx-proj','mx-dec',1,'a',now(),'mx-client',FALSE,'pending');`),
@@ -646,10 +648,13 @@ const MATRIX: Branch[] = [
         // disagreement door — and either message binds the arm to the missing request
         refusal: /awaiting_countersign → change.* with 0 open `countersign_rejection` change request\(s\) born here|in this transaction with no open `countersign_rejection` request/ },
       { name: 'the disagreement\'s event is attributed to ANOTHER user than the request\'s requester (wrong actor, #590 round 4)',
-        // no audit row is declared for this branch, so 4d-i's correspondence never looks: the
-        // request's own seal binds the event's actor to `requestedById`
+        // the request's own seal binds the event's actor to `requestedById`; since A8b the audit row
+        // is demanded too, so 4d-i's correspondence binds the same pair through the register
         bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, actor: 'mx-pmc' }),
-        refusal: /countersign_rejection request .* names mx-client as its requester, and this transaction carries 0 `decision.change_requested` event\(s\) attributed to that person/ },
+        refusal: /countersign_rejection request .* names mx-client as its requester, and this transaction carries 0 `decision.change_requested` event\(s\) attributed to that person|names an actor other than/ },
+      { name: 'the disagreement is written with its request and event but NO `change_requested` audit row (A8b, #673 round 1)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, audit: false }),
+        refusal: /countersign_rejection request .* was opened in this transaction with 0 `change_requested` audit row\(s\)/ },
       { name: 'a rejection request PLANTED EARLIER is no-op updated to stand in for the one this disagreement owes, at the drain generation (no-op substitution)',
         // 4d-i's disagreement door reads the request by `xmin`, which the touch supplies; at the
         // prior generation the event owes no claim, so at cc923fdd this bundle COMMITTED — a
@@ -658,7 +663,7 @@ const MATRIX: Branch[] = [
           VALUES ('mx-cr-old','mx-proj','mx-dec','an earlier disagreement',0,0,'open','countersign_rejection','mx-rev-park');`),
         bundle: TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`,
           `UPDATE "ChangeRequest" SET "reason" = "reason" WHERE "id" = 'mx-cr-old';`,
-          EV({ id: 'mx-ev-rej', type: 'decision.change_requested', dec: 'mx-dec', version: PRIOR })),
+          EV({ id: 'mx-ev-rej', type: 'decision.change_requested', dec: 'mx-dec', version: PRIOR }), AU('mx-dec', 'change_requested')),
         refusal: /awaiting_countersign → change.* with 0 open `countersign_rejection` change request\(s\) born here/ },
     ],
   },
