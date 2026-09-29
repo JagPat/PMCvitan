@@ -27,7 +27,9 @@ export function todayPath(latest: DailyLog | null, totalWorkers: number, today?:
   const done: Record<EngineerTodayStep, boolean> = {
     checkIn: !!log?.checkedIn,
     crew: !!log && totalWorkers > 0,
-    photos: !!log && (log.progress > 0 || log.photos.length > 0),
+    // `progress` counts this log's photos; `photos` is the project's recent progress media, which
+    // can belong to earlier days, so it is never evidence for today
+    photos: !!log && log.progress > 0,
     send: !!log?.submitted,
   };
   const doneCount = TODAY_STEPS.filter((k) => done[k]).length;

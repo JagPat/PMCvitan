@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { SEED_DAILY_LOG, engineerTodayLabels as L, type DailyLog } from '@vitan/shared';
 import { todayPath } from '@/lib/engineerToday';
 import { todayCivil } from '@/lib/civilDate';
@@ -67,9 +67,12 @@ describe('todayPath — the day read from the log', () => {
     expect(todayPath(log({ checkedIn: true, logDate: '2026-09-28' }), 0, '2026-09-29').action).toBe('crew');
   });
 
-  it('a photo on the log counts even before the progress tally catches up', () => {
-    const p = todayPath(log({ checkedIn: true, photos: [{ id: 'm1', url: 'data:x' } as DailyLog['photos'][number]] }), 3);
-    expect(p.done.photos).toBe(true);
+  it('only this log’s photos count: the project’s older progress media is not today’s', () => {
+    const older = [{ id: 'm1', url: 'data:x' } as DailyLog['photos'][number]];
+    const p = todayPath(log({ checkedIn: true, photos: older, progress: 0 }), 3, TODAY);
+    expect(p.done.photos).toBe(false);
+    expect(p.action).toBe('photos');
+    expect(todayPath(log({ checkedIn: true, photos: older, progress: 1 }), 3, TODAY).done.photos).toBe(true);
   });
 });
 
@@ -198,6 +201,25 @@ describe('Engineer Today — the screen', () => {
     try {
       const { r } = await loadToday({ dailyLog: log({ logDate: '2026-09-29' }), timeZone: 'Asia/Kolkata' });
       expect(r.getByTestId('engineer-today').textContent).toContain('29 September');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a page left open across the site’s midnight moves on to the new day', async () => {
+    vi.useFakeTimers();
+    // 23:59 in Kolkata on 29 Sep
+    vi.setSystemTime(new Date('2026-09-29T18:29:00Z'));
+    try {
+      const sent = log({ checkedIn: true, progress: 2, submitted: true, logDate: '2026-09-29' });
+      sent.crew[0].count = 3;
+      const { r } = await loadToday({ dailyLog: sent, timeZone: 'Asia/Kolkata' });
+      expect(r.getByTestId('today-now').dataset.action).toBe('done');
+      await act(async () => {
+        vi.advanceTimersByTime(2 * 60_000);
+      });
+      expect(r.getByTestId('today-now').dataset.action).toBe('start');
+      expect(r.getByTestId('engineer-today').textContent).toContain('30 September');
     } finally {
       vi.useRealTimers();
     }

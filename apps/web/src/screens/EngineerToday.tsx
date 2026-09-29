@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useStore } from '@/store/store';
 import { dailyLogReadMode } from '@/data/apiGateway';
 import { selectTotalWorkers } from '@/store/selectors';
@@ -36,7 +36,17 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   const reading = moduleOwned && (dailyLogLoad === 'idle' || dailyLogLoad === 'loading');
   const unavailable = moduleOwned && dailyLogLoad === 'error';
 
-  const path = todayPath(dailyLog, total, todayCivil(timeZone));
+  // the site's civil day, re-checked each minute: a page left open across the site's midnight
+  // moves on to the new day (and its heading) without a reload
+  const [today, setToday] = useState(() => todayCivil(timeZone));
+  useEffect(() => {
+    const tick = () => setToday(todayCivil(timeZone));
+    tick();
+    const id = setInterval(tick, 60_000);
+    return () => clearInterval(id);
+  }, [timeZone]);
+
+  const path = todayPath(dailyLog, total, today);
   const next = path.action === 'start' || path.action === 'done' ? null : path.action;
   const openSite = () => setScreen('daily-log');
   const date = formatDay(LOCALE[lang], timeZone);
