@@ -63,6 +63,7 @@ import {
   deciderNoun,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
+import { dailyLogCommandInFlight } from './dailyLogPending';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
@@ -202,6 +203,9 @@ export interface AppState {
   // these track its explicit load state for the daily-log surfaces ('idle' in snapshot mode).
   dailyLogLoad: 'idle' | 'loading' | 'ready' | 'error';
   dailyLogSource: 'projection' | 'live' | null;
+  // a committed daily-log start/submit still awaiting its module read (see ModuleReadState)
+  dailyLogReconcileAfter: number | null;
+  dailyLogReconcileKind: 'start' | 'send' | null;
   // Phase 2 Task 10 (Module 2 — Drawings) — the drawings XOR read-ownership state, mirroring decisions.
   // When drawingsReadMode() === 'moduleQuery', `drawings` is owned by the module-owned read (baked
   // per-viewer); these track its explicit load state for the drawing surfaces ('idle' in snapshot mode).
@@ -1007,6 +1011,8 @@ export function getInitialState(): AppState {
     decisionsSource: null,
     dailyLogLoad: 'idle',
     dailyLogSource: null,
+    dailyLogReconcileAfter: null,
+    dailyLogReconcileKind: null,
     drawingsLoad: 'idle',
     drawingsSource: null,
     inspectionsLoad: 'idle',
@@ -1424,6 +1430,12 @@ export const useStore = create<Store>()(
       // a stale module response is dropped with its snapshot, never applied over a newer scope's data.
       const prevTimeZone = st.timeZone;
       applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
+      // a committed daily-log command is reflected once a pull that BEGAN after it carries the
+      // daily-log module read — success shows the new log, failure the read's own error state
+      const after = get().dailyLogReconcileAfter;
+      if (after !== null && dailyLogResult !== undefined && lease.sequence > after) {
+        set((s) => { s.dailyLogReconcileAfter = null; s.dailyLogReconcileKind = null; });
+      }
       // Phase 4 Task 6 (Codex round 2) — on a cold labour-pilot boot the shell can trigger the
       // FIRST labour load before any snapshot has delivered the project timezone, so that load's
       // presence read fell back to the BROWSER's civil day. When an applied snapshot CHANGES the
@@ -4131,6 +4143,11 @@ export const useStore = create<Store>()(
         get().flash('Starting a new log needs the server.');
         return;
       }
+      // a start already on its way (queued, or committed but not yet read back) is never queued twice
+      if (dailyLogCommandInFlight(get())) {
+        get().flash('Today\u2019s log is already being started.');
+        return;
+      }
       // Task 10 correction round 2 (finding 1): WRITE-AHEAD — the op + its key are persisted to the
       // durable outbox before the network call (online or offline), so a lost/uncertain response never
       // strands the command without its key; a retry or reload replays the SAME op under the SAME key.
@@ -4449,6 +4466,17 @@ export const useStore = create<Store>()(
         get().flash('Please check in at site before submitting the daily log.');
         return;
       }
+      // a log already sent is never sent again: each send mints a fresh idempotency key, so the
+      // server would take a second tap as a second, independent submission
+      if (dl.submitted) {
+        get().flash('Today\u2019s log is already with PMC.');
+        return;
+      }
+      // a send already on its way (queued, or committed but not yet read back) is never queued twice
+      if (dailyLogCommandInFlight(get())) {
+        get().flash('Today\u2019s log is already on its way to PMC.');
+        return;
+      }
       const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew };
       // Task 10 correction round 2 (finding 1): WRITE-AHEAD — the op + its key are persisted before the
       // network call (online too), so a lost response is retried under the SAME key, submitting once.
@@ -4561,6 +4589,8 @@ export const useStore = create<Store>()(
       // reconcile hook below for why), so there is nothing to collect.
       let commercialAttempted = false;
       let lastSnap: ApiSnapshot | null = null;
+      // the LAST daily-log command this flush committed: the log will next read back as its result
+      let dailyLogCommitted: 'start' | 'send' | null = null;
       let synced = 0;
       let dropped = 0;
       let stoppedAt = -1;
@@ -4580,6 +4610,8 @@ export const useStore = create<Store>()(
         try {
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
+          if (ops[i].t === 'startDailyLog') dailyLogCommitted = 'start';
+          else if (ops[i].t === 'submitDailyLog') dailyLogCommitted = 'send';
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
           if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
           if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
@@ -4637,6 +4669,13 @@ export const useStore = create<Store>()(
       const appended = get().outbox.slice(ops.length);
       set((s) => {
         s.outbox = [...remaining, ...appended];
+        // under module ownership the command's own snapshot carries no daily-log slice, so the log
+        // on screen predates the committed start/submit until the reconcile's module read lands —
+        // flag it in the SAME update that drops the op, leaving no window to act on the stale log
+        if (dailyLogCommitted && dailyLogReadMode() === 'moduleQuery') {
+          s.dailyLogReconcileAfter = snapshotSeq;
+          s.dailyLogReconcileKind = dailyLogCommitted;
+        }
         s.syncQueue = []; // local-only labels (check-in, QR) are considered synced on reconnect
         // gate round 8: the queue changed — a queued submit may have replayed or
         // been dropped (terminal 4xx). Re-derive the freeze so a dropped submit

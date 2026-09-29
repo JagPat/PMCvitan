@@ -35,6 +35,7 @@ export {
   X,
   Volume2,
   CircleCheck,
+  Circle,
   Languages,
   Users,
   Wrench,

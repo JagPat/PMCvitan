@@ -4,6 +4,7 @@ import { selectActionItems, type ActionItem } from '@/store/selectors';
 import { ROLE_LABEL } from '@/lib/screens';
 import { Eyebrow, Button } from '@/components';
 import { ArrowRight, CircleCheck } from '@/lib/icons';
+import { EngineerToday } from './EngineerToday';
 import styles from './responsive.module.css';
 
 type Tone = ActionItem['tone'];
@@ -32,6 +33,17 @@ export function InboxScreen() {
   const short = useStore((s) => s.short); // this queue is scoped to the active project
   const setScreen = useStore((s) => s.setScreen);
 
+  // the engineer's home is their day: Today's path carries the site log, so its "not submitted"
+  // card would only repeat it; everything else still waiting on them follows below
+  if (role === 'engineer') {
+    const rest = items.filter((it) => it.key !== 'eng-log');
+    return (
+      <div className={`${styles.screen} ${styles.mid}`}>
+        <EngineerToday also={rest.length ? <ActionList items={rest} onOpen={setScreen} /> : undefined} />
+      </div>
+    );
+  }
+
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
       <Eyebrow>FOR YOU · {ROLE_LABEL[role].toUpperCase()}</Eyebrow>
@@ -52,33 +64,42 @@ export function InboxScreen() {
           <div style={{ marginTop: 4 }}>When a decision, drawing or inspection is waiting on you, it’ll show up here.</div>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 11, marginTop: 22 }}>
-          {items.map((it) => {
-            const t = TONE[it.tone];
-            return (
-              <div key={it.key} data-testid={`inbox-item-${it.key}`} style={{ ...card, borderColor: t.border }}>
-                <span aria-hidden style={{ ...rail, background: t.accent }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14.5, lineHeight: 1.3 }}>{it.title}</div>
-                  {it.detail && (
-                    <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {it.detail}
-                    </div>
-                  )}
-                </div>
-                <Button
-                  variant={it.tone === 'red' ? 'danger' : it.tone === 'amber' ? 'accent' : 'ink'}
-                  onClick={() => setScreen(it.screen)}
-                  data-testid={`inbox-cta-${it.key}`}
-                  style={{ flex: 'none', padding: '9px 13px', fontSize: 13 }}
-                >
-                  {it.cta} <ArrowRight size={15} />
-                </Button>
-              </div>
-            );
-          })}
+        <div style={{ marginTop: 22 }}>
+          <ActionList items={items} onOpen={setScreen} />
         </div>
       )}
+    </div>
+  );
+}
+
+/** The For You cards: one row per item, each a one-tap jump to where the thing is done. */
+function ActionList({ items, onOpen }: { items: ActionItem[]; onOpen: (screen: ActionItem['screen']) => void }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+      {items.map((it) => {
+        const t = TONE[it.tone];
+        return (
+          <div key={it.key} data-testid={`inbox-item-${it.key}`} style={{ ...card, borderColor: t.border }}>
+            <span aria-hidden style={{ ...rail, background: t.accent }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 14.5, lineHeight: 1.3 }}>{it.title}</div>
+              {it.detail && (
+                <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {it.detail}
+                </div>
+              )}
+            </div>
+            <Button
+              variant={it.tone === 'red' ? 'danger' : it.tone === 'amber' ? 'accent' : 'ink'}
+              onClick={() => onOpen(it.screen)}
+              data-testid={`inbox-cta-${it.key}`}
+              style={{ flex: 'none', padding: '9px 13px', fontSize: 13 }}
+            >
+              {it.cta} <ArrowRight size={15} />
+            </Button>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -8,6 +8,7 @@ import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { LocationPicker } from '@/components/LocationPicker';
 import { captureStamp } from '@/lib/captureStamp';
 import { projectScopeOf } from '@/store/projectScope';
+import { dailyLogCommandInFlight, dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
 import { can, labourLabels } from '@vitan/shared';
@@ -47,6 +48,13 @@ export function DailyLogScreen() {
   const reading = moduleOwned && (dailyLogLoad === 'idle' || dailyLogLoad === 'loading');
   const unavailable = moduleOwned && dailyLogLoad === 'error';
   const actionsLocked = reading || unavailable; // don't mutate a log whose read hasn't settled
+  // a start / send already on its way (queued, or committed and not yet read back): the log on
+  // screen predates it, so the same command is never offered twice — the rule the store enforces
+  const starting = useStore(dailyLogStartPending);
+  const sending = useStore(dailyLogSendPending);
+  const inFlight = useStore(dailyLogCommandInFlight);
+  // a send on its way has already captured what it carries (check-in, crew, photo count): edits
+  // made now would be dropped by the reconcile while the server keeps the sent values, so they wait
   // live project identity — never the seeded Ambli copy (Phase 0 Task 7)
   const short = useStore((s) => s.short);
   const location = useStore((s) => s.location);
@@ -123,8 +131,8 @@ export function DailyLogScreen() {
         detail="Start today's log when site work begins — attendance, crew, materials and progress photos all record onto it."
         action={
           can('dailyLog.start', role) ? (
-            <Button variant="ink" onClick={startDailyLog} data-testid="start-new-day">
-              <Plus size={15} /> Start today's log
+            <Button variant="ink" onClick={startDailyLog} disabled={inFlight} data-testid="start-new-day">
+              <Plus size={15} /> {starting ? 'Starting today\u2019s log\u2026' : "Start today's log"}
             </Button>
           ) : undefined
         }
@@ -157,7 +165,7 @@ export function DailyLogScreen() {
             <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{dailyLog.date}</div>
           </div>
           {dailyLog.submitted && can('dailyLog.start', role) && (
-            <Button variant="outline" onClick={startDailyLog} disabled={actionsLocked} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
+            <Button variant="outline" onClick={startDailyLog} disabled={actionsLocked || inFlight} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
               <Plus size={15} /> Start new day
             </Button>
           )}
@@ -184,13 +192,13 @@ export function DailyLogScreen() {
               <div style={{ fontWeight: 600, fontSize: 14 }}>Checked in · {dailyLog.checkinTime}</div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'rgba(237,231,218,.55)', marginTop: 2 }}>{siteLabel} · within 60 m · GPS + selfie</div>
             </div>
-            <button onClick={checkOut} data-testid="check-out" style={{ background: 'transparent', border: '1px solid rgba(237,231,218,.3)', color: 'var(--sidebar-text)', padding: '8px 11px', minHeight: 44, borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
+            <button onClick={checkOut} disabled={sending} data-testid="check-out" style={{ background: 'transparent', border: '1px solid rgba(237,231,218,.3)', color: 'var(--sidebar-text)', padding: '8px 11px', minHeight: 44, borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
               Check out
             </button>
           </div>
         ) : (
           <>
-            <button onClick={checkIn} data-testid="check-in" style={{ width: '100%', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 15, padding: 18, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9 }}>
+            <button onClick={checkIn} disabled={sending} data-testid="check-in" style={{ width: '100%', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 15, padding: 18, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9 }}>
               <Crosshair size={18} /> Check in at site
             </button>
             {/* the PRESENCE PROOF is not an eyebrow: it tells the worker what this button is about to
@@ -209,11 +217,11 @@ export function DailyLogScreen() {
             <div key={c.trade} style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 12, padding: '11px 13px', display: 'flex', alignItems: 'center', gap: 11 }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: c.count > 0 ? 'var(--green-solid)' : 'rgba(35,33,28,.18)' }} />
               <div style={{ flex: 1, fontWeight: 600, fontSize: 13.5 }}>{c.trade}</div>
-              <button onClick={() => crewStep(i, -1)} aria-label={`Remove ${c.trade}`} style={stepBtn}>
+              <button onClick={() => crewStep(i, -1)} disabled={sending} aria-label={`Remove ${c.trade}`} style={stepBtn}>
                 <Minus size={16} />
               </button>
               <div style={{ width: 26, textAlign: 'center', fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 15 }}>{c.count}</div>
-              <button onClick={() => crewStep(i, 1)} aria-label={`Add ${c.trade}`} style={stepBtn}>
+              <button onClick={() => crewStep(i, 1)} disabled={sending} aria-label={`Add ${c.trade}`} style={stepBtn}>
                 <Plus size={16} />
               </button>
             </div>
@@ -299,7 +307,7 @@ export function DailyLogScreen() {
           ))}
         </div>
         {can('dailyLog.addMaterial', role) && (
-          <button onClick={() => setAddingMaterial(true)} disabled={actionsLocked} data-testid="add-material" style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+          <button onClick={() => setAddingMaterial(true)} disabled={actionsLocked || sending} data-testid="add-material" style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
             <Plus size={16} /> Record material delivery
           </button>
         )}
@@ -312,7 +320,7 @@ export function DailyLogScreen() {
             <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Stamped with the time and place the photo itself recorded</div>
           </div>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
-          <button onClick={() => fileRef.current?.click()} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => fileRef.current?.click()} disabled={sending} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <Camera size={14} /> Add
           </button>
         </div>
@@ -350,11 +358,11 @@ export function DailyLogScreen() {
       <div className={styles.stickyFoot} style={{ padding: '12px 16px 20px', borderTop: '1px solid rgba(35,33,28,.1)', background: 'var(--panel)' }}>
         <button
           onClick={submitDailyLog}
-          disabled={actionsLocked}
+          disabled={actionsLocked || inFlight || dailyLog.submitted}
           data-testid="submit-daily-log"
-          style={{ width: '100%', maxWidth: 460, margin: '0 auto', display: 'block', padding: 15, borderRadius: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.6 : 1, border: 'none', background: dailyLog.submitted ? 'var(--green-chip)' : 'var(--ink)', color: dailyLog.submitted ? 'var(--green-text)' : 'var(--sidebar-text)' }}
+          style={{ width: '100%', maxWidth: 460, margin: '0 auto', display: 'block', padding: 15, borderRadius: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, cursor: actionsLocked || inFlight ? 'not-allowed' : 'pointer', opacity: actionsLocked || inFlight ? 0.6 : 1, border: 'none', background: dailyLog.submitted ? 'var(--green-chip)' : 'var(--ink)', color: dailyLog.submitted ? 'var(--green-text)' : 'var(--sidebar-text)' }}
         >
-          {dailyLog.submitted ? 'Submitted ✓ — sent to PMC' : 'Submit Daily Log to PMC'}
+          {dailyLog.submitted ? 'Submitted ✓ — sent to PMC' : sending ? 'Sending to PMC\u2026' : 'Submit Daily Log to PMC'}
         </button>
       </div>
     </div>

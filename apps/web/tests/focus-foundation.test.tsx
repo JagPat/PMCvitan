@@ -445,6 +445,8 @@ describe('F-1a ink-surface inventory', () => {
     'layout/CreateControl.module.css': 'light-ring-fill',
     'layout/NotificationPanel.module.css': 'sets-active-focus-ring',
     'layout/LeftRail.module.css': 'element-data-surface',
+    // the engineer's "do this now" card: ink, holding the day's one big action
+    'screens/EngineerToday.module.css': 'element-data-surface',
   };
 
   // vitest runs with cwd = apps/web; a wrong cwd fails LOUDLY (ENOENT), and
