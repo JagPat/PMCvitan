@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import {
-  DRAIN_DIRECTIVE, DRAIN_EVIDENCE_MARKER, coolifyInventoryReader, gitAncestryClassifier, judgeDrain, renderDrainEvidence,
+  DRAIN_DIRECTIVE, DRAIN_EVIDENCE_MARKER, coolifyInventoryReader, deploymentInProgress, gitAncestryClassifier, judgeDrain, renderDrainEvidence,
   type Classification, type DrainEvidenceInput, type LiveLease, type PlatformInventory, type ReleaseClassifier,
 } from './drain-evidence';
 
@@ -63,6 +63,16 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
     unclassified({ platform: { inventory: inventory({}, [{ deploymentUuid: 'd-1', applicationId: 7, status: 'in_progress', commit: 'cccccccc' }]) } }, /1 deployment\(s\) in progress .*d-1:in_progress/);
     // a running deployment of ANOTHER application is not this one's
     expect(judgeDrain(base({ platform: { inventory: inventory({}, [{ deploymentUuid: 'd-2', applicationId: 8, status: 'in_progress', commit: null }]) } })).verdict).toBe('drained');
+    // a deployment record is judged by STATE (#663 round 4, finding 1): finished, failed and cancelled records
+    // are history and leave the verdict drained; queued is in progress; an unknown state is counted in
+    // progress and named in the finding
+    const dep = (status: string) => ({ deploymentUuid: `d-${status}`, applicationId: 7, status, commit: 'cccccccc' });
+    expect(judgeDrain(base({ platform: { inventory: inventory({}, [dep('finished'), dep('failed'), dep('cancelled-by-user')]) } })).verdict).toBe('drained');
+    unclassified({ platform: { inventory: inventory({}, [dep('finished'), dep('queued')]) } }, /1 deployment\(s\) in progress .*d-queued:queued\)/);
+    unclassified({ platform: { inventory: inventory({}, [dep('weird')]) } }, /d-weird:weird\).*"weird" is not a state this command knows and is counted in progress/);
+    expect(deploymentInProgress('FINISHED')).toEqual({ inProgress: false, known: true });
+    expect(deploymentInProgress('in_progress')).toEqual({ inProgress: true, known: true });
+    expect(deploymentInProgress('rolling')).toEqual({ inProgress: true, known: false });
     unclassified({ platform: { inventory: inventory({ gitCommitSha: 'unknown' }) } }, /image commit "unknown", which cannot be placed/);
     unclassified({ leases: [lease('i-u', 3, 'unreleased')] }, /names release "unreleased", which cannot be placed/);
     unclassified({ persistedMinimum: null }, /no persisted server-generation minimum/);

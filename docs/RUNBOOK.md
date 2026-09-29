@@ -1311,7 +1311,9 @@ catalog version and release; a live lease at a catalog version below the minimum
 persisted catalog maximum, or `--minimum-catalog-version`) is a still-serving older process; (ii) the
 platform's inventory for the processes that predate the register — the application resource
 (`GET /applications/{uuid}`: its running status and the commit its image was built from) and the
-platform's queue of running deployments (`GET /deployments`). Each release is placed against the
+platform's deployment queue (`GET /deployments`), each record judged by its state: `queued` and
+`in_progress` are in progress, `finished`, `failed` and cancelled records are history, and a state
+the command does not know is counted in progress and named. Each release is placed against the
 minimum by git ancestry in `--repo`. The verdict is `drained` only when the application runs an image
 at or after the minimum, no deployment of it is in progress, and every live lease is at the minimum
 catalog version; anything provably older is `not-drained`; anything it cannot place — no token, a

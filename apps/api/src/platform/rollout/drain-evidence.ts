@@ -39,6 +39,23 @@ export const DRAIN_DIRECTIVE = 'phase-6-4d-previous-release-drained';
 export const DRAIN_EVIDENCE_MARKER = 'DRAIN-EVIDENCE';
 
 export type Classification = 'at-or-after' | 'before' | 'unclassifiable';
+
+/**
+ * The platform's deployment states (#663's review round 4, finding 1). A record in a TERMINAL state
+ * is history, not a deployment in progress, whatever endpoint returned it; a record in an ACTIVE
+ * state means two images may serve at once. A state this list does not know is counted IN PROGRESS
+ * and named in a finding — fail closed, and visibly, rather than guessing which way it leans.
+ */
+export const DEPLOYMENT_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['finished', 'failed', 'cancelled-by-user', 'cancelled']);
+export const DEPLOYMENT_ACTIVE_STATUSES: ReadonlySet<string> = new Set(['queued', 'in_progress']);
+
+/** Whether a deployment record still counts as in progress, and whether that judgement rests on a known state. */
+export function deploymentInProgress(status: string): { inProgress: boolean; known: boolean } {
+  const s = status.trim().toLowerCase();
+  if (DEPLOYMENT_TERMINAL_STATUSES.has(s)) return { inProgress: false, known: true };
+  if (DEPLOYMENT_ACTIVE_STATUSES.has(s)) return { inProgress: true, known: true };
+  return { inProgress: true, known: false };
+}
 export type DrainVerdict = 'drained' | 'not-drained' | 'unclassified';
 
 export interface ReleaseClassifier {
@@ -126,13 +143,17 @@ export function judgeDrain(input: DrainEvidenceInput): DrainEvidence {
     platform = { available: false, reason: input.platform.unavailable };
   } else {
     const { application, runningDeployments, source } = input.platform.inventory;
-    const inProgress = runningDeployments.filter((d) => d.applicationId === application.id);
+    // this application's records, judged by STATE: a finished, failed or cancelled record is history
+    // (#663 round 4, finding 1); an unknown state is counted in progress and named
+    const own = runningDeployments.filter((d) => d.applicationId === application.id);
+    const inProgress = own.filter((d) => deploymentInProgress(d.status).inProgress);
+    const unknown = inProgress.filter((d) => !deploymentInProgress(d.status).known);
     const classification = input.classifier.classify(input.minimumRelease, application.gitCommitSha);
     if (!/^running\b/.test(application.status)) {
       cannot(`application ${application.uuid} (${application.name}) is not running (status "${application.status}"): the drain is judged over a serving fleet, and a stopped one is not evidence of which image would serve next`);
     }
     if (inProgress.length > 0) {
-      cannot(`${inProgress.length} deployment(s) in progress for application ${application.uuid} (${inProgress.map((d) => `${d.deploymentUuid}:${d.status}`).join(', ')}): two images may serve at once until it finishes`);
+      cannot(`${inProgress.length} deployment(s) in progress for application ${application.uuid} (${inProgress.map((d) => `${d.deploymentUuid}:${d.status}`).join(', ')}): two images may serve at once until it finishes${unknown.length ? ` — ${unknown.map((d) => `"${d.status}"`).join(', ')} ${unknown.length === 1 ? 'is not a state this command knows and is' : 'are not states this command knows and are'} counted in progress` : ''}`);
     }
     if (classification === 'before') {
       refuse(`application ${application.uuid} (${application.name}) serves image commit ${application.gitCommitSha}, BEFORE the minimum release ${input.minimumRelease}`);
@@ -228,9 +249,10 @@ export type FetchLike = (url: string, init: { headers: Record<string, string> })
 
 /**
  * The Coolify reader: `GET /applications/{uuid}` (the resource, its `status` and `git_commit_sha`)
- * and `GET /deployments` (the platform's running deployments). The token is sent and never
- * returned, logged or embedded in the evidence. Any read that fails or lacks a field the judgement
- * needs throws, which the command records as an unavailable inventory — fail closed.
+ * and `GET /deployments` (the platform's deployment queue, documented as the running ones; every
+ * record is returned with its `status` and the judgement decides by state). The token is sent and
+ * never returned, logged or embedded in the evidence. Any read that fails or lacks a field the
+ * judgement needs throws, which the command records as an unavailable inventory — fail closed.
  */
 export function coolifyInventoryReader(opts: { baseUrl: string; token: string; fetch: FetchLike }): { read(appUuid: string): Promise<PlatformInventory> } {
   const base = opts.baseUrl.replace(/\/+$/, '');
