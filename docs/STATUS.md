@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a7b-send-boundary
 reviewed_merge: fff49f8
-open_pr: none
+open_pr: 668
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
@@ -27,7 +27,7 @@ updated: 2026-09-29
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A7b (`work_item: phase-6-task-4d-ii-a-a7b-send-boundary`, branch
+- **Now, A7b, `open_pr: 668` (`work_item: phase-6-task-4d-ii-a-a7b-send-boundary`, branch
   `claude/4d-ii-a7b-send-boundary`, from `main` at `aa70f9d`).** The second A7 sub-unit, the send
   boundary (plan §A.4): the push consumer's FINAL re-judge before EACH recipient's provider call
   (the mark, the family's own predicate re-run, the recipient's standing); `deciderPushTarget`
