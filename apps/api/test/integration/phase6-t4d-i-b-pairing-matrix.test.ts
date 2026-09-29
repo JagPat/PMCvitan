@@ -401,6 +401,67 @@ const PROVISIONAL = (o: { rev: string; ev: string; version: string; order?: Orde
 /** a HAND: a write past every seal, for a world state no delivered writer produces */
 const HAND = (sql: string) => `SET session_replication_role = 'replica'; ${sql} SET session_replication_role = 'origin';`;
 
+/** the world the countersign bundle needs: the chain active, the audit kind's door dropped (4d-iii's act, as the
+ *  forward world drops it), and `mx-dec` PARKED by the delivered provisional approve (its head `mx-rev-park`,
+ *  approver MX PMC on behalf of the client, `approvedFrom = pending`) */
+const COUNTERSIGN_WORLD = `${CHAIN_WORLD}
+  DROP TRIGGER IF EXISTS "DecisionEvent_t4d_kind_reserved" ON "DecisionEvent";
+  ${PROVISIONAL({ rev: 'mx-rev-park', ev: 'mx-ev-aw-park', version: CURRENT })}`;
+/** the world the stranded bundles need: NO architect (the chain inactive), the audit kind's and the forward's doors
+ *  dropped, and `mx-dec` parked with its provisional head by HAND (the state the last architect's departure
+ *  leaves; no delivered writer parks a decision under an inactive chain) */
+const STRANDED_WORLD = `DROP TRIGGER IF EXISTS "DecisionEvent_t4d_kind_reserved" ON "DecisionEvent";
+  DROP TRIGGER IF EXISTS "DecisionForward_t4d_reserved" ON "DecisionForward";
+  ` + HAND(`UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'mx-dec';
+  INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","finalized","approvedFrom","approvedByName","approvedByRole")
+    VALUES ('mx-rev-park','mx-proj','mx-dec',1,'a',now(),'mx-client',FALSE,'pending','MX Client','client');`);
+/** the finalization both finalizers perform after their fact: the head's flip and `awaiting_countersign → approved` */
+const FINALIZE = (o: { flip?: boolean; land?: boolean }) =>
+  `${o.flip === false ? '' : `UPDATE "DecisionApprovalRevision" SET "finalized" = TRUE WHERE "id" = 'mx-rev-park';`}
+   ${o.land === false ? '' : `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'mx-dec';`}`;
+/**
+ * 4d-ii-a / A8b — the delivered `decisions.countersign`: receipt, the FACT first naming the exact head (4d-i's
+ * seal judges the architect's standing, the awaiting subject and the provisional head at the insert), the
+ * head's finality flip, `awaiting_countersign → approved`, ONE `decision.approved` in the ARCHITECT's name
+ * naming the revision and the fact, the `countersigned` audit row, the completed receipt naming the fact.
+ */
+const COUNTERSIGN = (o: { cs: string; ev: string; version: string; order?: Order; event?: boolean; audit?: boolean; fact?: boolean; flip?: boolean; land?: boolean; named?: string; namedRev?: string; actor?: string; role?: string; cmd?: string }) => {
+  const cmd = o.cmd ?? `${o.cs}-cmd`;
+  const fact = o.fact === false ? '' : `INSERT INTO "DecisionCountersign" ("id","projectId","decisionId","revisionId","countersignedById","countersignedByRole","countersignedByName","sourceCommandId")
+      VALUES ('${o.cs}','mx-proj','mx-dec','mx-rev-park','mx-arch','${o.role ?? 'architect'}','MX Architect','${cmd}');`;
+  const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.approved', dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-arch',
+    payload: `jsonb_build_object('revisionId','${o.namedRev ?? 'mx-rev-park'}','countersignId','${o.named ?? o.cs}','finalization','countersign')`,
+    push: `, 'push', jsonb_build_object('body','approved','roles', c."pushRoles")` });
+  const audit = o.audit === false ? '' : AU('mx-dec', 'countersigned');
+  const act = fact + FINALIZE(o);
+  return TX(RESERVE(cmd, 'decisions.countersign', 'mx-arch'), o.order === 'event-first' ? event + act : act + event, audit, COMPLETE(cmd, o.cs));
+};
+/**
+ * 4d-ii-a / A8b — the delivered `decisions.resolveStrandedCountersign`: receipt, the FACT first (4d-i's seal
+ * judges the PMC, the awaiting subject, the INACTIVE chain and the provisional head at the insert), then by
+ * outcome — `completed`: the flip, `awaiting_countersign → approved`, ONE `decision.approved` in the PMC's name
+ * naming the revision and the fact; `returned`: `awaiting_countersign → change`, the open `countersign_rejection`
+ * request citing the head under the SAME receipt (the resolution is the bundle's primary; the request verifies
+ * and never claims), ONE `decision.change_requested` in the PMC's name naming the revision and the fact, the
+ * `change_requested` audit row — and, both: the `stranded_resolved` audit row, the completed receipt naming the fact.
+ */
+const STRANDED = (o: { sr: string; ev: string; version: string; outcome: 'completed' | 'returned'; order?: Order; event?: boolean; audit?: boolean; fact?: boolean; flip?: boolean; land?: boolean; request?: boolean; named?: string; actor?: string; role?: string; cmd?: string }) => {
+  const cmd = o.cmd ?? `${o.sr}-cmd`;
+  const fact = o.fact === false ? '' : `INSERT INTO "DecisionStrandedResolution" ("id","projectId","decisionId","revisionId","outcome","resolvedById","resolvedByRole","resolvedByName","reason","sourceCommandId")
+      VALUES ('${o.sr}','mx-proj','mx-dec','mx-rev-park','${o.outcome}','mx-pmc','${o.role ?? 'pmc'}','MX PMC','nobody left to countersign','${cmd}');`;
+  const family = o.outcome === 'completed' ? 'decision.approved' : 'decision.change_requested';
+  const event = o.event === false ? '' : EV({ id: o.ev, type: family, dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-pmc',
+    payload: `jsonb_build_object('revisionId','mx-rev-park','resolutionId','${o.named ?? o.sr}','outcome','${o.outcome}')`,
+    push: o.outcome === 'completed' ? `, 'push', jsonb_build_object('body','approved','roles', c."pushRoles")` : undefined });
+  const act = o.outcome === 'completed'
+    ? fact + FINALIZE(o)
+    : fact + (o.land === false ? '' : `UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`)
+      + (o.request === false ? '' : `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId","requestedById","requestedByRole","requestedByName","sourceCommandId")
+          VALUES ('${o.sr}-cr','mx-proj','mx-dec','nobody left to countersign',0,0,'open','countersign_rejection','mx-rev-park','mx-pmc','pmc','MX PMC','${cmd}');`);
+  const audit = (o.audit === false ? '' : AU('mx-dec', 'stranded_resolved')) + (o.outcome === 'returned' && o.request !== false ? AU('mx-dec', 'change_requested') : '');
+  return TX(RESERVE(cmd, 'decisions.resolveStrandedCountersign', 'mx-pmc'), o.order === 'event-first' ? event + act : act + event, audit, COMPLETE(cmd, o.sr));
+};
+
 // ── THE MATRIX ───────────────────────────────────────────────────────────────────────────────
 const MATRIX: Branch[] = [
   {
@@ -776,6 +837,124 @@ const MATRIX: Branch[] = [
       { name: 'a revision BORN finalized under an ACTIVE chain (the writer choosing the birth value)',
         bundle: PROVISIONAL({ rev: 'mx-rev', ev: 'mx-ev-aw', version: CURRENT, finalized: true }),
         refusal: /born finalized=t on a project whose architect chain is ACTIVE/ },
+    ],
+  },
+  // 4d-ii-a / A8b — the countersign: the fact naming the exact head is the branch's primary fact
+  {
+    key: 'decision.approved',
+    writer: 'decisions.countersign (the architect finalizes the parked provisional approval)',
+    fact: 'DecisionCountersign (naming the exact head revision, the architect\'s frozen pair)',
+    audit: 'DecisionEvent.countersigned',
+    transition: 'Decision awaiting_countersign → approved with the head\'s finality flip, under a decisions.countersign receipt naming the fact',
+    enforcedBy: ['DecisionCountersign_t4d_claim', 'DecisionCountersign_t4d_claim_deferred', 'DecisionCountersign_t4d_seal', 'DecisionCountersign_t4d_paired',
+      'DecisionCountersign_t4d_provenance_bound', 'DecisionApprovalRevision_t4d_flip_paired', 'DecisionApprovalRevision_t4d_one_flip',
+      'DecisionEvent_t4d_correspondence', 'DomainEvent_t4d_pairing_claimed'],
+    setup: COUNTERSIGN_WORLD,
+    positive: (order, version) => COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version, order }),
+    claim: 'mx-ev-cs:DecisionCountersign:mx-cs',
+    negatives: [
+      { name: 'the countersign is written with NO finalizing event',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, event: false }),
+        refusal: /with 0 finalizing event\(s\)|carries 0 `decision\.approved`/ },
+      { name: 'the event names ANOTHER countersign (wrong identity)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, named: 'mx-cs-other' }),
+        refusal: /with 0 finalizing event\(s\)|requires a pairing claim and none was made/ },
+      { name: 'the event names ANOTHER revision than the one the fact finalized (wrong identity)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, namedRev: 'mx-rev-other' }),
+        refusal: /with 0 finalizing event\(s\)|requires a pairing claim and none was made/ },
+      { name: 'the event is attributed to ANOTHER user than the countersigner (wrong actor)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, actor: 'mx-pmc' }),
+        refusal: /with 0 finalizing event\(s\)|requires a pairing claim and none was made|names an actor other than/ },
+      { name: 'the fact and the event are written but the head is never FLIPPED (a countersign that finalizes nothing)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, flip: false }),
+        refusal: /which is not finalized at commit/ },
+      { name: 'the fact, the flip and the event are written but the decision stays `awaiting_countersign` (the status never lands)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, land: false }),
+        refusal: /at commit the decision is `awaiting_countersign` rather than `approved`/ },
+      { name: 'the flip, the landing and the event with NO fact behind them (the forged finalization)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, fact: false }),
+        refusal: /with neither a DecisionCountersign nor a `completed` DecisionStrandedResolution naming it|requires a pairing claim and none was made/ },
+      { name: 'the countersign is written with its event but NO `countersigned` audit row',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, audit: false }),
+        refusal: /with 0 `countersigned` audit row\(s\)/ },
+      { name: 'the fact freezes the role `pmc` (a countersign is the architect\'s act)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, role: 'pmc' }),
+        refusal: /freezes the role `pmc` — a countersign is the ARCHITECT/ },
+    ],
+  },
+  // 4d-ii-a / A8b — the stranded resolution, COMPLETED: the fact is the branch's primary fact
+  {
+    key: 'decision.approved',
+    writer: 'decisions.resolveStrandedCountersign (completed: the PMC finalizes under the inactive chain)',
+    fact: 'DecisionStrandedResolution (outcome completed, naming the exact head, the PMC\'s frozen pair)',
+    audit: 'DecisionEvent.stranded_resolved',
+    transition: 'Decision awaiting_countersign → approved with the head\'s finality flip, under a decisions.resolveStrandedCountersign receipt naming the fact',
+    enforcedBy: ['DecisionStrandedResolution_t4d_claim', 'DecisionStrandedResolution_t4d_claim_deferred', 'DecisionStrandedResolution_t4d_seal', 'DecisionStrandedResolution_t4d_paired',
+      'DecisionStrandedResolution_t4d_provenance_bound', 'DecisionApprovalRevision_t4d_flip_paired', 'DecisionEvent_t4d_correspondence', 'DomainEvent_t4d_pairing_claimed'],
+    setup: STRANDED_WORLD,
+    positive: (order, version) => STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version, order, outcome: 'completed' }),
+    claim: 'mx-ev-sr:DecisionStrandedResolution:mx-sr',
+    negatives: [
+      { name: 'the resolution is written with NO finalizing event',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', event: false }),
+        refusal: /with 0 event\(s\) of its outcome's family|carries 0 `decision\.approved`/ },
+      { name: 'the event names ANOTHER resolution (wrong identity)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', named: 'mx-sr-other' }),
+        refusal: /with 0 event\(s\) of its outcome's family|requires a pairing claim and none was made/ },
+      { name: 'the event is attributed to ANOTHER user than the resolver (wrong actor)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', actor: 'mx-client' }),
+        refusal: /with 0 event\(s\) of its outcome's family|requires a pairing claim and none was made|names an actor other than/ },
+      { name: 'the fact and the event are written but the head is never flipped and the decision never lands',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', flip: false, land: false }),
+        refusal: /owes BOTH the finality flip on revision mx-rev-park and the `awaiting_countersign → approved` transition/ },
+      { name: 'the resolution is written with its event but NO `stranded_resolved` audit row',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', audit: false }),
+        refusal: /with 0 `stranded_resolved` audit row\(s\)/ },
+      { name: 'the project still holds an ACTIVE architect (the decision is not stranded; the countersign is the legal path)',
+        setup: `${STANDING_WORLD} ${STANDING({ mt: 'mx-mt1', ev: 'mx-ev-st1', version: CURRENT })}`,
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed' }),
+        refusal: /still holds an ACTIVE architect, so decision mx-dec is not stranded/ },
+      { name: 'the fact freezes the role `architect` (resolving a stranded decision is the PMC\'s named act)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', role: 'architect' }),
+        refusal: /freezes the role `architect` — resolving a stranded decision is the PMC/ },
+    ],
+  },
+  // 4d-ii-a / A8b — the stranded resolution, RETURNED: the resolution claims; the request it opens verifies
+  {
+    key: 'decision.change_requested',
+    writer: 'decisions.resolveStrandedCountersign (returned: the PMC reopens under the inactive chain)',
+    fact: 'DecisionStrandedResolution (outcome returned, naming the exact head) with the open countersign_rejection ChangeRequest citing it under the same receipt',
+    audit: 'DecisionEvent.stranded_resolved (and the request\'s change_requested)',
+    transition: 'Decision awaiting_countersign → change (recorded as change_from_awaiting), the request opened under a decisions.resolveStrandedCountersign receipt naming the resolution',
+    enforcedBy: ['DecisionStrandedResolution_t4d_claim', 'DecisionStrandedResolution_t4d_claim_deferred', 'DecisionStrandedResolution_t4d_seal', 'DecisionStrandedResolution_t4d_paired',
+      'DecisionStrandedResolution_t4d_provenance_bound', 'ChangeRequest_t4d_source_bound', 'ChangeRequest_t4d_paired', 'ChangeRequest_t4d_claim',
+      'Decision_t4d_disagreement_paired', 'Decision_t4d_change_paired', 'DecisionEvent_t4d_correspondence', 'DomainEvent_t4d_pairing_claimed'],
+    setup: STRANDED_WORLD,
+    positive: (order, version) => STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version, order, outcome: 'returned' }),
+    claim: 'mx-ev-sr:DecisionStrandedResolution:mx-sr',
+    negatives: [
+      { name: 'the returned resolution is written with NO reopening event',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', event: false }),
+        refusal: /with 0 event\(s\) of its outcome's family|carries 0 `decision\.change_requested`/ },
+      { name: 'the event names ANOTHER resolution (wrong identity)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', named: 'mx-sr-other' }),
+        refusal: /with 0 event\(s\) of its outcome's family|requires a pairing claim and none was made/ },
+      { name: 'the event is attributed to ANOTHER user than the resolver (wrong actor)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', actor: 'mx-client' }),
+        refusal: /with 0 event\(s\) of its outcome's family|requires a pairing claim and none was made|names an actor other than|names .* as its requester/ },
+      { name: 'the resolution and the transition are written with NO rejection request (the return that nothing can close)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', request: false }),
+        refusal: /with no open `countersign_rejection` request/ },
+      { name: 'the resolution, the request and the event are written but the decision stays `awaiting_countersign`',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', land: false }),
+        refusal: /at commit the decision is `awaiting_countersign` rather than `change`|is `awaiting_countersign`, not `change`/ },
+      { name: 'the returned resolution is written with its event but NO `stranded_resolved` audit row',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', audit: false }),
+        refusal: /with 0 `stranded_resolved` audit row\(s\)/ },
+      { name: 'the project still holds an ACTIVE architect (the return is refused; the disagreement is the architect\'s)',
+        setup: `${STANDING_WORLD} ${STANDING({ mt: 'mx-mt1', ev: 'mx-ev-st1', version: CURRENT })}`,
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned' }),
+        refusal: /still holds an ACTIVE architect, so decision mx-dec is not stranded/ },
     ],
   },
 ];

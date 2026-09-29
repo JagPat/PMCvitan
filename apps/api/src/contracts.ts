@@ -107,6 +107,46 @@ export const forwardDecisionSchema = z
   });
 export type ForwardDecisionInput = z.infer<typeof forwardDecisionSchema>;
 
+// Phase 6 task 4d (4d-ii-a / A8b, §A.2) — the architect's disagreement: reject back, or forward on to a
+// named designation (the target exactly as the forward takes it). The reason is non-blank at both layers;
+// the impacts default to 0 (the plan: "the command accepts the impacts as OPTIONAL inputs defaulting to 0").
+export const disagreeDecisionSchema = z
+  .object({
+    path: z.enum(['reject_back', 'forward_on']),
+    reason: z.string().trim().min(1, 'A disagreement needs a reason'),
+    costImpact: z.number().int().optional(),
+    timeImpactDays: z.number().int().optional(),
+    toDesignationKind: z.enum(['client', 'pmc', 'member', 'architect']).optional(),
+    toDesignationMembershipId: z.string().trim().min(1).optional(),
+  })
+  .refine((v) => (v.path === 'forward_on') === (v.toDesignationKind !== undefined), {
+    message: 'toDesignationKind is required exactly when path is forward_on',
+  })
+  .refine((v) => (v.toDesignationKind === 'member') === (v.toDesignationMembershipId !== undefined), {
+    message: 'toDesignationMembershipId is required exactly when toDesignationKind is member',
+  });
+export type DisagreeDecisionInput = z.infer<typeof disagreeDecisionSchema>;
+
+// Phase 6 task 4d (4d-ii-a / A8b, §A.2 "the stranded decision") — the PMC's named resolution. The reason is
+// non-blank at zod and at the fact (the seal); a target is admitted on `returned` only (an ordinary same-
+// bundle forward, or the REQUIRED re-homing of a designation with no active holder — judged in the service).
+export const resolveStrandedCountersignSchema = z
+  .object({
+    outcome: z.enum(['completed', 'returned']),
+    reason: z.string().trim().min(1, 'A stranded resolution needs a reason'),
+    costImpact: z.number().int().optional(),
+    timeImpactDays: z.number().int().optional(),
+    toDesignationKind: z.enum(['client', 'pmc', 'member', 'architect']).optional(),
+    toDesignationMembershipId: z.string().trim().min(1).optional(),
+  })
+  .refine((v) => v.outcome === 'returned' || v.toDesignationKind === undefined, {
+    message: 'a target is admitted only on a returned resolution',
+  })
+  .refine((v) => (v.toDesignationKind === 'member') === (v.toDesignationMembershipId !== undefined), {
+    message: 'toDesignationMembershipId is required exactly when toDesignationKind is member',
+  });
+export type ResolveStrandedCountersignInput = z.infer<typeof resolveStrandedCountersignSchema>;
+
 export const changeSchema = z.object({
   reason: z.string().min(1),
   costImpact: z.number().int(),

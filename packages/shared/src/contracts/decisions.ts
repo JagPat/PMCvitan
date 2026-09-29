@@ -43,6 +43,17 @@ export const DECISION_COMMANDS = [
   // the holder columns move with it (the one door in the holder freeze), and `decision.forwarded` is
   // pushed at the new holder's users, frozen at emission. Refused 409 while 4d-i's reservation stands.
   'decisions.forward',
+  // Phase 6 task 4d (4d-ii-a / A8b, §A.2) — the CHAIN's three remaining writers. COUNTERSIGN: the
+  // architect finalizes a provisional approval (the `DecisionCountersign` fact naming the exact revision,
+  // its finality flip and `awaiting_countersign → approved` in one transaction; the finalizing event by the
+  // revision's recorded `approvedFrom`). DISAGREE: the architect rejects the provisional approval back to
+  // its decider (reject-back) or hands it on to another (forward-on, through the one forward door), landing
+  // `change` with an open `countersign_rejection` request. RESOLVE STRANDED: the PMC's named resolution
+  // of a decision left awaiting with no active architect — `completed` finalizes under the no-chain rule,
+  // `returned` sends it back with the rejection request (re-homing an emptied designation with a forward).
+  'decisions.countersign',
+  'decisions.disagree',
+  'decisions.resolveStrandedCountersign',
 ] as const;
 export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 
@@ -149,6 +160,41 @@ export interface ForwardDecisionInput {
   /** required exactly when `toDesignationKind` is `member` */
   toDesignationMembershipId?: string;
   reason: string;
+}
+
+/**
+ * Phase 6 task 4d (4d-ii-a / A8b, §A.2) — `decisions.disagree`: the architect's answer to a provisional
+ * approval. `reject_back` keeps the decider as holder; `forward_on` re-points the holder to the named
+ * designation (a role, or `member` with its membership id) through the one forward door. The reason is
+ * required and non-blank; the impacts are optional and default to 0. Both paths land `change` with an open
+ * `countersign_rejection` request the decider (or the new holder) answers by re-approving.
+ */
+export interface DisagreeDecisionInput {
+  path: 'reject_back' | 'forward_on';
+  reason: string;
+  costImpact?: number;
+  timeImpactDays?: number;
+  /** `forward_on` only */
+  toDesignationKind?: 'client' | 'pmc' | 'member' | 'architect';
+  /** required exactly when `toDesignationKind` is `member` */
+  toDesignationMembershipId?: string;
+}
+
+/**
+ * Phase 6 task 4d (4d-ii-a / A8b, §A.2 "the stranded decision") — `decisions.resolveStrandedCountersign`:
+ * the PMC's named resolution of a decision left `awaiting_countersign` with no active architect.
+ * `completed` finalizes the provisional approval under the no-chain rule; `returned` sends it back to its
+ * decider with an open `countersign_rejection` request carrying this reason. A `returned` resolution of a
+ * designation with no active holder REQUIRES a target (the decision is re-homed with a forward in the same
+ * bundle); one whose designation still has a holder may name a target for an ordinary same-bundle forward.
+ */
+export interface ResolveStrandedCountersignInput {
+  outcome: 'completed' | 'returned';
+  reason: string;
+  costImpact?: number;
+  timeImpactDays?: number;
+  toDesignationKind?: 'client' | 'pmc' | 'member' | 'architect';
+  toDesignationMembershipId?: string;
 }
 
 /** `decisions.requestChange` — reopen a locked decision with a reason + impacts. */

@@ -14,8 +14,7 @@ import {
   pendingDecisionNotice,
   provisionalApprovalNotice,
   recordedDecisionNotice,
-  withdrawnDecisionNotice,
-} from '../domain/notifications';
+  withdrawnDecisionNotice, finalizedApprovalNotice } from '../domain/notifications';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a / A4c — the RENDERER TRIPWIRE (§A.3 obligation 7): a kinded notice is
@@ -38,10 +37,10 @@ const approved = (over: Partial<{ kind: string; title: string; deciderKind: stri
   };
 };
 const revisions = new Map([
-  ['dar-D1-v1', { decisionId: 'D1', material: 'Granite', onBehalfOf: null }],
-  ['dar-D1-v2', { decisionId: 'D1', material: 'Quartz', onBehalfOf: 'client' }],
+  ['dar-D1-v1', { decisionId: 'D1', material: 'Granite', onBehalfOf: null, approvedByName: 'Client One', approvedByRole: 'client' }],
+  ['dar-D1-v2', { decisionId: 'D1', material: 'Quartz', onBehalfOf: 'client', approvedByName: 'Priya PMC', approvedByRole: 'pmc' }],
   // another decision's revision in the same project (#665's review round 1)
-  ['dar-D2-v1', { decisionId: 'D2', material: 'Marble', onBehalfOf: null }],
+  ['dar-D2-v1', { decisionId: 'D2', material: 'Marble', onBehalfOf: null, approvedByName: null, approvedByRole: null }],
 ]);
 /** the renderer for D1's notices: the revision the event names must be D1's */
 const render = (kind: string, event: Parameters<typeof renderKindedDecisionNotice>[1]) => renderKindedDecisionNotice(kind, event, revisions, 'D1');
@@ -159,10 +158,12 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
     const src = readFileSync(join(__dirname, 'decisions.service.ts'), 'utf8');
     const creates = [...src.matchAll(/tx\.notification\.create\(\{ data: \{[^}]*\} \}\)/g)].map((m) => m[0]);
     // 4d-ii-a / A8a — six writers: the one-step issue, publish, the approve (green), the provisional
-    // approve (awaiting), the withdraw and the forward
-    expect(creates.length).toBe(6);
+    // approve (awaiting), the withdraw and the forward; A8b — two more: the FINALIZER's green notice
+    // (the countersign and the `completed` stranded resolution share it) and the re-homing forward's
+    // notice inside the rejection bundle (the disagreement's forward-on and the `returned` resolution)
+    expect(creates.length).toBe(8);
     // every notice names its colour by the constant its renderer arm reads; no literal is left
-    expect(creates.filter((c) => /PENDING_DECISION_NOTICE_COLOR|RECORDED_DECISION_NOTICE_COLOR|WITHDRAWN_DECISION_NOTICE_COLOR|APPROVED_DECISION_NOTICE_COLOR|AWAITING_COUNTERSIGN_NOTICE_COLOR|FORWARDED_DECISION_NOTICE_COLOR/.test(c))).toHaveLength(6);
+    expect(creates.filter((c) => /PENDING_DECISION_NOTICE_COLOR|RECORDED_DECISION_NOTICE_COLOR|WITHDRAWN_DECISION_NOTICE_COLOR|APPROVED_DECISION_NOTICE_COLOR|AWAITING_COUNTERSIGN_NOTICE_COLOR|FORWARDED_DECISION_NOTICE_COLOR/.test(c))).toHaveLength(8);
     expect(creates.filter((c) => /'#[0-9A-Fa-f]{6}'/.test(c))).toEqual([]);
     // 4d-ii-a / A7a — every decisions notice writer stamps the event it announces and its kind (the
     // binding pair; the seal refuses one half without the other), the event emitted first in the
@@ -171,9 +172,31 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
       expect(c, c).toMatch(/kind: /);
       expect(c, c).toMatch(/eventId \}/);
     }
-    // five event-id mints (the approve mints one for either landing) and six emitters
-    expect(src.match(/const eventId = randomUUID\(\);/g)).toHaveLength(5);
-    expect(src.match(/emitEvent\(tx, \{\n\s+projectId, actor, eventId,/g)).toHaveLength(6);
+    // seven event-id mints (the approve mints one for either landing; A8b's finalization and its
+    // re-homing forward mint theirs) and eight minted emitters (the rejection's `change_requested`
+    // announcement carries no feed row and mints none)
+    expect(src.match(/const eventId = randomUUID\(\);/g)).toHaveLength(7);
+    expect(src.match(/emitEvent\(tx, \{\n\s+projectId, actor, eventId,/g)).toHaveLength(8);
+  });
+
+  it('A8b — a FINALIZER\'s green notice names the approver from the revision\'s frozen pair and the finalizer as its own attribution; an unknown finalization or a revision with no frozen approver renders nothing', () => {
+    const countersigned = approved({ actorName: 'Arch One', actorRole: 'architect' });
+    (countersigned.payload as Record<string, unknown>).finalization = 'countersign';
+    expect(render('decision.approved', countersigned)).toEqual({
+      text: finalizedApprovalNotice({ actorName: 'Client One', actorRole: 'client', title: 'Kitchen counter', material: 'Granite', deciderKind: 'client', onBehalfOf: null }, 'countersign', 'Arch One'),
+      color: APPROVED_DECISION_NOTICE_COLOR,
+    });
+    expect(render('decision.approved', countersigned)?.text).toBe('Client approved Kitchen counter — Granite — countersigned by Arch One');
+    const completed = approved({ actorName: 'Priya PMC', actorRole: 'pmc', kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client' });
+    (completed.payload as Record<string, unknown>).finalization = 'stranded_completed';
+    expect(render('decision.reapproved', completed)?.text).toBe('Priya PMC (PMC) approved Kitchen counter on behalf of the client — Quartz — finalized by Priya PMC with no active architect');
+    const unknown = approved({ actorName: 'Arch One', actorRole: 'architect' });
+    (unknown.payload as Record<string, unknown>).finalization = 'by decree';
+    expect(render('decision.approved', unknown)).toBeNull();
+    // the revision the event names carries no frozen approver (a drain-window head): nothing to name
+    const unfrozen = approved({ actorName: 'Arch One', actorRole: 'architect', revisionId: 'dar-D2-v1' });
+    (unfrozen.payload as Record<string, unknown>).finalization = 'countersign';
+    expect(renderKindedDecisionNotice('decision.approved', unfrozen, revisions, 'D2')).toBeNull();
   });
 });
 

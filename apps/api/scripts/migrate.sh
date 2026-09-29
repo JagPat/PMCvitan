@@ -455,6 +455,11 @@ if echo "$out" | grep -q "P3005"; then
   # Decision_t4b_approved_tuple_check with awaiting_countersign admitted (4d-i widened the attribution
   # SEAL's arm for the provisional transition, never the CHECK beside it). A CHECK is raw SQL a db-push
   # baseline never carries and a resolve-as-applied never installs, so it replays, in ledger order.
+  # 20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence (4d-ii-a / A8b) installs the two finalizer
+  # claimants (raw triggers), re-issues 4d-i's provenance seal with the returned request's second
+  # producer and 4d-i's birth pairing with its one-open-approval count excluding the DISPOSED revisions,
+  # and RAISES the persisted server-generation minimum to A8b's — the fence that refuses every
+  # A6-to-A8a build at startup. None of it is in schema.prisma; it replays, in ledger order.
   # 20271126000000_phase6_4c_iiir_writer_fence is here for exactly the same reason as its sibling
   # below (Codex on `6b3ff9e6`, where it was MISSING from this list). Prisma's model of it is one
   # nullable column, which `prisma db push` and a resolve-as-applied both reproduce — while the two
@@ -529,7 +534,8 @@ if echo "$out" | grep -q "P3005"; then
 20280102000000_phase6_t4d_ii_a7a_revision_named
 20280103000000_phase6_t4d_ii_a7c_inbox_v3
 20280104000000_phase6_t4d_ii_a7d_catalog_change
-20280105000000_phase6_t4d_ii_a8a_awaiting_tuple"
+20280105000000_phase6_t4d_ii_a8a_awaiting_tuple
+20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

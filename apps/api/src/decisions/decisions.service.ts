@@ -9,10 +9,10 @@ import type { AuthUser } from '../common/auth';
 import { resolveActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
-import { APPROVED_DECISION_NOTICE_COLOR, AWAITING_COUNTERSIGN_NOTICE_COLOR, DESIGNATION_ROLE_LABEL, FORWARDED_DECISION_NOTICE_COLOR, PENDING_DECISION_NOTICE_COLOR, RECORDED_DECISION_NOTICE_COLOR, WITHDRAWN_DECISION_NOTICE_COLOR, approvedDecisionNotice, forwardedDecisionNotice, pendingDecisionNotice, provisionalApprovalNotice, recordedDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
+import { APPROVED_DECISION_NOTICE_COLOR, AWAITING_COUNTERSIGN_NOTICE_COLOR, DESIGNATION_ROLE_LABEL, FORWARDED_DECISION_NOTICE_COLOR, PENDING_DECISION_NOTICE_COLOR, RECORDED_DECISION_NOTICE_COLOR, WITHDRAWN_DECISION_NOTICE_COLOR, approvedDecisionNotice, finalizedApprovalNotice, forwardedDecisionNotice, pendingDecisionNotice, provisionalApprovalNotice, recordedDecisionNotice, withdrawnDecisionNotice, type ApprovalFinalization } from '../domain/notifications';
 import { cancelQueuedPushBySubject, lockQueuedPushDeliveries } from '../platform/outbox/cancellation';
 import { EXTERNAL_EFFECTS, type PushRole } from '../platform/external-effects';
-import type { ApproveInput, ChangeInput, CreateDecisionInput, ForwardDecisionInput, RequestConsultationInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
+import type { ApproveInput, ChangeInput, CreateDecisionInput, DisagreeDecisionInput, ForwardDecisionInput, RequestConsultationInput, ResolveStrandedCountersignInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { resolveActorEnvelope } from '../platform/actor-envelope';
@@ -1137,6 +1137,524 @@ export class DecisionsService {
           dispatch: { push: { body, roles: [requesterRole], targetUserId: consultation.requestedById } },
         });
         return { resultRef: id, events: [ev] };
+      },
+    });
+
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  // ═══ Phase 6 task 4d (4d-ii-a / A8b) — THE CHAIN'S THREE REMAINING WRITERS ═══════════════════════
+
+  /** The decision's OPEN provisional approval: its highest-version revision, still unfinalized, with the
+   *  option it chose. What the countersign and the stranded resolution act on (4d-i's
+   *  `phase6_t4d_provisional_head` judges the same thing at the fact's insert). */
+  private async provisionalHead(tx: Prisma.TransactionClient, projectId: string, decisionId: string) {
+    const head = await tx.decisionApprovalRevision.findFirst({
+      where: { projectId, decisionId },
+      orderBy: { version: 'desc' },
+      include: { option: { select: { label: true, material: true } } },
+    });
+    if (!head || head.finalized) {
+      throw new ConflictException('The decision carries no provisional approval to act on — reload and retry');
+    }
+    if (!head.approvedByName || !head.approvedByRole || (head.approvedFrom !== 'pending' && head.approvedFrom !== 'change')) {
+      throw new ConflictException('The provisional approval records no frozen approver or source — it cannot be finalized');
+    }
+    return head as typeof head & { approvedByName: string; approvedByRole: string; approvedFrom: 'pending' | 'change' };
+  }
+
+  /** The decision row under its lock, for the three A8b writers: the status, holder and title as they
+   *  stand at this instant (the pre-read was a plain read). */
+  private async lockAwaitingDecision(tx: Prisma.TransactionClient, projectId: string, decisionId: string, what: string) {
+    const rows = await tx.$queryRaw<Array<{ status: string; deciderKind: string; deciderMembershipId: string | null; title: string }>>`
+      SELECT "status"::text AS status, "deciderKind"::text AS "deciderKind", "deciderMembershipId", "title"
+        FROM "Decision" WHERE "projectId" = ${projectId} AND "id" = ${decisionId} FOR UPDATE`;
+    const cur = rows[0];
+    if (!cur || cur.status !== 'awaiting_countersign') {
+      throw new ConflictException(`The decision changed while ${what} — reload and retry`);
+    }
+    return cur;
+  }
+
+  /**
+   * The FINALIZATION a countersign or a `completed` stranded resolution performs, after its fact is written
+   * (the fact FIRST: the countersign and stranded seals judge the subject and the provisional head at the
+   * insert): the head's finality flip (the one permitted revision transition, paired by
+   * `DecisionApprovalRevision_t4d_flip_paired` to the fact), `awaiting_countersign → approved` (paired by
+   * the fact's own seal at commit), the finalizer's audit row, the demands the finalization outdates
+   * cancelled by subject (the countersign demand answered; the approval leaves the consultation-open set),
+   * and exactly ONE finalizing event — `decision.approved` or `decision.reapproved` by the revision's
+   * RECORDED `approvedFrom`, naming the exact revision, the finalization and the approver's frozen pair —
+   * with the green notice bound to it: the approver from the revision's frozen facts, the finalizer as a
+   * distinct attribution.
+   */
+  private async finalizeProvisionalApproval(
+    tx: Prisma.TransactionClient,
+    args: {
+      projectId: string; decisionId: string; actor: ReturnType<typeof resolveActor> extends Promise<infer A> ? A : never;
+      envelope: { actorRole: string; actorName: string };
+      head: Awaited<ReturnType<DecisionsService['provisionalHead']>>;
+      cur: { title: string; deciderKind: string };
+      finalization: ApprovalFinalization;
+      audit: { type: 'countersigned' | 'stranded_resolved'; payload: Prisma.InputJsonObject };
+      auditAction: string;
+      factRef: Record<string, string>;
+    },
+  ): Promise<EmittedEventMeta> {
+    const { projectId, decisionId, actor, envelope, head, cur } = args;
+    const flipped = await tx.decisionApprovalRevision.updateMany({
+      where: { id: head.id, projectId, decisionId, finalized: false },
+      data: { finalized: true },
+    });
+    if (flipped.count !== 1) throw new ConflictException('The provisional approval changed while finalizing — reload and retry');
+    const { count } = await tx.decision.updateMany({
+      where: { id: decisionId, projectId, status: 'awaiting_countersign' },
+      data: { status: 'approved' },
+    });
+    if (count === 0) throw new ConflictException('The decision changed while finalizing — reload and retry');
+    await tx.decisionEvent.create({
+      data: {
+        decisionId, type: args.audit.type,
+        actor: envelope.actorName, actorId: actor.actorId, actorName: envelope.actorName, actorRole: envelope.actorRole,
+        payload: { ...args.audit.payload, revisionId: head.id, option: head.option.label, material: head.option.material },
+      },
+    });
+    await recordAudit(tx, { projectId, actor, action: args.auditAction, entity: 'Decision', entityId: decisionId });
+    await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.awaiting_countersign' });
+    await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.consultation_requested' });
+    const family = head.approvedFrom === 'change' ? 'decision.reapproved' : 'decision.approved';
+    const approver = {
+      actorName: head.approvedByName, actorRole: head.approvedByRole, title: cur.title,
+      material: head.option.material, deciderKind: cur.deciderKind, onBehalfOf: head.onBehalfOf,
+    };
+    const announce = finalizedApprovalNotice(approver, args.finalization, envelope.actorName);
+    const eventId = randomUUID();
+    const ev = await emitEvent(tx, {
+      projectId, actor, eventId, actorEnvelope: envelope,
+      eventType: family, entityType: 'Decision', entityId: decisionId,
+      payload: {
+        option: head.option.label, material: head.option.material, ...(head.onBehalfOf ? { onBehalfOf: head.onBehalfOf } : {}),
+        revisionId: head.id, title: cur.title, deciderKind: cur.deciderKind, approvedFrom: head.approvedFrom,
+        finalization: args.finalization, approverName: head.approvedByName, approverRole: head.approvedByRole,
+        ...args.factRef,
+      },
+      effectKey: family,
+      dispatch: { push: { body: announce } },
+    });
+    await tx.notification.create({ data: { projectId, text: announce, color: APPROVED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: family, eventId } });
+    return ev;
+  }
+
+  /**
+   * The REJECTION a disagreement or a `returned` stranded resolution performs: the optional same-bundle
+   * forward (through the ONE forward door — the fact first, the holder moved), `awaiting_countersign →
+   * change`, the open `countersign_rejection` request citing the exact provisional head with the actor's
+   * frozen pair and this receipt, the audit rows, the demands the rejection outdates cancelled, and the
+   * events: exactly one `decision.change_requested` (the request's, or the returned resolution's), and
+   * the frozen-audience `decision.forwarded` with its notice when the bundle re-homes the decision.
+   * Neither path touches `pending`; the decider (or the new holder) answers by re-approving.
+   */
+  private async rejectProvisionalApproval(
+    tx: Prisma.TransactionClient,
+    args: {
+      projectId: string; decisionId: string; commandId: string;
+      actor: ReturnType<typeof resolveActor> extends Promise<infer A> ? A : never;
+      envelope: { actorRole: string; actorName: string };
+      head: Awaited<ReturnType<DecisionsService['provisionalHead']>>;
+      cur: { title: string; deciderKind: string; deciderMembershipId: string | null };
+      reason: string; costImpact: number; timeImpactDays: number;
+      target: { kind: 'client' | 'pmc' | 'member' | 'architect'; membershipId: string | null } | null;
+      auditAction: string;
+      /** the resolution's own audit row, when the bundle is a `returned` resolution */
+      resolutionAudit?: { type: 'stranded_resolved'; payload: Prisma.InputJsonObject };
+      requestPayload: Prisma.InputJsonObject;
+    },
+  ): Promise<{ requestId: string; forwardId: string | null; events: EmittedEventMeta[] }> {
+    const { projectId, decisionId, actor, envelope, head, cur } = args;
+    const events: EmittedEventMeta[] = [];
+    let forward: { forwardId: string; targetUserIds: string[]; toLabel: string; from: { kind: string; membershipId: string | null }; to: { kind: string; membershipId: string | null } } | null = null;
+    if (args.target) {
+      const toKind = args.target.kind;
+      const toMembershipId = args.target.membershipId;
+      if (cur.deciderKind === toKind && (cur.deciderMembershipId ?? null) === toMembershipId) {
+        throw new ConflictException('That designation is already the holder of this decision');
+      }
+      let targetUserIds: string[];
+      let toLabel: string;
+      if (toKind === 'member') {
+        const to = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, toMembershipId!);
+        if (!to) throw new ConflictException('The target holds no active membership on this project — the new holder must be able to act');
+        targetUserIds = [to.userId];
+        toLabel = to.name;
+      } else {
+        targetUserIds = await this.orgsParticipant.effectiveRoleHolderUserIds(tx, projectId, toKind);
+        if (targetUserIds.length === 0) throw new ConflictException(`Nobody holds the ${toKind} role on this project — the decision would land with nobody able to act on it`);
+        toLabel = DESIGNATION_ROLE_LABEL[toKind];
+      }
+      const forwardId = `dfw-${randomUUID()}`;
+      const fromMembershipId = cur.deciderKind === 'member' ? cur.deciderMembershipId : null;
+      await tx.decisionForward.create({
+        data: {
+          id: forwardId, projectId, decisionId,
+          fromDesignationKind: cur.deciderKind, fromDesignationMembershipId: fromMembershipId,
+          toDesignationKind: toKind, toDesignationMembershipId: toMembershipId,
+          forwardedById: actor.actorId, forwardedByRole: envelope.actorRole, forwardedByName: envelope.actorName,
+          reason: args.reason, sourceCommandId: args.commandId,
+        },
+      });
+      forward = { forwardId, targetUserIds, toLabel, from: { kind: cur.deciderKind, membershipId: fromMembershipId }, to: { kind: toKind, membershipId: toMembershipId } };
+    }
+    // ONE row write lands the transition and — when the bundle re-homes — the holder move with it:
+    // `Decision_t4d_change_paired` judges every row event of this transaction at commit against the
+    // `awaiting_countersign → change` move it recorded, so a holder move written as a SEPARATE statement
+    // is an event whose row still reads `awaiting_countersign` and is refused as a walked-back move.
+    // The attribution seal's one door (the same-transaction `DecisionForward` from the holder the row
+    // carries to the one it moves to) judges the holder columns of this same statement.
+    const { count } = await tx.decision.updateMany({
+      where: {
+        id: decisionId, projectId, status: 'awaiting_countersign',
+        ...(forward ? { deciderKind: cur.deciderKind as $Enums.DeciderKind, deciderMembershipId: forward.from.membershipId } : {}),
+      },
+      data: { status: 'change', ...(forward ? { deciderKind: forward.to.kind as $Enums.DeciderKind, deciderMembershipId: forward.to.membershipId } : {}) },
+    });
+    if (count === 0) throw new ConflictException('The decision changed while rejecting — reload and retry');
+    let requestId = '';
+    try {
+      const request = await tx.changeRequest.create({
+        data: {
+          projectId, decisionId, reason: args.reason, costImpact: args.costImpact, timeImpactDays: args.timeImpactDays, status: 'open',
+          origin: 'countersign_rejection', revisionId: head.id,
+          requestedById: actor.actorId, requestedByRole: envelope.actorRole, requestedByName: envelope.actorName,
+          sourceCommandId: args.commandId,
+        },
+        select: { id: true },
+      });
+      requestId = request.id;
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new ConflictException('A change request is already open for this decision');
+      }
+      throw e;
+    }
+    if (args.resolutionAudit) {
+      await tx.decisionEvent.create({
+        data: {
+          decisionId, type: args.resolutionAudit.type,
+          actor: envelope.actorName, actorId: actor.actorId, actorName: envelope.actorName, actorRole: envelope.actorRole,
+          payload: { ...args.resolutionAudit.payload, revisionId: head.id, requestId },
+        },
+      });
+    }
+    await tx.decisionEvent.create({
+      data: {
+        decisionId, type: 'change_requested',
+        actor: envelope.actorName, actorId: actor.actorId, actorName: envelope.actorName, actorRole: envelope.actorRole,
+        payload: { ...args.requestPayload, origin: 'countersign_rejection', revisionId: head.id, requestId, reason: args.reason, costImpact: args.costImpact, timeImpactDays: args.timeImpactDays },
+      },
+    });
+    if (forward) {
+      await tx.decisionEvent.create({
+        data: {
+          decisionId, type: 'forwarded',
+          actor: envelope.actorName, actorId: actor.actorId, actorName: envelope.actorName, actorRole: envelope.actorRole,
+          payload: { forwardId: forward.forwardId, from: forward.from, to: forward.to, toLabel: forward.toLabel, reason: args.reason },
+        },
+      });
+    }
+    await recordAudit(tx, { projectId, actor, action: args.auditAction, entity: 'Decision', entityId: decisionId });
+    // the demands this rejection outdates: the countersign demand (answered), and — when the decision is
+    // re-homed — any earlier hand-off still queued (the new forward supersedes it)
+    await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.awaiting_countersign' });
+    const cancelledForwards = forward ? await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.forwarded' }) : null;
+    events.push(await emitEvent(tx, {
+      projectId, actor, actorEnvelope: envelope,
+      eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId,
+      payload: { ...args.requestPayload, reason: args.reason, costImpact: args.costImpact, timeImpactDays: args.timeImpactDays, origin: 'countersign_rejection', revisionId: head.id, requestId, title: cur.title },
+      effectKey: 'decision.change_requested', dispatch: {},
+    }));
+    if (forward) {
+      const eventId = randomUUID();
+      events.push(await emitEvent(tx, {
+        projectId, actor, eventId, actorEnvelope: envelope,
+        eventType: 'decision.forwarded', entityType: 'Decision', entityId: decisionId,
+        payload: {
+          forwardId: forward.forwardId, title: cur.title, from: forward.from, to: forward.to, toLabel: forward.toLabel, reason: args.reason,
+          pushIntentsCancelled: cancelledForwards ? cancelledForwards.neutralized + cancelledForwards.marked + cancelledForwards.entombed : 0,
+        },
+        effectKey: 'decision.forwarded',
+        dispatch: { push: { body: EXTERNAL_EFFECTS['decision.forwarded'].pushBody, targetUserIds: forward.targetUserIds } },
+      }));
+      await tx.notification.create({ data: { projectId, text: forwardedDecisionNotice(cur.title, forward.toLabel), color: FORWARDED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.forwarded', eventId } });
+    }
+    return { requestId, forwardId: forward?.forwardId ?? null, events };
+  }
+
+  /**
+   * Phase 6 task 4d (4d-ii-a / A8b, §A.2 "Countersign, and the state that carries it") —
+   * `decisions.countersign`: the ARCHITECT finalizes a provisional approval. ONE atomic act, sealed from both
+   * sides: the `DecisionCountersign` fact naming the EXACT head revision is written first (the seal judges
+   * the architect's standing, the awaiting subject and the provisional head at the insert), then the head's
+   * finality flip and `awaiting_countersign → approved` — row, flip and status are one transaction or none.
+   * The finalizing event is `decision.approved` or `decision.reapproved` by the revision's RECORDED
+   * `approvedFrom`, naming the revision; the audit register gains the `countersigned` row beside the
+   * `approved`/`reapproved` row the provisional act appended; the green notice names the approver from the
+   * revision's frozen facts and the countersigner as a distinct attribution. A self-countersign (the
+   * architect is also the decider) is two acts under two keys — this one never approves.
+   *
+   * Refused 409 unless the decision awaits its countersign; 403 to anyone but an ACTIVE architect
+   * (re-judged under the readiness key through the kernel register the seals judge by).
+   */
+  async countersign(projectId: string, decisionId: string, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ decisionId, countersign: true });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.countersign', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+    const d = await this.prisma.decision.findUnique({ where: { id: decisionId }, select: { projectId: true, status: true } });
+    if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
+    if (d.status !== 'awaiting_countersign') {
+      throw new ConflictException(`Decision ${decisionId} is ${d.status}, not awaiting its countersign — there is no provisional approval to countersign`);
+    }
+
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'decisions.countersign',
+      idempotencyKey,
+      requestHash,
+      // the fact's `sourceCommandId` is REQUIRED (§A.3 obligation 6): an unkeyed call takes a per-call
+      // server key so the receipt exists; a client key keeps its exactly-once replay
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        await assertCountersignClient(tx, projectId, user.decisionsContract, 'Countersigning a decision');
+        // AUTHORITY: an ACTIVE architect, live, through the kernel register the countersign seal judges by
+        if (user.role !== 'architect' || !(await RoleStandingQuery.holdsRole(tx, projectId, user.sub, 'architect'))) {
+          throw new ForbiddenException('Only an active architect can countersign a provisional approval');
+        }
+        const envelope = await resolveActorEnvelope(tx, projectId, actor);
+        if (!envelope || envelope.actorRole !== 'architect') {
+          throw new ConflictException('Your architect standing could not be frozen for this countersign — reload and retry');
+        }
+        // THE ONE LOCK ORDER (§A.4 (i)): the subject's queued countersign demands and open invitations FOR
+        // UPDATE ascending, THEN the decision row
+        await lockQueuedPushDeliveries(tx, { projectId, subject: decisionId, eventTypes: ['decision.awaiting_countersign', 'decision.consultation_requested'] });
+        const cur = await this.lockAwaitingDecision(tx, projectId, decisionId, 'countersigning');
+        const head = await this.provisionalHead(tx, projectId, decisionId);
+        // THE FACT FIRST
+        const countersignId = `dcs-${randomUUID()}`;
+        await tx.decisionCountersign.create({
+          data: {
+            id: countersignId, projectId, decisionId, revisionId: head.id,
+            countersignedById: actor.actorId, countersignedByRole: envelope.actorRole, countersignedByName: envelope.actorName,
+            sourceCommandId: ctx.commandId!,
+          },
+        });
+        const ev = await this.finalizeProvisionalApproval(tx, {
+          projectId, decisionId, actor, envelope, head, cur,
+          finalization: 'countersign',
+          audit: { type: 'countersigned', payload: { countersignId } },
+          auditAction: 'decision.countersign',
+          factRef: { countersignId },
+        });
+        // the receipt names the FACT (the provenance seal's `resultRef` arm)
+        return { resultRef: countersignId, events: [ev] };
+      },
+    });
+
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /**
+   * Phase 6 task 4d (4d-ii-a / A8b, §A.2 "Disagreement — the `change` state's OWN machinery honoured") —
+   * `decisions.disagree`: the ARCHITECT's answer to a provisional approval. REJECT BACK keeps the decider
+   * as holder — they re-approve and the chain runs again; FORWARD ON re-points the holder to the
+   * designation the architect names, through the SAME forward door with the SAME `DecisionForward` fact
+   * as the generic command, taken from `awaiting_countersign` in the transaction that lands `change`.
+   * Both paths open the `countersign_rejection` request (citing the exact provisional head, the
+   * architect's frozen pair and this receipt) whose only closures are the re-approval and — never — the
+   * ordinary withdrawal. Neither path returns to `pending`; neither erases the approval act it answers.
+   *
+   * Refused 409 unless the decision awaits its countersign, and on a forward-on naming the current holder;
+   * 403 to anyone but an ACTIVE architect.
+   */
+  async disagree(projectId: string, decisionId: string, input: DisagreeDecisionInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const reason = input.reason;
+    const costImpact = input.costImpact ?? 0;
+    const timeImpactDays = input.timeImpactDays ?? 0;
+    const target = input.path === 'forward_on'
+      ? { kind: input.toDesignationKind!, membershipId: input.toDesignationKind === 'member' ? input.toDesignationMembershipId! : null }
+      : null;
+    const requestHash = hashRequest({ decisionId, path: input.path, reason, costImpact, timeImpactDays, target });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.disagree', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+    const d = await this.prisma.decision.findUnique({ where: { id: decisionId }, select: { projectId: true, status: true, deciderKind: true, deciderMembershipId: true } });
+    if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
+    if (d.status !== 'awaiting_countersign') {
+      throw new ConflictException(`Decision ${decisionId} is ${d.status}, not awaiting its countersign — there is no provisional approval to disagree with`);
+    }
+    if (target && d.deciderKind === target.kind && (d.deciderMembershipId ?? null) === target.membershipId) {
+      throw new ConflictException('That designation is already the holder of this decision — reject it back instead');
+    }
+
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'decisions.disagree',
+      idempotencyKey,
+      requestHash,
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        await assertCountersignClient(tx, projectId, user.decisionsContract, 'Rejecting a provisional approval');
+        if (user.role !== 'architect' || !(await RoleStandingQuery.holdsRole(tx, projectId, user.sub, 'architect'))) {
+          throw new ForbiddenException('Only an active architect can reject a provisional approval');
+        }
+        const envelope = await resolveActorEnvelope(tx, projectId, actor);
+        if (!envelope || envelope.actorRole !== 'architect') {
+          throw new ConflictException('Your architect standing could not be frozen for this disagreement — reload and retry');
+        }
+        // THE ONE LOCK ORDER: the subject's queued countersign demands and hand-offs, THEN the decision row
+        await lockQueuedPushDeliveries(tx, { projectId, subject: decisionId, eventTypes: ['decision.awaiting_countersign', 'decision.forwarded'] });
+        const cur = await this.lockAwaitingDecision(tx, projectId, decisionId, 'rejecting');
+        if (cur.deciderKind !== d.deciderKind || (cur.deciderMembershipId ?? null) !== (d.deciderMembershipId ?? null)) {
+          throw new ConflictException('The decision changed while rejecting — reload and retry');
+        }
+        const head = await this.provisionalHead(tx, projectId, decisionId);
+        const { requestId, events } = await this.rejectProvisionalApproval(tx, {
+          projectId, decisionId, commandId: ctx.commandId!, actor, envelope, head, cur,
+          reason, costImpact, timeImpactDays, target,
+          auditAction: 'decision.disagree',
+          requestPayload: { path: input.path },
+        });
+        // the receipt names the REQUEST — the bundle's primary fact (the forward, when present, cites the
+        // same receipt through the bundle arm of the provenance seal)
+        return { resultRef: requestId, events };
+      },
+    });
+
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /**
+   * Phase 6 task 4d (4d-ii-a / A8b, §A.2 "The stranded decision, resolved by a NAMED command") —
+   * `decisions.resolveStrandedCountersign`: the PMC's named resolution of a decision left
+   * `awaiting_countersign` with NO active architect (the last one left; generic forwarding refuses the
+   * status and the countersign needs an architect). Legal ONLY while the decision awaits AND the chain is
+   * inactive, both re-judged under the readiness key and the decision row lock. Two attributed outcomes,
+   * recorded as the append-only `DecisionStrandedResolution` fact naming the exact head: (a) COMPLETED —
+   * the head finalizes under the no-chain rule and the decision lands `approved`, announced by the
+   * revision's recorded family; (b) RETURNED — the decision lands `change` with the open
+   * `countersign_rejection` request carrying the PMC's reason, so the existing machinery demands a fresh
+   * approval (which, under the now-inactive chain, lands `approved` directly). A designation WITHOUT an
+   * active holder (the named member departed; the role emptied) is re-homed atomically: `returned`
+   * REQUIRES a target then, and the bundle carries a `DecisionForward` from the empty designation to the
+   * named active target (400 without one); a target for a designation that still has a holder is an
+   * ordinary same-bundle forward through the same door.
+   */
+  async resolveStrandedCountersign(projectId: string, decisionId: string, input: ResolveStrandedCountersignInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const reason = input.reason;
+    const costImpact = input.costImpact ?? 0;
+    const timeImpactDays = input.timeImpactDays ?? 0;
+    const target = input.toDesignationKind
+      ? { kind: input.toDesignationKind, membershipId: input.toDesignationKind === 'member' ? input.toDesignationMembershipId! : null }
+      : null;
+    const requestHash = hashRequest({ decisionId, outcome: input.outcome, reason, costImpact, timeImpactDays, target });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.resolveStrandedCountersign', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+    const d = await this.prisma.decision.findUnique({ where: { id: decisionId }, select: { projectId: true, status: true, deciderKind: true, deciderMembershipId: true } });
+    if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
+    if (d.status !== 'awaiting_countersign') {
+      throw new ConflictException(`Decision ${decisionId} is ${d.status}, not awaiting its countersign — it is not stranded`);
+    }
+
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'decisions.resolveStrandedCountersign',
+      idempotencyKey,
+      requestHash,
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        // AUTHORITY: the PMC, live under the standing row's lock (the fact freezes `pmc`)
+        if (user.role !== 'pmc' || !(await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, user.sub, ['pmc'], { forUpdate: true }))) {
+          throw new ForbiddenException('Only the PMC can resolve a stranded decision');
+        }
+        const envelope = await resolveActorEnvelope(tx, projectId, actor);
+        if (!envelope || envelope.actorRole !== 'pmc') {
+          throw new ConflictException('Your PMC standing could not be frozen for this resolution — reload and retry');
+        }
+        // THE PREMISE, re-judged under the readiness key the architect standing writers take (P36): an
+        // architect who could countersign makes this act illegal
+        if ((await RoleStandingQuery.activeCount(tx, projectId, 'architect')) > 0) {
+          throw new ConflictException('This project still holds an active architect — the decision is not stranded; the countersign is the legal path');
+        }
+        await lockQueuedPushDeliveries(tx, { projectId, subject: decisionId, eventTypes: ['decision.awaiting_countersign', 'decision.consultation_requested', 'decision.forwarded'] });
+        const cur = await this.lockAwaitingDecision(tx, projectId, decisionId, 'resolving');
+        const head = await this.provisionalHead(tx, projectId, decisionId);
+        const resolutionId = `dsr-${randomUUID()}`;
+        if (input.outcome === 'completed') {
+          // THE FACT FIRST (the stranded seal judges the PMC, the awaiting subject, the inactive chain and
+          // the provisional head at the insert), then the finalization it pairs with at commit
+          await tx.decisionStrandedResolution.create({
+            data: {
+              id: resolutionId, projectId, decisionId, revisionId: head.id, outcome: 'completed',
+              resolvedById: actor.actorId, resolvedByRole: envelope.actorRole, resolvedByName: envelope.actorName,
+              reason, sourceCommandId: ctx.commandId!,
+            },
+          });
+          const ev = await this.finalizeProvisionalApproval(tx, {
+            projectId, decisionId, actor, envelope, head, cur,
+            finalization: 'stranded_completed',
+            audit: { type: 'stranded_resolved', payload: { resolutionId, outcome: 'completed', reason } },
+            auditAction: 'decision.resolveStranded',
+            factRef: { resolutionId },
+          });
+          return { resultRef: resolutionId, events: [ev] };
+        }
+        // RETURNED. The installed designation's standing decides whether a target is REQUIRED: a named
+        // member's active membership, or a role at least one active member holds. A designation nobody
+        // can act for is re-homed in this bundle or the resolution is refused — the open-holder rule
+        // judges a `change` decision's designation at commit, and would otherwise refuse the transition
+        // this outcome advertises.
+        const holderPresent = cur.deciderKind === 'member'
+          ? (await this.orgsParticipant.lockActiveMembershipById(tx, projectId, cur.deciderMembershipId!)) !== null
+          : cur.deciderKind === 'none'
+            ? false
+            : (await this.orgsParticipant.effectiveRoleHolderUserIds(tx, projectId, cur.deciderKind as 'client' | 'pmc' | 'architect')).length > 0;
+        if (!holderPresent && !target) {
+          throw new BadRequestException('The decision\'s designation has no active holder — a returned resolution must name a target to re-home it to');
+        }
+        // THE FACT FIRST: the resolution is the bundle's PRIMARY and its claimant (the request that follows
+        // verifies), so it is written before the request and before the event
+        await tx.decisionStrandedResolution.create({
+          data: {
+            id: resolutionId, projectId, decisionId, revisionId: head.id, outcome: 'returned',
+            resolvedById: actor.actorId, resolvedByRole: envelope.actorRole, resolvedByName: envelope.actorName,
+            reason, sourceCommandId: ctx.commandId!,
+          },
+        });
+        const { events } = await this.rejectProvisionalApproval(tx, {
+          projectId, decisionId, commandId: ctx.commandId!, actor, envelope, head, cur,
+          reason, costImpact, timeImpactDays, target,
+          auditAction: 'decision.resolveStranded',
+          resolutionAudit: { type: 'stranded_resolved', payload: { resolutionId, outcome: 'returned', reason } },
+          requestPayload: { resolutionId, outcome: 'returned' },
+        });
+        // the receipt names the RESOLUTION — the bundle's primary fact; the request and the forward cite
+        // the same receipt through the bundle arm of the provenance seal
+        return { resultRef: resolutionId, events };
       },
     });
 

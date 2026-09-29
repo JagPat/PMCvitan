@@ -228,6 +228,15 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/api/src/decisions/decisions.service.ts :: d.status === 'awaiting_countersign' #2": 'answered',
     "apps/api/src/decisions/decisions.service.ts :: d.status !== 'pending' && d.status !== 'change' #2": 'excludes: forward hands over an OPEN decision; an awaiting one is refused by its own arm above',
     "apps/api/src/decisions/decisions.service.ts :: cur.status !== 'pending' && cur.status !== 'change'": 'excludes: the forward’s re-judge under the decision lock; an awaiting decision is the architect’s',
+    // 4d-ii-a / A8b — the countersign, the disagreement and the stranded resolution act ONLY on an awaiting
+    // decision: each pre-read refuses any other status with its answer, the row lock re-judges it, and the
+    // two compare-and-sets (the finalization's `→ approved`, the rejection's `→ change`) move only from it
+    "apps/api/src/decisions/decisions.service.ts :: cur.status !== 'awaiting_countersign'": 'answered',
+    "apps/api/src/decisions/decisions.service.ts :: d.status !== 'awaiting_countersign'": 'answered',
+    "apps/api/src/decisions/decisions.service.ts :: d.status !== 'awaiting_countersign' #2": 'answered',
+    "apps/api/src/decisions/decisions.service.ts :: d.status !== 'awaiting_countersign' #3": 'answered',
+    "apps/api/src/decisions/decisions.service.ts :: status: 'awaiting_countersign'": 'answered',
+    "apps/api/src/decisions/decisions.service.ts :: status: 'awaiting_countersign' #2": 'answered',
     "apps/api/src/decisions/decisions.service.ts :: prior === 'change'": 'excludes: approved vs reapproved, from the status approve admitted',
     "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #2": 'excludes: approved vs reapproved, from the status approve admitted',
     "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #3": 'excludes: approved vs reapproved, from the status approve admitted',

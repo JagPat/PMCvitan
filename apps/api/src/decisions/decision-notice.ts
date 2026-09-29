@@ -11,8 +11,7 @@ import {
   pendingDecisionNotice,
   provisionalApprovalNotice,
   recordedDecisionNotice,
-  withdrawnDecisionNotice,
-} from '../domain/notifications';
+  withdrawnDecisionNotice, finalizedApprovalNotice } from '../domain/notifications';
 import type { DecisionDto } from '../snapshot/types';
 
 /**
@@ -81,6 +80,11 @@ export interface ApprovalRevisionFacts {
   material: string;
   /** The holder kind a PMC recorded consent on behalf of; `null` when the decider acted. */
   onBehalfOf: string | null;
+  /** 4d-ii-a / A8b — the approver's pair FROZEN at the act (required on a revision born provisional):
+   *  what a FINALIZER's green notice names as the approver, since that event's envelope is the
+   *  finalizer's. NULL on a pre-4d-ii or drain-window revision. */
+  approvedByName: string | null;
+  approvedByRole: string | null;
 }
 
 /** The kinds whose notice renders from a revision the event names (`payload.revisionId`). 4d-ii-a / A8a:
@@ -153,6 +157,22 @@ export function renderKindedDecisionNotice(
       const revision = revisionId ? revisions?.get(revisionId) : undefined;
       if (!title || !deciderKind || !revision || !event.actorName || !event.actorRole) return null;
       if (!decisionId || revision.decisionId !== decisionId) return null;
+      // A8b — a FINALIZER's event (the countersign, the `completed` stranded resolution): its envelope is
+      // the finalizer's, so the approver is the revision's FROZEN pair, and the finalization is stated as
+      // its own attribution. An event naming a finalization the vocabulary does not know, or a revision
+      // carrying no frozen approver, renders nothing rather than the finalizer as the approver.
+      const finalization = field(event.payload, 'finalization');
+      if (finalization !== null) {
+        if (finalization !== 'countersign' && finalization !== 'stranded_completed') return null;
+        if (!revision.approvedByName || !revision.approvedByRole) return null;
+        return {
+          text: finalizedApprovalNotice(
+            { actorName: revision.approvedByName, actorRole: revision.approvedByRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf },
+            finalization, event.actorName,
+          ),
+          color: APPROVED_DECISION_NOTICE_COLOR,
+        };
+      }
       return {
         text: approvedDecisionNotice({ actorName: event.actorName, actorRole: event.actorRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf }),
         color: APPROVED_DECISION_NOTICE_COLOR,

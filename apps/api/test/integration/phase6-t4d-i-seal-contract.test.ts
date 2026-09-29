@@ -332,8 +332,12 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'DecisionApprovalRevision.DecisionApprovalRevision_t4d_birth_paired': C('I') },
     // round 11, finding 3: `xmin` alone is satisfied by a no-op UPDATE, so the birth is bound to
     // the STATE a provisional approval produces and to the one-open-approval invariant.
+    // 4d-ii-a / A8b: the one-open-approval count excludes the revisions a `countersign_rejection`
+    // request or a `returned` resolution DISPOSED of (the plan's "UNDISPOSED"): a rejected head stays
+    // unfinalized forever, and the re-approval's fresh head must pass beside it.
     must: ['count(*)', 'v_births <> 1', 'txid_current()', "NEW.\"finalized\" = FALSE",
-      'awaiting_countersign', 'v_open > 1'],
+      'awaiting_countersign', 'v_open > 1', "c.\"origin\" = 'countersign_rejection' AND c.\"revisionId\" = r.\"id\"",
+      "s.\"outcome\" = 'returned' AND s.\"revisionId\" = r.\"id\""],
   },
   phase6_t4d_revision_one_flip: {
     rule: 'finality is ONE-WAY and a finalized revision is undeletable',
@@ -825,6 +829,34 @@ const REGISTER: Record<string, SealContract> = {
       'DecisionForward.DecisionForward_t4d_claim_deferred': C('I'),
     },
     must: ['decision.forwarded', "'forwardId'", 'NEW."forwardedById"', 'platform_claim_event_pairing_once', 'TG_NAME'],
+  },
+  phase6_t4d_countersign_claims_event: {
+    rule: 'a `DecisionCountersign` fact claims the decision\'s same-transaction finalizing event '
+      + '(`decision.approved` / `decision.reapproved`) whose payload names THIS row (`countersignId`) and '
+      + 'its revision (`revisionId`) and whose `actorId` is `countersignedById`; the DEFERRED half demands '
+      + 'exactly one, and the `countersigned` audit row beside it',
+    plan: '§A.2 the chain; §A.3 obligation 7; A8b',
+    on: {
+      'DecisionCountersign.DecisionCountersign_t4d_claim': A('I'),
+      'DecisionCountersign.DecisionCountersign_t4d_claim_deferred': C('I'),
+    },
+    must: ['decision.approved', 'decision.reapproved', "'countersignId'", "'revisionId'", 'NEW."countersignedById"',
+      "'countersigned'", 'phase6_t4d_tx_audit_count', 'platform_claim_event_pairing_once', 'TG_NAME'],
+  },
+  phase6_t4d_stranded_claims_event: {
+    rule: 'a `DecisionStrandedResolution` fact claims the decision\'s same-transaction event of its '
+      + 'outcome\'s family — `completed`: `decision.approved` / `decision.reapproved`; `returned`: '
+      + '`decision.change_requested` (the request it opens verifies, never claims) — whose payload names '
+      + 'THIS row (`resolutionId`) and its revision and whose `actorId` is `resolvedById`; the DEFERRED '
+      + 'half demands exactly one, and the `stranded_resolved` audit row beside it',
+    plan: '§A.2 the stranded decision; §A.3 obligation 7; A8b',
+    on: {
+      'DecisionStrandedResolution.DecisionStrandedResolution_t4d_claim': A('I'),
+      'DecisionStrandedResolution.DecisionStrandedResolution_t4d_claim_deferred': C('I'),
+    },
+    must: ["'completed'", 'decision.approved', 'decision.reapproved', 'decision.change_requested', "'resolutionId'",
+      "'revisionId'", 'NEW."resolvedById"', "'stranded_resolved'", 'phase6_t4d_tx_audit_count',
+      'platform_claim_event_pairing_once', 'TG_NAME'],
   },
   phase6_t4d_consultation_claims_event: {
     rule: 'a consultation request claims its `decision.consultation_requested`, a response its '

@@ -44,6 +44,12 @@ export const ROLE_POLICY = {
   // be designated in, and the SERVICE narrows to the decision's actual holder, a pmc or an architect.
   // No token can carry `architect` while 4d-i's doors stand, and the command refuses 409 until 4d-iii.
   'decision.forward': ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'],
+  // Phase 6 task 4d (4d-ii-a / A8b, §A.1) — the countersign and the disagreement are the ARCHITECT's acts
+  // alone (the service re-judges active architect standing under the lock); resolving a stranded decision
+  // is the PMC's named act alone. Each row is the exact role the DB seal freezes on the fact.
+  'decision.countersign': ['architect'],
+  'decision.disagree': ['architect'],
+  'decision.resolveStrandedCountersign': ['pmc'],
   // Phase 6 unit 4c-ii (§A) — CONSULTATION. Asking is the practice's call: `pmc` in 4c, and
   // `architect` joining the requesting set with the role (4d-ii-a / A5a). No token can carry the
   // role while 4d-i's reservation doors stand, so the row is unreachable until 4d-iii.
