@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a7d-catalog-change
 reviewed_merge: 582297b
-open_pr: none
+open_pr: 671
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
@@ -27,7 +27,7 @@ updated: 2026-09-29
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A7d, `open_pr: none` (`work_item: phase-6-task-4d-ii-a-a7d-catalog-change`, branch
+- **Now, A7d, `open_pr: 671` (`work_item: phase-6-task-4d-ii-a-a7d-catalog-change`, branch
   `claude/4d-ii-a7d-catalog-change`, from `main` at `582297b`).** The last A7 sub-unit, the CATALOG
   CHANGE (plan §D "4d-ii-a is a CATALOG CHANGE, staged as one"): the compiled external-effect catalog
   widened — the three chain types (`decision.forwarded` and `decision.awaiting_countersign`, the two
