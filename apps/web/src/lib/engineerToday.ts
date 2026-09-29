@@ -15,12 +15,14 @@ export type TodayPath = {
  * A pure read: nothing here is stored, so the path can only ever say what the log says.
  *
  * The server serves the project's LATEST log, not today's. A log already sent on an earlier civil
- * day (`today` is the project's civil date) is finished business: today has not started, so the
+ * day (`today` is the project's civil date), or with no civil date at all, is finished business: today has not started, so the
  * action is to start it — the Site screen's "Start new day". An earlier log never sent stays the
  * one to finish, as it does on the Site screen.
  */
 export function todayPath(latest: DailyLog | null, totalWorkers: number, today?: string): TodayPath {
-  const earlierDaySent = !!latest?.submitted && !!latest.logDate && !!today && latest.logDate < today;
+  // a sent log with no civil date (a legacy row) is history too: the server lets a new day start
+  // over any submitted log, and the Site screen offers it
+  const earlierDaySent = !!latest?.submitted && (!latest.logDate || (!!today && latest.logDate < today));
   const log = earlierDaySent ? null : latest;
   const done: Record<EngineerTodayStep, boolean> = {
     checkIn: !!log?.checkedIn,

@@ -39,7 +39,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   const path = todayPath(dailyLog, total, todayCivil(timeZone));
   const next = path.action === 'start' || path.action === 'done' ? null : path.action;
   const openSite = () => setScreen('daily-log');
-  const date = new Intl.DateTimeFormat(LOCALE[lang], { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
+  const date = formatDay(LOCALE[lang], timeZone);
 
   let card;
   // a failed read is shown before anything derived from the log: a retained last-known log can't
@@ -136,4 +136,18 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
       )}
     </section>
   );
+}
+
+/** The heading's day, on the SITE's calendar — the same civil day `todayPath` and the server use —
+ *  falling back to the device's day when the project zone is unknown or unrecognised. */
+function formatDay(locale: string, timeZone: string | null): string {
+  const opts: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' };
+  if (timeZone) {
+    try {
+      return new Intl.DateTimeFormat(locale, { ...opts, timeZone }).format(new Date());
+    } catch {
+      /* unknown IANA zone — fall through to the device's day */
+    }
+  }
+  return new Intl.DateTimeFormat(locale, opts).format(new Date());
 }

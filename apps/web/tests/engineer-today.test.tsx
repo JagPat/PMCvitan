@@ -2,6 +2,9 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import { SEED_DAILY_LOG, engineerTodayLabels as L, type DailyLog } from '@vitan/shared';
 import { todayPath } from '@/lib/engineerToday';
+import { todayCivil } from '@/lib/civilDate';
+
+const TODAY = todayCivil(null);
 
 /**
  * UX slice 2a — the site engineer's Today: one "do this now" action and the day's four-step
@@ -19,6 +22,7 @@ const log = (over: Partial<DailyLog> = {}): DailyLog => ({
   crew: SEED_DAILY_LOG.crew.map((c) => ({ ...c, count: 0 })),
   progress: 0,
   photos: [],
+  logDate: TODAY,
   ...over,
 });
 
@@ -39,7 +43,7 @@ describe('todayPath — the day read from the log', () => {
   });
 
   it('a submitted log is done, and says only what the log shows', () => {
-    const p = todayPath(log({ checkedIn: true, submitted: true, progress: 1 }), 0);
+    const p = todayPath(log({ checkedIn: true, submitted: true, progress: 1 }), 0, TODAY);
     expect(p.action).toBe('done');
     expect(p.done).toEqual({ checkIn: true, crew: false, photos: true, send: true });
   });
@@ -51,6 +55,12 @@ describe('todayPath — the day read from the log', () => {
     expect(p.doneCount).toBe(0);
     // the same log on its own day is done
     expect(todayPath(sent, 5, '2026-09-28').action).toBe('done');
+  });
+
+  it('a sent log with no civil date (a legacy row) is history: today starts fresh', () => {
+    expect(todayPath(log({ checkedIn: true, submitted: true, logDate: null }), 5, '2026-09-29').action).toBe('start');
+    // an unsent undated log is still the one to finish
+    expect(todayPath(log({ checkedIn: true, logDate: null }), 5, '2026-09-29').action).toBe('photos');
   });
 
   it('an earlier log never sent is still the one to finish', () => {
@@ -179,6 +189,18 @@ describe('Engineer Today — the screen', () => {
     const { r } = await loadToday({ dailyLog: yesterday, timeZone: 'Asia/Kolkata' });
     expect(r.getByTestId('today-now').dataset.action).toBe('start');
     expect(r.getByTestId('today-count').textContent).toBe('0 of 4 done');
+  });
+
+  it('the heading names the site’s day, not the device’s', async () => {
+    // 20:30 UTC on 28 Sep is already 29 Sep in Kolkata
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-28T20:30:00Z'));
+    try {
+      const { r } = await loadToday({ dailyLog: log({ logDate: '2026-09-29' }), timeZone: 'Asia/Kolkata' });
+      expect(r.getByTestId('engineer-today').textContent).toContain('29 September');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('every step is a tap target at least 44px tall', async () => {
