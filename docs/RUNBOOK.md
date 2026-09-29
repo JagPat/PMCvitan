@@ -949,6 +949,10 @@ Stop routing to and shut down every instance running the PREVIOUS build. The sin
 guarantee and the coverage seal are per-catalog: an old instance still sending under the old
 catalog while a new seal is recorded would race the cutover. Zero old instances before step 2.
 
+For the Phase 6 4d drain, `rollout:drain-evidence` (§P6T4D, "Recording the drain's autonomous
+corroboration") records what the platform and the `ReleaseLease` register show, beside — never
+instead of — the human operator attestation the gate requires.
+
 ## 2. Deploy the new build in LEGACY/SHADOW sender mode
 
 Deploy with `OUTBOX_SENDER_MODE` unset (legacy default) or `shadow`. In these modes the
@@ -1249,6 +1253,75 @@ process stalled) for most of a lease: look there, not at the lease.
 `RELEASE_LEASE_DISABLED=true` skips registration for the API acceptance harness, whose seed wipes
 the database every run and cannot wipe this table. It is honored only when `NODE_ENV` is not
 `production`, which the image sets, so a deployed process always registers.
+
+### The deploy refuses to start: `server-generation fence: this build compiles server generation N, below the persisted minimum M`
+
+Phase 6 unit **4d-ii-a / A6e** installs the second drain fence (the staging document, "The drain").
+Every build compiles a monotone server generation (`src/platform/server-generation.ts`,
+`SERVER_GENERATION`); the singleton `ServerGeneration` row is the persisted minimum, written only by
+a migration inside its DDL transition and only ever raised, each raise recording the raising
+migration's name and time. At startup, before the consumer catalog is synced or anything is written,
+the outbox bootstrap reads the minimum and refuses the process when it exceeds the build's generation.
+The read locks the row `FOR SHARE` and the process holds that lock until it actually serves — its
+lease registered, its relay started and its HTTP listener open (`main.ts` releases the hold after
+`app.listen()`) — so a raise cannot commit between a process's admission and its serving: a raising
+migration waits for every process in that window, and a process that starts after it reads the
+raised minimum and is refused. A6e's migration `20280101000000_phase6_t4d_ii_a6e_generation_fence`
+sets the minimum to A6e's generation, so nothing running is refused; A8b's migration raises it, and
+from then on every A6-to-A8a build — an A7 image restarted after A8b included — is refused at
+startup, exactly as a stale `catalogVersion` is. The fence is not a consumer contract version.
+
+The refusal names the build's generation, the persisted minimum and the migration that raised it.
+It means an OLDER image was started against a database a later release has migrated: a rollback, a
+stale replica, a container restarted from an old image. Do not lower the minimum — nothing can
+(`ServerGeneration_t4d_raised` refuses any decrease, inside a migration too; the row is never deleted
+or truncated). Deploy the release carrying the named migration, or a later one.
+
+`server-generation fence: no persisted server-generation minimum` means the fenced build's own
+migration has not run on this database: `scripts/migrate.sh` runs every migration before the process
+starts, and `20280101000000` is on `ALWAYS_EXECUTE`, so this is a database the runner did not
+migrate (a hand-started process, a wrong `DATABASE_URL`). Run the migrations and start again.
+
+A raising migration copies A6e's raise block with its own literal and name. Its UPDATE takes the row
+FOR NO KEY UPDATE and so waits behind every process currently between admission and its open
+listener; that is by design, and a deploy whose migration step appears to pause there is waiting for
+a process that is still booting. The admission hold is bounded (`SERVER_GENERATION_FENCE_HOLD_MS`, ten minutes). A
+boot that outlives it before admission is refused. A hold that ends AFTER admission and before the
+listener opens — the bound lapsed, a closed connection — is a LOST admission: a raise may have
+committed under the process, so it does not go on to serve; it logs `FENCED — the server-generation
+admission was lost before this process served` and exits, and the container restarts it into a
+fresh admission. A `FENCED` exit of this kind means the boot took longer than ten minutes or the
+database connection dropped during it: look there, not at the fence.
+
+### Recording the drain's autonomous corroboration: `rollout:drain-evidence`
+
+The gate `phase-6-4d-previous-release-drained` clears ONLY on the direct explicit human
+`OPERATOR-ATTESTATION` (docs/POLICY.md). Beside it — never instead of it — the runner records the
+evidence it can verify fail-closed, as a `DRAIN-EVIDENCE` comment on the controlling issue:
+
+```
+COOLIFY_TOKEN='<read token>' pnpm --filter api rollout:drain-evidence \
+  --minimum-release <commit of the release carrying A8b> \
+  --app <Coolify application uuid> --coolify-url https://<coolify host>/api/v1 \
+  --repo <a checkout holding both commits> --out drain-evidence.md
+```
+
+It reads two things and changes nothing: (i) the `ReleaseLease` register — every LIVE lease, its
+catalog version and release; a live lease at a catalog version below the minimum (by default the
+persisted catalog maximum, or `--minimum-catalog-version`) is a still-serving older process; (ii) the
+platform's inventory for the processes that predate the register — the application resource
+(`GET /applications/{uuid}`: its running status and the commit its image was built from) and the
+platform's deployment queue (`GET /deployments`), each record judged by its state: `queued` and
+`in_progress` are in progress, `finished`, `failed` and cancelled records are history, and a state
+the command does not know is counted in progress and named. Each release is placed against the
+minimum by git ancestry in `--repo`. The verdict is `drained` only when the application runs an image
+at or after the minimum, no deployment of it is in progress, and every live lease is at the minimum
+catalog version; anything provably older is `not-drained`; anything it cannot place — no token, a
+failed read, a stopped application, a deployment in progress, a release that is not a commit in the
+checkout, an `unreleased` lease — is `unclassified`, and the command exits non-zero for both. The
+JSON evidence goes to stdout; the comment body to `--out` (else stderr), for the runner to post. The
+token comes from the environment only and is never printed. The command drains, stops, deploys and
+posts nothing.
 
 ### A restored database that lost its migration ledger
 

@@ -149,6 +149,10 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // nothing truncates), so the entry is the registry being complete, not a bypass a suite needs;
   // the row-scoped removal below is the register's only seam.
   { table: 'OutboxConsumerActivation', trigger: 'OutboxConsumerActivation_t4d_no_truncate' },
+  // Phase 6 task 4d-ii-a / A6e — the server-generation fence's persisted minimum. No sanctioned reset
+  // names it and no CASCADE can reach it (no foreign key points at it), so this entry is the registry
+  // being complete, not a bypass a suite needs: the minimum is never legitimately cleared.
+  { table: 'ServerGeneration', trigger: 'ServerGeneration_t4d_no_truncate' },
 ];
 
 /**

@@ -1,4 +1,4 @@
-import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { PushService } from '../../push/push.service';
@@ -21,6 +21,7 @@ import { CommercialBudgetQuery } from '../../commercial/commercial-budget.query'
 import { OrgsParticipant } from '../../orgs/orgs.participant';
 import { effectCoverageVersion } from '../external-effects';
 import { ReleaseLeaseService } from '../release-lease.service';
+import { holdAdmission, type AdmissionHold } from '../server-generation';
 
 /**
  * Phase 2 Task 6 — outbox lifecycle bootstrap. At app start it registers the socket + push
@@ -29,8 +30,12 @@ import { ReleaseLeaseService } from '../release-lease.service';
  * the relay's dispatch interval (a no-op under NODE_ENV=test — tests drive the relay directly).
  */
 @Injectable()
-export class OutboxBootstrap implements OnModuleInit {
+export class OutboxBootstrap implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger('OutboxBootstrap');
+  /** 4d-ii-a / A6e — the admission held open until the process actually serves. */
+  private hold: AdmissionHold | null = null;
+  /** Stop serving on a lost admission. Replaced only by a probe; in a process, the container restarts it. */
+  protected terminate: (reason: string) => void = () => process.exit(1);
 
   constructor(
     private readonly relay: OutboxRelay,
@@ -58,6 +63,46 @@ export class OutboxBootstrap implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    // 4d-ii-a / A6e — THE SERVER-GENERATION FENCE, first: a build whose compiled generation is below
+    // the persisted, migration-written minimum is refused before it registers, syncs or writes
+    // anything (the staging document, "The drain"). Fail-closed on an absent minimum.
+    //
+    // The admission read locks the singleton row FOR SHARE, and the transaction HOLDS that lock
+    // until the process ACTUALLY SERVES: through the catalog sync, the lease registration and the
+    // relay start below, and past the end of this hook until `main.ts` reports the HTTP listener
+    // open by calling `releaseAdmission()` (#663's review round 1, finding 2; round 2, finding 1 —
+    // a hold released at the end of this hook left a gap before the relay and the listener in which
+    // a raise could commit under an admitted older build). A raising migration's UPDATE conflicts
+    // with FOR SHARE, so it cannot commit inside that window, and a process that starts after the
+    // raise reads the raised minimum and is refused. The serving steps use the pooled client on
+    // their own connections; only the lock lives on the held one, and the transaction holds no
+    // write. A hold that ENDS after admission and before release (`SERVER_GENERATION_FENCE_HOLD_MS`
+    // lapsed, a closed connection) is a LOST admission: a raise may have committed under this
+    // process, so it must not go on to serve — it terminates, and the container restarts it into a
+    // fresh admission (round 3, finding 1; the same posture as a lapsed `ReleaseLease`).
+    this.releaseAdmission(); // a re-entered boot (the suites drive this hook directly) holds one admission at a time
+    this.hold = holdAdmission(this.prisma, () => this.serveBehindFence(), {
+      log: this.log,
+      onLost: (reason) => this.terminate(reason),
+    });
+    await this.hold.admitted;
+  }
+
+  /**
+   * The process is serving: its listener is open. Lets the admission transaction commit and the
+   * row's SHARE lock go. Called by `main.ts` after `app.listen()`, by the test harness after
+   * `app.init()`, and on module destroy. Idempotent.
+   */
+  releaseAdmission(): void {
+    this.hold?.release();
+  }
+
+  onModuleDestroy(): void {
+    this.releaseAdmission();
+  }
+
+  /** Everything between admission and serving, run while the fence's SHARE lock is held. */
+  private async serveBehindFence(): Promise<void> {
     registerConsumer(makeSocketConsumer(this.realtime));
     registerConsumer(
       makePushConsumer(this.push, {
@@ -153,6 +198,7 @@ export class OutboxBootstrap implements OnModuleInit {
     // 4d-ii-a — the serving process's `ReleaseLease`, written only once the catalog is synced and
     // the sender gate has passed, so a process refused above never claims one (a no-op under test).
     await this.releaseLease.register();
+    // the relay starts INSIDE the hold: a raise cannot commit between the lease and the first pass
     this.relay.start();
   }
 }
