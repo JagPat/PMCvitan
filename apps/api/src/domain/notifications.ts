@@ -23,6 +23,11 @@ export const WITHDRAWN_DECISION_NOTICE_COLOR = '#6B665C';
 /** Phase 6 task 4d-ii-a / A7a — the green approved notice's colour, named beside its text so the
  *  approve writer and the kinded renderer read one definition. */
 export const APPROVED_DECISION_NOTICE_COLOR = '#3F7A54';
+/** Phase 6 task 4d-ii-a / A8a — the forwarded notice is an ACTION ITEM for the new holder, written in
+ *  the pending demand's colour; the provisional approval's notice is the awaiting colour the shared
+ *  status chip uses (`packages/shared/src/tokens/colors.ts`), never green. */
+export const FORWARDED_DECISION_NOTICE_COLOR = '#C08A2D';
+export const AWAITING_COUNTERSIGN_NOTICE_COLOR = '#31567F';
 
 /** The notification text shown when a PMC issues a decision (awaiting client approval). */
 export function pendingDecisionNotice(title: string): string {
@@ -97,4 +102,34 @@ export function approvedDecisionNotice(f: ApprovedDecisionNoticeFacts): string {
   return f.deciderKind === 'client'
     ? `Client approved ${f.title} — ${f.material}`
     : `${f.actorName} approved ${f.title} — ${f.material}`;
+}
+
+/**
+ * Phase 6 task 4d-ii-a / A8a (§A.2, the forwarding notice) — "Decision forwarded: T → <new holder>".
+ * `toLabel` is the new holder's display identity FROZEN at the act (a named member's name, or the
+ * role's label), carried on the `decision.forwarded` event the kinded renderer reads.
+ */
+const FORWARDED_DECISION_PREFIX = 'Decision forwarded';
+
+export function forwardedDecisionNotice(title: string, toLabel: string): string {
+  return `${FORWARDED_DECISION_PREFIX}: ${title} → ${toLabel}`;
+}
+
+/** The display label of a forward target designation (a role), as the notice names it. */
+export const DESIGNATION_ROLE_LABEL: Record<'client' | 'pmc' | 'architect', string> = {
+  client: 'the client',
+  pmc: 'the PMC',
+  architect: 'the architect',
+};
+
+/**
+ * Phase 6 task 4d-ii-a / A8a (§A.2, "the durable Notification tells the truth about finality") —
+ * under an ACTIVE chain the provisional approve writes THIS notice instead of the green one: the same
+ * announcement of who exercised the authority, with the finality it lacks stated — the countersign is
+ * still to come. The finalizer (A8b) writes the green notice from the revision's frozen approver facts.
+ */
+const PROVISIONAL_APPROVAL_SUFFIX = " — awaiting the architect's countersign";
+
+export function provisionalApprovalNotice(f: ApprovedDecisionNoticeFacts): string {
+  return `${approvedDecisionNotice(f)}${PROVISIONAL_APPROVAL_SUFFIX}`;
 }

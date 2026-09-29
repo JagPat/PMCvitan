@@ -14,39 +14,46 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a7d-catalog-change
-reviewed_merge: 582297b
-open_pr: 671
+work_item: phase-6-task-4d-ii-a-a8a-forward-approve
+reviewed_merge: 7e12e7a
+open_pr: 672
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
 ```
 
-### Now — Phase 6 task 4d: A7d, the catalog change
+### Now — Phase 6 task 4d: A8a, forward and approve
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A7d, `open_pr: 671` (`work_item: phase-6-task-4d-ii-a-a7d-catalog-change`, branch
-  `claude/4d-ii-a7d-catalog-change`, from `main` at `582297b`).** The last A7 sub-unit, the CATALOG
-  CHANGE (plan §D "4d-ii-a is a CATALOG CHANGE, staged as one"): the compiled external-effect catalog
-  widened — the three chain types (`decision.forwarded` and `decision.awaiting_countersign`, the two
-  FROZEN-audience push families with their constant bodies; `membership.standing_changed`), the
-  `architect` role in the three targeted ceilings — at a new coverage generation (`23f47cd9…`, the
-  preimage gaining `frozenAudience` and `pushBody`) seeded BESIDE U3's by
-  `20280104000000_phase6_t4d_ii_a7d_catalog_change`, audited key by key against the generation it
-  extends; `targetUserIds` admitted by `buildDispatchIntent` for the frozen families alone and sent to
-  by the push consumer intersected with the family predicate's current set (`forwardPushTarget`,
-  `countersignPushTarget`); the decider push's architect arm; `webpush.notify` 2 → 3; `decisions.inbox`'s
-  persisted rule rewritten under the rule transition for the two decision types; `decisions.effects`
-  registered INACTIVE (ordered, `types` over `membership.standing_changed`, its head from A6a's
-  catalog-INSERT trigger) with its handler — the last-architect cancellation, the activation
-  re-notification to the current architects, the stale-activation no-op — over
-  `EventStreamQuery.latestPosition`; `membership.standing_changed` emitted by the member commands on
-  an architect-standing flip, claimed by the `MembershipTransition`; the `DecisionForward` claimant and
-  the provisional-revision arm of the approval claimant; U1's kernel actor seal re-issued with the
-  re-notification's one system-act exemption; `ALWAYS_EXECUTE`. The reseal sequence is in the packet
-  (the build in `legacy`/`shadow`, `outbox:status` clean, `outbox:seal-external`, restart in `outbox`).
+- **Now, A8a, `open_pr: 672` (`work_item: phase-6-task-4d-ii-a-a8a-forward-approve`, branch
+  `claude/4d-ii-a8a-forward-approve`, from `main` at `7e12e7a`).** The first A8 sub-unit (the staging
+  note's table): `decisions.forward` on the ledger with `lockProjectReadiness` in the canonical order,
+  refusing 409 while the reservation stands; the approve CAS landing `awaiting_countersign` under a
+  chain with the provisional revision and notice, the frozen `approvedFrom`/`approvedByName`/
+  `approvedByRole` and its `decider`/`forward` cancellations; the two chain keys' executable bundles
+  owed to A8a in the pairing matrix; the status tripwire's two A8a arms; `decision.forward` in
+  `ROLE_POLICY` (P28); the forwarded and provisional notices' renderer arms. One migration the delivered
+  database forced (`20280105000000_phase6_t4d_ii_a8a_awaiting_tuple`, `ALWAYS_EXECUTE`): 4b's
+  `Decision_t4b_approved_tuple_check` re-issued with `awaiting_countersign` admitted — 4d-i widened the
+  attribution seal's arm for the provisional transition and never the CHECK beside it, so the chain
+  reapproval of a tuple-bearing decision was unrepresentable. No consumer version, catalog row or door
+  moves.
+- **A7d merged as #671** (`7e12e7a`): the CATALOG CHANGE (plan §D "4d-ii-a is a CATALOG CHANGE, staged
+  as one") — the compiled external-effect catalog widened (the three chain types, the two FROZEN-audience
+  push families with their constant bodies, the `architect` role in the three targeted ceilings) at a new
+  coverage generation (`23f47cd9…`) seeded BESIDE U3's by `20280104000000_phase6_t4d_ii_a7d_catalog_change`
+  and audited key by key against it; `targetUserIds` at the compiled boundary and in the push consumer
+  (the frozen set intersected with the family predicate's current set); `webpush.notify` 2 → 3;
+  `decisions.inbox`'s persisted rule rewritten for the two decision types; `decisions.effects` registered
+  INACTIVE with its handler over `EventStreamQuery.latestPosition`; `membership.standing_changed` emitted
+  on an architect-standing flip and claimed by the `MembershipTransition`; the `DecisionForward` claimant
+  and the provisional arm of the approval claimant; U1's actor seal re-issued with the re-notification's
+  one system-act exemption; `ALWAYS_EXECUTE`. Its review found the ledger-lost rule: on a database that
+  CARRIES A7d (its seals beside 4d-i's) `scripts/migrate.sh` resolves 4d-i's two halves and U3 as applied
+  on the P3005 path (their catalog audits would refuse A7d's generation) and replays the rest; the
+  RUNBOOK's ledger-lost section states it. **With A7d, A7 is complete.**
 - **A7c merged as #670** (`582297b`): `decisions.inbox` v3 — the projection's DURABLE contract version
   moves 2 → 3 for the meanings the stored DTO gained since 4c-ii (the finalized-only cycle, the
   non-`standard` origin, the awaiting state and the forward-installed holder); the writer fence's two

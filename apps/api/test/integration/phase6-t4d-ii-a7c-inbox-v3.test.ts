@@ -272,8 +272,8 @@ describe('4d-ii-a / A7c — decisions.inbox v3: the contract version, the fence 
     const did = await issue({ deciderKind: 'member', deciderMembershipId: eng.membershipId });
     await applyProjection();
     expect((await projected(did)).dto?.status).toBe('pending');
-    // the state A8a's approve writes under an active chain, planted with the approval tuple NULL as
-    // the provisional act leaves the Decision row's own tuple (the revision carries the act)
+    // the state A8a's approve writes under an active chain, planted by its status alone (the fold reads
+    // the row's status; the tuple and the revision the provisional act writes are not what this arm asks)
     await plantDecision(`UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = '${did}'`);
     try {
       await issue();

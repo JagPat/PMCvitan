@@ -39,6 +39,11 @@ export const ROLE_POLICY = {
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;
   // that is the practice's call alone (the client never had authority over the asking either).
   'decision.withdraw': ['pmc'],
+  // Phase 6 task 4d (4d-ii-a / A8a, §A.2) — FORWARD authority is the current HOLDER + the PMC + the
+  // architect (the owner's 2026-08-13 amendment): the route CEILING admits every role a holder can
+  // be designated in, and the SERVICE narrows to the decision's actual holder, a pmc or an architect.
+  // No token can carry `architect` while 4d-i's doors stand, and the command refuses 409 until 4d-iii.
+  'decision.forward': ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'],
   // Phase 6 unit 4c-ii (§A) — CONSULTATION. Asking is the practice's call: `pmc` in 4c, and
   // `architect` joining the requesting set with the role (4d-ii-a / A5a). No token can carry the
   // role while 4d-i's reservation doors stand, so the row is unreachable until 4d-iii.

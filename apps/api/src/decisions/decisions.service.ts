@@ -9,10 +9,10 @@ import type { AuthUser } from '../common/auth';
 import { resolveActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
-import { APPROVED_DECISION_NOTICE_COLOR, PENDING_DECISION_NOTICE_COLOR, RECORDED_DECISION_NOTICE_COLOR, WITHDRAWN_DECISION_NOTICE_COLOR, approvedDecisionNotice, pendingDecisionNotice, recordedDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
-import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
-import type { PushRole } from '../platform/external-effects';
-import type { ApproveInput, ChangeInput, CreateDecisionInput, RequestConsultationInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
+import { APPROVED_DECISION_NOTICE_COLOR, AWAITING_COUNTERSIGN_NOTICE_COLOR, DESIGNATION_ROLE_LABEL, FORWARDED_DECISION_NOTICE_COLOR, PENDING_DECISION_NOTICE_COLOR, RECORDED_DECISION_NOTICE_COLOR, WITHDRAWN_DECISION_NOTICE_COLOR, approvedDecisionNotice, forwardedDecisionNotice, pendingDecisionNotice, provisionalApprovalNotice, recordedDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
+import { cancelQueuedPushBySubject, lockQueuedPushDeliveries } from '../platform/outbox/cancellation';
+import { EXTERNAL_EFFECTS, type PushRole } from '../platform/external-effects';
+import type { ApproveInput, ChangeInput, CreateDecisionInput, ForwardDecisionInput, RequestConsultationInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { resolveActorEnvelope } from '../platform/actor-envelope';
@@ -431,6 +431,11 @@ export class DecisionsService {
     // approval against a now-withdrawn decision would drive `withdrawn → approved` into the
     // terminal trigger — a raw database error mid-write instead of a refusal. A deliberate 409
     // here has NO side effects (no revision, no register event, no notice).
+    // 4d-ii-a / A8a — an approval AWAITING its countersign is the ARCHITECT's action item: it is
+    // countersigned, rejected back or resolved when stranded (A8b), never approved again.
+    if (d.status === 'awaiting_countersign') {
+      throw new ConflictException(`Decision ${decisionId} is awaiting the architect's countersign — it is the architect's to countersign or reject, never approved again`);
+    }
     if (d.status !== 'pending' && d.status !== 'change') {
       throw new ConflictException(`Decision ${decisionId} was withdrawn — it can no longer be approved`);
     }
@@ -443,8 +448,11 @@ export class DecisionsService {
     // the actor IS the decider (by role, or the named membership's user), or the PMC approves
     // on the decider's behalf — recorded honestly, generalized from the hard-coded 'client'.
     const isNamedDecider = d.deciderKind === 'member' && d.deciderMembership?.userId === user.sub;
+    // 4d-ii-a / A8a — the ARCHITECT arm: a decision designated to the architect role is decided by an
+    // architect (the role a token carries only once 4d-iii lets the chain activate).
     const isRoleDecider =
-      (d.deciderKind === 'client' && user.role === 'client') || (d.deciderKind === 'pmc' && user.role === 'pmc');
+      (d.deciderKind === 'client' && user.role === 'client') || (d.deciderKind === 'pmc' && user.role === 'pmc')
+      || (d.deciderKind === 'architect' && user.role === 'architect');
     if (!isNamedDecider && !isRoleDecider && user.role !== 'pmc') {
       throw new ForbiddenException('Only this decision\'s decider (or the PMC on their behalf) can approve it');
     }
@@ -452,7 +460,7 @@ export class DecisionsService {
     // the display identity of the HOLDER the act freezes (round 3 — the act keeps its own
     // history even after a later forward re-homes the decision)
     const holderLabel =
-      d.deciderKind === 'member' ? `Member ${d.deciderMembershipId}` : d.deciderKind === 'pmc' ? 'PMC' : 'Client';
+      d.deciderKind === 'member' ? `Member ${d.deciderMembershipId}` : d.deciderKind === 'pmc' ? 'PMC' : d.deciderKind === 'architect' ? 'Architect' : 'Client';
     // ...and the ANNOUNCEMENT says who exercised the authority (gate finding 7). Composed inside
     // the transaction from A7a: see `announce` there.
 
@@ -481,6 +489,13 @@ export class DecisionsService {
         // locked": refused 409 with a reload, judged here under the readiness key (never at the
         // transport) and before any write. With no chain the approve is untouched.
         await assertCountersignClient(tx, projectId, user.decisionsContract, 'Approving a decision');
+        // 4d-ii-a / A8a (§A.2, "the chain switch") — the switch is read HERE, under the readiness key the
+        // architect standing writers take, through the kernel register the birth and entry seals judge
+        // by: an active architect makes this approval PROVISIONAL (`awaiting_countersign`, the revision
+        // born `finalized = false`), and the demand goes to the architects frozen at this instant. With
+        // no chain the approve lands `approved` exactly as it did.
+        const chainActive = (await RoleStandingQuery.activeCount(tx, projectId, 'architect')) > 0;
+        const landing: 'approved' | 'awaiting_countersign' = chainActive ? 'awaiting_countersign' : 'approved';
         // round-11 Codex F1 — the ROLE that granted authority is re-validated LIVE inside the
         // transaction, under the membership-row lock: `user.role` was established by JwtGuard
         // BEFORE this transaction, and with two active holders a concurrent removal/re-role of
@@ -512,10 +527,30 @@ export class DecisionsService {
           }
           holderDisplay = member.name;
         }
+        // the actor's FROZEN pair (A2's seam), resolved BEFORE the delivery rows and the decision row are
+        // locked (its reads lock standing rows, which come before both in the one order): the revision's
+        // `approvedByRole`/`approvedByName`, the event's envelope and the notice's text are one reading.
+        // A provisional approval REQUIRES the pair (the birth seal's arm); a no-chain approval records it
+        // when it resolves and keeps the legacy NULLs otherwise (4d-iii's trailing seal requires it).
+        const envelope = await resolveActorEnvelope(tx, projectId, actor);
+        if (chainActive && !envelope) {
+          throw new ConflictException('Your project standing could not be frozen for a provisional approval — reload and retry');
+        }
+        // THE ONE LOCK ORDER (§A.4 (i)): the subject's queued push deliveries FOR UPDATE ascending, THEN the
+        // decision row — the decider and forward demands this act outdates and, when the approval leaves
+        // the consultation-open set (no chain), the open invitations too
+        await lockQueuedPushDeliveries(tx, { projectId, subject: decisionId, eventTypes: ['decision.published', 'decision.forwarded', ...(chainActive ? [] : ['decision.consultation_requested'])] });
+        // #672 round 1 (Codex): the CAS names the HOLDER the authority above was judged against, beside
+        // the status — the pre-read is taken before the readiness key, and a forward committing in
+        // between leaves the status where it was (`pending` stays `pending`, `change` stays `change`)
+        // while moving the holder, so a status-only CAS would let a DISPLACED holder's approval land
+        // with its stale authorization and freeze a tuple naming a holder the decision no longer
+        // carries (a first tuple is refused by nothing; a frozen one is not compared again). Count 0
+        // is the same deterministic 409, no side effects.
         const { count } = await tx.decision.updateMany({
-          where: { id: decisionId, projectId, status: prior },
+          where: { id: decisionId, projectId, status: prior, deciderKind: d.deciderKind, deciderMembershipId: d.deciderMembershipId ?? null },
           data: {
-            status: 'approved',
+            status: landing,
             approvedOption: o.label,
             material: o.material,
             cost: o.delta,
@@ -526,7 +561,10 @@ export class DecisionsService {
             photoSwatch: o.swatch,
             // the approval act FREEZES the holder tuple it captured consent for (round 3);
             // the holder columns stay current STATE, the act keeps its own history — so a
-            // RE-approval never rewrites the FIRST act's tuple (the DB seal refuses it too)
+            // RE-approval never rewrites the FIRST act's tuple (the DB seal refuses it too).
+            // 4d-ii-a / A8a — the PROVISIONAL act writes it too, "exactly as the finalizing act
+            // would" (§A.2; 4d-i's widened seal arm admits `→ awaiting_countersign`, and A8a's
+            // migration widens 4b's `Decision_t4b_approved_tuple_check` beside it).
             ...(d.approvedDeciderKind === null
               ? {
                   approvedDeciderKind: d.deciderKind,
@@ -536,7 +574,7 @@ export class DecisionsService {
               : {}),
           },
         });
-        if (count === 0) throw new ConflictException('The decision changed while approving — reload and retry');
+        if (count === 0) throw new ConflictException('The decision changed while approving (its status or its holder moved) — reload and retry');
         if (prior === 'change') {
           // mandatory re-approval CLOSES the reopening — EXACTLY ONE open request must
           // resolve, or 'reapproved' would lie about what happened (gate finding 1):
@@ -577,6 +615,15 @@ export class DecisionsService {
             approvedAt: new Date(),
             approvedById: actor.actorId,
             onBehalfOf,
+            // 4d-ii-a / A8a (§A.2) — the FINALITY key and the act the finalizer emits from: born `true`
+            // with no chain (today's row, but for the recorded act), born `false` under one — the birth
+            // seal judges the value against the register, never the writer; `approvedFrom` is the
+            // status the act left (`approved` vs `reapproved` at finalization), and the approver's pair
+            // is the frozen envelope (judged against the registers by the same seal).
+            finalized: !chainActive,
+            approvedFrom: prior,
+            approvedByName: envelope?.actorName ?? null,
+            approvedByRole: envelope?.actorRole ?? null,
             // 4c-ii — the receipt of the approval command this revision IS the product of. The
             // deferred trigger installed in this unit's migration requires it to have SUCCEEDED
             // at commit with its `resultRef` naming THIS decision, which is precisely when
@@ -607,17 +654,44 @@ export class DecisionsService {
         // approver and option). So the envelope is resolved HERE (A2's seam: one reading for the
         // event and the notice), the payload carries what the text needs beside the revision id,
         // and the cached text is built from the same facts the renderer reads.
-        const envelope = await resolveActorEnvelope(tx, projectId, actor);
         const announce = approvedDecisionNotice({
           actorName: envelope?.actorName ?? actor.actorName,
           actorRole: envelope?.actorRole ?? actor.actorRole,
           title: d.title, material: o.material, deciderKind: d.deciderKind, onBehalfOf,
         });
+        // 4d-ii-a / A8a (§A.4 (i)) — the demands this act outdates, cancelled by subject under the locks
+        // taken above: the decider's "awaiting your approval" and any "forwarded to you" still queued
+        // (the holder acted); and with no chain the open consultation invitations (the approval leaves the
+        // open set, so `consultation.respond` refuses from here). Under a chain the consultations stay
+        // open while the decision awaits, and nothing of that family is cancelled.
+        await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.published' });
+        await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.forwarded' });
+        if (!chainActive) await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.consultation_requested' });
         const eventId = randomUUID();
+        const facts = { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}), revisionId, title: d.title, deciderKind: d.deciderKind };
+        if (chainActive) {
+          // THE COUNTERSIGN DEMAND (§A.2, obligation 7): exactly ONE `decision.awaiting_countersign` —
+          // its payload the provisional act (the status it left, the approver's frozen pair, the
+          // revision it wrote) and its recipients the architects FROZEN now — and NEVER an approval
+          // event, which announces a finality the finalizer alone may announce (A8b). The durable
+          // notice tells the same truth: the approval, and the countersign it still awaits — the
+          // awaiting colour, never green.
+          const architects = await RoleStandingQuery.holderUserIds(tx, projectId, 'architect');
+          const provisional = provisionalApprovalNotice({ actorName: envelope!.actorName, actorRole: envelope!.actorRole, title: d.title, material: o.material, deciderKind: d.deciderKind, onBehalfOf });
+          const ev = await emitEvent(tx, {
+            projectId, actor, eventId, actorEnvelope: envelope,
+            eventType: 'decision.awaiting_countersign', entityType: 'Decision', entityId: decisionId,
+            payload: { ...facts, approvedFrom: prior, approverName: envelope!.actorName, approverRole: envelope!.actorRole },
+            effectKey: 'decision.awaiting_countersign',
+            dispatch: { push: { body: EXTERNAL_EFFECTS['decision.awaiting_countersign'].pushBody, targetUserIds: architects } },
+          });
+          await tx.notification.create({ data: { projectId, text: provisional, color: AWAITING_COUNTERSIGN_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.awaiting_countersign', eventId } });
+          return { resultRef: decisionId, events: [ev] };
+        }
         const ev = await emitEvent(tx, {
           projectId, actor, eventId, actorEnvelope: envelope,
           eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId,
-          payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}), revisionId, title: d.title, deciderKind: d.deciderKind },
+          payload: facts,
           effectKey: prior === 'change' ? 'decision.reapproved' : 'decision.approved',
           dispatch: { push: { body: announce } },
         });
@@ -627,6 +701,175 @@ export class DecisionsService {
     });
 
     // the decision is locked; PMC/contractor/engineer act on it — told truthfully by whom (fresh only)
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /**
+   * Phase 6 task 4d (4d-ii-a / A8a, §A.2 "Forwarding") — `decisions.forward`: the current holder, the PMC
+   * or an architect hands an OPEN, PUBLISHED decision to another designation. The HOLDER is the decision's
+   * current decider designation; forwarding re-points it, and the append-only `DecisionForward` chain
+   * records each hop — the DISPLACED designation, the new one, the ACTOR (a PMC forwarding a client-held
+   * decision is recorded as the PMC displacing the client) with the actor's frozen pair, the reason and the
+   * receipt. The fact is written FIRST (4d-i's seal compares it to the holder the decision carries at that
+   * instant), the holder columns move with it through the ONE door in 4b's holder freeze, and the hop is
+   * announced by exactly one `decision.forwarded` — a FROZEN-audience push at the new holder's users as
+   * they are now — with its audit row and its kinded notice, in the transition's own transaction.
+   *
+   * Refused 409 while 4d-i's reservation stands (the door judged under the readiness key, before any
+   * write); 409 to a client below `countersign-v1` under an active chain; 409 on a draft, on a record, on
+   * a decision that is not `pending`/`change` (an `awaiting_countersign` decision is the ARCHITECT's
+   * action item — it moves through the countersign, the rejection or the stranded resolution, never a
+   * generic forward), on a same-target forward and on a target that cannot act (a removed member, a role
+   * nobody holds); 403 to a caller who is neither the holder, a PMC nor an architect. The DB doors judge
+   * every one of these again at INSERT and at COMMIT (`phase6_t4d_forward_seal`, `_paired`,
+   * `_provenance_bound`, `_claim*`).
+   */
+  async forward(projectId: string, decisionId: string, input: ForwardDecisionInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const reason = input.reason; // zod `.trim().min(1)` — already trimmed, provably non-blank
+    const toKind = input.toDesignationKind;
+    const toMembershipId = toKind === 'member' ? input.toDesignationMembershipId! : null;
+    const requestHash = hashRequest({ decisionId, toKind, toMembershipId, reason });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.forward', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+
+    const d = await this.prisma.decision.findUnique({
+      where: { id: decisionId },
+      include: { deciderMembership: { select: { userId: true, id: true } } },
+    });
+    if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
+    // every refusal here is an ANSWER given before any write, and every one is re-judged under the lock
+    if (d.publishedAt === null) throw new ConflictException('A draft cannot be forwarded — it is its author\'s private workspace; publish it first');
+    if (d.deciderKind === 'none') throw new ConflictException(`Decision ${decisionId} is a record-only issue — it has no holder to forward`);
+    if (d.status === 'awaiting_countersign') {
+      throw new ConflictException(`Decision ${decisionId} is awaiting the architect's countersign — that is the architect's action item; it moves through the countersign, a rejection or the stranded resolution, never a forward`);
+    }
+    if (d.status !== 'pending' && d.status !== 'change') {
+      throw new ConflictException(`Decision ${decisionId} is ${d.status} — forwarding is legal only while the decision is open for its holder to act on`);
+    }
+    if (d.deciderKind === toKind && (d.deciderMembershipId ?? null) === toMembershipId) {
+      throw new ConflictException('That designation is already the holder of this decision');
+    }
+    const fromKind = d.deciderKind;
+    const fromMembershipId = fromKind === 'member' ? d.deciderMembershipId : null;
+
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'decisions.forward',
+      idempotencyKey,
+      requestHash,
+      // the fact's `sourceCommandId` is REQUIRED (§A.3 obligation 6): an unkeyed call takes a per-call
+      // server key so the receipt exists; a client key keeps its exactly-once replay
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        // the reservation door, judged under the readiness key: 409 until 4d-iii retires it
+        await assertPhase6_4dOpen(tx, 'Forwarding a decision');
+        await assertCountersignClient(tx, projectId, user.decisionsContract, 'Forwarding a decision');
+        // AUTHORITY (the owner's amendment: the current HOLDER + the PMC + the architect), every arm judged
+        // LIVE under the standing rows' locks — Membership before the decision row (the one order): the
+        // route's role re-validated, then the holder arm (a named holder's own membership, locked; a role
+        // holder through the delivered standing read, the architect through the kernel register), then
+        // pmc, then the architect.
+        const liveRole = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, user.sub, [user.role], { forUpdate: true });
+        if (!liveRole) throw new ForbiddenException('Your project standing changed while forwarding — the role that authorized this forward is no longer yours');
+        let isHolder = false;
+        if (fromKind === 'member') {
+          const from = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, fromMembershipId!);
+          if (!from) throw new ConflictException('The current holder is no longer an active member of this project — the decision must be re-homed by the PMC');
+          isHolder = from.userId === user.sub;
+        } else if (fromKind === 'architect') {
+          isHolder = await RoleStandingQuery.holdsRole(tx, projectId, user.sub, 'architect');
+        } else {
+          isHolder = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, user.sub, [fromKind], { forUpdate: true });
+        }
+        const isPmc = user.role === 'pmc';
+        const isArchitect = user.role === 'architect' && (await RoleStandingQuery.holdsRole(tx, projectId, user.sub, 'architect'));
+        if (!isHolder && !isPmc && !isArchitect) {
+          throw new ForbiddenException('Only this decision\'s current holder, the PMC or an architect can forward it');
+        }
+        // THE TARGET must be able to act, judged under its own standing lock: a NAMED member's active
+        // membership (locked), or a role at least one active member holds — and its users are the
+        // recipients FROZEN on the push (`targetUserIds`), resolved at this instant under the same locks.
+        let targetUserIds: string[];
+        let toLabel: string;
+        if (toKind === 'member') {
+          const to = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, toMembershipId!);
+          if (!to) throw new ConflictException('The forward target holds no active membership on this project — the new holder must be able to act');
+          targetUserIds = [to.userId];
+          toLabel = to.name;
+        } else {
+          targetUserIds = await this.orgsParticipant.effectiveRoleHolderUserIds(tx, projectId, toKind);
+          if (targetUserIds.length === 0) throw new ConflictException(`Nobody holds the ${toKind} role on this project — the decision would land with nobody able to act on it`);
+          toLabel = DESIGNATION_ROLE_LABEL[toKind];
+        }
+        // the actor's FROZEN pair (A2's seam) — the fact's `forwardedByRole`/`forwardedByName`, the event's
+        // envelope and the audit row are one reading; the seal refuses a pair the actor does not hold
+        const envelope = await resolveActorEnvelope(tx, projectId, actor);
+        if (!envelope) throw new ConflictException('Your project standing could not be frozen for this forward — reload and retry');
+        // THE ONE LOCK ORDER (§A.4 (i)): the subject's queued decider and forward deliveries FOR UPDATE
+        // ascending, THEN the decision row
+        await lockQueuedPushDeliveries(tx, { projectId, subject: decisionId, eventTypes: ['decision.published', 'decision.forwarded'] });
+        const rows = await tx.$queryRaw<Array<{ status: string; publishedAt: Date | null; deciderKind: string; deciderMembershipId: string | null; title: string }>>`
+          SELECT "status"::text AS status, "publishedAt", "deciderKind"::text AS "deciderKind", "deciderMembershipId", "title"
+            FROM "Decision" WHERE "projectId" = ${projectId} AND "id" = ${decisionId} FOR UPDATE`;
+        const cur = rows[0];
+        if (!cur || cur.publishedAt === null || (cur.status !== 'pending' && cur.status !== 'change')
+          || cur.deciderKind !== fromKind || (cur.deciderMembershipId ?? null) !== fromMembershipId) {
+          throw new ConflictException('The decision changed while forwarding — reload and retry');
+        }
+        // THE FACT FIRST (4d-i's seal compares it to the holder the decision carries at this instant), THEN
+        // the holder moves through the one door — the same transaction, field for field
+        const forwardId = `dfw-${randomUUID()}`;
+        await tx.decisionForward.create({
+          data: {
+            id: forwardId, projectId, decisionId,
+            fromDesignationKind: fromKind, fromDesignationMembershipId: fromMembershipId,
+            toDesignationKind: toKind, toDesignationMembershipId: toMembershipId,
+            forwardedById: actor.actorId, forwardedByRole: envelope.actorRole, forwardedByName: envelope.actorName,
+            reason, sourceCommandId: ctx.commandId!,
+          },
+        });
+        const { count } = await tx.decision.updateMany({
+          where: { id: decisionId, projectId, deciderKind: fromKind, deciderMembershipId: fromMembershipId },
+          data: { deciderKind: toKind, deciderMembershipId: toMembershipId },
+        });
+        if (count === 0) throw new ConflictException('The decision changed while forwarding — reload and retry');
+        // §A.4 (i): a forward outdates the displaced holder's "awaiting your approval" and any earlier
+        // "forwarded to you" still queued — cancelled by subject under the locks taken above
+        const cancelledDecider = await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.published' });
+        const cancelledForwards = await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.forwarded' });
+        const pushIntentsCancelled = [cancelledDecider, cancelledForwards].reduce((n, c) => n + c.neutralized + c.marked + c.entombed, 0);
+        const from = { kind: fromKind, membershipId: fromMembershipId };
+        const to = { kind: toKind, membershipId: toMembershipId };
+        // the audit register keeps the act (the correspondence seal binds it to the event and the fact)
+        await tx.decisionEvent.create({
+          data: {
+            decisionId, type: 'forwarded',
+            actor: actor.actorName, actorId: actor.actorId, actorName: envelope.actorName, actorRole: envelope.actorRole,
+            payload: { forwardId, from, to, toLabel, reason },
+          },
+        });
+        await recordAudit(tx, { projectId, actor, action: 'decision.forward', entity: 'Decision', entityId: decisionId });
+        const eventId = randomUUID();
+        const ev = await emitEvent(tx, {
+          projectId, actor, eventId, actorEnvelope: envelope,
+          eventType: 'decision.forwarded', entityType: 'Decision', entityId: decisionId,
+          payload: { forwardId, title: cur.title, from, to, toLabel, reason, pushIntentsCancelled },
+          effectKey: 'decision.forwarded',
+          // the frozen-audience family: the new holder's users as they are NOW, and the catalog's body
+          dispatch: { push: { body: EXTERNAL_EFFECTS['decision.forwarded'].pushBody, targetUserIds } },
+        });
+        await tx.notification.create({ data: { projectId, text: forwardedDecisionNotice(cur.title, toLabel), color: FORWARDED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.forwarded', eventId } });
+        // the receipt names the FACT (the provenance seal's `resultRef` arm)
+        return { resultRef: forwardId, events: [ev] };
+      },
+    });
+
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }

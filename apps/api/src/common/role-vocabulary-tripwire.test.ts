@@ -77,6 +77,8 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     'packages/shared/src/domain/types.ts :: union TokenRole': 'answered',
     'packages/shared/src/domain/types.ts :: list TOKEN_ROLES': 'answered',
     'packages/shared/src/domain/policy.ts :: list decision.approve': 'answered',
+    // 4d-ii-a / A8a — forward authority is the holder + pmc + architect: every holder-capable role at the route
+    'packages/shared/src/domain/policy.ts :: list decision.forward': 'answered',
     'packages/shared/src/domain/policy.ts :: list decision.updateDraft': 'answered',
     'packages/shared/src/domain/policy.ts :: list decision.change': 'excludes: the architect’s change path is the countersign disagreement, never a standard change request (§A.1)',
     'packages/shared/src/domain/policy.ts :: list decision.withdrawChange': 'answered',

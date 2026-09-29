@@ -63,6 +63,8 @@ const MODEL_OWNER: Record<string, string> = {
   // Phase 6 unit 4c-i — deployed dark; owned here from the moment the tables exist
   decisionConsultation: 'decisions',
   decisionConsultationResponse: 'decisions',
+  // Phase 6 task 4d (4d-ii-a / A8a) — the append-only forward chain, written only by decisions.forward
+  decisionForward: 'decisions',
   activity: 'activities', gateOverride: 'activities',
   phase: 'phases',
   inspection: 'inspections', inspectionItem: 'inspections',
@@ -174,7 +176,7 @@ const MODEL_OWNER: Record<string, string> = {
 const SERVICES: Record<string, { domain: string; foreign: Record<string, number>; dispatch: number }> = {
   // Phase 6 task 4b — +1: `decisions.updateDraft` (the draft-edit command dispatches its
   // weightless committed effect like every other emitting command).
-  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 9 },
+  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 10 },
   // edge 1 (closing inspection) → inspection.participant; edge 5 (drawing unlink) → FK SET NULL
   'activities/activities.service.ts': { domain: 'activities', foreign: {}, dispatch: 8 },
   // edge 6 (phase→activity detach) → FK SET NULL (phaseId)
@@ -399,7 +401,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'nodes/nodes.controller.ts': ['Post()', "Patch(':nodeId')", "Post(':nodeId/move')", "Post(':nodeId/publish')", "Delete(':nodeId')"],
   // Phase 6 task 4b — Patch(':decisionId/draft') edits an UNPUBLISHED draft (decider re-point /
   // record conversion / options) under the new `decision.updateDraft` policy.
-  'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Patch(':decisionId/draft')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')", "Post(':decisionId/consultations')", "Post(':decisionId/consultations/respond')"],
+  'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Patch(':decisionId/draft')", "Post(':decisionId/approve')", "Post(':decisionId/forward')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')", "Post(':decisionId/consultations')", "Post(':decisionId/consultations/respond')"],
   'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('resolve-mismatch')", "Post('submit')"],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
@@ -598,7 +600,7 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
     it('84 external-effect dispatch sites total across the pillar services (82 + Phase-6 unit 4c-ii request/respond consultation)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(84);
+      expect(total).toBe(85);
     });
   });
 
@@ -611,10 +613,10 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
     }
     it('172 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(172);
+      expect(total).toBe(173);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(172);
+      expect(live).toBe(173);
     });
   });
 

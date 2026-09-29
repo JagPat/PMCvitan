@@ -61,7 +61,8 @@ export const decisionsManifest: ModuleManifest = {
   consumesEvents: ['membership.standing_changed'],
   // Phase 6 task 4b (§A.1/§A.2) — `decisions.updateDraft` re-points an UNPUBLISHED draft's
   // decider/kind/options as one coherent pair (the write-once holder freeze starts at publication).
-  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw', 'decisions.updateDraft', 'consultations.request', 'consultations.respond'],
+  // 4d-ii-a / A8a adds `decisions.forward` (the hand-off; `decision.forwarded`'s writer).
+  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw', 'decisions.updateDraft', 'consultations.request', 'consultations.respond', 'decisions.forward'],
   // 4b adds: `statusAndDraftMap`/`statusAndDraftOf` (the recorded gate arm's draft flag),
   // `deciderPushTarget` (the decider push family's claim-time predicate, bound at bootstrap).
   queries: ['decisions.snapshotSlice', 'decisions.renderKindedNotice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef', 'decisions.statusAndDraftMap', 'decisions.statusAndDraftOf', 'decisions.deciderPushTarget', 'decisions.consultationRequestedPushTarget', 'decisions.consultationRespondedPushTarget', 'decisions.forwardPushTarget', 'decisions.countersignPushTarget'],
@@ -75,6 +76,7 @@ export const decisionsManifest: ModuleManifest = {
     'PATCH /projects/:projectId/decisions/:decisionId/draft',
     'POST /projects/:projectId/decisions/:decisionId/consultations',
     'POST /projects/:projectId/decisions/:decisionId/consultations/respond',
+    'POST /projects/:projectId/decisions/:decisionId/forward',
   ],
   permissions: ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
 };

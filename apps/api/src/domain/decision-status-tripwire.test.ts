@@ -204,7 +204,9 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/api/src/decisions/decision-serialize.ts :: d.status === 'change'": 'excludes: the open change request, shown only while reopened',
     "apps/api/src/decisions/decision-serialize.ts :: d.status === 'withdrawn'": 'excludes: the withdrawal reason',
     "apps/api/src/decisions/decision-serialize.ts :: d.status === 'withdrawn' #2": 'excludes: the withdrawn audience (pmc-only)',
-    "apps/api/src/decisions/decision-serialize.ts :: d.status === 'pending'": 'owed by A8a: an awaiting decision’s audience, decided where the value is first written (the approve under a chain)',
+    // 4d-ii-a / A8a — the awaiting audience: the pending demand's (pmc, the decider, a standing consultee)
+    // plus the architect whose action item it is; an architect sees every pending decision too
+    "apps/api/src/decisions/decision-serialize.ts :: d.status === 'pending' || d.status === 'awaiting_countersign'": 'answered',
     "apps/api/src/decisions/decisions.participant.ts :: ['pending', 'change']": 'excludes: the delivered open set; a decision awaiting countersign is answered by its own set (`namedAwaiting`/`awaitingRoles`), which carries the last architect’s exemption',
     // 4d-ii-a / A7d — the decider and forward push targets: the demand stands only while the decision
     // awaits its DECIDER; an awaiting decision demands a countersign through its own family
@@ -220,7 +222,12 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/api/src/decisions/decisions.query.ts :: d.status !== 'approved'": 'excludes: only a FINAL approval anchors requirement provenance (A4b refuses a provisional head too)',
     "apps/api/src/decisions/decisions.service.ts :: d.status === 'approved'": 'excludes: approve’s already-locked refusal; an awaiting decision is refused by the open-question arm below',
     "apps/api/src/decisions/decisions.service.ts :: d.status === 'recorded'": 'excludes: a record has nothing to approve',
-    "apps/api/src/decisions/decisions.service.ts :: d.status !== 'pending' && d.status !== 'change'": 'excludes: approve acts on an open question; an awaiting approval is the architect’s to countersign (A8b), never re-approved',
+    // 4d-ii-a / A8a — approve's and forward's own awaiting refusals, each with its answer
+    "apps/api/src/decisions/decisions.service.ts :: d.status === 'awaiting_countersign'": 'answered',
+    "apps/api/src/decisions/decisions.service.ts :: d.status !== 'pending' && d.status !== 'change'": 'excludes: approve acts on an open question; an awaiting approval is refused by its own arm above',
+    "apps/api/src/decisions/decisions.service.ts :: d.status === 'awaiting_countersign' #2": 'answered',
+    "apps/api/src/decisions/decisions.service.ts :: d.status !== 'pending' && d.status !== 'change' #2": 'excludes: forward hands over an OPEN decision; an awaiting one is refused by its own arm above',
+    "apps/api/src/decisions/decisions.service.ts :: cur.status !== 'pending' && cur.status !== 'change'": 'excludes: the forward’s re-judge under the decision lock; an awaiting decision is the architect’s',
     "apps/api/src/decisions/decisions.service.ts :: prior === 'change'": 'excludes: approved vs reapproved, from the status approve admitted',
     "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #2": 'excludes: approved vs reapproved, from the status approve admitted',
     "apps/api/src/decisions/decisions.service.ts :: prior === 'change' #3": 'excludes: approved vs reapproved, from the status approve admitted',
@@ -237,7 +244,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/api/src/decisions/decisions.service.ts :: status: 'approved'": 'excludes: the change request’s compare-and-set from a FINAL approval',
     "apps/api/src/decisions/decisions.service.ts :: status: 'change'": 'excludes: the change withdrawal’s compare-and-set from an open change request',
     "apps/api/src/decisions/decisions.service.ts :: status: 'pending'": 'excludes: the withdraw’s compare-and-set, only from a never-approved pending decision',
-    "apps/api/src/decisions/decisions.service.ts :: status: 'pending' #2": 'owed by A8a: whether a sibling awaiting countersign still carries the legacy pending text the withdraw retires',
+    "apps/api/src/decisions/decisions.service.ts :: status: 'pending' #2": 'excludes: the withdraw’s legacy-text ambiguity guard counts siblings still awaiting APPROVAL; a sibling awaiting its countersign has been approved (provisionally) and, like an approved sibling, no longer carries a live pending demand (A8a)',
     "apps/api/src/labour/labour-procurement.service.ts :: status: 'approved'": 'not a decision status: a labour requisition',
     "apps/api/src/labour/labour-procurement.service.ts :: status: 'recorded'": 'not a decision status: a labour quote',
     "apps/api/src/labour/labour-procurement.service.ts :: status: 'recorded' #2": 'not a decision status: a labour quote',

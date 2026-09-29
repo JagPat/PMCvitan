@@ -136,15 +136,23 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
     expect(await deliveryRow(d.id)).toMatchObject({ status: 'succeeded', deliveryAction: 'dispatch', cancelledAt: null });
   });
 
-  it('CLAIM under the decision row lock: an approval committed before the claim drops the demand with the recorded mark, nothing sent', async () => {
+  it('an approval committed before the claim has already NEUTRALIZED the pending demand (A8a\'s cancellation by subject): the claim finds nothing claimable, nothing sent, the mark recorded', async () => {
+    // 4d-ii-a / A8a (plan §A.4 (i)): the approve cancels the decider demand by subject inside its
+    // own transaction — a still-PENDING row is neutralized in place (`succeeded` + `noop`,
+    // `cancelledAt` recording why), so a claim after that commit finds nothing to lease. Before
+    // A8a the approve left the row pending and the CLAIM's own predicate (the holder read under
+    // the decision row lock) dropped it; that claim-time drop stays the consumer's guard for a
+    // row the writer's cancellation could not reach, proven over fakes in `consumers.test.ts`,
+    // and the LEASED race is the pre-send arm below.
     const did = await issue();
     const d = await pushDelivery(did, 'decision.published');
+    expect(await deliveryRow(d.id)).toMatchObject({ status: 'pending', deliveryAction: 'dispatch', cancelledAt: null });
     expect((await post(clientToken)(`${base()}/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
-    expect(await relay.dispatchOne(d.id)).toBe('succeeded');
-    expect(sends).toEqual([]);
     const row = await deliveryRow(d.id);
-    expect(row.deliveryAction).toBe('noop');
+    expect(row).toMatchObject({ status: 'succeeded', deliveryAction: 'noop' });
     expect(row.cancelledAt).not.toBeNull();
+    expect(await relay.dispatchOne(d.id)).toBe('skip');
+    expect(sends).toEqual([]);
   });
 
   it('PRE-SEND, the fan-out arm: a client who LOSES standing while the others are being sent is SKIPPED — the rest sent, no mark', async () => {
@@ -190,9 +198,14 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
     }
   });
 
-  it('PRE-SEND, the single-recipient arm: a member-held demand claimed, the decision APPROVED at the pre-send barrier → nothing sent, the delivery marked', async () => {
+  it('PRE-SEND, the single-recipient arm: a member-held demand LEASED and claimed, the decision APPROVED at the pre-send barrier → nothing sent, the delivery marked', async () => {
     const did = await issue({ deciderKind: 'member', deciderMembershipId: eng.membershipId });
     const d = await pushDelivery(did, 'decision.published');
+    // the row is LEASED first, as the relay's claim leases it before any send: A8a's approve
+    // neutralizes a still-pending row itself (the arm above), and a leased row is exactly the
+    // race the pre-send hook exists for — the approve's cancellation reaches it as the MARK
+    // alone (the sender owns it), and the sender's final re-read drops the send and records it
+    expect(await relay.claimOne(d.id)).toBe(true);
     // the barrier: the family predicate's SECOND call (the pre-send re-judge) waits until the
     // approval has committed; the claim (the first call) ran unhindered and resolved the engineer
     const original = query.deciderPushTarget.bind(query);
