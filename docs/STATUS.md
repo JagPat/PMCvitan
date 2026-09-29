@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a8a-forward-approve
 reviewed_merge: 7e12e7a
-open_pr: none
+open_pr: 672
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
@@ -27,7 +27,7 @@ updated: 2026-09-29
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A8a, `open_pr: none` (`work_item: phase-6-task-4d-ii-a-a8a-forward-approve`, branch
+- **Now, A8a, `open_pr: 672` (`work_item: phase-6-task-4d-ii-a-a8a-forward-approve`, branch
   `claude/4d-ii-a8a-forward-approve`, from `main` at `7e12e7a`).** The first A8 sub-unit (the staging
   note's table): `decisions.forward` on the ledger with `lockProjectReadiness` in the canonical order,
   refusing 409 while the reservation stands; the approve CAS landing `awaiting_countersign` under a
