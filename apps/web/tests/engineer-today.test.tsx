@@ -293,3 +293,61 @@ describe('Engineer Today — the screen', () => {
     expect(r.getAllByRole('button').length).toBeGreaterThanOrEqual(5);
   });
 });
+
+describe('one rule for every writer — a start or send already on its way is never sent twice', () => {
+  async function loadStore(overrides: Record<string, unknown>) {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const scope = await import('@/store/projectScope');
+    useStore.setState(getInitialState());
+    // a gateway that never answers: the write-ahead op stays queued, exactly as offline or in flight
+    const never = () => new Promise(() => {});
+    useStore.getState()._setGateway({ submitDailyLog: vi.fn(never), startDailyLog: vi.fn(never), snapshot: vi.fn(never) } as never);
+    useStore.setState({ ...scope.emptyProjectData(), activeProjectId: 'villa-b', projectLoadState: 'ready', role: 'engineer', lang: 'en', online: false, ...overrides });
+    return useStore;
+  }
+  const sentOps = (useStore: Awaited<ReturnType<typeof loadStore>>, t: string) => useStore.getState().outbox.filter((o) => o.t === t).length;
+
+  it('the store queues a second send neither while the first is queued nor while it is being read back', async () => {
+    const ready = log({ checkedIn: true, progress: 2 });
+    const useStore = await loadStore({ dailyLog: ready });
+    useStore.getState().submitDailyLog();
+    useStore.getState().submitDailyLog();
+    expect(sentOps(useStore, 'submitDailyLog')).toBe(1);
+    // committed, awaiting the read-back: the outbox is empty but the log on screen predates the send
+    useStore.setState({ outbox: [], dailyLogReconcileAfter: 5 });
+    useStore.getState().submitDailyLog();
+    expect(sentOps(useStore, 'submitDailyLog')).toBe(0);
+  });
+
+  it('the store queues a second start neither while the first is queued nor while it is being read back', async () => {
+    const useStore = await loadStore({ dailyLog: null });
+    useStore.getState().startDailyLog();
+    useStore.getState().startDailyLog();
+    expect(sentOps(useStore, 'startDailyLog')).toBe(1);
+    useStore.setState({ outbox: [], dailyLogReconcileAfter: 5 });
+    useStore.getState().startDailyLog();
+    expect(sentOps(useStore, 'startDailyLog')).toBe(0);
+  });
+
+  it('the Site screen shows the send on its way and does not offer Submit again', async () => {
+    const ready = log({ checkedIn: true, progress: 2 });
+    const useStore = await loadStore({ dailyLog: ready, dailyLogReconcileAfter: 5 });
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+    const submit = r.getByTestId('submit-daily-log') as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    expect(submit.textContent).toContain('Sending to PMC');
+    // once the read-back lands the log is sent, and nothing is pending
+    act(() => useStore.setState({ dailyLog: { ...ready, submitted: true }, dailyLogReconcileAfter: null }));
+    expect((r.getByTestId('submit-daily-log') as HTMLButtonElement).textContent).toContain('sent to PMC');
+  });
+
+  it('the Site screen does not offer Start again while a start is on its way', async () => {
+    await loadStore({ dailyLog: null, outbox: [{ t: 'startDailyLog', idempotencyKey: 'k' }] });
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+    expect((r.getByTestId('start-new-day') as HTMLButtonElement).disabled).toBe(true);
+  });
+});

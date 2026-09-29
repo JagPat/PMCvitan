@@ -63,6 +63,7 @@ import {
   deciderNoun,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
+import { dailyLogSendPending, dailyLogStartPending } from './dailyLogPending';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
@@ -4140,6 +4141,11 @@ export const useStore = create<Store>()(
         get().flash('Starting a new log needs the server.');
         return;
       }
+      // a start already on its way (queued, or committed but not yet read back) is never queued twice
+      if (dailyLogStartPending(get())) {
+        get().flash('Today\u2019s log is already being started.');
+        return;
+      }
       // Task 10 correction round 2 (finding 1): WRITE-AHEAD — the op + its key are persisted to the
       // durable outbox before the network call (online or offline), so a lost/uncertain response never
       // strands the command without its key; a retry or reload replays the SAME op under the SAME key.
@@ -4456,6 +4462,11 @@ export const useStore = create<Store>()(
       }
       if (!dl.checkedIn) {
         get().flash('Please check in at site before submitting the daily log.');
+        return;
+      }
+      // a send already on its way (queued, or committed but not yet read back) is never queued twice
+      if (dailyLogSendPending(get())) {
+        get().flash('Today\u2019s log is already on its way to PMC.');
         return;
       }
       const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew };

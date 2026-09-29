@@ -4,6 +4,7 @@ import { dailyLogReadMode } from '@/data/apiGateway';
 import { selectTotalWorkers } from '@/store/selectors';
 import { todayPath, TODAY_STEPS } from '@/lib/engineerToday';
 import { todayCivil } from '@/lib/civilDate';
+import { dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { ArrowRight, Circle, CircleCheck, Crosshair, Plus, RefreshCw } from '@/lib/icons';
 import { can, engineerNavLabels, engineerTodayLabels as L, engineerTodayProgress, type Lang } from '@vitan/shared';
 import styles from './EngineerToday.module.css';
@@ -25,15 +26,10 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   const dailyLogLoad = useStore((s) => s.dailyLogLoad);
   const timeZone = useStore((s) => s.timeZone);
   const online = useStore((s) => s.online);
-  // a start or send already in this project's durable outbox (offline, or awaiting the server): the
-  // log only changes once the server confirms, so until then the card must not offer the same
-  // command again — a second tap would queue a second op under a fresh key
-  // ...and once the server has committed it, the log on screen still predates it until the
-  // reconcile's module read lands (`dailyLogReconcileAfter`, set in the same update that drops the
-  // op) — the command is still on its way from the card's point of view
-  const reconciling = useStore((s) => s.dailyLogReconcileAfter !== null);
-  const pendingStart = useStore((s) => s.outbox.some((o) => o.t === 'startDailyLog')) || reconciling;
-  const pendingSend = useStore((s) => s.outbox.some((o) => o.t === 'submitDailyLog')) || reconciling;
+  // a start or send already on its way (queued, or committed and not yet read back) is shown as
+  // such — the same rule the store's commands enforce (see `dailyLogPending`)
+  const pendingStart = useStore(dailyLogStartPending);
+  const pendingSend = useStore(dailyLogSendPending);
   const setScreen = useStore((s) => s.setScreen);
   const startDailyLog = useStore((s) => s.startDailyLog);
   const checkIn = useStore((s) => s.checkIn);
