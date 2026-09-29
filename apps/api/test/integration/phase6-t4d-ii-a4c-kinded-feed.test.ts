@@ -17,9 +17,11 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * (§A.3 obligation 7, "the readers"; P31's reader arms).
  *
  * A kinded notice is bound to the event that announced its act. 4d-i sealed the binding (same
- * transaction, same decision, kind = event type, frozen, undeletable); nothing writes one until A7
- * stamps the decision writers, so each arm plants one beside a real decision, in ONE transaction
- * with its event as the seal demands. The snapshot is the only feed reader, and for a kinded row it:
+ * transaction, same decision, kind = event type, frozen, undeletable). Each arm PLANTS one beside a
+ * real decision, in ONE transaction with its event as the seal demands, with a forged cache (from
+ * A7a the writers themselves bind their notices — `phase6-t4d-ii-a7a-kinded-notice-writers` — so a
+ * decision published here already carries a genuine kinded notice beside the planted one). The
+ * snapshot is the only feed reader, and for a kinded row it:
  *
  * - RENDERS the notice from its kind and event, never from the stored `text` (a forged cache is
  *   served to no one);
@@ -122,7 +124,7 @@ describe('4d-ii-a / A4c — the snapshot serves kinded notices by rendering, vis
     await plantKinded(d.id, 'decision.published', { title: d.title });
     const pmc = await feedOf('pmc', f.memberUser.id);
     expect(pmc).not.toContain(FORGED);
-    expect(pmc.filter((text) => text === `Decision awaiting approval: ${d.title}`).length, 'the kind-less cache and the kinded rendering both announce it').toBe(2);
+    expect(pmc.filter((text) => text === `Decision awaiting approval: ${d.title}`).length, 'the writer\'s own kinded notice and the planted one both render').toBe(2);
     expect(await feedOf('client', f.clientUser.id)).toContain(`Decision awaiting approval: ${d.title}`);
   });
 

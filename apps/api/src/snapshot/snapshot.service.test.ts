@@ -16,7 +16,7 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
       notification: { findMany: vi.fn(async () => [
         { id: 'n1', text: 'x', color: '#000000', time: 'now', at: new Date(), decisionId: 'd1', kind: 'decision.published', eventId: 'e1', projectId: 'p1' },
       ]) },
-      domainEvent: { findMany: vi.fn(async () => [{ eventId: 'e1', eventType: 'decision.published', payload: { title: 'T' }, dispatchIntent: { effectKey: 'decision.published' } }]) },
+      domainEvent: { findMany: vi.fn(async () => [{ eventId: 'e1', eventType: 'decision.published', payload: { title: 'T' }, dispatchIntent: { effectKey: 'decision.published' }, actorRole: 'pmc', actorName: 'P' }]) },
     };
     const transaction = vi.fn(async (fn: (client: typeof tx) => Promise<unknown>, _opts?: unknown) => fn(tx));
     const prisma = {
@@ -29,6 +29,8 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
     const decisionsQuery = {
       snapshotSlice: vi.fn(async () => ({ decisions: [{ id: 'd1', status: 'pending', deciderKind: 'client' }], statuses: new Map(), drafts: new Set(), deciders: new Map() })),
       renderKindedNotice: vi.fn(() => ({ text: 'rendered', color: '#C08A2D' })),
+      // 4d-ii-a / A7a — the revisions the kinded events name, read on the same transaction
+      kindedNoticeRevisions: vi.fn(async () => new Map([['dar-d1-v1', { decisionId: 'd1', material: 'Granite', onBehalfOf: null }]])),
     };
     const svc = new SnapshotService(
       prisma as unknown as PrismaService,
@@ -48,11 +50,18 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
     expect(decisionsQuery.snapshotSlice).toHaveBeenCalledWith('p1', 'pmc', 'u1', tx);
     expect(tx.notification.findMany).toHaveBeenCalledTimes(1);
     expect(tx.domainEvent.findMany).toHaveBeenCalledTimes(1);
-    // and the kinded row was handed to the decisions module with its event and the viewer's decision
+    // A7a — the revision read runs on the SAME transaction, with the events just read
+    expect(decisionsQuery.kindedNoticeRevisions).toHaveBeenCalledTimes(1);
+    expect(decisionsQuery.kindedNoticeRevisions.mock.calls[0]![0]).toBe(tx);
+    expect(decisionsQuery.kindedNoticeRevisions.mock.calls[0]![1]).toBe('p1');
+    expect([...(decisionsQuery.kindedNoticeRevisions.mock.calls[0]![2] as Map<string, unknown>).keys()]).toEqual(['e1']);
+    // and the kinded row was handed to the decisions module with its event (envelope included), the
+    // viewer's decision and the revisions
     expect(decisionsQuery.renderKindedNotice).toHaveBeenCalledWith(
-      'decision.published', { eventType: 'decision.published', payload: { title: 'T' }, effectKey: 'decision.published' },
-      expect.objectContaining({ id: 'd1' }), 'pmc', 'u1',
+      'decision.published', { eventType: 'decision.published', payload: { title: 'T' }, effectKey: 'decision.published', actorRole: 'pmc', actorName: 'P' },
+      expect.objectContaining({ id: 'd1' }), 'pmc', 'u1', expect.any(Map),
     );
+    expect((decisionsQuery.renderKindedNotice.mock.calls[0]![5] as Map<string, unknown>).get('dar-d1-v1')).toEqual({ decisionId: 'd1', material: 'Granite', onBehalfOf: null });
     expect(out.notifications).toEqual([{ text: 'rendered', time: 'now', color: '#C08A2D' }]);
   });
 });

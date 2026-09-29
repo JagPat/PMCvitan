@@ -21,21 +21,32 @@ export function readNotificationFeed(client: FeedClient, projectId: string) {
   return client.notification.findMany({ where: { projectId }, orderBy: { at: 'desc' } });
 }
 
-/** The events kinded notices are bound to, by id: the type, the payload and the catalog key they
- *  were emitted under (`dispatchIntent.effectKey`). */
+/** A bound event as the feed reads it. */
+export interface FeedEvent {
+  eventType: string;
+  payload: unknown;
+  effectKey: string | null;
+  /** 4d-ii-a / A7a — the frozen actor envelope, which the green approved notice renders its
+   *  approver from. NULL for a previous-release event through the drain. */
+  actorRole: string | null;
+  actorName: string | null;
+}
+
+/** The events kinded notices are bound to, by id: the type, the payload, the catalog key they
+ *  were emitted under (`dispatchIntent.effectKey`) and the frozen actor envelope. */
 export async function readFeedEvents(
   client: FeedClient,
   projectId: string,
   eventIds: readonly string[],
-): Promise<Map<string, { eventType: string; payload: unknown; effectKey: string | null }>> {
+): Promise<Map<string, FeedEvent>> {
   if (eventIds.length === 0) return new Map();
   const rows = await client.domainEvent.findMany({
     where: { projectId, eventId: { in: [...eventIds] } },
-    select: { eventId: true, eventType: true, payload: true, dispatchIntent: true },
+    select: { eventId: true, eventType: true, payload: true, dispatchIntent: true, actorRole: true, actorName: true },
   });
   return new Map(rows.map((e) => {
     const intent = e.dispatchIntent as { effectKey?: unknown } | null;
     const effectKey = intent && typeof intent.effectKey === 'string' ? intent.effectKey : null;
-    return [e.eventId, { eventType: e.eventType, payload: e.payload, effectKey }];
+    return [e.eventId, { eventType: e.eventType, payload: e.payload, effectKey, actorRole: e.actorRole, actorName: e.actorName }];
   }));
 }

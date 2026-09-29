@@ -771,8 +771,11 @@ const REGISTER: Record<string, SealContract> = {
       + 'The immediate half may defer absence; the DEFERRED half demands exactly one event of the '
       + 'family ATTRIBUTED to the approver the head records (`approvedById`, which must be present — '
       + '4d-i\'s correspondence skips a NULL approver, so the claimant binds the actor itself; Codex '
-      + 'U3 round 1) and exactly one `approved` / `reapproved` audit row at commit',
-    plan: '§A.3 correspondence table (#572 r9 f1); §D 4d-i-b (b); 4d-i-b U3; #590 r2 f5',
+      + 'U3 round 1) and exactly one `approved` / `reapproved` audit row at commit. 4d-ii-a / A7a '
+      + '(20280102, #665 r1 P1): the event the head claims must, when its payload names a '
+      + '`revisionId`, name THIS head — the green notice renders from the revision the event names; '
+      + 'absent, admitted through the drain (a previous-release writer; required at 4d-iii)',
+    plan: '§A.3 correspondence table (#572 r9 f1); §D 4d-i-b (b); 4d-i-b U3; #590 r2 f5; §A.3 P2 (revisionId); A7a',
     on: {
       'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim': A('I'),
       'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim_deferred': C('I'),
@@ -780,7 +783,8 @@ const REGISTER: Record<string, SealContract> = {
     must: ['"finalized"', 'TG_NAME', 'phase6_t4d_tx_actor_event', 'phase6_t4d_tx_actor_event_count',
       'NEW."approvedById"',
       'phase6_t4d_tx_audit_count', "ARRAY['approved', 'reapproved']",
-      'platform_claim_event_pairing_once', 'decision.approved', 'decision.reapproved'],
+      'platform_claim_event_pairing_once', 'decision.approved', 'decision.reapproved',
+      "'revisionId'", 'names revision', 'v_named IS DISTINCT FROM NEW."id"'],
   },
   phase6_t4d_consultation_claims_event: {
     rule: 'a consultation request claims its `decision.consultation_requested`, a response its '

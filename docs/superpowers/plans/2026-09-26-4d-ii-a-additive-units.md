@@ -264,6 +264,52 @@ dependency, and each sub-unit is additive and dark on its own.
 
 Order: A6a → A6b → A6c → A6d; A6e after A6a. A7 starts after A6d and A6e are on `main`.
 
+**A7 is delivered as four sub-units (2026-09-29)**, with the same items and no new ones, on A5's and
+A6's precedent. The table's own estimate is `justified-large`; the items separate along their
+dependency, the catalog change (the inseparable seam that reseals the cutover) last, so each earlier
+sub-unit is additive, dark and reviewable on its own.
+
+- **A7a, the kinded notice writers:** every decisions notice writer (the one-step issue, publish,
+  approve, withdraw) mints its event id up front, emits the event FIRST (the notice's binding key is
+  a NOT DEFERRABLE foreign key onto it) and writes the notice bound to it (`eventId`, `kind` = the
+  event's type) in the same transaction, as 4d-i's `Notification_t4d_binding_bound` demands; the
+  hostile probe A7 owes, the late kinded insert against a committed no-notice event; the green
+  approved notice rendered from the event's frozen actor envelope and the REVISION its event names
+  (`payload.revisionId`, never the head), the revisions read by the decisions module in the
+  snapshot's one REPEATABLE READ transaction; the direct approve's `decision.approved`/`reapproved`
+  payload carries the exact `revisionId` (moved here from A8a's row, which keeps the countersign's
+  and the `completed` resolution's; §A.3's P2 correction names the direct approve too), with the
+  title and the holder kind the text needs, and the approve resolves the envelope itself (A2's seam)
+  so the cached text and the event are one reading. The withdraw's retirement stays kind-less-only
+  (A4c): the kinded pending notice of a withdrawn decision is hidden by the readers and kept as
+  evidence, so the suites that deleted notices by row after a withdrawal reset them by the
+  sanctioned TRUNCATE instead. One migration (`20280102000000_phase6_t4d_ii_a7a_revision_named`,
+  #665's review round 1): 4d-i-b U3's revision claimant re-issued with the arm §A.3's P2 correction
+  names — the green event's `payload.revisionId`, when present, must be the same-transaction head
+  the claimant is claiming for (another decision's revision, an older one of this decision, or one
+  that does not exist, refused at commit); absent, admitted through the drain and required at
+  4d-iii. Every other seal this unit writes against is 4d-i's.
+- **A7b, the send boundary:** the per-recipient pre-send hook in `makePushConsumer`;
+  `deciderPushTarget`'s decision-row lock; `consultationRespondedPushTarget`'s withdrawn-audience
+  arm; `cancelQueuedPushBySubject` narrowing by `targetUserIds`; the `respond` emitter persisting
+  the requester's role and `consultation.request` writing `requestedByRole`; the `withdrawChange`
+  refusal; the withdraw's target-aware response cancellation.
+- **A7c, `decisions.inbox` v3:** the projection row, fold, rebuild and filter for the awaiting
+  state, the forward holder and the non-standard origin; `catalogVersion` 3, the writer fence's
+  GUC and function; the `ProjectionGeneration` row; `ALWAYS_EXECUTE`.
+- **A7d, the catalog change:** the widened external-effect catalog at the new coverage version
+  beside the old (the architect in the targeted entries, `decision.consultation_responded` to
+  `['pmc','architect']`, the frozen-audience families, `membership.standing_changed`); `PushRole`,
+  `pushFamily`, `targetUserIds` in `DispatchInput`/`buildDispatchIntent`; the `architect` arms of
+  `deciderPush`/`deciderPushTarget` and the new families' claim predicates; `webpush.notify` 2→3
+  with its `OutboxConsumerCatalog` row; `decisions.effects` registered INACTIVE (its head from A6's
+  catalog-INSERT trigger), `consumesEvents` gaining `membership.standing_changed` and
+  `EventStreamQuery.latestPosition`, its activation handler recording a stale activation `noop`;
+  `membership.standing_changed` emitted on an architect-standing flip; `ALWAYS_EXECUTE`; the
+  reseal sequence in the packet.
+
+Order: A7a → A7b → A7c → A7d. A8a starts after A7d is on `main`.
+
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its
 packet which §C arms it carries. None may leave an arm unowned: the last 4d-ii-a unit to merge

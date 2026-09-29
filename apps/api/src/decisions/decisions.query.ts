@@ -7,7 +7,7 @@ import type { DeciderKind } from '@vitan/shared';
 import type { Role } from '../common/auth';
 import type { DecisionDto } from '../snapshot/types';
 import { serializeDecision, decisionVisibleToViewer, hydrateStoredDecisionDto } from './decision-serialize';
-import { kindedDecisionNoticeServed, renderKindedDecisionNotice, type KindedNoticeEvent } from './decision-notice';
+import { kindedDecisionNoticeServed, kindedNoticeRevisionId, renderKindedDecisionNotice, type ApprovalRevisionFacts, type KindedNoticeEvent } from './decision-notice';
 import { DECISIONS_PROJECTION } from './decisions.projection';
 import { consultationOpen } from './consultation-open';
 import { RoleStandingQuery, type KernelReadClient } from '../platform/role-standing.query';
@@ -117,9 +117,39 @@ export class DecisionsQueryService {
     decision: DecisionDto | undefined,
     role: Role,
     userId?: string,
+    /** 4d-ii-a / A7a — the revisions the feed's events name, from {@link kindedNoticeRevisions}. */
+    revisions?: ReadonlyMap<string, ApprovalRevisionFacts>,
   ): { text: string; color: string } | null {
-    if (!kindedDecisionNoticeServed(kind, event, decision, role, userId)) return null;
-    return renderKindedDecisionNotice(kind, event);
+    if (!decision || !kindedDecisionNoticeServed(kind, event, decision, role, userId)) return null;
+    return renderKindedDecisionNotice(kind, event, revisions, decision.id);
+  }
+
+  /**
+   * Phase 6 task 4d-ii-a / A7a — the approval revisions the feed's kinded events NAME
+   * (`payload.revisionId` on `decision.approved`/`reapproved`), by id: the approved option's material
+   * and the on-behalf fact the green notice renders. A decisions-owned read (the revision register is
+   * this module's), run by the snapshot on the SAME REPEATABLE READ transaction as the feed and the
+   * decision slice, so a notice, its decision and its revision are one snapshot. An event naming a
+   * revision this project does not hold gets none, and its notice renders nothing; one naming another
+   * decision's revision is refused by the renderer (the facts carry `decisionId`), as the database's
+   * revision claimant refuses it at commit (#665's review round 1).
+   */
+  async kindedNoticeRevisions(
+    client: Pick<Prisma.TransactionClient, 'decisionApprovalRevision'>,
+    projectId: string,
+    events: ReadonlyMap<string, KindedNoticeEvent>,
+  ): Promise<Map<string, ApprovalRevisionFacts>> {
+    const ids = new Set<string>();
+    for (const event of events.values()) {
+      const id = kindedNoticeRevisionId(event.eventType, event);
+      if (id) ids.add(id);
+    }
+    if (ids.size === 0) return new Map();
+    const rows = await client.decisionApprovalRevision.findMany({
+      where: { projectId, id: { in: [...ids] } },
+      select: { id: true, decisionId: true, onBehalfOf: true, option: { select: { material: true } } },
+    });
+    return new Map(rows.map((r) => [r.id, { decisionId: r.decisionId, material: r.option.material, onBehalfOf: r.onBehalfOf }]));
   }
 
   /**

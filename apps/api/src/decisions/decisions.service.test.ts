@@ -160,6 +160,9 @@ describe('DecisionsService — draft → publish lifecycle', () => {
       // Phase 6 task 4a — decision-notice writers stamp the decision so a later withdrawal
       // retires the pending notice by identity, never by matching display text
       decisionId: expect.any(String),
+      // 4d-ii-a / A7a — and bind the notice to the event that announced the act (kind = its type)
+      kind: 'decision.published',
+      eventId: expect.any(String),
     }]);
 
     const draft = make();
@@ -452,7 +455,10 @@ describe('DecisionsService — change control & mandatory re-approval (Phase 1 T
     const behalf = makeLifecycle('pending');
     await behalf.svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, user); // the PMC, 'Ar. Meghna'
     const text = behalf.notices.find((n) => n.includes('approved'));
-    expect(text).toMatch(/^Ar\. Meghna \(PMC\) approved Kitchen counter top on behalf of the client/);
+    // 4d-ii-a / A7a — the announcement names the approver as the event's FROZEN envelope does (one
+    // reading for the event and the notice): the account's registered name, which this stub
+    // deliberately distinguishes from the caller-side `Actor` name ('Ar. Meghna')
+    expect(text).toMatch(/^Registered Name \(PMC\) approved Kitchen counter top on behalf of the client/);
     expect(dispatchedIntents(behalf.dispatcher)[0]).toMatchObject({ effectKey: 'decision.approved', invalidate: true, push: { body: expect.stringContaining('on behalf of the client'), roles: ['pmc', 'contractor', 'engineer'] } });
   });
 });

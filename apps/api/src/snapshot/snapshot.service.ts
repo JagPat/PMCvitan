@@ -87,12 +87,15 @@ export class SnapshotService {
       const slice = await this.decisionsQuery.snapshotSlice(projectId, role, userId, tx);
       const feed = await readNotificationFeed(tx, projectId);
       const events = await readFeedEvents(tx, projectId, feed.flatMap((n) => (n.eventId ? [n.eventId] : [])));
-      return { slice, feed, events };
+      // 4d-ii-a / A7a — and the revisions the kinded green notices' events name, through the
+      // decisions module (its register), in this same snapshot
+      const revisions = await this.decisionsQuery.kindedNoticeRevisions(tx, projectId, events);
+      return { slice, feed, events, revisions };
       // read-only, so REPEATABLE READ never fails it with a serialization error; the limits are
       // generous because these reads used to need no interactive transaction at all
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 10_000, timeout: 30_000 });
     const decisionSlicePromise = feedSnapshot.then((f) => f.slice);
-    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, { feed: notifications, events: noticeEvents }, siteMedia, drawingDtos, companies, nodes] = await Promise.all([
+    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, { feed: notifications, events: noticeEvents, revisions: noticeRevisions }, siteMedia, drawingDtos, companies, nodes] = await Promise.all([
       decisionSlicePromise,
       // Task 10 (Module 4) — the activity spine (`activities` + `phases`) comes from the activities
       // module's query, never a direct `prisma.activity`/`gateOverride`/`prisma.phase` read. It bakes
@@ -224,7 +227,7 @@ export class SnapshotService {
         if (n.kind !== null) {
           const event = n.eventId ? noticeEvents.get(n.eventId) : undefined;
           if (!event || !n.decisionId) return [];
-          const rendered = this.decisionsQuery.renderKindedNotice(n.kind, event, visibleById.get(n.decisionId), role, userId);
+          const rendered = this.decisionsQuery.renderKindedNotice(n.kind, event, visibleById.get(n.decisionId), role, userId, noticeRevisions);
           return rendered ? [{ text: rendered.text, time: n.time, color: rendered.color }] : [];
         }
         // KIND-LESS rows (every notice written today): the delivered text-prefix filters, unchanged.
