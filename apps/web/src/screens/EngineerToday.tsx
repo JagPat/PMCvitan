@@ -42,21 +42,21 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   const reading = moduleOwned && (dailyLogLoad === 'idle' || dailyLogLoad === 'loading');
   const unavailable = moduleOwned && dailyLogLoad === 'error';
 
-  // the site's civil day, re-checked each minute: a page left open across the site's midnight
-  // moves on to the new day (and its heading) without a reload
-  const [today, setToday] = useState(() => todayCivil(timeZone));
+  // the site's civil day, read ONCE per render and shared by the heading and the path, so the two
+  // can never name different days. A minute tick forces a render, so a page left open across the
+  // site's midnight moves on to the new day without a reload (or any other update).
+  const [, setMinute] = useState(0);
   useEffect(() => {
-    const tick = () => setToday(todayCivil(timeZone));
-    tick();
-    const id = setInterval(tick, 60_000);
+    const id = setInterval(() => setMinute((m) => m + 1), 60_000);
     return () => clearInterval(id);
-  }, [timeZone]);
+  }, []);
+  const today = todayCivil(timeZone);
 
   const path = todayPath(dailyLog, total, today);
   const overdueDate = path.overdue ? formatLogDate(LOCALE[lang], path.overdue) : null;
   const next = path.action === 'start' || path.action === 'done' ? null : path.action;
   const openSite = () => setScreen('daily-log');
-  const date = formatDay(LOCALE[lang], timeZone);
+  const date = formatCivilDay(LOCALE[lang], today);
 
   let card;
   // an unsettled read (first load, a retry, or a failure) is shown before anything derived from
@@ -185,18 +185,13 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   );
 }
 
-/** The heading's day, on the SITE's calendar — the same civil day `todayPath` and the server use —
- *  falling back to the device's day when the project zone is unknown or unrecognised. */
-function formatDay(locale: string, timeZone: string | null): string {
-  const opts: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' };
-  if (timeZone) {
-    try {
-      return new Intl.DateTimeFormat(locale, { ...opts, timeZone }).format(new Date());
-    } catch {
-      /* unknown IANA zone — fall through to the device's day */
-    }
-  }
-  return new Intl.DateTimeFormat(locale, opts).format(new Date());
+/** The heading's day, from the same civil date `todayPath` reads (the site's calendar, or the
+ *  device's when the project zone is unknown). It is already a civil date, so it is formatted as-is
+ *  (UTC), never shifted by a zone. */
+function formatCivilDay(locale: string, iso: string): string {
+  const at = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(at.getTime())) return iso;
+  return new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(at);
 }
 
 /** A log's own civil date (ISO YYYY-MM-DD), as "28 September" in the reader's language. The date

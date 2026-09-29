@@ -449,3 +449,24 @@ describe('shadow review — a log already sent is never sent again', () => {
     expect((r.getAllByTestId('submit-daily-log').at(-1) as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe('shadow review — the heading and the path read one clock', () => {
+  it('a re-render just after the site’s midnight names the new day in both, before any minute tick', async () => {
+    vi.useFakeTimers();
+    // 23:59:30 in Kolkata on 29 Sep
+    vi.setSystemTime(new Date('2026-09-29T18:29:30Z'));
+    try {
+      const unsent = log({ checkedIn: true, progress: 2, logDate: '2026-09-29' });
+      unsent.crew[0].count = 3;
+      const { useStore, r } = await loadToday({ dailyLog: unsent, timeZone: 'Asia/Kolkata', online: true });
+      expect(r.queryByTestId('today-overdue')).toBeNull();
+      // 00:00:05 on the 30th — no timer has fired; an unrelated store update re-renders
+      vi.setSystemTime(new Date('2026-09-29T18:30:05Z'));
+      act(() => useStore.setState({ online: false }));
+      expect(r.getByTestId('engineer-today').textContent).toContain('30 September');
+      expect(r.getByTestId('today-overdue').textContent).toContain('29 September');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
