@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-ii-a-a7c-inbox-v3
 reviewed_merge: e069248
-open_pr: none
+open_pr: 670
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
@@ -27,7 +27,7 @@ updated: 2026-09-29
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A7c, `open_pr: none` (`work_item: phase-6-task-4d-ii-a-a7c-inbox-v3`, branch
+- **Now, A7c, `open_pr: 670` (`work_item: phase-6-task-4d-ii-a-a7c-inbox-v3`, branch
   `claude/4d-ii-a7c-inbox-v3`, from `main` at `e069248`).** The third A7 sub-unit, `decisions.inbox`
   v3: the projection's DURABLE contract version moves 2 → 3 (plan §D) for the meanings the stored DTO
   gained since 4c-ii without a version of its own — the finalized-only cycle (A4a), the non-`standard`
