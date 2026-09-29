@@ -30,6 +30,8 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   // such — the same rule the store's commands enforce (see `dailyLogPending`)
   const pendingStart = useStore(dailyLogStartPending);
   const pendingSend = useStore(dailyLogSendPending);
+  const queued = useStore((s) => s.outbox.some((o) => o.t === 'startDailyLog' || o.t === 'submitDailyLog'));
+  const flushOutbox = useStore((s) => s.flushOutbox);
   const setScreen = useStore((s) => s.setScreen);
   const startDailyLog = useStore((s) => s.startDailyLog);
   const checkIn = useStore((s) => s.checkIn);
@@ -85,6 +87,13 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
       <div className={styles.now} data-surface="ink" data-testid="today-now" data-action={pendingStart ? 'pending-start' : 'pending-send'}>
         <div className={styles.nowTitle} style={{ marginTop: 0 }}>{pendingStart ? L.pendingStart[lang] : L.pendingSend[lang]}</div>
         {!online && <div className={styles.nowDetail}>{L.savedOffline[lang]}</div>}
+        {/* a command still QUEUED (a transient failure keeps it; reload and reconnect only hydrate)
+            is replayed on demand — the same op under the same idempotency key, never a new one */}
+        {online && queued && (
+          <button className={styles.nowSecondary} onClick={() => void flushOutbox()} data-testid="today-retry-send">
+            <RefreshCw size={16} aria-hidden /> {L.retry[lang]}
+          </button>
+        )}
       </div>
     );
   } else if (path.action === 'done') {

@@ -470,3 +470,44 @@ describe('shadow review — the heading and the path read one clock', () => {
     }
   });
 });
+
+describe('review round 10 — a send on its way freezes the log, and a stalled one can be retried', () => {
+  it('the Site screen freezes crew, photos and materials while a send is on its way', async () => {
+    const ready = log({ checkedIn: true, progress: 2 });
+    await loadToday({ dailyLog: ready, outbox: [{ t: 'submitDailyLog', log: { checkedIn: true, checkinTime: null, progress: 2, crew: ready.crew }, idempotencyKey: 'k' }], online: false });
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+    const trade = ready.crew[0].trade;
+    expect((r.getAllByLabelText(`Add ${trade}`).at(-1) as HTMLButtonElement).disabled).toBe(true);
+    expect((r.getAllByLabelText(`Remove ${trade}`).at(-1) as HTMLButtonElement).disabled).toBe(true);
+    expect((r.getAllByTestId('add-progress-photo').at(-1) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('the Site screen’s log stays editable when nothing is on its way', async () => {
+    const ready = log({ checkedIn: true, progress: 2 });
+    await loadToday({ dailyLog: ready, outbox: [] });
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+    expect((r.getAllByLabelText(`Add ${ready.crew[0].trade}`).at(-1) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a queued send that stalled online offers Try again, which replays the queued op', async () => {
+    const ready = log({ checkedIn: true, progress: 2 });
+    ready.crew[0].count = 3;
+    const queued = { t: 'submitDailyLog' as const, log: { checkedIn: true, checkinTime: null, progress: 2, crew: ready.crew }, idempotencyKey: 'k1' };
+    const { useStore, r } = await loadToday({ dailyLog: ready, outbox: [queued], online: true });
+    const flush = vi.fn().mockResolvedValue({ ran: true });
+    act(() => useStore.setState({ flushOutbox: flush }));
+    fireEvent.click(r.getByTestId('today-retry-send'));
+    expect(flush).toHaveBeenCalledTimes(1);
+    // the queued op keeps its key — nothing new is queued
+    expect(useStore.getState().outbox).toEqual([queued]);
+  });
+
+  it('offline, the queued send says it is saved on the phone instead of offering a retry', async () => {
+    const ready = log({ checkedIn: true, progress: 2 });
+    const { r } = await loadToday({ dailyLog: ready, outbox: [{ t: 'submitDailyLog', log: { checkedIn: true, checkinTime: null, progress: 2, crew: ready.crew }, idempotencyKey: 'k' }], online: false });
+    expect(r.queryByTestId('today-retry-send')).toBeNull();
+    expect(r.getByText(L.savedOffline.en)).toBeTruthy();
+  });
+});

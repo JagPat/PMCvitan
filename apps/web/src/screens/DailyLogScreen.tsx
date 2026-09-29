@@ -53,6 +53,8 @@ export function DailyLogScreen() {
   const starting = useStore(dailyLogStartPending);
   const sending = useStore(dailyLogSendPending);
   const inFlight = useStore(dailyLogCommandInFlight);
+  // a send on its way has already captured the crew and photo count it carries: edits made now
+  // would be dropped by the reconcile while the server keeps the sent values, so they wait too
   // live project identity — never the seeded Ambli copy (Phase 0 Task 7)
   const short = useStore((s) => s.short);
   const location = useStore((s) => s.location);
@@ -215,11 +217,11 @@ export function DailyLogScreen() {
             <div key={c.trade} style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 12, padding: '11px 13px', display: 'flex', alignItems: 'center', gap: 11 }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: c.count > 0 ? 'var(--green-solid)' : 'rgba(35,33,28,.18)' }} />
               <div style={{ flex: 1, fontWeight: 600, fontSize: 13.5 }}>{c.trade}</div>
-              <button onClick={() => crewStep(i, -1)} aria-label={`Remove ${c.trade}`} style={stepBtn}>
+              <button onClick={() => crewStep(i, -1)} disabled={sending} aria-label={`Remove ${c.trade}`} style={stepBtn}>
                 <Minus size={16} />
               </button>
               <div style={{ width: 26, textAlign: 'center', fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 15 }}>{c.count}</div>
-              <button onClick={() => crewStep(i, 1)} aria-label={`Add ${c.trade}`} style={stepBtn}>
+              <button onClick={() => crewStep(i, 1)} disabled={sending} aria-label={`Add ${c.trade}`} style={stepBtn}>
                 <Plus size={16} />
               </button>
             </div>
@@ -305,7 +307,7 @@ export function DailyLogScreen() {
           ))}
         </div>
         {can('dailyLog.addMaterial', role) && (
-          <button onClick={() => setAddingMaterial(true)} disabled={actionsLocked} data-testid="add-material" style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+          <button onClick={() => setAddingMaterial(true)} disabled={actionsLocked || sending} data-testid="add-material" style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
             <Plus size={16} /> Record material delivery
           </button>
         )}
@@ -318,7 +320,7 @@ export function DailyLogScreen() {
             <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Stamped with the time and place the photo itself recorded</div>
           </div>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
-          <button onClick={() => fileRef.current?.click()} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => fileRef.current?.click()} disabled={sending} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <Camera size={14} /> Add
           </button>
         </div>
