@@ -78,10 +78,12 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
         )}
       </div>
     );
-  } else if ((path.action === 'start' && pendingStart) || (path.action !== 'start' && path.action !== 'done' && pendingSend)) {
+  } else if (pendingStart || (pendingSend && path.action !== 'done')) {
+    // a start on its way outranks whatever the log on screen says — including the previous log's
+    // "sent" state, since a new log may start on the same day once the last one is sent
     card = (
-      <div className={styles.now} data-surface="ink" data-testid="today-now" data-action={path.action === 'start' ? 'pending-start' : 'pending-send'}>
-        <div className={styles.nowTitle} style={{ marginTop: 0 }}>{path.action === 'start' ? L.pendingStart[lang] : L.pendingSend[lang]}</div>
+      <div className={styles.now} data-surface="ink" data-testid="today-now" data-action={pendingStart ? 'pending-start' : 'pending-send'}>
+        <div className={styles.nowTitle} style={{ marginTop: 0 }}>{pendingStart ? L.pendingStart[lang] : L.pendingSend[lang]}</div>
         {!online && <div className={styles.nowDetail}>{L.savedOffline[lang]}</div>}
       </div>
     );

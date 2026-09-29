@@ -236,11 +236,11 @@ describe('Engineer Today — the screen', () => {
   it('after the server commits a send, the stale log never offers Send again before its read lands', async () => {
     const ready = log({ checkedIn: true, progress: 2 });
     ready.crew[0].count = 3;
-    const { useStore, r } = await loadToday({ dailyLog: ready, dailyLogLoad: 'ready', outbox: [], dailyLogReconcileAfter: 7 }, { VITE_DAILYLOG_READ: 'moduleQuery' });
+    const { useStore, r } = await loadToday({ dailyLog: ready, dailyLogLoad: 'ready', outbox: [], dailyLogReconcileAfter: 7, dailyLogReconcileKind: 'send' }, { VITE_DAILYLOG_READ: 'moduleQuery' });
     expect(r.getByTestId('today-now').dataset.action).toBe('pending-send');
     expect(r.queryByTestId('today-action')).toBeNull();
     // the reconcile's read lands the submitted log and clears the flag
-    act(() => useStore.setState({ dailyLog: { ...ready, submitted: true }, dailyLogReconcileAfter: null }));
+    act(() => useStore.setState({ dailyLog: { ...ready, submitted: true }, dailyLogReconcileAfter: null, dailyLogReconcileKind: null }));
     expect(r.getByTestId('today-now').dataset.action).toBe('done');
   });
 
@@ -369,7 +369,7 @@ describe('one rule for every writer — a start or send already on its way is ne
     useStore.getState().submitDailyLog();
     expect(sentOps(useStore, 'submitDailyLog')).toBe(1);
     // committed, awaiting the read-back: the outbox is empty but the log on screen predates the send
-    useStore.setState({ outbox: [], dailyLogReconcileAfter: 5 });
+    useStore.setState({ outbox: [], dailyLogReconcileAfter: 5, dailyLogReconcileKind: 'send' });
     useStore.getState().submitDailyLog();
     expect(sentOps(useStore, 'submitDailyLog')).toBe(0);
   });
@@ -379,21 +379,21 @@ describe('one rule for every writer — a start or send already on its way is ne
     useStore.getState().startDailyLog();
     useStore.getState().startDailyLog();
     expect(sentOps(useStore, 'startDailyLog')).toBe(1);
-    useStore.setState({ outbox: [], dailyLogReconcileAfter: 5 });
+    useStore.setState({ outbox: [], dailyLogReconcileAfter: 5, dailyLogReconcileKind: 'start' });
     useStore.getState().startDailyLog();
     expect(sentOps(useStore, 'startDailyLog')).toBe(0);
   });
 
   it('the Site screen shows the send on its way and does not offer Submit again', async () => {
     const ready = log({ checkedIn: true, progress: 2 });
-    const useStore = await loadStore({ dailyLog: ready, dailyLogReconcileAfter: 5 });
+    const useStore = await loadStore({ dailyLog: ready, dailyLogReconcileAfter: 5, dailyLogReconcileKind: 'send' });
     const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
     const r = render(<DailyLogScreen />);
     const submit = r.getByTestId('submit-daily-log') as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
     expect(submit.textContent).toContain('Sending to PMC');
     // once the read-back lands the log is sent, and nothing is pending
-    act(() => useStore.setState({ dailyLog: { ...ready, submitted: true }, dailyLogReconcileAfter: null }));
+    act(() => useStore.setState({ dailyLog: { ...ready, submitted: true }, dailyLogReconcileAfter: null, dailyLogReconcileKind: null }));
     expect((r.getByTestId('submit-daily-log') as HTMLButtonElement).textContent).toContain('sent to PMC');
   });
 
@@ -402,5 +402,28 @@ describe('one rule for every writer — a start or send already on its way is ne
     const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
     const r = render(<DailyLogScreen />);
     expect((r.getByTestId('start-new-day') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('review round 9 — the pending card names the command actually on its way', () => {
+  it('a start queued over a log already sent today shows as starting, not as "with PMC"', async () => {
+    const sentToday = log({ checkedIn: true, progress: 1, submitted: true });
+    const { r } = await loadToday({ dailyLog: sentToday, outbox: [{ t: 'startDailyLog', idempotencyKey: 'k' }], online: false });
+    expect(r.getByTestId('today-now').dataset.action).toBe('pending-start');
+    expect(r.getByText(L.savedOffline.en)).toBeTruthy();
+    expect(r.queryByText(L.action.done.en)).toBeNull();
+  });
+
+  it('a committed start still being read back shows as starting, over the previous sent log', async () => {
+    const sentToday = log({ checkedIn: true, progress: 1, submitted: true });
+    const { r } = await loadToday({ dailyLog: sentToday, dailyLogLoad: 'ready', dailyLogReconcileAfter: 3, dailyLogReconcileKind: 'start' }, { VITE_DAILYLOG_READ: 'moduleQuery' });
+    expect(r.getByTestId('today-now').dataset.action).toBe('pending-start');
+  });
+
+  it('a committed send being read back is shown as sending — never as a start', async () => {
+    const ready = log({ checkedIn: true, progress: 2 });
+    const { r } = await loadToday({ dailyLog: ready, dailyLogLoad: 'ready', dailyLogReconcileAfter: 3, dailyLogReconcileKind: 'send' }, { VITE_DAILYLOG_READ: 'moduleQuery' });
+    expect(r.getByTestId('today-now').dataset.action).toBe('pending-send');
+    expect(r.queryByText(L.pendingStart.en)).toBeNull();
   });
 });

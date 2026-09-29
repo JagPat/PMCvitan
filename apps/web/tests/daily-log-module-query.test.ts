@@ -191,10 +191,12 @@ describe('Task 10 (correction, finding 2) — module-aware post-command reconcil
     s().submitDailyLog();
     await settles(() => s().outbox.length === 0 && gw.dailyLog.mock.calls.length >= 2); // committed; reconcile read in flight
     expect(s().dailyLog?.submitted).toBe(false);          // the log on screen still predates the send…
-    expect(s().dailyLogReconcileAfter).not.toBeNull();     // …and says so
+    expect(s().dailyLogReconcileAfter).not.toBeNull();     // …and says so,
+    expect(s().dailyLogReconcileKind).toBe('send');        // …naming the command it waits on
 
     reconcileRead.release(moduleRead(3, 'MOD-MAT'));      // the committed truth: submitted
     await settles(() => s().dailyLogReconcileAfter === null);
+    expect(s().dailyLogReconcileKind).toBeNull();
     expect(s().dailyLog?.submitted).toBe(true);
     unsub();
     expect(gaps).toEqual([]);

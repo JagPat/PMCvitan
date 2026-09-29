@@ -218,6 +218,8 @@ export interface ModuleReadState {
    *  outbox, cleared once a pull begun after it delivers the daily-log read (or fails, which the
    *  read's own error state shows). Until then the log on screen predates the command. */
   dailyLogReconcileAfter: number | null;
+  /** which command that reconcile is for — the display names it; the guards hold either */
+  dailyLogReconcileKind: 'start' | 'send' | null;
   drawingsLoad: 'idle' | 'loading' | 'ready' | 'error';
   drawingsSource: 'projection' | 'live' | null;
   inspectionsLoad: 'idle' | 'loading' | 'ready' | 'error';
@@ -247,6 +249,7 @@ export function emptyModuleReadState(): ModuleReadState {
     dailyLogLoad: 'idle',
     dailyLogSource: null,
     dailyLogReconcileAfter: null,
+    dailyLogReconcileKind: null,
     drawingsLoad: 'idle',
     drawingsSource: null,
     inspectionsLoad: 'idle',

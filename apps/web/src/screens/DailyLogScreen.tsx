@@ -8,7 +8,7 @@ import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { LocationPicker } from '@/components/LocationPicker';
 import { captureStamp } from '@/lib/captureStamp';
 import { projectScopeOf } from '@/store/projectScope';
-import { dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
+import { dailyLogCommandInFlight, dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
 import { can, labourLabels } from '@vitan/shared';
@@ -52,6 +52,7 @@ export function DailyLogScreen() {
   // screen predates it, so the same command is never offered twice — the rule the store enforces
   const starting = useStore(dailyLogStartPending);
   const sending = useStore(dailyLogSendPending);
+  const inFlight = useStore(dailyLogCommandInFlight);
   // live project identity — never the seeded Ambli copy (Phase 0 Task 7)
   const short = useStore((s) => s.short);
   const location = useStore((s) => s.location);
@@ -128,7 +129,7 @@ export function DailyLogScreen() {
         detail="Start today's log when site work begins — attendance, crew, materials and progress photos all record onto it."
         action={
           can('dailyLog.start', role) ? (
-            <Button variant="ink" onClick={startDailyLog} disabled={starting} data-testid="start-new-day">
+            <Button variant="ink" onClick={startDailyLog} disabled={inFlight} data-testid="start-new-day">
               <Plus size={15} /> {starting ? 'Starting today\u2019s log\u2026' : "Start today's log"}
             </Button>
           ) : undefined
@@ -162,7 +163,7 @@ export function DailyLogScreen() {
             <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{dailyLog.date}</div>
           </div>
           {dailyLog.submitted && can('dailyLog.start', role) && (
-            <Button variant="outline" onClick={startDailyLog} disabled={actionsLocked || starting} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
+            <Button variant="outline" onClick={startDailyLog} disabled={actionsLocked || inFlight} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
               <Plus size={15} /> Start new day
             </Button>
           )}
@@ -355,9 +356,9 @@ export function DailyLogScreen() {
       <div className={styles.stickyFoot} style={{ padding: '12px 16px 20px', borderTop: '1px solid rgba(35,33,28,.1)', background: 'var(--panel)' }}>
         <button
           onClick={submitDailyLog}
-          disabled={actionsLocked || sending}
+          disabled={actionsLocked || inFlight}
           data-testid="submit-daily-log"
-          style={{ width: '100%', maxWidth: 460, margin: '0 auto', display: 'block', padding: 15, borderRadius: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, cursor: actionsLocked || sending ? 'not-allowed' : 'pointer', opacity: actionsLocked || sending ? 0.6 : 1, border: 'none', background: dailyLog.submitted ? 'var(--green-chip)' : 'var(--ink)', color: dailyLog.submitted ? 'var(--green-text)' : 'var(--sidebar-text)' }}
+          style={{ width: '100%', maxWidth: 460, margin: '0 auto', display: 'block', padding: 15, borderRadius: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, cursor: actionsLocked || inFlight ? 'not-allowed' : 'pointer', opacity: actionsLocked || inFlight ? 0.6 : 1, border: 'none', background: dailyLog.submitted ? 'var(--green-chip)' : 'var(--ink)', color: dailyLog.submitted ? 'var(--green-text)' : 'var(--sidebar-text)' }}
         >
           {dailyLog.submitted ? 'Submitted ✓ — sent to PMC' : sending ? 'Sending to PMC\u2026' : 'Submit Daily Log to PMC'}
         </button>
