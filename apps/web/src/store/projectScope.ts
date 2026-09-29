@@ -213,6 +213,11 @@ export interface ModuleReadState {
   decisionsSource: 'projection' | 'live' | null;
   dailyLogLoad: 'idle' | 'loading' | 'ready' | 'error';
   dailyLogSource: 'projection' | 'live' | null;
+  /** A daily-log start/submit committed on the server while the module read owns the log: the
+   *  lease sequence its reconcile must pass. Set in the SAME update that drops the op from the
+   *  outbox, cleared once a pull begun after it delivers the daily-log read (or fails, which the
+   *  read's own error state shows). Until then the log on screen predates the command. */
+  dailyLogReconcileAfter: number | null;
   drawingsLoad: 'idle' | 'loading' | 'ready' | 'error';
   drawingsSource: 'projection' | 'live' | null;
   inspectionsLoad: 'idle' | 'loading' | 'ready' | 'error';
@@ -241,6 +246,7 @@ export function emptyModuleReadState(): ModuleReadState {
     decisionsSource: null,
     dailyLogLoad: 'idle',
     dailyLogSource: null,
+    dailyLogReconcileAfter: null,
     drawingsLoad: 'idle',
     drawingsSource: null,
     inspectionsLoad: 'idle',

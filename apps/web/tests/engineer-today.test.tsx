@@ -221,6 +221,17 @@ describe('Engineer Today — the screen', () => {
     expect(r.queryByTestId('today-action')).toBeNull();
   });
 
+  it('after the server commits a send, the stale log never offers Send again before its read lands', async () => {
+    const ready = log({ checkedIn: true, progress: 2 });
+    ready.crew[0].count = 3;
+    const { useStore, r } = await loadToday({ dailyLog: ready, dailyLogLoad: 'ready', outbox: [], dailyLogReconcileAfter: 7 }, { VITE_DAILYLOG_READ: 'moduleQuery' });
+    expect(r.getByTestId('today-now').dataset.action).toBe('pending-send');
+    expect(r.queryByTestId('today-action')).toBeNull();
+    // the reconcile's read lands the submitted log and clears the flag
+    act(() => useStore.setState({ dailyLog: { ...ready, submitted: true }, dailyLogReconcileAfter: null }));
+    expect(r.getByTestId('today-now').dataset.action).toBe('done');
+  });
+
   it('the next morning, yesterday’s sent log leads to starting today’s', async () => {
     const yesterday = log({ checkedIn: true, progress: 2, submitted: true, logDate: '2000-01-01' });
     const { r } = await loadToday({ dailyLog: yesterday, timeZone: 'Asia/Kolkata' });

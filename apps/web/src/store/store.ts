@@ -202,6 +202,8 @@ export interface AppState {
   // these track its explicit load state for the daily-log surfaces ('idle' in snapshot mode).
   dailyLogLoad: 'idle' | 'loading' | 'ready' | 'error';
   dailyLogSource: 'projection' | 'live' | null;
+  // a committed daily-log start/submit still awaiting its module read (see ModuleReadState)
+  dailyLogReconcileAfter: number | null;
   // Phase 2 Task 10 (Module 2 — Drawings) — the drawings XOR read-ownership state, mirroring decisions.
   // When drawingsReadMode() === 'moduleQuery', `drawings` is owned by the module-owned read (baked
   // per-viewer); these track its explicit load state for the drawing surfaces ('idle' in snapshot mode).
@@ -1007,6 +1009,7 @@ export function getInitialState(): AppState {
     decisionsSource: null,
     dailyLogLoad: 'idle',
     dailyLogSource: null,
+    dailyLogReconcileAfter: null,
     drawingsLoad: 'idle',
     drawingsSource: null,
     inspectionsLoad: 'idle',
@@ -1424,6 +1427,12 @@ export const useStore = create<Store>()(
       // a stale module response is dropped with its snapshot, never applied over a newer scope's data.
       const prevTimeZone = st.timeZone;
       applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
+      // a committed daily-log command is reflected once a pull that BEGAN after it carries the
+      // daily-log module read — success shows the new log, failure the read's own error state
+      const after = get().dailyLogReconcileAfter;
+      if (after !== null && dailyLogResult !== undefined && lease.sequence > after) {
+        set((s) => { s.dailyLogReconcileAfter = null; });
+      }
       // Phase 4 Task 6 (Codex round 2) — on a cold labour-pilot boot the shell can trigger the
       // FIRST labour load before any snapshot has delivered the project timezone, so that load's
       // presence read fell back to the BROWSER's civil day. When an applied snapshot CHANGES the
@@ -4561,6 +4570,7 @@ export const useStore = create<Store>()(
       // reconcile hook below for why), so there is nothing to collect.
       let commercialAttempted = false;
       let lastSnap: ApiSnapshot | null = null;
+      let dailyLogCommitted = false;
       let synced = 0;
       let dropped = 0;
       let stoppedAt = -1;
@@ -4580,6 +4590,7 @@ export const useStore = create<Store>()(
         try {
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
+          if (ops[i].t === 'startDailyLog' || ops[i].t === 'submitDailyLog') dailyLogCommitted = true;
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
           if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
           if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
@@ -4637,6 +4648,10 @@ export const useStore = create<Store>()(
       const appended = get().outbox.slice(ops.length);
       set((s) => {
         s.outbox = [...remaining, ...appended];
+        // under module ownership the command's own snapshot carries no daily-log slice, so the log
+        // on screen predates the committed start/submit until the reconcile's module read lands —
+        // flag it in the SAME update that drops the op, leaving no window to act on the stale log
+        if (dailyLogCommitted && dailyLogReadMode() === 'moduleQuery') s.dailyLogReconcileAfter = snapshotSeq;
         s.syncQueue = []; // local-only labels (check-in, QR) are considered synced on reconnect
         // gate round 8: the queue changed — a queued submit may have replayed or
         // been dropped (terminal 4xx). Re-derive the freeze so a dropped submit

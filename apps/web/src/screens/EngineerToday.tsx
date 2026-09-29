@@ -28,8 +28,12 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   // a start or send already in this project's durable outbox (offline, or awaiting the server): the
   // log only changes once the server confirms, so until then the card must not offer the same
   // command again — a second tap would queue a second op under a fresh key
-  const pendingStart = useStore((s) => s.outbox.some((o) => o.t === 'startDailyLog'));
-  const pendingSend = useStore((s) => s.outbox.some((o) => o.t === 'submitDailyLog'));
+  // ...and once the server has committed it, the log on screen still predates it until the
+  // reconcile's module read lands (`dailyLogReconcileAfter`, set in the same update that drops the
+  // op) — the command is still on its way from the card's point of view
+  const reconciling = useStore((s) => s.dailyLogReconcileAfter !== null);
+  const pendingStart = useStore((s) => s.outbox.some((o) => o.t === 'startDailyLog')) || reconciling;
+  const pendingSend = useStore((s) => s.outbox.some((o) => o.t === 'submitDailyLog')) || reconciling;
   const setScreen = useStore((s) => s.setScreen);
   const startDailyLog = useStore((s) => s.startDailyLog);
   const checkIn = useStore((s) => s.checkIn);
