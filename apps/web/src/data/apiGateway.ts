@@ -61,6 +61,9 @@ import type {
   VendorBillListDto,
   VendorAdvanceListDto,
   DeciderKind,
+  ForwardDecisionInput,
+  DisagreeDecisionInput,
+  ResolveStrandedCountersignInput,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -807,8 +810,18 @@ export class ApiGateway {
     });
     if (!res.ok) {
       // Surface the HTTP status so callers can react (e.g. 429 throttle vs 503 send-failure).
-      const err = new Error(`${path} ${res.status}`) as Error & { status?: number };
+      const err = new Error(`${path} ${res.status}`) as Error & { status?: number; serverMessage?: string };
       err.status = res.status;
+      // Phase 6 task 4d-ii-b / B5a — and the server's OWN refusal message (Nest's `{ message }`, a string or
+      // a list), so a command the server refuses (a 409 while the doors stand, an ineligible state) can be
+      // surfaced as what the server said rather than masked behind a generic line. Read defensively: a body
+      // that is not JSON, or carries no message, leaves the field absent.
+      try {
+        const body = (await res.json()) as { message?: unknown } | null;
+        const m = body?.message;
+        if (typeof m === 'string' && m.trim()) err.serverMessage = m;
+        else if (Array.isArray(m) && m.length) err.serverMessage = m.filter((x): x is string => typeof x === 'string').join('; ');
+      } catch { /* no readable body — the status alone is the fact */ }
       throw err;
     }
     return res.json() as Promise<T>;
@@ -1219,6 +1232,28 @@ export class ApiGateway {
   withdrawDecision(decisionId: string, reason: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/decisions/${decisionId}/withdraw`, { reason }, idempotencyKey);
   }
+  // ── Phase 6 task 4d-ii-b / B5a — the four countersign-chain commands (4d-ii-a / A8a, A8b), on the
+  //    server's routes with the SHARED input types. Every one is REFUSED 409 while the six reservation
+  //    doors stand, so nothing here is reachable by delivered traffic; the client surfaces that refusal as
+  //    the server's message (see `refusalMessage`). The key is REQUIRED on each: every act is a ledgered
+  //    command whose lost-response retry must reach the server under the SAME key (P32's client half —
+  //    self-countersign stays two explicit acts under two keys). ──
+  /** `decisions.forward` — hand an OPEN decision to a new designation (a role, or a named member). */
+  forwardDecision(decisionId: string, input: ForwardDecisionInput, idempotencyKey: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/forward`, input, idempotencyKey);
+  }
+  /** `decisions.countersign` — the ARCHITECT finalizes a provisional approval (`awaiting_countersign → approved`). */
+  countersignDecision(decisionId: string, idempotencyKey: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/countersign`, undefined, idempotencyKey);
+  }
+  /** `decisions.disagree` — the ARCHITECT sends a provisional approval back (`reject_back`) or on (`forward_on`). */
+  disagreeDecision(decisionId: string, input: DisagreeDecisionInput, idempotencyKey: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/disagree`, input, idempotencyKey);
+  }
+  /** `decisions.resolveStrandedCountersign` — the PMC resolves a decision awaiting a countersign no active architect can give. */
+  resolveStrandedCountersign(decisionId: string, input: ResolveStrandedCountersignInput, idempotencyKey: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/stranded`, input, idempotencyKey);
+  }
   /** Keyed for replay-safety (Task 10 Module 4): a lost-response retry starts exactly once. */
   startActivity(activityId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/activities/${activityId}/start`, undefined, idempotencyKey);
@@ -1605,6 +1640,13 @@ export type OutboxOp =
   // Phase 6 task 4a — withdraw a published, never-approved decision (pmc; terminal; the reason
   // travels with the op so an offline replay carries the exact attribution evidence).
   | { t: 'withdraw'; decisionId: string; reason: string; idempotencyKey: string }
+  // Phase 6 task 4d-ii-b / B5a — the four countersign-chain commands, WRITE-AHEAD with a stable key and
+  // their full shared input, so an offline replay or a lost-response retry reaches the server with the
+  // exact act under the SAME key (one key per act; never a combined command).
+  | { t: 'forwardDecision'; decisionId: string; input: ForwardDecisionInput; idempotencyKey: string }
+  | { t: 'countersignDecision'; decisionId: string; idempotencyKey: string }
+  | { t: 'disagreeDecision'; decisionId: string; input: DisagreeDecisionInput; idempotencyKey: string }
+  | { t: 'resolveStrandedCountersign'; decisionId: string; input: ResolveStrandedCountersignInput; idempotencyKey: string }
   // the drawing acknowledgement carries a stable idempotencyKey (Phase 2 Task 10): a queued ack
   // replayed on reconnect reaches the server under the SAME key it was first sent with, so a
   // lost-response retry records the acknowledgement exactly once (actor-scoped).
@@ -1697,11 +1739,34 @@ export function isTerminalOutboxError(err: unknown): boolean {
   return status >= 400 && status < 500; // other 4xx → permanent client error, drop it
 }
 
+/** Phase 6 task 4d-ii-b / B5a — the four countersign-chain op types, the ones whose terminal refusal the
+ *  flush surfaces as the server's message (`refusalMessage`) instead of the generic "discarded" count. */
+export const COUNTERSIGN_CHAIN_OP_TYPES = ['forwardDecision', 'countersignDecision', 'disagreeDecision', 'resolveStrandedCountersign'] as const satisfies readonly OutboxOp['t'][];
+export type CountersignChainOp = Extract<OutboxOp, { t: (typeof COUNTERSIGN_CHAIN_OP_TYPES)[number] }>;
+export function isCountersignChainOp(op: OutboxOp): op is CountersignChainOp {
+  return (COUNTERSIGN_CHAIN_OP_TYPES as readonly string[]).includes(op.t);
+}
+/** The server's own refusal text from a failed request, when it sent one (`req()` captures Nest's
+ *  `message`); `null` for a network failure or a body without one — the caller says so, and invents nothing. */
+export function refusalMessage(err: unknown): string | null {
+  const m = (err as { serverMessage?: unknown } | null)?.serverMessage;
+  return typeof m === 'string' && m.trim() ? m : null;
+}
+
 /** Replay one queued mutation; resolves to the fresh snapshot. */
 export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapshot> {
   switch (op.t) {
     case 'approve':
       return gw.approveDecision(op.decisionId, op.optionIndex, op.idempotencyKey);
+    // Phase 6 task 4d-ii-b / B5a — the countersign-chain commands replay their full act under the SAME key
+    case 'forwardDecision':
+      return gw.forwardDecision(op.decisionId, op.input, op.idempotencyKey);
+    case 'countersignDecision':
+      return gw.countersignDecision(op.decisionId, op.idempotencyKey);
+    case 'disagreeDecision':
+      return gw.disagreeDecision(op.decisionId, op.input, op.idempotencyKey);
+    case 'resolveStrandedCountersign':
+      return gw.resolveStrandedCountersign(op.decisionId, op.input, op.idempotencyKey);
     case 'change':
       return gw.requestChange(op.decisionId, op.reason, op.costImpact, op.timeImpactDays, op.idempotencyKey);
     case 'changeWithdraw':
