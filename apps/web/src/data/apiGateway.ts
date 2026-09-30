@@ -683,17 +683,21 @@ export class ApiGateway {
   listMembers(): Promise<ProjectMember[]> {
     return this.req(`/projects/${this.projectId}/members`);
   }
+  // ── Phase 6 task 4d-ii-b / B6 — the three member commands carry a client `Idempotency-Key` (4d-ii-a / A3b
+  //    made them ledger commands and let the server SYNTHESIZE a key for a tab that sends none, so a keyless
+  //    call still works; a keyed one is deduplicated, so the user's retry after a lost response runs once).
+  //    The store mints one key per ACT and reuses it on the retry (`memberActKey`). ──
   /** Add a member to the active project (provisions the account if new). */
-  addMember(input: AddMemberInput): Promise<ProjectMember> {
-    return this.req(`/projects/${this.projectId}/members`, { method: 'POST', body: JSON.stringify(input) });
+  addMember(input: AddMemberInput, idempotencyKey?: string): Promise<ProjectMember> {
+    return this.req(`/projects/${this.projectId}/members`, { method: 'POST', body: JSON.stringify(input), ...keyHeader(idempotencyKey) });
   }
   /** Change a member's role (and, for a consultant, their discipline). */
-  updateMemberRole(userId: string, role: Role, discipline?: string): Promise<ProjectMember> {
-    return this.req(`/projects/${this.projectId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role, ...(discipline ? { discipline } : {}) }) });
+  updateMemberRole(userId: string, role: Role, discipline?: string, idempotencyKey?: string): Promise<ProjectMember> {
+    return this.req(`/projects/${this.projectId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role, ...(discipline ? { discipline } : {}) }), ...keyHeader(idempotencyKey) });
   }
   /** Remove a member from the active project (soft delete). */
-  removeMember(userId: string): Promise<{ ok: boolean }> {
-    return this.req(`/projects/${this.projectId}/members/${userId}`, { method: 'DELETE' });
+  removeMember(userId: string, idempotencyKey?: string): Promise<{ ok: boolean }> {
+    return this.req(`/projects/${this.projectId}/members/${userId}`, { method: 'DELETE', ...keyHeader(idempotencyKey) });
   }
 
   /** Add a company/consultant to the active project. */
@@ -1732,6 +1736,11 @@ export type OutboxOp =
  * (no `status`), auth (401 — recoverable by re-signing-in), request timeout (408),
  * rate limiting (429), and any 5xx.
  */
+/** The `Idempotency-Key` header for a keyed request, or nothing for a keyless one (B6; `p()`'s rule). */
+function keyHeader(idempotencyKey?: string): { headers?: Record<string, string> } {
+  return idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {};
+}
+
 export function isTerminalOutboxError(err: unknown): boolean {
   const status = (err as { status?: number } | null)?.status;
   if (typeof status !== 'number') return false; // network / unknown → transient, retry later

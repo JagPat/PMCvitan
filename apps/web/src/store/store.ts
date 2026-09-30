@@ -1942,6 +1942,24 @@ export const useStore = create<Store>()(
       runWriteAhead(op, label, okMsg);
     };
 
+    /** Phase 6 task 4d-ii-b / B6 — the member commands' per-act keys. An ACT is one intended change on one
+     *  project (`<project>:add:<contact>`, `<project>:role:<user>:<role>:<discipline>`, `<project>:remove:<user>`);
+     *  its key is minted on the first attempt and REUSED until the act settles — a confirmed success or a
+     *  terminal (4xx) refusal — so the user's retry after a lost or uncertain response reaches the server's
+     *  ledger under the same key and runs once, while the next identical act (adding the same person again
+     *  after a success) is a new act under a new key. Held in memory only: a reload is a new act too, which
+     *  the server's own dedup of a keyless call already covered before this unit. */
+    const memberActKeys = new Map<string, string>();
+    const memberActKey = (act: string): string => {
+      const scoped = `${get().activeProjectId}:${act}`;
+      const existing = memberActKeys.get(scoped);
+      if (existing) return existing;
+      const fresh = newIdempotencyKey();
+      memberActKeys.set(scoped, fresh);
+      return fresh;
+    };
+    const settleMemberAct = (act: string): void => { memberActKeys.delete(`${get().activeProjectId}:${act}`); };
+
     // ── Phase 3 Task 7 (correction 2) — the pilot MATERIALS single-command dispatch. Every operational
     //    materials command (reserve a candidate, raise the residual requisition, issue, consume) goes
     //    through HERE: one WRITE-AHEAD op with a STABLE idempotency key, COALESCED against an identical
@@ -4330,23 +4348,35 @@ export const useStore = create<Store>()(
         }))
         .catch(() => {});
     },
+    // Phase 6 task 4d-ii-b / B6 — the three member commands are keyed per ACT (`memberActKey`): the first
+    // attempt mints the key; the user's retry after a lost response (the same act, on the same project)
+    // reuses it, so the server's ledger runs it once; a confirmed success or a terminal refusal settles the
+    // act, so the next identical act is a NEW act under a NEW key. A distinct act (another member, another
+    // role, another project) always has its own key.
     addMember: (input) => {
       if (!gateway) {
         get().flash('Managing the team needs the server.');
         return;
       }
+      const act = `add:${(input.email ?? input.phone ?? '').trim().toLowerCase()}`;
       gateway
-        .addMember(input)
-        .then(() => { get().loadTeam(); get().flash(input.name + ' added to the team.'); })
-        .catch(() => get().flash('Could not add the member — check the details / your access.'));
+        .addMember(input, memberActKey(act))
+        .then(() => { settleMemberAct(act); get().loadTeam(); get().flash(input.name + ' added to the team.'); })
+        .catch((err: unknown) => { if (isTerminalOutboxError(err)) settleMemberAct(act); get().flash('Could not add the member — check the details / your access.'); });
     },
     updateMemberRole: (userId, role, discipline) => {
       if (!gateway) return;
-      gateway.updateMemberRole(userId, role, discipline).then(() => get().loadTeam()).catch(() => get().flash('Could not change the role.'));
+      const act = `role:${userId}:${role}:${discipline ?? ''}`;
+      gateway.updateMemberRole(userId, role, discipline, memberActKey(act))
+        .then(() => { settleMemberAct(act); get().loadTeam(); })
+        .catch((err: unknown) => { if (isTerminalOutboxError(err)) settleMemberAct(act); get().flash('Could not change the role.'); });
     },
     removeMember: (userId) => {
       if (!gateway) return;
-      gateway.removeMember(userId).then(() => { get().loadTeam(); get().flash('Member removed.'); }).catch(() => get().flash('Could not remove the member.'));
+      const act = `remove:${userId}`;
+      gateway.removeMember(userId, memberActKey(act))
+        .then(() => { settleMemberAct(act); get().loadTeam(); get().flash('Member removed.'); })
+        .catch((err: unknown) => { if (isTerminalOutboxError(err)) settleMemberAct(act); get().flash('Could not remove the member.'); });
     },
     loadOrgMembers: (orgId) => {
       if (!gateway) return;

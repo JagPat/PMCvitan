@@ -14,15 +14,37 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-ii-b-b5b-controls
-reviewed_merge: c217c5e
-open_pr: 683
+work_item: 4d-ii-b-b6-member-keys
+reviewed_merge: dd372b4
+open_pr: 684
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-30
 ```
 
-### Now — 4d-ii-b unit B5b, the affordances and the controls (#683, `claude/4d-ii-b-b5b-controls`)
+### Now — 4d-ii-b unit B6, the client keys on the member commands (#684, `claude/4d-ii-b-b6-member-keys`)
+
+B5b merged as #683 (`dd372b4`; one review round — the stranded Complete takes the PMC's own reason, no
+target is ever defaulted — then a clean exact-head review). **B6 is the LAST unit of 4d-ii-b and the one
+open `claude/**` draft.** It ships the client `Idempotency-Key` on the three member commands (the plan,
+lines 3108–3116: 4d-ii-a / A3b made `members.add`, `members.updateRole` and `members.remove` ledger
+commands with server key synthesis for a keyless tab; the client key is this unit's): the gateway's
+`addMember`, `updateMemberRole` and `removeMember` take an optional key and send it as the header, and the
+store mints ONE key per ACT (`<project>:add:<contact>`, `<project>:role:<user>:<role>:<discipline>`,
+`<project>:remove:<user>`) and REUSES it on the user's retry of the same act — a lost or uncertain
+response retried by the user runs once on the ledger — settling the act on a confirmed success or a
+terminal refusal so the next identical act is a new act under a new key; a distinct act (another member,
+another role, another project) has its own key. No UI change, no server change, no migration. Proof:
+`tests/member-command-keys.test.ts` — per command: the same key on the retry after a lost response, a new
+key after a success and for a distinct act, a new key after a terminal refusal but the same after a
+transient one, project scoping; the add act's contact identity normalised; nothing minted without the
+server; the gateway putting each key on the right route beside the contract header, and a keyless call
+sending no header. **The fold rides this unit's post-merge STATUS record**: when B6 merges, the record
+sets `blocking_directive: phase-6-4d-previous-release-drained`, naming the release carrying A8b
+(`f8274f4`, #673) as the previous release whose drain 4d-iii waits on, with task 4 `in_progress`,
+`work_item: none`, `open_pr: none`.
+
+### History — 4d-ii-b unit B5b, the affordances and the controls (#683, `claude/4d-ii-b-b5b-controls`)
 
 B5a merged as #682 (`c217c5e`; a clean exact-head review on its first head). **B5b is the sixth unit in
 sequence and the one open `claude/**` draft** (B6, the member-command keys, remains). It ships the
@@ -51,9 +73,8 @@ inputs and no other role seeing them; the PMC's Complete / Return on a stranded 
 in flight; the register rendering nothing under `'reserved'` with the seeded rows and everything under
 `'open'` — and a Playwright spec against the reserved server asserts the PMC's register carries no
 Forward, no countersign control and no stranded resolution on any row while the delivered Withdraw stands.
-No server runtime change, no migration; dark: the rollout reads reserved and no row can be awaiting. Next
-after B5b: B6 (the client keys on the member commands) — the LAST unit, whose post-merge STATUS record
-carries the fold setting `blocking_directive: phase-6-4d-previous-release-drained`.
+No server runtime change, no migration; dark: the rollout reads reserved and no row can be awaiting. B5b
+merged as #683 (`dd372b4`); B6 opened next — the record above.
 
 ### History — 4d-ii-b unit B5a, the four commands on the client (#682, `claude/4d-ii-b-b5a-commands`)
 
