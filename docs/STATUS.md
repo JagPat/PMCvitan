@@ -13,23 +13,38 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
-task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a8b-countersign-disagree-stranded
-reviewed_merge: 39c3bf6
-open_pr: 673
+task_state: merged
+work_item: none
+reviewed_merge: f8274f4
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-29
+updated: 2026-09-30
 ```
 
-### Now — Phase 6 task 4d: A8b, countersign, disagree, stranded
+### Now — Phase 6 task 4d: 4d-ii-a is COMPLETE (A8b merged as #673); 4d-ii-b, the client unit, is next
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
-(4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
+(4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged, and with #673
+every A-unit of the staging note (`docs/superpowers/plans/2026-09-26-4d-ii-a-additive-units.md`) is on
+`main`: **4d-ii-a, the server unit, is complete.** Nothing writes this record automatically; as after every
+unit merge, this file records the merge itself so the runner is not parked on finished work.
 
-- **Now, A8b, `open_pr: 673` (`work_item: phase-6-task-4d-ii-a-a8b-countersign-disagree-stranded`,
-  branch `claude/4d-ii-a8b-countersign`, from `main` at `39c3bf6`; `main` at `8e56091`, #669, merged in).** The last A-unit (the staging note's
-  table): the chain's three remaining writers on the ledger, each FACT FIRST under `lockProjectReadiness`
+- **Next: 4d-ii-b, the CLIENT unit** (§D: the web gateway declaring `countersign-v1` on every API-bound
+  request with the `fetch(` tripwire; the web role fan-out following the shell's `rollout.phase6_4d` read;
+  the Forward affordance; the Inbox `awaiting_countersign` branch and the reader enumeration's web arms;
+  the architect's Decision Log controls — Countersign / Reject back / Forward on — and the stranded item;
+  the approval and success copy; the roster on the consultation surface; the store's additive fields and
+  the `DecisionForward` DTO; the shell badge; the web arms of P28b, P29c, P30, P31, P33 and P34, driven
+  against the 4d-ii-a server with the doors standing). It carries no migration. Its STATUS fold — the last
+  unit before the drain — SETS `blocking_directive: phase-6-4d-previous-release-drained`, naming the
+  release carrying A8b (`f8274f4`) as the drain's minimum (the staging note, "The drain"). How 4d-ii-b is
+  staged — §D's one `justified-large` unit, or additive units under a staging record as 4d-i-b and 4d-ii-a
+  were — is the owner's disposition; no unit of it is open. After 4d-ii-b: the drain attestation (an
+  `OPERATOR-ATTESTATION`, REQUIRED, with the autonomous evidence as fail-closed corroboration), then 4d-iii.
+- **A8b merged as #673** (`f8274f4`, on its reviewed head `b356809`: a fresh Codex +1 after five
+  finding-bearing heads, eleven threads resolved). The last A-unit: the chain's three remaining writers on
+  the ledger, each FACT FIRST under `lockProjectReadiness`
   in the canonical order with the actor's frozen pair, its audit row, ONE event naming the fact and the
   exact head revision, its kinded notice and the demands it outdates cancelled — `decisions.countersign`
   (the architect finalizes: the flip, `awaiting_countersign → approved`, `decision.approved`/`reapproved`
@@ -46,7 +61,15 @@ The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units u
   refused the re-approval every disagreement demands), and the persisted server-generation minimum
   RAISED to 2 — the drain fence the staging note assigns to A8b. Three writer branches join the pairing
   matrix; the route policy, tripwire, manifest and boundary pins move. §C arms not carried by any
-  A-unit: none.
+  A-unit: none. Five Codex rounds were fixed forward on the PR, each binding one more thing the delivered
+  writers already wrote and a hand-run bundle could omit or forge: the change-request notice and the
+  rejection's audit row (round 1); the feed row, the payload discriminator and the envelope pair (round 2);
+  the content the renderer reads, the receipt's one primary table and the returned request's revision
+  (round 3); one reason across the bundle and the blank guard over all ASCII whitespace (round 4); the
+  revision's approver pair on the finalizing event and the rejection's producer authority — its receipt,
+  the producer's role as the frozen role, the envelope equal to the pair (round 5). The pairing matrix
+  ends at 148 bundles with forty-five A8b refusals; the seal contract, the migration's own verification
+  and the upgrade proof assert every clause by token.
 - **A8a merged as #672** (`39c3bf6`): `decisions.forward` on the ledger (fact first, the holder moved
   through the attribution seal's one door, the new holder's users frozen, refusing 409 while the
   reservation stands); the approve CAS landing `awaiting_countersign` under a chain with the provisional
