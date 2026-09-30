@@ -124,12 +124,19 @@ decider pickers (`IssueDecisionModal`, `DraftsScreen`) and the gateway's `decide
 gain the `architect` designation under the same gate. `PERSONAS_OWED` is emptied, `screensFor.architect`
 gets the role's screens from its `ROLE_POLICY` rows (the Inbox, the Decision Log, Drawings, Places,
 the consultation surface), and `applyAuthResult`/`setRole`/`localEmailSignIn` refuse to land on an
-undefined screen. The role-vocabulary tripwire's four owed registrations and the persona pin move to
-registered, in the same change.
+undefined screen. **Every consumer of the derived `ROLES` list is under the same gate**, not only the
+Team pickers: emptying `PERSONAS_OWED` adds `architect` to `ROLES` globally, and both persona
+switchers render that list unconditionally today — the desktop `RolePicker` and the mobile `TopBar`
+switcher under `DEV_AUTH` — so B2 replaces the static list with one rollout-aware selector (the
+`ROLES` for the shell's current `rollout.phase6_4d`) that every switcher and picker reads, and no
+switcher offers `architect` while the shell reads `'reserved'` (#677 review, finding 4145060015). The
+role-vocabulary tripwire's four owed registrations and the persona pin move to registered, in the same
+change.
 
 Web arms of P28 (the web role lists and pickers) and P28b/P34 (the pickers follow the ONE shell
-read): unit tests render each picker under `'reserved'` and `'open'`; a Playwright spec against the
-reserved server asserts no picker offers `architect`. ~250 lines, standard.
+read): unit tests render each picker AND each persona switcher under `'reserved'` and `'open'`; a
+Playwright spec against the reserved server asserts no picker or switcher offers `architect`.
+~250 lines, standard.
 
 ### B3 — the readers, the Inbox branch and the badge
 
@@ -137,9 +144,15 @@ reserved server asserts no picker offers `architect`. ~250 lines, standard.
 the active architect's "N decision(s) awaiting your countersign", the PMC's "awaiting the architect's
 countersign" summary, and the PMC's stranded-resolution item when the chain is inactive (the client
 reads chain activity the way the DTO exposes it — `countersignRequired` on the pending rows — and
-never invents an active chain). The audience mirrors (`selectLogDecisions`, `selectVisibleDecisions`,
-`RouteBridge`'s decider-route set) admit an awaiting row to the PMC, the architect, the decider and a
-standing consultee only, matching `decisionVisibleToViewer`. `locationTree`'s `STATUS_LABEL` and
+never invents an active chain). The audience mirrors (`selectLogDecisions`, `selectVisibleDecisions`)
+admit an awaiting row to the PMC, the architect, the decider and a standing consultee only, matching
+`decisionVisibleToViewer`. **The approval route stays limited to actionable states**: `RouteBridge`'s
+decider-route set, which gates the `client-decisions` approval screen, keeps its `pending`/`change`
+condition — an awaiting decision is not one its decider can approve, and admitting it would deep-link a
+named non-client decider to an empty approval screen (#677 review, finding 4145060024); awaiting rows
+are read on the Decision Log and through the visibility selectors, and the architect acts on them
+through B5b's controls, not the approval route. Its tripwire predicate is re-registered with that
+verdict. `locationTree`'s `STATUS_LABEL` and
 `rank`, the Decision Log's `STATUS_FILTERS` and rollup chips, and `StatusChip` answer the value. The
 shell badge renders `counts.pendingDecisions` (the server's `countPending`, which carries the
 architect and stranded arms) where the web computes a local count today, with the local derivation
