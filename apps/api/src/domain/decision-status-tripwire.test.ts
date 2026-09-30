@@ -32,7 +32,8 @@ import { deriveDecisionGate } from './transitions';
  *   review, findings 4117700813 and 4117700814).
  *
  * What does not yet answer `awaiting_countersign` is registered as OWED, by the unit that owns the
- * arm (A5, A7, A8a, and 4d-ii-b for every web reader), which records its verdict as it lands.
+ * arm (A5, A7, A8a, and 4d-ii-b for every web reader), which records its verdict as it lands. The web
+ * readers recorded theirs with 4d-ii-b / B3; the consultation surface's open set is B4's.
  */
 const REPO = join(__dirname, '..', '..', '..', '..');
 
@@ -70,8 +71,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     'packages/shared/src/tokens/colors.ts decisionChipLabel': 'answered',
     'packages/shared/src/tokens/colors.ts decisionRail': 'answered',
     'apps/web/src/lib/locationTree.ts counts': 'answered',
-    'apps/web/src/lib/locationTree.ts STATUS_LABEL': 'owed by 4d-ii-b',
-    'apps/web/src/lib/locationTree.ts rank': 'owed by 4d-ii-b',
+    'apps/web/src/lib/locationTree.ts STATUS_LABEL': 'answered',
+    'apps/web/src/lib/locationTree.ts rank': 'answered',
   };
 
   /** The TOP-LEVEL text of the object literal opening at `open` (a `{`), nested braces emptied, so an
@@ -140,11 +141,12 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
    * Web status SETS that are not flat maps, which the flat-map scan cannot see (#652's review,
    * finding 4117568488): a status LIST, an array literal whose entries are keyed `key: '<status>'`
    * (the Decision Log's filter chips), and a per-status ROLLUP reading `counts.<status>` (its group
-   * chips). ANSWERED means it keys every status. Both are OWED by 4d-ii-b (the plan's §A.2 web arms).
+   * chips). ANSWERED means it keys every status. Both were owed by 4d-ii-b (the plan's §A.2 web arms) and
+   * answered by its unit B3.
    */
   const WEB_STATUS_SETS: Record<string, 'answered' | 'owed by 4d-ii-b'> = {
-    'apps/web/src/screens/DecisionLogScreen.tsx STATUS_FILTERS': 'owed by 4d-ii-b',
-    'apps/web/src/screens/DecisionLogScreen.tsx counts.*': 'owed by 4d-ii-b',
+    'apps/web/src/screens/DecisionLogScreen.tsx STATUS_FILTERS': 'answered',
+    'apps/web/src/screens/DecisionLogScreen.tsx counts.*': 'answered',
   };
 
   it('every web status list and rollup is registered, and each ANSWERED one keys every status', () => {
@@ -185,7 +187,6 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
    * - `not a decision status: <what>`: the literal is another entity's status.
    */
   type Verdict = 'answered' | `excludes: ${string}` | `owed by ${string}` | `not a decision status: ${string}`;
-  const OWED_CLIENT: Verdict = 'owed by 4d-ii-b: the plan’s §A.2 web arms';
   const STATUS_PREDICATES: Record<string, Verdict> = {
     // shared
     "packages/shared/src/domain/types.ts :: ['pending', 'approved', 'change', 'withdrawn', 'recorded', 'awaiting_countersign']": 'answered',
@@ -280,33 +281,40 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     // web
     "apps/web/src/data/apiGateway.ts :: entry.status !== 'pending'": 'not a decision status: an evidence upload entry',
     "apps/web/src/store/store.ts :: e.status === 'pending'": 'not a decision status: an evidence upload entry',
-    "apps/web/src/components/ConsultationThread.tsx :: decision.status === 'pending' || decision.status === 'change'": OWED_CLIENT,
-    "apps/web/src/layout/RouteBridge.tsx :: d.status === 'pending' || d.status === 'change'": OWED_CLIENT,
-    "apps/web/src/screens/ClientDecisionsScreen.tsx :: d.status === 'change'": OWED_CLIENT,
-    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'pending'": OWED_CLIENT,
-    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'approved'": OWED_CLIENT,
-    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'recorded'": OWED_CLIENT,
-    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'pending' || d.status === 'withdrawn'": OWED_CLIENT,
-    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'withdrawn'": OWED_CLIENT,
-    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'withdrawn' #2": OWED_CLIENT,
-    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'change'": OWED_CLIENT,
-    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'change' #2": OWED_CLIENT,
-    "apps/web/src/screens/PortfolioScreen.tsx :: d.status === 'pending'": OWED_CLIENT,
-    "apps/web/src/screens/ScheduleScreen.tsx :: d.status !== 'withdrawn'": OWED_CLIENT,
-    "apps/web/src/screens/TeamAccessScreen.tsx :: d.status === 'approved'": OWED_CLIENT,
-    "apps/web/src/screens/modals/AddMaterialModal.tsx :: d.status !== 'withdrawn'": OWED_CLIENT,
-    "apps/web/src/store/selectors.ts :: d.status === 'pending'": OWED_CLIENT,
-    "apps/web/src/store/selectors.ts :: d.status === 'change'": OWED_CLIENT,
-    "apps/web/src/store/selectors.ts :: d.status !== 'withdrawn'": OWED_CLIENT,
-    "apps/web/src/store/selectors.ts :: d.status !== 'pending'": OWED_CLIENT,
-    "apps/web/src/store/selectors.ts :: d.status !== 'withdrawn' #2": OWED_CLIENT,
-    "apps/web/src/store/selectors.ts :: d.status !== 'pending' #2": OWED_CLIENT,
-    "apps/web/src/store/selectors.ts :: d.status === 'approved'": OWED_CLIENT,
-    "apps/web/src/store/selectors.ts :: d.status === 'pending' #2": OWED_CLIENT,
-    "apps/web/src/store/selectors.ts :: d.status === 'change' #2": OWED_CLIENT,
-    "apps/web/src/store/store.ts :: d.status === 'change'": OWED_CLIENT,
-    "apps/web/src/store/store.ts :: d.status === 'pending'": OWED_CLIENT,
-    "apps/web/src/store/store.ts :: o.status === 'pending'": OWED_CLIENT,
+    // 4d-ii-b / B3 — the web readers, each with its verdict (the plan's §A.2 web arms; the record's B3).
+    // The consultation surface's open set is B4's (mirrors `CONSULTATION_OPEN_STATUSES`, with the roster).
+    "apps/web/src/components/ConsultationThread.tsx :: decision.status === 'pending' || decision.status === 'change'": 'owed by 4d-ii-b / B4: the consultation open set widens with the status, and the roster loads',
+    // the approval route opens on ACTIONABLE states only: an awaiting decision is not one its decider can
+    // approve, and admitting it would deep-link a named non-client decider to an empty approval screen
+    // (#677 review, finding 4145060024); awaiting rows are read on the Decision Log and acted on through B5b
+    "apps/web/src/layout/RouteBridge.tsx :: d.status === 'pending' || d.status === 'change'": 'excludes: the approval route opens on actionable states only; an awaiting row is the Decision Log’s (#677 review, finding 4145060024)',
+    "apps/web/src/screens/ClientDecisionsScreen.tsx :: d.status === 'change'": 'excludes: the open change request’s panel, shown only while reopened',
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'pending'": 'excludes: withdrawing the DECISION is refused after any approval act; a provisional approval is one (the phase6_t4a seal)',
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'approved'": 'excludes: the lock icon marks a FINAL approval; an uncountersigned one is provisional',
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'recorded'": 'excludes: the record branch',
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'awaiting_countersign'": 'answered',
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'pending' || d.status === 'withdrawn'": 'excludes: the never-approved rows render their options; an awaiting row carries a provisional approval and renders it (its own arm above)',
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'withdrawn'": 'excludes: the withdrawn attribution',
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'withdrawn' #2": 'excludes: the withdrawal reason',
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'change'": 'excludes: the open change request’s panel, shown only while reopened',
+    "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'change' #2": 'excludes: the change-request affordances, only on a reopened row',
+    "apps/web/src/screens/PortfolioScreen.tsx :: d.status === 'pending'": 'excludes: the DEMO-mode tile’s pending count (the live tile is the server’s countPending); the countersign arms are the Decision Log badge’s (selectCountersignObligations)',
+    "apps/web/src/screens/ScheduleScreen.tsx :: d.status !== 'withdrawn'": 'excludes: the withdrawn arm of the schedule’s decision list',
+    "apps/web/src/screens/TeamAccessScreen.tsx :: d.status === 'approved'": 'excludes: the welcome sample of FINAL approvals',
+    "apps/web/src/screens/modals/AddMaterialModal.tsx :: d.status !== 'withdrawn'": 'excludes: the withdrawn arm of the provenance picker (the server refuses a provisional head anyway, A4b)',
+    "apps/web/src/store/selectors.ts :: d.status === 'pending'": 'excludes: selectPending — the decisions awaiting their DECIDER; an awaiting row has its decider’s approval (selectAwaitingCountersign below)',
+    "apps/web/src/store/selectors.ts :: d.status === 'change'": 'excludes: selectReapproval — the reopened rows',
+    "apps/web/src/store/selectors.ts :: d.status === 'awaiting_countersign'": 'answered',
+    "apps/web/src/store/selectors.ts :: d.status === 'awaiting_countersign' #2": 'answered',
+    "apps/web/src/store/selectors.ts :: d.status !== 'withdrawn'": 'excludes: the log’s withdrawn arm (pmc-only)',
+    "apps/web/src/store/selectors.ts :: d.status !== 'pending' && d.status !== 'awaiting_countersign'": 'answered',
+    "apps/web/src/store/selectors.ts :: d.status !== 'withdrawn' #2": 'excludes: the visible-rows withdrawn arm (pmc-only)',
+    "apps/web/src/store/selectors.ts :: d.status === 'approved'": 'excludes: selectApproved — the FINAL approvals the shared surfaces count',
+    "apps/web/src/store/selectors.ts :: d.status === 'pending' #2": 'excludes: the Inbox’s pending demand; the awaiting branch is its own (selectAwaitingCountersign)',
+    "apps/web/src/store/selectors.ts :: d.status === 'change' #2": 'excludes: the Inbox’s reopened rows',
+    "apps/web/src/store/store.ts :: d.status === 'change'": 'excludes: the demo change-withdrawal’s compare-and-set from an open change request',
+    "apps/web/src/store/store.ts :: d.status === 'pending'": 'excludes: the demo withdraw’s compare-and-set, only from a never-approved pending decision',
+    "apps/web/src/store/store.ts :: o.status === 'pending'": 'excludes: the demo withdraw’s legacy-text ambiguity guard, mirroring the service’s (a sibling awaiting its countersign no longer carries a live pending demand)',
   };
 
   /** Whether the object literal around `idx`, or one enclosing it, is a Prisma filter: the value of

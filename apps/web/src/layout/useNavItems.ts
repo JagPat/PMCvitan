@@ -1,5 +1,5 @@
 import { useStore } from '@/store/store';
-import { selectActionItems, selectDeciderPending, selectDeciderReapproval, selectDraftDecisions, selectDraftDrawings, selectReviewPending } from '@/store/selectors';
+import { selectActionItems, selectCountersignObligations, selectDeciderPending, selectDeciderReapproval, selectDraftDecisions, selectDraftDrawings, selectReviewPending } from '@/store/selectors';
 import { enabledScreensFor, SCREEN_META, type ScreenMeta } from '@/lib/screens';
 
 export interface NavItem extends ScreenMeta {
@@ -16,6 +16,13 @@ export function useNavItems(): NavItem[] {
   const deciderPending = useStore((s) => selectDeciderPending(s).length);
   const deciderReapprove = useStore((s) => selectDeciderReapproval(s).length);
   const reviewPending = useStore(selectReviewPending);
+  // Phase 6 task 4d-ii-b / B3 — the Decision Log badge carries the viewer's COUNTERSIGN-chain obligations:
+  // the web arm of the server's `countPending` 4d arms (A5d — the architect's countersigns owed, the PMC's
+  // stranded resolutions), derived LIVE from the served rows (`countersignRequired` is the chain's
+  // activity as the DTO exposes it) so a countersign or a resolution clears it at once, where the shell's
+  // `counts.pendingDecisions` is a point-in-time read. Those rows are read and acted on (B5b) on the
+  // Decision Log, never on the approval route, so the approval badge below stays F5's combined count.
+  const countersignObligations = useStore((s) => selectCountersignObligations(s).length);
   const actionCount = useStore((s) => selectActionItems(s).length);
   const draftCount = useStore((s) => selectDraftDecisions(s).length + selectDraftDrawings(s).length);
   // Task 9 — manifest-driven: filter the role's screens by the shell's enabled modules (a no-op until
@@ -45,6 +52,7 @@ export function useNavItems(): NavItem[] {
     // round-7 Codex F5 — the badge carries the SAME combined count that opens the route:
     // a mandatory re-approval is outstanding work even when nothing fresh is pending.
     if (m.key === 'client-decisions') badge = deciderPending + deciderReapprove;
+    if (m.key === 'decision-log') badge = countersignObligations;
     if (m.key === 'inspect-review') badge = reviewPending;
     if (m.key === 'materials') badge = shortageCount;
     if (m.key === 'labour') badge = labourShortfallCount;

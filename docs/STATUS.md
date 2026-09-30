@@ -14,15 +14,46 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-ii-b-b2-role-fanout
-reviewed_merge: deb83d0
-open_pr: 679
+work_item: 4d-ii-b-b3-readers
+reviewed_merge: 1411ce4
+open_pr: 680
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-30
 ```
 
-### Now — 4d-ii-b unit B2, the role fan-out and the architect persona (#679, `claude/4d-ii-b-b2-role-fanout`)
+### Now — 4d-ii-b unit B3, the readers, the Inbox branch and the badge (#680, `claude/4d-ii-b-b3-readers`)
+
+B2 merged as #679 (`1411ce4`; a clean exact-head review on its first head). **B3 is the third unit and the
+one open `claude/**` draft.** It ships every web READER of `awaiting_countersign` (the plan's §A.2 web
+arms; the web arm of P31): `selectActionItems` gains the awaiting branch — the architect's amber "N
+decision(s) awaiting your countersign", the PMC's ink "awaiting the architect's countersign" summary and
+the PMC's RED stranded item, all pointed at the Decision Log, with the chain's activity read per row
+exactly as the DTO exposes it (`isStrandedCountersign`: an awaiting row served WITHOUT the
+`countersignRequired` overlay the server applies while an architect is active) and never invented; the
+audience mirrors `selectLogDecisions` / `selectVisibleDecisions` share one `openDemandVisible` rule
+matching the server's `decisionVisibleToViewer` (pending and awaiting: the PMC, the architect, the
+decider, a standing consultee); `locationTree`'s label ("Awaiting countersign") and rank (between change
+and approved); the Decision Log's filter chips (`awaiting_countersign` and `recorded`, so the set
+answers every status), its rollup chip, and the row (a provisional approval attributed "Approved by … —
+awaiting the architect's countersign", tagged PROVISIONAL, no lock); and the Decision Log nav badge
+carrying `selectCountersignObligations` — the web arm of `countPending`'s two 4d arms (the architect's
+countersigns owed, the PMC's stranded resolutions), derived live from the served rows rather than a
+render of the shell's point-in-time `counts.pendingDecisions`, so round-3 F1 (the PMC's badge is their
+own work) and round-7 F5 (the approval badge carries re-approvals) both hold; the staging record's B3
+section records this as-built decision. **The approval route stays on pending/change** (#677 review,
+finding 4145060024) and its tripwire predicate is registered with that verdict; every owed web
+predicate, `locationTree`'s two maps and the Decision Log's two sets are re-registered answered or
+excluded in the API's status tripwire, with the consultation surface's open set left owed by B4. Proof:
+unit tests plant awaiting rows with and without the overlay for every role (the readers, the Inbox
+items, the badge, the register, the chip, the route pin), and a Playwright spec against the reserved
+server pins the relation the client sees — the approval badge equals the shell's `counts.pendingDecisions`
+plus the client's re-approvals, the Decision Log badge is absent, the "Awaiting countersign" chip is
+offered and no served row carries the value. No server runtime change, no migration; dark: no row can be
+awaiting while the doors stand, so nothing new renders. Next after B3: B4 (the approval copy, the
+consultation surface, the withdraw rule).
+
+### History — 4d-ii-b unit B2, the role fan-out and the architect persona (#679, `claude/4d-ii-b-b2-role-fanout`)
 
 B1 merged as #678 (`deb83d0`; one CI fix on the way — the pre-existing lost-response spec's route
 callback outliving its test, retired with `page.unrouteAll` — then a clean exact-head review). **B2 is the
@@ -42,8 +73,8 @@ every switcher and picker reads `selectRoles`; both decider pickers gate on the 
 tests render each switcher and picker under `'reserved'` and `'open'`, and a Playwright spec against
 the reserved server asserts the Team pickers and the decider picker offer no architect (P28's web
 lists and pickers; P28b / P34's web arm). No server runtime change, no migration; dark: the shell reads
-`'reserved'` until 4d-iii, so nothing new renders. Next after B2: B3 (the readers, the Inbox branch and
-the badge).
+`'reserved'` until 4d-iii, so nothing new renders. B2 merged as #679 (`1411ce4`); B3 opened next — the
+record above.
 
 ### History — 4d-ii-b unit B1, the client boundary and the rollout read (#678, `claude/4d-ii-b-b1-client-boundary`)
 

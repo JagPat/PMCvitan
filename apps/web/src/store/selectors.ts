@@ -59,24 +59,61 @@ export function selectDeciderReapproval(s: AppState): Decision[] {
   return selectReapproval(s).filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
 }
 
+// ---- Phase 6 task 4d-ii-b / B3 — the countersign readers ----
+
+/** The published decisions AWAITING the architect's countersign: approved (provisionally) by their
+ *  decider under an active chain, not yet final. A draft is never awaiting (approve acts on a published
+ *  row), but the guard keeps the read matching every other status selector. */
+export function selectAwaitingCountersign(s: AppState): Decision[] {
+  return s.decisions.filter((d) => d.status === 'awaiting_countersign' && !d.draft);
+}
+
+/** Is this awaiting decision STRANDED — waiting for a countersign no active architect can give? The
+ *  client reads chain activity THE WAY THE DTO EXPOSES IT and never invents an active chain: the server
+ *  overlays `countersignRequired: true` on every decision it serves while the kernel register reads an
+ *  active architect (4d-ii-a / A5c, both read paths, never stored), so an awaiting row WITHOUT the
+ *  overlay was served with the chain inactive — exactly the rows the server's `countStranded` counts for
+ *  the PMC (A5d). A row that is not awaiting is never stranded. */
+export function isStrandedCountersign(d: Decision): boolean {
+  return d.status === 'awaiting_countersign' && d.countersignRequired !== true;
+}
+
+/** The viewer's COUNTERSIGN-CHAIN obligations — the web arm of the server's `countPending` 4d arms
+ *  (A5d): an ARCHITECT owes a countersign on every awaiting decision (the chain is active while an
+ *  architect holds the role, so none of them is stranded); the PMC owes the resolution of every STRANDED
+ *  one; nobody else owes anything here. Drives the Decision Log nav badge and the Inbox items; empty on
+ *  live data while the doors stand (no row can be awaiting), so nothing new renders until 4d-iii. */
+export function selectCountersignObligations(s: AppState): Decision[] {
+  if (s.role === 'architect') return selectAwaitingCountersign(s);
+  if (s.role === 'pmc') return selectAwaitingCountersign(s).filter(isStrandedCountersign);
+  return [];
+}
+
 /** Decision log is permission-filtered: a pending row is visible only to pmc and THE DECIDER
  *  (Phase 6 task 4b §A.3 — the shared `viewerIsDecider` predicate, so a named engineer-decider
  *  sees their obligation in the log while a same-role non-decider and the non-deciding client
- *  do not). Private drafts are excluded for everyone — they live only in the Drafts workspace. */
+ *  do not), and a row AWAITING its countersign keeps that audience plus the architect (4d-ii-b / B3,
+ *  `openDemandVisible`). Private drafts are excluded for everyone — they live only in the Drafts workspace. */
 export function selectLogDecisions(s: AppState): Decision[] {
   // Phase 6 task 4a — a WITHDRAWN decision is pmc-only (the server's decisionVisibleToViewer
   // is the authority; this selector mirrors it): withdrawal never widens an audience, and the
   // old `status !== 'pending'` negative filter would otherwise LEAK a withdrawn decision to
   // roles that never saw it while it was pending.
   if (s.role !== 'pmc') {
-    return s.decisions.filter(
-      (d) =>
-        !d.draft &&
-        d.status !== 'withdrawn' &&
-        (d.status !== 'pending' || viewerIsDecider(d, s.role, s.sessionUserId) || viewerIsConsultee(d.consultations, d.approvalCycle, s.sessionUserId)),
-    );
+    return s.decisions.filter((d) => !d.draft && d.status !== 'withdrawn' && openDemandVisible(d, s));
   }
   return s.decisions.filter((d) => !d.draft);
+}
+
+/** Phase 6 task 4d-ii-b / B3 — the audience of a decision carrying an OPEN DEMAND, mirroring the server's
+ *  `decisionVisibleToViewer` (4d-ii-a / A8a) exactly: a PENDING decision and one AWAITING its countersign
+ *  share one audience — the decider whose (provisional) approval it carries, a standing consultee, and the
+ *  architect, who sees every open demand of the project (an architect token exists only while the chain
+ *  is active) and whose action item the awaiting row is. Every other status is read by everyone here
+ *  (`withdrawn` is filtered pmc-only by the callers, above this rule). The pmc arm is the callers'. */
+function openDemandVisible(d: Decision, s: AppState): boolean {
+  if (d.status !== 'pending' && d.status !== 'awaiting_countersign') return true;
+  return s.role === 'architect' || viewerIsDecider(d, s.role, s.sessionUserId) || viewerIsConsultee(d.consultations, d.approvalCycle, s.sessionUserId);
 }
 
 /** Phase 6 task 4a round 6 (Codex) — the ONE audience rule for decision ROWS on every surface
@@ -95,12 +132,8 @@ export function selectVisibleDecisions(s: AppState): Decision[] {
     // the DECIDER (Phase 6 task 4b §A.3 — the shared `viewerIsDecider` predicate), WITHDRAWN
     // is pmc-only. A persona switch over a still-loaded store — or demo mode, which never
     // refetches — must not render rows the server filters (round 6 + round 10 + 4b round 12).
-    return s.decisions.filter(
-      (d) =>
-        !d.draft &&
-        d.status !== 'withdrawn' &&
-        (d.status !== 'pending' || viewerIsDecider(d, s.role, s.sessionUserId) || viewerIsConsultee(d.consultations, d.approvalCycle, s.sessionUserId)),
-    );
+    // 4d-ii-b / B3 — and AWAITING follows the same open-demand audience (the architect included).
+    return s.decisions.filter((d) => !d.draft && d.status !== 'withdrawn' && openDemandVisible(d, s));
   }
   return s.decisions.filter((d) => !d.draft);
 }
@@ -353,6 +386,23 @@ export function selectActionItems(s: AppState): ActionItem[] {
   if (myChanges.length) {
     // a reopened decision BLOCKS the work driven by it until the decider re-approves
     items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red' });
+  }
+
+  // Phase 6 task 4d-ii-b / B3 (the plan's §A.2 Inbox arm) — the AWAITING branch. The architect's item is
+  // their countersign work; the PMC gets the management summary of the rows the architect holds, and the
+  // RED stranded item for the rows no active architect can countersign (`isStrandedCountersign`: the
+  // chain's activity as the DTO exposes it, never invented). All three land on the Decision Log, where
+  // the awaiting rows are read and (B5b) acted on — never on the approval route, which stays limited to
+  // actionable pending/change states (#677 review, finding 4145060024). Empty while the doors stand.
+  const awaiting = selectAwaitingCountersign(s);
+  if (s.role === 'architect' && awaiting.length) {
+    items.push({ key: 'arch-countersign', title: `${awaiting.length} decision${plural(awaiting.length)} awaiting your countersign`, detail: names(awaiting), screen: 'decision-log', cta: 'Review & countersign', tone: 'amber' });
+  }
+  if (s.role === 'pmc' && awaiting.length) {
+    const stranded = awaiting.filter(isStrandedCountersign);
+    const held = awaiting.filter((d) => !isStrandedCountersign(d));
+    if (stranded.length) items.push({ key: 'pmc-stranded', title: `${stranded.length} decision${plural(stranded.length)} stranded — no architect to countersign`, detail: names(stranded), screen: 'decision-log', cta: 'Resolve', tone: 'red' });
+    if (held.length) items.push({ key: 'pmc-countersign', title: `${held.length} decision${plural(held.length)} awaiting the architect’s countersign`, detail: names(held), screen: 'decision-log', cta: 'View', tone: 'ink' });
   }
 
   if (s.role === 'engineer') {

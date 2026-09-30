@@ -16,13 +16,19 @@ const GROUP_OPTIONS: { key: GroupBy; label: string }[] = [
   { key: 'status', label: 'Status' },
   { key: 'flat', label: 'All' },
 ];
+// Phase 6 task 4a — the register keeps withdrawn rows (pmc-only; the server filters them out of every
+// other role's snapshot, so that chip simply never matches for them).
+// Phase 6 task 4d-ii-b / B3 — the filter set answers EVERY status (the API's status tripwire pins it): a
+// record is a filed fact the reader may want alone, and a decision awaiting the architect's countersign is
+// its own state between approval and lock. Neither new chip matches a row while the doors stand (no row can
+// be awaiting) unless the project files records.
 const STATUS_FILTERS: { key: Decision['status']; label: string }[] = [
   { key: 'pending', label: 'Pending' },
   { key: 'approved', label: 'Approved' },
   { key: 'change', label: 'Change' },
-  // Phase 6 task 4a — the register keeps withdrawn rows (pmc-only; the server filters them
-  // out of every other role's snapshot, so this chip simply never matches for them)
   { key: 'withdrawn', label: 'Withdrawn' },
+  { key: 'recorded', label: 'Recorded' },
+  { key: 'awaiting_countersign', label: 'Awaiting countersign' },
 ];
 
 export function DecisionLogScreen() {
@@ -153,6 +159,7 @@ export function DecisionLogScreen() {
                   <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
                     {g.counts.pending > 0 && <RollupChip n={g.counts.pending} color="var(--amber-solid)" label="pending" />}
                     {g.counts.change > 0 && <RollupChip n={g.counts.change} color="var(--red-solid)" label="change" />}
+                    {g.counts.awaiting_countersign > 0 && <RollupChip n={g.counts.awaiting_countersign} color={decisionRail.awaiting_countersign} label="awaiting countersign" />}
                     {g.counts.approved > 0 && <RollupChip n={g.counts.approved} color="var(--green-solid)" label="approved" />}
                     {g.counts.withdrawn > 0 && <RollupChip n={g.counts.withdrawn} color="var(--muted)" label="withdrawn" />}
                     {g.counts.recorded > 0 && <RollupChip n={g.counts.recorded} color="var(--muted)" label="recorded" />}
@@ -196,6 +203,10 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
   // Phase 6 task 4b (round-1 Codex F2) — a RECORD is a filed fact: no approver, no options, no
   // approval demand, no cost. It renders its own branch instead of borrowing the approved shape.
   const recorded = d.status === 'recorded';
+  // Phase 6 task 4d-ii-b / B3 — a decision AWAITING its countersign carries its decider's PROVISIONAL
+  // approval (the chosen option, the approver, the cost) but no lock: the attribution says who approved
+  // it and what it still waits for, the photo tag says PROVISIONAL, and the lock icon stays final-only.
+  const awaiting = d.status === 'awaiting_countersign';
   // Phase 6 task 4a — a withdrawn decision was never approved: it renders its options (never a
   // fabricated approval line), and its attribution names the withdrawer, not an approver.
   const neverLocked = d.status === 'pending' || d.status === 'withdrawn';
@@ -207,16 +218,18 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
     ? 'Issue recorded — no approval required'
     : d.status === 'withdrawn'
       ? `Withdrawn by ${d.withdrawnBy ?? 'the PMC'}${d.withdrawnAt ? ` · ${new Date(d.withdrawnAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}`
-      : d.approver
-        ? `Approved by ${d.approver}${d.onBehalfOf ? ` (on behalf of the ${d.onBehalfOf})` : ''} · ${d.date}`
-        : `Ageing ${d.ageDays} days · ${kind === 'client' ? 'awaiting client' : `awaiting ${deciderNoun(kind)}`}`;
+      : awaiting
+        ? `Approved by ${d.approver ?? deciderNoun(kind)} — awaiting the architect’s countersign`
+        : d.approver
+          ? `Approved by ${d.approver}${d.onBehalfOf ? ` (on behalf of the ${d.onBehalfOf})` : ''} · ${d.date}`
+          : `Ageing ${d.ageDays} days · ${kind === 'client' ? 'awaiting client' : `awaiting ${deciderNoun(kind)}`}`;
   const approvedLine = recorded
     ? 'Filed on the register — nothing approvable'
     : neverLocked ? `${d.options.length} options presented` : `${d.approvedOption} — ${d.material}`;
   const costStr = recorded
     ? '—'
     : neverLocked ? 'up to ' + signed(Math.max(...d.options.map((o) => o.delta))) : signed(d.cost ?? 0);
-  const photoLabel = recorded ? 'RECORDED' : neverLocked ? 'OPTIONS' : 'APPROVED';
+  const photoLabel = recorded ? 'RECORDED' : neverLocked ? 'OPTIONS' : awaiting ? 'PROVISIONAL' : 'APPROVED';
 
   return (
     <div
