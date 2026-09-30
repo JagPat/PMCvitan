@@ -163,6 +163,27 @@ Web arm of P31 (the reader tripwire, the Inbox item and badge). Unit tests plant
 role; a Playwright spec against the reserved server asserts the badge equals the shell count.
 ~300 lines, standard.
 
+**As built (the B3 unit).** The badge arm lands as the web arm of `countPending`'s two 4d arms, derived
+LIVE from the served rows, not as a render of the shell's `counts.pendingDecisions`: the Decision Log
+nav badge carries `selectCountersignObligations` — the architect's awaiting rows, the PMC's STRANDED ones
+(`isStrandedCountersign`: an awaiting row served WITHOUT the `countersignRequired` overlay, which the
+server applies to every row it serves while the kernel register reads an active architect, so the
+chain's activity is read per row exactly as the DTO exposes it and never invented) — and the approval
+badge keeps round-7 F5's combined pending + re-approval count. Rendering the shell count instead would
+have regressed two delivered rules: `countPending`'s PMC arm counts EVERY pending decision (the Portfolio
+tile's management count), which since 4b round-3 F1 is not the PMC's badge, and the server count omits
+the re-approvals F5 requires the approval badge to carry; and a point-in-time shell read would go stale
+after every write-ahead approval where the local derivation clears at once. The Playwright spec therefore
+pins the RELATION rather than an equality: for the seeded client the approval badge equals the shell's
+`counts.pendingDecisions` plus the client's re-approvals, and the Decision Log badge (the countersign
+arms) is absent with no awaiting row. The Inbox items are `arch-countersign` (amber), `pmc-stranded`
+(red, before the summary) and `pmc-countersign` (ink), all pointed at the Decision Log; the register's
+`STATUS_FILTERS` gained the `recorded` chip too, so the set answers every status; the row renders a
+provisional approval with its attribution ("Approved by … — awaiting the architect's countersign"),
+no lock, and the tag PROVISIONAL; the audience mirrors share one `openDemandVisible` rule (pending and
+awaiting: the architect, the decider, a standing consultee). The consultation surface's open-set
+predicate stays registered as owed by B4.
+
 ### B4 — the copy, the consultation surface and the withdraw rule
 
 `ApproveModal` reads `countersignRequired` and says "Will be sent to the architect for countersign"

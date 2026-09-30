@@ -101,7 +101,9 @@ export interface DecisionGroup {
   counts: { total: number; pending: number; approved: number; change: number; withdrawn: number; recorded: number; awaiting_countersign: number };
 }
 
-const STATUS_LABEL: Record<string, string> = { pending: 'Pending', approved: 'Approved', change: 'Change requested', withdrawn: 'Withdrawn', recorded: 'Recorded' };
+// (Phase 6 task 4d-ii-b / B3 — `awaiting_countersign` answered: the label, and its place in the status order
+// between the open states and the final approval; the API's status tripwire pins both as answered)
+const STATUS_LABEL: Record<string, string> = { pending: 'Pending', approved: 'Approved', change: 'Change requested', awaiting_countersign: 'Awaiting countersign', withdrawn: 'Withdrawn', recorded: 'Recorded' };
 
 /** Group + sort decisions for the register display by the chosen lens. Single-level
  *  sections (collapsible in the UI), with the finer location shown as a per-row caption. */
@@ -171,7 +173,7 @@ export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode
 
   const groups: DecisionGroup[] = [...map.entries()].map(([key, rows]) => {
     // (`awaiting_countersign`, Phase 6 task 4d, is counted so the counter answers for every status; its
-    // label and its place in the status order are the client unit's, 4d-ii-b)
+    // label and its place in the status order landed with 4d-ii-b / B3, above and below)
     const counts = { total: rows.length, pending: 0, approved: 0, change: 0, withdrawn: 0, recorded: 0, awaiting_countersign: 0 };
     for (const r of rows) counts[r.decision.status] += 1;
     // rows sorted by their finer location, then id
@@ -181,7 +183,7 @@ export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode
 
   // section order: status uses a fixed priority; otherwise alphabetical by label
   if (mode === 'status') {
-    const rank: Record<string, number> = { pending: 0, change: 1, approved: 2, recorded: 3, withdrawn: 4 };
+    const rank: Record<string, number> = { pending: 0, change: 1, awaiting_countersign: 2, approved: 3, recorded: 4, withdrawn: 5 };
     groups.sort((a, b) => (rank[a.key] ?? 9) - (rank[b.key] ?? 9));
   } else {
     groups.sort((a, b) => a.label.localeCompare(b.label));
