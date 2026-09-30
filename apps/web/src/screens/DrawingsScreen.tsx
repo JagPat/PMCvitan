@@ -214,7 +214,7 @@ export function DrawingsScreen() {
   );
 }
 
-const ROLE_SHORT: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Engineer', contractor: 'Contractor', worker: 'Worker' };
+const ROLE_SHORT: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Engineer', contractor: 'Contractor', consultant: 'Consultant', architect: 'Architect', worker: 'Worker' };
 
 /** The build-acknowledgement block for the current revision (Slice 2). Contractor/
  *  engineer confirm they're building to it; the PMC/everyone sees who has. Reads

@@ -1,11 +1,11 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, drawingMutationsBlocked } from '@/store/store';
-import { selectDraftDecisions, selectDraftDrawings } from '@/store/selectors';
+import { selectDraftDecisions, selectDraftDrawings, selectPhase6_4dOpen } from '@/store/selectors';
 import { resolveDrawingUrl, drawingsReadMode } from '@/data/apiGateway';
 import { Eyebrow, Button, Swatch } from '@/components';
 import { Lock, ArrowUpRight, FileEdit, FileText, WifiOff, RefreshCw } from '@/lib/icons';
-import { SW, type SwatchKey } from '@vitan/shared';
+import { SW, type DeciderKind, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 /**
@@ -29,12 +29,15 @@ export function DraftsScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [decisions.length]);
   const memberCandidates = members.filter((m) => m.status === 'active' && m.membershipId);
+  // Phase 6 task 4d-ii-b / B2 — the ARCHITECT designation is offered only once the shell reads
+  // `rollout.phase6_4d = 'open'` (the server refuses it 409 while 4d-i's doors stand).
+  const chainOpen = useStore(selectPhase6_4dOpen);
   // Phase 6 task 4b (round-1 Codex F6) — converting a RECORD back to a choice must carry its
   // 2-4 options (incl. the lead swatch) in the SAME edit: the server's option floor and swatch
   // CHECK refuse a bare kind change. Selecting a deciding kind on a record opens this inline
   // form; Confirm submits kind + options together through the one drafting door.
   const [convertForms, setConvertForms] = useState<Record<string, {
-    kind: 'client' | 'pmc' | 'member';
+    kind: Exclude<DeciderKind, 'none'>;
     membershipId?: string;
     options: Array<{ material: string; swatch: SwatchKey; delta: string }>;
   }>>({});
@@ -125,7 +128,7 @@ export function DraftsScreen() {
                       <select
                         value={convertForms[d.id]?.kind ?? d.deciderKind}
                         onChange={(e) => {
-                          const kind = e.target.value as 'client' | 'pmc' | 'member' | 'none';
+                          const kind = e.target.value as DeciderKind;
                           // a RECORD converting back to a choice needs its 2-4 options in the
                           // SAME edit (round-1 Codex F6) — open the inline form, submit on Confirm
                           if (record && kind !== 'none') {
@@ -154,6 +157,7 @@ export function DraftsScreen() {
                         <option value="client">The client</option>
                         <option value="pmc">The practice (PMC)</option>
                         <option value="member" disabled={!memberCandidates.length}>A named member</option>
+                        {chainOpen && <option value="architect">The architect</option>}
                         <option value="none">Nobody — record only</option>
                       </select>
                       {d.deciderKind === 'member' && (

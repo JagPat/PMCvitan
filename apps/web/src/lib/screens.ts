@@ -1,3 +1,4 @@
+import type { Phase6_4dRollout } from '@/data/apiGateway';
 import type { Role, ScreenKey } from '@vitan/shared';
 import {
   Inbox,
@@ -144,9 +145,11 @@ export function screensFor(role: Role): ScreenMeta[] {
     contractor: ['inbox', 'drawings', 'places', 'team-access', 'decision-log'],
     // a discipline consultant: read-mostly reviewer — drawings, the register, the Site Map, project health
     consultant: ['inbox', 'drawings', 'decision-log', 'places', 'client-health'],
-    // Phase 6 task 4d — the role is in the vocabulary from 4d-ii-a (A5a) so this map answers for it,
-    // but no session can carry it until 4d-iii and its screens are the client unit's (4d-ii-b)
-    architect: [],
+    // Phase 6 task 4d-ii-b / B2 — the architect's screens, from the role's ROLE_POLICY rows: the
+    // Inbox (the awaiting-countersign item, B3), the Decision Log (Countersign / Reject back / Forward
+    // on and the consultation surface, B4/B5b), the drawing register and the Site Map (`project.read`).
+    // No session can carry the role until 4d-iii drops the doors; the list is what such a session lands on.
+    architect: ['inbox', 'decision-log', 'drawings', 'places'],
   };
   return keys[role].map((k) => SCREEN_META[k]);
 }
@@ -199,28 +202,33 @@ export const ROLE_LABEL: Record<Role, string> = {
   architect: 'Architect',
 };
 
-/** Phase 6 task 4d — roles in the vocabulary that the product does not render a session for YET.
- *  `architect` joined the shared role type in 4d-ii-a (A5a) with its label, so every `Record<Role, …>`
- *  answers for it; its persona, its screens and the Team role pickers are the client unit's
- *  (4d-ii-b), which empties this list. Registered in the API's role tripwire. */
-export const PERSONAS_OWED: readonly Role[] = ['architect'];
+/**
+ * Phase 6 task 4d-ii-b / B2 — the roles the server RESERVES behind the architect chain's rollout
+ * (`rollout.phase6_4d`, §A.1): while 4d-i's doors stand the server refuses every membership or
+ * designation in them 409, so no switcher or picker may offer them (ui-server-parity; P28b / P34's
+ * web arm). Registered in the API's role tripwire, which pins this literal.
+ */
+export const RESERVED_ROLES: readonly Role[] = ['architect'];
+
+/** Every persona the product knows, in switcher order — derived from `ROLE_LABEL`, a `Record<Role, string>`,
+ *  so adding a role to the union forces a label here and every consumer of `rolesFor` gains the option
+ *  with no further edit (#584 review round 11: two hand-written copies of this list once disagreed). */
+export const ALL_ROLES = Object.keys(ROLE_LABEL) as Role[];
+
+/** The personas offered while the chain is RESERVED — computed ONCE so `rolesFor` returns a stable
+ *  reference per rollout value (a store selector returning a fresh array every read re-renders forever). */
+const UNRESERVED_ROLES: readonly Role[] = ALL_ROLES.filter((r) => !RESERVED_ROLES.includes(r));
 
 /**
- * THE persona list — every role the product renders a session for, in switcher order.
- *
- * #584 review round 11: there were two hand-written copies of this list and they disagreed.
- * `RolePicker` (the rail) carried five; `TopBar` (the phone) carried four and omitted
- * `consultant`. That is not only a missing dev affordance: the cross-surface sweep in
- * `mobile-fields.spec.ts` derives "every persona the product offers" from the TOPBAR switcher's
- * own options, so the consultant's entire surface set — the discipline-scoped drawing register,
- * its scope toggle and its empty-discipline escape — had never been measured by the arm whose
- * whole point is that nothing is a named list.
- *
- * Derived from `ROLE_LABEL`, which is a `Record<Role, string>`: adding a role to the union forces
- * a label here and BOTH switchers gain the option with no further edit. A hand-written array
- * would just be the same defect waiting for the next role.
+ * THE persona list for a given rollout state — the ONE selector every switcher and picker reads
+ * (the rail's `RolePicker`, the phone's `TopBar` switcher, the Team screen's pickers; B2), through
+ * the store's `selectRoles`. `'reserved'` (the fail-closed default, B1) hides `RESERVED_ROLES`;
+ * `'open'` — only once 4d-iii drops the doors and the shell says so — offers them all. A static
+ * list here would offer the architect before the server admits one (#677 review, finding 4145060015).
  */
-export const ROLES = (Object.keys(ROLE_LABEL) as Role[]).filter((r) => !PERSONAS_OWED.includes(r));
+export function rolesFor(rollout: Phase6_4dRollout): readonly Role[] {
+  return rollout === 'open' ? ALL_ROLES : UNRESERVED_ROLES;
+}
 
 export const ROLE_SUBTITLE: Record<Role, string> = {
   pmc: 'Architect · full access',

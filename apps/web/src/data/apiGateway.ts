@@ -60,6 +60,7 @@ import type {
   MeasurementRegisterDto,
   VendorBillListDto,
   VendorAdvanceListDto,
+  DeciderKind,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -219,14 +220,14 @@ export interface NewDecisionInput {
   options: { material: string; delta: number; swatch: string; photoUrl?: string; recommended?: boolean }[];
   /** default false → saved as a private draft; true → issued to the client in one step */
   publish?: boolean;
-  deciderKind?: 'client' | 'pmc' | 'member' | 'none';
+  deciderKind?: DeciderKind;
   deciderMembershipId?: string;
 }
 
 /** Phase 6 task 4b (§A.1/§A.2) — edit an UNPUBLISHED draft: re-point its decider, convert
  *  to/from a record (kind + status + options move as one coherent pair), or replace options. */
 export interface UpdateDecisionDraftInput {
-  deciderKind?: 'client' | 'pmc' | 'member' | 'none';
+  deciderKind?: DeciderKind;
   deciderMembershipId?: string;
   options?: { material: string; delta: number; swatch: string; photoUrl?: string; recommended?: boolean }[];
 }

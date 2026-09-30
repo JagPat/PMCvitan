@@ -8,8 +8,9 @@
  * surface for the core loop.
  */
 
-import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
+import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
+import { rolesFor } from '@/lib/screens';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
 export const WIN = 75;
@@ -23,6 +24,14 @@ export const pctOf = (d: number): number => (d / WIN) * 100;
  *  `false` while reserved, before the shell lands, and after any scope change. */
 export function selectPhase6_4dOpen(s: AppState): boolean {
   return s.phase6_4dRollout === 'open';
+}
+
+/** Phase 6 task 4d-ii-b / B2 — the personas the product offers RIGHT NOW: every switcher and picker
+ *  (the rail's `RolePicker`, the phone's `TopBar` switcher, the Team screen's role pickers) reads this
+ *  one selector, so a reserved role (`architect`) is offered nowhere while the shell reads `'reserved'`
+ *  and everywhere at once when it reads `'open'`. Never a static list (#677 review, finding 4145060015). */
+export function selectRoles(s: AppState): readonly Role[] {
+  return rolesFor(s.phase6_4dRollout);
 }
 
 // ---- decisions ----

@@ -25,8 +25,11 @@ import { decisionsManifest } from '../decisions/decisions.manifest';
  *   `excludes: <why>` must not; `owed by <unit>: <what>` names the unit that answers it; `not a
  *   role: <what>` names the other axis (a firm's kind).
  *
- * The web holds the PERSONA back (`PERSONAS_OWED` in `apps/web/src/lib/screens.ts`): its maps answer
- * for the role so they compile, but no switcher or picker offers it until 4d-ii-b.
+ * The web offers the persona and the designation only as the shell's `rollout.phase6_4d` admits them
+ * (4d-ii-b / B2): `RESERVED_ROLES` in `apps/web/src/lib/screens.ts` names the roles hidden while the
+ * doors stand, `rolesFor(rollout)` is the ONE list every switcher and picker reads (through the store's
+ * `selectRoles`), and the decider pickers offer `architect` under the same read. The pins below hold
+ * that shape: no static persona list may return.
  */
 const REPO = join(__dirname, '..', '..', '..', '..');
 
@@ -102,10 +105,11 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     'apps/web/src/lib/screens.ts :: map keys': 'answered',
     'apps/web/src/lib/screens.ts :: map ROLE_LABEL': 'answered',
     'apps/web/src/lib/screens.ts :: map ROLE_SUBTITLE': 'answered',
-    'apps/web/src/screens/TeamScreen.tsx :: list ROLES': 'owed by 4d-ii-b: the Team role picker, following `rollout.phase6_4d`',
-    'apps/web/src/screens/TeamScreen.tsx :: map ROLE_LABEL': 'owed by 4d-ii-b: the Team screen’s role labels',
-    'apps/web/src/screens/PortfolioScreen.tsx :: map ROLE_LABEL': 'owed by 4d-ii-b: the Portfolio card’s role label',
-    'apps/web/src/screens/DrawingsScreen.tsx :: map ROLE_SHORT': 'owed by 4d-ii-b: the acknowledgement block’s role label',
+    // 4d-ii-b / B2 — the Team screen's list and label map are gone: its pickers read the store's
+    // rollout-aware `selectRoles` and the shared `ROLE_LABEL` (registered above), so nothing there is a
+    // hand-written vocabulary any more
+    'apps/web/src/screens/PortfolioScreen.tsx :: map ROLE_LABEL': 'answered',
+    'apps/web/src/screens/DrawingsScreen.tsx :: map ROLE_SHORT': 'answered',
     'apps/web/src/screens/TeamScreen.tsx :: map COMPANY_KIND_LABEL': 'not a role: a firm’s kind, a different axis that already spells `architect` (§A.1, untouched)',
   };
 
@@ -157,10 +161,24 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     expect(Object.keys(ROLE_LISTS).filter((id) => !found.some((f) => f.id === id))).toEqual([]);
   });
 
-  it('the web holds the persona back: the role has its labels, and no session, switcher or picker offers it', () => {
-    const screens = readFileSync(join(REPO, 'apps/web/src/lib/screens.ts'), 'utf8');
-    // owed by 4d-ii-b, which empties the list when it ships the persona
-    expect(screens).toMatch(/export const PERSONAS_OWED: readonly Role\[\] = \['architect'\];/);
-    expect(screens).toMatch(/export const ROLES = \(Object\.keys\(ROLE_LABEL\) as Role\[\]\)\.filter\(\(r\) => !PERSONAS_OWED\.includes\(r\)\);/);
+  it('the web offers the persona only as the rollout admits it: one reserved list, one rollout-aware selector, no static persona list', () => {
+    const web = (rel: string) => readFileSync(join(REPO, 'apps/web/src', rel), 'utf8');
+    const screens = web('lib/screens.ts');
+    // 4d-ii-b / B2 — the reserved roles and the ONE list every switcher and picker reads
+    expect(screens).toMatch(/export const RESERVED_ROLES: readonly Role\[\] = \['architect'\];/);
+    expect(screens).toMatch(/const UNRESERVED_ROLES: readonly Role\[\] = ALL_ROLES\.filter\(\(r\) => !RESERVED_ROLES\.includes\(r\)\);/);
+    expect(screens).toMatch(/export function rolesFor\(rollout: Phase6_4dRollout\): readonly Role\[\] \{\s*return rollout === 'open' \? ALL_ROLES : UNRESERVED_ROLES;/);
+    expect(screens).not.toMatch(/export const ROLES\b/); // the static persona list may not return
+    expect(screens).not.toMatch(/PERSONAS_OWED/);
+    // every switcher and picker reads the store's selector, never a list of its own
+    for (const rel of ['layout/RolePicker.tsx', 'layout/TopBar.tsx', 'screens/TeamScreen.tsx']) {
+      expect(web(rel), `${rel} reads the rollout-aware selectRoles`).toMatch(/selectRoles/);
+      expect(web(rel), `${rel} imports no static ROLES`).not.toMatch(/\bROLES\b/);
+    }
+    // the decider pickers offer the architect designation under the same read
+    for (const rel of ['screens/modals/IssueDecisionModal.tsx', 'screens/DraftsScreen.tsx']) {
+      expect(web(rel), `${rel} gates the architect designation on the rollout`).toMatch(/\{chainOpen && <option value="architect">/);
+      expect(web(rel)).toMatch(/selectPhase6_4dOpen/);
+    }
   });
 });
