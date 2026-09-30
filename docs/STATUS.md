@@ -14,15 +14,38 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-ii-b-staging-record
-reviewed_merge: 35d0f74
-open_pr: 677
+work_item: 4d-ii-b-b1-client-boundary
+reviewed_merge: ba20653
+open_pr: 678
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-30
 ```
 
-### Now — 4d-ii-b opens with its STAGING RECORD (#677, `claude/4d-ii-b-staging-record`): the client unit as additive units B1 … B6
+### Now — 4d-ii-b unit B1, the client boundary and the rollout read (#678, `claude/4d-ii-b-b1-client-boundary`)
+
+The staging record merged as #677 (`ba20653`, one review round: the persona switchers joined B2's gate,
+the approval route stays on actionable states in B3), recording 4d-ii-b as the additive units B1 … B6 of
+`docs/superpowers/plans/2026-09-30-4d-ii-b-additive-units.md`. **B1 is the first unit and the one open
+`claude/**` draft.** It ships: the web gateway declaring `X-Vitan-Decisions-Contract: countersign-v1` on
+EVERY API-bound request — the shared `req()` and the direct `fetch('/auth/session')` in `connect()`,
+the presigned object-storage PUT left bare — with the client-boundary tripwire the plan asks for
+(`apps/web/tests/client-boundary-tripwire.test.ts` enumerates every `fetch(` site in the gateway from
+source, refuses an unclassified one, and captures the header on the wire for `connect()`, a public auth
+call and an authenticated call); the shell's `rollout.phase6_4d` typed on `ProjectShell`, read into the
+store as `phase6_4dRollout` FAIL CLOSED (`'reserved'` before the shell lands, on an older server that
+sends no field, on any value but the exact `'open'`, after every scope change, and for a stale scope's
+reply), exposed as `selectPhase6_4dOpen` — the ONE predicate B2's pickers and switchers and B5b's
+Forward affordance will read; and the additive 4d decision fields (`countersignRequired`,
+`changeRequest.origin`, the awaiting status, the architect designation) pinned as read through untouched
+in both decision read modes. A Playwright spec over the real stack asserts every API-bound request the
+app makes carries the exact value and none carries `recorded-v1`, and that the shell reads
+`rollout.phase6_4d = 'reserved'` with the doors standing (P29c's web arm). No server runtime change, no
+migration; dark: the 4b interceptor admits any non-empty declaration and the 4d-ii-a interceptor serves a
+`countersign-v1` client everything, so a tab on this bundle behaves byte-identically against the current
+server. Next after B1: B2 (the role fan-out and the architect persona).
+
+### History — 4d-ii-b opened with its STAGING RECORD (#677, `claude/4d-ii-b-staging-record`): the client unit as additive units B1 … B6
 
 The STATUS record of the #675 merge landed as #676 (`35d0f74`, a clean exact-head review on its
 round-1 head `5337edf`), so the runner's move is 4d-ii-b. Its staging was left as the owner's
@@ -34,7 +57,7 @@ send no key — so the runner opens the same vehicle 4d-ii-a used: a docs-only s
 `docs/superpowers/plans/2026-09-30-4d-ii-b-additive-units.md`, with a dated pointer note at the top of
 the 4d plan. **Merging #677 records the additive staging as the disposition; closing it, or a
 coordination note on #482 choosing §D's single unit, reverses it before any B-unit opens.** No B-unit
-is open; the first (B1, the client boundary and the rollout read) opens only after #677 merges.
+was open then; B1 (the client boundary and the rollout read) opened after #677 merged — the record above.
 
 - **The six units** (each standard-budget, one concern, dark while the six reservation doors stand,
   no migration, no server runtime change): **B1** the `countersign-v1` declaration on every API-bound

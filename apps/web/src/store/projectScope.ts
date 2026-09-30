@@ -21,7 +21,7 @@ import type { DailyLogDraft } from './dailyLogDraft';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
-import type { AllocateLabourInput } from '../data/apiGateway';
+import type { AllocateLabourInput, Phase6_4dRollout } from '../data/apiGateway';
 
 /**
  * The frontend project-scope lifecycle (Phase 0 Task 2).
@@ -102,6 +102,9 @@ export interface ProjectDataState {
   // treats the next project's capability set as unknown (no premature deep-link bounce) until its
   // own shell lands.
   capabilitiesKnown: boolean;
+  // Phase 6 task 4d-ii-b / B1 — the shell's `rollout.phase6_4d`; project-owned, reset to `'reserved'`
+  // (fail closed) on every scope change until the next project's shell lands.
+  phase6_4dRollout: Phase6_4dRollout;
   materialsView: MaterialsView | null;
   // Phase 3 Task 7 (correction 2) — the SERVER-computed reservation plan per activity whose cover UI is
   // open (canonical reserve candidates + the residual to requisition), and the in-flight materials
@@ -182,6 +185,7 @@ export function emptyProjectData(): ProjectDataState {
     companies: [],
     capabilities: [],
     capabilitiesKnown: false,
+    phase6_4dRollout: 'reserved',
     materialsView: null,
     reservationPlans: {},
     materialsPending: [],

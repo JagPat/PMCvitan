@@ -15,6 +15,16 @@ import type { AppState } from './store';
 export const WIN = 75;
 export const pctOf = (d: number): number => (d / WIN) * 100;
 
+// ---- Phase 6 task 4d — the architect chain's rollout gate ----
+
+/** Phase 6 task 4d-ii-b / B1 — is the architect chain OPEN for the active project? The ONE predicate every
+ *  client gate on an architect shape reads (B2's Team and decider pickers and persona switchers, B5b's
+ *  Forward affordance): `true` only when this project's shell reported `rollout.phase6_4d = 'open'`;
+ *  `false` while reserved, before the shell lands, and after any scope change. */
+export function selectPhase6_4dOpen(s: AppState): boolean {
+  return s.phase6_4dRollout === 'open';
+}
+
 // ---- decisions ----
 
 export function selectPending(s: AppState): Decision[] {
