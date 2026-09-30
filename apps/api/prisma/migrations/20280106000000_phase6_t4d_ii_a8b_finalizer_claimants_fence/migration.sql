@@ -62,6 +62,25 @@
 --      bound notice of the event's kind (`platform_tx_notification`, the kernel read 4d-i installed for
 --      this), the discriminator in the payload containment, and the envelope equal to the fact's pair.
 --
+--   2e. THE CONTENT THE RENDERER READS, BOUND; THE RESOLVE RECEIPT'S PRIMARY, NAMED (#673's review round 3).
+--      Round 2 bound the payload's IDENTITY (the fact, the revision, the discriminator) and never its
+--      CONTENT: the kinded renderer renders the finalizers' green notice from `payload.title` and
+--      `payload.deciderKind`, and the change-request notice from `payload.title` and `payload.reason`,
+--      so a receipt-backed hand-run bundle could commit an event the renderer renders as nothing (a field
+--      absent) or as another decision's act (a field forged) while every identity clause held. The two
+--      claimants now demand `title` equal to the decision's and (the approval family) `deciderKind` equal
+--      to the decision's; the request arm demands `title` equal to the decision's and `reason` equal to
+--      the request's, both non-blank. And the provenance seal's receipt arm admitted ANY fact table as a
+--      receipt's primary (`resultRef = NEW.id` returned unconditionally), so a `countersign_rejection`
+--      request (or a forward) could be the primary result of a `decisions.resolveStrandedCountersign`
+--      receipt with NO `DecisionStrandedResolution` written — the PMC's return performed without the
+--      resolution fact, its inactive-chain and frozen-head judgements bypassed. The receipt arm now names
+--      the ONE primary table of each command (`decisions.disagree` → the request; the resolve → the
+--      resolution; the forward, the countersign, the standard request → their own facts), and the bundle
+--      arm is per command: under a disagreement receipt a forward pairs with the rejection request the
+--      receipt names; under a resolve receipt a request or a forward pairs with the `returned` resolution
+--      the receipt names — and the request must name the SAME revision the resolution disposed of.
+--
 --   3. THE FENCE, RAISED. A6e installed the server-generation fence and set the persisted minimum to 1
 --      (its own generation), so nothing running was refused. A8b is the last 4d-ii-a server unit — the
 --      release the drain's minimum names — so this file raises the minimum to 2, A8b's compiled
@@ -91,13 +110,24 @@ END $t4dii_a8b_prereq$;
 
 -- ── 1a. the `DecisionCountersign` fact claims the finalizing event ──────────────────────────────
 CREATE OR REPLACE FUNCTION phase6_t4d_countersign_claims_event() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_n BIGINT; v_event TEXT; v_audits BIGINT; v_notices BIGINT;
+DECLARE v_n BIGINT; v_event TEXT; v_audits BIGINT; v_notices BIGINT; v_title TEXT; v_kind TEXT;
 BEGIN
+  -- THE CONTENT THE RENDERER READS (#673 round 3): the kinded renderer renders the finalizers' green notice
+  -- from `payload.title` and `payload.deciderKind` beside the revision the payload names, so an event carrying
+  -- no title or another decision's is one the log renders as nothing or as another act. Both are bound to
+  -- the DECISION the fact names (its title non-blank), not to the payload's own word for them.
+  SELECT d."title", d."deciderKind"::text INTO v_title, v_kind FROM "Decision" d
+   WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId";
+  IF btrim(coalesce(v_title, '')) = '' THEN
+    RAISE EXCEPTION
+      'phase6 4d-ii-a A8b: countersign % names decision %, whose title is blank or which does not exist — the finalizing event''s notice renders the decision''s title, and a finalization of a decision the log cannot name is refused',
+      NEW."id", NEW."decisionId";
+  END IF;
   -- the finalizing event: the family, the fact and the revision it names, the DISCRIMINATOR the kinded
   -- renderer reads (`payload.finalization = 'countersign'` — #673 round 2: an event naming the fact but
-  -- carrying no or another finalization renders an ordinary approval or the wrong act), and the actor's
-  -- frozen ENVELOPE equal to the fact's frozen pair (P31: an envelope carrying a role or name other than
-  -- the fact's is refused)
+  -- carrying no or another finalization renders an ordinary approval or the wrong act), the CONTENT it
+  -- renders (`title`, `deciderKind` — round 3), and the actor's frozen ENVELOPE equal to the fact's frozen
+  -- pair (P31: an envelope carrying a role or name other than the fact's is refused)
   SELECT count(*), max(e."eventId") INTO v_n, v_event
     FROM "DomainEvent" e
    WHERE e."projectId" = NEW."projectId"
@@ -106,11 +136,12 @@ BEGIN
      AND e."actorId" = NEW."countersignedById"
      AND e."actorRole" = NEW."countersignedByRole" AND e."actorName" = NEW."countersignedByName"
      AND e."xmin" = txid_current()::text::xid
-     AND e."payload" @> jsonb_build_object('revisionId', NEW."revisionId", 'countersignId', NEW."id", 'finalization', 'countersign');
+     AND e."payload" @> jsonb_build_object('revisionId', NEW."revisionId", 'countersignId', NEW."id", 'finalization', 'countersign',
+                                           'title', v_title, 'deciderKind', v_kind);
   IF TG_NAME LIKE '%\_deferred' THEN
     IF v_n <> 1 THEN
       RAISE EXCEPTION
-        'phase6 4d-ii-a A8b: countersign % of decision % was written in this transaction with % finalizing event(s) (`decision.approved` / `decision.reapproved`) that name it (`payload.countersignId`), its revision (`payload.revisionId`) and its finalization (`payload.finalization` = countersign), and are attributed to the countersigner (`actorId` = `countersignedById`, the envelope''s role and name the fact''s frozen pair) — a countersign announces the approval it finalized exactly ONCE, in the same transaction, in the architect''s name and for the revision it ended: a finalization with no such event is an approval the stream never carried, one with two is an act announced twice, and one whose event names another finalization or another person is an act misreported',
+        'phase6 4d-ii-a A8b: countersign % of decision % was written in this transaction with % finalizing event(s) (`decision.approved` / `decision.reapproved`) that name it (`payload.countersignId`), its revision (`payload.revisionId`), its finalization (`payload.finalization` = countersign) and the decision as the log renders it (`payload.title` and `payload.deciderKind` equal to the decision''s), and are attributed to the countersigner (`actorId` = `countersignedById`, the envelope''s role and name the fact''s frozen pair) — a countersign announces the approval it finalized exactly ONCE, in the same transaction, in the architect''s name and for the revision it ended: a finalization with no such event is an approval the stream never carried, one with two is an act announced twice, and one whose event names another finalization, another person or another decision''s title is an act misreported',
         NEW."id", NEW."decisionId", v_n;
     END IF;
     v_audits := phase6_t4d_tx_audit_count(NEW."decisionId", ARRAY['countersigned']);
@@ -150,17 +181,29 @@ CREATE CONSTRAINT TRIGGER "DecisionCountersign_t4d_claim_deferred"
 -- `returned` announces the reopening (`decision.change_requested`) — the request the bundle opens
 -- verifies and never claims (4d-i-b's `ChangeRequest_t4d_claim` / `_paired` defer to the resolution).
 CREATE OR REPLACE FUNCTION phase6_t4d_stranded_claims_event() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_n BIGINT; v_event TEXT; v_audits BIGINT; v_notices BIGINT; v_types TEXT[]; v_named JSONB;
+DECLARE v_n BIGINT; v_event TEXT; v_audits BIGINT; v_notices BIGINT; v_types TEXT[]; v_named JSONB; v_title TEXT; v_kind TEXT;
 BEGIN
   v_types := CASE NEW."outcome"
     WHEN 'completed' THEN ARRAY['decision.approved', 'decision.reapproved']
     ELSE ARRAY['decision.change_requested'] END;
+  -- THE CONTENT THE RENDERER READS (#673 round 3): the green notice renders `payload.title` and
+  -- `payload.deciderKind`, the change-request notice `payload.title` (and the reason the request arm binds
+  -- to the request), so both are bound to the DECISION the fact names (its title non-blank)
+  SELECT d."title", d."deciderKind"::text INTO v_title, v_kind FROM "Decision" d
+   WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId";
+  IF btrim(coalesce(v_title, '')) = '' THEN
+    RAISE EXCEPTION
+      'phase6 4d-ii-a A8b: stranded resolution % names decision %, whose title is blank or which does not exist — the outcome''s notice renders the decision''s title, and a resolution of a decision the log cannot name is refused',
+      NEW."id", NEW."decisionId";
+  END IF;
   -- the DISCRIMINATOR the kinded renderer reads (#673 round 2): `completed` announces
   -- `finalization = stranded_completed` (the green notice names the PMC as the finalizer, never as the
-  -- approver); `returned` announces `outcome = returned` beside the request it opens
+  -- approver); `returned` announces `outcome = returned` beside the request it opens — and (round 3) the
+  -- CONTENT it renders
   v_named := CASE NEW."outcome"
-    WHEN 'completed' THEN jsonb_build_object('revisionId', NEW."revisionId", 'resolutionId', NEW."id", 'finalization', 'stranded_completed')
-    ELSE jsonb_build_object('revisionId', NEW."revisionId", 'resolutionId', NEW."id", 'outcome', 'returned') END;
+    WHEN 'completed' THEN jsonb_build_object('revisionId', NEW."revisionId", 'resolutionId', NEW."id", 'finalization', 'stranded_completed',
+                                             'title', v_title, 'deciderKind', v_kind)
+    ELSE jsonb_build_object('revisionId', NEW."revisionId", 'resolutionId', NEW."id", 'outcome', 'returned', 'title', v_title) END;
   SELECT count(*), max(e."eventId") INTO v_n, v_event
     FROM "DomainEvent" e
    WHERE e."projectId" = NEW."projectId"
@@ -173,7 +216,7 @@ BEGIN
   IF TG_NAME LIKE '%\_deferred' THEN
     IF v_n <> 1 THEN
       RAISE EXCEPTION
-        'phase6 4d-ii-a A8b: stranded resolution % (`%`) of decision % was written in this transaction with % event(s) of its outcome''s family (%) that name it (`payload.resolutionId`), its revision (`payload.revisionId`) and its outcome (`payload.finalization` = stranded_completed, or `payload.outcome` = returned) and are attributed to the resolving PMC (`actorId` = `resolvedById`, the envelope''s role and name the fact''s frozen pair) — a resolution announces its outcome exactly ONCE, in the same transaction, in the resolver''s name and for the revision it disposed of, and an event naming another outcome or another person is an act misreported',
+        'phase6 4d-ii-a A8b: stranded resolution % (`%`) of decision % was written in this transaction with % event(s) of its outcome''s family (%) that name it (`payload.resolutionId`), its revision (`payload.revisionId`), its outcome (`payload.finalization` = stranded_completed, or `payload.outcome` = returned) and the decision as the log renders it (`payload.title` equal to the decision''s; `completed`: `payload.deciderKind` too) and are attributed to the resolving PMC (`actorId` = `resolvedById`, the envelope''s role and name the fact''s frozen pair) — a resolution announces its outcome exactly ONCE, in the same transaction, in the resolver''s name and for the revision it disposed of, and an event naming another outcome, another person or another decision''s title is an act misreported',
         NEW."id", NEW."outcome", NEW."decisionId", v_n, array_to_string(v_types, ' or ');
     END IF;
     -- THE FEED ROW (#673 round 2): the outcome''s notice bound to its event — the green notice for
@@ -209,8 +252,8 @@ CREATE CONSTRAINT TRIGGER "DecisionStrandedResolution_t4d_claim_deferred"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_stranded_claims_event();
 
 -- ── 2. the provenance seal, re-issued with the returned request's second producer ───────────────
--- 4d-i's body, byte-identical but for the one `ChangeRequest` arm (its four triggers stand as installed
--- and are not touched here).
+-- 4d-i's body, byte-identical but for the one `ChangeRequest` arm, the receipt arm's PRIMARY TABLE and
+-- the bundle arm PER COMMAND (#673 round 3; its four triggers stand as installed and are not touched here).
 CREATE OR REPLACE FUNCTION public.phase6_t4d_provenance_bound()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -221,6 +264,7 @@ DECLARE
   v_types TEXT[];
   v_actor_column TEXT;
   v_actor TEXT;
+  v_primary_table TEXT;
 BEGIN
   v_types := CASE TG_TABLE_NAME
     WHEN 'DecisionForward' THEN
@@ -306,27 +350,59 @@ BEGIN
       TG_TABLE_NAME, NEW."id", COALESCE(v_actor, '<null>'), COALESCE(c."actorId", '<null>');
   END IF;
 
-  IF c."resultRef" = NEW."id" THEN RETURN NULL; END IF;
+  -- 4d-ii-a / A8b (#673 round 3) — THE RECEIPT'S PRIMARY IS ONE TABLE, NAMED PER COMMAND. The delivered
+  -- arm returned for ANY row the receipt named as its result, so a `countersign_rejection` request (or a
+  -- forward) could be the primary result of a `decisions.resolveStrandedCountersign` receipt with no
+  -- `DecisionStrandedResolution` written at all — the PMC's return performed without the fact whose seal
+  -- judges the inactive chain and the frozen head, and with no resolution in the register. Each command
+  -- writes exactly one primary fact (§A.3: the fact present on EVERY instance of the branch), and a row of
+  -- another table citing that receipt is the bundle's SECONDARY, judged by the bundle arm below.
+  v_primary_table := CASE c."commandType"
+    WHEN 'decisions.forward' THEN 'DecisionForward'
+    WHEN 'decisions.countersign' THEN 'DecisionCountersign'
+    WHEN 'decisions.resolveStrandedCountersign' THEN 'DecisionStrandedResolution'
+    WHEN 'decisions.disagree' THEN 'ChangeRequest'
+    WHEN 'decisions.requestChange' THEN 'ChangeRequest'
+    ELSE NULL
+  END;
+  IF c."resultRef" = NEW."id" THEN
+    IF v_primary_table IS DISTINCT FROM TG_TABLE_NAME THEN
+      RAISE EXCEPTION
+        'phase6 4d-ii-a A8b: %.% is named as the PRIMARY result of its `%` receipt, but that command''s primary fact is a % row — a `decisions.resolveStrandedCountersign` receipt names the resolution and a `decisions.disagree` receipt names the request; a request or a forward standing in as the resolve''s result is a return performed with no resolution written, its chain and head never judged',
+        TG_TABLE_NAME, NEW."id", c."commandType", COALESCE(v_primary_table, '<none>');
+    END IF;
+    RETURN NULL;
+  END IF;
 
   -- The bundle arm. The primary is looked up by the SHARED receipt, which is what makes this a
   -- bundle rather than two unrelated rows: a row citing a receipt whose result names some other
-  -- command's fact finds nothing here and is refused.
-  SELECT EXISTS (
-    SELECT 1 FROM "ChangeRequest" cr
-     WHERE cr."projectId" = NEW."projectId" AND cr."id" = c."resultRef"
-       AND cr."sourceCommandId" = NEW."sourceCommandId"
-       AND cr."decisionId" = NEW."decisionId"
-  ) OR EXISTS (
-    SELECT 1 FROM "DecisionStrandedResolution" sr
-     WHERE sr."projectId" = NEW."projectId" AND sr."id" = c."resultRef"
-       AND sr."sourceCommandId" = NEW."sourceCommandId"
-       AND sr."decisionId" = NEW."decisionId"
-  ) INTO v_primary_ok;
+  -- command's fact finds nothing here and is refused. PER COMMAND (#673 round 3): under a disagreement
+  -- receipt the forward-on's `DecisionForward` pairs with the `countersign_rejection` request the receipt
+  -- names; under a resolve receipt the `returned` bundle's request and re-homing forward pair with the
+  -- `returned` resolution the receipt names — and the request must name the SAME revision the resolution
+  -- disposed of (a request naming an earlier revision beside a resolution disposing of the current head
+  -- is two immutable records of one act that disagree about which approval it ended).
+  v_primary_ok := CASE c."commandType"
+    WHEN 'decisions.disagree' THEN EXISTS (
+      SELECT 1 FROM "ChangeRequest" cr
+       WHERE cr."projectId" = NEW."projectId" AND cr."id" = c."resultRef"
+         AND cr."sourceCommandId" = NEW."sourceCommandId"
+         AND cr."decisionId" = NEW."decisionId"
+         AND cr."origin" = 'countersign_rejection')
+    WHEN 'decisions.resolveStrandedCountersign' THEN EXISTS (
+      SELECT 1 FROM "DecisionStrandedResolution" sr
+       WHERE sr."projectId" = NEW."projectId" AND sr."id" = c."resultRef"
+         AND sr."sourceCommandId" = NEW."sourceCommandId"
+         AND sr."decisionId" = NEW."decisionId"
+         AND sr."outcome" = 'returned'
+         AND (TG_TABLE_NAME <> 'ChangeRequest' OR sr."revisionId" = (to_jsonb(NEW) ->> 'revisionId')))
+    ELSE FALSE
+  END;
 
   IF NOT v_primary_ok THEN
     RAISE EXCEPTION
-      'phase6 4d-i: the receipt cited by %.% names result %, which is neither this row nor a PRIMARY fact of its bundle citing the same receipt for the same decision — a receipt for another result cannot be borrowed',
-      TG_TABLE_NAME, NEW."id", COALESCE(c."resultRef", '<null>');
+      'phase6 4d-i: the receipt cited by %.% names result %, which is neither this row nor the PRIMARY fact of its `%` bundle citing the same receipt for the same decision (a disagreement''s `countersign_rejection` request; a resolve''s `returned` resolution — naming, for a request, the SAME revision the request cites) — a receipt for another result cannot be borrowed',
+      TG_TABLE_NAME, NEW."id", COALESCE(c."resultRef", '<null>'), c."commandType";
   END IF;
   RETURN NULL;
 END $function$;
@@ -506,6 +582,7 @@ DECLARE
   v_events BIGINT;
   v_audits BIGINT;
   v_births BIGINT;
+  v_title  TEXT;
 BEGIN
   IF NOT phase6_t4d_change_pairing_active() THEN RETURN NULL; END IF;   -- active once U3's flip flags the change keys (the gate U2 installed; the flip below makes it TRUE)
 
@@ -569,13 +646,23 @@ BEGIN
       -- (`countersign_rejection`), the title and the reason, so an event carrying no origin or another
       -- request's id leaves a notice the log cannot render; and the reopening owes the Decision Log
       -- its notice (the plan's correspondence table gives it to this origin alone).
+      -- (#673 round 3) — AND THE CONTENT IT RENDERS: `payload.title` equal to the DECISION's title and
+      -- `payload.reason` equal to THIS request's reason, both non-blank — the renderer renders solely from
+      -- those two fields, so an absent one is a committed notice the log shows as nothing and a forged
+      -- one is a reason shown in place of the immutable request's.
+      SELECT dd."title" INTO v_title FROM "Decision" dd WHERE dd."projectId" = NEW."projectId" AND dd."id" = NEW."decisionId";
+      IF btrim(coalesce(v_title, '')) = '' OR btrim(coalesce(NEW."reason", '')) = '' THEN
+        RAISE EXCEPTION
+          'phase6 4d-ii-a A8b: countersign_rejection request % of decision % carries a blank reason, or names a decision whose title is blank — the change-request notice renders the decision''s title and the request''s reason, and a reopening the log cannot state is refused',
+          NEW."id", NEW."decisionId";
+      END IF;
       SELECT count(*), max(e."eventId") INTO v_events, v_event FROM "DomainEvent" e
        WHERE e."projectId" = NEW."projectId" AND e."entityType" = 'Decision' AND e."entityId" = NEW."decisionId"
          AND e."eventType" = 'decision.change_requested' AND e."xmin" = txid_current()::text::xid
-         AND e."payload" @> jsonb_build_object('origin', 'countersign_rejection', 'requestId', NEW."id");
+         AND e."payload" @> jsonb_build_object('origin', 'countersign_rejection', 'requestId', NEW."id", 'title', v_title, 'reason', NEW."reason");
       IF v_events <> 1 THEN
         RAISE EXCEPTION
-          'phase6 4d-ii-a A8b: countersign_rejection request % of decision % was opened in this transaction with % `decision.change_requested` event(s) naming it (`payload.requestId`) and its origin (`payload.origin` = countersign_rejection) — the reopening announces THIS request exactly ONCE, and an event naming no origin or another request is one the Decision Log renders as nothing',
+          'phase6 4d-ii-a A8b: countersign_rejection request % of decision % was opened in this transaction with % `decision.change_requested` event(s) naming it (`payload.requestId`), its origin (`payload.origin` = countersign_rejection), the decision''s title (`payload.title`) and its own reason (`payload.reason`) — the reopening announces THIS request exactly ONCE, and an event naming no origin, another request, another title or another reason is one the Decision Log renders as nothing or as words the request never carried',
           NEW."id", NEW."decisionId", v_events;
       END IF;
       IF platform_tx_notification(NEW."projectId", v_event) IS NULL OR NOT EXISTS (
@@ -731,8 +818,12 @@ BEGIN
   END IF;
   SELECT p.prosrc INTO v_src FROM pg_proc p WHERE p.proname = 'phase6_t4d_provenance_bound';
   IF v_src IS NULL OR position('ARRAY[''decisions.disagree'', ''decisions.resolveStrandedCountersign'']' in v_src) = 0
-     OR position('receiptThisTx' in v_src) = 0 THEN
-    RAISE EXCEPTION 'phase6 4d-ii-a A8b: the provenance seal does not carry the returned request''s second producer beside 4d-i''s own clauses after this file ran. The deploy is refused.';
+     OR position('receiptThisTx' in v_src) = 0
+     OR position('v_primary_table IS DISTINCT FROM TG_TABLE_NAME' in v_src) = 0
+     OR position('WHEN ''decisions.resolveStrandedCountersign'' THEN ''DecisionStrandedResolution''' in v_src) = 0
+     OR position('sr."outcome" = ''returned''' in v_src) = 0
+     OR position('sr."revisionId" = (to_jsonb(NEW) ->> ''revisionId'')' in v_src) = 0 THEN
+    RAISE EXCEPTION 'phase6 4d-ii-a A8b: the provenance seal does not carry the returned request''s second producer, the receipt''s primary table and the per-command bundle arm beside 4d-i''s own clauses after this file ran. The deploy is refused.';
   END IF;
   SELECT count(*) INTO n FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
    WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname = 'phase6_t4d_provenance_bound'
@@ -764,6 +855,14 @@ BEGIN
       OR (p.proname = 'phase6_t4d_stranded_claims_event' AND position('''finalization'', ''stranded_completed''' in p.prosrc) > 0 AND position('''outcome'', ''returned''' in p.prosrc) > 0);
   IF n <> 2 THEN
     RAISE EXCEPTION 'phase6 4d-ii-a A8b: the finalizer claimants do not bind the payload discriminator to the fact (found % of 2). The deploy is refused.', n;
+  END IF;
+  SELECT count(*) INTO n FROM pg_proc p
+   WHERE (p.proname IN ('phase6_t4d_countersign_claims_event', 'phase6_t4d_stranded_claims_event')
+            AND position('''title'', v_title, ''deciderKind'', v_kind' in p.prosrc) > 0 AND position('d."deciderKind"::text' in p.prosrc) > 0)
+      OR (p.proname = 'phase6_t4d_change_request_paired'
+            AND position('''title'', v_title, ''reason'', NEW."reason"' in p.prosrc) > 0 AND position('btrim(coalesce(NEW."reason", ''''))' in p.prosrc) > 0);
+  IF n <> 3 THEN
+    RAISE EXCEPTION 'phase6 4d-ii-a A8b: the two claimants and the request arm do not bind the content the renderer reads to the decision and the request (found % of 3). The deploy is refused.', n;
   END IF;
   SELECT p.prosrc INTO v_src FROM pg_proc p WHERE p.proname = 'phase6_t4d_change_request_paired';
   IF v_src IS NULL OR position('countersign_rejection request % was opened in this transaction with % `change_requested` audit row(s)' in v_src) = 0

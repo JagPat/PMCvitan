@@ -479,9 +479,11 @@ forced:
   revision's frozen pair, an unknown finalization or an unfrozen pair rendering nothing); three writer
   branches in the pairing matrix (`decision.approved` by the countersign and by the `completed`
   resolution; `decision.change_requested` by the `returned` resolution — fact-first and event-first,
-  the PRIOR generation committing for the families it carries, thirty-one refusals — the feed row, the
-  discriminator and the envelope pair among them — and the disagreement branch's audit row, notice,
-  origin and request name with their refusals); the kinded renderer's change-request arm and its
+  the PRIOR generation committing for the families it carries, thirty-eight refusals — the feed row, the
+  discriminator, the envelope pair, the title and decider kind the renderer reads, and the request
+  naming an earlier revision than the resolution among them — and the disagreement branch's receipt,
+  audit row, notice, origin, request name, title and reason with their refusals, and a rejection request
+  named as a resolve receipt's primary with no resolution written); the kinded renderer's change-request arm and its
   audience (pmc and the decider); the status
   tripwire's six A8b registrations; the seal contract's two claimants and the birth pairing's widened
   tokens; the inventory's four triggers; the call-graph, route and boundary pins.
@@ -513,7 +515,18 @@ forced:
   returned`; the rejection's `origin` and `requestId`), and the event's envelope must equal the fact's
   frozen pair (#673's review round 2: a receipt-backed hand-run bundle could finalize, return or reject
   with its claimed event and audit row and no feed row, or with an event the renderer read as an
-  ordinary approval). No consumer version, catalog row or door moves.
+  ordinary approval); (7) the CONTENT the kinded renderer reads, bound to the rows (#673's review round
+  3): the two claimants demand `payload.title` equal to the decision's (non-blank) and, for the approval
+  family, `payload.deciderKind` equal to the decision's; the request arm demands `payload.title` equal to
+  the decision's and `payload.reason` equal to the request's, both non-blank (round 2 had bound the
+  payload's identity and never its content, so an event the renderer rendered as nothing or as another
+  decision's act passed every clause); and the provenance seal's receipt arm names the ONE primary table
+  of each command (a `decisions.resolveStrandedCountersign` receipt names the resolution, a
+  `decisions.disagree` receipt the request — at b193f77 a rejection request could be the resolve's
+  primary result with no resolution written, the PMC's return performed without the fact whose seal
+  judges the inactive chain and the frozen head), with the bundle arm PER COMMAND and the returned
+  bundle's request required to name the SAME revision the resolution disposed of. No consumer version,
+  catalog row or door moves.
 - **§C arms not carried by any A-unit: none.** A8b carries P31 (the atomic countersign, the orphan
   fact, the split), P32 (the self-countersign as two keys), P33 (both disagreement paths, the
   withdrawal refused), P25d/P41 (a question beside the countersign, both orderings), P29b and P36 (the
