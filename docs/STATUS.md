@@ -14,15 +14,40 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-ii-b-b4-copy-consultation-withdraw
-reviewed_merge: f9810c0
-open_pr: 681
+work_item: 4d-ii-b-b5a-commands
+reviewed_merge: 2f84444
+open_pr: 682
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-30
 ```
 
-### Now — 4d-ii-b unit B4, the copy, the consultation surface and the withdraw rule (#681, `claude/4d-ii-b-b4-copy-consultation-withdraw`)
+### Now — 4d-ii-b unit B5a, the four commands on the client (#682, `claude/4d-ii-b-b5a-commands`)
+
+B4 merged as #681 (`2f84444`; a clean exact-head review on its first head). **B5a is the fifth unit and the
+one open `claude/**` draft.** It ships the four countersign-chain commands on the client with NO UI (B5b's):
+gateway `forwardDecision`, `countersignDecision`, `disagreeDecision` and `resolveStrandedCountersign` on
+the server's four routes with the shared input types, each REQUIRING an `Idempotency-Key`; four `OutboxOp`
+variants carrying the full shared input, with `replayOutboxOp` arms; four write-ahead store actions
+minting ONE fresh key per act (`dispatchChainAct`: coalesced against an equivalent act on the same decision
+still in the outbox — a double-click runs once under the first key — never against a settled one, so
+self-countersign stays two explicit acts under two keys, P32's client half); a blank reason refused before
+any key is minted; and the server's refusal surfaced as the SERVER's own words — `req()` now captures
+Nest's `message` (a string or a list) on a non-2xx reply, `refusalMessage(err)` reads it, and the flush
+reports a refused chain act as "<Act> <id> refused — <message>." instead of folding it into the anonymous
+"discarded" count (every other op keeps its line). Without the server the actions do nothing but say so
+(no demo model of the chain; no fabricated lock). Proof: `tests/countersign-commands.test.ts` (30) drives
+each command against a mocked gateway — the lost response and the identical key on retry, the double-click
+coalesced and the next act under a new key, the reload re-hydrating the op with its key and the replay arm
+sending it, the project switch mid-flight leaving the act under the old scope, the 409 surfaced unmasked
+and the unexplained refusal named, the blank reason, the six success copies — and the gateway over a
+stubbed fetch (the four routes, bodies, keys and the contract header; the message captured from a string,
+a list, and absent from a non-JSON body); a Playwright API probe against the reserved server asserts each
+route refuses with a `message` string and the decision is untouched. No server runtime change, no
+migration; dark: every route 409s while the doors stand. Next after B5a: B5b (the affordances and the
+controls).
+
+### History — 4d-ii-b unit B4, the copy, the consultation surface and the withdraw rule (#681, `claude/4d-ii-b-b4-copy-consultation-withdraw`)
 
 B3 merged as #680 (`f9810c0`; a clean exact-head review on its first head after two body-format edits
 to the scope gate). **B4 is the fourth unit and the one open `claude/**` draft.** It ships the client's
@@ -46,8 +71,8 @@ over a loaded one) and the withdraw rule (PMC, requester, a third viewer; the or
 surfaces) — 7 of 9 RED at `f9810c0`, the two delivered-copy pins green there by design; a Playwright
 spec against the reserved server asserts the client's confirmation reads the delivered copy and the
 PMC's register offers Withdraw on the seeded standard request with no origin named. No server runtime
-change, no migration; dark: no served row carries the overlay or an origin while the doors stand. Next
-after B4: B5a (the four commands on the client).
+change, no migration; dark: no served row carries the overlay or an origin while the doors stand. B4 merged
+as #681 (`2f84444`); B5a opened next — the record above.
 
 ### History — 4d-ii-b unit B3, the readers, the Inbox branch and the badge (#680, `claude/4d-ii-b-b3-readers`)
 

@@ -223,6 +223,16 @@ an active chain, an ineligible state) are surfaced as the server's message, neve
 cover the lost response, the double-click and the replay for each command, and the scope guard on a
 project switch mid-flight. No UI in this unit. ~350 lines, standard.
 
+**As built (the B5a unit).** The gateway's `req()` captures the server's refusal text (Nest's `message`,
+a string or a list) as `serverMessage` on the thrown error, read by `refusalMessage(err)`; the flush
+reports a refused countersign-chain act as "<Act> <id> refused — <message>." (or "the server did not say
+why") on its own line, leaving every other op's "discarded" count as it was. The double-click rule is a
+COALESCE, not a second act: an equivalent act (same kind, same decision) still in the outbox makes the
+second click a no-op ("already in progress"), so it runs once under the first key; once the first settles,
+the next act of the same kind mints a new key. A blank reason is refused locally before any key exists.
+Without the server the actions flash "This needs the server." and change nothing. The Playwright proof is
+an API probe (no UI exists yet): each route refuses with a `message` string while the doors stand.
+
 ### B5b — the affordances and the controls
 
 The Forward affordance on a `pending`/`change` decision for its holder, the PMC and an architect,

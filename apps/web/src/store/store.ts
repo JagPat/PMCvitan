@@ -59,6 +59,9 @@ import {
   type ScreenKey,
   type Worker,
   type MeasurementRegisterDto,
+  type ForwardDecisionInput,
+  type DisagreeDecisionInput,
+  type ResolveStrandedCountersignInput,
   ROLE_POLICY,
   deciderNoun,
 } from '@vitan/shared';
@@ -74,7 +77,7 @@ import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
 import { unlinkPushOnSignOut } from '@/data/push';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -439,6 +442,20 @@ export interface AppActions {
   submitChange: () => void;
   /** Withdraw the open change request — the decision re-locks (requester or PMC only). */
   withdrawChange: (decId: string) => void;
+  /**
+   * Phase 6 task 4d-ii-b / B5a — the four countersign-chain commands (4d-ii-a / A8a, A8b), WRITE-AHEAD to
+   * the durable outbox under ONE fresh idempotency key per act: a lost or uncertain response replays the
+   * SAME act under the SAME key, and an equivalent act still pending on the same decision is coalesced
+   * (a double-click runs once) — while a LATER act of the same kind, after the first settles, is a new
+   * act under a new key (self-countersign stays two explicit acts under two keys, P32's client half).
+   * The server's refusal (409 while the doors stand, an ineligible state, a lesser client under an active
+   * chain) is surfaced as the server's own message. No UI in this unit (B5b's); no demo-mode fabrication:
+   * without the server these do nothing but say so.
+   */
+  forwardDecision: (decId: string, input: ForwardDecisionInput) => void;
+  countersignDecision: (decId: string) => void;
+  disagreeDecision: (decId: string, input: DisagreeDecisionInput) => void;
+  resolveStrandedCountersign: (decId: string, input: ResolveStrandedCountersignInput) => void;
   /** Withdraw a PUBLISHED, never-approved decision — pmc only, reason required (Phase 6 task 4a). */
   openWithdraw: (decId: string) => void;
   confirmWithdraw: () => void;
@@ -1910,6 +1927,21 @@ export const useStore = create<Store>()(
       return true;
     };
 
+    /** Phase 6 task 4d-ii-b / B5a — dispatch ONE countersign-chain act (`forward`, `countersign`, `disagree`,
+     *  `resolveStranded`). Write-ahead under the op's fresh key; COALESCED against an equivalent act (same
+     *  kind, same decision) still in the outbox — a double-click or a click while the first act awaits its
+     *  reply runs once, under the FIRST key — never against a settled one, so the next legitimate act of the
+     *  same kind is a new act under a new key. Without the server it does nothing but say so: the chain
+     *  has no demo model, and fabricating a countersign locally would show a lock the server never granted. */
+    const dispatchChainAct = (op: OutboxOp & { t: 'forwardDecision' | 'countersignDecision' | 'disagreeDecision' | 'resolveStrandedCountersign'; decisionId: string }, label: string, okMsg: string): void => {
+      if (!gateway) { get().flash('This needs the server.'); return; }
+      if (get().outbox.some((o) => o.t === op.t && 'decisionId' in o && o.decisionId === op.decisionId)) {
+        get().flash(label + ' — already in progress.');
+        return;
+      }
+      runWriteAhead(op, label, okMsg);
+    };
+
     // ── Phase 3 Task 7 (correction 2) — the pilot MATERIALS single-command dispatch. Every operational
     //    materials command (reserve a candidate, raise the residual requisition, issue, consume) goes
     //    through HERE: one WRITE-AHEAD op with a STABLE idempotency key, COALESCED against an identical
@@ -2302,6 +2334,37 @@ export const useStore = create<Store>()(
       }
       set((s) => { s.modal = { type: null }; });
       get().flash('Advice recorded — the person who asked has been told.');
+    },
+    // ── Phase 6 task 4d-ii-b / B5a — the four countersign-chain commands. Each is one write-ahead act
+    //    under ONE fresh key (`dispatchChainAct`): coalesced while an equivalent act on the same decision
+    //    is still in the outbox, replayed under the same key after a lost response, and refused-as-said
+    //    when the server 409s it (the flush surfaces the server's message). Reasons are required where
+    //    the shared contract requires them; a blank one is refused here before any key is minted. ──
+    forwardDecision: (decId, input) => {
+      const reason = input.reason.trim();
+      if (!reason) { get().flash('A reason is required to forward a decision.'); return; }
+      dispatchChainAct({ t: 'forwardDecision', decisionId: decId, input: { ...input, reason }, idempotencyKey: newIdempotencyKey() }, 'Forward ' + decId, 'Forwarded — the new decider will see it.');
+    },
+    countersignDecision: (decId) => {
+      dispatchChainAct({ t: 'countersignDecision', decisionId: decId, idempotencyKey: newIdempotencyKey() }, 'Countersign ' + decId, 'Countersigned — the decision is locked.');
+    },
+    disagreeDecision: (decId, input) => {
+      const reason = input.reason.trim();
+      if (!reason) { get().flash('A reason is required to send a decision back.'); return; }
+      dispatchChainAct(
+        { t: 'disagreeDecision', decisionId: decId, input: { ...input, reason }, idempotencyKey: newIdempotencyKey() },
+        'Disagree ' + decId,
+        input.path === 'forward_on' ? 'Sent on to the new decider as a change request.' : 'Sent back to the decider as a change request.',
+      );
+    },
+    resolveStrandedCountersign: (decId, input) => {
+      const reason = input.reason.trim();
+      if (!reason) { get().flash('A reason is required to resolve a stranded countersign.'); return; }
+      dispatchChainAct(
+        { t: 'resolveStrandedCountersign', decisionId: decId, input: { ...input, reason }, idempotencyKey: newIdempotencyKey() },
+        'Resolve ' + decId,
+        input.outcome === 'completed' ? 'Countersign resolved — the decision is locked.' : 'Returned to the decider as a change request.',
+      );
     },
     openChange: (decId) => {
       const d = get().decisions.find((x) => x.id === decId);
@@ -4690,6 +4753,8 @@ export const useStore = create<Store>()(
       // Track each op's OUTCOME by idempotency key (when it has one) so the caller can classify its own
       // commands: queue absence alone can't tell a succeeded op from a terminally-dropped 4xx.
       const keyOf = (op: OutboxOp): string | undefined => ('idempotencyKey' in op ? op.idempotencyKey : undefined);
+      const chainActLabel = (op: OutboxOp & { decisionId: string }): string =>
+        ({ forwardDecision: 'Forward', countersignDecision: 'Countersign', disagreeDecision: 'Disagree', resolveStrandedCountersign: 'Resolve' } as Record<string, string>)[op.t] + ' ' + op.decisionId;
       const succeededKeys: string[] = [];
       const droppedKeys: string[] = [];
       // Phase 3 Task 7 (correction 2/3) — the RESOLVED pilot-materials COALESCE keys (succeeded OR
@@ -4714,6 +4779,10 @@ export const useStore = create<Store>()(
       let dailyLogCommitted: 'start' | 'send' | null = null;
       let synced = 0;
       let dropped = 0;
+      // Phase 6 task 4d-ii-b / B5a — a countersign-chain act the server REFUSED (terminal 4xx: the 409 while
+      // the doors stand, an ineligible state, a lesser client under an active chain) is reported as the
+      // server's own words, one line per act, instead of joining the anonymous "discarded" count.
+      const chainRefusals: string[] = [];
       let stoppedAt = -1;
       let scopeMoved = false;
       for (let i = 0; i < ops.length; i++) {
@@ -4739,7 +4808,12 @@ export const useStore = create<Store>()(
           if (com) { commercialAttempted = true; commercialWritesSettled += 1; }
         } catch (err) {
           if (isTerminalOutboxError(err)) {
-            dropped += 1; // server will never accept this one — discard and keep going
+            const op = ops[i];
+            if (isCountersignChainOp(op)) {
+              chainRefusals.push(`${chainActLabel(op)} refused — ${refusalMessage(err) ?? 'the server did not say why'}.`);
+            } else {
+              dropped += 1; // server will never accept this one — discard and keep going
+            }
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
             if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
@@ -4815,6 +4889,8 @@ export const useStore = create<Store>()(
       if (dropped > 0) parts.push(`${dropped} could not be applied and ${dropped > 1 ? 'were' : 'was'} discarded`);
       if (remaining.length > 0) parts.push(`${remaining.length} still pending — will retry when you reconnect`);
       if (parts.length) get().flash(parts.join('; ') + '.');
+      // the chain refusals carry the server's words, so they are not folded into the count above
+      if (chainRefusals.length) get().flash(chainRefusals.join(' '));
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
       // to FAILED; an op kept alive by a failed dead-letter write stays covered
       void reconcileEvidence();
