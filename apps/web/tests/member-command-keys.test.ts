@@ -10,8 +10,9 @@ import { ApiGateway, type ApiGateway as Gateway } from '@/data/apiGateway';
  *
  * The rule under test: one key per ACT, reused on the retry of the same act, settled by a confirmed
  * success or a terminal refusal so the next identical act is a new act under a new key; a distinct act
- * (another member, another role, another project) has its own key; and the gateway puts the key on the
- * wire as the `Idempotency-Key` header of the right route.
+ * (another member, another role, another project) has its own key; one request per act in flight, and a
+ * settle removes only the key it dispatched; and the gateway puts the key on the wire as the
+ * `Idempotency-Key` header of the right route.
  */
 
 const s = () => useStore.getState();
@@ -20,13 +21,13 @@ const refused = (status: number) => Object.assign(new Error(`refused ${status}`)
 const UUIDISH = /^[0-9a-f-]{20,}$/i;
 
 const COMMANDS = [
-  { label: 'addMember', method: 'addMember', keyIndex: 1,
+  { label: 'addMember', method: 'addMember', keyIndex: 1, busy: 'Adding Nilesh — already in progress.',
     invoke: () => s().addMember({ name: 'Nilesh', role: 'contractor', email: 'N@vitan.in ' }),
     other: () => s().addMember({ name: 'Priya', role: 'engineer', email: 'p@vitan.in' }) },
-  { label: 'updateMemberRole', method: 'updateMemberRole', keyIndex: 3,
+  { label: 'updateMemberRole', method: 'updateMemberRole', keyIndex: 3, busy: 'Changing the role — already in progress.',
     invoke: () => s().updateMemberRole('u-1', 'consultant', 'structural'),
     other: () => s().updateMemberRole('u-1', 'engineer') },
-  { label: 'removeMember', method: 'removeMember', keyIndex: 1,
+  { label: 'removeMember', method: 'removeMember', keyIndex: 1, busy: 'Removing the member — already in progress.',
     invoke: () => s().removeMember('u-1'),
     other: () => s().removeMember('u-2') },
 ] as const;
@@ -129,6 +130,45 @@ describe('B6 — one idempotency key per member act, reused on the retry', () =>
       expect(nextAmbliKey).toMatch(UUIDISH);
       expect(nextAmbliKey).not.toBe(ambliKey);
       expect(nextAmbliKey).not.toBe(bKey);
+    });
+
+    it(`${cmd.label}: ONE request per act in flight — a second attempt while the first is unanswered is not sent; after the answer, the next attempt is a new key on a success and the same key on a transient failure`, async () => {
+      // round-2 Codex P1 (4150414077): two overlapping requests sharing k1 — the first completion deleted
+      // k1 unconditionally, a legitimate next act minted k2, and the LATE completion of the other k1
+      // request deleted k2 too, so k2's lost-response retry would have run again under k3. The proof
+      // now rests on two guards: one request per act in flight, and a settle that removes only the key
+      // it dispatched (compare-and-delete).
+      let finish: (v: unknown) => void = () => {};
+      let fail: (e: unknown) => void = () => {};
+      const method = vi.fn()
+        .mockImplementationOnce(() => new Promise((r) => { finish = r; }))
+        .mockImplementationOnce(() => new Promise((_r, j) => { fail = j; }))
+        .mockRejectedValue(new Error('offline'));
+      s()._setGateway({ [cmd.method]: method, listMembers: vi.fn().mockResolvedValue([]) } as unknown as Gateway);
+      cmd.invoke(); // k1 in flight
+      await flush();
+      const k1 = keyOf(cmd, method.mock.calls[0]);
+      cmd.invoke(); // a double-click while k1 is unanswered: refused locally, nothing sent
+      await flush();
+      expect(method).toHaveBeenCalledTimes(1);
+      expect(s().toast).toBe(cmd.busy);
+      finish({}); // k1 succeeds → settled
+      await flush(); await flush();
+      cmd.invoke(); // the next identical act: a NEW key, in flight
+      await flush();
+      expect(method).toHaveBeenCalledTimes(2);
+      const k2 = keyOf(cmd, method.mock.calls[1]);
+      expect(k2).toMatch(UUIDISH);
+      expect(k2).not.toBe(k1);
+      cmd.invoke(); // again refused while k2 is unanswered
+      await flush();
+      expect(method).toHaveBeenCalledTimes(2);
+      fail(refused(503)); // k2 fails transiently → NOT settled
+      await flush(); await flush();
+      cmd.invoke(); // the user's retry: k2 again
+      await flush();
+      expect(method).toHaveBeenCalledTimes(3);
+      expect(keyOf(cmd, method.mock.calls[2])).toBe(k2);
     });
   }
 

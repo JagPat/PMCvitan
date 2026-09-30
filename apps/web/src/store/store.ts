@@ -1949,10 +1949,18 @@ export const useStore = create<Store>()(
      *  ledger under the same key and runs once, while the next identical act (adding the same person again
      *  after a success) is a new act under a new key. Held in memory only: a reload is a new act too, which
      *  the server's own dedup of a keyless call already covered before this unit.
-     *  The project is bound into the act ONCE, when the attempt is made (`memberAct`), and the settle uses
-     *  that same bound act: the active project may change while the request is in flight, and a settle
-     *  that re-read it at response time would miss the entry and leave a settled key to be reused. */
+     *
+     *  The rule the proofs rest on (review rounds 1–2 on this unit): A SETTLE REMOVES ONLY THE KEY IT
+     *  DISPATCHED. The map entry is `boundAct → key`; a completion names BOTH — the act bound to the project
+     *  active at the attempt (never the project active when the response arrives), and the key it was sent
+     *  under (never "whatever the act holds now"). Two guards make that hold under any interleaving:
+     *  - `dispatchMemberAct` lets ONE request per bound act be in flight — a second attempt while the first
+     *    is unanswered is not sent (it would share the key; its completion could then settle a key minted
+     *    after the first one settled). The user's retry is the attempt AFTER a response, never beside one.
+     *  - `settleMemberAct(boundAct, key)` is a compare-and-delete: the entry goes only if it still holds
+     *    that key, so a completion can never remove a key it did not carry. */
     const memberActKeys = new Map<string, string>();
+    const memberActsInFlight = new Set<string>();
     const memberAct = (act: string): string => `${get().activeProjectId}:${act}`;
     const memberActKey = (boundAct: string): string => {
       const existing = memberActKeys.get(boundAct);
@@ -1961,7 +1969,30 @@ export const useStore = create<Store>()(
       memberActKeys.set(boundAct, fresh);
       return fresh;
     };
-    const settleMemberAct = (boundAct: string): void => { memberActKeys.delete(boundAct); };
+    const settleMemberAct = (boundAct: string, key: string): void => {
+      if (memberActKeys.get(boundAct) === key) memberActKeys.delete(boundAct);
+    };
+    /** One dispatch of a member act: refuse a second attempt while the first is unanswered; mint or reuse
+     *  the act's key; settle exactly that key on a success or a terminal refusal; keep it on a transient
+     *  failure for the user's retry. `label` names the act in the "already in progress" notice. */
+    const dispatchMemberAct = (
+      boundAct: string,
+      label: string,
+      send: (key: string) => Promise<unknown>,
+      onOk: () => void,
+      onFail: () => void,
+    ): void => {
+      if (memberActsInFlight.has(boundAct)) {
+        get().flash(label + ' — already in progress.');
+        return;
+      }
+      const key = memberActKey(boundAct);
+      memberActsInFlight.add(boundAct);
+      send(key)
+        .then(() => { settleMemberAct(boundAct, key); onOk(); })
+        .catch((err: unknown) => { if (isTerminalOutboxError(err)) settleMemberAct(boundAct, key); onFail(); })
+        .finally(() => { memberActsInFlight.delete(boundAct); });
+    };
     /** The add act is the REQUEST as the server hashes it (`MembersService.add`: name, role, the email
      *  lower-cased, the phone, the discipline only for a consultant) — a keyed replay with a different
      *  hash is a 409 on the server, so a re-entry that corrects any field must be a NEW act under a new
@@ -4362,36 +4393,47 @@ export const useStore = create<Store>()(
         }))
         .catch(() => {});
     },
-    // Phase 6 task 4d-ii-b / B6 — the three member commands are keyed per ACT (`memberActKey`): the first
-    // attempt mints the key; the user's retry after a lost response (the same act, on the same project)
-    // reuses it, so the server's ledger runs it once; a confirmed success or a terminal refusal settles the
-    // act, so the next identical act is a NEW act under a NEW key. A distinct act (another member, another
-    // role, another project) always has its own key. The project is bound into the act when the attempt is
-    // made, and the settle names that same bound act (not the project active when the response arrives).
+    // Phase 6 task 4d-ii-b / B6 — the three member commands go through `dispatchMemberAct`: one request per
+    // act in flight; the act's key minted on the first attempt and reused on the user's retry after a lost
+    // response, so the server's ledger runs it once; a confirmed success or a terminal refusal settles
+    // exactly the key that was sent, so the next identical act is a NEW act under a NEW key. A distinct act
+    // (another member, another role, another project) always has its own key. The project is bound into
+    // the act at the attempt, not read again when the response arrives.
     addMember: (input) => {
-      if (!gateway) {
+      const g = gateway;
+      if (!g) {
         get().flash('Managing the team needs the server.');
         return;
       }
-      const act = memberAct(addMemberAct(input));
-      gateway
-        .addMember(input, memberActKey(act))
-        .then(() => { settleMemberAct(act); get().loadTeam(); get().flash(input.name + ' added to the team.'); })
-        .catch((err: unknown) => { if (isTerminalOutboxError(err)) settleMemberAct(act); get().flash('Could not add the member — check the details / your access.'); });
+      dispatchMemberAct(
+        memberAct(addMemberAct(input)),
+        'Adding ' + input.name,
+        (key) => g.addMember(input, key),
+        () => { get().loadTeam(); get().flash(input.name + ' added to the team.'); },
+        () => { get().flash('Could not add the member — check the details / your access.'); },
+      );
     },
     updateMemberRole: (userId, role, discipline) => {
-      if (!gateway) return;
-      const act = memberAct(`role:${userId}:${role}:${discipline ?? ''}`);
-      gateway.updateMemberRole(userId, role, discipline, memberActKey(act))
-        .then(() => { settleMemberAct(act); get().loadTeam(); })
-        .catch((err: unknown) => { if (isTerminalOutboxError(err)) settleMemberAct(act); get().flash('Could not change the role.'); });
+      const g = gateway;
+      if (!g) return;
+      dispatchMemberAct(
+        memberAct(`role:${userId}:${role}:${discipline ?? ''}`),
+        'Changing the role',
+        (key) => g.updateMemberRole(userId, role, discipline, key),
+        () => { get().loadTeam(); },
+        () => { get().flash('Could not change the role.'); },
+      );
     },
     removeMember: (userId) => {
-      if (!gateway) return;
-      const act = memberAct(`remove:${userId}`);
-      gateway.removeMember(userId, memberActKey(act))
-        .then(() => { settleMemberAct(act); get().loadTeam(); get().flash('Member removed.'); })
-        .catch((err: unknown) => { if (isTerminalOutboxError(err)) settleMemberAct(act); get().flash('Could not remove the member.'); });
+      const g = gateway;
+      if (!g) return;
+      dispatchMemberAct(
+        memberAct(`remove:${userId}`),
+        'Removing the member',
+        (key) => g.removeMember(userId, key),
+        () => { get().loadTeam(); get().flash('Member removed.'); },
+        () => { get().flash('Could not remove the member.'); },
+      );
     },
     loadOrgMembers: (orgId) => {
       if (!gateway) return;

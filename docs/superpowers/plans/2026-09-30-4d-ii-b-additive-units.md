@@ -285,7 +285,13 @@ keyless call still sends no header. The project is bound into the act when the a
 settle names that bound act: the shadow review of the unit's first head found the settle re-reading
 the active project at response time, so a project switch while a request was in flight left the
 succeeded key in place and the next identical act on the first project would have replayed the ledger
-row (200, nothing run) — fixed forward in the unit with a per-command regression.
+row (200, nothing run) — fixed forward in the unit with a per-command regression. Round-2 Codex found
+the same family once more (two overlapping requests sharing a key; the first completion's unconditional
+delete let the late completion wipe a key minted after it), so the rule the proofs rest on is now stated
+and enforced twice over: a settle removes ONLY the key it dispatched — one request per bound act in
+flight (`dispatchMemberAct`; a second attempt while the first is unanswered is refused with "already in
+progress", the retry being the attempt AFTER a response), and a compare-and-delete settle
+(`settleMemberAct(boundAct, key)`), with a per-command regression for the overlap.
 
 ## Order and what a unit may not do
 
