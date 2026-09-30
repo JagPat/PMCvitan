@@ -75,4 +75,11 @@ test('a lost response after the server commits does NOT double-apply — the wri
       return (body.materials ?? []).filter((m: { name: string }) => m.name === MAT).length;
     }, { timeout: 10_000, message: 'the material must be recorded exactly once' })
     .toBe(1);
+
+  // The dropped POST's route callback is still awaiting `route.fetch()` when the assertions above are
+  // satisfied (the replay under the SAME key is what the server answers first, and the ledger holds the
+  // first request until it does). A callback that outlives the test raises "route.fetch: Test ended" as
+  // an error outside any test and fails the whole run (#678's api-e2e, 2026-09-30). Retire the route
+  // and ignore that in-flight error: nothing the test proves depends on the dropped request's reply.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
