@@ -1943,7 +1943,7 @@ export const useStore = create<Store>()(
     };
 
     /** Phase 6 task 4d-ii-b / B6 — the member commands' per-act keys. An ACT is one intended change on one
-     *  project (`<project>:add:<contact>`, `<project>:role:<user>:<role>:<discipline>`, `<project>:remove:<user>`);
+     *  project (`<project>:add:<request>`, `<project>:role:<user>:<role>:<discipline>`, `<project>:remove:<user>`);
      *  its key is minted on the first attempt and REUSED until the act settles — a confirmed success or a
      *  terminal (4xx) refusal — so the user's retry after a lost or uncertain response reaches the server's
      *  ledger under the same key and runs once, while the next identical act (adding the same person again
@@ -1962,6 +1962,17 @@ export const useStore = create<Store>()(
       return fresh;
     };
     const settleMemberAct = (boundAct: string): void => { memberActKeys.delete(boundAct); };
+    /** The add act is the REQUEST as the server hashes it (`MembersService.add`: name, role, the email
+     *  lower-cased, the phone, the discipline only for a consultant) — a keyed replay with a different
+     *  hash is a 409 on the server, so a re-entry that corrects any field must be a NEW act under a new
+     *  key, and only the byte-identical request (or the same email in another case) reuses the key. */
+    const addMemberAct = (input: AddMemberInput): string => 'add:' + JSON.stringify({
+      name: input.name,
+      role: input.role,
+      email: input.email?.toLowerCase() ?? null,
+      phone: input.phone ?? null,
+      discipline: input.role === 'consultant' ? (input.discipline ?? null) : null,
+    });
 
     // ── Phase 3 Task 7 (correction 2) — the pilot MATERIALS single-command dispatch. Every operational
     //    materials command (reserve a candidate, raise the residual requisition, issue, consume) goes
@@ -4362,7 +4373,7 @@ export const useStore = create<Store>()(
         get().flash('Managing the team needs the server.');
         return;
       }
-      const act = memberAct(`add:${(input.email ?? input.phone ?? '').trim().toLowerCase()}`);
+      const act = memberAct(addMemberAct(input));
       gateway
         .addMember(input, memberActKey(act))
         .then(() => { settleMemberAct(act); get().loadTeam(); get().flash(input.name + ' added to the team.'); })

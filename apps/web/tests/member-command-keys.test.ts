@@ -132,18 +132,37 @@ describe('B6 — one idempotency key per member act, reused on the retry', () =>
     });
   }
 
-  it('the add act is identified by the contact, normalised: the same email in another case or with spaces is the same act', async () => {
+  it('the add act is the request as the server hashes it: the same email in another case is the same act; a corrected name, role, discipline or phone is a NEW act', async () => {
+    // round-1 Codex P2 (4150008570): the server hashes name, role, email (lower-cased), phone and the
+    // consultant's discipline under the key and 409s a same-key/different-hash replay — so a re-entry
+    // that corrects a field must not reuse the key the lost request was sent under.
     const method = vi.fn().mockRejectedValue(new Error('offline'));
     s()._setGateway({ addMember: method, listMembers: vi.fn() } as unknown as Gateway);
-    s().addMember({ name: 'Nilesh', role: 'contractor', email: 'N@vitan.in ' });
+    s().addMember({ name: 'Nilesh', role: 'contractor', email: 'N@vitan.in' });
     await flush();
-    s().addMember({ name: 'Nilesh K.', role: 'contractor', email: 'n@vitan.in' });
+    s().addMember({ name: 'Nilesh', role: 'contractor', email: 'n@vitan.in' }); // the server lower-cases the email: the same hash
     await flush();
-    expect(method.mock.calls[1][1]).toBe(method.mock.calls[0][1]);
+    const key = method.mock.calls[0][1];
+    expect(method.mock.calls[1][1]).toBe(key);
+    s().addMember({ name: 'Nilesh K.', role: 'contractor', email: 'n@vitan.in' }); // a corrected name: another request
+    await flush();
+    expect(method.mock.calls[2][1]).not.toBe(key);
+    s().addMember({ name: 'Nilesh', role: 'engineer', email: 'n@vitan.in' }); // another role
+    await flush();
+    expect(method.mock.calls[3][1]).not.toBe(key);
+    s().addMember({ name: 'Nilesh', role: 'consultant', discipline: 'structural', email: 'n@vitan.in' });
+    await flush();
+    s().addMember({ name: 'Nilesh', role: 'consultant', discipline: 'mep', email: 'n@vitan.in' }); // another discipline
+    await flush();
+    expect(method.mock.calls[5][1]).not.toBe(method.mock.calls[4][1]);
+    // a discipline on a non-consultant is dropped by the server's hash, so it is the same act here too
+    s().addMember({ name: 'Nilesh', role: 'contractor', email: 'n@vitan.in', discipline: 'structural' });
+    await flush();
+    expect(method.mock.calls[6][1]).toBe(key);
     // a phone contact is its own identity
     s().addMember({ name: 'Ramesh', role: 'engineer', phone: '9898989898' });
     await flush();
-    expect(method.mock.calls[2][1]).not.toBe(method.mock.calls[0][1]);
+    expect(method.mock.calls[7][1]).not.toBe(key);
   });
 
   it('without the server nothing is minted and nothing is sent', async () => {

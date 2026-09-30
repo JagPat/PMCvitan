@@ -272,9 +272,11 @@ lost response retried by the user runs once (the server dedups a keyed replay; a
 its per-call synthesized key for tabs older than this unit). Unit tests assert the same key on the
 retry and that a second distinct act mints a new one. ~120 lines, standard.
 
-**As built (the B6 unit).** An ACT is one intended change on one project — `add:<contact>` (the email
-or phone, trimmed and lower-cased), `role:<user>:<role>:<discipline>`, `remove:<user>`, each prefixed by
-the active project id. The store mints the act's key on the first attempt and reuses it until the act
+**As built (the B6 unit).** An ACT is one intended change on one project — `add:<request>` (the add
+request exactly as the server hashes it under the key: name, role, the email lower-cased, the phone,
+the discipline only for a consultant — a re-entry that corrects any field is a new act, since a keyed
+replay with a different hash is a 409 on the server; round-1 Codex P2), `role:<user>:<role>:<discipline>`,
+`remove:<user>`, each prefixed by the active project id. The store mints the act's key on the first attempt and reuses it until the act
 SETTLES: a confirmed success, or a terminal (4xx) refusal — after either, the next identical act is a
 new act under a new key; a transient failure (network, 5xx, 401/408/429) keeps the key for the user's
 retry. The keys live in memory only: a reload is a new act, which the server's synthesized key for a
