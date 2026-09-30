@@ -14,15 +14,41 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: ux-today-draft-reconcile
-reviewed_merge: c6cfec7
-open_pr: 675
+work_item: none
+reviewed_merge: 4f24a24
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-30
 ```
 
-### Now — the #669 Today-flow correction goes FIRST (#675, `claude/ux-today-draft-reconcile`); 4d-ii-b stays the next roadmap unit and is DEFERRED until it merges
+### Now — the #669 Today-flow correction MERGED as #675 (`4f24a24`); the Today reservation is released; 4d-ii-b, the client unit, is the next unit to open
+
+**#675 merged** at `4f24a24` on its reviewed head `7a6e7b0` (full CI run 36700639513 green; a fresh clean
+exact-head Codex review on the first attempt, zero threads; the merge tree identical to the head). It was
+the one open `claude/**` draft, so this record clears `work_item` and `open_pr` and keeps task 4
+`in_progress` — the unit-merged shape of the state machine below — with `next_task: phase-6-task-4d`, so
+the runner's next move is 4d-ii-b, exactly as the reconciliation below deferred it. Nothing writes this
+record automatically; as after every unit merge, this file records the merge itself so the runner is not
+sent back to a PR that no longer exists.
+
+- **What merged.** The engineer's UNSENT daily-log work (check-in, crew counts, photos taken) as a
+  project- and log-scoped pending draft (`apps/web/src/store/dailyLogDraft.ts`) that every reconcile lays
+  over the server's log in both read modes, persisted beside the outbox under the same user + project key,
+  dropped once the server's log is sent, a new day's or absent, and never applied to another project's
+  log. Unit and real-stack Playwright proof, RED at `c6cfec7`; no API change, no migration.
+- **QA handoff.** READY_FOR_QA was DELIVERED on #482 as comment 5909777608 (following the protocol QA set
+  in comment 5904136063), with the exact
+  SHAs, the CI run, the coverage actually delivered and an explicit NOT_DEPLOYED: nothing is released;
+  production remains last verified at #584. A QA failure routes back to this owner as a same-owner
+  correction PR; it does not reopen this record.
+- **The reservation is released.** The Today correction was held by Claude Code session
+  `session_01SkcEKPyj3MbLUoCy8bFuck` on `claude/ux-today-draft-reconcile`; with the merge there is no
+  Today producer to preserve and no UX successor is queued.
+- **Next: 4d-ii-b** — scope, staging disposition and dot's review priorities exactly as recorded in the
+  two sections below.
+
+### History — the #669 Today-flow correction went FIRST (#675, `claude/ux-today-draft-reconcile`); 4d-ii-b stayed the next roadmap unit and was DEFERRED until it merged
 
 The post-merge handoff after #674 (`c6cfec7`) had two candidates for the one open slot: the roadmap's
 4d-ii-b (the client unit, recorded next below) and the named correction of the Today flow merged as #669,
@@ -71,9 +97,9 @@ unit whose staging is still the owner's disposition. Both do not run together: t
   including `/auth/session` with a coverage test; retries, lost responses, double-clicks, role/project
   changes and both rejection paths through re-approval; self-countersign as two explicit acts;
   `rollout.phase6_4d` for role pickers and Forward; the drain minimum including A8b) travel with it.
-- **After this merges:** the record keeps `task_state: in_progress` for task 4 with `work_item` and
-  `open_pr` cleared and `next_task: phase-6-task-4d` (the unit-merged shape of the state machine below);
-  4d-ii-b then opens as the next unit.
+- **After this merges** (done — the record above): `task_state: in_progress` for task 4 with `work_item`
+  and `open_pr` cleared and `next_task: phase-6-task-4d` (the unit-merged shape of the state machine
+  below); 4d-ii-b then opens as the next unit.
 
 ### Recorded next — Phase 6 task 4d: 4d-ii-a is COMPLETE (A8b merged as #673); 4d-ii-b, the client unit, is next
 
