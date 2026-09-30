@@ -421,6 +421,12 @@ export function activitiesReadMode(): 'snapshot' | 'moduleQuery' {
  *  and imported by BOTH the API's query service and this gateway, so the two cannot drift (finding 5). */
 export type ModuleActivities = ActivitiesModuleResult;
 
+/** Phase 6 task 4d (§A.1) — the architect chain's rollout state as the shell reports it: `'reserved'`
+ *  while 4d-i's reservation doors stand, `'open'` once 4d-iii drops them. The ONE value every client
+ *  gate on an architect shape (the Team and decider pickers, the persona switchers, the Forward
+ *  affordance — 4d-ii-b's B2 and B5b) reads, so no client offers what the server refuses. */
+export type Phase6_4dRollout = 'reserved' | 'open';
+
 /** Phase 2 Task 9 — the project-shell summary (identity + enabled modules + projection counts). */
 export interface ProjectShell {
   id: string;
@@ -434,7 +440,26 @@ export interface ProjectShell {
    *  `[]` otherwise); the client gates the Materials surfaces on this. */
   capabilities: string[];
   counts: { pendingDecisions: number; decisionsGeneration: number | null };
+  /** Phase 6 task 4d-ii-b / B1 — mirrors the API's `ProjectShellDto.rollout`, read from the catalog by the
+   *  same function whose 409 refusals judge the doors. Absent from a server older than 4d-ii-a / A5b;
+   *  the store reads an absent value as `'reserved'` (fail closed — never assumed open). */
+  rollout?: { phase6_4d: Phase6_4dRollout };
 }
+
+/**
+ * Phase 6 task 4d-ii-b / B1 (§A.2, "Browser tabs cannot be drained, so they stand behind a CLIENT
+ * CONTRACT boundary") — the decisions contract THIS bundle understands, declared on EVERY request that
+ * reaches the API: the shared `req()` helper AND the direct `fetch('/auth/session')` in `connect()`.
+ * A request declaring less is served by 4d-ii-a's `countersign-v1` interceptor with every 4d shape
+ * stripped (an `awaiting_countersign` row, an architect-designated row, a non-`standard` change
+ * request) and is refused 409 as an architect session; a request declaring exactly this value is served
+ * everything. Only the EXACT value counts on the server (`declaredDecisionsContract`) — anything else
+ * non-empty ranks as the 4b `recorded-v1`. The client-boundary tripwire (`tests/client-boundary-tripwire.test.ts`)
+ * enumerates every `fetch(` site in this file and asserts the header on each API-bound one; the ONE
+ * exempt site is the presigned object-storage PUT in `prepareIssue`, which never reaches the API.
+ */
+export const DECISIONS_CONTRACT_HEADER = 'X-Vitan-Decisions-Contract';
+export const DECISIONS_CONTRACT = 'countersign-v1';
 
 /** Result of a real sign-in (phone OTP / worker token / password). */
 export interface AuthResult {
@@ -500,9 +525,11 @@ export class ApiGateway {
    *  — the audience predicates key on the store's `sessionUserId`, which must be populated on
    *  this path exactly like a real sign-in). */
   async connect(role: Role): Promise<string | null> {
+    // API-bound, so it declares the contract like every `req()` call (B1): the interceptor refuses an
+    // architect token to a lesser client, and this is the ONE token-minting call outside `req()`.
     const res = await fetch(`${this.base}/auth/session`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', [DECISIONS_CONTRACT_HEADER]: DECISIONS_CONTRACT },
       body: JSON.stringify({ role, projectId: this.projectId }),
     });
     if (!res.ok) throw new Error(`auth/session ${res.status}`);
@@ -769,10 +796,10 @@ export class ApiGateway {
       ...init,
       headers: {
         'Content-Type': 'application/json',
-        // Phase 6 unit 4b (Codex R2-F1) — this bundle understands the `recorded` status; the
-        // declaration is the version boundary that lets the server serve records to it while
-        // stripping them for a still-cached PREVIOUS bundle (which never sends the header).
-        'X-Vitan-Decisions-Contract': 'recorded-v1',
+        // Phase 6 unit 4b (Codex R2-F1) introduced this declaration as the version boundary that lets
+        // the server serve a shape to the bundle that understands it while stripping it for a
+        // still-cached PREVIOUS bundle; 4d-ii-b / B1 moves it to `countersign-v1` (see the constant).
+        [DECISIONS_CONTRACT_HEADER]: DECISIONS_CONTRACT,
         ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
         ...(init?.headers ?? {}),
       },

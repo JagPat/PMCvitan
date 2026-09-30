@@ -74,7 +74,7 @@ import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
 import { unlinkPushOnSignOut } from '@/data/push';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -238,6 +238,13 @@ export interface AppState {
   // lands. Once `true`, a capability-gated screen the project lacks is redirected like any
   // forbidden screen. Project-owned → reset on every scope change with `capabilities`.
   capabilitiesKnown: boolean;
+  // Phase 6 task 4d-ii-b / B1 — the architect chain's rollout state from the shell (`rollout.phase6_4d`):
+  // `'reserved'` while 4d-i's doors stand, `'open'` once 4d-iii drops them. The ONE value every client
+  // gate on an architect shape reads (B2's pickers and persona switchers, B5b's Forward affordance).
+  // `'reserved'` until a shell read for THIS project says otherwise — never assumed open, and a shell
+  // from a server older than A5b (no `rollout` field) reads as reserved too. Project-owned → torn down
+  // to `'reserved'` on every scope change, so a switch never carries one project's state to another.
+  phase6_4dRollout: Phase6_4dRollout;
   // Phase 3 Task 7 — the pilot Materials bundle + its module-query load status (greenfield, no snapshot
   // fallback → no `source`). `null`/'idle' on a non-pilot project; the pilot's shell load triggers it.
   materialsView: MaterialsView | null;
@@ -1028,6 +1035,7 @@ export function getInitialState(): AppState {
     enabledModules: [],
     capabilities: [],
     capabilitiesKnown: false,
+    phase6_4dRollout: 'reserved',
     materialsView: null,
     materialsLoad: 'idle',
     reservationPlans: {},
@@ -3114,6 +3122,9 @@ export const useStore = create<Store>()(
           if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) {
             s.enabledModules = shell.enabledModules;
             s.capabilities = shell.capabilities;
+            // B1 — the rollout state, fail closed: only the exact `'open'` opens; anything else (including
+            // an absent field from an older server) stays reserved.
+            s.phase6_4dRollout = shell.rollout?.phase6_4d === 'open' ? 'open' : 'reserved';
             // F-deeplink — the shell has now REPORTED this project's capabilities, so RouteBridge
             // may enforce the capability gate on deep links (it never bounces while unknown).
             s.capabilitiesKnown = true;
