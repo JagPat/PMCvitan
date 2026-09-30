@@ -4967,6 +4967,9 @@ assert "A8b: the one-open-approval count excludes the disposed revisions (a reje
 assert "A8b: the request pairing demands the rejection's change_requested audit row beside 4d-i-b's own clauses, its trigger standing deferred (#673 round 1)" \
   "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_change_request_paired' AND prosrc LIKE '%countersign_rejection request %% was opened in this transaction with %% \`change_requested\` audit row(s)%' AND prosrc LIKE '%change_from_awaiting%' AND prosrc LIKE '%platform_claim_event_pairing_once%')::text || '|' || (SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname = 'phase6_t4d_change_request_paired' AND t.tgname = 'ChangeRequest_t4d_paired' AND t.tgdeferrable AND t.tginitdeferred)::text;" \
   "1|1"
+assert "A8b: the two claimants and the request arm demand the bound notice, and the claimants bind the payload discriminator to the fact (#673 round 2)" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE proname IN ('phase6_t4d_countersign_claims_event','phase6_t4d_stranded_claims_event','phase6_t4d_change_request_paired') AND prosrc LIKE '%platform_tx_notification%')::text || '|' || (SELECT count(*) FROM pg_proc WHERE (proname = 'phase6_t4d_countersign_claims_event' AND prosrc LIKE '%''finalization'', ''countersign''%') OR (proname = 'phase6_t4d_stranded_claims_event' AND prosrc LIKE '%''finalization'', ''stranded_completed''%' AND prosrc LIKE '%''outcome'', ''returned''%'))::text;" \
+  "3|2"
 assert "A8b: the persisted server-generation minimum is 2, raised by this file, and a second replay keeps it" \
   "SELECT \"minimumGeneration\"::text || '|' || \"raisedBy\" FROM \"ServerGeneration\" WHERE \"key\" = 'singleton';" \
   "2|20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence"

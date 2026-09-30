@@ -755,6 +755,7 @@ const REGISTER: Record<string, SealContract> = {
       'txid_current', 'change_from_approved', 'approved_from_change', 'awaiting_from_change', 'change_from_awaiting',
       'phase6_t4d_tx_audit_count', "ARRAY['change_requested']", "ARRAY['change_withdrawn']",
       'countersign_rejection request % was opened in this transaction with % `change_requested` audit row(s)',
+      'platform_tx_notification', "'origin', 'countersign_rejection', 'requestId', NEW.\"id\"",
       'phase6_t4d_tx_actor_event_count', 'NEW."requestedById"',
       'decision.change_requested', 'decision.change_withdrawn',
       'decision.approved', 'decision.reapproved', 'decision.awaiting_countersign',
@@ -843,7 +844,7 @@ const REGISTER: Record<string, SealContract> = {
       'DecisionCountersign.DecisionCountersign_t4d_claim_deferred': C('I'),
     },
     must: ['decision.approved', 'decision.reapproved', "'countersignId'", "'revisionId'", 'NEW."countersignedById"',
-      "'countersigned'", 'phase6_t4d_tx_audit_count', 'platform_claim_event_pairing_once', 'TG_NAME'],
+      "'countersigned'", 'phase6_t4d_tx_audit_count', 'platform_claim_event_pairing_once', 'TG_NAME', 'platform_tx_notification', "'finalization', 'countersign'", 'NEW."countersignedByRole"'],
   },
   phase6_t4d_stranded_claims_event: {
     rule: 'a `DecisionStrandedResolution` fact claims the decision\'s same-transaction event of its '
@@ -858,7 +859,7 @@ const REGISTER: Record<string, SealContract> = {
     },
     must: ["'completed'", 'decision.approved', 'decision.reapproved', 'decision.change_requested', "'resolutionId'",
       "'revisionId'", 'NEW."resolvedById"', "'stranded_resolved'", 'phase6_t4d_tx_audit_count',
-      'platform_claim_event_pairing_once', 'TG_NAME'],
+      'platform_claim_event_pairing_once', 'TG_NAME', 'platform_tx_notification', "'finalization', 'stranded_completed'", "'outcome', 'returned'", 'NEW."resolvedByRole"'],
   },
   phase6_t4d_consultation_claims_event: {
     rule: 'a consultation request claims its `decision.consultation_requested`, a response its '

@@ -479,9 +479,10 @@ forced:
   revision's frozen pair, an unknown finalization or an unfrozen pair rendering nothing); three writer
   branches in the pairing matrix (`decision.approved` by the countersign and by the `completed`
   resolution; `decision.change_requested` by the `returned` resolution — fact-first and event-first,
-  the PRIOR generation committing for the families it carries, twenty-three refusals, and the
-  disagreement branch's audit row with its no-audit-row refusal); the kinded renderer's change-request
-  arm and its audience (pmc and the decider); the status
+  the PRIOR generation committing for the families it carries, thirty-one refusals — the feed row, the
+  discriminator and the envelope pair among them — and the disagreement branch's audit row, notice,
+  origin and request name with their refusals); the kinded renderer's change-request arm and its
+  audience (pmc and the decider); the status
   tripwire's six A8b registrations; the seal contract's two claimants and the birth pairing's widened
   tokens; the inventory's four triggers; the call-graph, route and boundary pins.
 - **One migration** (`20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence`, one transaction,
@@ -505,7 +506,14 @@ forced:
   arm demanding exactly one `change_requested` audit row, as its `standard` arm does and as the plan's
   correspondence table gives both producers of the origin (#673's review round 1: a receipt-backed
   hand-run rejection bundle with its claimed event and no audit row committed evidence the decision
-  log could not show), otherwise byte-identical. No consumer version, catalog row or door moves.
+  log could not show), otherwise byte-identical; (6) the two claimants and the request arm demand the
+  bound FEED ROW of the event's kind (`platform_tx_notification`, the kernel read 4d-i installed; P31: a
+  countersign bundle without its feed row is refused), the claimants bind the payload DISCRIMINATOR the
+  kinded renderer reads to the fact (`finalization = countersign` / `stranded_completed`; `outcome =
+  returned`; the rejection's `origin` and `requestId`), and the event's envelope must equal the fact's
+  frozen pair (#673's review round 2: a receipt-backed hand-run bundle could finalize, return or reject
+  with its claimed event and audit row and no feed row, or with an event the renderer read as an
+  ordinary approval). No consumer version, catalog row or door moves.
 - **§C arms not carried by any A-unit: none.** A8b carries P31 (the atomic countersign, the orphan
   fact, the split), P32 (the self-countersign as two keys), P33 (both disagreement paths, the
   withdrawal refused), P25d/P41 (a question beside the countersign, both orderings), P29b and P36 (the

@@ -52,6 +52,16 @@
 --      arm demanding exactly one `change_requested` audit row, as the `standard` arm does; every other
 --      clause is byte-identical.
 --
+--   2d. THE FEED ROW AND THE DISCRIMINATOR, DEMANDED (#673's review round 2). The claimants demanded
+--      the event and the audit row and never the kinded notice the plan's correspondence table owes each
+--      A8b outcome, nor the payload discriminator the kinded renderer reads (`finalization`: countersign /
+--      stranded_completed; `outcome`: returned; the rejection's `origin` and `requestId`), nor the
+--      envelope's frozen pair beside the actor id (P31). A receipt-backed hand-run bundle could finalize,
+--      return or reject with the correctly claimed event and audit row and no feed row, or with an event
+--      the renderer reads as an ordinary approval. The two claimants and the request arm now demand the
+--      bound notice of the event's kind (`platform_tx_notification`, the kernel read 4d-i installed for
+--      this), the discriminator in the payload containment, and the envelope equal to the fact's pair.
+--
 --   3. THE FENCE, RAISED. A6e installed the server-generation fence and set the persisted minimum to 1
 --      (its own generation), so nothing running was refused. A8b is the last 4d-ii-a server unit — the
 --      release the drain's minimum names — so this file raises the minimum to 2, A8b's compiled
@@ -72,7 +82,8 @@ BEGIN
      OR to_regclass('"ServerGeneration"') IS NULL
      OR to_regproc('phase6_t4d_provenance_bound') IS NULL OR to_regproc('platform_claim_event_pairing_once') IS NULL
      OR to_regproc('phase6_t4d_revision_birth_paired') IS NULL OR to_regproc('phase6_t4d_change_request_paired') IS NULL
-     OR to_regproc('phase6_t4d_tx_audit_count') IS NULL OR to_regproc('platform_t4d_server_generation_raised') IS NULL THEN
+     OR to_regproc('phase6_t4d_tx_audit_count') IS NULL OR to_regproc('platform_t4d_server_generation_raised') IS NULL
+     OR to_regprocedure('platform_tx_notification(text, text)') IS NULL THEN
     RAISE EXCEPTION
       'phase6 4d-ii-a A8b ABORT: this unit installs claimants on 4d-i''s two finalizer fact tables, re-issues 4d-i''s provenance seal and raises A6e''s server-generation minimum, and this database does not hold all of them. Those files apply before this one in the ledger; on the P3005 baseline path they are on ALWAYS_EXECUTE.';
   END IF;
@@ -80,20 +91,26 @@ END $t4dii_a8b_prereq$;
 
 -- ── 1a. the `DecisionCountersign` fact claims the finalizing event ──────────────────────────────
 CREATE OR REPLACE FUNCTION phase6_t4d_countersign_claims_event() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_n BIGINT; v_event TEXT; v_audits BIGINT;
+DECLARE v_n BIGINT; v_event TEXT; v_audits BIGINT; v_notices BIGINT;
 BEGIN
+  -- the finalizing event: the family, the fact and the revision it names, the DISCRIMINATOR the kinded
+  -- renderer reads (`payload.finalization = 'countersign'` — #673 round 2: an event naming the fact but
+  -- carrying no or another finalization renders an ordinary approval or the wrong act), and the actor's
+  -- frozen ENVELOPE equal to the fact's frozen pair (P31: an envelope carrying a role or name other than
+  -- the fact's is refused)
   SELECT count(*), max(e."eventId") INTO v_n, v_event
     FROM "DomainEvent" e
    WHERE e."projectId" = NEW."projectId"
      AND e."entityType" = 'Decision' AND e."entityId" = NEW."decisionId"
      AND e."eventType" IN ('decision.approved', 'decision.reapproved')
      AND e."actorId" = NEW."countersignedById"
+     AND e."actorRole" = NEW."countersignedByRole" AND e."actorName" = NEW."countersignedByName"
      AND e."xmin" = txid_current()::text::xid
-     AND e."payload" @> jsonb_build_object('revisionId', NEW."revisionId", 'countersignId', NEW."id");
+     AND e."payload" @> jsonb_build_object('revisionId', NEW."revisionId", 'countersignId', NEW."id", 'finalization', 'countersign');
   IF TG_NAME LIKE '%\_deferred' THEN
     IF v_n <> 1 THEN
       RAISE EXCEPTION
-        'phase6 4d-ii-a A8b: countersign % of decision % was written in this transaction with % finalizing event(s) (`decision.approved` / `decision.reapproved`) that name it (`payload.countersignId`) and its revision (`payload.revisionId`) and are attributed to the countersigner (`actorId` = `countersignedById`) — a countersign announces the approval it finalized exactly ONCE, in the same transaction, in the architect''s name and for the revision it ended: a finalization with no such event is an approval the stream never carried, and one with two is an act announced twice',
+        'phase6 4d-ii-a A8b: countersign % of decision % was written in this transaction with % finalizing event(s) (`decision.approved` / `decision.reapproved`) that name it (`payload.countersignId`), its revision (`payload.revisionId`) and its finalization (`payload.finalization` = countersign), and are attributed to the countersigner (`actorId` = `countersignedById`, the envelope''s role and name the fact''s frozen pair) — a countersign announces the approval it finalized exactly ONCE, in the same transaction, in the architect''s name and for the revision it ended: a finalization with no such event is an approval the stream never carried, one with two is an act announced twice, and one whose event names another finalization or another person is an act misreported',
         NEW."id", NEW."decisionId", v_n;
     END IF;
     v_audits := phase6_t4d_tx_audit_count(NEW."decisionId", ARRAY['countersigned']);
@@ -101,6 +118,17 @@ BEGIN
       RAISE EXCEPTION
         'phase6 4d-ii-a A8b: countersign % of decision % was written in this transaction with % `countersigned` audit row(s) — the finalizer appends its own row beside the `approved`/`reapproved` row the provisional act left (§A.3 obligation 7), and the register, the fact and the stream record the SAME act',
         NEW."id", NEW."decisionId", v_audits;
+    END IF;
+    -- THE FEED ROW (#673 round 2; P31: a countersign bundle WITHOUT its feed row is refused): the green
+    -- notice bound to the finalizing event, of the event''s own kind, written here
+    SELECT count(*) INTO v_notices FROM "Notification" n
+     WHERE n."projectId" = NEW."projectId" AND n."eventId" = v_event AND n."decisionId" = NEW."decisionId"
+       AND n."kind" IN ('decision.approved', 'decision.reapproved')
+       AND n."xmin" = txid_current()::text::xid;
+    IF platform_tx_notification(NEW."projectId", v_event) IS NULL OR v_notices <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-ii-a A8b: countersign % of decision % was written in this transaction with % bound notice(s) of the approval family on its finalizing event — the finalization owes the Decision Log its green notice (the plan''s correspondence table; `Notification.eventId`/`kind` bound to the event, written in the same transaction), and an act with no feed row is one the log cannot show',
+        NEW."id", NEW."decisionId", v_notices;
     END IF;
   END IF;
   IF v_n <> 1 THEN RETURN NULL; END IF;   -- the immediate half, before the event: the deferred half decides
@@ -122,24 +150,42 @@ CREATE CONSTRAINT TRIGGER "DecisionCountersign_t4d_claim_deferred"
 -- `returned` announces the reopening (`decision.change_requested`) — the request the bundle opens
 -- verifies and never claims (4d-i-b's `ChangeRequest_t4d_claim` / `_paired` defer to the resolution).
 CREATE OR REPLACE FUNCTION phase6_t4d_stranded_claims_event() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_n BIGINT; v_event TEXT; v_audits BIGINT; v_types TEXT[];
+DECLARE v_n BIGINT; v_event TEXT; v_audits BIGINT; v_notices BIGINT; v_types TEXT[]; v_named JSONB;
 BEGIN
   v_types := CASE NEW."outcome"
     WHEN 'completed' THEN ARRAY['decision.approved', 'decision.reapproved']
     ELSE ARRAY['decision.change_requested'] END;
+  -- the DISCRIMINATOR the kinded renderer reads (#673 round 2): `completed` announces
+  -- `finalization = stranded_completed` (the green notice names the PMC as the finalizer, never as the
+  -- approver); `returned` announces `outcome = returned` beside the request it opens
+  v_named := CASE NEW."outcome"
+    WHEN 'completed' THEN jsonb_build_object('revisionId', NEW."revisionId", 'resolutionId', NEW."id", 'finalization', 'stranded_completed')
+    ELSE jsonb_build_object('revisionId', NEW."revisionId", 'resolutionId', NEW."id", 'outcome', 'returned') END;
   SELECT count(*), max(e."eventId") INTO v_n, v_event
     FROM "DomainEvent" e
    WHERE e."projectId" = NEW."projectId"
      AND e."entityType" = 'Decision' AND e."entityId" = NEW."decisionId"
      AND e."eventType" = ANY (v_types)
      AND e."actorId" = NEW."resolvedById"
+     AND e."actorRole" = NEW."resolvedByRole" AND e."actorName" = NEW."resolvedByName"
      AND e."xmin" = txid_current()::text::xid
-     AND e."payload" @> jsonb_build_object('revisionId', NEW."revisionId", 'resolutionId', NEW."id");
+     AND e."payload" @> v_named;
   IF TG_NAME LIKE '%\_deferred' THEN
     IF v_n <> 1 THEN
       RAISE EXCEPTION
-        'phase6 4d-ii-a A8b: stranded resolution % (`%`) of decision % was written in this transaction with % event(s) of its outcome''s family (%) that name it (`payload.resolutionId`) and its revision (`payload.revisionId`) and are attributed to the resolving PMC (`actorId` = `resolvedById`) — a resolution announces its outcome exactly ONCE, in the same transaction, in the resolver''s name and for the revision it disposed of',
+        'phase6 4d-ii-a A8b: stranded resolution % (`%`) of decision % was written in this transaction with % event(s) of its outcome''s family (%) that name it (`payload.resolutionId`), its revision (`payload.revisionId`) and its outcome (`payload.finalization` = stranded_completed, or `payload.outcome` = returned) and are attributed to the resolving PMC (`actorId` = `resolvedById`, the envelope''s role and name the fact''s frozen pair) — a resolution announces its outcome exactly ONCE, in the same transaction, in the resolver''s name and for the revision it disposed of, and an event naming another outcome or another person is an act misreported',
         NEW."id", NEW."outcome", NEW."decisionId", v_n, array_to_string(v_types, ' or ');
+    END IF;
+    -- THE FEED ROW (#673 round 2): the outcome''s notice bound to its event — the green notice for
+    -- `completed`, the change-request notice for `returned` — written here
+    SELECT count(*) INTO v_notices FROM "Notification" n
+     WHERE n."projectId" = NEW."projectId" AND n."eventId" = v_event AND n."decisionId" = NEW."decisionId"
+       AND n."kind" = ANY (v_types)
+       AND n."xmin" = txid_current()::text::xid;
+    IF platform_tx_notification(NEW."projectId", v_event) IS NULL OR v_notices <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-ii-a A8b: stranded resolution % (`%`) of decision % was written in this transaction with % bound notice(s) of its outcome''s family on its event — the resolution owes the Decision Log its notice (the plan''s correspondence table; `Notification.eventId`/`kind` bound to the event, written in the same transaction), and an act with no feed row is one the log cannot show',
+        NEW."id", NEW."outcome", NEW."decisionId", v_notices;
     END IF;
     v_audits := phase6_t4d_tx_audit_count(NEW."decisionId", ARRAY['stranded_resolved']);
     IF v_audits <> 1 THEN
@@ -518,6 +564,28 @@ BEGIN
           'phase6 4d-ii-a A8b: countersign_rejection request % was opened in this transaction with % `change_requested` audit row(s) for decision % — the disagreement (reject-back, forward-on) and the `returned` resolution append the audit row beside the request and the event, and the register, the fact and the stream record the SAME act: a rejection with no audit row is a reopening the decision log cannot show, and one with two is an act registered twice',
           NEW."id", v_audits, NEW."decisionId";
       END IF;
+      -- 4d-ii-a / A8b (#673 round 2) — THE EVENT NAMES THIS REQUEST AND ITS ORIGIN, AND THE FEED ROW IS
+      -- BOUND TO IT: the kinded renderer renders the change-request notice from `payload.origin`
+      -- (`countersign_rejection`), the title and the reason, so an event carrying no origin or another
+      -- request's id leaves a notice the log cannot render; and the reopening owes the Decision Log
+      -- its notice (the plan's correspondence table gives it to this origin alone).
+      SELECT count(*), max(e."eventId") INTO v_events, v_event FROM "DomainEvent" e
+       WHERE e."projectId" = NEW."projectId" AND e."entityType" = 'Decision' AND e."entityId" = NEW."decisionId"
+         AND e."eventType" = 'decision.change_requested' AND e."xmin" = txid_current()::text::xid
+         AND e."payload" @> jsonb_build_object('origin', 'countersign_rejection', 'requestId', NEW."id");
+      IF v_events <> 1 THEN
+        RAISE EXCEPTION
+          'phase6 4d-ii-a A8b: countersign_rejection request % of decision % was opened in this transaction with % `decision.change_requested` event(s) naming it (`payload.requestId`) and its origin (`payload.origin` = countersign_rejection) — the reopening announces THIS request exactly ONCE, and an event naming no origin or another request is one the Decision Log renders as nothing',
+          NEW."id", NEW."decisionId", v_events;
+      END IF;
+      IF platform_tx_notification(NEW."projectId", v_event) IS NULL OR NOT EXISTS (
+           SELECT 1 FROM "Notification" n
+            WHERE n."projectId" = NEW."projectId" AND n."eventId" = v_event AND n."decisionId" = NEW."decisionId"
+              AND n."kind" = 'decision.change_requested' AND n."xmin" = txid_current()::text::xid) THEN
+        RAISE EXCEPTION
+          'phase6 4d-ii-a A8b: countersign_rejection request % of decision % was opened in this transaction with 0 bound notice(s) of kind `decision.change_requested` on its event — the rejection (reject-back, forward-on, the `returned` resolution) owes the Decision Log its change-request notice (`Notification.eventId`/`kind` bound to the event, written in the same transaction), and a reopening with no feed row is one the log cannot show',
+          NEW."id", NEW."decisionId";
+      END IF;
       -- ONE act, ONE actor (#590 round 4). The request binds its own actor (and does it for the
       -- `returned` resolution's request too: the PMC who returned the decision is the requester that
       -- request records); with A8b's audit row 4d-i's `DecisionEvent_t4d_correspondence` binds the
@@ -684,6 +752,18 @@ BEGIN
      AND t.tgdeferrable AND t.tginitdeferred;
   IF n <> 1 THEN
     RAISE EXCEPTION 'phase6 4d-ii-a A8b: the birth pairing trigger is not standing deferred on the re-issued body (found %). The deploy is refused.', n;
+  END IF;
+  SELECT count(*) INTO n FROM pg_proc p
+   WHERE p.proname IN ('phase6_t4d_countersign_claims_event', 'phase6_t4d_stranded_claims_event', 'phase6_t4d_change_request_paired')
+     AND position('platform_tx_notification' in p.prosrc) > 0;
+  IF n <> 3 THEN
+    RAISE EXCEPTION 'phase6 4d-ii-a A8b: the two claimants and the request arm do not demand the bound notice (found % of 3). The deploy is refused.', n;
+  END IF;
+  SELECT count(*) INTO n FROM pg_proc p
+   WHERE (p.proname = 'phase6_t4d_countersign_claims_event' AND position('''finalization'', ''countersign''' in p.prosrc) > 0)
+      OR (p.proname = 'phase6_t4d_stranded_claims_event' AND position('''finalization'', ''stranded_completed''' in p.prosrc) > 0 AND position('''outcome'', ''returned''' in p.prosrc) > 0);
+  IF n <> 2 THEN
+    RAISE EXCEPTION 'phase6 4d-ii-a A8b: the finalizer claimants do not bind the payload discriminator to the fact (found % of 2). The deploy is refused.', n;
   END IF;
   SELECT p.prosrc INTO v_src FROM pg_proc p WHERE p.proname = 'phase6_t4d_change_request_paired';
   IF v_src IS NULL OR position('countersign_rejection request % was opened in this transaction with % `change_requested` audit row(s)' in v_src) = 0
