@@ -8,7 +8,7 @@ import { ArrowRight } from '@/lib/icons';
 import type { PortfolioProject } from '@vitan/shared';
 import styles from './responsive.module.css';
 
-const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Engineer', contractor: 'Contractor' };
+const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Engineer', contractor: 'Contractor', consultant: 'Consultant', architect: 'Architect' };
 
 /**
  * Portfolio — a cross-project monitoring board. One card per project the PMC can

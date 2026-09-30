@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useStore } from '@/store/store';
 import { Bell, Power, ChevronDown } from '@/lib/icons';
-import { ROLE_LABEL, ROLES } from '@/lib/screens';
+import { ROLE_LABEL } from '@/lib/screens';
+import { selectRoles } from '@/store/selectors';
 import type { Role } from '@vitan/shared';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { useProjectSwitch } from './useProjectSwitch';
@@ -18,6 +19,8 @@ import styles from './TopBar.module.css';
  */
 export function TopBar() {
   const role = useStore((s) => s.role);
+  // B2 — the personas on offer follow the shell's rollout (a reserved role is not offered)
+  const roles = useStore(selectRoles);
   const setRole = useStore((s) => s.setRole);
   const signOut = useStore((s) => s.signOut);
   const toggleNotif = useStore((s) => s.toggleNotif);
@@ -65,7 +68,7 @@ export function TopBar() {
           <label className={styles.selectWrap} data-testid="mobile-role-switcher">
             <span className={styles.viewingAs}>as</span>
             <select value={role} onChange={(e) => setRole(e.target.value as Role)} className={styles.select} aria-label="Viewing as">
-              {ROLES.map((r) => (
+              {roles.map((r) => (
                 <option key={r} value={r}>
                   {ROLE_LABEL[r]}
                 </option>

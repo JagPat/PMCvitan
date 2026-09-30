@@ -1,5 +1,6 @@
 import { useStore } from '@/store/store';
-import { ROLE_LABEL, ROLE_SUBTITLE, ROLES } from '@/lib/screens';
+import { selectRoles } from '@/store/selectors';
+import { ROLE_LABEL, ROLE_SUBTITLE } from '@/lib/screens';
 
 /**
  * Persona switcher — the session/identity control. Until auth (Phase 7) this
@@ -9,6 +10,8 @@ import { ROLE_LABEL, ROLE_SUBTITLE, ROLES } from '@/lib/screens';
 export function RolePicker({ compact = false }: { compact?: boolean }) {
   const role = useStore((s) => s.role);
   const setRole = useStore((s) => s.setRole);
+  // B2 — the personas on offer follow the shell's rollout (a reserved role is not offered)
+  const roles = useStore(selectRoles);
 
   return (
     <div>
@@ -24,7 +27,7 @@ export function RolePicker({ compact = false }: { compact?: boolean }) {
         VIEWING AS
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-        {ROLES.map((r) => {
+        {roles.map((r) => {
           const active = role === r;
           return (
             <button

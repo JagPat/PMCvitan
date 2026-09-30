@@ -1,6 +1,11 @@
 import { test, expect, type Page } from '@playwright/test';
 // the product's own role list, so this file cannot drift from it (#584 review round 11)
-import { ROLES } from '../../src/lib/screens';
+import { rolesFor } from '../../src/lib/screens';
+
+// Phase 6 task 4d-ii-b / B2 — the personas the product offers follow the shell's `rollout.phase6_4d`;
+// the demo has no server and so no shell, and the store's fail-closed default is `'reserved'`, which
+// hides the reserved architect persona. These are the personas the switcher offers in that state.
+const ROLES = rolesFor('reserved');
 import { pilotTargetState } from './fixtures/pilot-targets';
 import { SEED_DECISIONS, SEED_DRAWINGS } from '@vitan/shared';
 

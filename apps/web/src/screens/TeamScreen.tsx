@@ -4,13 +4,17 @@ import { useStore } from '@/store/store';
 import { Eyebrow, Button, Modal } from '@/components';
 import { Plus, X, Trash2, Pencil } from '@/lib/icons';
 import { CONSULTANT_DISCIPLINES, type OrgRole, type Role, type CompanyKind, type ProjectCompany } from '@vitan/shared';
+import { ROLE_LABEL } from '@/lib/screens';
+import { selectRoles } from '@/store/selectors';
 import type { AddMemberInput, NewProjectInput, CompanyInput } from '@/data/apiGateway';
 import { todayCivil } from '@/lib/civilDate';
 import { isDeviceBindPending } from '@/lib/labourKeys';
 import styles from './responsive.module.css';
 
-const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor', 'consultant'];
-const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Engineer', contractor: 'Contractor', consultant: 'Consultant', worker: 'Worker' };
+// B2 — the member-role labels are the ONE shared `ROLE_LABEL` (so the architect's is the same everywhere),
+// plus the worker label a roster row may carry; the role OPTIONS come from the store's rollout-aware
+// `selectRoles`, never a list written here (#677 review, finding 4145060015).
+const MEMBER_ROLE_LABEL: Record<string, string> = { ...ROLE_LABEL, worker: 'Worker' };
 const discLabel = (d: string) => d.charAt(0).toUpperCase() + d.slice(1);
 const ORG_ROLES: OrgRole[] = ['owner', 'admin', 'member'];
 const ORG_ROLE_LABEL: Record<OrgRole, string> = { owner: 'Owner', admin: 'Admin', member: 'Member' };
@@ -38,6 +42,11 @@ export function TeamScreen() {
   const location = useStore((s) => s.location);
   // membership role when known; else the current session role (covers the demo persona)
   const activeMembership = memberships.find((m) => m.projectId === activeProjectId);
+  // B2 — the roles a member may be added in or moved to, following the shell's `rollout.phase6_4d`
+  // (P28b / P34's web arm): the architect is offered only once the server admits one. A member
+  // ALREADY in a role the rollout hides still shows that role, so the picker never misstates a row.
+  const roleOptions = useStore(selectRoles);
+  const optionsFor = (current: Role): readonly Role[] => (roleOptions.includes(current) ? roleOptions : [...roleOptions, current]);
   const myRole = activeMembership?.role ?? sessionRole;
   const canManage = myRole === 'pmc';
   // deleting a project is an org-admin power (owner/admin of the project's org)
@@ -103,7 +112,7 @@ export function TeamScreen() {
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="member-name" />
           <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="member-contact" />
           <select value={role} onChange={(e) => setRole(e.target.value as Role)} style={{ ...fld, flex: '0 0 130px' }} data-testid="member-role">
-            {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+            {roleOptions.map((r) => <option key={r} value={r}>{MEMBER_ROLE_LABEL[r]}</option>)}
           </select>
           {role === 'consultant' && (
             <select value={discipline} onChange={(e) => setDiscipline(e.target.value)} style={{ ...fld, flex: '0 0 130px' }} data-testid="member-discipline" aria-label="Discipline">
@@ -135,7 +144,7 @@ export function TeamScreen() {
                     override the shared `fld` height downward, so raising the token alone would
                     have left them short: an override is a second spelling of the rule. */}
                 <select value={m.role} onChange={(e) => { const r = e.target.value as Role; updateMemberRole(m.userId, r, r === 'consultant' ? (m.discipline ?? 'architect') : undefined); }} style={{ ...fld, flex: '0 0 120px', height: 44 }} data-testid={`member-role-${m.userId}`}>
-                  {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                  {optionsFor(m.role).map((r) => <option key={r} value={r}>{MEMBER_ROLE_LABEL[r]}</option>)}
                 </select>
                 {m.role === 'consultant' && (
                   <select value={m.discipline ?? 'architect'} onChange={(e) => updateMemberRole(m.userId, 'consultant', e.target.value)} style={{ ...fld, flex: '0 0 120px', height: 44 }} aria-label={`Discipline for ${m.name}`}>
@@ -144,7 +153,7 @@ export function TeamScreen() {
                 )}
               </>
             ) : (
-              <span style={roleChip}>{ROLE_LABEL[m.role]}{m.role === 'consultant' && m.discipline ? ` · ${discLabel(m.discipline)}` : ''}</span>
+              <span style={roleChip}>{MEMBER_ROLE_LABEL[m.role]}{m.role === 'consultant' && m.discipline ? ` · ${discLabel(m.discipline)}` : ''}</span>
             )}
             {canManage && (
               <button onClick={() => removeMember(m.userId)} aria-label={`Remove ${m.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, padding: 4 }}>

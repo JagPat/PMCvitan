@@ -1,9 +1,10 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, type IssueDecisionPayload } from '@/store/store';
+import { selectPhase6_4dOpen } from '@/store/selectors';
 import { Button, Modal, InheritedContext, MoreDetails } from '@/components';
 import { X } from '@/lib/icons';
-import { swatch as swatchGradient, SW, type SwatchKey } from '@vitan/shared';
+import { swatch as swatchGradient, SW, type DeciderKind, type SwatchKey } from '@vitan/shared';
 import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
 
 /**
@@ -29,8 +30,11 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
   // Phase 6 task 4b (§A.1/§A.2) — WHO decides: the client (default, byte-identical legacy
   // behaviour), the practice itself (pmc), a NAMED project member, or nobody (`none` — a
   // record-only issue with exactly zero options, born terminal `recorded`).
-  const [deciderKind, setDeciderKind] = useState<'client' | 'pmc' | 'member' | 'none'>('client');
+  const [deciderKind, setDeciderKind] = useState<DeciderKind>('client');
   const [deciderMembershipId, setDeciderMembershipId] = useState('');
+  // Phase 6 task 4d-ii-b / B2 — the ARCHITECT designation (§A.1) is offered only once the shell reads
+  // `rollout.phase6_4d = 'open'`: while 4d-i's doors stand the server refuses it 409 before any write.
+  const chainOpen = useStore(selectPhase6_4dOpen);
   const members = useStore(useShallow((s) => s.members));
   const loadTeam = useStore((s) => s.loadTeam);
   useEffect(() => {
@@ -107,6 +111,7 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
             <option value="client">The client</option>
             <option value="pmc">The practice (PMC)</option>
             <option value="member">A named member</option>
+            {chainOpen && <option value="architect">The architect</option>}
             <option value="none">Nobody — record only</option>
           </select>
           {deciderKind === 'member' && (

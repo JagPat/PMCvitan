@@ -14,15 +14,38 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-ii-b-b1-client-boundary
-reviewed_merge: ba20653
-open_pr: 678
+work_item: 4d-ii-b-b2-role-fanout
+reviewed_merge: deb83d0
+open_pr: 679
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-30
 ```
 
-### Now — 4d-ii-b unit B1, the client boundary and the rollout read (#678, `claude/4d-ii-b-b1-client-boundary`)
+### Now — 4d-ii-b unit B2, the role fan-out and the architect persona (#679, `claude/4d-ii-b-b2-role-fanout`)
+
+B1 merged as #678 (`deb83d0`; one CI fix on the way — the pre-existing lost-response spec's route
+callback outliving its test, retired with `page.unrouteAll` — then a clean exact-head review). **B2 is the
+second unit and the one open `claude/**` draft.** It ships the role fan-out under B1's ONE shell read:
+`RESERVED_ROLES` (`['architect']`) and `rolesFor(rollout)` in `lib/screens.ts` replace the static
+persona list, and every switcher and picker reads it through the store's `selectRoles` — the rail's
+`RolePicker`, the phone's `TopBar` switcher (the two persona switchers #677's review named), and the Team
+screen's add-member and per-member pickers (a member ALREADY in a hidden role still shows that role, so
+no row is misstated). The architect persona has its screens (`inbox`, `decision-log`, `drawings`,
+`places`, from its `ROLE_POLICY` rows) and every sign-in landing falls back to the home rather than an
+undefined screen. Both decider pickers (`IssueDecisionModal`, `DraftsScreen`) offer "The architect"
+only when `selectPhase6_4dOpen`, and the gateway's `deciderKind` inputs take the shared `DeciderKind`.
+The Portfolio and Drawings role labels answer for the role; the Team screen's labels are the shared
+`ROLE_LABEL`. The API's role-vocabulary tripwire moves its four owed web registrations to answered or
+retired and replaces the persona pin with pins on the new shape (no static persona list may return;
+every switcher and picker reads `selectRoles`; both decider pickers gate on the rollout). Proof: unit
+tests render each switcher and picker under `'reserved'` and `'open'`, and a Playwright spec against
+the reserved server asserts the Team pickers and the decider picker offer no architect (P28's web
+lists and pickers; P28b / P34's web arm). No server runtime change, no migration; dark: the shell reads
+`'reserved'` until 4d-iii, so nothing new renders. Next after B2: B3 (the readers, the Inbox branch and
+the badge).
+
+### History — 4d-ii-b unit B1, the client boundary and the rollout read (#678, `claude/4d-ii-b-b1-client-boundary`)
 
 The staging record merged as #677 (`ba20653`, one review round: the persona switchers joined B2's gate,
 the approval route stays on actionable states in B3), recording 4d-ii-b as the additive units B1 … B6 of
@@ -43,7 +66,7 @@ app makes carries the exact value and none carries `recorded-v1`, and that the s
 `rollout.phase6_4d = 'reserved'` with the doors standing (P29c's web arm). No server runtime change, no
 migration; dark: the 4b interceptor admits any non-empty declaration and the 4d-ii-a interceptor serves a
 `countersign-v1` client everything, so a tab on this bundle behaves byte-identically against the current
-server. Next after B1: B2 (the role fan-out and the architect persona).
+server. B1 merged as #678 (`deb83d0`); B2 opened next — the record above.
 
 ### History — 4d-ii-b opened with its STAGING RECORD (#677, `claude/4d-ii-b-staging-record`): the client unit as additive units B1 … B6
 

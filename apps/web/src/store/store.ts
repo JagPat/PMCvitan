@@ -1987,7 +1987,8 @@ export const useStore = create<Store>()(
         const allowed = screensFor(res.role).map((m) => m.key);
         // a role-allowed target screen survives the transition (deep links); anything
         // else lands on the role's home
-        s.screen = opts?.targetScreen && allowed.includes(opts.targetScreen) ? opts.targetScreen : allowed[0];
+        // B2 — never land on an undefined screen: a role whose list were ever empty falls back to the home
+        s.screen = opts?.targetScreen && allowed.includes(opts.targetScreen) ? opts.targetScreen : (allowed[0] ?? 'inbox');
         s.sessionToken = res.token;
         s.userName = res.name ?? null;
         s.sessionUserId = jwtSub(res.token);
@@ -2031,7 +2032,7 @@ export const useStore = create<Store>()(
       const role: Role = em.startsWith('pmc@') ? 'pmc' : em.startsWith('client@') ? 'client' : em.startsWith('contractor@') ? 'contractor' : 'engineer';
       set((s) => {
         s.role = role;
-        s.screen = screensFor(role)[0].key;
+        s.screen = screensFor(role)[0]?.key ?? 'inbox';
         s.access = freshAccess(s.access.generation + 1);
       });
       get().flash('Signed in as ' + role + ' (demo).');
@@ -2073,7 +2074,7 @@ export const useStore = create<Store>()(
 
     // ---- shell ----
     setRole: (role) => {
-      const first = screensFor(role)[0].key;
+      const first = screensFor(role)[0]?.key ?? 'inbox';
       const applySwitch = () => set((s) => {
         s.role = role;
         s.screen = first;
@@ -5050,7 +5051,7 @@ export const useStore = create<Store>()(
       }
       set((s) => {
         s.role = role;
-        s.screen = screensFor(role)[0].key;
+        s.screen = screensFor(role)[0]?.key ?? 'inbox';
         s.access = freshAccess(s.access.generation + 1);
       });
       get().flash('Signed in as ' + role + ' (demo).');
@@ -5292,7 +5293,7 @@ export const useStore = create<Store>()(
           // local demo: persona sign-in, no token/project change
           set((s) => {
             s.role = role;
-            s.screen = screensFor(role)[0].key;
+            s.screen = screensFor(role)[0]?.key ?? 'inbox';
             s.sessionToken = null;
             s.userName = name;
             s.access = freshAccess(s.access.generation + 1);
