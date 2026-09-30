@@ -753,8 +753,11 @@ const REGISTER: Record<string, SealContract> = {
       + '`change_requested` audit row appended here (4d-ii-a / A8b, #673 round 1: the plan\'s '
       + 'correspondence table gives both producers of the origin the row), exactly ONE event naming '
       + 'it, its origin, the DECISION\'s title and its OWN reason (#673 rounds 2–3: the fields the kinded '
-      + 'renderer reads, bound to the rows, not the payload\'s word) and exactly ONE '
-      + 'event attributed to its `requestedById`; a request written '
+      + 'renderer reads, bound to the rows, not the payload\'s word), exactly ONE '
+      + 'event attributed to its `requestedById`, and (#673 round 5) its receipt from one of its two '
+      + 'producers, its frozen role the producer\'s (`architect` under `decisions.disagree`, `pmc` under '
+      + '`decisions.resolveStrandedCountersign`) and exactly ONE event whose envelope is that frozen pair; '
+      + 'a request written '
       + '`withdrawn` rides the `change → approved` restoration, exactly one `change_withdrawn` '
       + 'audit row, and claims its one `decision.change_withdrawn`; a request written `resolved` '
       + 'rides the reapproval\'s landing with exactly one revision born here and its event present '
@@ -769,6 +772,10 @@ const REGISTER: Record<string, SealContract> = {
       'countersign_rejection request % was opened in this transaction with % `change_requested` audit row(s)',
       'platform_tx_notification', "'origin', 'countersign_rejection', 'requestId', NEW.\"id\", 'title', v_title, 'reason', NEW.\"reason\"",
       "btrim(coalesce(NEW.\"reason\", ''), E' \\t\\n\\r\\v\\f')",
+      // #673 round 5 — the producer's authority and the frozen pair: the receipt, the role by producer,
+      // the event's envelope equal to the request's pair
+      "WHEN 'decisions.disagree' THEN 'architect' ELSE 'pmc'", 'e."actorRole" = NEW."requestedByRole" AND e."actorName" = NEW."requestedByName"',
+      "'decisions.disagree', 'decisions.resolveStrandedCountersign'",
       'phase6_t4d_tx_actor_event_count', 'NEW."requestedById"',
       'decision.change_requested', 'decision.change_withdrawn',
       'decision.approved', 'decision.reapproved', 'decision.awaiting_countersign',
@@ -850,7 +857,8 @@ const REGISTER: Record<string, SealContract> = {
     rule: 'a `DecisionCountersign` fact claims the decision\'s same-transaction finalizing event '
       + '(`decision.approved` / `decision.reapproved`) whose payload names THIS row (`countersignId`) and '
       + 'its revision (`revisionId`), carries the finalization discriminator, the DECISION\'s title and '
-      + 'decider kind (the content the kinded renderer reads, #673 round 3) and whose `actorId` is '
+      + 'decider kind (the content the kinded renderer reads, #673 round 3), the REVISION\'s frozen approver '
+      + 'pair and `approvedFrom` (#673 round 5) and whose `actorId` is '
       + '`countersignedById` under the fact\'s frozen envelope pair; the DEFERRED half demands exactly one, '
       + 'the `countersigned` audit row and the bound notice beside it',
     plan: '§A.2 the chain; §A.3 obligation 7; A8b',
@@ -860,14 +868,17 @@ const REGISTER: Record<string, SealContract> = {
     },
     must: ['decision.approved', 'decision.reapproved', "'countersignId'", "'revisionId'", 'NEW."countersignedById"',
       "'countersigned'", 'phase6_t4d_tx_audit_count', 'platform_claim_event_pairing_once', 'TG_NAME', 'platform_tx_notification', "'finalization', 'countersign'", 'NEW."countersignedByRole"',
-      "'title', v_title, 'deciderKind', v_kind", 'd."deciderKind"::text', "btrim(coalesce(v_title, ''), E' \\t\\n\\r\\v\\f')"],
+      "'title', v_title, 'deciderKind', v_kind", 'd."deciderKind"::text', "btrim(coalesce(v_title, ''), E' \\t\\n\\r\\v\\f')",
+      // #673 round 5 — the revision's frozen approver pair and origin, frozen on the finalizing event
+      "'approverName', v_appr_name, 'approverRole', v_appr_role, 'approvedFrom', v_from", 'r."approvedByName", r."approvedByRole", r."approvedFrom"'],
   },
   phase6_t4d_stranded_claims_event: {
     rule: 'a `DecisionStrandedResolution` fact claims the decision\'s same-transaction event of its '
       + 'outcome\'s family — `completed`: `decision.approved` / `decision.reapproved`; `returned`: '
       + '`decision.change_requested` (the request it opens verifies, never claims) — whose payload names '
       + 'THIS row (`resolutionId`), its revision, its outcome discriminator and the DECISION\'s title (and, '
-      + '`completed`, its decider kind — the content the kinded renderer reads, #673 round 3) and whose '
+      + '`completed`, its decider kind — the content the kinded renderer reads, #673 round 3 — and the '
+      + 'REVISION\'s frozen approver pair and `approvedFrom`, #673 round 5) and whose '
       + '`actorId` is `resolvedById` under the fact\'s frozen envelope pair; the DEFERRED half demands exactly '
       + 'one, the `stranded_resolved` audit row and the bound notice beside it',
     plan: '§A.2 the stranded decision; §A.3 obligation 7; A8b',
@@ -878,7 +889,8 @@ const REGISTER: Record<string, SealContract> = {
     must: ["'completed'", 'decision.approved', 'decision.reapproved', 'decision.change_requested', "'resolutionId'",
       "'revisionId'", 'NEW."resolvedById"', "'stranded_resolved'", 'phase6_t4d_tx_audit_count',
       'platform_claim_event_pairing_once', 'TG_NAME', 'platform_tx_notification', "'finalization', 'stranded_completed'", "'outcome', 'returned'", 'NEW."resolvedByRole"',
-      "'title', v_title, 'deciderKind', v_kind", "'outcome', 'returned', 'title', v_title", 'd."deciderKind"::text', "btrim(coalesce(v_title, ''), E' \\t\\n\\r\\v\\f')"],
+      "'title', v_title, 'deciderKind', v_kind", "'outcome', 'returned', 'title', v_title", 'd."deciderKind"::text', "btrim(coalesce(v_title, ''), E' \\t\\n\\r\\v\\f')",
+      "'approverName', v_appr_name, 'approverRole', v_appr_role, 'approvedFrom', v_from", 'r."approvedByName", r."approvedByRole", r."approvedFrom"'],
   },
   phase6_t4d_consultation_claims_event: {
     rule: 'a consultation request claims its `decision.consultation_requested`, a response its '

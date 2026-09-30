@@ -479,12 +479,15 @@ forced:
   revision's frozen pair, an unknown finalization or an unfrozen pair rendering nothing); three writer
   branches in the pairing matrix (`decision.approved` by the countersign and by the `completed`
   resolution; `decision.change_requested` by the `returned` resolution — fact-first and event-first,
-  the PRIOR generation committing for the families it carries, forty refusals — the feed row, the
+  the PRIOR generation committing for the families it carries, forty-five refusals — the feed row, the
   discriminator, the envelope pair, the title and decider kind the renderer reads, a newline-only title,
-  the request naming an earlier revision than the resolution and the resolution recording another reason
-  than its request among them — and the disagreement branch's receipt, audit row, notice, origin, request
-  name, title, reason and tab-only reason with their refusals, and a rejection request named as a resolve
-  receipt's primary with no resolution written); the kinded renderer's change-request arm and its
+  the approver pair and origin forged or absent, the request naming an earlier revision than the
+  resolution, the resolution recording another reason than its request and its request frozen as the
+  architect among them — and the disagreement branch, run in the ARCHITECT's name under the active chain:
+  its receipt, audit row, notice, origin, request name, title, reason and tab-only reason with their
+  refusals, a client-shaped disagreement, a request with no frozen pair, an envelope naming another role,
+  a request citing no receipt, and a rejection request named as a resolve receipt's primary with no
+  resolution written); the kinded renderer's change-request arm and its
   audience (pmc and the decider); the status
   tripwire's six A8b registrations; the seal contract's two claimants and the birth pairing's widened
   tokens; the inventory's four triggers; the call-graph, route and boundary pins.
@@ -530,8 +533,15 @@ forced:
   (#673's review round 4): the bundle arm demands the secondary's `reason` equal to the primary's (the
   request's and the re-homing forward's to the `returned` resolution's; the forward-on's forward's to the
   request's), and the three non-blank guards strip the whole ASCII whitespace set rather than `btrim`'s
-  default space alone (a tab-only reason or title had passed them). No consumer version, catalog row or
-  door moves.
+  default space alone (a tab-only reason or title had passed them); (9) the approver pair and the
+  producer's authority (#673's review round 5): both claimants demand the finalizing event's
+  `approverName`, `approverRole` and `approvedFrom` equal to the named revision's columns (a revision
+  carrying none cannot be finalized), and the request arm demands the rejection request's receipt from one
+  of its two producers, its frozen role the producer's (`architect` under `decisions.disagree`, `pmc`
+  under `decisions.resolveStrandedCountersign`), a non-null frozen pair and exactly one event whose
+  envelope is that pair (at be68a64 a receipt-backed disagreement run by an active client with a truthful
+  `client` pair reopened an awaiting decision with no architect anywhere in the act). No consumer version,
+  catalog row or door moves.
 - **§C arms not carried by any A-unit: none.** A8b carries P31 (the atomic countersign, the orphan
   fact, the split), P32 (the self-countersign as two keys), P33 (both disagreement paths, the
   withdrawal refused), P25d/P41 (a question beside the countersign, both orderings), P29b and P36 (the
