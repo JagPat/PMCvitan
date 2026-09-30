@@ -479,11 +479,12 @@ forced:
   revision's frozen pair, an unknown finalization or an unfrozen pair rendering nothing); three writer
   branches in the pairing matrix (`decision.approved` by the countersign and by the `completed`
   resolution; `decision.change_requested` by the `returned` resolution — fact-first and event-first,
-  the PRIOR generation committing for the families it carries, thirty-eight refusals — the feed row, the
-  discriminator, the envelope pair, the title and decider kind the renderer reads, and the request
-  naming an earlier revision than the resolution among them — and the disagreement branch's receipt,
-  audit row, notice, origin, request name, title and reason with their refusals, and a rejection request
-  named as a resolve receipt's primary with no resolution written); the kinded renderer's change-request arm and its
+  the PRIOR generation committing for the families it carries, forty refusals — the feed row, the
+  discriminator, the envelope pair, the title and decider kind the renderer reads, a newline-only title,
+  the request naming an earlier revision than the resolution and the resolution recording another reason
+  than its request among them — and the disagreement branch's receipt, audit row, notice, origin, request
+  name, title, reason and tab-only reason with their refusals, and a rejection request named as a resolve
+  receipt's primary with no resolution written); the kinded renderer's change-request arm and its
   audience (pmc and the decider); the status
   tripwire's six A8b registrations; the seal contract's two claimants and the birth pairing's widened
   tokens; the inventory's four triggers; the call-graph, route and boundary pins.
@@ -525,8 +526,12 @@ forced:
   `decisions.disagree` receipt the request — at b193f77 a rejection request could be the resolve's
   primary result with no resolution written, the PMC's return performed without the fact whose seal
   judges the inactive chain and the frozen head), with the bundle arm PER COMMAND and the returned
-  bundle's request required to name the SAME revision the resolution disposed of. No consumer version,
-  catalog row or door moves.
+  bundle's request required to name the SAME revision the resolution disposed of; (8) one act, one reason
+  (#673's review round 4): the bundle arm demands the secondary's `reason` equal to the primary's (the
+  request's and the re-homing forward's to the `returned` resolution's; the forward-on's forward's to the
+  request's), and the three non-blank guards strip the whole ASCII whitespace set rather than `btrim`'s
+  default space alone (a tab-only reason or title had passed them). No consumer version, catalog row or
+  door moves.
 - **§C arms not carried by any A-unit: none.** A8b carries P31 (the atomic countersign, the orphan
   fact, the split), P32 (the self-countersign as two keys), P33 (both disagreement paths, the
   withdrawal refused), P25d/P41 (a question beside the countersign, both orderings), P29b and P36 (the

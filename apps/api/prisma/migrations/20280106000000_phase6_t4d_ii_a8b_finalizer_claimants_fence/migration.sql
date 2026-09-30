@@ -81,6 +81,16 @@
 --      receipt names; under a resolve receipt a request or a forward pairs with the `returned` resolution
 --      the receipt names — and the request must name the SAME revision the resolution disposed of.
 --
+--   2f. THE REASON, ONE ACROSS THE BUNDLE; THE BLANK GUARD, ALL OF ASCII WHITESPACE (#673's review round 4).
+--      The per-command bundle arm paired the returned request with its resolution by receipt, decision,
+--      outcome and revision, never by REASON, so a hand-run bundle could commit a resolution recording
+--      reason A beside a request, an event and a notice recording reason B — two immutable records of one
+--      act disagreeing about why the PMC returned the approval (the same held for the re-homing forward,
+--      and for the forward-on's forward beside its request). The bundle arm now demands the secondary's
+--      `reason` equal to the primary's (the request's and the forward's to the resolution's; the forward's
+--      to the request's). And the non-blank guards used `btrim`'s default set (the space alone), so a
+--      tab-only or newline-only reason or title passed them; they now strip the whole ASCII whitespace set.
+--
 --   3. THE FENCE, RAISED. A6e installed the server-generation fence and set the persisted minimum to 1
 --      (its own generation), so nothing running was refused. A8b is the last 4d-ii-a server unit — the
 --      release the drain's minimum names — so this file raises the minimum to 2, A8b's compiled
@@ -118,7 +128,7 @@ BEGIN
   -- the DECISION the fact names (its title non-blank), not to the payload's own word for them.
   SELECT d."title", d."deciderKind"::text INTO v_title, v_kind FROM "Decision" d
    WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId";
-  IF btrim(coalesce(v_title, '')) = '' THEN
+  IF btrim(coalesce(v_title, ''), E' \t\n\r\v\f') = '' THEN
     RAISE EXCEPTION
       'phase6 4d-ii-a A8b: countersign % names decision %, whose title is blank or which does not exist — the finalizing event''s notice renders the decision''s title, and a finalization of a decision the log cannot name is refused',
       NEW."id", NEW."decisionId";
@@ -191,7 +201,7 @@ BEGIN
   -- to the request), so both are bound to the DECISION the fact names (its title non-blank)
   SELECT d."title", d."deciderKind"::text INTO v_title, v_kind FROM "Decision" d
    WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId";
-  IF btrim(coalesce(v_title, '')) = '' THEN
+  IF btrim(coalesce(v_title, ''), E' \t\n\r\v\f') = '' THEN
     RAISE EXCEPTION
       'phase6 4d-ii-a A8b: stranded resolution % names decision %, whose title is blank or which does not exist — the outcome''s notice renders the decision''s title, and a resolution of a decision the log cannot name is refused',
       NEW."id", NEW."decisionId";
@@ -381,27 +391,32 @@ BEGIN
   -- names; under a resolve receipt the `returned` bundle's request and re-homing forward pair with the
   -- `returned` resolution the receipt names — and the request must name the SAME revision the resolution
   -- disposed of (a request naming an earlier revision beside a resolution disposing of the current head
-  -- is two immutable records of one act that disagree about which approval it ended).
+  -- is two immutable records of one act that disagree about which approval it ended). And the secondary's
+  -- REASON must equal the primary's (#673 round 4): the request's and the forward's to the resolution's, the
+  -- forward-on's forward's to the request's — one act states one reason, and a resolution recording reason
+  -- A beside a request and a notice recording reason B is a register that cannot say why.
   v_primary_ok := CASE c."commandType"
     WHEN 'decisions.disagree' THEN EXISTS (
       SELECT 1 FROM "ChangeRequest" cr
        WHERE cr."projectId" = NEW."projectId" AND cr."id" = c."resultRef"
          AND cr."sourceCommandId" = NEW."sourceCommandId"
          AND cr."decisionId" = NEW."decisionId"
-         AND cr."origin" = 'countersign_rejection')
+         AND cr."origin" = 'countersign_rejection'
+         AND cr."reason" = (to_jsonb(NEW) ->> 'reason'))
     WHEN 'decisions.resolveStrandedCountersign' THEN EXISTS (
       SELECT 1 FROM "DecisionStrandedResolution" sr
        WHERE sr."projectId" = NEW."projectId" AND sr."id" = c."resultRef"
          AND sr."sourceCommandId" = NEW."sourceCommandId"
          AND sr."decisionId" = NEW."decisionId"
          AND sr."outcome" = 'returned'
+         AND sr."reason" = (to_jsonb(NEW) ->> 'reason')
          AND (TG_TABLE_NAME <> 'ChangeRequest' OR sr."revisionId" = (to_jsonb(NEW) ->> 'revisionId')))
     ELSE FALSE
   END;
 
   IF NOT v_primary_ok THEN
     RAISE EXCEPTION
-      'phase6 4d-i: the receipt cited by %.% names result %, which is neither this row nor the PRIMARY fact of its `%` bundle citing the same receipt for the same decision (a disagreement''s `countersign_rejection` request; a resolve''s `returned` resolution — naming, for a request, the SAME revision the request cites) — a receipt for another result cannot be borrowed',
+      'phase6 4d-i: the receipt cited by %.% names result %, which is neither this row nor the PRIMARY fact of its `%` bundle citing the same receipt for the same decision and stating the SAME reason (a disagreement''s `countersign_rejection` request; a resolve''s `returned` resolution — naming, for a request, the SAME revision the request cites) — a receipt for another result cannot be borrowed',
       TG_TABLE_NAME, NEW."id", COALESCE(c."resultRef", '<null>'), c."commandType";
   END IF;
   RETURN NULL;
@@ -651,7 +666,7 @@ BEGIN
       -- those two fields, so an absent one is a committed notice the log shows as nothing and a forged
       -- one is a reason shown in place of the immutable request's.
       SELECT dd."title" INTO v_title FROM "Decision" dd WHERE dd."projectId" = NEW."projectId" AND dd."id" = NEW."decisionId";
-      IF btrim(coalesce(v_title, '')) = '' OR btrim(coalesce(NEW."reason", '')) = '' THEN
+      IF btrim(coalesce(v_title, ''), E' \t\n\r\v\f') = '' OR btrim(coalesce(NEW."reason", ''), E' \t\n\r\v\f') = '' THEN
         RAISE EXCEPTION
           'phase6 4d-ii-a A8b: countersign_rejection request % of decision % carries a blank reason, or names a decision whose title is blank — the change-request notice renders the decision''s title and the request''s reason, and a reopening the log cannot state is refused',
           NEW."id", NEW."decisionId";
@@ -822,7 +837,9 @@ BEGIN
      OR position('v_primary_table IS DISTINCT FROM TG_TABLE_NAME' in v_src) = 0
      OR position('WHEN ''decisions.resolveStrandedCountersign'' THEN ''DecisionStrandedResolution''' in v_src) = 0
      OR position('sr."outcome" = ''returned''' in v_src) = 0
-     OR position('sr."revisionId" = (to_jsonb(NEW) ->> ''revisionId'')' in v_src) = 0 THEN
+     OR position('sr."revisionId" = (to_jsonb(NEW) ->> ''revisionId'')' in v_src) = 0
+     OR position('sr."reason" = (to_jsonb(NEW) ->> ''reason'')' in v_src) = 0
+     OR position('cr."reason" = (to_jsonb(NEW) ->> ''reason'')' in v_src) = 0 THEN
     RAISE EXCEPTION 'phase6 4d-ii-a A8b: the provenance seal does not carry the returned request''s second producer, the receipt''s primary table and the per-command bundle arm beside 4d-i''s own clauses after this file ran. The deploy is refused.';
   END IF;
   SELECT count(*) INTO n FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
@@ -858,9 +875,10 @@ BEGIN
   END IF;
   SELECT count(*) INTO n FROM pg_proc p
    WHERE (p.proname IN ('phase6_t4d_countersign_claims_event', 'phase6_t4d_stranded_claims_event')
-            AND position('''title'', v_title, ''deciderKind'', v_kind' in p.prosrc) > 0 AND position('d."deciderKind"::text' in p.prosrc) > 0)
+            AND position('''title'', v_title, ''deciderKind'', v_kind' in p.prosrc) > 0 AND position('d."deciderKind"::text' in p.prosrc) > 0
+            AND position('btrim(coalesce(v_title, ''''), E'' \t\n\r\v\f'')' in p.prosrc) > 0)
       OR (p.proname = 'phase6_t4d_change_request_paired'
-            AND position('''title'', v_title, ''reason'', NEW."reason"' in p.prosrc) > 0 AND position('btrim(coalesce(NEW."reason", ''''))' in p.prosrc) > 0);
+            AND position('''title'', v_title, ''reason'', NEW."reason"' in p.prosrc) > 0 AND position('btrim(coalesce(NEW."reason", ''''), E'' \t\n\r\v\f'')' in p.prosrc) > 0);
   IF n <> 3 THEN
     RAISE EXCEPTION 'phase6 4d-ii-a A8b: the two claimants and the request arm do not bind the content the renderer reads to the decision and the request (found % of 3). The deploy is refused.', n;
   END IF;

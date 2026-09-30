@@ -173,7 +173,8 @@ const REGISTER: Record<string, SealContract> = {
       + 'AND the receipt is IDENTIFIED first — the right KIND of command, run by the SAME actor; '
       + 'a receipt names ONE primary table per command (the resolve → the resolution, the '
       + 'disagreement → the request), and the bundle arm is PER COMMAND: under a resolve receipt the '
-      + 'request pairs with the `returned` resolution naming the SAME revision (4d-ii-a / A8b, #673 round 3)',
+      + 'request pairs with the `returned` resolution naming the SAME revision, and the secondary states the '
+      + 'primary\'s REASON (4d-ii-a / A8b, #673 rounds 3–4)',
     plan: '§A.3 obligation 6 (as amended by #582 round 1, finding 12); A8b #673 r3',
     on: {
       'DecisionCountersign.DecisionCountersign_t4d_provenance_bound': C('I'),
@@ -201,6 +202,8 @@ const REGISTER: Record<string, SealContract> = {
       // arm tying the returned request to the resolution's revision
       'v_primary_table IS DISTINCT FROM TG_TABLE_NAME', "WHEN 'decisions.resolveStrandedCountersign' THEN 'DecisionStrandedResolution'",
       "sr.\"outcome\" = 'returned'", "sr.\"revisionId\" = (to_jsonb(NEW) ->> 'revisionId')",
+      // #673 round 4 — one act, one reason across the bundle
+      "sr.\"reason\" = (to_jsonb(NEW) ->> 'reason')", "cr.\"reason\" = (to_jsonb(NEW) ->> 'reason')",
     ],
   },
   phase6_t4d_forward_seal: {
@@ -765,7 +768,7 @@ const REGISTER: Record<string, SealContract> = {
       'phase6_t4d_tx_audit_count', "ARRAY['change_requested']", "ARRAY['change_withdrawn']",
       'countersign_rejection request % was opened in this transaction with % `change_requested` audit row(s)',
       'platform_tx_notification', "'origin', 'countersign_rejection', 'requestId', NEW.\"id\", 'title', v_title, 'reason', NEW.\"reason\"",
-      "btrim(coalesce(NEW.\"reason\", ''))",
+      "btrim(coalesce(NEW.\"reason\", ''), E' \\t\\n\\r\\v\\f')",
       'phase6_t4d_tx_actor_event_count', 'NEW."requestedById"',
       'decision.change_requested', 'decision.change_withdrawn',
       'decision.approved', 'decision.reapproved', 'decision.awaiting_countersign',
@@ -857,7 +860,7 @@ const REGISTER: Record<string, SealContract> = {
     },
     must: ['decision.approved', 'decision.reapproved', "'countersignId'", "'revisionId'", 'NEW."countersignedById"',
       "'countersigned'", 'phase6_t4d_tx_audit_count', 'platform_claim_event_pairing_once', 'TG_NAME', 'platform_tx_notification', "'finalization', 'countersign'", 'NEW."countersignedByRole"',
-      "'title', v_title, 'deciderKind', v_kind", 'd."deciderKind"::text'],
+      "'title', v_title, 'deciderKind', v_kind", 'd."deciderKind"::text', "btrim(coalesce(v_title, ''), E' \\t\\n\\r\\v\\f')"],
   },
   phase6_t4d_stranded_claims_event: {
     rule: 'a `DecisionStrandedResolution` fact claims the decision\'s same-transaction event of its '
@@ -875,7 +878,7 @@ const REGISTER: Record<string, SealContract> = {
     must: ["'completed'", 'decision.approved', 'decision.reapproved', 'decision.change_requested', "'resolutionId'",
       "'revisionId'", 'NEW."resolvedById"', "'stranded_resolved'", 'phase6_t4d_tx_audit_count',
       'platform_claim_event_pairing_once', 'TG_NAME', 'platform_tx_notification', "'finalization', 'stranded_completed'", "'outcome', 'returned'", 'NEW."resolvedByRole"',
-      "'title', v_title, 'deciderKind', v_kind", "'outcome', 'returned', 'title', v_title", 'd."deciderKind"::text'],
+      "'title', v_title, 'deciderKind', v_kind", "'outcome', 'returned', 'title', v_title", 'd."deciderKind"::text', "btrim(coalesce(v_title, ''), E' \\t\\n\\r\\v\\f')"],
   },
   phase6_t4d_consultation_claims_event: {
     rule: 'a consultation request claims its `decision.consultation_requested`, a response its '
