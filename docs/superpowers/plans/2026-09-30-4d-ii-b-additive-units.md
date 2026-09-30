@@ -200,6 +200,17 @@ Web arms of P31 (the provisional copy under an active chain) and P33 (the Withdr
 suppressed while the direct call still 409s). Unit tests plant both shapes; the Playwright proof
 against the reserved server is the delivered copy unchanged. ~200 lines, standard.
 
+**As built (the B4 unit).** `runRemote` / `runRemoteOrQueue` take `okMsg` as a string OR a function of
+the accepted snapshot, evaluated once before the reconcile announces it; `approveOutcomeCopy` reads the
+approved row's status from the returned slice and falls back to the delivered copy when the slice does
+not carry the row (nothing is invented from an absence). The roster load on the consultation surface
+happens when the chooser OPENS over an empty `members` slice (the Ask click), not on mount: the thread
+renders under every register row, so a mount-time load would fire one `listMembers` read per row.
+The rejection request reads "Sent back by the architect: <reason>" (with its cost and schedule impacts
+and the re-approval owed, as a standard request shows) on both the register and the approval surface;
+only the exact origin `countersign_rejection` withholds Withdraw — a request with no origin is a
+standard one, from a server before or after 4d.
+
 ### B5a — the four commands on the client
 
 Gateway methods `forwardDecision`, `countersignDecision`, `disagreeDecision` and
