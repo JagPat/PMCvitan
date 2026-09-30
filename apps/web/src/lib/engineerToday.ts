@@ -51,10 +51,12 @@ export function todayPath(latest: DailyLog | null, totalWorkers: number, today?:
  * Photos taken for THIS log: the log's own `progress` count, and nothing else. The log's `photos`
  * list is the project's recent progress media — not linked to any log, and a second log can start
  * on the same civil day — so no date rule can say which log a photo belongs to, and it is never
- * counted. `progress` is persisted only with the send, so after a reload an unsent log's photos
- * step reads as not done; that never withholds anything, because crew and photos are suggestions
- * and the card always offers Send for a checked-in log. Exact per-log evidence needs the upload to
- * carry its `dailyLogId` (an API change for a later unit).
+ * counted. The server persists `progress` only with the send; until then the store's pending draft
+ * (store/dailyLogDraft.ts, #669) carries the photos taken on this device for this log across every
+ * reconcile and a reload, so the step reads as done where they were taken. Photos taken on ANOTHER
+ * device for the same unsent log are not known here; that never withholds anything, because crew
+ * and photos are suggestions and the card always offers Send for a checked-in log. Exact per-log
+ * evidence needs the upload to carry its `dailyLogId` (an API change for a later unit).
  */
 function hasPhotoEvidence(log: DailyLog): boolean {
   return log.progress > 0;

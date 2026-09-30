@@ -17,6 +17,7 @@ import type {
   MeasurementRegisterDto,
   VendorAdvanceListDto,
 } from '@vitan/shared';
+import type { DailyLogDraft } from './dailyLogDraft';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
@@ -88,6 +89,8 @@ export interface ProjectDataState {
   members: ProjectMember[];
   activities: Activity[];
   dailyLog: DailyLog | null;
+  // #669 — the engineer's unsent work on that log; project-owned like the log (store/dailyLogDraft.ts)
+  dailyLogDraft: DailyLogDraft | null;
   notifications: AppNotification[];
   companies: ProjectCompany[];
   // Phase 3 Task 7 — the PER-PROJECT pilot capabilities (`['materials']` on a pilot project) + the
@@ -174,6 +177,7 @@ export function emptyProjectData(): ProjectDataState {
     members: [],
     activities: [],
     dailyLog: null,
+    dailyLogDraft: null,
     notifications: [],
     companies: [],
     capabilities: [],
