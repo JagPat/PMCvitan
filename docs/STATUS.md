@@ -14,15 +14,45 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: none
-reviewed_merge: 4f24a24
-open_pr: none
+work_item: 4d-ii-b-staging-record
+reviewed_merge: 35d0f74
+open_pr: 677
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-30
 ```
 
-### Now — the #669 Today-flow correction MERGED as #675 (`4f24a24`); the Today reservation is released; 4d-ii-b, the client unit, is the next unit to open
+### Now — 4d-ii-b opens with its STAGING RECORD (#677, `claude/4d-ii-b-staging-record`): the client unit as additive units B1 … B6
+
+The STATUS record of the #675 merge landed as #676 (`35d0f74`, a clean exact-head review on its
+round-1 head `5337edf`), so the runner's move is 4d-ii-b. Its staging was left as the owner's
+disposition (below): §D's one `justified-large` unit, or additive units under a staging record as
+4d-i-b and 4d-ii-a were. A gap map of the §D inventory against `main` at `4f24a24` found almost none of
+the client unit built — the gateway declares `recorded-v1`, nothing reads `rollout.phase6_4d`, no
+architect picker, persona or reader exists, none of the four commands has a client, the member commands
+send no key — so the runner opens the same vehicle 4d-ii-a used: a docs-only staging record,
+`docs/superpowers/plans/2026-09-30-4d-ii-b-additive-units.md`, with a dated pointer note at the top of
+the 4d plan. **Merging #677 records the additive staging as the disposition; closing it, or a
+coordination note on #482 choosing §D's single unit, reverses it before any B-unit opens.** No B-unit
+is open; the first (B1, the client boundary and the rollout read) opens only after #677 merges.
+
+- **The six units** (each standard-budget, one concern, dark while the six reservation doors stand,
+  no migration, no server runtime change): **B1** the `countersign-v1` declaration on every API-bound
+  request with the `fetch(` tripwire, and the shell's `rollout.phase6_4d` read into the store; **B2**
+  the role fan-out and the architect persona (lists, Team and decider pickers gated on `'open'`,
+  `PERSONAS_OWED` emptied); **B3** the readers — the Inbox `awaiting_countersign` branch, the audience
+  mirrors, `locationTree`, the Decision Log filters and chips, the shell badge on `countPending`; **B4**
+  the approval copy from `countersignRequired` and the returned status, the consultation surface's open
+  set and roster, Withdraw suppressed on a `countersign_rejection` request; **B5a** the four commands on
+  the client (gateway, outbox ops, write-ahead actions with keys); **B5b** the Forward affordance and the
+  architect's / PMC's controls; **B6** the client `Idempotency-Key` on the three member commands.
+  Order B1 → B2 → B3 → B4 → B5a → B5b, B6 after B1. dot's review priorities (#482 comment 5906093330)
+  are mapped to units in the record.
+- **The fold.** The STATUS fold that sets `blocking_directive: phase-6-4d-previous-release-drained`
+  (naming the release carrying A8b, `f8274f4`) rides the post-merge STATUS record of the LAST B-unit to
+  merge, as the record states.
+
+### History — the #669 Today-flow correction MERGED as #675 (`4f24a24`); the Today reservation is released; 4d-ii-b, the client unit, is the next unit to open
 
 **#675 merged** at `4f24a24` on its reviewed head `7a6e7b0` (full CI run 36700639513 green; a fresh clean
 exact-head Codex review on the first attempt, zero threads; the merge tree identical to the head). It was
@@ -45,8 +75,8 @@ sent back to a PR that no longer exists.
 - **The reservation is released.** The Today correction was held by Claude Code session
   `session_01SkcEKPyj3MbLUoCy8bFuck` on `claude/ux-today-draft-reconcile`; with the merge there is no
   Today producer to preserve and no UX successor is queued.
-- **Next: 4d-ii-b** — scope, staging disposition and dot's review priorities exactly as recorded in the
-  two sections below.
+- **Next: 4d-ii-b** — opened above with its staging record (#677); scope and dot's review priorities as
+  recorded in the two sections below.
 
 ### History — the #669 Today-flow correction went FIRST (#675, `claude/ux-today-draft-reconcile`); 4d-ii-b stayed the next roadmap unit and was DEFERRED until it merged
 

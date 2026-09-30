@@ -5,6 +5,11 @@
 > That record maps every §D 4d-ii-a inventory item to exactly one unit; §A remains the specification. It also
 > corrects one staging fact: the `OutboxConsumerActivation` register, which §D says 4d-i installs, was not
 > installed there, and unit A6 installs it. The text below is left as reviewed.
+>
+> **Staging record (2026-09-30).** 4d-ii-b, the CLIENT unit, is delivered as the additive units B1–B6
+> recorded in `2026-09-30-4d-ii-b-additive-units.md`, not as the single `justified-large` PR §D stages. That
+> record maps every §D 4d-ii-b inventory item to exactly one unit; §A remains the specification. The STATUS
+> fold that sets the drain directive rides the last B-unit's post-merge record. The text below is left as reviewed.
 
 **Status: PLANNING — this is the docs-only 4d plan unit the merged 4b plan's §E order requires**
 (`docs/superpowers/plans/2026-08-14-decision-workflow-4b.md`
