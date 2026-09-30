@@ -1948,17 +1948,20 @@ export const useStore = create<Store>()(
      *  terminal (4xx) refusal — so the user's retry after a lost or uncertain response reaches the server's
      *  ledger under the same key and runs once, while the next identical act (adding the same person again
      *  after a success) is a new act under a new key. Held in memory only: a reload is a new act too, which
-     *  the server's own dedup of a keyless call already covered before this unit. */
+     *  the server's own dedup of a keyless call already covered before this unit.
+     *  The project is bound into the act ONCE, when the attempt is made (`memberAct`), and the settle uses
+     *  that same bound act: the active project may change while the request is in flight, and a settle
+     *  that re-read it at response time would miss the entry and leave a settled key to be reused. */
     const memberActKeys = new Map<string, string>();
-    const memberActKey = (act: string): string => {
-      const scoped = `${get().activeProjectId}:${act}`;
-      const existing = memberActKeys.get(scoped);
+    const memberAct = (act: string): string => `${get().activeProjectId}:${act}`;
+    const memberActKey = (boundAct: string): string => {
+      const existing = memberActKeys.get(boundAct);
       if (existing) return existing;
       const fresh = newIdempotencyKey();
-      memberActKeys.set(scoped, fresh);
+      memberActKeys.set(boundAct, fresh);
       return fresh;
     };
-    const settleMemberAct = (act: string): void => { memberActKeys.delete(`${get().activeProjectId}:${act}`); };
+    const settleMemberAct = (boundAct: string): void => { memberActKeys.delete(boundAct); };
 
     // ── Phase 3 Task 7 (correction 2) — the pilot MATERIALS single-command dispatch. Every operational
     //    materials command (reserve a candidate, raise the residual requisition, issue, consume) goes
@@ -4352,13 +4355,14 @@ export const useStore = create<Store>()(
     // attempt mints the key; the user's retry after a lost response (the same act, on the same project)
     // reuses it, so the server's ledger runs it once; a confirmed success or a terminal refusal settles the
     // act, so the next identical act is a NEW act under a NEW key. A distinct act (another member, another
-    // role, another project) always has its own key.
+    // role, another project) always has its own key. The project is bound into the act when the attempt is
+    // made, and the settle names that same bound act (not the project active when the response arrives).
     addMember: (input) => {
       if (!gateway) {
         get().flash('Managing the team needs the server.');
         return;
       }
-      const act = `add:${(input.email ?? input.phone ?? '').trim().toLowerCase()}`;
+      const act = memberAct(`add:${(input.email ?? input.phone ?? '').trim().toLowerCase()}`);
       gateway
         .addMember(input, memberActKey(act))
         .then(() => { settleMemberAct(act); get().loadTeam(); get().flash(input.name + ' added to the team.'); })
@@ -4366,14 +4370,14 @@ export const useStore = create<Store>()(
     },
     updateMemberRole: (userId, role, discipline) => {
       if (!gateway) return;
-      const act = `role:${userId}:${role}:${discipline ?? ''}`;
+      const act = memberAct(`role:${userId}:${role}:${discipline ?? ''}`);
       gateway.updateMemberRole(userId, role, discipline, memberActKey(act))
         .then(() => { settleMemberAct(act); get().loadTeam(); })
         .catch((err: unknown) => { if (isTerminalOutboxError(err)) settleMemberAct(act); get().flash('Could not change the role.'); });
     },
     removeMember: (userId) => {
       if (!gateway) return;
-      const act = `remove:${userId}`;
+      const act = memberAct(`remove:${userId}`);
       gateway.removeMember(userId, memberActKey(act))
         .then(() => { settleMemberAct(act); get().loadTeam(); get().flash('Member removed.'); })
         .catch((err: unknown) => { if (isTerminalOutboxError(err)) settleMemberAct(act); get().flash('Could not remove the member.'); });

@@ -279,7 +279,11 @@ SETTLES: a confirmed success, or a terminal (4xx) refusal — after either, the 
 new act under a new key; a transient failure (network, 5xx, 401/408/429) keeps the key for the user's
 retry. The keys live in memory only: a reload is a new act, which the server's synthesized key for a
 keyless call already covered before this unit. The gateway signatures keep the key optional, so a
-keyless call still sends no header.
+keyless call still sends no header. The project is bound into the act when the attempt is made and the
+settle names that bound act: the shadow review of the unit's first head found the settle re-reading
+the active project at response time, so a project switch while a request was in flight left the
+succeeded key in place and the next identical act on the first project would have replayed the ledger
+row (200, nothing run) — fixed forward in the unit with a per-command regression.
 
 ## Order and what a unit may not do
 

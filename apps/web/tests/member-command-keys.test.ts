@@ -101,6 +101,35 @@ describe('B6 — one idempotency key per member act, reused on the retry', () =>
       await flush();
       expect(keyOf(cmd, method.mock.calls[1])).not.toBe(keyOf(cmd, method.mock.calls[0]));
     });
+
+    it(`${cmd.label}: a settle names the project the act was MINTED on — switching projects while the request is in flight neither strands the key nor settles another project's act`, async () => {
+      // the finding on this unit's first head: the settle re-read the active project at response time, so
+      // a switch mid-flight left the succeeded key in place and the next identical act replayed the ledger
+      // row (200, nothing run) instead of running a new act.
+      let finish: (v: unknown) => void = () => {};
+      const method = vi.fn().mockImplementationOnce(() => new Promise((r) => { finish = r; })).mockRejectedValue(new Error('offline'));
+      s()._setGateway({ [cmd.method]: method, listMembers: vi.fn().mockResolvedValue([]) } as unknown as Gateway);
+      cmd.invoke(); // minted under ambli, response pending
+      await flush();
+      const ambliKey = keyOf(cmd, method.mock.calls[0]);
+      useStore.setState({ activeProjectId: 'project-b', projectScopeGeneration: 2 });
+      cmd.invoke(); // the same act on project B: its own key, and the (offline) failure keeps it
+      await flush();
+      const bKey = keyOf(cmd, method.mock.calls[1]);
+      expect(bKey).not.toBe(ambliKey);
+      finish({}); // ambli's response arrives while B is active
+      await flush(); await flush();
+      cmd.invoke(); // B's act was not settled by ambli's success: the retry reuses B's key
+      await flush();
+      expect(keyOf(cmd, method.mock.calls[2])).toBe(bKey);
+      useStore.setState({ activeProjectId: 'ambli', projectScopeGeneration: 3 });
+      cmd.invoke(); // back on ambli, the identical act is a NEW act: the succeeded key was settled
+      await flush();
+      const nextAmbliKey = keyOf(cmd, method.mock.calls[3]);
+      expect(nextAmbliKey).toMatch(UUIDISH);
+      expect(nextAmbliKey).not.toBe(ambliKey);
+      expect(nextAmbliKey).not.toBe(bKey);
+    });
   }
 
   it('the add act is identified by the contact, normalised: the same email in another case or with spaces is the same act', async () => {
