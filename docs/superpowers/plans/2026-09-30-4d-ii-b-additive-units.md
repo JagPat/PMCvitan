@@ -249,6 +249,22 @@ refusals planted; Playwright against the reserved server asserts no Forward rend
 controls are absent (the states cannot exist), which is P29c's "no Forward renders" arm. ~400 lines,
 standard.
 
+**As built (the B5b unit).** One component, `CountersignControls`, under every register row: the Forward
+affordance (holder / PMC / architect, open rows, `selectPhase6_4dOpen` only), the architect's three
+controls on an awaiting row, the PMC's Complete / Return on a stranded row (`isStrandedCountersign`); a
+target chooser offering the four designations (the roster loaded once when it opens over an empty
+`members` slice, B4's rule), a required reason, optional cost / schedule impacts on the disagreement and
+the return; every control disabled ("Working…") while a chain act on that decision is in the outbox. The
+controls drive B5a's store actions, which own the keys and surface the server's refusal. No forward
+history is rendered, so the completeness tripwire's `DecisionForward` entry is closed as `not served`
+(with the assertion widened so a DTO added later must be classified in the same change). The Forward
+affordance lives on the register only; the approval surface offers no chain control. Round 1 of #683's
+review (findings 4149247987 and 4149247992) set two rules the controls now keep: the stranded
+Complete goes through the same required-reason form as Return — the reason is persisted as the
+resolution's own, so the client invents none — and NO target is ever defaulted: a Forward / Forward on
+requires the actor to choose one, and a stranded Return sends none unless the PMC chooses to re-home
+the decision (the service reads a supplied target on a return as a same-bundle forward).
+
 ### B6 — the client keys on the member commands
 
 `addMember`, `updateMemberRole` and `removeMember` send an `Idempotency-Key` minted per act, so a

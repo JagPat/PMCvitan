@@ -14,15 +14,48 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-ii-b-b5a-commands
-reviewed_merge: 2f84444
-open_pr: 682
+work_item: 4d-ii-b-b5b-controls
+reviewed_merge: c217c5e
+open_pr: 683
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-30
 ```
 
-### Now — 4d-ii-b unit B5a, the four commands on the client (#682, `claude/4d-ii-b-b5a-commands`)
+### Now — 4d-ii-b unit B5b, the affordances and the controls (#683, `claude/4d-ii-b-b5b-controls`)
+
+B5a merged as #682 (`c217c5e`; a clean exact-head review on its first head). **B5b is the sixth unit in
+sequence and the one open `claude/**` draft** (B6, the member-command keys, remains). It ships the
+countersign chain's UI on the register row, `apps/web/src/components/CountersignControls.tsx`, rendered under
+every Decision Log row: the **Forward** affordance on an OPEN (`pending` / `change`) decision for its
+holder, the PMC and an architect, rendered ONLY while the shell reads `rollout.phase6_4d = 'open'`
+(`selectPhase6_4dOpen`, B1's one read — P29c's "no Forward renders" arm while the doors stand), with a
+target chooser (client / PMC / a named member / the architect; the roster loaded once when the chooser
+opens over an empty slice) and a required reason; the **architect's controls** on an awaiting decision —
+Countersign, Reject back (`disagree` / `reject_back` with reason and optional impacts), Forward on
+(`disagree` / `forward_on` with the target); the **PMC's stranded resolution** — Complete without
+countersign / Return to the decider — on an awaiting row served WITHOUT the `countersignRequired` overlay
+(`isStrandedCountersign`, B3's read of the chain's activity), both through the required-reason form (the
+reason is persisted as the resolution's own), a Return re-homing the decision ONLY when the PMC chooses a
+target (round 1 of the review, findings 4149247987 and 4149247992). Every control drives one of B5a's
+write-ahead acts and is DISABLED, reading "Working…", while an act on that decision is still in the
+outbox; no target is ever defaulted — a Forward / Forward on requires one to be chosen — and a blank
+reason (or a member target without a member) cannot be sent. The register renders no forward history, so
+the completeness tripwire's `DecisionForward` entry is closed as `not served` (a DTO added later must be
+classified in the same change — the assertion now covers that verdict too), and the status tripwire
+registers the component's two predicates. Proof: `tests/countersign-controls.test.tsx` (7 tests, 19
+assertions' worth of cases) renders the component per role × rollout × status — Forward for the holder,
+the PMC and an architect on open rows under `'open'` only, never on decided rows or drafts; the form's
+target, reason and roster load; the architect's three controls driving the acts with the exact shared
+inputs and no other role seeing them; the PMC's Complete / Return on a stranded row only; disabled while
+in flight; the register rendering nothing under `'reserved'` with the seeded rows and everything under
+`'open'` — and a Playwright spec against the reserved server asserts the PMC's register carries no
+Forward, no countersign control and no stranded resolution on any row while the delivered Withdraw stands.
+No server runtime change, no migration; dark: the rollout reads reserved and no row can be awaiting. Next
+after B5b: B6 (the client keys on the member commands) — the LAST unit, whose post-merge STATUS record
+carries the fold setting `blocking_directive: phase-6-4d-previous-release-drained`.
+
+### History — 4d-ii-b unit B5a, the four commands on the client (#682, `claude/4d-ii-b-b5a-commands`)
 
 B4 merged as #681 (`2f84444`; a clean exact-head review on its first head). **B5a is the fifth unit and the
 one open `claude/**` draft.** It ships the four countersign-chain commands on the client with NO UI (B5b's):
@@ -44,8 +77,8 @@ and the unexplained refusal named, the blank reason, the six success copies — 
 stubbed fetch (the four routes, bodies, keys and the contract header; the message captured from a string,
 a list, and absent from a non-JSON body); a Playwright API probe against the reserved server asserts each
 route refuses with a `message` string and the decision is untouched. No server runtime change, no
-migration; dark: every route 409s while the doors stand. Next after B5a: B5b (the affordances and the
-controls).
+migration; dark: every route 409s while the doors stand. B5a merged as #682 (`c217c5e`); B5b opened next —
+the record above.
 
 ### History — 4d-ii-b unit B4, the copy, the consultation surface and the withdraw rule (#681, `claude/4d-ii-b-b4-copy-consultation-withdraw`)
 

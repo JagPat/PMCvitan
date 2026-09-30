@@ -2,7 +2,7 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
-import { Eyebrow, DecisionChip, Button, Modal, LocationContext, EditState, ConsultationThread } from '@/components';
+import { Eyebrow, DecisionChip, Button, Modal, LocationContext, EditState, ConsultationThread, CountersignControls } from '@/components';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { Lock, Plus, ChevronRight, Pencil, Trash2, BookmarkPlus } from '@/lib/icons';
 import { deciderNoun, signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
@@ -272,6 +272,10 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
               all off-pilot (the component reads the same per-project capability the server does),
               and nothing for a decision with no thread and no action available to this viewer. */}
           <ConsultationThread decision={d} />
+          {/* Phase 6 task 4d-ii-b / B5b — the countersign chain's affordances and controls: Forward while the
+              rollout is open, the architect's Countersign / Reject back / Forward on, the PMC's stranded
+              resolution. Renders nothing for a delivered role while the doors stand. */}
+          <CountersignControls decision={d} />
           {d.status === 'change' && d.changeRequest && (
             <div style={{ marginTop: 12, padding: '9px 12px', borderRadius: 10, background: 'rgba(180,70,46,.07)', border: '1px solid rgba(180,70,46,.2)' }} data-testid={`cr-detail-${d.id}`}>
               {/* Phase 6 task 4d-ii-b / B4 — a request the architect opened by REJECTING the countersign names

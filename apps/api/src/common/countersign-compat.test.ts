@@ -100,7 +100,7 @@ describe('the countersign-v1 interceptor (4d-ii-a / A5e)', () => {
  * delivered values are listed so a NEW one is caught unclassified.
  */
 describe('the countersign-v1 completeness tripwire (4d-ii-a / A5e)', () => {
-  type Classification = 'delivered' | `strip: ${string}` | `refuse: ${string}` | `additive-ignorable: ${string}` | `owed by ${string}`;
+  type Classification = 'delivered' | `strip: ${string}` | `refuse: ${string}` | `additive-ignorable: ${string}` | `owed by ${string}` | `not served: ${string}`;
 
   const STATUS: Record<string, Classification> = {
     pending: 'delivered', approved: 'delivered', change: 'delivered', withdrawn: 'delivered', recorded: 'delivered',
@@ -129,7 +129,10 @@ describe('the countersign-v1 completeness tripwire (4d-ii-a / A5e)', () => {
    *  forward to the architect role is stripped by the designation arm above) and adds no DTO; a
    *  forward-history shape, if the client unit wants one, is 4d-ii-b's to classify. */
   const OWED_DTOS: Record<string, Classification> = {
-    DecisionForward: 'owed by 4d-ii-b (a forward-history shape, if the client unit serves one; A8a moves the delivered holder fields)',
+    // 4d-ii-b / B5b closed the entry: the client renders NO forward history — the register reads the holder from
+    // the delivered decider fields A8a moves — so no DTO exists to classify. Should one be added later, it must
+    // be classified here (strip / refuse / additive-ignorable) in the same change (the assertion below).
+    DecisionForward: 'not served: 4d-ii-b renders no forward history; the holder is read from the delivered decider fields',
   };
 
   const sharedTypes = readFileSync(join(REPO, 'packages/shared/src/domain/types.ts'), 'utf8');
@@ -172,7 +175,8 @@ describe('the countersign-v1 completeness tripwire (4d-ii-a / A5e)', () => {
   it('a 4d DTO a later unit serves is classified before it exists', () => {
     for (const [dto, verdict] of Object.entries(OWED_DTOS)) {
       const exists = new RegExp(`export (interface|type) ${dto}\\b`).test(sharedTypes);
-      expect(exists && verdict.startsWith('owed by'), `${dto} now exists: classify it (strip / refuse / additive-ignorable)`).toBe(false);
+      const unclassified = verdict.startsWith('owed by') || verdict.startsWith('not served');
+      expect(exists && unclassified, `${dto} now exists: classify it (strip / refuse / additive-ignorable)`).toBe(false);
     }
   });
 

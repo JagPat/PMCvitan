@@ -17,3 +17,4 @@ export { InheritedContext } from './InheritedContext';
 export { CreateMenu } from './CreateMenu';
 export { MoreDetails } from './MoreDetails';
 export { ConsultationThread } from './ConsultationThread';
+export { CountersignControls } from './CountersignControls';
