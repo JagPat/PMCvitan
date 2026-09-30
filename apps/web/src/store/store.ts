@@ -1729,10 +1729,15 @@ export const useStore = create<Store>()(
     // back), false on failure: a caller that must hold a dependent action (the Drafts screen
     // holds Publish while a conversion PATCH is in flight) can await the settle. Every existing
     // fire-and-forget call site ignores the returned promise unchanged.
-    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: string): Promise<boolean> => {
+    // Phase 6 task 4d-ii-b / B4 — a command's success copy may FOLLOW the accepted snapshot instead of
+    // being fixed up front: `okMsg` is a string, or a function of the snapshot the server returned
+    // (evaluated once, before the reconcile announces it), so an approval can say what actually
+    // happened — locked, or parked awaiting the architect's countersign — from the row as served.
+    type OkMsg = string | ((snap: ApiSnapshot) => string);
+    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg): Promise<boolean> => {
       const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
       return call()
-        .then((snap) => { consumeSnapshotResult(acceptSnapshot(snap, lease), okMsg, lease.scope); return true; })
+        .then((snap) => { consumeSnapshotResult(acceptSnapshot(snap, lease), typeof okMsg === 'function' ? okMsg(snap) : okMsg, lease.scope); return true; })
         .catch(() => { if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.'); return false; });
     };
 
@@ -1855,7 +1860,7 @@ export const useStore = create<Store>()(
       op: OutboxOp,
       label: string,
       call: () => Promise<ApiSnapshot>,
-      okMsg: string,
+      okMsg: OkMsg,
     ): boolean => {
       if (!gateway) return false;
       if (get().online) {
@@ -1870,6 +1875,15 @@ export const useStore = create<Store>()(
       get().flash(label + ' — saved offline, will sync when you reconnect.');
       return true;
     };
+
+    /** Phase 6 task 4d-ii-b / B4 — the approval's success copy, read from the RETURNED snapshot: under an
+     *  active architect chain the approve compare-and-set lands the decision `awaiting_countersign` (4d-ii-a /
+     *  A8a), and the toast must say so rather than "locked"; the delivered copy stands for a final approval,
+     *  and for a row the returned slice does not carry (nothing is invented from its absence). */
+    const approveOutcomeCopy = (decId: string) => (snap: ApiSnapshot): string =>
+      snap.decisions.find((d) => d.id === decId)?.status === 'awaiting_countersign'
+        ? 'Approved — awaiting the architect’s countersign.'
+        : 'Approved & locked — saved to the server.';
 
     /**
      * WRITE-AHEAD command path (Task 10 correction round 2, finding 1). Unlike `runRemoteOrQueue`
@@ -2221,7 +2235,7 @@ export const useStore = create<Store>()(
       // one stable idempotency key for this approval — the online send and any offline replay
       // reach the server under it, so a lost-response retry re-locks once (Phase 2 Task 5).
       const approveKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx, idempotencyKey: approveKey }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx, approveKey), 'Approved & locked — saved to the server.')) return;
+      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx, idempotencyKey: approveKey }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx, approveKey), approveOutcomeCopy(decId))) return;
       const src = get().decisions.find((x) => x.id === decId);
       const material = src ? src.options[optIdx].material : '';
       const title = src ? src.title : '';

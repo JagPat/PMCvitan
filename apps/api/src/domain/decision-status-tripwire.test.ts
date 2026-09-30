@@ -33,7 +33,7 @@ import { deriveDecisionGate } from './transitions';
  *
  * What does not yet answer `awaiting_countersign` is registered as OWED, by the unit that owns the
  * arm (A5, A7, A8a, and 4d-ii-b for every web reader), which records its verdict as it lands. The web
- * readers recorded theirs with 4d-ii-b / B3; the consultation surface's open set is B4's.
+ * readers recorded theirs with 4d-ii-b / B3 and B4.
  */
 const REPO = join(__dirname, '..', '..', '..', '..');
 
@@ -281,9 +281,10 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     // web
     "apps/web/src/data/apiGateway.ts :: entry.status !== 'pending'": 'not a decision status: an evidence upload entry',
     "apps/web/src/store/store.ts :: e.status === 'pending'": 'not a decision status: an evidence upload entry',
-    // 4d-ii-b / B3 — the web readers, each with its verdict (the plan's §A.2 web arms; the record's B3).
-    // The consultation surface's open set is B4's (mirrors `CONSULTATION_OPEN_STATUSES`, with the roster).
-    "apps/web/src/components/ConsultationThread.tsx :: decision.status === 'pending' || decision.status === 'change'": 'owed by 4d-ii-b / B4: the consultation open set widens with the status, and the roster loads',
+    // 4d-ii-b / B3 — the web readers, each with its verdict (the plan's §A.2 web arms; the record's B3);
+    // B4 — the consultation surface's open set (the server's `CONSULTATION_OPEN_STATUSES`) and the approval's
+    // success copy read from the returned snapshot.
+    "apps/web/src/components/ConsultationThread.tsx :: decision.status === 'pending' || decision.status === 'change' || decision.status === 'awaiting_countersign'": 'answered',
     // the approval route opens on ACTIONABLE states only: an awaiting decision is not one its decider can
     // approve, and admitting it would deep-link a named non-client decider to an empty approval screen
     // (#677 review, finding 4145060024); awaiting rows are read on the Decision Log and acted on through B5b
@@ -312,6 +313,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/web/src/store/selectors.ts :: d.status === 'approved'": 'excludes: selectApproved — the FINAL approvals the shared surfaces count',
     "apps/web/src/store/selectors.ts :: d.status === 'pending' #2": 'excludes: the Inbox’s pending demand; the awaiting branch is its own (selectAwaitingCountersign)',
     "apps/web/src/store/selectors.ts :: d.status === 'change' #2": 'excludes: the Inbox’s reopened rows',
+    "apps/web/src/store/store.ts :: ?.status === 'awaiting_countersign'": 'answered',
     "apps/web/src/store/store.ts :: d.status === 'change'": 'excludes: the demo change-withdrawal’s compare-and-set from an open change request',
     "apps/web/src/store/store.ts :: d.status === 'pending'": 'excludes: the demo withdraw’s compare-and-set, only from a never-approved pending decision',
     "apps/web/src/store/store.ts :: o.status === 'pending'": 'excludes: the demo withdraw’s legacy-text ambiguity guard, mirroring the service’s (a sibling awaiting its countersign no longer carries a live pending demand)',

@@ -14,15 +14,42 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-ii-b-b3-readers
-reviewed_merge: 1411ce4
-open_pr: 680
+work_item: 4d-ii-b-b4-copy-consultation-withdraw
+reviewed_merge: f9810c0
+open_pr: 681
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-30
 ```
 
-### Now — 4d-ii-b unit B3, the readers, the Inbox branch and the badge (#680, `claude/4d-ii-b-b3-readers`)
+### Now — 4d-ii-b unit B4, the copy, the consultation surface and the withdraw rule (#681, `claude/4d-ii-b-b4-copy-consultation-withdraw`)
+
+B3 merged as #680 (`f9810c0`; a clean exact-head review on its first head after two body-format edits
+to the scope gate). **B4 is the fourth unit and the one open `claude/**` draft.** It ships the client's
+honesty about a PROVISIONAL approval and the two rules the chain adds (the web arms of P31's copy and
+P33's suppressed Withdraw): `ApproveModal` reads the served `countersignRequired` overlay and says "Will
+be sent to the architect for countersign" (with its explainer and button) instead of promising a lock the
+server will not grant, byte-identical without the overlay; `confirmApprove`'s success toast follows the
+approved row's status in the RETURNED snapshot ("Approved — awaiting the architect's countersign" for
+`awaiting_countersign`, the delivered copy for `approved` and for a slice that does not carry the row),
+through `runRemote` / `runRemoteOrQueue` now taking a message or a function of the accepted snapshot;
+`ConsultationThread`'s open set is the server's `CONSULTATION_OPEN_STATUSES` (pending, change,
+awaiting_countersign) and it loads the roster when the chooser opens over an empty `members` slice (on
+the Ask click, once per opening — never per row render, so a register of N rows fires no N reads);
+`mayWithdraw` is withheld from a request whose `origin` is `countersign_rejection` (the service 409s
+it; a request with no origin is a standard one from any server), and the rejection request is rendered
+as "Sent back by the architect: …" with its impacts on both the register and the approval surface. The
+API status tripwire records the consultation predicate and the new store predicate as answered. Proof:
+unit tests plant both shapes for the modal, the toast (a mocked gateway returning each status), the
+consultation surface (the open set per status; the roster load once on Ask over an empty slice, never
+over a loaded one) and the withdraw rule (PMC, requester, a third viewer; the origin rendered on both
+surfaces) — 7 of 9 RED at `f9810c0`, the two delivered-copy pins green there by design; a Playwright
+spec against the reserved server asserts the client's confirmation reads the delivered copy and the
+PMC's register offers Withdraw on the seeded standard request with no origin named. No server runtime
+change, no migration; dark: no served row carries the overlay or an origin while the doors stand. Next
+after B4: B5a (the four commands on the client).
+
+### History — 4d-ii-b unit B3, the readers, the Inbox branch and the badge (#680, `claude/4d-ii-b-b3-readers`)
 
 B2 merged as #679 (`1411ce4`; a clean exact-head review on its first head). **B3 is the third unit and the
 one open `claude/**` draft.** It ships every web READER of `awaiting_countersign` (the plan's §A.2 web
@@ -50,8 +77,8 @@ items, the badge, the register, the chip, the route pin), and a Playwright spec 
 server pins the relation the client sees — the approval badge equals the shell's `counts.pendingDecisions`
 plus the client's re-approvals, the Decision Log badge is absent, the "Awaiting countersign" chip is
 offered and no served row carries the value. No server runtime change, no migration; dark: no row can be
-awaiting while the doors stand, so nothing new renders. Next after B3: B4 (the approval copy, the
-consultation surface, the withdraw rule).
+awaiting while the doors stand, so nothing new renders. B3 merged as #680 (`f9810c0`); B4 opened next —
+the record above.
 
 ### History — 4d-ii-b unit B2, the role fan-out and the architect persona (#679, `claude/4d-ii-b-b2-role-fanout`)
 

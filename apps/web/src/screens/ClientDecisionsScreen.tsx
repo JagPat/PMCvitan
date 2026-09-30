@@ -86,7 +86,12 @@ function PendingCard({ d, subLabel, onApprove }: { d: Decision; subLabel: string
         <div style={{ fontWeight: 700, fontSize: 18, marginTop: 3 }}>{d.title}</div>
         {d.status === 'change' && d.changeRequest && (
           <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 10, background: 'var(--red-chip, rgba(180,70,46,.08))', fontSize: 12.5 }} data-testid={`cr-context-${d.id}`}>
-            <div style={{ fontWeight: 600, color: 'var(--red-text)' }}>Change requested: {d.changeRequest.reason}</div>
+            {/* Phase 6 task 4d-ii-b / B4 — a countersign rejection reads as what it is (see DecisionLogScreen) */}
+            <div style={{ fontWeight: 600, color: 'var(--red-text)' }}>
+              {d.changeRequest.origin === 'countersign_rejection'
+                ? <span data-testid={`cr-origin-${d.id}`}>Sent back by the architect: {d.changeRequest.reason}</span>
+                : <>Change requested: {d.changeRequest.reason}</>}
+            </div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
               {d.changeRequest.costImpact === 0 ? 'No cost change' : signed(d.changeRequest.costImpact)}
               {' · '}

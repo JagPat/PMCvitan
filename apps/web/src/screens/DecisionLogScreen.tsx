@@ -49,9 +49,15 @@ export function DecisionLogScreen() {
     }
   }, [sessionToken]);
   // the SERVICE narrows withdraw to the requester or the PMC — mirror it so the
-  // button only appears where the server would accept the call
+  // button only appears where the server would accept the call. Phase 6 task 4d-ii-b / B4 (P33's web
+  // arm): a request the ARCHITECT opened by rejecting a countersign (`origin: 'countersign_rejection'`)
+  // cannot be withdrawn by anyone — withdrawing it would complete an approval the architect refused —
+  // and the service 409s the call (4d-ii-a / A7b), so the affordance is not offered. Only that origin is
+  // named: a request with no origin is a standard one from any server, before or after 4d.
   const mayWithdraw = (d: Decision): boolean =>
-    can('decision.withdrawChange', role) && (role === 'pmc' || (!!mySub && d.changeRequest?.requestedById === mySub));
+    can('decision.withdrawChange', role)
+    && d.changeRequest?.origin !== 'countersign_rejection'
+    && (role === 'pmc' || (!!mySub && d.changeRequest?.requestedById === mySub));
   // Phase 6 task 4a — withdrawing the DECISION itself: pmc only, and only a published,
   // never-approved pending row is eligible (the service refuses everything else with a 409)
   const mayWithdrawDecision = (d: Decision): boolean =>
@@ -268,7 +274,14 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
           <ConsultationThread decision={d} />
           {d.status === 'change' && d.changeRequest && (
             <div style={{ marginTop: 12, padding: '9px 12px', borderRadius: 10, background: 'rgba(180,70,46,.07)', border: '1px solid rgba(180,70,46,.2)' }} data-testid={`cr-detail-${d.id}`}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--red-text)' }}>Change requested: {d.changeRequest.reason}</div>
+              {/* Phase 6 task 4d-ii-b / B4 — a request the architect opened by REJECTING the countersign names
+                  its origin: the decider reads that their provisional approval was sent back, not that a
+                  colleague asked for a change. A standard request reads exactly as it always did. */}
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--red-text)' }}>
+                {d.changeRequest.origin === 'countersign_rejection'
+                  ? <span data-testid={`cr-origin-${d.id}`}>Sent back by the architect: {d.changeRequest.reason}</span>
+                  : <>Change requested: {d.changeRequest.reason}</>}
+              </div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
                 {d.changeRequest.costImpact === 0 ? 'No cost change' : signed(d.changeRequest.costImpact)}
                 {' · '}

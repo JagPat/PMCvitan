@@ -24,6 +24,7 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
   const role = useStore((s) => s.role);
   const sessionUserId = useStore((s) => s.sessionUserId);
   const members = useStore(useShallow((s) => s.members));
+  const loadTeam = useStore((s) => s.loadTeam);
   const requestConsultation = useStore((s) => s.requestConsultation);
   const respondToConsultation = useStore((s) => s.respondToConsultation);
 
@@ -35,8 +36,10 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
 
   const thread = decision.consultations ?? [];
   // Asking is only meaningful while the question is open — the same eligibility the server
-  // enforces, mirrored so no affordance offers an action the server answers with a 409.
-  const open = !decision.draft && (decision.status === 'pending' || decision.status === 'change');
+  // enforces, mirrored so no affordance offers an action the server answers with a 409. Phase 6 task
+  // 4d-ii-b / B4: the open set is the server's `CONSULTATION_OPEN_STATUSES` — an approval the architect
+  // has yet to countersign is still open to advice (4d-ii-a / A4d, the consultation seals admit it).
+  const open = !decision.draft && (decision.status === 'pending' || decision.status === 'change' || decision.status === 'awaiting_countersign');
   const mayAsk = open && can('consultation.request', role);
   // The viewer's OWN unanswered consultation, in the CURRENT cycle. A consultation from a closed
   // cycle is not answerable — the approval that ended that cycle closed it — so no compose box
@@ -127,7 +130,16 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
 
       {/* the REQUESTER's affordance */}
       {mayAsk && !asking && (
-        <Button data-testid={`consultation-ask-${decision.id}`} onClick={() => setAsking(true)} style={{ marginTop: 10 }}>
+        <Button
+          data-testid={`consultation-ask-${decision.id}`}
+          // Phase 6 task 4d-ii-b / B4 — the chooser draws its askable set from the store's `members`, which
+          // only `loadTeam()` fills; on a fresh session that never opened the Team screen (the architect's
+          // has no Team screen at all) the widened Ask would open an EMPTY chooser. So the surface loads the
+          // roster itself when the chooser opens over an empty slice, exactly as `IssueDecisionModal` does —
+          // once per opening, never per row render.
+          onClick={() => { setAsking(true); if (!members.length) void loadTeam(); }}
+          style={{ marginTop: 10 }}
+        >
           Ask a member
         </Button>
       )}
