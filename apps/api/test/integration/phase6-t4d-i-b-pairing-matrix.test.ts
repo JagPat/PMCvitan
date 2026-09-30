@@ -148,13 +148,17 @@ const EV = (o: {
   /** the HUMAN actor the event is attributed to (`actorId`), as `emitEvent` attributes every
    *  delivered writer's event; omitted, the event is a `system` one that names nobody */
   actor?: string;
+  /** 4d-ii-a / A8b — the actor's frozen ENVELOPE pair (`actorRole`/`actorName`), as `emitEvent` writes it
+   *  from the resolved pair; the A8b claimants compare it to the fact's frozen pair (P31) */
+  role?: string; name?: string;
 }) => {
   const p = o.proj ?? P1;
   const who = o.actor ? `'human',NULL,'${o.actor}'` : `'system','system:mx',NULL`;
+  const pair = `${o.role ? `'${o.role}'` : 'NULL'},${o.name ? `'${o.name}'` : 'NULL'}`;
   return `
     UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = '${p.id}';
-    INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","actorId","entityType","entityId","payload","dispatchIntent")
-      SELECT '${o.id}','${o.type}',1,'${p.org}','${p.id}',s."nextPosition" - 1,${who},'Decision','${o.dec}',
+    INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","actorId","actorRole","actorName","entityType","entityId","payload","dispatchIntent")
+      SELECT '${o.id}','${o.type}',1,'${p.org}','${p.id}',s."nextPosition" - 1,${who},${pair},'Decision','${o.dec}',
              ${o.payload ?? "'{}'::jsonb"},
              jsonb_build_object('effectKey','${o.type}','coverageVersion',c."coverageVersion",'invalidate',c."invalidate"${o.push ?? ''})
         FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
@@ -164,6 +168,10 @@ const EV = (o: {
 /** the audit register row the delivered writer appends beside its fact */
 const AU = (dec: string, type: string) =>
   `INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES (md5(random()::text), '${dec}', '${type}', 'mx');`;
+/** 4d-ii-a / A8b — the kinded FEED ROW a delivered writer binds to its event (`eventId`/`kind`); the A8b
+ *  claimants and the re-issued request arm demand it (#673 round 2) */
+const NOTICE = (ev: string, kind: string, dec = 'mx-dec') =>
+  `INSERT INTO "Notification" ("id","projectId","text","color","time","decisionId","kind","eventId") VALUES ('${ev}-n','mx-proj','notice','#C08A2D','just now','${dec}','${kind}','${ev}');`;
 /** a command receipt: RESERVED on insert, completed by update, as the ledger protocol demands */
 const RESERVE = (id: string, type: string, actor: string, proj: Proj = P1) =>
   `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
@@ -217,14 +225,42 @@ const OPENING = (o: { cr: string; ev: string; version: string; order?: Order; au
     o.order === 'event-first' ? event + fact : fact + event, audit);
 };
 /** the disagreement (4d-ii's `decisions.disagree`) on a decision parked in `awaiting_countersign` with the provisional head `mx-rev-park` */
-const REJECT = (o: { cr: string; ev: string; version: string; order?: Order; actor?: string }) => {
-  // the disagreeing party is the request's `requestedById` AND the event's actor (no seal under
-  // test judges that party's standing; 4d-ii's `decisions.disagree` binds it to the architect)
-  const fact = `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId","requestedById")
-      VALUES ('${o.cr}','mx-proj','mx-dec','the architect disagrees',0,0,'open','countersign_rejection','mx-rev-park','mx-client');`;
-  const event = EV({ id: o.ev, type: 'decision.change_requested', dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-client' });
-  return TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`,
-    o.order === 'event-first' ? event + fact : fact + event);
+const REJECT = (o: { cr: string; ev: string; version: string; order?: Order; actor?: string; audit?: boolean; notice?: boolean; origin?: string | null; named?: string; title?: string | null; reason?: string | null; receipt?: string | null; requestReason?: string; requester?: { id: string; role: string; name: string }; pair?: null; envelopeRole?: string }) => {
+  // the disagreeing party is the ARCHITECT (#673 round 5: the request's frozen role is the producer's —
+  // `architect` under `decisions.disagree` — and the event's envelope is that pair; 4d-i's envelope-truth
+  // seal judges the envelope against the actor's real standing, so the world seats `mx-arch`). `requester`
+  // swaps the party (a client-shaped bundle), `pair: null` freezes no pair, `envelopeRole` swaps the envelope.
+  // 4d-ii-a / A8b (#673 round 3) — `receipt` names the command whose receipt the request cites as its
+  // PRIMARY result (the delivered `decisions.disagree` writes one; the provenance seal names the one
+  // primary table of each command, so a resolve receipt naming the request is refused); `null` cites none
+  const who = o.requester ?? { id: 'mx-arch', role: 'architect', name: 'MX Architect' };
+  const receipt = o.receipt === null ? undefined : (o.receipt ?? 'decisions.disagree');
+  const cmd = receipt ? `${o.cr}-cmd` : undefined;
+  // #673 round 4: `requestReason` is a SQL literal for the reason the request AND the event carry (a tab-only
+  // reason is blank to the eye and must be refused by the non-blank guard)
+  const rr = o.requestReason ?? `'the architect disagrees'`;
+  const pair = o.pair === null ? 'NULL,NULL' : `'${who.role}','${who.name}'`;
+  const fact = cmd
+    ? `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId","requestedById","requestedByRole","requestedByName","sourceCommandId")
+      VALUES ('${o.cr}','mx-proj','mx-dec',${rr},0,0,'open','countersign_rejection','mx-rev-park','${who.id}',${pair},'${cmd}');`
+    : `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId","requestedById","requestedByRole","requestedByName")
+      VALUES ('${o.cr}','mx-proj','mx-dec',${rr},0,0,'open','countersign_rejection','mx-rev-park','${who.id}',${pair});`;
+  // 4d-ii-a / A8b (#673 round 2) — the event names the request and its origin (what the kinded renderer
+  // reads), and the change-request notice is bound to it; (round 3) the title and the reason it renders,
+  // bound to the decision and the request — `title`/`reason` swap them, `null` omits them
+  const origin = o.origin === null ? '' : `'origin','${o.origin ?? 'countersign_rejection'}',`;
+  const title = o.title === null ? '' : `,'title','${o.title ?? 'MX Pending'}'`;
+  const reason = o.reason === null ? '' : `,'reason',${o.reason ? `'${o.reason}'` : rr}`;
+  const event = EV({ id: o.ev, type: 'decision.change_requested', dec: 'mx-dec', version: o.version, actor: o.actor ?? who.id,
+    role: o.envelopeRole ?? who.role, name: who.name,
+    payload: `jsonb_build_object(${origin}'requestId','${o.named ?? o.cr}'${title}${reason})` })
+    + (o.notice === false ? '' : NOTICE(o.ev, 'decision.change_requested'));
+  // 4d-ii-a / A8b (#673 round 1) — the rejection's `change_requested` audit row, demanded by the re-issued request pairing
+  const audit = o.audit === false ? '' : AU('mx-dec', 'change_requested');
+  return TX(cmd ? RESERVE(cmd, receipt!, who.id) : '',
+    `UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`,
+    o.order === 'event-first' ? event + fact : fact + event, audit,
+    cmd ? COMPLETE(cmd, o.cr) : '');
 };
 /** the delivered `withdrawChange` on the reopened decision */
 const WITHDRAWAL = (o: { cr: string; ev: string; version: string; order?: Order; audit?: boolean; dec?: string; actor?: string }) => {
@@ -401,6 +437,94 @@ const PROVISIONAL = (o: { rev: string; ev: string; version: string; order?: Orde
 /** a HAND: a write past every seal, for a world state no delivered writer produces */
 const HAND = (sql: string) => `SET session_replication_role = 'replica'; ${sql} SET session_replication_role = 'origin';`;
 
+/** the world the countersign bundle needs: the chain active, the audit kind's door dropped (4d-iii's act, as the
+ *  forward world drops it), and `mx-dec` PARKED by the delivered provisional approve (its head `mx-rev-park`,
+ *  approver MX PMC on behalf of the client, `approvedFrom = pending`) */
+const COUNTERSIGN_WORLD = `${CHAIN_WORLD}
+  DROP TRIGGER IF EXISTS "DecisionEvent_t4d_kind_reserved" ON "DecisionEvent";
+  ${PROVISIONAL({ rev: 'mx-rev-park', ev: 'mx-ev-aw-park', version: CURRENT })}`;
+/** the world the stranded bundles need: NO architect (the chain inactive), the audit kind's and the forward's doors
+ *  dropped, and `mx-dec` parked with its provisional head by HAND (the state the last architect's departure
+ *  leaves; no delivered writer parks a decision under an inactive chain) */
+const STRANDED_WORLD = `DROP TRIGGER IF EXISTS "DecisionEvent_t4d_kind_reserved" ON "DecisionEvent";
+  DROP TRIGGER IF EXISTS "DecisionForward_t4d_reserved" ON "DecisionForward";
+  ` + HAND(`UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'mx-dec';
+  INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","finalized","approvedFrom","approvedByName","approvedByRole")
+    VALUES ('mx-rev-park','mx-proj','mx-dec',1,'a',now(),'mx-client',FALSE,'pending','MX Client','client');`);
+/** the finalization both finalizers perform after their fact: the head's flip and `awaiting_countersign → approved` */
+const FINALIZE = (o: { flip?: boolean; land?: boolean }) =>
+  `${o.flip === false ? '' : `UPDATE "DecisionApprovalRevision" SET "finalized" = TRUE WHERE "id" = 'mx-rev-park';`}
+   ${o.land === false ? '' : `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'mx-dec';`}`;
+/**
+ * 4d-ii-a / A8b — the delivered `decisions.countersign`: receipt, the FACT first naming the exact head (4d-i's
+ * seal judges the architect's standing, the awaiting subject and the provisional head at the insert), the
+ * head's finality flip, `awaiting_countersign → approved`, ONE `decision.approved` in the ARCHITECT's name
+ * naming the revision and the fact, the `countersigned` audit row, the completed receipt naming the fact.
+ */
+const COUNTERSIGN = (o: { cs: string; ev: string; version: string; order?: Order; event?: boolean; audit?: boolean; fact?: boolean; flip?: boolean; land?: boolean; named?: string; namedRev?: string; actor?: string; role?: string; cmd?: string; notice?: boolean; finalization?: string | null; envelopeRole?: string; title?: string | null; deciderKind?: string | null; approver?: { name: string; role: string } | null; approvedFrom?: string | null }) => {
+  const cmd = o.cmd ?? `${o.cs}-cmd`;
+  const fact = o.fact === false ? '' : `INSERT INTO "DecisionCountersign" ("id","projectId","decisionId","revisionId","countersignedById","countersignedByRole","countersignedByName","sourceCommandId")
+      VALUES ('${o.cs}','mx-proj','mx-dec','mx-rev-park','mx-arch','${o.role ?? 'architect'}','MX Architect','${cmd}');`;
+  // #673 round 2: the DISCRIMINATOR the renderer reads, the envelope equal to the fact's pair, the bound green notice;
+  // round 3: the CONTENT the renderer reads (`title`, `deciderKind`), bound to the decision — swapped or omitted here
+  const finalization = o.finalization === null ? '' : `,'finalization','${o.finalization ?? 'countersign'}'`;
+  const content = (o.title === null ? '' : `,'title','${o.title ?? 'MX Pending'}'`) + (o.deciderKind === null ? '' : `,'deciderKind','${o.deciderKind ?? 'client'}'`)
+    // #673 round 5: the provisional revision's frozen approver pair and `approvedFrom` (the PROVISIONAL bundle
+    // parked `mx-rev-park` as MX PMC / pmc, from `pending`), frozen on the finalizing event — swapped or omitted here
+    + (o.approver === null ? '' : `,'approverName','${o.approver?.name ?? 'MX PMC'}','approverRole','${o.approver?.role ?? 'pmc'}'`)
+    + (o.approvedFrom === null ? '' : `,'approvedFrom','${o.approvedFrom ?? 'pending'}'`);
+  const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.approved', dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-arch',
+    role: o.envelopeRole ?? o.role ?? 'architect', name: 'MX Architect',
+    payload: `jsonb_build_object('revisionId','${o.namedRev ?? 'mx-rev-park'}','countersignId','${o.named ?? o.cs}'${finalization}${content})`,
+    push: `, 'push', jsonb_build_object('body','approved','roles', c."pushRoles")` })
+    + (o.notice === false ? '' : NOTICE(o.ev, 'decision.approved'));
+  const audit = o.audit === false ? '' : AU('mx-dec', 'countersigned');
+  const act = fact + FINALIZE(o);
+  return TX(RESERVE(cmd, 'decisions.countersign', 'mx-arch'), o.order === 'event-first' ? event + act : act + event, audit, COMPLETE(cmd, o.cs));
+};
+/**
+ * 4d-ii-a / A8b — the delivered `decisions.resolveStrandedCountersign`: receipt, the FACT first (4d-i's seal
+ * judges the PMC, the awaiting subject, the INACTIVE chain and the provisional head at the insert), then by
+ * outcome — `completed`: the flip, `awaiting_countersign → approved`, ONE `decision.approved` in the PMC's name
+ * naming the revision and the fact; `returned`: `awaiting_countersign → change`, the open `countersign_rejection`
+ * request citing the head under the SAME receipt (the resolution is the bundle's primary; the request verifies
+ * and never claims), ONE `decision.change_requested` in the PMC's name naming the revision and the fact, the
+ * `change_requested` audit row — and, both: the `stranded_resolved` audit row, the completed receipt naming the fact.
+ */
+const STRANDED = (o: { sr: string; ev: string; version: string; outcome: 'completed' | 'returned'; order?: Order; event?: boolean; audit?: boolean; fact?: boolean; flip?: boolean; land?: boolean; request?: boolean; named?: string; actor?: string; role?: string; cmd?: string; notice?: boolean; announced?: 'completed' | 'returned'; title?: string | null; deciderKind?: string | null; rev?: string; requestRev?: string; srReason?: string; approver?: { name: string; role: string } | null; requestRole?: string }) => {
+  const cmd = o.cmd ?? `${o.sr}-cmd`;
+  // #673 round 3: `rev` is the head the resolution disposes of (the event names it too); `requestRev` the
+  // one the returned bundle's request records — the provenance seal demands they are the same
+  const rev = o.rev ?? 'mx-rev-park';
+  const fact = o.fact === false ? '' : `INSERT INTO "DecisionStrandedResolution" ("id","projectId","decisionId","revisionId","outcome","resolvedById","resolvedByRole","resolvedByName","reason","sourceCommandId")
+      VALUES ('${o.sr}','mx-proj','mx-dec','${rev}','${o.outcome}','mx-pmc','${o.role ?? 'pmc'}','MX PMC','${o.srReason ?? 'nobody left to countersign'}','${cmd}');`;
+  const family = o.outcome === 'completed' ? 'decision.approved' : 'decision.change_requested';
+  // #673 round 2: the DISCRIMINATOR the renderer reads (`finalization` for completed, `outcome` for returned —
+  // `announced` swaps it), the envelope equal to the fact's pair, the bound notice of the family's kind
+  const announced = o.announced ?? o.outcome;
+  const discriminator = announced === 'completed' ? `'finalization','stranded_completed'` : `'outcome','returned'`;
+  // #673 round 3: the CONTENT the renderer reads — the green notice's `title` and `deciderKind`, the change-request
+  // notice's `title` (and `reason`, bound by the request arm) — bound to the decision; swapped or omitted here
+  const title = o.title === null ? '' : `,'title','${o.title ?? 'MX Pending'}'`;
+  const kind = o.deciderKind === null ? '' : `,'deciderKind','${o.deciderKind ?? 'client'}'`;
+  // #673 round 5: `completed` freezes the head's approver pair and `approvedFrom` (the world parks `mx-rev-park`
+  // as MX Client / client, from `pending`)
+  const approver = o.approver === null ? '' : `,'approverName','${o.approver?.name ?? 'MX Client'}','approverRole','${o.approver?.role ?? 'client'}','approvedFrom','pending'`;
+  const content = o.outcome === 'completed' ? title + kind + approver : `,'origin','countersign_rejection','requestId','${o.sr}-cr'${title},'reason','nobody left to countersign'`;
+  const event = o.event === false ? '' : EV({ id: o.ev, type: family, dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-pmc',
+    role: 'pmc', name: 'MX PMC',
+    payload: `jsonb_build_object('revisionId','${rev}','resolutionId','${o.named ?? o.sr}',${discriminator}${content})`,
+    push: o.outcome === 'completed' ? `, 'push', jsonb_build_object('body','approved','roles', c."pushRoles")` : undefined })
+    + (o.notice === false ? '' : NOTICE(o.ev, family));
+  const act = o.outcome === 'completed'
+    ? fact + FINALIZE(o)
+    : fact + (o.land === false ? '' : `UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`)
+      + (o.request === false ? '' : `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId","requestedById","requestedByRole","requestedByName","sourceCommandId")
+          VALUES ('${o.sr}-cr','mx-proj','mx-dec','nobody left to countersign',0,0,'open','countersign_rejection','${o.requestRev ?? rev}','mx-pmc','${o.requestRole ?? 'pmc'}','MX PMC','${cmd}');`);
+  const audit = (o.audit === false ? '' : AU('mx-dec', 'stranded_resolved')) + (o.outcome === 'returned' && o.request !== false ? AU('mx-dec', 'change_requested') : '');
+  return TX(RESERVE(cmd, 'decisions.resolveStrandedCountersign', 'mx-pmc'), o.order === 'event-first' ? event + act : act + event, audit, COMPLETE(cmd, o.sr));
+};
+
 // ── THE MATRIX ───────────────────────────────────────────────────────────────────────────────
 const MATRIX: Branch[] = [
   {
@@ -568,13 +692,18 @@ const MATRIX: Branch[] = [
     key: 'decision.change_requested',
     writer: 'decisions.disagree (countersign_rejection)',
     fact: 'ChangeRequest (origin countersign_rejection, citing the provisional revision)',
-    audit: null,
+    audit: 'DecisionEvent.change_requested (demanded since A8b, #673 round 1)',
     transition: 'Decision awaiting_countersign → change (recorded as change_from_awaiting)',
     enforcedBy: ['ChangeRequest_t4d_paired', 'ChangeRequest_t4d_claim', 'Decision_t4d_disagreement_paired',
-      'Decision_t4d_change_transition', 'DomainEvent_t4d_pairing_claimed'],
-    setup: HAND(`UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'mx-dec';
+      'Decision_t4d_change_transition', 'DecisionEvent_t4d_correspondence', 'DomainEvent_t4d_pairing_claimed'],
+    // #673 round 5: the chain ACTIVE (the architect the disagreement is the act of, seated by the delivered
+    // `members.add` bundle so the envelope-truth seal admits the `architect` envelope), the decision parked
+    setup: `${CHAIN_WORLD}
+      ` + HAND(`UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'mx-dec';
       INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","finalized","approvedFrom")
         VALUES ('mx-rev-park','mx-proj','mx-dec',1,'a',now(),'mx-client',FALSE,'pending');`),
+    // the positive cites the disagreement's receipt as the delivered writer does (#673 round 3: the
+    // provenance seal names the request as `decisions.disagree`'s ONE primary table) in the ARCHITECT's name
     positive: (order, version) => REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version, order }),
     claim: 'mx-ev-rej:ChangeRequest:mx-cr-rej',
     negatives: [
@@ -585,10 +714,57 @@ const MATRIX: Branch[] = [
         // disagreement door — and either message binds the arm to the missing request
         refusal: /awaiting_countersign → change.* with 0 open `countersign_rejection` change request\(s\) born here|in this transaction with no open `countersign_rejection` request/ },
       { name: 'the disagreement\'s event is attributed to ANOTHER user than the request\'s requester (wrong actor, #590 round 4)',
-        // no audit row is declared for this branch, so 4d-i's correspondence never looks: the
-        // request's own seal binds the event's actor to `requestedById`
+        // the request's own seal binds the event's actor to `requestedById`; since A8b the audit row
+        // is demanded too, so 4d-i's correspondence binds the same pair through the register
         bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, actor: 'mx-pmc' }),
-        refusal: /countersign_rejection request .* names mx-client as its requester, and this transaction carries 0 `decision.change_requested` event\(s\) attributed to that person/ },
+        refusal: /countersign_rejection request .* names mx-arch as its requester, and this transaction carries 0 `decision.change_requested` event\(s\) attributed to that person|names an actor other than|a role that actor does not hold/ },
+      { name: 'the disagreement is written with its request and event but NO `change_requested` audit row (A8b, #673 round 1)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, audit: false }),
+        refusal: /countersign_rejection request .* was opened in this transaction with 0 `change_requested` audit row\(s\)/ },
+      { name: 'the disagreement is written with its request, event and audit row but NO bound change-request notice (A8b, #673 round 2)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, notice: false }),
+        refusal: /with 0 bound notice\(s\) of kind `decision\.change_requested`/ },
+      { name: 'the disagreement\'s event carries NO origin (the renderer would render nothing; A8b, #673 round 2)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, origin: null }),
+        refusal: /with 0 `decision\.change_requested` event\(s\) naming it \(`payload\.requestId`\), its origin/ },
+      { name: 'the disagreement\'s event names ANOTHER request (A8b, #673 round 2)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, named: 'mx-cr-other' }),
+        refusal: /with 0 `decision\.change_requested` event\(s\) naming it \(`payload\.requestId`\), its origin/ },
+      { name: 'the disagreement\'s event carries NO title (the renderer would render nothing; A8b, #673 round 3)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, title: null }),
+        refusal: /with 0 `decision\.change_requested` event\(s\) naming it .* the decision's title \(`payload\.title`\) and its own reason/ },
+      { name: 'the disagreement\'s event carries ANOTHER decision\'s title (A8b, #673 round 3)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, title: 'MX Approved' }),
+        refusal: /with 0 `decision\.change_requested` event\(s\) naming it .* the decision's title \(`payload\.title`\) and its own reason/ },
+      { name: 'the disagreement\'s event carries a reason the request never recorded (a forged notice; A8b, #673 round 3)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, reason: 'words the request never carried' }),
+        refusal: /with 0 `decision\.change_requested` event\(s\) naming it .* the decision's title \(`payload\.title`\) and its own reason/ },
+      { name: 'the disagreement\'s event carries NO reason (A8b, #673 round 3)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, reason: null }),
+        refusal: /with 0 `decision\.change_requested` event\(s\) naming it .* the decision's title \(`payload\.title`\) and its own reason/ },
+      { name: 'the request\'s reason is a TAB alone, carried faithfully by the event (blank to the eye; A8b, #673 round 4)',
+        // at 6c13a5c this bundle COMMITTED: `btrim`'s default set is the space alone
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, requestReason: `E'\\t'` }),
+        refusal: /countersign_rejection request mx-cr-rej of decision mx-dec carries a blank reason/ },
+      { name: 'a CLIENT-shaped disagreement: the active client reopens the decision under a `decisions.disagree` receipt with a truthful `client` pair and no architect anywhere in the act (A8b, #673 round 5)',
+        // at be68a64 this bundle COMMITTED: the arm bound the event to the requester's id and nothing else
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, requester: { id: 'mx-client', role: 'client', name: 'MX Client' } }),
+        refusal: /freezes the requester as `client` \/ `MX Client` under a `decisions\.disagree` receipt, whose producer acts as `architect`/ },
+      { name: 'the rejection request freezes NO requester pair (A8b, #673 round 5)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, pair: null }),
+        refusal: /freezes the requester as `<null>` \/ `<null>` under a `decisions\.disagree` receipt/ },
+      { name: 'the event\'s envelope names ANOTHER role than the request froze (A8b, #673 round 5)',
+        // 4d-i's envelope-truth seal (the architect does not hold `pmc`) or the request arm's pair binding refuses it — either message binds the arm
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, envelopeRole: 'pmc' }),
+        refusal: /a role that actor does not hold|event\(s\) whose envelope \(`actorId`, `actorRole`, `actorName`\) is that pair/ },
+      { name: 'the rejection request cites NO receipt (a reopening nobody performed; A8b, #673 round 5)',
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, receipt: null }),
+        refusal: /cites no receipt of one of its two producers \(found `<none>`\)/ },
+      { name: 'the rejection request is named as the PRIMARY result of a `decisions.resolveStrandedCountersign` receipt with NO resolution written (the PMC\'s return without its fact; A8b, #673 round 3)',
+        // at b193f77 this bundle COMMITTED: the receipt arm returned for any row the receipt named
+        // in the PMC's name (round 5 binds the frozen role to the producer first), so the provenance seal is the one reached
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, receipt: 'decisions.resolveStrandedCountersign', requester: { id: 'mx-pmc', role: 'pmc', name: 'MX PMC' } }),
+        refusal: /ChangeRequest\.mx-cr-rej is named as the PRIMARY result of its `decisions\.resolveStrandedCountersign` receipt, but that command's primary fact is a DecisionStrandedResolution row/ },
       { name: 'a rejection request PLANTED EARLIER is no-op updated to stand in for the one this disagreement owes, at the drain generation (no-op substitution)',
         // 4d-i's disagreement door reads the request by `xmin`, which the touch supplies; at the
         // prior generation the event owes no claim, so at cc923fdd this bundle COMMITTED — a
@@ -597,7 +773,7 @@ const MATRIX: Branch[] = [
           VALUES ('mx-cr-old','mx-proj','mx-dec','an earlier disagreement',0,0,'open','countersign_rejection','mx-rev-park');`),
         bundle: TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`,
           `UPDATE "ChangeRequest" SET "reason" = "reason" WHERE "id" = 'mx-cr-old';`,
-          EV({ id: 'mx-ev-rej', type: 'decision.change_requested', dec: 'mx-dec', version: PRIOR })),
+          EV({ id: 'mx-ev-rej', type: 'decision.change_requested', dec: 'mx-dec', version: PRIOR }), AU('mx-dec', 'change_requested')),
         refusal: /awaiting_countersign → change.* with 0 open `countersign_rejection` change request\(s\) born here/ },
     ],
   },
@@ -776,6 +952,203 @@ const MATRIX: Branch[] = [
       { name: 'a revision BORN finalized under an ACTIVE chain (the writer choosing the birth value)',
         bundle: PROVISIONAL({ rev: 'mx-rev', ev: 'mx-ev-aw', version: CURRENT, finalized: true }),
         refusal: /born finalized=t on a project whose architect chain is ACTIVE/ },
+    ],
+  },
+  // 4d-ii-a / A8b — the countersign: the fact naming the exact head is the branch's primary fact
+  {
+    key: 'decision.approved',
+    writer: 'decisions.countersign (the architect finalizes the parked provisional approval)',
+    fact: 'DecisionCountersign (naming the exact head revision, the architect\'s frozen pair)',
+    audit: 'DecisionEvent.countersigned',
+    transition: 'Decision awaiting_countersign → approved with the head\'s finality flip, under a decisions.countersign receipt naming the fact',
+    enforcedBy: ['DecisionCountersign_t4d_claim', 'DecisionCountersign_t4d_claim_deferred', 'DecisionCountersign_t4d_seal', 'DecisionCountersign_t4d_paired',
+      'DecisionCountersign_t4d_provenance_bound', 'DecisionApprovalRevision_t4d_flip_paired', 'DecisionApprovalRevision_t4d_one_flip',
+      'DecisionEvent_t4d_correspondence', 'DomainEvent_t4d_pairing_claimed'],
+    setup: COUNTERSIGN_WORLD,
+    positive: (order, version) => COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version, order }),
+    claim: 'mx-ev-cs:DecisionCountersign:mx-cs',
+    negatives: [
+      { name: 'the countersign is written with NO finalizing event',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, event: false }),
+        refusal: /with 0 finalizing event\(s\)|carries 0 `decision\.approved`/ },
+      { name: 'the event names ANOTHER countersign (wrong identity)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, named: 'mx-cs-other' }),
+        refusal: /with 0 finalizing event\(s\)|requires a pairing claim and none was made/ },
+      { name: 'the event names ANOTHER revision than the one the fact finalized (wrong identity)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, namedRev: 'mx-rev-other' }),
+        refusal: /with 0 finalizing event\(s\)|requires a pairing claim and none was made/ },
+      { name: 'the event is attributed to ANOTHER user than the countersigner (wrong actor)',
+        // with the envelope pair on the event (#673 round 2) 4d-i's envelope-truth seal refuses first:
+        // the other user does not hold the frozen role; either message binds the arm
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, actor: 'mx-pmc' }),
+        refusal: /with 0 finalizing event\(s\)|requires a pairing claim and none was made|names an actor other than|a role that actor does not hold/ },
+      { name: 'the fact and the event are written but the head is never FLIPPED (a countersign that finalizes nothing)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, flip: false }),
+        refusal: /which is not finalized at commit/ },
+      { name: 'the fact, the flip and the event are written but the decision stays `awaiting_countersign` (the status never lands)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, land: false }),
+        refusal: /at commit the decision is `awaiting_countersign` rather than `approved`/ },
+      { name: 'the flip, the landing and the event with NO fact behind them (the forged finalization)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, fact: false }),
+        refusal: /with neither a DecisionCountersign nor a `completed` DecisionStrandedResolution naming it|requires a pairing claim and none was made/ },
+      { name: 'the countersign is written with its event but NO `countersigned` audit row',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, audit: false }),
+        refusal: /with 0 `countersigned` audit row\(s\)/ },
+      { name: 'the fact freezes the role `pmc` (a countersign is the architect\'s act)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, role: 'pmc' }),
+        refusal: /freezes the role `pmc` — a countersign is the ARCHITECT/ },
+      { name: 'the countersign is written with its event and audit row but NO bound green notice (#673 round 2)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, notice: false }),
+        refusal: /with 0 bound notice\(s\) of the approval family/ },
+      { name: 'the event names NO finalization (the renderer would render an ordinary approval; #673 round 2)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, finalization: null }),
+        refusal: /with 0 finalizing event\(s\)|requires a pairing claim and none was made/ },
+      { name: 'the event names ANOTHER finalization (`stranded_completed` on a countersign; #673 round 2)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, finalization: 'stranded_completed' }),
+        refusal: /with 0 finalizing event\(s\)|requires a pairing claim and none was made/ },
+      { name: 'the event\'s envelope carries a role other than the fact\'s frozen pair (P31; #673 round 2)',
+        // 4d-i's envelope-truth seal refuses a role the actor does not hold before the claimant compares
+        // the pair; a role the actor DOES hold but the fact did not freeze is the claimant's refusal
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, envelopeRole: 'pmc' }),
+        refusal: /with 0 finalizing event\(s\)|requires a pairing claim and none was made|a role that actor does not hold/ },
+      { name: 'the finalizing event carries NO title (the renderer would render nothing; A8b, #673 round 3)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, title: null }),
+        refusal: /with 0 finalizing event\(s\) .* the decision as the log renders it \(`payload\.title` and `payload\.deciderKind` equal to the decision's\)/ },
+      { name: 'the finalizing event carries ANOTHER decision\'s title (A8b, #673 round 3)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, title: 'MX Approved' }),
+        refusal: /with 0 finalizing event\(s\) .* the decision as the log renders it \(`payload\.title` and `payload\.deciderKind` equal to the decision's\)/ },
+      { name: 'the decision\'s title is a NEWLINE alone, carried faithfully by the event (blank to the eye; A8b, #673 round 4)',
+        setup: HAND(`UPDATE "Decision" SET "title" = E'\\n' WHERE "id" = 'mx-dec';`),
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, title: '\\n' }),
+        refusal: /countersign mx-cs names decision mx-dec, whose title is blank/ },
+      { name: 'the finalizing event freezes ANOTHER approver than the revision records (the architect as the approver; A8b, #673 round 5)',
+        // at be68a64 this bundle COMMITTED: immutable event evidence attributing the approval to another person
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, approver: { name: 'MX Architect', role: 'architect' } }),
+        refusal: /with 0 finalizing event\(s\) .* the revision's frozen approver and origin \(`payload\.approverName`, `payload\.approverRole`, `payload\.approvedFrom` equal to the revision's\)/ },
+      { name: 'the finalizing event freezes NO approver pair (A8b, #673 round 5)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, approver: null }),
+        refusal: /with 0 finalizing event\(s\) .* the revision's frozen approver and origin/ },
+      { name: 'the finalizing event announces ANOTHER origin than the revision recorded (`approvedFrom`; A8b, #673 round 5)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, approvedFrom: 'change' }),
+        refusal: /with 0 finalizing event\(s\) .* the revision's frozen approver and origin/ },
+      { name: 'the finalizing event carries ANOTHER decider kind than the decision\'s (A8b, #673 round 3)',
+        bundle: COUNTERSIGN({ cs: 'mx-cs', ev: 'mx-ev-cs', version: CURRENT, deciderKind: 'pmc' }),
+        refusal: /with 0 finalizing event\(s\) .* the decision as the log renders it \(`payload\.title` and `payload\.deciderKind` equal to the decision's\)/ },
+    ],
+  },
+  // 4d-ii-a / A8b — the stranded resolution, COMPLETED: the fact is the branch's primary fact
+  {
+    key: 'decision.approved',
+    writer: 'decisions.resolveStrandedCountersign (completed: the PMC finalizes under the inactive chain)',
+    fact: 'DecisionStrandedResolution (outcome completed, naming the exact head, the PMC\'s frozen pair)',
+    audit: 'DecisionEvent.stranded_resolved',
+    transition: 'Decision awaiting_countersign → approved with the head\'s finality flip, under a decisions.resolveStrandedCountersign receipt naming the fact',
+    enforcedBy: ['DecisionStrandedResolution_t4d_claim', 'DecisionStrandedResolution_t4d_claim_deferred', 'DecisionStrandedResolution_t4d_seal', 'DecisionStrandedResolution_t4d_paired',
+      'DecisionStrandedResolution_t4d_provenance_bound', 'DecisionApprovalRevision_t4d_flip_paired', 'DecisionEvent_t4d_correspondence', 'DomainEvent_t4d_pairing_claimed'],
+    setup: STRANDED_WORLD,
+    positive: (order, version) => STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version, order, outcome: 'completed' }),
+    claim: 'mx-ev-sr:DecisionStrandedResolution:mx-sr',
+    negatives: [
+      { name: 'the resolution is written with NO finalizing event',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', event: false }),
+        refusal: /with 0 event\(s\) of its outcome's family|carries 0 `decision\.approved`/ },
+      { name: 'the event names ANOTHER resolution (wrong identity)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', named: 'mx-sr-other' }),
+        refusal: /with 0 event\(s\) of its outcome's family|requires a pairing claim and none was made/ },
+      { name: 'the event is attributed to ANOTHER user than the resolver (wrong actor)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', actor: 'mx-client' }),
+        refusal: /with 0 event\(s\) of its outcome's family|requires a pairing claim and none was made|names an actor other than|a role that actor does not hold/ },
+      { name: 'the fact and the event are written but the head is never flipped and the decision never lands',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', flip: false, land: false }),
+        refusal: /owes BOTH the finality flip on revision mx-rev-park and the `awaiting_countersign → approved` transition/ },
+      { name: 'the resolution is written with its event but NO `stranded_resolved` audit row',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', audit: false }),
+        refusal: /with 0 `stranded_resolved` audit row\(s\)/ },
+      { name: 'the project still holds an ACTIVE architect (the decision is not stranded; the countersign is the legal path)',
+        setup: `${STANDING_WORLD} ${STANDING({ mt: 'mx-mt1', ev: 'mx-ev-st1', version: CURRENT })}`,
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed' }),
+        refusal: /still holds an ACTIVE architect, so decision mx-dec is not stranded/ },
+      { name: 'the fact freezes the role `architect` (resolving a stranded decision is the PMC\'s named act)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', role: 'architect' }),
+        refusal: /freezes the role `architect` — resolving a stranded decision is the PMC/ },
+      { name: 'the completed resolution is written with its event and audit row but NO bound green notice (#673 round 2)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', notice: false }),
+        refusal: /with 0 bound notice\(s\) of its outcome's family/ },
+      { name: 'the completed resolution\'s event announces `returned` (the discriminator swapped; #673 round 2)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', announced: 'returned' }),
+        refusal: /with 0 event\(s\) of its outcome's family|requires a pairing claim and none was made/ },
+      { name: 'the completing event carries ANOTHER decision\'s title (A8b, #673 round 3)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', title: 'MX Approved' }),
+        refusal: /with 0 event\(s\) of its outcome's family .* the decision as the log renders it \(`payload\.title` equal to the decision's; `completed`: `payload\.deciderKind` too/ },
+      { name: 'the completing event freezes ANOTHER approver than the revision records (the PMC as the approver; A8b, #673 round 5)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', approver: { name: 'MX PMC', role: 'pmc' } }),
+        refusal: /with 0 event\(s\) of its outcome's family .* the revision's frozen approver and origin/ },
+      { name: 'the completing event carries NO decider kind (the renderer would render nothing; A8b, #673 round 3)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'completed', deciderKind: null }),
+        refusal: /with 0 event\(s\) of its outcome's family .* the decision as the log renders it \(`payload\.title` equal to the decision's; `completed`: `payload\.deciderKind` too/ },
+    ],
+  },
+  // 4d-ii-a / A8b — the stranded resolution, RETURNED: the resolution claims; the request it opens verifies
+  {
+    key: 'decision.change_requested',
+    writer: 'decisions.resolveStrandedCountersign (returned: the PMC reopens under the inactive chain)',
+    fact: 'DecisionStrandedResolution (outcome returned, naming the exact head) with the open countersign_rejection ChangeRequest citing it under the same receipt',
+    audit: 'DecisionEvent.stranded_resolved (and the request\'s change_requested)',
+    transition: 'Decision awaiting_countersign → change (recorded as change_from_awaiting), the request opened under a decisions.resolveStrandedCountersign receipt naming the resolution',
+    enforcedBy: ['DecisionStrandedResolution_t4d_claim', 'DecisionStrandedResolution_t4d_claim_deferred', 'DecisionStrandedResolution_t4d_seal', 'DecisionStrandedResolution_t4d_paired',
+      'DecisionStrandedResolution_t4d_provenance_bound', 'ChangeRequest_t4d_source_bound', 'ChangeRequest_t4d_paired', 'ChangeRequest_t4d_claim',
+      'Decision_t4d_disagreement_paired', 'Decision_t4d_change_paired', 'DecisionEvent_t4d_correspondence', 'DomainEvent_t4d_pairing_claimed'],
+    setup: STRANDED_WORLD,
+    positive: (order, version) => STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version, order, outcome: 'returned' }),
+    claim: 'mx-ev-sr:DecisionStrandedResolution:mx-sr',
+    negatives: [
+      { name: 'the returned resolution is written with NO reopening event',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', event: false }),
+        refusal: /with 0 event\(s\) of its outcome's family|carries 0 `decision\.change_requested`/ },
+      { name: 'the event names ANOTHER resolution (wrong identity)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', named: 'mx-sr-other' }),
+        refusal: /with 0 event\(s\) of its outcome's family|requires a pairing claim and none was made/ },
+      { name: 'the event is attributed to ANOTHER user than the resolver (wrong actor)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', actor: 'mx-client' }),
+        refusal: /with 0 event\(s\) of its outcome's family|requires a pairing claim and none was made|names an actor other than|names .* as its requester|a role that actor does not hold/ },
+      { name: 'the resolution and the transition are written with NO rejection request (the return that nothing can close)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', request: false }),
+        refusal: /with no open `countersign_rejection` request/ },
+      { name: 'the resolution, the request and the event are written but the decision stays `awaiting_countersign`',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', land: false }),
+        refusal: /at commit the decision is `awaiting_countersign` rather than `change`|is `awaiting_countersign`, not `change`/ },
+      { name: 'the returned resolution is written with its event but NO `stranded_resolved` audit row',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', audit: false }),
+        refusal: /with 0 `stranded_resolved` audit row\(s\)/ },
+      { name: 'the project still holds an ACTIVE architect (the return is refused; the disagreement is the architect\'s)',
+        setup: `${STANDING_WORLD} ${STANDING({ mt: 'mx-mt1', ev: 'mx-ev-st1', version: CURRENT })}`,
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned' }),
+        refusal: /still holds an ACTIVE architect, so decision mx-dec is not stranded/ },
+      { name: 'the returned resolution is written with its request, event and audit rows but NO bound change-request notice (#673 round 2)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', notice: false }),
+        refusal: /with 0 bound notice\(s\)/ },
+      { name: 'the returned resolution\'s event announces `completed` (the discriminator swapped; #673 round 2)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', announced: 'completed' }),
+        refusal: /with 0 event\(s\) of its outcome's family|requires a pairing claim and none was made/ },
+      { name: 'the returning event carries NO title (the renderer would render nothing; A8b, #673 round 3)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', title: null }),
+        refusal: /with 0 event\(s\) of its outcome's family .* the decision as the log renders it \(`payload\.title` equal to the decision's/ },
+      { name: 'the returned bundle\'s request freezes the requester as `architect` under the PMC\'s resolve receipt (A8b, #673 round 5)',
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', requestRole: 'architect' }),
+        // 4d-i's requester-pair truth (the PMC does not hold `architect`) or the request arm's producer binding refuses it — either message binds the arm
+        refusal: /a role that actor does not hold|freezes the requester as `architect` \/ `MX PMC` under a `decisions\.resolveStrandedCountersign` receipt, whose producer acts as `pmc`/ },
+      { name: 'the resolution records ANOTHER reason than the request, the event and the notice it opens (A8b, #673 round 4)',
+        // at 6c13a5c this bundle COMMITTED: the bundle arm paired the two by receipt, decision, outcome and revision alone
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', srReason: 'a reason the request never carried' }),
+        refusal: /the receipt cited by ChangeRequest\.mx-sr-cr names result mx-sr, which is neither this row nor the PRIMARY fact of its `decisions\.resolveStrandedCountersign` bundle citing the same receipt for the same decision and stating the SAME reason/ },
+      { name: 'the returned bundle\'s request names an EARLIER revision than the one the resolution disposed of (A8b, #673 round 3)',
+        // the world after a rejected head was re-approved: the fresh provisional head (version 2) stands
+        // above the earlier revision the rejection disposed of; the resolution disposes of the head while
+        // the immutable request records the earlier one — at b193f77 this bundle COMMITTED
+        setup: HAND(`INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","finalized","approvedFrom","approvedByName","approvedByRole")
+          VALUES ('mx-rev-other','mx-proj','mx-dec',2,'a',now(),'mx-client',FALSE,'pending','MX Client','client');`),
+        bundle: STRANDED({ sr: 'mx-sr', ev: 'mx-ev-sr', version: CURRENT, outcome: 'returned', rev: 'mx-rev-other', requestRev: 'mx-rev-park' }),
+        refusal: /the receipt cited by ChangeRequest\.mx-sr-cr names result mx-sr, which is neither this row nor the PRIMARY fact of its `decisions\.resolveStrandedCountersign` bundle .* naming, for a request, the SAME revision the request cites/ },
     ],
   },
 ];

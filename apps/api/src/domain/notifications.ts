@@ -28,6 +28,11 @@ export const APPROVED_DECISION_NOTICE_COLOR = '#3F7A54';
  *  status chip uses (`packages/shared/src/tokens/colors.ts`), never green. */
 export const FORWARDED_DECISION_NOTICE_COLOR = '#C08A2D';
 export const AWAITING_COUNTERSIGN_NOTICE_COLOR = '#31567F';
+/** 4d-ii-a / A8b — the countersign REJECTION's notice (the disagreement's two paths and the `returned`
+ *  stranded resolution): an action item for the decider — the re-approval — so the pending amber. The
+ *  standard `requestChange` writes no notice (the plan's correspondence table: the change-request
+ *  notice is owed for the `countersign_rejection` origin ONLY). */
+export const CHANGE_REQUESTED_NOTICE_COLOR = '#C08A2D';
 
 /** The notification text shown when a PMC issues a decision (awaiting client approval). */
 export function pendingDecisionNotice(title: string): string {
@@ -111,6 +116,16 @@ export function approvedDecisionNotice(f: ApprovedDecisionNoticeFacts): string {
  */
 const FORWARDED_DECISION_PREFIX = 'Decision forwarded';
 
+/**
+ * Phase 6 task 4d-ii-a / A8b (§A.2 "Disagreement", the correspondence table's change-request notice) —
+ * "Change requested: T — <reason>": the architect's rejection or the PMC's `returned` resolution, the
+ * reason it carries, rendered from the `decision.change_requested` event of a `countersign_rejection`
+ * request (the title and the reason frozen on the event at the act).
+ */
+export function changeRequestedNotice(title: string, reason: string): string {
+  return `Change requested: ${title} — ${reason}`;
+}
+
 export function forwardedDecisionNotice(title: string, toLabel: string): string {
   return `${FORWARDED_DECISION_PREFIX}: ${title} → ${toLabel}`;
 }
@@ -132,4 +147,21 @@ const PROVISIONAL_APPROVAL_SUFFIX = " — awaiting the architect's countersign";
 
 export function provisionalApprovalNotice(f: ApprovedDecisionNoticeFacts): string {
   return `${approvedDecisionNotice(f)}${PROVISIONAL_APPROVAL_SUFFIX}`;
+}
+
+/**
+ * Phase 6 task 4d-ii-a / A8b (§A.2, "the durable Notification tells the truth about finality") — the
+ * FINALIZER's green notice: the approver exactly as the direct approve names them, from the provisional
+ * revision's FROZEN approver facts (`approvedByName`/`approvedByRole`, the act-time pair), and the
+ * finalization as a DISTINCT attribution — "countersigned by <architect>", or "finalized by <PMC> with no
+ * active architect" for the `completed` stranded resolution — never claiming the finalizer approved the
+ * option. The finalizer's own name is the event's frozen envelope.
+ */
+export type ApprovalFinalization = 'countersign' | 'stranded_completed';
+
+export function finalizedApprovalNotice(f: ApprovedDecisionNoticeFacts, finalization: ApprovalFinalization, finalizerName: string): string {
+  const suffix = finalization === 'countersign'
+    ? ` — countersigned by ${finalizerName}`
+    : ` — finalized by ${finalizerName} with no active architect`;
+  return `${approvedDecisionNotice(f)}${suffix}`;
 }

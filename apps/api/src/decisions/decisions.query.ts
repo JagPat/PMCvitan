@@ -147,9 +147,9 @@ export class DecisionsQueryService {
     if (ids.size === 0) return new Map();
     const rows = await client.decisionApprovalRevision.findMany({
       where: { projectId, id: { in: [...ids] } },
-      select: { id: true, decisionId: true, onBehalfOf: true, option: { select: { material: true } } },
+      select: { id: true, decisionId: true, onBehalfOf: true, approvedByName: true, approvedByRole: true, option: { select: { material: true } } },
     });
-    return new Map(rows.map((r) => [r.id, { decisionId: r.decisionId, material: r.option.material, onBehalfOf: r.onBehalfOf }]));
+    return new Map(rows.map((r) => [r.id, { decisionId: r.decisionId, material: r.option.material, onBehalfOf: r.onBehalfOf, approvedByName: r.approvedByName, approvedByRole: r.approvedByRole }]));
   }
 
   /**

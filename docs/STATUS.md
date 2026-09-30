@@ -14,32 +14,46 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-ii-a-a8a-forward-approve
-reviewed_merge: 7e12e7a
-open_pr: 672
+work_item: phase-6-task-4d-ii-a-a8b-countersign-disagree-stranded
+reviewed_merge: 39c3bf6
+open_pr: 673
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-29
 ```
 
-### Now — Phase 6 task 4d: A8a, forward and approve
+### Now — Phase 6 task 4d: A8b, countersign, disagree, stranded
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged.
 
-- **Now, A8a, `open_pr: 672` (`work_item: phase-6-task-4d-ii-a-a8a-forward-approve`, branch
-  `claude/4d-ii-a8a-forward-approve`, from `main` at `7e12e7a`).** The first A8 sub-unit (the staging
-  note's table): `decisions.forward` on the ledger with `lockProjectReadiness` in the canonical order,
-  refusing 409 while the reservation stands; the approve CAS landing `awaiting_countersign` under a
-  chain with the provisional revision and notice, the frozen `approvedFrom`/`approvedByName`/
-  `approvedByRole` and its `decider`/`forward` cancellations; the two chain keys' executable bundles
-  owed to A8a in the pairing matrix; the status tripwire's two A8a arms; `decision.forward` in
-  `ROLE_POLICY` (P28); the forwarded and provisional notices' renderer arms. One migration the delivered
-  database forced (`20280105000000_phase6_t4d_ii_a8a_awaiting_tuple`, `ALWAYS_EXECUTE`): 4b's
-  `Decision_t4b_approved_tuple_check` re-issued with `awaiting_countersign` admitted — 4d-i widened the
-  attribution seal's arm for the provisional transition and never the CHECK beside it, so the chain
-  reapproval of a tuple-bearing decision was unrepresentable. No consumer version, catalog row or door
-  moves.
+- **Now, A8b, `open_pr: 673` (`work_item: phase-6-task-4d-ii-a-a8b-countersign-disagree-stranded`,
+  branch `claude/4d-ii-a8b-countersign`, from `main` at `39c3bf6`; `main` at `8e56091`, #669, merged in).** The last A-unit (the staging note's
+  table): the chain's three remaining writers on the ledger, each FACT FIRST under `lockProjectReadiness`
+  in the canonical order with the actor's frozen pair, its audit row, ONE event naming the fact and the
+  exact head revision, its kinded notice and the demands it outdates cancelled — `decisions.countersign`
+  (the architect finalizes: the flip, `awaiting_countersign → approved`, `decision.approved`/`reapproved`
+  by the revision's RECORDED `approvedFrom`, the green notice naming the approver from the revision's
+  frozen pair and the countersigner distinctly); `decisions.disagree` (reject-back keeps the holder;
+  forward-on re-homes through the SAME forward door in the SAME row write; both open the
+  `countersign_rejection` request citing the head, which only a re-approval closes);
+  `decisions.resolveStrandedCountersign` (the PMC, legal only under an INACTIVE chain: `completed`
+  finalizes under the no-chain rule; `returned` reopens with the request, the resolution the claimant,
+  a holderless designation re-homed in the bundle or refused 400). One migration
+  (`20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence`, `ALWAYS_EXECUTE`): the two finalizer
+  claimants, 4d-i's provenance seal re-issued with the returned request's second producer, 4d-i's
+  one-open-approval count re-issued to count UNDISPOSED revisions (the plan's rule; the delivered count
+  refused the re-approval every disagreement demands), and the persisted server-generation minimum
+  RAISED to 2 — the drain fence the staging note assigns to A8b. Three writer branches join the pairing
+  matrix; the route policy, tripwire, manifest and boundary pins move. §C arms not carried by any
+  A-unit: none.
+- **A8a merged as #672** (`39c3bf6`): `decisions.forward` on the ledger (fact first, the holder moved
+  through the attribution seal's one door, the new holder's users frozen, refusing 409 while the
+  reservation stands); the approve CAS landing `awaiting_countersign` under a chain with the provisional
+  revision, its frozen `approvedFrom` and pair, the awaiting notice and the decider/forward
+  cancellations; the CAS naming the holder beside the status (#672 round 1); the push consumer's drop
+  writing its mark once; migration `20280105000000_phase6_t4d_ii_a8a_awaiting_tuple` (4b's tuple CHECK
+  admitting `awaiting_countersign`, `ALWAYS_EXECUTE`).
 - **A7d merged as #671** (`7e12e7a`): the CATALOG CHANGE (plan §D "4d-ii-a is a CATALOG CHANGE, staged
   as one") — the compiled external-effect catalog widened (the three chain types, the two FROZEN-audience
   push families with their constant bodies, the `architect` role in the three targeted ceilings) at a new

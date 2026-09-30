@@ -11,8 +11,7 @@ import {
   pendingDecisionNotice,
   provisionalApprovalNotice,
   recordedDecisionNotice,
-  withdrawnDecisionNotice,
-} from '../domain/notifications';
+  withdrawnDecisionNotice, finalizedApprovalNotice, changeRequestedNotice, CHANGE_REQUESTED_NOTICE_COLOR } from '../domain/notifications';
 import type { DecisionDto } from '../snapshot/types';
 
 /**
@@ -81,6 +80,11 @@ export interface ApprovalRevisionFacts {
   material: string;
   /** The holder kind a PMC recorded consent on behalf of; `null` when the decider acted. */
   onBehalfOf: string | null;
+  /** 4d-ii-a / A8b — the approver's pair FROZEN at the act (required on a revision born provisional):
+   *  what a FINALIZER's green notice names as the approver, since that event's envelope is the
+   *  finalizer's. NULL on a pre-4d-ii or drain-window revision. */
+  approvedByName: string | null;
+  approvedByRole: string | null;
 }
 
 /** The kinds whose notice renders from a revision the event names (`payload.revisionId`). 4d-ii-a / A8a:
@@ -153,6 +157,22 @@ export function renderKindedDecisionNotice(
       const revision = revisionId ? revisions?.get(revisionId) : undefined;
       if (!title || !deciderKind || !revision || !event.actorName || !event.actorRole) return null;
       if (!decisionId || revision.decisionId !== decisionId) return null;
+      // A8b — a FINALIZER's event (the countersign, the `completed` stranded resolution): its envelope is
+      // the finalizer's, so the approver is the revision's FROZEN pair, and the finalization is stated as
+      // its own attribution. An event naming a finalization the vocabulary does not know, or a revision
+      // carrying no frozen approver, renders nothing rather than the finalizer as the approver.
+      const finalization = field(event.payload, 'finalization');
+      if (finalization !== null) {
+        if (finalization !== 'countersign' && finalization !== 'stranded_completed') return null;
+        if (!revision.approvedByName || !revision.approvedByRole) return null;
+        return {
+          text: finalizedApprovalNotice(
+            { actorName: revision.approvedByName, actorRole: revision.approvedByRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf },
+            finalization, event.actorName,
+          ),
+          color: APPROVED_DECISION_NOTICE_COLOR,
+        };
+      }
       return {
         text: approvedDecisionNotice({ actorName: event.actorName, actorRole: event.actorRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf }),
         color: APPROVED_DECISION_NOTICE_COLOR,
@@ -180,6 +200,18 @@ export function renderKindedDecisionNotice(
       const toLabel = field(event.payload, 'toLabel');
       if (!title || !toLabel) return null;
       return { text: forwardedDecisionNotice(title, toLabel), color: FORWARDED_DECISION_NOTICE_COLOR };
+    }
+    case 'decision.change_requested': {
+      // A8b — the countersign REJECTION's notice (#673 round 1): the disagreement's two paths and the
+      // `returned` stranded resolution announce the reopening with the title and the reason frozen on
+      // the event. The standard `requestChange` writes no notice (the plan's correspondence table owes
+      // the change-request notice to the `countersign_rejection` origin ONLY), so an event of any other
+      // origin renders nothing — a kinded row bound to one is a forgery the renderer does not serve.
+      if (field(event.payload, 'origin') !== 'countersign_rejection') return null;
+      const title = field(event.payload, 'title');
+      const reason = field(event.payload, 'reason');
+      if (!title || !reason) return null;
+      return { text: changeRequestedNotice(title, reason), color: CHANGE_REQUESTED_NOTICE_COLOR };
     }
     default:
       return null;
@@ -213,7 +245,9 @@ export function kindedDecisionNoticeServed(
   // 4d-ii-a / A8a — the forwarded notice is the NEW holder's action item: the pending demand's audience
   // (pmc and the decider the decision now names); the displaced holder and every other viewer of the
   // decision see the decision itself move, not the demand addressed to someone else.
-  if (kind === 'decision.forwarded' && role !== 'pmc') {
+  // A8b — the rejection's notice is likewise the decider's action item (the re-approval): pmc and the
+  // decider the decision names (after a forward-on, the NEW holder).
+  if ((kind === 'decision.forwarded' || kind === 'decision.change_requested') && role !== 'pmc') {
     return viewerIsDecider({ deciderKind: decision.deciderKind, deciderUserId: decision.deciderUserId ?? null }, role, userId);
   }
   return true;

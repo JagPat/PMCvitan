@@ -4,7 +4,7 @@ import { DecisionsQueryService } from './decisions.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
-import { approveSchema, changeSchema, createDecisionSchema, forwardDecisionSchema, requestConsultationSchema, respondToConsultationSchema, updateDecisionDraftSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type ForwardDecisionInput, type RequestConsultationInput, type RespondToConsultationInput, type UpdateDecisionDraftInput, type WithdrawDecisionInput } from '../contracts';
+import { approveSchema, changeSchema, createDecisionSchema, forwardDecisionSchema, disagreeDecisionSchema, resolveStrandedCountersignSchema, requestConsultationSchema, respondToConsultationSchema, updateDecisionDraftSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type ForwardDecisionInput, type DisagreeDecisionInput, type ResolveStrandedCountersignInput, type RequestConsultationInput, type RespondToConsultationInput, type UpdateDecisionDraftInput, type WithdrawDecisionInput } from '../contracts';
 
 @Controller('projects/:projectId/decisions')
 @UseGuards(JwtGuard, RolesGuard)
@@ -94,6 +94,52 @@ export class DecisionsController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.decisions.forward(projectId, decisionId, body, user, idempotencyKey);
+  }
+
+  /** Phase 6 task 4d (4d-ii-a / A8b, §A.2) — the ARCHITECT countersigns a provisional approval: the
+   *  `DecisionCountersign` fact naming the exact head revision, its finality flip and
+   *  `awaiting_countersign → approved` commit together, announced by the finalizing event the revision's
+   *  recorded `approvedFrom` chooses. Refused 409 unless the decision awaits its countersign. */
+  @Post(':decisionId/countersign')
+  @RolesFor('decision.countersign')
+  countersign(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.countersign(projectId, decisionId, user, idempotencyKey);
+  }
+
+  /** Phase 6 task 4d (4d-ii-a / A8b, §A.2 "Disagreement") — the ARCHITECT rejects a provisional approval
+   *  back to its decider (`reject_back`) or hands it on to a named designation (`forward_on`, through the
+   *  one forward door): the decision lands `change` with an open `countersign_rejection` request. */
+  @Post(':decisionId/disagree')
+  @RolesFor('decision.disagree')
+  disagree(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @Body(new ZodPipe(disagreeDecisionSchema)) body: DisagreeDecisionInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.disagree(projectId, decisionId, body, user, idempotencyKey);
+  }
+
+  /** Phase 6 task 4d (4d-ii-a / A8b, §A.2 "the stranded decision") — the PMC resolves a decision left
+   *  awaiting its countersign with NO active architect: `completed` finalizes it under the no-chain rule,
+   *  `returned` sends it back to its decider with the rejection request (re-homing an emptied designation
+   *  with a same-bundle forward). Refused 409 while an architect is active. */
+  @Post(':decisionId/stranded')
+  @RolesFor('decision.resolveStrandedCountersign')
+  resolveStranded(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @Body(new ZodPipe(resolveStrandedCountersignSchema)) body: ResolveStrandedCountersignInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.resolveStrandedCountersign(projectId, decisionId, body, user, idempotencyKey);
   }
 
   /** Raise a change request against a decision — PMC, client, contractor, or the site

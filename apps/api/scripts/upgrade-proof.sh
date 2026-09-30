@@ -4945,6 +4945,38 @@ assert_rejects "A8a: the tuple on a PENDING decision is still refused by the wid
   "UPDATE \"Decision\" SET \"approvedDeciderKind\" = 'client', \"approvedDeciderLabel\" = 'Client' WHERE \"id\" = (SELECT \"id\" FROM \"Decision\" WHERE \"status\" = 'pending' AND \"approvedDeciderKind\" IS NULL ORDER BY \"id\" LIMIT 1)" \
   "Decision_t4b_approved_tuple_check|frozen|approval transition"
 
+# ── 4d-ii-a / A8b: the finalizers' claimants, the returned request's provenance, the fence raised ──
+# Over the ledger this database ran: the two claimants stand on the finalizer fact tables (immediate
+# and deferred), 4d-i's provenance seal carries the returned request's second producer on its four
+# triggers, and the persisted server-generation minimum is A8b's 2 with A8b's name as the evidence. The
+# file replays over a database that already carries it and moves nothing (the raise is GREATEST).
+if $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence/migration.sql" >/dev/null 2>&1; then
+  echo "ok      A8b: the finalizer-claimants migration replays over a database that already carries it"
+else
+  echo "FAILED  A8b: the finalizer-claimants migration did not replay (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
+fi
+assert "A8b: the countersign's and the stranded resolution's claimants stand, immediate and deferred, on their fact tables" \
+  "SELECT count(*)::text FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND t.tgqual IS NULL AND t.tgtype = 5 AND ((c.relname = 'DecisionCountersign' AND p.proname = 'phase6_t4d_countersign_claims_event' AND ((t.tgname = 'DecisionCountersign_t4d_claim' AND NOT t.tgdeferrable) OR (t.tgname = 'DecisionCountersign_t4d_claim_deferred' AND t.tgdeferrable AND t.tginitdeferred))) OR (c.relname = 'DecisionStrandedResolution' AND p.proname = 'phase6_t4d_stranded_claims_event' AND ((t.tgname = 'DecisionStrandedResolution_t4d_claim' AND NOT t.tgdeferrable) OR (t.tgname = 'DecisionStrandedResolution_t4d_claim_deferred' AND t.tgdeferrable AND t.tginitdeferred))));" \
+  "4"
+assert "A8b: the provenance seal admits the returned request under the stranded resolution's receipt, on its four triggers, beside 4d-i's own clauses" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_provenance_bound' AND prosrc LIKE '%ARRAY[''decisions.disagree'', ''decisions.resolveStrandedCountersign'']%' AND prosrc LIKE '%receiptThisTx%')::text || '|' || (SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname = 'phase6_t4d_provenance_bound' AND t.tgname IN ('DecisionForward_t4d_provenance_bound','DecisionCountersign_t4d_provenance_bound','DecisionStrandedResolution_t4d_provenance_bound','ChangeRequest_t4d_source_bound'))::text;" \
+  "1|4"
+assert "A8b: the one-open-approval count excludes the disposed revisions (a rejection request's, a returned resolution's) beside 4d-i's own clauses, its trigger standing deferred" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_revision_birth_paired' AND prosrc LIKE '%c.\"origin\" = ''countersign_rejection'' AND c.\"revisionId\" = r.\"id\"%' AND prosrc LIKE '%s.\"outcome\" = ''returned'' AND s.\"revisionId\" = r.\"id\"%' AND prosrc LIKE '%v_open > 1%' AND prosrc LIKE '%v_births <> 1%')::text || '|' || (SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname = 'phase6_t4d_revision_birth_paired' AND t.tgname = 'DecisionApprovalRevision_t4d_birth_paired' AND t.tgdeferrable AND t.tginitdeferred)::text;" \
+  "1|1"
+assert "A8b: the request pairing demands the rejection's change_requested audit row beside 4d-i-b's own clauses, its trigger standing deferred (#673 round 1)" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_change_request_paired' AND prosrc LIKE '%countersign_rejection request %% was opened in this transaction with %% \`change_requested\` audit row(s)%' AND prosrc LIKE '%change_from_awaiting%' AND prosrc LIKE '%platform_claim_event_pairing_once%')::text || '|' || (SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname = 'phase6_t4d_change_request_paired' AND t.tgname = 'ChangeRequest_t4d_paired' AND t.tgdeferrable AND t.tginitdeferred)::text;" \
+  "1|1"
+assert "A8b: the two claimants and the request arm demand the bound notice, and the claimants bind the payload discriminator to the fact (#673 round 2)" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE proname IN ('phase6_t4d_countersign_claims_event','phase6_t4d_stranded_claims_event','phase6_t4d_change_request_paired') AND prosrc LIKE '%platform_tx_notification%')::text || '|' || (SELECT count(*) FROM pg_proc WHERE (proname = 'phase6_t4d_countersign_claims_event' AND prosrc LIKE '%''finalization'', ''countersign''%') OR (proname = 'phase6_t4d_stranded_claims_event' AND prosrc LIKE '%''finalization'', ''stranded_completed''%' AND prosrc LIKE '%''outcome'', ''returned''%'))::text;" \
+  "3|2"
+assert "A8b: the two claimants and the request arm bind the content the renderer reads (title, deciderKind; title, reason) to the decision and the request with the blank guard over all ASCII whitespace, the claimants bind the revision's approver pair and origin, the request arm binds the producer's authority and the frozen pair to the envelope, and the provenance seal names the receipt's one primary table, ties the returned request to the resolution's revision and the secondary's reason to the primary's (#673 rounds 3–5)" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE (proname IN ('phase6_t4d_countersign_claims_event','phase6_t4d_stranded_claims_event') AND prosrc LIKE '%''title'', v_title, ''deciderKind'', v_kind%' AND prosrc LIKE '%d.\"deciderKind\"::text%' AND prosrc LIKE '%''approverName'', v_appr_name, ''approverRole'', v_appr_role, ''approvedFrom'', v_from%') OR (proname = 'phase6_t4d_change_request_paired' AND prosrc LIKE '%''title'', v_title, ''reason'', NEW.\"reason\"%' AND position('btrim(coalesce(NEW.\"reason\", ''''), E'' \\t\\n\\r\\v\\f'')' in prosrc) > 0 AND prosrc LIKE '%WHEN ''decisions.disagree'' THEN ''architect'' ELSE ''pmc''%' AND prosrc LIKE '%e.\"actorRole\" = NEW.\"requestedByRole\" AND e.\"actorName\" = NEW.\"requestedByName\"%'))::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_provenance_bound' AND prosrc LIKE '%v_primary_table IS DISTINCT FROM TG_TABLE_NAME%' AND prosrc LIKE '%WHEN ''decisions.resolveStrandedCountersign'' THEN ''DecisionStrandedResolution''%' AND prosrc LIKE '%sr.\"outcome\" = ''returned''%' AND prosrc LIKE '%sr.\"revisionId\" = (to_jsonb(NEW) ->> ''revisionId'')%' AND prosrc LIKE '%sr.\"reason\" = (to_jsonb(NEW) ->> ''reason'')%' AND prosrc LIKE '%cr.\"reason\" = (to_jsonb(NEW) ->> ''reason'')%')::text;" \
+  "3|1"
+assert "A8b: the persisted server-generation minimum is 2, raised by this file, and a second replay keeps it" \
+  "SELECT \"minimumGeneration\"::text || '|' || \"raisedBy\" FROM \"ServerGeneration\" WHERE \"key\" = 'singleton';" \
+  "2|20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence"
+
 # ── and the marker table is CLOSED, not merely trigger-covered ──────────────────────────────────
 # A child created with INHERITS takes a marker row the PARENT lookup finds while none of the
 # parent's triggers fire for DML against it. Measured on this codebase; asserted here over the
@@ -5045,7 +5077,7 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*) continue ;; esac
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5448,9 +5480,10 @@ assert "4d-ii-a / A6d: the mark and the legacy neutralization stand, payloads pr
 # ever RAISED and the evidence of a raise is not rewritten; the row is never deleted or truncated.
 # The proof then RAISES the minimum the way a later fence-raising migration would (A8b's stand-in),
 # so the ledger-lost replay below re-runs A6e's file over a raised minimum and must not lower it.
-assert "4d-ii-a / A6e: the persisted server-generation minimum is this migration's, under its three seals" \
+# (4d-ii-a / A8b RAISED the minimum to 2 with its own name as the evidence; A6e's three seals stand.)
+assert "4d-ii-a / A6e: the persisted server-generation minimum is the LAST raise's (A8b's 2), under A6e's three seals" \
   "SELECT (SELECT \"minimumGeneration\"::text || '|' || \"raisedBy\" FROM \"ServerGeneration\" WHERE \"key\" = 'singleton') || '|' || (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('ServerGeneration_t4d_raised','ServerGeneration_t4d_retained','ServerGeneration_t4d_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_server_generation_migration_open')::text;" \
-  "1|20280101000000_phase6_t4d_ii_a6e_generation_fence|3|0"
+  "2|20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence|3|0"
 assert_rejects "4d-ii-a / A6e: the minimum is written only inside a migration transition — a direct UPDATE is refused" \
   "UPDATE \"ServerGeneration\" SET \"minimumGeneration\" = 9 WHERE \"key\" = 'singleton'" \
   "migration transition closed"
@@ -5517,7 +5550,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20271230000000_phase6_t4d_ii_a6c_catalog_rules 20271231000000_phase6_t4d_ii_a6d_delivery_seals
 20280101000000_phase6_t4d_ii_a6e_generation_fence 20280102000000_phase6_t4d_ii_a7a_revision_named
 20280103000000_phase6_t4d_ii_a7c_inbox_v3 20280104000000_phase6_t4d_ii_a7d_catalog_change
-20280105000000_phase6_t4d_ii_a8a_awaiting_tuple"
+20280105000000_phase6_t4d_ii_a8a_awaiting_tuple
+20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each

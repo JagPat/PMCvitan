@@ -209,6 +209,9 @@ function buildBase(): void {
     // 4d-ii-a / A8a widens 4b's approved-tuple CHECK beside 4d-i's widened seal arm and verifies that
     // arm stands: built on 4d-i's decision facts, excluded with the rest.
     '20280105000000_phase6_t4d_ii_a8a_awaiting_tuple',
+    // 4d-ii-a / A8b installs claimants on 4d-i's finalizer fact tables, re-issues 4d-i's provenance seal
+    // and raises A6e's fence: built on both, excluded with the rest.
+    '20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence',
     // 4d-ii-a / A4a's consultation-cycle seals are 4d-i's bodies re-issued, guarded on 4d-i's
     // retirement marker, so they too apply only on top of 4d-i.
     '20271227000000_phase6_t4d_ii_consultation_finalized_cycle']);

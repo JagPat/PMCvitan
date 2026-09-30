@@ -428,6 +428,129 @@ forced:
   set's DB-side shape and correspondence stay 4d-iii's (A7d's note); the forwarded notice's audience
   is the pending demand's (pmc and the decider the decision now names).
 
+**A8b is delivered (2026-09-29)** with the table's items and one migration, the last A-unit:
+
+- **`decisions.countersign`** (the architect; `synthesizeKeyWhenAbsent`): under `lockProjectReadiness`,
+  the architect's standing re-judged through the kernel register the seal judges by and the pair
+  resolved (A2's seam; the envelope's role must be `architect`); the subject's queued countersign
+  demands and open invitations `FOR UPDATE` ascending, THEN the decision row (409 unless
+  `awaiting_countersign`), then the provisional head (the highest version, unfinalized, its frozen
+  approver and `approvedFrom` required). The `DecisionCountersign` fact FIRST naming the exact head,
+  the head's finality flip (the one permitted revision transition), `awaiting_countersign → approved`,
+  the `countersigned` audit row beside the provisional act's, the demands cancelled by subject, and
+  exactly ONE `decision.approved` or `decision.reapproved` — the family the revision RECORDED in
+  `approvedFrom` — naming the revision, the fact and the finalization, the approver's frozen pair in
+  the payload, the architect the actor; the green notice ("Client approved T — M — countersigned by X")
+  bound to it, rendered by the kinded reader from the revision's frozen pair. The receipt names the
+  fact. A self-countersign is two acts under two keys.
+- **`decisions.disagree`** (the architect): REJECT BACK leaves the holder; FORWARD ON re-homes the
+  decision through the SAME forward door as the generic command (the `DecisionForward` fact first, the
+  target's standing under its lock, the users frozen) — and the holder move is written IN THE SAME
+  ROW WRITE as `awaiting_countersign → change`, because 4d-i-b's `Decision_t4d_change_paired` judges
+  every row event of the transaction at commit against the move it recorded, and a holder move
+  written as a separate statement is an event whose row still reads `awaiting_countersign`. Both paths
+  open the `countersign_rejection` request citing the exact head with the architect's frozen pair and
+  this receipt (the request is the bundle's primary; the forward cites the same receipt through the
+  provenance seal's bundle arm), append the `change_requested` (and `forwarded`) audit rows, cancel the
+  countersign demand (and, re-homing, any queued hand-off), emit ONE `decision.change_requested`
+  (`path`, `origin`, `revisionId`, `requestId`, the title and the reason) with the CHANGE-REQUEST NOTICE
+  bound to it ("Change requested: T — <reason>", the pending amber; the plan's correspondence table owes
+  it to the `countersign_rejection` origin only, and the kinded renderer's arm renders nothing for any
+  other origin — #673's review round 1) and, re-homing, the frozen-audience `decision.forwarded` with
+  its notice. The request's ONLY closure is the re-approval (`withdrawChange` refuses it, A7b); the
+  decider — or the new holder — re-approves and the chain runs again.
+- **`decisions.resolveStrandedCountersign`** (the PMC, `hasProjectRoleStanding` under the standing row's
+  lock): legal ONLY while the decision awaits AND the chain is inactive, both re-judged under the
+  readiness key (`RoleStandingQuery.activeCount(architect) > 0` → 409, the countersign being the legal
+  path). `completed`: the `DecisionStrandedResolution` fact first, then the same finalization as the
+  countersign (`finalization = stranded_completed`; the notice "… — finalized by X with no active
+  architect"). `returned`: the installed designation's standing decides whether a target is REQUIRED —
+  a named member's active membership, or a role at least one active member holds; a designation nobody
+  can act for (the departed architect's role; the departed named member) is re-homed in the bundle
+  through the forward door or the resolution is refused 400 — then the fact first (the RESOLUTION is
+  the claimant of `decision.change_requested`; the request it opens verifies, as 4d-i-b's request seals
+  already defer), the same reject bundle with the `stranded_resolved` audit row beside the
+  `change_requested` one. The re-approval under the now-inactive chain lands `approved` directly.
+- **The registrations owed to A8b:** the three routes (`/countersign`, `/disagree`, `/stranded`),
+  `decision.countersign` and `decision.disagree` in `ROLE_POLICY` (P28's set is now complete for the
+  routes that exist) and `decision.resolveStrandedCountersign` for the PMC; the shared command list, the
+  manifest, the zod contracts (a target exactly on `forward_on` / `returned`, a membership exactly for a
+  member); the kinded renderer's finalization arm (`payload.finalization`, the approver from the
+  revision's frozen pair, an unknown finalization or an unfrozen pair rendering nothing); three writer
+  branches in the pairing matrix (`decision.approved` by the countersign and by the `completed`
+  resolution; `decision.change_requested` by the `returned` resolution — fact-first and event-first,
+  the PRIOR generation committing for the families it carries, forty-five refusals — the feed row, the
+  discriminator, the envelope pair, the title and decider kind the renderer reads, a newline-only title,
+  the approver pair and origin forged or absent, the request naming an earlier revision than the
+  resolution, the resolution recording another reason than its request and its request frozen as the
+  architect among them — and the disagreement branch, run in the ARCHITECT's name under the active chain:
+  its receipt, audit row, notice, origin, request name, title, reason and tab-only reason with their
+  refusals, a client-shaped disagreement, a request with no frozen pair, an envelope naming another role,
+  a request citing no receipt, and a rejection request named as a resolve receipt's primary with no
+  resolution written); the kinded renderer's change-request arm and its
+  audience (pmc and the decider); the status
+  tripwire's six A8b registrations; the seal contract's two claimants and the birth pairing's widened
+  tokens; the inventory's four triggers; the call-graph, route and boundary pins.
+- **One migration** (`20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence`, one transaction,
+  `ALWAYS_EXECUTE`, verified at its end, replayed twice by the upgrade proof): (1) the two finalizer
+  CLAIMANTS on A7d's pattern — the fact claims the same-transaction event of its decision attributed to
+  its own actor and naming the fact and the revision, the DEFERRED half demanding exactly one and the
+  finalizer's audit row (the countersign's branch and the resolution's two had no claimant, and 4d-i's
+  kernel pairing seal refuses every unclaimed `pairingRequired` event); (2) 4d-i's
+  `phase6_t4d_provenance_bound` re-issued with the returned request's second producer
+  (`decisions.resolveStrandedCountersign` beside `decisions.disagree`; §B.6's two producers), otherwise
+  byte-identical; (3) 4d-i's `phase6_t4d_revision_birth_paired` re-issued with its one-open-approval
+  count excluding UNDISPOSED-ness's complement — the revisions a `countersign_rejection` request or a
+  `returned` resolution names — as the plan states the head (§A.2: "UNDISPOSED — named by no
+  `countersign_rejection` `ChangeRequest` and no `DecisionStrandedResolution` … while the real
+  re-approval appends a FRESH head that passes"): a rejected head stays unfinalized forever, so the
+  delivered count refused the fresh provisional head every disagreement demands as a second open
+  approval (A8b's live suite, the reject-back and forward-on arms, RED at the delivered seal); (4) the
+  persisted server-generation minimum RAISED to 2 with this file's name (A6e's raise block, `GREATEST`),
+  `SERVER_GENERATION` moving with it — from here every A6-to-A8a build is refused at startup ("The
+  drain"); (5) 4d-i-b's `phase6_t4d_change_request_paired` re-issued with its `countersign_rejection`
+  arm demanding exactly one `change_requested` audit row, as its `standard` arm does and as the plan's
+  correspondence table gives both producers of the origin (#673's review round 1: a receipt-backed
+  hand-run rejection bundle with its claimed event and no audit row committed evidence the decision
+  log could not show), otherwise byte-identical; (6) the two claimants and the request arm demand the
+  bound FEED ROW of the event's kind (`platform_tx_notification`, the kernel read 4d-i installed; P31: a
+  countersign bundle without its feed row is refused), the claimants bind the payload DISCRIMINATOR the
+  kinded renderer reads to the fact (`finalization = countersign` / `stranded_completed`; `outcome =
+  returned`; the rejection's `origin` and `requestId`), and the event's envelope must equal the fact's
+  frozen pair (#673's review round 2: a receipt-backed hand-run bundle could finalize, return or reject
+  with its claimed event and audit row and no feed row, or with an event the renderer read as an
+  ordinary approval); (7) the CONTENT the kinded renderer reads, bound to the rows (#673's review round
+  3): the two claimants demand `payload.title` equal to the decision's (non-blank) and, for the approval
+  family, `payload.deciderKind` equal to the decision's; the request arm demands `payload.title` equal to
+  the decision's and `payload.reason` equal to the request's, both non-blank (round 2 had bound the
+  payload's identity and never its content, so an event the renderer rendered as nothing or as another
+  decision's act passed every clause); and the provenance seal's receipt arm names the ONE primary table
+  of each command (a `decisions.resolveStrandedCountersign` receipt names the resolution, a
+  `decisions.disagree` receipt the request — at b193f77 a rejection request could be the resolve's
+  primary result with no resolution written, the PMC's return performed without the fact whose seal
+  judges the inactive chain and the frozen head), with the bundle arm PER COMMAND and the returned
+  bundle's request required to name the SAME revision the resolution disposed of; (8) one act, one reason
+  (#673's review round 4): the bundle arm demands the secondary's `reason` equal to the primary's (the
+  request's and the re-homing forward's to the `returned` resolution's; the forward-on's forward's to the
+  request's), and the three non-blank guards strip the whole ASCII whitespace set rather than `btrim`'s
+  default space alone (a tab-only reason or title had passed them); (9) the approver pair and the
+  producer's authority (#673's review round 5): both claimants demand the finalizing event's
+  `approverName`, `approverRole` and `approvedFrom` equal to the named revision's columns (a revision
+  carrying none cannot be finalized), and the request arm demands the rejection request's receipt from one
+  of its two producers, its frozen role the producer's (`architect` under `decisions.disagree`, `pmc`
+  under `decisions.resolveStrandedCountersign`), a non-null frozen pair and exactly one event whose
+  envelope is that pair (at be68a64 a receipt-backed disagreement run by an active client with a truthful
+  `client` pair reopened an awaiting decision with no architect anywhere in the act). No consumer version,
+  catalog row or door moves.
+- **§C arms not carried by any A-unit: none.** A8b carries P31 (the atomic countersign, the orphan
+  fact, the split), P32 (the self-countersign as two keys), P33 (both disagreement paths, the
+  withdrawal refused), P25d/P41 (a question beside the countersign, both orderings), P29b and P36 (the
+  stranded resolution's two outcomes, the holderless designation, the re-seated architect), and the
+  countersigner's standing (a departed architect refused; the new one countersigns).
+- **Residuals stated:** the web arms of every A8b control (Countersign / Reject back / Forward on, the
+  stranded item) are 4d-ii-b's; the finalizer's audit row is demanded by the claimant, the forward's
+  still not (A8a's residual, 4d-iii's); the frozen set's DB-side shape stays 4d-iii's.
+
 Each unit's probes are the arms of §C's table that test its own items (the P29b no-header arms
 travel with A3, the late-kinded-insert hostile probe with A7, and so on). A unit states in its
 packet which §C arms it carries. None may leave an arm unowned: the last 4d-ii-a unit to merge
@@ -484,8 +607,9 @@ four commands and their effects, reachable once 4d-iii retires the doors. A seco
 - **A6 installs it.** Every build compiles a monotone server generation. At startup, a process reads the
   persisted minimum, written only by migrations, and refuses to start when that minimum is greater than
   its own generation. A6's migration sets the minimum to A6's generation, so nothing running is refused.
-- **A8b raises it.** A8b's migration raises the minimum to A8b's generation. From then on every A6-to-A8a
-  build, including an A7 image, is refused at startup, exactly as a stale `catalogVersion` is.
+- **A8b raises it.** A8b's migration (`20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence`)
+  raises the minimum to A8b's generation, 2. From then on every A6-to-A8a build, including an A7 image,
+  is refused at startup, exactly as a stale `catalogVersion` is.
 - **Why A6 and not A8b.** The check has to be compiled into every build it must refuse. A check first
   shipped in A8b could not stop an A7 image, which would not contain it.
 - **Builds older than A6** carry no fence check, but they are also older than A7, so A7's consumer

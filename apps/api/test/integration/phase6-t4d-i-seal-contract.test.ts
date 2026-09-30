@@ -170,8 +170,12 @@ const REGISTER: Record<string, SealContract> = {
   },
   phase6_t4d_provenance_bound: {
     rule: 'the fact cites a COMPLETED receipt whose result names the row or its bundle PRIMARY, '
-      + 'AND the receipt is IDENTIFIED first — the right KIND of command, run by the SAME actor',
-    plan: '§A.3 obligation 6 (as amended by #582 round 1, finding 12)',
+      + 'AND the receipt is IDENTIFIED first — the right KIND of command, run by the SAME actor; '
+      + 'a receipt names ONE primary table per command (the resolve → the resolution, the '
+      + 'disagreement → the request), and the bundle arm is PER COMMAND: under a resolve receipt the '
+      + 'request pairs with the `returned` resolution naming the SAME revision, and the secondary states the '
+      + 'primary\'s REASON (4d-ii-a / A8b, #673 rounds 3–4)',
+    plan: '§A.3 obligation 6 (as amended by #582 round 1, finding 12); A8b #673 r3',
     on: {
       'DecisionCountersign.DecisionCountersign_t4d_provenance_bound': C('I'),
       'DecisionForward.DecisionForward_t4d_provenance_bound': C('I'),
@@ -194,6 +198,12 @@ const REGISTER: Record<string, SealContract> = {
       // learned in round 3 that a token a second clause can satisfy witnesses neither, so the
       // alias is the evidence and it exists nowhere else here.
       'receiptThisTx',
+      // 4d-ii-a / A8b (#673 round 3) — the receipt's ONE primary table, and the per-command bundle
+      // arm tying the returned request to the resolution's revision
+      'v_primary_table IS DISTINCT FROM TG_TABLE_NAME', "WHEN 'decisions.resolveStrandedCountersign' THEN 'DecisionStrandedResolution'",
+      "sr.\"outcome\" = 'returned'", "sr.\"revisionId\" = (to_jsonb(NEW) ->> 'revisionId')",
+      // #673 round 4 — one act, one reason across the bundle
+      "sr.\"reason\" = (to_jsonb(NEW) ->> 'reason')", "cr.\"reason\" = (to_jsonb(NEW) ->> 'reason')",
     ],
   },
   phase6_t4d_forward_seal: {
@@ -332,8 +342,12 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'DecisionApprovalRevision.DecisionApprovalRevision_t4d_birth_paired': C('I') },
     // round 11, finding 3: `xmin` alone is satisfied by a no-op UPDATE, so the birth is bound to
     // the STATE a provisional approval produces and to the one-open-approval invariant.
+    // 4d-ii-a / A8b: the one-open-approval count excludes the revisions a `countersign_rejection`
+    // request or a `returned` resolution DISPOSED of (the plan's "UNDISPOSED"): a rejected head stays
+    // unfinalized forever, and the re-approval's fresh head must pass beside it.
     must: ['count(*)', 'v_births <> 1', 'txid_current()', "NEW.\"finalized\" = FALSE",
-      'awaiting_countersign', 'v_open > 1'],
+      'awaiting_countersign', 'v_open > 1', "c.\"origin\" = 'countersign_rejection' AND c.\"revisionId\" = r.\"id\"",
+      "s.\"outcome\" = 'returned' AND s.\"revisionId\" = r.\"id\""],
   },
   phase6_t4d_revision_one_flip: {
     rule: 'finality is ONE-WAY and a finalized revision is undeletable',
@@ -735,9 +749,15 @@ const REGISTER: Record<string, SealContract> = {
       + 'exactly ONE `decision.change_requested` event attributed to its `requestedById` (4d-i\'s '
       + 'correspondence skips a NULL requester, so the request binds the actor itself — Codex U3 '
       + 'round 1); for '
-      + '`countersign_rejection` the EXACT `awaiting_countersign → change` move and exactly ONE '
-      + 'event attributed to its `requestedById` (no audit row is declared for that branch, so '
-      + '4d-i\'s correspondence cannot bind the actor there); a request written '
+      + '`countersign_rejection` the EXACT `awaiting_countersign → change` move, exactly ONE '
+      + '`change_requested` audit row appended here (4d-ii-a / A8b, #673 round 1: the plan\'s '
+      + 'correspondence table gives both producers of the origin the row), exactly ONE event naming '
+      + 'it, its origin, the DECISION\'s title and its OWN reason (#673 rounds 2–3: the fields the kinded '
+      + 'renderer reads, bound to the rows, not the payload\'s word), exactly ONE '
+      + 'event attributed to its `requestedById`, and (#673 round 5) its receipt from one of its two '
+      + 'producers, its frozen role the producer\'s (`architect` under `decisions.disagree`, `pmc` under '
+      + '`decisions.resolveStrandedCountersign`) and exactly ONE event whose envelope is that frozen pair; '
+      + 'a request written '
       + '`withdrawn` rides the `change → approved` restoration, exactly one `change_withdrawn` '
       + 'audit row, and claims its one `decision.change_withdrawn`; a request written `resolved` '
       + 'rides the reapproval\'s landing with exactly one revision born here and its event present '
@@ -749,6 +769,13 @@ const REGISTER: Record<string, SealContract> = {
       'phase6_t4d_change_pairing_active',
       'txid_current', 'change_from_approved', 'approved_from_change', 'awaiting_from_change', 'change_from_awaiting',
       'phase6_t4d_tx_audit_count', "ARRAY['change_requested']", "ARRAY['change_withdrawn']",
+      'countersign_rejection request % was opened in this transaction with % `change_requested` audit row(s)',
+      'platform_tx_notification', "'origin', 'countersign_rejection', 'requestId', NEW.\"id\", 'title', v_title, 'reason', NEW.\"reason\"",
+      "btrim(coalesce(NEW.\"reason\", ''), E' \\t\\n\\r\\v\\f')",
+      // #673 round 5 — the producer's authority and the frozen pair: the receipt, the role by producer,
+      // the event's envelope equal to the request's pair
+      "WHEN 'decisions.disagree' THEN 'architect' ELSE 'pmc'", 'e."actorRole" = NEW."requestedByRole" AND e."actorName" = NEW."requestedByName"',
+      "'decisions.disagree', 'decisions.resolveStrandedCountersign'",
       'phase6_t4d_tx_actor_event_count', 'NEW."requestedById"',
       'decision.change_requested', 'decision.change_withdrawn',
       'decision.approved', 'decision.reapproved', 'decision.awaiting_countersign',
@@ -825,6 +852,45 @@ const REGISTER: Record<string, SealContract> = {
       'DecisionForward.DecisionForward_t4d_claim_deferred': C('I'),
     },
     must: ['decision.forwarded', "'forwardId'", 'NEW."forwardedById"', 'platform_claim_event_pairing_once', 'TG_NAME'],
+  },
+  phase6_t4d_countersign_claims_event: {
+    rule: 'a `DecisionCountersign` fact claims the decision\'s same-transaction finalizing event '
+      + '(`decision.approved` / `decision.reapproved`) whose payload names THIS row (`countersignId`) and '
+      + 'its revision (`revisionId`), carries the finalization discriminator, the DECISION\'s title and '
+      + 'decider kind (the content the kinded renderer reads, #673 round 3), the REVISION\'s frozen approver '
+      + 'pair and `approvedFrom` (#673 round 5) and whose `actorId` is '
+      + '`countersignedById` under the fact\'s frozen envelope pair; the DEFERRED half demands exactly one, '
+      + 'the `countersigned` audit row and the bound notice beside it',
+    plan: '§A.2 the chain; §A.3 obligation 7; A8b',
+    on: {
+      'DecisionCountersign.DecisionCountersign_t4d_claim': A('I'),
+      'DecisionCountersign.DecisionCountersign_t4d_claim_deferred': C('I'),
+    },
+    must: ['decision.approved', 'decision.reapproved', "'countersignId'", "'revisionId'", 'NEW."countersignedById"',
+      "'countersigned'", 'phase6_t4d_tx_audit_count', 'platform_claim_event_pairing_once', 'TG_NAME', 'platform_tx_notification', "'finalization', 'countersign'", 'NEW."countersignedByRole"',
+      "'title', v_title, 'deciderKind', v_kind", 'd."deciderKind"::text', "btrim(coalesce(v_title, ''), E' \\t\\n\\r\\v\\f')",
+      // #673 round 5 — the revision's frozen approver pair and origin, frozen on the finalizing event
+      "'approverName', v_appr_name, 'approverRole', v_appr_role, 'approvedFrom', v_from", 'r."approvedByName", r."approvedByRole", r."approvedFrom"'],
+  },
+  phase6_t4d_stranded_claims_event: {
+    rule: 'a `DecisionStrandedResolution` fact claims the decision\'s same-transaction event of its '
+      + 'outcome\'s family — `completed`: `decision.approved` / `decision.reapproved`; `returned`: '
+      + '`decision.change_requested` (the request it opens verifies, never claims) — whose payload names '
+      + 'THIS row (`resolutionId`), its revision, its outcome discriminator and the DECISION\'s title (and, '
+      + '`completed`, its decider kind — the content the kinded renderer reads, #673 round 3 — and the '
+      + 'REVISION\'s frozen approver pair and `approvedFrom`, #673 round 5) and whose '
+      + '`actorId` is `resolvedById` under the fact\'s frozen envelope pair; the DEFERRED half demands exactly '
+      + 'one, the `stranded_resolved` audit row and the bound notice beside it',
+    plan: '§A.2 the stranded decision; §A.3 obligation 7; A8b',
+    on: {
+      'DecisionStrandedResolution.DecisionStrandedResolution_t4d_claim': A('I'),
+      'DecisionStrandedResolution.DecisionStrandedResolution_t4d_claim_deferred': C('I'),
+    },
+    must: ["'completed'", 'decision.approved', 'decision.reapproved', 'decision.change_requested', "'resolutionId'",
+      "'revisionId'", 'NEW."resolvedById"', "'stranded_resolved'", 'phase6_t4d_tx_audit_count',
+      'platform_claim_event_pairing_once', 'TG_NAME', 'platform_tx_notification', "'finalization', 'stranded_completed'", "'outcome', 'returned'", 'NEW."resolvedByRole"',
+      "'title', v_title, 'deciderKind', v_kind", "'outcome', 'returned', 'title', v_title", 'd."deciderKind"::text', "btrim(coalesce(v_title, ''), E' \\t\\n\\r\\v\\f')",
+      "'approverName', v_appr_name, 'approverRole', v_appr_role, 'approvedFrom', v_from", 'r."approvedByName", r."approvedByRole", r."approvedFrom"'],
   },
   phase6_t4d_consultation_claims_event: {
     rule: 'a consultation request claims its `decision.consultation_requested`, a response its '

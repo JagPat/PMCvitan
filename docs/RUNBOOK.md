@@ -1267,9 +1267,10 @@ lease registered, its relay started and its HTTP listener open (`main.ts` releas
 `app.listen()`) — so a raise cannot commit between a process's admission and its serving: a raising
 migration waits for every process in that window, and a process that starts after it reads the
 raised minimum and is refused. A6e's migration `20280101000000_phase6_t4d_ii_a6e_generation_fence`
-sets the minimum to A6e's generation, so nothing running is refused; A8b's migration raises it, and
-from then on every A6-to-A8a build — an A7 image restarted after A8b included — is refused at
-startup, exactly as a stale `catalogVersion` is. The fence is not a consumer contract version.
+sets the minimum to A6e's generation, so nothing running is refused; A8b's migration
+`20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence` raises it to 2, and from then on every
+A6-to-A8a build — an A7 image restarted after A8b included — is refused at startup, exactly as a
+stale `catalogVersion` is. The fence is not a consumer contract version.
 
 The refusal names the build's generation, the persisted minimum and the migration that raised it.
 It means an OLDER image was started against a database a later release has migrated: a rollback, a

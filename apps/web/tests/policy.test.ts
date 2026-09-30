@@ -27,6 +27,11 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // ceiling admits every role a holder can be designated in; the service narrows. No web surface
   // yet (4d-ii-b's).
   'decision.forward': ['client', 'pmc', 'contractor', 'engineer', 'consultant', 'architect'],
+  // Phase 6 task 4d (4d-ii-a / A8b) — the architect's countersign and disagreement, the PMC's stranded
+  // resolution. No web surface yet (4d-ii-b's).
+  'decision.countersign': ['architect'],
+  'decision.disagree': ['architect'],
+  'decision.resolveStrandedCountersign': ['pmc'],
   'requirement.manage': ['pmc'],
   'requirement.read': ['pmc', 'engineer'],
   'substitution.manage': ['pmc'],

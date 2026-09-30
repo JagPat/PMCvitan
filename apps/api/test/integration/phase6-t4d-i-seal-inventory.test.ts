@@ -75,6 +75,9 @@ const INVENTORY: Record<string, string[]> = {
     'DecisionConsultationResponse_t4d_claim', 'DecisionConsultationResponse_t4d_claim_deferred'],
   DecisionCountersign: [
     'DecisionCountersign_t4d_append_only',
+    // 4d-ii-a / A8b (20280106): the countersign's claimant, immediate and deferred.
+    'DecisionCountersign_t4d_claim',
+    'DecisionCountersign_t4d_claim_deferred',
     'DecisionCountersign_t4d_no_truncate',
     'DecisionCountersign_t4d_paired',
     'DecisionCountersign_t4d_provenance_bound',
@@ -98,6 +101,9 @@ const INVENTORY: Record<string, string[]> = {
   ],
   DecisionStrandedResolution: [
     'DecisionStrandedResolution_t4d_append_only',
+    // 4d-ii-a / A8b (20280106): the stranded resolution's claimant, immediate and deferred.
+    'DecisionStrandedResolution_t4d_claim',
+    'DecisionStrandedResolution_t4d_claim_deferred',
     'DecisionStrandedResolution_t4d_no_truncate',
     'DecisionStrandedResolution_t4d_paired',
     'DecisionStrandedResolution_t4d_provenance_bound',
