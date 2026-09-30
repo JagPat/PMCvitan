@@ -80,9 +80,14 @@ describe('B5b — the Forward affordance follows the ONE shell read', () => {
     let r = render(<CountersignControls decision={dec({ id: 'P' })} />);
     fireEvent.click(r.getByTestId('forward-P'));
     expect(spies.loadTeam).not.toHaveBeenCalled(); // the roster is loaded
-    // a blank reason cannot be sent
+    // no target is defaulted: the chooser opens on "Choose who decides…" and nothing can be sent until one is chosen
+    expect((r.getByTestId('chain-kind-P') as HTMLSelectElement).value).toBe('');
+    fireEvent.change(r.getByTestId('chain-reason-P'), { target: { value: 'r' } });
     expect((r.getByTestId('chain-send-P') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('chain-reason-P'), { target: { value: '' } });
+    // a blank reason cannot be sent
     fireEvent.change(r.getByTestId('chain-kind-P'), { target: { value: 'member' } });
+    expect((r.getByTestId('chain-send-P') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(r.getByTestId('chain-reason-P'), { target: { value: '  The engineer owns this detail  ' } });
     // a member target without a chosen member cannot be sent either
     expect((r.getByTestId('chain-send-P') as HTMLButtonElement).disabled).toBe(true);
@@ -97,6 +102,7 @@ describe('B5b — the Forward affordance follows the ONE shell read', () => {
     r = render(<CountersignControls decision={dec({ id: 'Q' })} />);
     fireEvent.click(r.getByTestId('forward-Q'));
     expect(spies.loadTeam).toHaveBeenCalledTimes(1);
+    fireEvent.change(r.getByTestId('chain-kind-Q'), { target: { value: 'pmc' } });
     fireEvent.change(r.getByTestId('chain-reason-Q'), { target: { value: 'r' } });
     fireEvent.click(r.getByTestId('chain-send-Q'));
     expect(spies.forwardDecision).toHaveBeenLastCalledWith('Q', { toDesignationKind: 'pmc', reason: 'r' });
@@ -126,6 +132,9 @@ describe('B5b — the architect’s controls on an awaiting decision', () => {
     expect(spies.disagreeDecision).toHaveBeenLastCalledWith('A1', { path: 'reject_back', reason: 'Grain runs the wrong way', costImpact: 5000, timeImpactDays: 2 });
 
     fireEvent.click(r.getByTestId('forward-on-A1'));
+    // a Forward on REQUIRES a chosen target: with the reason filled but no target, nothing can be sent
+    fireEvent.change(r.getByTestId('chain-reason-A1'), { target: { value: 'x' } });
+    expect((r.getByTestId('chain-send-A1') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(r.getByTestId('chain-kind-A1'), { target: { value: 'client' } });
     fireEvent.change(r.getByTestId('chain-reason-A1'), { target: { value: 'The client should re-decide' } });
     fireEvent.click(r.getByTestId('chain-send-A1'));
@@ -147,18 +156,30 @@ describe('B5b — the architect’s controls on an awaiting decision', () => {
 });
 
 describe('B5b — the PMC’s stranded resolution', () => {
-  it('Complete / Return render for the PMC on a STRANDED row only, and drive the act with its outcome, reason and target', () => {
+  it('Complete / Return render for the PMC on a STRANDED row only; both take the PMC’s own reason, and a Return re-homes only when a target is chosen', () => {
     const spies = acts();
     as('pmc', 'u-pmc');
     let r = render(<CountersignControls decision={stranded('S1')} />);
+    // Complete goes through the required-reason form: nothing is enqueued on the click, and no reason is invented
     fireEvent.click(r.getByTestId('stranded-complete-S1'));
-    expect(spies.resolveStrandedCountersign).toHaveBeenCalledWith('S1', { outcome: 'completed', reason: 'No active architect — completed by the PMC' });
+    expect(spies.resolveStrandedCountersign).not.toHaveBeenCalled();
+    expect(r.queryByTestId('chain-kind-S1')).toBeNull(); // no target on a completion
+    expect((r.getByTestId('chain-send-S1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('chain-reason-S1'), { target: { value: 'Two quotes agree; the architect left the project' } });
+    fireEvent.click(r.getByTestId('chain-send-S1'));
+    expect(spies.resolveStrandedCountersign).toHaveBeenLastCalledWith('S1', { outcome: 'completed', reason: 'Two quotes agree; the architect left the project' });
+    // Return with NO target keeps the current decider: the act carries no designation
     fireEvent.click(r.getByTestId('stranded-return-S1'));
-    expect((r.getByTestId('chain-kind-S1') as HTMLSelectElement).value).toBe('client'); // a return re-homes to a decider
-    fireEvent.change(r.getByTestId('chain-kind-S1'), { target: { value: 'pmc' } });
+    expect((r.getByTestId('chain-kind-S1') as HTMLSelectElement).value).toBe('');
     fireEvent.change(r.getByTestId('chain-reason-S1'), { target: { value: 'Re-check the lot' } });
     fireEvent.click(r.getByTestId('chain-send-S1'));
-    expect(spies.resolveStrandedCountersign).toHaveBeenLastCalledWith('S1', { outcome: 'returned', reason: 'Re-check the lot', costImpact: 0, timeImpactDays: 0, toDesignationKind: 'pmc' });
+    expect(spies.resolveStrandedCountersign).toHaveBeenLastCalledWith('S1', { outcome: 'returned', reason: 'Re-check the lot', costImpact: 0, timeImpactDays: 0 });
+    // Return WITH a chosen target re-homes the decision
+    fireEvent.click(r.getByTestId('stranded-return-S1'));
+    fireEvent.change(r.getByTestId('chain-kind-S1'), { target: { value: 'pmc' } });
+    fireEvent.change(r.getByTestId('chain-reason-S1'), { target: { value: 'The practice will re-decide' } });
+    fireEvent.click(r.getByTestId('chain-send-S1'));
+    expect(spies.resolveStrandedCountersign).toHaveBeenLastCalledWith('S1', { outcome: 'returned', reason: 'The practice will re-decide', costImpact: 0, timeImpactDays: 0, toDesignationKind: 'pmc' });
     cleanup();
     // an awaiting row under an ACTIVE chain is the architect's: the PMC resolves nothing
     r = render(<CountersignControls decision={awaiting('A1')} />);

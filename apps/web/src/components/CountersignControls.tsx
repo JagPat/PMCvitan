@@ -19,7 +19,9 @@ import { can, viewerIsDecider, type Decision } from '@vitan/shared';
  * - the ARCHITECT's controls on a decision AWAITING its countersign — Countersign, Reject back
  *   (`disagree` / `reject_back`), Forward on (`disagree` / `forward_on` with the target);
  * - the PMC's STRANDED resolution — Complete / Return — on an awaiting decision served WITHOUT the
- *   `countersignRequired` overlay (`isStrandedCountersign`: the chain's activity as the DTO exposes it).
+ *   `countersignRequired` overlay (`isStrandedCountersign`: the chain's activity as the DTO exposes it); both
+ *   through the required-reason form (the reason is persisted as the resolution's own), and a Return re-homes
+ *   the decision ONLY when the PMC chooses a target.
  *
  * Every control dispatches one of B5a's write-ahead acts (one key per act; the server's refusal surfaced as
  * its own words) and is DISABLED while an act on this decision is still in the outbox ("Working…"). The
@@ -27,7 +29,7 @@ import { can, viewerIsDecider, type Decision } from '@vitan/shared';
  * delivered role while the doors stand: no row can be awaiting and the rollout reads reserved.
  */
 type Designation = 'client' | 'pmc' | 'member' | 'architect';
-type Panel = 'forward' | 'reject_back' | 'forward_on' | 'returned' | null;
+type Panel = 'forward' | 'reject_back' | 'forward_on' | 'completed' | 'returned' | null;
 
 export function CountersignControls({ decision: d }: { decision: Decision }) {
   const role = useStore((s) => s.role);
@@ -42,7 +44,11 @@ export function CountersignControls({ decision: d }: { decision: Decision }) {
   const resolveStrandedCountersign = useStore((s) => s.resolveStrandedCountersign);
 
   const [panel, setPanel] = useState<Panel>(null);
-  const [kind, setKind] = useState<Designation>('pmc');
+  // the target designation: NEVER defaulted (#683 review, finding 4149247992) — a Forward / Forward on
+  // requires the PMC or the architect to CHOOSE one, and a stranded Return sends none unless they choose to
+  // re-home the decision (the service reads a supplied target on a return as a same-bundle forward, so a
+  // defaulted one would silently reassign a decision whose designation still has a holder)
+  const [kind, setKind] = useState<Designation | ''>('');
   const [membershipId, setMembershipId] = useState('');
   const [reason, setReason] = useState('');
   const [cost, setCost] = useState('');
@@ -61,20 +67,25 @@ export function CountersignControls({ decision: d }: { decision: Decision }) {
 
   const openPanel = (p: Panel) => {
     setPanel(p);
-    setReason(''); setCost(''); setDays(''); setMembershipId('');
-    setKind(p === 'returned' ? 'client' : 'pmc');
+    setReason(''); setCost(''); setDays(''); setMembershipId(''); setKind('');
     // the target chooser draws from the roster only `loadTeam()` fills — load it when it opens over an empty slice
     if ((p === 'forward' || p === 'forward_on' || p === 'returned') && !members.length) void loadTeam();
   };
-  const target = kind === 'member' ? { toDesignationKind: kind, toDesignationMembershipId: membershipId } : { toDesignationKind: kind };
-  const targetComplete = kind !== 'member' || !!membershipId;
+  const hasTarget = panel === 'forward' || panel === 'forward_on' || panel === 'returned';
+  const targetRequired = panel === 'forward' || panel === 'forward_on';
+  // the target as the shared input carries it: absent when none was chosen (a stranded Return keeps its decider)
+  const target = kind === '' ? {} : kind === 'member' ? { toDesignationKind: kind, toDesignationMembershipId: membershipId } : { toDesignationKind: kind };
+  const targetComplete = (kind !== '' || !targetRequired) && (kind !== 'member' || !!membershipId);
   const impacts = { costImpact: parseInt(cost.replace(/[^\d-]/g, ''), 10) || 0, timeImpactDays: parseInt(days.replace(/[^\d-]/g, ''), 10) || 0 };
   const send = () => {
     const r = reason.trim();
-    if (!r) return;
-    if (panel === 'forward') forwardDecision(d.id, { ...target, reason: r });
+    if (!r || !targetComplete) return;
+    if (panel === 'forward') forwardDecision(d.id, { ...target, reason: r } as Parameters<typeof forwardDecision>[1]);
     if (panel === 'reject_back') disagreeDecision(d.id, { path: 'reject_back', reason: r, ...impacts });
     if (panel === 'forward_on') disagreeDecision(d.id, { path: 'forward_on', reason: r, ...impacts, ...target });
+    // the PMC's OWN reason on both outcomes: the service persists it as the immutable resolution reason
+    // (#683 review, finding 4149247987), so Complete goes through the same required-reason form as Return
+    if (panel === 'completed') resolveStrandedCountersign(d.id, { outcome: 'completed', reason: r });
     if (panel === 'returned') resolveStrandedCountersign(d.id, { outcome: 'returned', reason: r, ...impacts, ...target });
     setPanel(null);
   };
@@ -97,7 +108,7 @@ export function CountersignControls({ decision: d }: { decision: Decision }) {
         )}
         {mayResolve && (
           <>
-            <Button variant="success" style={btn} disabled={pending} onClick={() => resolveStrandedCountersign(d.id, { outcome: 'completed', reason: 'No active architect — completed by the PMC' })} data-testid={`stranded-complete-${d.id}`}>{working ?? 'Complete without countersign'}</Button>
+            <Button variant="success" style={btn} disabled={pending} onClick={() => openPanel('completed')} data-testid={`stranded-complete-${d.id}`}>{working ?? 'Complete without countersign'}</Button>
             <Button variant="outline" style={btn} disabled={pending} onClick={() => openPanel('returned')} data-testid={`stranded-return-${d.id}`}>{working ?? 'Return to the decider'}</Button>
           </>
         )}
@@ -105,11 +116,12 @@ export function CountersignControls({ decision: d }: { decision: Decision }) {
       {panel && (
         <div data-testid={`chain-panel-${d.id}`} style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(35,33,28,.035)', border: '1px solid rgba(35,33,28,.12)', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--faint)' }}>
-            {panel === 'forward' ? 'Forward to' : panel === 'reject_back' ? 'Reject back to the decider' : panel === 'forward_on' ? 'Forward on to' : 'Return to'}
+            {panel === 'forward' ? 'Forward to' : panel === 'reject_back' ? 'Reject back to the decider' : panel === 'forward_on' ? 'Forward on to' : panel === 'completed' ? 'Complete without countersign' : 'Return to the decider'}
           </div>
-          {panel !== 'reject_back' && (
+          {hasTarget && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <select aria-label="Forward to" value={kind} onChange={(e) => setKind(e.target.value as Designation)} style={{ ...fld, flex: '0 0 180px' }} data-testid={`chain-kind-${d.id}`}>
+              <select aria-label={panel === 'returned' ? 'Re-home to' : 'Forward to'} value={kind} onChange={(e) => setKind(e.target.value as Designation | '')} style={{ ...fld, flex: '0 0 200px' }} data-testid={`chain-kind-${d.id}`}>
+                <option value="">{panel === 'returned' ? 'Keep the current decider' : 'Choose who decides…'}</option>
                 <option value="client">The client</option>
                 <option value="pmc">The practice (PMC)</option>
                 <option value="member">A named member</option>
@@ -125,7 +137,7 @@ export function CountersignControls({ decision: d }: { decision: Decision }) {
           )}
           <textarea aria-label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} rows={2} placeholder="Reason (required)" data-testid={`chain-reason-${d.id}`}
             style={{ width: '100%', fontSize: 12.5, padding: 8, borderRadius: 8, border: '1px solid var(--hairline)', font: 'inherit' }} />
-          {panel !== 'forward' && (
+          {(panel === 'reject_back' || panel === 'forward_on' || panel === 'returned') && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <input aria-label="Cost impact" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="Cost impact (₹, optional)" style={{ ...fld, flex: '1 1 140px' }} data-testid={`chain-cost-${d.id}`} />
               <input aria-label="Schedule impact (days)" value={days} onChange={(e) => setDays(e.target.value)} placeholder="Days (optional)" style={{ ...fld, flex: '1 1 120px' }} data-testid={`chain-days-${d.id}`} />
@@ -133,7 +145,7 @@ export function CountersignControls({ decision: d }: { decision: Decision }) {
           )}
           <div style={{ display: 'flex', gap: 8 }}>
             <Button variant="ink" style={btn} disabled={pending || !reason.trim() || !targetComplete} onClick={send} data-testid={`chain-send-${d.id}`}>
-              {panel === 'forward' ? 'Forward' : panel === 'reject_back' ? 'Send back' : panel === 'forward_on' ? 'Forward on' : 'Return'}
+              {panel === 'forward' ? 'Forward' : panel === 'reject_back' ? 'Send back' : panel === 'forward_on' ? 'Forward on' : panel === 'completed' ? 'Complete' : 'Return'}
             </Button>
             <Button variant="outline" style={btn} onClick={() => setPanel(null)} data-testid={`chain-cancel-${d.id}`}>Cancel</Button>
           </div>

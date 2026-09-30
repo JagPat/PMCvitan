@@ -35,9 +35,12 @@ opens over an empty slice) and a required reason; the **architect's controls** o
 Countersign, Reject back (`disagree` / `reject_back` with reason and optional impacts), Forward on
 (`disagree` / `forward_on` with the target); the **PMC's stranded resolution** — Complete without
 countersign / Return to the decider — on an awaiting row served WITHOUT the `countersignRequired` overlay
-(`isStrandedCountersign`, B3's read of the chain's activity). Every control drives one of B5a's write-ahead
-acts and is DISABLED, reading "Working…", while an act on that decision is still in the outbox; a blank
-reason (and a member target without a member) cannot be sent. The register renders no forward history, so
+(`isStrandedCountersign`, B3's read of the chain's activity), both through the required-reason form (the
+reason is persisted as the resolution's own), a Return re-homing the decision ONLY when the PMC chooses a
+target (round 1 of the review, findings 4149247987 and 4149247992). Every control drives one of B5a's
+write-ahead acts and is DISABLED, reading "Working…", while an act on that decision is still in the
+outbox; no target is ever defaulted — a Forward / Forward on requires one to be chosen — and a blank
+reason (or a member target without a member) cannot be sent. The register renders no forward history, so
 the completeness tripwire's `DecisionForward` entry is closed as `not served` (a DTO added later must be
 classified in the same change — the assertion now covers that verdict too), and the status tripwire
 registers the component's two predicates. Proof: `tests/countersign-controls.test.tsx` (7 tests, 19
