@@ -37,7 +37,8 @@ sent back to a PR that no longer exists.
   over the server's log in both read modes, persisted beside the outbox under the same user + project key,
   dropped once the server's log is sent, a new day's or absent, and never applied to another project's
   log. Unit and real-stack Playwright proof, RED at `c6cfec7`; no API change, no migration.
-- **QA handoff.** READY_FOR_QA was posted on #482 per its protocol (comment 5904136063) with the exact
+- **QA handoff.** READY_FOR_QA was DELIVERED on #482 as comment 5909777608 (following the protocol QA set
+  in comment 5904136063), with the exact
   SHAs, the CI run, the coverage actually delivered and an explicit NOT_DEPLOYED: nothing is released;
   production remains last verified at #584. A QA failure routes back to this owner as a same-owner
   correction PR; it does not reopen this record.
