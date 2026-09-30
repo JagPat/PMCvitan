@@ -13,16 +13,69 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
-task_state: merged
-work_item: none
-reviewed_merge: f8274f4
-open_pr: none
+task_state: in_progress
+work_item: ux-today-draft-reconcile
+reviewed_merge: c6cfec7
+open_pr: 675
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-30
 ```
 
-### Now — Phase 6 task 4d: 4d-ii-a is COMPLETE (A8b merged as #673); 4d-ii-b, the client unit, is next
+### Now — the #669 Today-flow correction goes FIRST (#675, `claude/ux-today-draft-reconcile`); 4d-ii-b stays the next roadmap unit and is DEFERRED until it merges
+
+The post-merge handoff after #674 (`c6cfec7`) had two candidates for the one open slot: the roadmap's
+4d-ii-b (the client unit, recorded next below) and the named correction of the Today flow merged as #669,
+which Field Lab QA reproduced on 2026-09-30 (#482, comments 5902441629 and 5904136063) and Delivery queued
+as a separate correction "to be reconciled at the next safe handoff — not run concurrently, not dropped".
+**Reconciled here: the correction goes first.** It is a production defect in the engineer's primary flow,
+its owner and QA protocol are already named, and it is small and self-contained; 4d-ii-b is a multi-surface
+unit whose staging is still the owner's disposition. Both do not run together: this is the ONE open
+`claude/**` draft, and no 4d-ii-b unit opens until it merges.
+
+- **The Today reservation is acknowledged and HELD by this session** — Claude Code session
+  `session_01SkcEKPyj3MbLUoCy8bFuck` (the established Phase 6 producer), branch
+  `claude/ux-today-draft-reconcile` from `c6cfec7`, PR #675 — and is not transferred: one producer. The
+  READY_FOR_QA handoff follows #482 comment 5904136063 once CI and the exact-head review have cleared a head.
+- **The defect (root cause).** The server persists check-in, crew and the photo count (`progress`) only
+  with the SEND (`submitDailyLog` carries them); until then they lived in the client's `dailyLog` alone.
+  Every other write on the way to Send — a material recorded, a progress photo uploaded — reconciles the
+  store from the server (the command's own snapshot, or the module read under module ownership), and
+  `applySnapshotCore` REPLACED the client log with the server's unsent values: the engineer was back at
+  "Check in", the crew back to the seed, photos "not done", and Today never reached Send through its steps.
+- **The correction (canonical draft ownership, not card presentation).** `apps/web/src/store/dailyLogDraft.ts`
+  is the engineer's UNSENT work as a project- and log-scoped pending draft (check-in, crew counts by trade,
+  photos taken here). The writers record into it; `applySnapshotCore` lays it over the server's log in the
+  same update in BOTH read modes, only where a branch actually replaces the log; it is persisted beside the
+  outbox under the same user + project key and hydrated with it, so a reload keeps the day; it is DROPPED —
+  never carried — when the server's log is no longer the one it was written against (sent, a new day, no
+  log), and a draft for another project never touches this project's log. The server's stronger truth wins
+  where it holds one. No API change, no migration, no build variable.
+- **Proof.** `apps/web/tests/daily-log-draft.test.ts`: the pure overlay/drop rules and the store journeys
+  (material reconcile in snapshot and moduleQuery modes, the online photo refresh, the reload, the send
+  landing, a new day, a project switch) — the seven store cases are RED at `c6cfec7` and GREEN here.
+  `apps/web/tests/e2e-api/daily-log-today-flow.spec.ts` over the real stack: check in from Today → one
+  more mason → a material (the first refresh boundary) → a progress photo (the second) → reload and
+  re-sign-in → Send from Today, asserting after each boundary that the day stayed and against the server
+  that the send carried exactly it (checked in, 11 workers, 3 photos, once); RED at `c6cfec7` at the first
+  boundary (Site offered "Check in" again), GREEN in both read modes. It runs in every api-e2e mode.
+- **Known limitation, stated not hidden.** The draft counts photos taken on THIS device for THIS log; a
+  photo uploaded from another device for the same unsent log is not counted until the send. Exact per-log
+  evidence needs the upload to carry its `dailyLogId` — an API change, deliberately not folded into this
+  client correction (QA's alternative "or equivalent durable per-log evidence" is what ships).
+- **4d-ii-b is deferred, not started.** Its scope and staging disposition stand exactly as recorded below;
+  the review priorities dot posted with Jagrut's approval (#482 comment 5906093330: accurate
+  "awaiting countersign" copy from `countersignRequired` and the returned status; Countersign / Reject
+  back / Forward on / stranded paths with Inbox and Decision Log states, badges, roster and permissions;
+  Withdraw suppressed on a `countersign_rejection` request; `countersign-v1` on every API-bound request
+  including `/auth/session` with a coverage test; retries, lost responses, double-clicks, role/project
+  changes and both rejection paths through re-approval; self-countersign as two explicit acts;
+  `rollout.phase6_4d` for role pickers and Forward; the drain minimum including A8b) travel with it.
+- **After this merges:** the record keeps `task_state: in_progress` for task 4 with `work_item` and
+  `open_pr` cleared and `next_task: phase-6-task-4d` (the unit-merged shape of the state machine below);
+  4d-ii-b then opens as the next unit.
+
+### Recorded next — Phase 6 task 4d: 4d-ii-a is COMPLETE (A8b merged as #673); 4d-ii-b, the client unit, is next
 
 The runner's move after #638 was `task:4`: the remaining Phase 6 task 4d units under the active plan's §D
 (4d-ii-a, 4d-ii-b, the drain attestation, 4d-iii). 4d-i and 4d-i-b's U1/U2/U3 are merged, and with #673

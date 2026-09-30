@@ -64,6 +64,7 @@ import {
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
 import { dailyLogCommandInFlight } from './dailyLogPending';
+import { type DailyLogDraft, dailyLogKey, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
@@ -350,6 +351,11 @@ export interface AppState {
   access: AccessState;
   activities: Activity[];
   dailyLog: DailyLog | null; // null = no daily log started for this project
+  // #669 Today regression — the engineer's UNSENT work on `dailyLog` (check-in, crew counts, photos
+  // taken) as the canonical project- and log-scoped pending draft: every reconcile overlays it onto
+  // the server's log, it is persisted beside the outbox (same user + project key) and dropped once
+  // the server's log is no longer the one it was written against (see store/dailyLogDraft.ts).
+  dailyLogDraft: DailyLogDraft | null;
   notifications: AppNotification[];
   // real session (set by a phone-OTP sign-in; null = passwordless dev auth)
   sessionToken: string | null;
@@ -1077,6 +1083,7 @@ export function getInitialState(): AppState {
     access: freshAccess(),
     activities: structuredClone(SEED_ACTIVITIES),
     dailyLog: structuredClone(SEED_DAILY_LOG),
+    dailyLogDraft: null,
     notifications: structuredClone(SEED_NOTIFICATIONS),
     sessionToken: null,
     userName: null,
@@ -1223,6 +1230,57 @@ export const useStore = create<Store>()(
      *  DIRECTLY — only `acceptSnapshot` may, after the ordering checks. A source-scan
      *  test (`snapshot-ordering.test.ts`) enforces the single call site so an
      *  unsequenced apply cannot be reintroduced. */
+    // ── #669 Today regression — the pending daily-log draft (store/dailyLogDraft.ts) ──
+    // The signed-in user (JWT sub), as the outbox scopes it — 'anon' for the passwordless dev session.
+    const sessionSub = (): string => {
+      const token = get().sessionToken;
+      if (!token) return 'anon';
+      try {
+        return (JSON.parse(atob(token.split('.')[1])) as { sub?: string }).sub ?? 'anon';
+      } catch {
+        return 'anon'; // malformed token — the anonymous scope
+      }
+    };
+    // Persisted beside the outbox under the SAME user + project scope (WEB-02), so work recorded in
+    // one project (or by one user on a shared device) is never laid over another's log.
+    const dailyLogDraftKey = (): string => `vitan.dailyLogDraft.${sessionSub()}.${get().activeProjectId}`;
+    const persistDailyLogDraft = (): void => {
+      try {
+        const storage = globalThis.localStorage;
+        if (!storage) return;
+        const draft = get().dailyLogDraft;
+        if (!draft) storage.removeItem(dailyLogDraftKey());
+        else if (draft.projectId === get().activeProjectId) storage.setItem(dailyLogDraftKey(), JSON.stringify(draft));
+        // a draft for another project is never written under this project's key
+      } catch {
+        /* storage unavailable — the in-session draft still works */
+      }
+    };
+    /** Land the SERVER's log on the store with the engineer's unsent draft laid over it; the draft
+     *  that no longer applies (the log was sent, a new day replaced it, or there is no log) is dropped
+     *  in the same update. The one place `s.dailyLog` takes a server log. */
+    const applyServerDailyLog = (s: AppState, serverLog: DailyLog | null, projectId: string): void => {
+      const r = overlayDailyLogDraft(serverLog, s.dailyLogDraft, projectId);
+      s.dailyLog = r.log;
+      s.dailyLogDraft = r.draft;
+    };
+    /** Record what the engineer just did on the log on screen into the pending draft for THAT log
+     *  (a draft written against another log is superseded). A sent log takes no draft. */
+    const recordDailyLogDraft = (s: AppState, mutate: (d: DailyLogDraft) => void): void => {
+      if (!s.dailyLog || s.dailyLog.submitted) return;
+      const logKey = dailyLogKey(s.dailyLog);
+      if (!s.dailyLogDraft || s.dailyLogDraft.projectId !== s.activeProjectId || s.dailyLogDraft.logKey !== logKey) {
+        s.dailyLogDraft = { projectId: s.activeProjectId, logKey };
+      }
+      mutate(s.dailyLogDraft);
+    };
+    /** …a crew count set by trade (absolute — the latest count), the draft's crew rule. */
+    const recordDraftCrew = (s: AppState, trade: string, count: number): void =>
+      recordDailyLogDraft(s, (d) => { d.crew = { ...(d.crew ?? {}), [trade]: count }; });
+    /** …one more progress photo taken for this log on this device. */
+    const recordDraftPhoto = (s: AppState): void =>
+      recordDailyLogDraft(s, (d) => { d.photosAdded = (d.photosAdded ?? 0) + 1; });
+
     const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null, activitiesResult?: ModuleActivities | null): void => {
       set((s) => {
         s.projectLoadState = 'ready'; // the active project's data has landed
@@ -1366,16 +1424,23 @@ export const useStore = create<Store>()(
         // (unchanged). 'moduleQuery' mode: a `dailyLogResult` (fetched under THIS same scope lease) owns
         // them (ready); `null` = the module fetch FAILED (keep last-good, expose an error boundary);
         // `undefined` = no fetch accompanied this apply (a command's own snapshot) — leave untouched.
+        //
+        // #669 Today regression — whichever mode owns the log CORE, the engineer's UNSENT work on it
+        // (check-in, crew, photos taken — persisted by the server only with the send) is laid over the
+        // server's log by `applyServerDailyLog` in the SAME update, so a material recorded or a photo
+        // uploaded on the way to Send never resets the day. Only a branch that actually REPLACES the log
+        // overlays: an apply that leaves `s.dailyLog` untouched (moduleQuery + no module read) must not
+        // lay the draft over an already-overlaid log.
         const progressPhotos = (snap.dailyLog?.photos ?? []).map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
         if (dailyLogReadMode() === 'snapshot') {
-          s.dailyLog = snap.dailyLog ? { ...snap.dailyLog, photos: progressPhotos } : null;
+          applyServerDailyLog(s, snap.dailyLog ? { ...snap.dailyLog, photos: progressPhotos } : null, snap.project.id);
           s.materials = snap.materials ?? [];
         } else if (dailyLogResult) {
           // The module read is the shared wire contract (DailyLogModuleResult, finding 5): its `swatch`
           // fields are open strings and its arrays readonly. Narrow them to the store's DTO (SwatchKey,
           // mutable) at this ONE boundary — the values are always valid swatch keys (a closed set).
           const core = dailyLogResult.dailyLog;
-          s.dailyLog = core
+          applyServerDailyLog(s, core
             ? {
                 date: core.date, logDate: core.logDate, checkedIn: core.checkedIn, checkinTime: core.checkinTime,
                 submitted: core.submitted, progress: core.progress,
@@ -1383,7 +1448,7 @@ export const useStore = create<Store>()(
                 materials: core.materials.map((m) => ({ name: m.name, decisionId: m.decisionId, qty: m.qty, zone: m.zone, matched: m.matched, swatch: m.swatch as SwatchKey, photo: m.photo })),
                 photos: progressPhotos,
               }
-            : null;
+            : null, snap.project.id);
           s.materials = dailyLogResult.materials.map((m) => ({ id: m.id, name: m.name, qty: m.qty, zone: m.zone, matched: m.matched, swatch: m.swatch as SwatchKey, decisionId: m.decisionId, nodeId: m.nodeId }));
           s.dailyLogLoad = 'ready';
           s.dailyLogSource = dailyLogResult.source;
@@ -1408,6 +1473,7 @@ export const useStore = create<Store>()(
         s.milestonePct = snap.project.milestonePct;
         s.nodes = snap.nodes ?? [];
       });
+      persistDailyLogDraft();
     };
 
     /** The ONE ordered entry point for applying a snapshot. Checks, in order:
@@ -4332,7 +4398,9 @@ export const useStore = create<Store>()(
         if (!s.dailyLog) return;
         s.dailyLog.checkedIn = true;
         s.dailyLog.checkinTime = '8:12 AM';
+        recordDailyLogDraft(s, (d) => { d.checkIn = { checkedIn: true, checkinTime: '8:12 AM' }; });
       });
+      persistDailyLogDraft();
       get().record('Check-in 8:12 AM');
       // the site named in the toast is the LIVE project's, never seeded copy (Phase 0 Task 7)
       get().flash(get().online ? `Checked in at ${get().location || get().short} · within 60 m · selfie + time stamped.` : 'Checked in offline — will sync when signal returns.');
@@ -4342,7 +4410,9 @@ export const useStore = create<Store>()(
         if (!s.dailyLog) return;
         s.dailyLog.checkedIn = false;
         s.dailyLog.checkinTime = null;
+        recordDailyLogDraft(s, (d) => { d.checkIn = { checkedIn: false, checkinTime: null }; });
       });
+      persistDailyLogDraft();
       get().flash('Checked out. Shift hours logged.');
     },
     scanWorker: () => {
@@ -4352,18 +4422,32 @@ export const useStore = create<Store>()(
         get().flash('No crew rows on this log yet — add trades on the daily log first.');
         return;
       }
-      set((s) => { const c = s.dailyLog?.crew[4]; if (c) c.count += 1; });
+      set((s) => {
+        const c = s.dailyLog?.crew[4];
+        if (!c) return;
+        c.count += 1;
+        recordDraftCrew(s, c.trade, c.count);
+      });
+      persistDailyLogDraft();
       get().record('QR check-in · Helper');
       get().flash('Worker checked in via QR · Helper · 9:03 AM · face verified.');
     },
-    crewStep: (idx, delta) =>
+    crewStep: (idx, delta) => {
       set((s) => {
         const c = s.dailyLog?.crew[idx];
         if (!c) return; // no log, or a stale index against a replaced crew list
         c.count = Math.max(0, c.count + delta);
-      }),
+        recordDraftCrew(s, c.trade, c.count);
+      });
+      persistDailyLogDraft();
+    },
     addProgress: () => {
-      set((s) => { if (s.dailyLog) s.dailyLog.progress += 1; });
+      set((s) => {
+        if (!s.dailyLog) return;
+        s.dailyLog.progress += 1;
+        recordDraftPhoto(s);
+      });
+      persistDailyLogDraft();
       get().record('Progress photo');
     },
     addProgressPhoto: (dataUrl, nodeId, stamp, pickedIn) => {
@@ -4399,9 +4483,11 @@ export const useStore = create<Store>()(
             if (s.dailyLog) {
               s.dailyLog.photos.unshift({ url: dataUrl });
               s.dailyLog.progress += 1;
+              recordDraftPhoto(s);
             }
           });
           persistOutbox();
+          persistDailyLogDraft();
           get().flash('Photo saved offline — will upload when signal returns.');
           return;
         }
@@ -4416,7 +4502,9 @@ export const useStore = create<Store>()(
               if (!s.dailyLog) return;
               s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
               s.dailyLog.progress += 1;
+              recordDraftPhoto(s);
             });
+            persistDailyLogDraft();
             // say what the photo actually carried, not what the feature is called
             get().flash(
               hasStamp(stamped)
@@ -4436,6 +4524,7 @@ export const useStore = create<Store>()(
         if (s.dailyLog) {
           s.dailyLog.photos.unshift({ url: dataUrl, ...stamped });
           s.dailyLog.progress += 1;
+          recordDraftPhoto(s);
         }
         s.photos.unshift({
           id: `demo-photo-${s.photos.length + 1}`,
@@ -4445,6 +4534,7 @@ export const useStore = create<Store>()(
           ...stamped,
         });
       });
+      persistDailyLogDraft();
       get().record('Progress photo');
       if (!get().online) {
         get().flash('Photo saved offline — will upload when signal returns.');
@@ -4482,7 +4572,12 @@ export const useStore = create<Store>()(
       // network call (online too), so a lost response is retried under the SAME key, submitting once.
       const submitKey = newIdempotencyKey();
       if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, 'Submit daily log', 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
-      set((s) => { if (s.dailyLog) s.dailyLog.submitted = true; });
+      set((s) => {
+        if (!s.dailyLog) return;
+        s.dailyLog.submitted = true;
+        s.dailyLogDraft = null; // sent: the log now holds the work the draft carried
+      });
+      persistDailyLogDraft();
       get().record('Daily log submit');
       get().flash(get().online ? 'Daily site log sent to PMC — attendance, materials & photos attached.' : 'Saved offline — log will upload to PMC when signal returns.');
     },
@@ -4821,8 +4916,20 @@ export const useStore = create<Store>()(
           const changed = materialsNorm.changed || labourNorm.changed || commercialNorm.changed;
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable
           if (changed) storage.setItem(outboxKey(), JSON.stringify(ops));
+          // #669 — the engineer's unsent daily-log work for THIS scope comes back with its queue, so a
+          // reload (or a return to this project) keeps the day where they left it; the next apply lays
+          // it over the server's log (or drops it if that log has moved on). Malformed → none.
+          let draft: DailyLogDraft | null = null;
+          try {
+            const rawDraft = storage.getItem(dailyLogDraftKey());
+            draft = rawDraft ? parseDailyLogDraft(JSON.parse(rawDraft) as unknown) : null;
+          } catch {
+            draft = null;
+          }
+          if (draft && draft.projectId !== get().activeProjectId) draft = null; // never another project's
           set((s) => {
             s.outbox = ops;
+            s.dailyLogDraft = draft;
             // gate round 8: rebuild an offline submit's freeze from the durable
             // outbox, so a reload keeps the checklist frozen until the queued
             // submit replays (also covered from the snapshot side by applySnapshot).
