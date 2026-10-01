@@ -174,7 +174,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     await flush();
     await flush();
 
-    expect(gw.addMember).toHaveBeenCalledWith({ name: 'Nilesh', role: 'contractor', email: 'n@vitan.in' });
+    expect(gw.addMember).toHaveBeenCalledWith({ name: 'Nilesh', role: 'contractor', email: 'n@vitan.in' }, expect.any(String)); // B6: keyed per act
     expect(s().members).toEqual([{ userId: 'u1', name: 'Nilesh', email: 'n@vitan.in', phone: null, role: 'contractor', status: 'active' }]);
   });
 

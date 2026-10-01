@@ -272,6 +272,32 @@ lost response retried by the user runs once (the server dedups a keyed replay; a
 its per-call synthesized key for tabs older than this unit). Unit tests assert the same key on the
 retry and that a second distinct act mints a new one. ~120 lines, standard.
 
+**As built (the B6 unit).** An ACT is one intended change in one project scope — `add:<request>` (the add
+request exactly as the server hashes it under the key: name, role, the email lower-cased, the phone,
+the discipline only for a consultant — a re-entry that corrects any field is a new act, since a keyed
+replay with a different hash is a 409 on the server; round-1 Codex P2), `role:<user>:<role>:<discipline>`,
+`remove:<user>`, each prefixed by the project id and the scope generation of the attempt. The store mints the act's key on the first attempt and reuses it until the act
+SETTLES: a confirmed success, or a terminal (4xx) refusal — after either, the next identical act is a
+new act under a new key; a transient failure (network, 5xx, 401/408/429) keeps the key for the user's
+retry. The keys live in memory only: a reload is a new act, which the server's synthesized key for a
+keyless call already covered before this unit. The gateway signatures keep the key optional, so a
+keyless call still sends no header. The project is bound into the act when the attempt is made and the
+settle names that bound act: the shadow review of the unit's first head found the settle re-reading
+the active project at response time, so a project switch while a request was in flight left the
+succeeded key in place and the next identical act on the first project would have replayed the ledger
+row (200, nothing run) — fixed forward in the unit with a per-command regression. Round-2 Codex found
+the same family once more (two overlapping requests sharing a key; the first completion's unconditional
+delete let the late completion wipe a key minted after it), so the rule the proofs rest on is now stated
+and enforced twice over: a settle removes ONLY the key it dispatched — one request per bound act in
+flight (`dispatchMemberAct`; a second attempt while the first is unanswered is refused with "already in
+progress", the retry being the attempt AFTER a response), and a compare-and-delete settle
+(`settleMemberAct(boundAct, key)`), with a per-command regression for the overlap. Round-3 Codex: the
+lock and the keys were bound to the project alone, so a manager's unanswered request blocked the next
+identity on the same project after a sign-out/sign-in — the act is now bound to the FULL `ProjectScope`
+(project + generation, the identity every post-await guard in the store keys on), the in-flight lock is
+released only by the key that took it, and the completion's UI effects run only while the attempt's scope
+is still live; STATUS's Now entry names the add act as the request, not the contact.
+
 ## Order and what a unit may not do
 
 Sequence: B1 → B2 → B3 → B4 → B5a → B5b; B6 after B1, independently. A unit starts only after its
