@@ -37,8 +37,12 @@ so the shepherd stops seeing `main` record a PR that is not live.
 #683 (`dd372b4`), B6 #684 (`e4ac5d8`). Every row of the record's inventory-to-unit map has a merged
 unit; its last row — "the STATUS fold setting `blocking_directive: phase-6-4d-previous-release-drained`
 … the post-merge STATUS record of the LAST unit to merge" — is THIS record. No B-unit carried a
-migration or an `apps/api` change: the server release is unchanged since A8b, and the doors still stand
-(`rollout.phase6_4d` reads `'reserved'`; the four chain routes answer 409 under the reservation).
+migration or a server-RUNTIME change — the only `apps/api` edits were to the API tripwire TESTS that
+scan the web source, the edits the staging record permits (B2: `role-vocabulary-tripwire.test.ts`;
+B3, B4, B5b: `decision-status-tripwire.test.ts`; B5b: `countersign-compat.test.ts`, closing the
+`DecisionForward` entry as not served) — so the server release is unchanged since A8b, and the doors
+still stand (`rollout.phase6_4d` reads `'reserved'`; the four chain routes answer 409 under the
+reservation).
 
 The Now block takes the DIRECTIVE LANDING SHAPE (`task_state: correction_required`, `work_item: none`,
 `open_pr: none`, a named `blocking_directive`), NOT the terminal handoff shape, and that is the plan's
