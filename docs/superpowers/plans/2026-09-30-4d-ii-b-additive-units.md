@@ -333,3 +333,8 @@ post-merge STATUS record of the LAST B-unit to merge — SETS
 `blocking_directive: phase-6-4d-previous-release-drained` naming that release, and the drain
 attestation (an `OPERATOR-ATTESTATION`, REQUIRED, with the autonomous evidence as fail-closed
 corroboration) follows before 4d-iii.
+
+**Landed.** B6 merged as #684 (`e4ac5d8`), the last B-unit; its post-merge STATUS record sets the
+directive in the directive landing shape (`task_state: correction_required`, `work_item: none`,
+`open_pr: none`, `next_task: phase-6-task-4d-iii`), naming `f8274f4` as the minimum release. 4d-ii-b is
+complete; the drain attestation is the next step, and it is the operator's.

@@ -13,16 +13,118 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
-task_state: in_progress
-work_item: 4d-ii-b-b6-member-keys
-reviewed_merge: dd372b4
-open_pr: 684
-next_task: phase-6-task-4d
-blocking_directive: none
-updated: 2026-09-30
+task_state: correction_required
+work_item: none
+reviewed_merge: e4ac5d8
+open_pr: none
+next_task: phase-6-task-4d-iii
+blocking_directive: phase-6-4d-previous-release-drained
+updated: 2026-10-01
 ```
 
-### Now — 4d-ii-b unit B6, the client keys on the member commands (#684, `claude/4d-ii-b-b6-member-keys`)
+### Now — 4d-ii-b is COMPLETE: B6 merged as #684 (`e4ac5d8`); this fold LANDS the drain directive
+
+**UNIT B6 IS MERGED (PR #684 at `main` `e4ac5d8`) WITH A FRESH INDEPENDENT CODEX +1 ON THE EXACT
+REVIEWED HEAD `98287a2`** — the first review attempt's counter, after three finding-bearing heads
+(`3dfc23c`, `f4772bb`, `a55a4f8`) were each folded forward as one batch (review rounds 1–3, plus the
+advisory shadow review's finding on the first head), and the trusted exact-head gate completed it
+directly. `open_pr` goes to `none`, `work_item` to `none`, and `reviewed_merge` advances to the B6 merge,
+so the shepherd stops seeing `main` record a PR that is not live.
+
+**4d-ii-b, the CLIENT unit, is COMPLETE.** Every B-unit of the staging record
+(`docs/superpowers/plans/2026-09-30-4d-ii-b-additive-units.md`, #677 `ba20653`) is on `main`: B1 #678
+(`deb83d0`), B2 #679 (`1411ce4`), B3 #680 (`f9810c0`), B4 #681 (`2f84444`), B5a #682 (`c217c5e`), B5b
+#683 (`dd372b4`), B6 #684 (`e4ac5d8`). Every row of the record's inventory-to-unit map has a merged
+unit; its last row — "the STATUS fold setting `blocking_directive: phase-6-4d-previous-release-drained`
+… the post-merge STATUS record of the LAST unit to merge" — is THIS record. No B-unit carried a
+migration or a server-RUNTIME change — the only `apps/api` edits were to the API tripwire TESTS that
+scan the web source, the edits the staging record permits (B2: `role-vocabulary-tripwire.test.ts`;
+B3, B4, B5b: `decision-status-tripwire.test.ts`; B5b: `countersign-compat.test.ts`, closing the
+`DecisionForward` entry as not served) — so the server release is unchanged since A8b, and the doors
+still stand (`rollout.phase6_4d` reads `'reserved'`; the four chain routes answer 409 under the
+reservation).
+
+The Now block takes the DIRECTIVE LANDING SHAPE (`task_state: correction_required`, `work_item: none`,
+`open_pr: none`, a named `blocking_directive`), NOT the terminal handoff shape, and that is the plan's
+own instruction rather than a choice made here — the staging record's "The drain" ("4d-ii-b's STATUS
+fold … SETS `blocking_directive: phase-6-4d-previous-release-drained` naming that release, and the
+drain attestation … follows before 4d-iii"), the 4d-ii-a record below ("Its STATUS fold — the last unit
+before the drain — SETS `blocking_directive: …`"), and §D's order (4d-ii-a, 4d-ii-b, the drain
+attestation, 4d-iii). It mirrors 4c-ii's landing (#500, `8b23e19`) exactly. `assessRunnerState`
+therefore resolves to `directive:phase-6-4d-previous-release-drained` and CANNOT start 4d-iii while the
+directive stands; `isDirectiveLandingShape` recognizes this landing, so the shepherd does not read its
+own `open_pr: none` as drift and does not instruct the loop to point `open_pr` at the landing PR itself
+(the #303 trap). `task_state: correction_required` is NOT a claim that B6 or any 4d-ii unit is
+defective — every 4d-ii unit merged clean on its exact reviewed head. It is the state from which
+STATUS schedules a directive, and the directive is the rollout prerequisite the plan attaches to this
+landing. `next_task: phase-6-task-4d-iii` records that 4d-iii is the ORDERING; the directive is what
+decides WHEN it may open. No unit of 4d waits on a fresh GO — this is a ROLLOUT ordering prerequisite,
+not a scope authorization. Task 4 is not complete until 4d-iii merges, so no unit's merge — B6's
+included — may be treated as the end of the task.
+
+### Directive `phase-6-4d-previous-release-drained`
+
+**What it attests, and the minimum release.** One fact, and only one: every PMC Vitan serving process
+older than the release carrying A8b — `main` `f8274f4`, #673, the server release that carries the
+bumped consumer contracts and the persisted server-generation minimum A8b's migration raised — is
+stopped or drained, so no process predating it can still claim a delivery or serve a request. 4d-ii-b
+is client-only, so the minimum is UNCHANGED from the 4d-ii-a record. Why the drain matters for 4d,
+stated concretely (§D): a pre-4d instance's Prisma client fails to READ any `Decision` row whose
+`status` is a value its generated enum does not know, and its zod `TokenRole` refuses to mint a JWT for
+an `architect` member — so a project whose chain activates while an old instance still serves is a
+split brain of exactly 4c's class. The reservation makes that state unreachable until the fleet is
+attested drained; 4d-iii retires the reservation. Browser tabs stand behind the `countersign-v1`
+boundary B1 shipped, so the client side needs no drain.
+
+**Why a human declares it.** No code in this repository can observe which processes are ALREADY
+RUNNING. `docs/POLICY.md`: "clearing `phase-6-4d-previous-release-drained` requires the human
+`OPERATOR-ATTESTATION`. Automated release-lease/fleet evidence is fail-closed corroboration, not a
+substitute." That is a BOARD DECISION carried from 4c (2026-08-29, on #480: an operator-declared
+directive, NO automated drain actor) and re-answered for 4d on the controlling issue #482 (comment
+5569586836, 2026-09-07: the user's standing instructions RETAIN human production attestation; evidence
+does NOT replace the direct explicit operator attestation; no review request, agent statement or
+coordinator note can authorize its removal). The two pieces of trusted autonomous evidence 4d-ii-a
+shipped — the sealed `ReleaseLease` register every serving process writes at startup and renews with
+its compiled consumer-catalog version (the witness unit and A6), and `rollout:drain-evidence`, which
+reads the deploy platform's running-container inventory, asserts every image is at or after the
+minimum release, fails closed on anything it cannot classify, and records a `DRAIN-EVIDENCE` comment on
+#482 (A6e) — are CORROBORATION the runner verifies and records BEFORE the attestation. They are never a
+substitute, and a wait for genuinely required operator evidence is never permission to clear the gate.
+
+**How to clear it.** (1) The runner's own, repeatable, fail-closed step: run `rollout:drain-evidence`
+against the minimum release `f8274f4` and let it record its `DRAIN-EVIDENCE` comment on #482. (2) The
+operator's step, which only a human supplies: an `OPERATOR-ATTESTATION` on #482, in the owner's own
+voice and account, beginning `OPERATOR-ATTESTATION`, naming `phase-6-4d-previous-release-drained` and
+the minimum release `f8274f4`, stating that every PMC Vitan process in the class is on `f8274f4` or
+later, and carrying no Watch, Claude, Board-via-agent or other generation marker anywhere in it — the
+4c-iv record (#482 comment 5548460858, cited in this file's 4c-iv clearing entry) is the format
+precedent. (3) A STATUS commit CITING that record by URL, setting `blocking_directive: none` and
+`task_state` to the state 4d-iii opens from — the attributable, reviewable record of WHO declared the
+fleet drained, the same shape every other blocking directive in this loop has used. Nothing else
+clears it: not a Board call relayed by an agent, not the handoff watchdog, not the drift shepherd, not
+a clean signal on any PR, not a review finding asking for its removal, and not any statement this
+runner writes — the autonomous producer that landed this record cannot clear the directive it landed.
+
+**What it blocks while it stands.** `assessRunnerState` returns `directive:` ahead of every other
+work source, so 4d-iii — the migration-only unit that, behind its table fence, retires the five doors,
+installs the trailing INSERT-time seals and the standing-writer readiness triggers, re-projects the
+standing registers toward the orgs truth, activates `decisions.effects` and tombstones the old
+external-effect catalog version (§D "4d-iii, the reservation retirement") — is unreachable, and so is
+every step after it. The runner is not stranded: it continues every already-authorized duty —
+shepherding open PRs, fix-forward corrections on review findings, CI and the gate battery, the
+Maintenance queue — and it runs `rollout:drain-evidence` as its half of the gate. **A merge is not a
+rollout**: nothing in this record deploys anything, activates the architect role on any project, or
+claims the fleet is drained.
+
+### History — 4d-ii-b unit B6, the client keys on the member commands (#684, `claude/4d-ii-b-b6-member-keys`)
+
+Merged as #684 (`e4ac5d8`) on the exact reviewed head `98287a2`, after three review rounds folded forward
+as one batch each: round 1 (the settle read the response-time project — also the advisory shadow review's
+finding — and the add act was narrower than the server's request hash), round 2 (two overlapping requests
+shared a key and the first completion's unconditional delete let the late completion wipe a later key),
+round 3 (the lock and keys were bound to the project alone, so a stale request blocked the next identity
+on the same project; STATUS named the add act by its contact). Every round was one defect — the settle
+naming an entry other than the exact one it dispatched — and the as-merged rule below is its closure.
 
 B5b merged as #683 (`dd372b4`; one review round — the stranded Complete takes the PMC's own reason, no
 target is ever defaulted — then a clean exact-head review). **B6 is the LAST unit of 4d-ii-b and the one
