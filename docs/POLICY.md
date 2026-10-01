@@ -113,10 +113,13 @@ gates still prevent completion. The implementer cannot supply independent review
 clearance; it must come from the configured review integration.
 
 No routine human technical approval substitutes for CI or independent review.
-The retained production-drain exception is different: clearing
-`phase-6-4d-previous-release-drained` requires the human `OPERATOR-ATTESTATION`.
-Automated release-lease/fleet evidence is fail-closed corroboration, not a substitute.
-This consolidation does not reverse that decision or authorize a production action.
+The production-drain exception this contract previously retained — clearing
+`phase-6-4d-previous-release-drained` required the human `OPERATOR-ATTESTATION` — is
+withdrawn by the owner's decision of 2026-10-01
+(https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5929472784). The fail-closed
+automated evidence (the `ReleaseLease` preflight in 4d-iii's migration;
+`rollout:drain-evidence` where it is run) is the gate. No human attestation is required
+or awaited. Deploys remain the operator's.
 
 ## Correction routing and recovery
 
