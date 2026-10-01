@@ -10,9 +10,9 @@ import { ApiGateway, type ApiGateway as Gateway } from '@/data/apiGateway';
  *
  * The rule under test: one key per ACT, reused on the retry of the same act, settled by a confirmed
  * success or a terminal refusal so the next identical act is a new act under a new key; a distinct act
- * (another member, another role, another project) has its own key; one request per act in flight, and a
- * settle removes only the key it dispatched; and the gateway puts the key on the wire as the
- * `Idempotency-Key` header of the right route.
+ * (another member, another role, another project) has its own key; an act belongs to the scope (project +
+ * generation) it was attempted in; one request per act in flight, and a settle removes only the key it
+ * dispatched; and the gateway puts the key on the wire as the `Idempotency-Key` header of the right route.
  */
 
 const s = () => useStore.getState();
@@ -168,6 +168,39 @@ describe('B6 — one idempotency key per member act, reused on the retry', () =>
       cmd.invoke(); // the user's retry: k2 again
       await flush();
       expect(method).toHaveBeenCalledTimes(3);
+      expect(keyOf(cmd, method.mock.calls[2])).toBe(k2);
+    });
+
+    it(`${cmd.label}: an act belongs to the scope it was attempted in — the next identity on the same project is neither blocked by nor touched by this one's unanswered request`, async () => {
+      // round-3 Codex P2 (4150714194): the lock and the keys were bound to the project alone, so a manager's
+      // unanswered request blocked the next manager's identical act on the same project after a sign-out
+      // and sign-in. The act now carries the scope generation (bumped by every auth result and sign-out),
+      // and a completion from the old scope settles only its own entry and runs no UI effect.
+      let finish: (v: unknown) => void = () => {};
+      const method = vi.fn()
+        .mockImplementationOnce(() => new Promise((r) => { finish = r; }))
+        .mockRejectedValue(new Error('offline'));
+      s()._setGateway({ [cmd.method]: method, listMembers: vi.fn().mockResolvedValue([]) } as unknown as Gateway);
+      useStore.setState({ sessionUserId: 'manager-1' });
+      cmd.invoke(); // manager 1's request, unanswered
+      await flush();
+      const k1 = keyOf(cmd, method.mock.calls[0]);
+      // manager 1 signs out (generation bump), manager 2 signs in on the same project (another bump)
+      useStore.setState({ sessionUserId: null, projectScopeGeneration: 2, toast: null });
+      useStore.setState({ sessionUserId: 'manager-2', projectScopeGeneration: 3 });
+      cmd.invoke(); // the identical act: NOT refused as "already in progress", sent under its own key
+      await flush();
+      expect(method).toHaveBeenCalledTimes(2);
+      const k2 = keyOf(cmd, method.mock.calls[1]);
+      expect(k2).toMatch(UUIDISH);
+      expect(k2).not.toBe(k1);
+      expect(s().toast).not.toBe(cmd.busy);
+      const toastBefore = s().toast;
+      finish({}); // manager 1's response arrives in manager 2's session
+      await flush(); await flush();
+      expect(s().toast).toBe(toastBefore); // no "added / removed" notice leaks into the next identity's UI
+      cmd.invoke(); // manager 2's retry after the offline failure: still k2 — the stale completion touched nothing
+      await flush();
       expect(keyOf(cmd, method.mock.calls[2])).toBe(k2);
     });
   }

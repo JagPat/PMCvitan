@@ -30,16 +30,24 @@ open `claude/**` draft.** It ships the client `Idempotency-Key` on the three mem
 lines 3108–3116: 4d-ii-a / A3b made `members.add`, `members.updateRole` and `members.remove` ledger
 commands with server key synthesis for a keyless tab; the client key is this unit's): the gateway's
 `addMember`, `updateMemberRole` and `removeMember` take an optional key and send it as the header, and the
-store mints ONE key per ACT (`<project>:add:<contact>`, `<project>:role:<user>:<role>:<discipline>`,
-`<project>:remove:<user>`) and REUSES it on the user's retry of the same act — a lost or uncertain
+store mints ONE key per ACT and REUSES it on the user's retry of the same act — a lost or uncertain
 response retried by the user runs once on the ledger — settling the act on a confirmed success or a
 terminal refusal so the next identical act is a new act under a new key; a distinct act (another member,
-another role, another project) has its own key. No UI change, no server change, no migration. Proof:
+another role, another project) has its own key. An act is bound to the FULL scope of the attempt
+(`<project>:<generation>:…`, the same `ProjectScope` every post-await guard keys on, so a sign-in,
+sign-out or project switch starts fresh): `add:<request>` is the add request exactly as the server hashes
+it under the key — name, role, the email lower-cased, the phone, the discipline only for a consultant —
+so a re-entry that corrects any field is a new act (a same-key/different-hash replay is a 409 on the
+server); `role:<user>:<role>:<discipline>`; `remove:<user>`. The rule the proofs rest on: a settle removes
+ONLY the key it dispatched — one request per bound act in flight ("already in progress" refuses a second
+attempt while the first is unanswered), a compare-and-delete settle, and the completion's UI effects only
+while the attempt's scope is still live. No UI change, no server change, no migration. Proof:
 `tests/member-command-keys.test.ts` — per command: the same key on the retry after a lost response, a new
 key after a success and for a distinct act, a new key after a terminal refusal but the same after a
-transient one, project scoping; the add act's contact identity normalised; nothing minted without the
-server; the gateway putting each key on the right route beside the contract header, and a keyless call
-sending no header. **The fold rides this unit's post-merge STATUS record**: when B6 merges, the record
+transient one, project scoping, the mid-flight project switch, the in-flight overlap, the next identity
+on the same project; the add act's request identity (same email in another case → same key; a corrected
+name / role / discipline → new key); nothing minted without the server; the gateway putting each key on
+the right route beside the contract header, and a keyless call sending no header. **The fold rides this unit's post-merge STATUS record**: when B6 merges, the record
 sets `blocking_directive: phase-6-4d-previous-release-drained`, naming the release carrying A8b
 (`f8274f4`, #673) as the previous release whose drain 4d-iii waits on, with task 4 `in_progress`,
 `work_item: none`, `open_pr: none`.
