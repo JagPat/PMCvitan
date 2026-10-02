@@ -182,6 +182,41 @@ export function engineerTodayProgress(done: number, total: number, lang: Lang): 
   return `${done} of ${total} done`;
 }
 
+/** The crew step asked one trade at a time. Trade names are the site's own words (each log carries
+ *  its trades forward), so they are shown as recorded; Gujarati and Hindi copy awaits a native
+ *  speaker's check. */
+export const engineerCrewLabels = {
+  back: { en: 'Back to Today', hi: 'आज पर वापस', gu: 'આજે પર પાછા' },
+  less: { en: 'One less', hi: 'एक कम', gu: 'એક ઓછો' },
+  more: { en: 'One more', hi: 'एक और', gu: 'એક વધુ' },
+  next: { en: 'Next', hi: 'आगे', gu: 'આગળ' },
+  finish: { en: 'Done — back to Today', hi: 'हो गया — आज पर वापस', gu: 'થઈ ગયું — આજે પર પાછા' },
+  nobody: { en: 'Nobody today', hi: 'आज कोई नहीं आया', gu: 'આજે કોઈ નથી આવ્યું' },
+  laterAsk: { en: "Next we'll ask", hi: 'आगे पूछेंगे', gu: 'પછી પૂછીશું' },
+} as const;
+
+/** The one question on screen: how many of this trade came. An earlier day's unsent log is asked
+ *  about without "today". */
+export function engineerCrewQuestion(trade: string, lang: Lang, today = true): string {
+  if (lang === 'hi') return today ? `${trade}: आज कितने आए?` : `${trade}: कितने आए?`;
+  if (lang === 'gu') return today ? `${trade}: આજે કેટલા આવ્યા?` : `${trade}: કેટલા આવ્યા?`;
+  return today ? `${trade}: how many came today?` : `${trade}: how many came?`;
+}
+
+/** "Question 2 of 5", for the stepper's progress. */
+export function engineerCrewPosition(at: number, total: number, lang: Lang): string {
+  if (lang === 'hi') return `${total} में से सवाल ${at}`;
+  if (lang === 'gu') return `${total} માંથી સવાલ ${at}`;
+  return `Question ${at} of ${total}`;
+}
+
+/** "3 more", after the next trade names. */
+export function engineerCrewMore(n: number, lang: Lang): string {
+  if (lang === 'hi') return `${n} और`;
+  if (lang === 'gu') return `${n} વધુ`;
+  return `${n} more`;
+}
+
 /** Shell chrome shared by every role: the More tab and the language control. */
 export const shellLabels: Record<'more' | 'language' | 'close' | 'screens', Record<Lang, string>> = {
   more: { en: 'More', hi: 'और', gu: 'વધુ' },

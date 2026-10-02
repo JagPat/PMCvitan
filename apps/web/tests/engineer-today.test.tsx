@@ -122,8 +122,12 @@ describe('Engineer Today — the screen', () => {
     expect(r.getByTestId('today-count').textContent).toBe('1 of 4 done');
   });
 
-  it('crew and photos open the Site screen, where they are recorded', async () => {
-    const { useStore, r } = await loadToday({ dailyLog: log({ checkedIn: true }) });
+  // U1: the crew step is asked in place, one trade at a time (tests/crew-stepper.test.tsx)
+  it('photos open the Site screen, where they are recorded', async () => {
+    const counted = log({ checkedIn: true });
+    counted.crew[0].count = 3;
+    const { useStore, r } = await loadToday({ dailyLog: counted });
+    expect(r.getByTestId('today-now').dataset.action).toBe('photos');
     fireEvent.click(r.getByTestId('today-action'));
     expect(useStore.getState().screen).toBe('daily-log');
   });

@@ -1179,3 +1179,21 @@ test('phone and worker OTP recovery actions meet the target floor', async ({ pag
     await sweepActionTargets(page, `Team Access ${step}`);
   }
 });
+
+test("the engineer's crew questions meet the target floor and fit the phone, in Gujarati", async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  // U1 — Today's crew step, asked one trade at a time; an engineer lands in Gujarati, the longest copy
+  await page.getByTestId('today-step-crew').click();
+  await expect(page.getByTestId('crew-stepper')).toBeVisible();
+  await expect(page.getByTestId('crew-question')).toContainText('આજે કેટલા આવ્યા?');
+  await sweepActionTargets(page, 'Crew question');
+  const before = Number(await page.getByTestId('crew-count').textContent());
+  await page.getByTestId('crew-more').click();
+  await expect(page.getByTestId('crew-count')).toHaveText(String(before + 1));
+  await page.getByTestId('crew-next').click();
+  await expect(page.getByTestId('crew-position')).toHaveText(/^2 \/ /);
+  await sweepActionTargets(page, 'Crew question, second trade');
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});

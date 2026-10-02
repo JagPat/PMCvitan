@@ -5,6 +5,8 @@ import { selectTotalWorkers } from '@/store/selectors';
 import { todayPath, TODAY_STEPS } from '@/lib/engineerToday';
 import { todayCivil } from '@/lib/civilDate';
 import { dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
+import { dailyLogKey } from '@/store/dailyLogDraft';
+import { CrewStepper } from './CrewStepper';
 import { ArrowRight, Circle, CircleCheck, Crosshair, Plus, RefreshCw } from '@/lib/icons';
 import { can, engineerNavLabels, engineerTodayLabels as L, engineerTodayLogFor, engineerTodayOverdue, engineerTodayProgress, type Lang } from '@vitan/shared';
 import styles from './EngineerToday.module.css';
@@ -15,7 +17,8 @@ const LOCALE: Record<Lang, string> = { en: 'en-IN', hi: 'hi-IN', gu: 'gu-IN' };
  * The site engineer's Today: one "do this now" action and the day's four-step path
  * (check in → crew & material → progress photos → send to PMC). Presentation only — every step
  * reads the daily log the Site screen records, and every action is the same store command that
- * screen uses, so Today can never claim a step the log doesn't show.
+ * screen uses, so Today can never claim a step the log doesn't show. The crew step is asked here,
+ * one trade at a time (`CrewStepper`); photos and material stay on the Site screen.
  */
 export function EngineerToday({ also }: { also?: ReactNode }) {
   const lang = useStore((s) => s.lang);
@@ -25,6 +28,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   const total = useStore(selectTotalWorkers);
   const dailyLogLoad = useStore((s) => s.dailyLogLoad);
   const timeZone = useStore((s) => s.timeZone);
+  const projectId = useStore((s) => s.activeProjectId);
   const online = useStore((s) => s.online);
   // a start or send already on its way (queued, or committed and not yet read back) is shown as
   // such — the same rule the store's commands enforce (see `dailyLogPending`)
@@ -59,6 +63,24 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   const next = path.action === 'start' || path.action === 'done' ? null : path.action;
   const openSite = () => setScreen('daily-log');
   const date = formatCivilDay(LOCALE[lang], today);
+
+  // the crew questions are asked only of an open, settled log that nothing is on its way for —
+  // the same log the Site screen edits. Anything else (no trades yet, a read unsettled, a start or
+  // send in flight, the log sent) leaves the crew step on the Site screen, and closes the stepper.
+  // The stepper stays bound to the log it was opened for (the pending draft's own key: project and
+  // log day), so a project switch or a replaced log brings the engineer back to Today.
+  const [askingFor, setAskingFor] = useState<string | null>(null);
+  const canAsk =
+    !reading && !unavailable && !pendingStart && !pendingSend &&
+    path.action !== 'start' && path.action !== 'done' && (dailyLog?.crew.length ?? 0) > 0;
+  const logFor = dailyLog ? `${projectId}|${dailyLogKey(dailyLog)}` : null;
+  useEffect(() => {
+    if (!canAsk || askingFor !== logFor) setAskingFor(null);
+  }, [canAsk, askingFor, logFor]);
+  const openCrew = () => (canAsk ? setAskingFor(logFor) : openSite());
+  if (canAsk && askingFor !== null && askingFor === logFor) {
+    return <CrewStepper onClose={() => setAskingFor(null)} today={!path.overdue} />;
+  }
 
   let card;
   // an unsettled read (first load, a retry, or a failure) is shown before anything derived from
@@ -111,7 +133,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   } else {
     const a = path.action;
     const canAct = a === 'start' ? can('dailyLog.start', role) : a === 'send' ? can('dailyLog.submit', role) : true;
-    const run = a === 'start' ? startDailyLog : a === 'checkIn' ? checkIn : a === 'send' ? submitDailyLog : openSite;
+    const run = a === 'start' ? startDailyLog : a === 'checkIn' ? checkIn : a === 'send' ? submitDailyLog : a === 'crew' ? openCrew : openSite;
     const Icon = a === 'start' ? Plus : a === 'checkIn' ? Crosshair : ArrowRight;
     // an earlier day's unsent log is never called today's: its own date is named, and sending it
     // says "this log"
@@ -167,7 +189,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
                 <li key={k}>
                   <button
                     className={`${styles.step} ${isNext ? styles.stepNext : ''}`}
-                    onClick={openSite}
+                    onClick={k === 'crew' ? openCrew : openSite}
                     data-testid={`today-step-${k}`}
                     data-state={isDone ? 'done' : skipped ? 'skipped' : isNext ? 'next' : 'todo'}
                   >
