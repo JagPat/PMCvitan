@@ -675,6 +675,8 @@ export interface AppActions {
   checkOut: () => void;
   scanWorker: () => void;
   crewStep: (idx: number, delta: number) => void;
+  /** U1 — the engineer answered every crew question for the open log (a no-crew day included) */
+  confirmCrew: () => void;
   addProgress: () => void;
   /**
    * `stamp` is what the PHOTO's own EXIF carries — empty when the file records nothing.
@@ -1295,14 +1297,25 @@ export const useStore = create<Store>()(
     const recordDailyLogDraft = (s: AppState, mutate: (d: DailyLogDraft) => void): void => {
       if (!s.dailyLog || s.dailyLog.submitted) return;
       const logKey = dailyLogKey(s.dailyLog);
-      if (!s.dailyLogDraft || s.dailyLogDraft.projectId !== s.activeProjectId || s.dailyLogDraft.logKey !== logKey) {
-        s.dailyLogDraft = { projectId: s.activeProjectId, logKey };
-      }
-      mutate(s.dailyLogDraft);
+      const logId = s.dailyLog.id;
+      // a draft written against another log — another project, another civil day, or another log of
+      // the same day (a different server id) — is superseded, never carried over (U1, #690)
+      const other = !s.dailyLogDraft
+        || s.dailyLogDraft.projectId !== s.activeProjectId
+        || s.dailyLogDraft.logKey !== logKey
+        || (!!logId && !!s.dailyLogDraft.logId && s.dailyLogDraft.logId !== logId);
+      if (other) s.dailyLogDraft = { projectId: s.activeProjectId, logKey, ...(logId ? { logId } : {}) };
+      else if (logId && !s.dailyLogDraft!.logId) s.dailyLogDraft!.logId = logId;
+      mutate(s.dailyLogDraft!);
     };
-    /** …a crew count set by trade (absolute — the latest count), the draft's crew rule. */
-    const recordDraftCrew = (s: AppState, trade: string, count: number): void =>
-      recordDailyLogDraft(s, (d) => { d.crew = { ...(d.crew ?? {}), [trade]: count }; });
+    /** …a crew count set on one row (absolute — the latest count), the draft's crew rule. Keyed by the
+     *  row's position with its trade (`crewRows`), so a free-text trade name can never collide with
+     *  another row's key and each row's count is kept for that row. */
+    const recordDraftCrew = (s: AppState, idx: number, count: number): void => {
+      const row = s.dailyLog?.crew[idx];
+      if (!row) return;
+      recordDailyLogDraft(s, (d) => { d.crewRows = { ...(d.crewRows ?? {}), [String(idx)]: { trade: row.trade, count } }; });
+    };
     /** …one more progress photo taken for this log on this device. */
     const recordDraftPhoto = (s: AppState): void =>
       recordDailyLogDraft(s, (d) => { d.photosAdded = (d.photosAdded ?? 0) + 1; });
@@ -1468,6 +1481,9 @@ export const useStore = create<Store>()(
           const core = dailyLogResult.dailyLog;
           applyServerDailyLog(s, core
             ? {
+                // the log's own id (U1, #690): the draft and Today's crew questions bind to it, so it is
+                // carried on the module read exactly as on the snapshot path
+                ...(core.id ? { id: core.id } : {}),
                 date: core.date, logDate: core.logDate, checkedIn: core.checkedIn, checkinTime: core.checkinTime,
                 submitted: core.submitted, progress: core.progress,
                 crew: core.crew.map((c) => ({ trade: c.trade, count: c.count })),
@@ -4622,18 +4638,24 @@ export const useStore = create<Store>()(
         const c = s.dailyLog?.crew[4];
         if (!c) return;
         c.count += 1;
-        recordDraftCrew(s, c.trade, c.count);
+        recordDraftCrew(s, 4, c.count);
       });
       persistDailyLogDraft();
       get().record('QR check-in · Helper');
       get().flash('Worker checked in via QR · Helper · 9:03 AM · face verified.');
+    },
+    confirmCrew: () => {
+      set((s) => {
+        recordDailyLogDraft(s, (d) => { d.crewConfirmed = true; });
+      });
+      persistDailyLogDraft();
     },
     crewStep: (idx, delta) => {
       set((s) => {
         const c = s.dailyLog?.crew[idx];
         if (!c) return; // no log, or a stale index against a replaced crew list
         c.count = Math.max(0, c.count + delta);
-        recordDraftCrew(s, c.trade, c.count);
+        recordDraftCrew(s, idx, c.count);
       });
       persistDailyLogDraft();
     },

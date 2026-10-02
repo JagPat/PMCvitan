@@ -144,7 +144,7 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     await settles(() => gw.addSiteMaterial.mock.calls.length === 1 && s().outbox.length === 0);
     await flush();
     expectTheMorningKept();
-    expect(s().dailyLogDraft).toEqual({ projectId: 'ambli', logKey: 'civil:2026-07-03', checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crew: { 'Flooring mason': 3 }, photosAdded: 1 });
+    expect(s().dailyLogDraft).toEqual({ projectId: 'ambli', logKey: 'civil:2026-07-03', checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crewRows: { 0: { trade: 'Flooring mason', count: 3 } }, photosAdded: 1 });
   });
 
   it('moduleQuery mode: the post-command module read keeps all three too (RED at c6cfec7)', async () => {
@@ -165,6 +165,69 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     await settles(() => gw.dailyLog.mock.calls.length >= 2 && s().outbox.length === 0);
     await flush();
     expectTheMorningKept();
+  });
+
+  // U1 (#690, shadow review on ae76494): the module read carries the log's id onto `s.dailyLog`, as the
+  // snapshot path does, so the draft's binding holds in this mode too
+  it('moduleQuery mode: the module read carries the log id, and a draft for another same-day log is not laid over it', async () => {
+    vi.stubEnv('VITE_DAILYLOG_READ', 'moduleQuery');
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog())),
+      dailyLog: vi.fn().mockResolvedValue(moduleRead(serverLog({ id: 'log-a' }))),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.id).toBe('log-a');
+
+    doTheMorning();
+    expect(s().dailyLogDraft?.logId).toBe('log-a');
+    // another device sent log-a and started log-b today; the next module read serves log-b
+    gw.dailyLog.mockResolvedValue(moduleRead(serverLog({ id: 'log-b' })));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.id).toBe('log-b');
+    expect(s().dailyLog).toMatchObject({ checkedIn: false, progress: 2 });
+    expect(s().dailyLogDraft).toBeNull();
+  });
+
+  // U1 (#690, shadow review on ae76494): two rows sharing a trade keep their own counts across a reconcile
+  it('two crew rows with the same trade keep their own counts through a reconcile', async () => {
+    const twin = serverLog({ crew: [{ trade: 'Mason', count: 1 }, { trade: 'Mason', count: 5 }] });
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(twin)) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().crewStep(1, 1);
+    s().crewStep(0, 1);
+    expect(s().dailyLog?.crew.map((c) => c.count)).toEqual([2, 6]);
+    await s().requestFreshSnapshot(); // the server still holds the unsent [1, 5]
+    await flush();
+    expect(s().dailyLog?.crew.map((c) => c.count)).toEqual([2, 6]);
+    // a draft written before the row key (bare trade) still applies to the first row only
+    const legacy = overlayDailyLogDraft(twin, { projectId: 'ambli', logKey: dailyLogKey(twin), crew: { Mason: 3 } }, 'ambli');
+    expect(legacy.log?.crew.map((c) => c.count)).toEqual([3, 5]);
+  });
+
+  // U1 (#690, Codex finding 4166618228): free-text trade names can never collide with another row's key
+  it('a trade whose text looks like an encoded key keeps its own count beside the rows it resembles', async () => {
+    const odd = serverLog({ crew: [{ trade: 'Mason\u241f1', count: 0 }, { trade: 'Mason', count: 1 }, { trade: 'Mason', count: 5 }] });
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(odd)) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().crewStep(0, 4);
+    s().crewStep(2, 1);
+    expect(s().dailyLog?.crew.map((c) => c.count)).toEqual([4, 1, 6]);
+    await s().requestFreshSnapshot(); // the server still holds the unsent [0, 1, 5]
+    await flush();
+    expect(s().dailyLog?.crew.map((c) => c.count)).toEqual([4, 1, 6]);
+    // a row key applies only where that position still holds the trade it was set on
+    const moved = overlayDailyLogDraft(serverLog({ crew: [{ trade: 'Plumber', count: 2 }] }), { projectId: 'ambli', logKey: dailyLogKey(odd), crewRows: { 0: { trade: 'Mason\u241f1', count: 4 } } }, 'ambli');
+    expect(moved.log?.crew.map((c) => c.count)).toEqual([2]);
+    // and the row map survives a persist round trip, refusing a malformed entry
+    expect(parseDailyLogDraft({ projectId: 'ambli', logKey: 'civil:2026-07-03', crewRows: { 0: { trade: 'Mason', count: 3 }, x: { trade: 'Bad', count: 1 }, 1: { trade: 'Odd', count: -1 } } })?.crewRows)
+      .toEqual({ 0: { trade: 'Mason', count: 3 } });
   });
 
   it('a photo uploaded online is counted once, and a refresh right after it keeps the count', async () => {
@@ -259,5 +322,89 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     expect(s().dailyLog).toMatchObject({ checkedIn: false, progress: 2 });
     // …while ambli's own draft still waits under its own key for the return
     expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.anon.ambli')).toContain('"checkedIn":true');
+  });
+});
+
+// U1 (#690, Codex finding 4165349940): a reconcile can jump straight from one unsent log to ANOTHER of
+// the same civil day (another device sent the first and started a second), with no sent state between.
+// The draft records its log's server id and is never laid over a log with a different id.
+describe('U1 — the draft is bound to its log by server id, not only by civil date', () => {
+  const draftFor = (logId?: string): DailyLogDraft => ({
+    projectId: 'ambli', logKey: 'civil:2026-07-03', ...(logId ? { logId } : {}),
+    checkIn: { checkedIn: true, checkinTime: '9:05 AM' }, crew: { Plumber: 4 }, photosAdded: 1,
+  });
+
+  it('a draft written for one log is dropped, not laid over another log of the same civil day', () => {
+    const replacement = serverLog({ id: 'log-b' });
+    const r = overlayDailyLogDraft(replacement, draftFor('log-a'), 'ambli');
+    expect(r.draft).toBeNull();
+    expect(r.log).toEqual(replacement); // no check-in, crew or photos carried onto the other log
+  });
+
+  it('the same log by id keeps its draft', () => {
+    const r = overlayDailyLogDraft(serverLog({ id: 'log-a' }), draftFor('log-a'), 'ambli');
+    expect(r.draft).not.toBeNull();
+    expect(r.log?.checkedIn).toBe(true);
+    expect(r.log?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
+  });
+
+  it('a draft or a log without an id (written or served before the field) is matched by civil date, as before', () => {
+    expect(overlayDailyLogDraft(serverLog({ id: 'log-a' }), draftFor(), 'ambli').draft).not.toBeNull();
+    expect(overlayDailyLogDraft(serverLog(), draftFor('log-a'), 'ambli').draft).not.toBeNull();
+  });
+
+  it('a draft written before the id existed is bound to the first log it is laid over, and then never to another', () => {
+    const legacy = draftFor(); // persisted before the field: no logId
+    const first = overlayDailyLogDraft(serverLog({ id: 'log-a' }), legacy, 'ambli');
+    expect(first.draft?.logId).toBe('log-a');
+    expect(first.log?.checkedIn).toBe(true);
+    // another device sent log-a and started log-b today: the bound draft is dropped, not carried over
+    const next = overlayDailyLogDraft(serverLog({ id: 'log-b' }), first.draft, 'ambli');
+    expect(next.draft).toBeNull();
+    expect(next.log?.checkedIn).toBe(false);
+  });
+
+  it('the store persists the binding on the reconcile that makes it', async () => {
+    globalThis.localStorage?.clear();
+    useStore.setState(getInitialState());
+    useStore.setState((st) => { st.online = true; st.activeProjectId = 'ambli'; st.projectScopeGeneration = 1; st.outbox = []; st.syncQueue = []; st.dailyLogDraft = draftFor(); });
+    s()._setGateway({ snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog({ id: 'log-a' }))) } as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLogDraft?.logId).toBe('log-a');
+    expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.anon.ambli')).toContain('"logId":"log-a"');
+  });
+
+  it('the draft records the id of the log it was written against, and a persisted draft keeps it', () => {
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-a' }) });
+    s().crewStep(1, 1);
+    expect(s().dailyLogDraft).toMatchObject({ projectId: 'ambli', logKey: dailyLogKey(serverLog()), logId: 'log-a' });
+    expect(parseDailyLogDraft(JSON.parse(JSON.stringify(s().dailyLogDraft)))?.logId).toBe('log-a');
+  });
+
+  it('a tap on another log of the same day starts a fresh draft instead of extending the old one', () => {
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-b' }), dailyLogDraft: draftFor('log-a') });
+    s().crewStep(0, 1);
+    expect(s().dailyLogDraft?.logId).toBe('log-b');
+    expect(s().dailyLogDraft?.checkIn).toBeUndefined();
+    expect(s().dailyLogDraft?.crewRows).toEqual({ 0: { trade: 'Flooring mason', count: 3 } });
+  });
+});
+
+// U1 (#690, Codex finding 4165349950): answering every crew question with "Nobody today" is an answer.
+describe('U1 — a no-crew day the engineer confirmed is a done crew step until the log is sent', () => {
+  it('todayPath reads crew as done for an unsent log the engineer confirmed, and never for a sent one', () => {
+    const empty = serverLog({ checkedIn: true, progress: 0, crew: serverLog().crew.map((c) => ({ ...c, count: 0 })) });
+    expect(todayPath(empty, 0).done.crew).toBe(false);
+    expect(todayPath(empty, 0, undefined, true).done.crew).toBe(true);
+    expect(todayPath(empty, 0, undefined, true).action).toBe('photos');
+    expect(todayPath({ ...empty, submitted: true }, 0, undefined, true).done.crew).toBe(false);
+  });
+
+  it('confirmCrew records it in the log draft, and it survives a persist round trip', () => {
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-a' }) });
+    s().confirmCrew();
+    expect(s().dailyLogDraft).toMatchObject({ logId: 'log-a', crewConfirmed: true });
+    expect(parseDailyLogDraft(JSON.parse(JSON.stringify(s().dailyLogDraft)))?.crewConfirmed).toBe(true);
   });
 });

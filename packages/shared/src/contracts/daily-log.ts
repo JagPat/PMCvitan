@@ -114,6 +114,8 @@ export interface DailyLogMaterialView {
 /** The daily-log-OWNED core of the DailyLog slice — the module's view WITHOUT the media-sourced
  *  `photos`, which the snapshot composes (media is a separate module). */
 export interface DailyLogCoreView {
+  /** the log's own id — optional: a projection row serialized before it existed lacks it */
+  readonly id?: string;
   readonly date: string;
   readonly logDate: string | null;
   readonly checkedIn: boolean;

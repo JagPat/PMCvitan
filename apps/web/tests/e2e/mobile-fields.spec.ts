@@ -1179,3 +1179,68 @@ test('phone and worker OTP recovery actions meet the target floor', async ({ pag
     await sweepActionTargets(page, `Team Access ${step}`);
   }
 });
+
+test("the engineer's crew questions meet the target floor and fit the phone, in Gujarati", async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  // U1 — Today's crew step, asked one trade at a time; an engineer lands in Gujarati, the longest copy
+  await page.getByTestId('today-step-crew').click();
+  await expect(page.getByTestId('crew-stepper')).toBeVisible();
+  await expect(page.getByTestId('crew-question')).toContainText('આજે કેટલા આવ્યા?');
+  await sweepActionTargets(page, 'Crew question');
+  const before = Number(await page.getByTestId('crew-count').textContent());
+  await page.getByTestId('crew-more').click();
+  await expect(page.getByTestId('crew-count')).toHaveText(String(before + 1));
+  await page.getByTestId('crew-next').click();
+  await expect(page.getByTestId('crew-position')).toHaveText(/^2 \/ /);
+  await sweepActionTargets(page, 'Crew question, second trade');
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test("a long free-text trade name wraps within the phone's width on the crew question", async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  // U1 (#690, Codex finding 4166618246): trades are each site's own free text, of any length
+  const long = 'Waterproofingmembraneapplicatorforterraceandwetareassubcontractgang'; // one unbroken token
+  await page.evaluate((trade) => {
+    const seed = (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed;
+    seed({ dailyLog: { date: '02 Oct 2026', logDate: null, checkedIn: true, checkinTime: '9:00 AM', submitted: false, progress: 0,
+      crew: [{ trade: 'Mason', count: 0 }, { trade, count: 0 }, { trade: `${trade}-second`, count: 0 }], materials: [], photos: [] } });
+  }, long);
+  await page.getByTestId('today-step-crew').click();
+  for (const step of [0, 1]) {
+    const box = await page.getByTestId('crew-question').boundingBox();
+    expect(box && box.x >= 0 && box.x + box.width <= 390 + 0.1).toBe(true);
+    const fits = await page.getByTestId('crew-question').evaluate((el) => el.scrollWidth <= el.clientWidth + 0.5);
+    expect(fits).toBe(true);
+    if (step === 0) {
+      const ahead = await page.getByTestId('crew-ahead').boundingBox();
+      expect(ahead && ahead.x + ahead.width <= 390 + 0.1).toBe(true);
+      await page.getByTestId('crew-next').click();
+      await expect(page.getByTestId('crew-question')).toContainText(long);
+    }
+  }
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test("a large crew roster's progress bar stays within the phone's width", async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  // U1 (#690, Codex finding 4167176496): a roster has no size cap, and daily-log.start copies it whole
+  const crew = Array.from({ length: 60 }, (_, i) => ({ trade: `Trade ${i + 1}`, count: 0 }));
+  await page.evaluate((rows) => {
+    const seed = (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed;
+    seed({ dailyLog: { date: '02 Oct 2026', logDate: null, checkedIn: true, checkinTime: '9:00 AM', submitted: false, progress: 0,
+      crew: rows, materials: [], photos: [] } });
+  }, crew);
+  await page.getByTestId('today-step-crew').click();
+  await expect(page.getByTestId('crew-position')).toHaveText('1 / 60');
+  for (const id of ['crew-back', 'crew-progress', 'crew-position']) {
+    const box = await page.getByTestId(id).boundingBox();
+    expect(box && box.x >= 0 && box.x + box.width <= 390 + 0.1, id).toBe(true);
+  }
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});

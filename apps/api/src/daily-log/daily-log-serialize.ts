@@ -45,6 +45,7 @@ export async function computeDailyLogSlice(
   return {
     dailyLog: dailyLog
       ? {
+          id: dailyLog.id,
           date: dailyLog.date,
           logDate: toIsoCivilDate(dailyLog.logDate),
           checkedIn: dailyLog.checkedIn,

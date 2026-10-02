@@ -122,6 +122,8 @@ export const engineerTodayLabels = {
   notRecorded: { en: 'Not recorded', hi: 'दर्ज नहीं', gu: 'નોંધાયું નથી' },
   sendAnyway: { en: 'Nothing more today — send to PMC', hi: 'आज और कुछ नहीं — PMC को भेजें', gu: 'આજે બીજું કંઈ નથી — PMC ને મોકલો' },
   sendThisLog: { en: 'Send this log to PMC', hi: 'यह लॉग PMC को भेजें', gu: 'આ લોગ PMC ને મોકલો' },
+  crewThisLog: { en: "Add this log's crew", hi: 'इस लॉग की टीम जोड़ें', gu: 'આ લોગની ટીમ ઉમેરો' },
+  crewThisLogDetail: { en: 'Who came, and what material arrived.', hi: 'कौन आया और कौन सा सामान आया।', gu: 'કોણ આવ્યું અને કયો માલ આવ્યો.' },
   alsoWaiting: { en: 'Also waiting on you', hi: 'यह भी आपका इंतज़ार कर रहा है', gu: 'આ પણ તમારી રાહ જુએ છે' },
   loading: { en: "Getting today's log…", hi: 'आज का लॉग आ रहा है…', gu: 'આજનો લોગ આવી રહ્યો છે…' },
   unavailable: { en: "Today's log didn't load", hi: 'आज का लॉग नहीं खुला', gu: 'આજનો લોગ ખૂલ્યો નહીં' },
@@ -180,6 +182,43 @@ export function engineerTodayProgress(done: number, total: number, lang: Lang): 
   if (lang === 'hi') return `${total} में से ${done} हो गए`;
   if (lang === 'gu') return `${total} માંથી ${done} થયાં`;
   return `${done} of ${total} done`;
+}
+
+/** The crew step asked one trade at a time. Trade names are the site's own words (each log carries
+ *  its trades forward), so they are shown as recorded; Gujarati and Hindi copy awaits a native
+ *  speaker's check. */
+export const engineerCrewLabels = {
+  back: { en: 'Back to Today', hi: 'आज पर वापस', gu: 'આજે પર પાછા' },
+  less: { en: 'One less', hi: 'एक कम', gu: 'એક ઓછો' },
+  more: { en: 'One more', hi: 'एक और', gu: 'એક વધુ' },
+  next: { en: 'Next', hi: 'आगे', gu: 'આગળ' },
+  finish: { en: 'Done — back to Today', hi: 'हो गया — आज पर वापस', gu: 'થઈ ગયું — આજે પર પાછા' },
+  nobody: { en: 'Nobody today', hi: 'आज कोई नहीं आया', gu: 'આજે કોઈ નથી આવ્યું' },
+  /** the same answer for an earlier day's unsent log, which is not today's */
+  nobodyEarlier: { en: 'Nobody came', hi: 'कोई नहीं आया', gu: 'કોઈ નથી આવ્યું' },
+  laterAsk: { en: "Next we'll ask", hi: 'आगे पूछेंगे', gu: 'પછી પૂછીશું' },
+} as const;
+
+/** The one question on screen: how many of this trade came. An earlier day's unsent log is asked
+ *  about without "today". */
+export function engineerCrewQuestion(trade: string, lang: Lang, today = true): string {
+  if (lang === 'hi') return today ? `${trade}: आज कितने आए?` : `${trade}: कितने आए?`;
+  if (lang === 'gu') return today ? `${trade}: આજે કેટલા આવ્યા?` : `${trade}: કેટલા આવ્યા?`;
+  return today ? `${trade}: how many came today?` : `${trade}: how many came?`;
+}
+
+/** "Question 2 of 5", for the stepper's progress. */
+export function engineerCrewPosition(at: number, total: number, lang: Lang): string {
+  if (lang === 'hi') return `${total} में से सवाल ${at}`;
+  if (lang === 'gu') return `${total} માંથી સવાલ ${at}`;
+  return `Question ${at} of ${total}`;
+}
+
+/** "3 more", after the next trade names. */
+export function engineerCrewMore(n: number, lang: Lang): string {
+  if (lang === 'hi') return `${n} और`;
+  if (lang === 'gu') return `${n} વધુ`;
+  return `${n} more`;
 }
 
 /** Shell chrome shared by every role: the More tab and the language control. */

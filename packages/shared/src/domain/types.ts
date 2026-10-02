@@ -590,6 +590,10 @@ export interface MediaRef {
 }
 
 export interface DailyLog {
+  /** the server's id for THIS log (two logs can share a civil day). Absent on a slice serialized
+   *  before the field existed (a projection row not yet refreshed), so a reader falls back to the
+   *  civil date there. */
+  id?: string;
   date: string;
   /** the civil day the site work belongs to (ISO YYYY-MM-DD) — Phase 0 Task 6 */
   logDate?: string | null;

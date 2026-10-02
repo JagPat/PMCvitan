@@ -25,15 +25,19 @@ export type TodayPath = {
  * today has not started, so the action is to start it — the Site screen's "Start new day". An
  * earlier log never sent stays the one to finish, as it does on the Site screen, and is flagged
  * `overdue` with its own date.
+ *
+ * `crewConfirmed` is the engineer's own answer to every crew question for this unsent log (U1): a
+ * no-crew day is then an answered step, not a gap. It comes from the pending draft, so it holds only
+ * for the log it was given for and is gone once the log is sent; a sent log's path is the record.
  */
-export function todayPath(latest: DailyLog | null, totalWorkers: number, today?: string): TodayPath {
+export function todayPath(latest: DailyLog | null, totalWorkers: number, today?: string, crewConfirmed = false): TodayPath {
   // a sent log with no civil date (a legacy row) is history too: the server lets a new day start
   // over any submitted log, and the Site screen offers it
   const earlierDaySent = !!latest?.submitted && (!latest.logDate || (!!today && latest.logDate < today));
   const log = earlierDaySent ? null : latest;
   const done: Record<EngineerTodayStep, boolean> = {
     checkIn: !!log?.checkedIn,
-    crew: !!log && totalWorkers > 0,
+    crew: !!log && (totalWorkers > 0 || (crewConfirmed && !log.submitted)),
     photos: !!log && hasPhotoEvidence(log),
     send: !!log?.submitted,
   };

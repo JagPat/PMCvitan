@@ -121,6 +121,30 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
     expect(proj.generation).toBe(1); // served from an ACTIVE generation
   });
 
+  // U1 (#690): the slice carries the log's own id, and a row serialized before it did is not served
+  it('a projection row without the log id (serialized before the field) falls back to the live slice, which carries it', async () => {
+    const p = await freshProject();
+    await makeDailyLog(p, 'DLOG-ID', { crew: [{ trade: 'Mason', count: 1 }] });
+    await applyProjection(p);
+    const fresh = await query.projectionSlice(p);
+    expect(fresh.generation).toBe(1);
+    expect(fresh.dailyLog?.id).toBeTruthy();
+
+    const gen = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: DAILY_LOG_PROJECTION, projectId: p, status: 'active' } });
+    const row = await t.prisma.dailyLogProjection.findUniqueOrThrow({ where: { generationId_projectId: { generationId: gen.id, projectId: p } } });
+    const dto = row.dto as { dailyLog: Record<string, unknown> | null; materials: unknown[] };
+    const { id: _id, ...older } = dto.dailyLog!;
+    await t.prisma.dailyLogProjection.update({
+      where: { generationId_projectId: { generationId: gen.id, projectId: p } },
+      data: { dto: { ...dto, dailyLog: older } as never },
+    });
+
+    expect((await query.projectionSlice(p)).generation).toBeNull();
+    const served = await query.moduleDailyLog(p);
+    expect(served.source).toBe('live');
+    expect(served.dailyLog?.id).toBe(fresh.dailyLog?.id);
+  });
+
   // ── Finding 1 (correction): serve a generation ONLY when healthy, caught up AND its row exists ──
 
   it('finding 1: legacy canonical data + only a no-op delivery serves LIVE, never authoritative-empty projection', async () => {
