@@ -88,16 +88,18 @@ The countersign chain's optional impact inputs (Reject back, Forward on, the PMC
 stripped every character but digits and an ASCII minus and fell back to 0, so "12.50" was sent as 1250
 rupees, "1.5" days as 15, "abc" as 0 and a Unicode minus "−5" as +5. The fix reads them through
 `apps/web/src/lib/impactInput.ts` (`readImpact`): blank is the agreed 0, a supported whole number is sent
-exactly as typed with its sign, and anything else is refused under its field with Send disabled. It is
-gated client code (nothing renders for a delivered role while the doors stand); no API, schema or
-migration change, nothing activated or deployed. RED at `4707c5d` on all three paths, GREEN here.
+exactly as typed with its sign, and anything else is refused under its field with Send disabled. As POLICY's
+family-wide rule requires (#687's shadow review), the same reader now also covers the two other writers
+of the same parsing defect: the DELIVERED Change Request (`submitChange` and `ChangeModal`, writing the
+same `ChangeRequest.costImpact` / `timeImpactDays`) and the option price delta when a decision is issued
+(`IssueDecisionModal`). The countersign controls are gated client code; the two delivered writers are live,
+and now refuse what they used to silently alter. No API, schema or migration change; nothing activated or
+deployed. RED at `4707c5d` on every path, GREEN here.
 
 **Owed before the chain is activated (the next unit):** the activated disposable-fixture proof the
 comment asks for — browser → API → persisted values, and refused inputs creating no command or request —
 needs a new api-e2e mode that drops the doors in the disposable database and seeds an architect with an
-awaiting decision. **Reported, not widened:** the same strip-and-default parsing remains in the delivered
-change-request submit (`apps/web/src/store/store.ts`, `submitChange`) and the option delta in
-`IssueDecisionModal`; both are reported on #482 for the owner's scheduling.
+awaiting decision.
 
 ### Directive `phase-6-4d-previous-release-drained`
 
