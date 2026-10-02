@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: correction_required
-work_item: countersign-impact-inputs
-reviewed_merge: e4ac5d8
-open_pr: 687
+work_item: none
+reviewed_merge: cffb251
+open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: phase-6-4d-previous-release-drained
 updated: 2026-10-02
@@ -77,33 +77,38 @@ decides WHEN it may open. No unit of 4d waits on a fresh GO — this is a ROLLOU
 not a scope authorization. Task 4 is not complete until 4d-iii merges, so no unit's merge — B6's
 included — may be treated as the end of the task.
 
-### Open correction — the countersign impact inputs (#687, `claude/countersign-impact-inputs`)
+### The countersign impact-input correction is MERGED (#687 at `main` `cffb251`)
 
-The correction named in #482 comment 5923291892 is the ONE open `claude/**` draft, acknowledged in this
-lane. It does not touch the drain directive above or below: the directive still stands, `task_state`
-stays `correction_required`, and `assessRunnerState` still resolves to
-`directive:phase-6-4d-previous-release-drained`. The open PR is recorded here so the shepherd sees it:
-the runner's instruction to shepherd an open PR comes from the live PR set, not from that step, so
-#687 is shepherded to completion while the directive keeps every later task unreachable, and leaving
-`open_pr` at `none` beside the live PR would read as drift (#687 Codex finding 4164784153; pinned in
-`scripts/runner-continuation-open-correction.test.mjs`).
+The correction named in #482 comment 5923291892 merged on its exact reviewed head `c93869e` with a
+fresh independent Codex +1, after two finding-bearing review rounds (Codex 4164784153 and 4165112252,
+plus the advisory shadow review's family-wide finding). This is its post-merge record: `open_pr` returns
+to `none`, `work_item` to `none`, and `reviewed_merge` advances to `cffb251`. The Now block is again the
+DIRECTIVE LANDING SHAPE. The drain directive below is untouched and still STANDS, so `assessRunnerState`
+resolves to `directive:phase-6-4d-previous-release-drained` and 4d-iii stays unreachable.
 
-The countersign chain's optional impact inputs (Reject back, Forward on, the PMC's stranded Return)
-stripped every character but digits and an ASCII minus and fell back to 0, so "12.50" was sent as 1250
-rupees, "1.5" days as 15, "abc" as 0 and a Unicode minus "−5" as +5. The fix reads them through
-`apps/web/src/lib/impactInput.ts` (`readImpact`): blank is the agreed 0, a supported whole number is sent
-exactly as typed with its sign, and anything else is refused under its field with Send disabled. As POLICY's
-family-wide rule requires (#687's shadow review), the same reader now also covers the two other writers
-of the same parsing defect: the DELIVERED Change Request (`submitChange` and `ChangeModal`, writing the
-same `ChangeRequest.costImpact` / `timeImpactDays`) and the option price delta when a decision is issued
-(`IssueDecisionModal`). The countersign controls are gated client code; the two delivered writers are live,
-and now refuse what they used to silently alter. No API, schema or migration change; nothing activated or
-deployed. RED at `4707c5d` on every path, GREEN here.
+The owner ruled on Codex finding 4165112252 that this separate post-merge record is the accepted way to
+clear the merged PR's pointer (the #675 → #676 and #684 → #685 pattern). #687 carries the regression
+test: `scripts/runner-continuation-open-correction.test.mjs` cases 5 and 6 feed the committed STATUS
+into the post-merge handoff and pin that the stale pointer is reported for cleanup and the directive
+stays the step. Those two cases now skip with their stated reason, because this record no longer names
+#687.
 
-**Owed before the chain is activated (the next unit):** the activated disposable-fixture proof the
-comment asks for — browser → API → persisted values, and refused inputs creating no command or request —
-needs a new api-e2e mode that drops the doors in the disposable database and seeds an architect with an
-awaiting decision.
+**`open_pr: none` beside the open UX PR is deliberate.** #690 (`claude/pmcvitan-mobile-places-n3fxup`)
+is the parallel UX lane's PR under the owner's 29 September allocation (#482 comment 5882137095): UX
+PRs do not take the STATUS pointer. The post-merge continuation's drift note suggests pointing
+`open_pr` at #690 "(or the correct current PR)"; for a parallel UX PR the correct value is `none`.
+Either value leaves the directive as the runner's step.
+
+What landed: the countersign chain's optional impact inputs (Reject back, Forward on, the PMC's
+stranded Return), the delivered Change Request (`submitChange` / `ChangeModal`) and the issued option's
+price delta (`IssueDecisionModal`) all read through `apps/web/src/lib/impactInput.ts` (`readImpact`). A
+supported whole number is sent exactly as typed, sign included; anything else is refused under its
+field and nothing is sent. No API, schema or migration change; nothing activated or deployed.
+
+**Owed before the countersign chain is activated (the next unit in this lane):** the activated
+disposable-fixture proof the comment asks for — browser → API → persisted values, and refused inputs
+creating no command or request. It needs a new api-e2e mode that drops the doors in the disposable
+database and seeds an architect with an awaiting decision.
 
 ### Directive `phase-6-4d-previous-release-drained`
 
