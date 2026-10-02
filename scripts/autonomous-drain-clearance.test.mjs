@@ -34,7 +34,9 @@ import { buildZip } from './zip-test-fixture.mjs';
 // and unlocked 4d-iii without a fresh `drained` verdict. These pin the gate that closes that, and the
 // round-2 findings on it: the base and head VALUES decide and a repeated Now key is refused (4163577340),
 // the record must be committed in the clearance PR itself (4163577348), and the controller re-runs the
-// rule from the trusted branch (4163577352, pinned in autonomous-review-workflow.test.mjs).
+// rule from the trusted branch (4163577352, pinned in autonomous-review-workflow.test.mjs); round 3: the
+// record is regenerated on the clearing head (4163934196) and made by the trusted producer (4163934186);
+// round 4: it is bound to the commit it was observed for (4164136422).
 
 const JUDGED_AT = Date.parse('2026-10-02T12:00:00.000Z');
 const NOW = (over = {}) => ({
@@ -58,6 +60,13 @@ const UNRELATED_PATCH = '@@ -40,3 +40,4 @@\n text\n+more text\n';
 // The duplicate-key encoding: nothing removed, two lines appended.
 const APPENDING_PATCH = '@@ -19,3 +19,5 @@\n blocking_directive: phase-6-4d-previous-release-drained\n updated: 2026-10-01\n+task_state: merged\n+blocking_directive: none\n';
 
+// The trusted producer's identity, and the commit a record is observed FOR (its clearing parent).
+const REPO = 'JagPat/PMCvitan';
+const RUN_ID = 4242;
+const WORKFLOW_SHA = 'c3'.repeat(20);
+const PARENT_SHA = 'b2'.repeat(20);
+const STAMP = (over = {}) => ({ workflow: DRAIN_EVIDENCE_WORKFLOW, repository: REPO, runId: RUN_ID, runAttempt: 1, workflowSha: WORKFLOW_SHA, clearingParent: PARENT_SHA, ...over });
+
 const EVIDENCE = (over = {}) => JSON.stringify({
   marker: 'DRAIN-EVIDENCE',
   directive: DRAIN_DIRECTIVE,
@@ -69,14 +78,11 @@ const EVIDENCE = (over = {}) => JSON.stringify({
   findings: [],
   verdict: 'drained',
   recordedAt: '2026-10-02T09:00:00.000Z',
+  provenance: STAMP(),
   ...over,
 });
 
 // The trusted producer: a stamped record, and a fake GitHub that holds the run and artifact that made it.
-const REPO = 'JagPat/PMCvitan';
-const RUN_ID = 4242;
-const WORKFLOW_SHA = 'c3'.repeat(20);
-const STAMP = (over = {}) => ({ workflow: DRAIN_EVIDENCE_WORKFLOW, repository: REPO, runId: RUN_ID, runAttempt: 1, workflowSha: WORKFLOW_SHA, ...over });
 const STAMPED = (evidenceOver = {}, stampOver = {}) => `${JSON.stringify({ ...JSON.parse(EVIDENCE(evidenceOver)), provenance: STAMP(stampOver) }, null, 2)}\n`;
 const PRODUCER = (producedText, { run: runOver = {}, artifact: artifactOver = {}, onMain = true, artifacts, zip } = {}) => {
   const archive = zip ?? buildZip([{ name: DRAIN_EVIDENCE_ARTIFACT_FILE, data: producedText }]);
@@ -102,7 +108,7 @@ const PRODUCER = (producedText, { run: runOver = {}, artifact: artifactOver = {}
 
 // The exact head commit as the readers see it: it changes STATUS and the record, committed after the record.
 const HEAD_SHA = 'a1'.repeat(20);
-const HEAD_COMMIT = (over = {}) => ({ sha: HEAD_SHA, files: ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT], committedAt: '2026-10-02T09:30:00.000Z', ...over });
+const HEAD_COMMIT = (over = {}) => ({ sha: HEAD_SHA, files: ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT], parents: [PARENT_SHA], committedAt: '2026-10-02T09:30:00.000Z', ...over });
 
 // A clearance as the readers see it: base carries the directive, head does not, the record regenerated here.
 const CLEARANCE = (over = {}) => assessDirectiveClearance({
@@ -198,14 +204,28 @@ test('the record must be regenerated on the clearing head (finding 4163934196)',
   assert.equal(unknown.allowed, false);
   assert.match(unknown.detail, /head commit could not be read/u);
   assert.equal(CLEARANCE({ headCommit: HEAD_COMMIT({ committedAt: undefined }) }).allowed, false);
+  // the record is bound to the commit it was observed FOR (finding 4164136422): the delete-and-re-add
+  // sequence puts the genuine record on top of a later commit, whose parent is not the stamped one
+  const reAdded = CLEARANCE({ headCommit: HEAD_COMMIT({ parents: ['d4'.repeat(20)] }) });
+  assert.equal(reAdded.allowed, false);
+  assert.match(reAdded.detail, /observed for clearing parent b2b2b2b, but commit a1a1a1a sits on d4d4d4d/u);
+  assert.match(reAdded.detail, /re-run the drain-evidence workflow with the PR's current head/u);
+  // a merge commit as the clearing head (a merge of main on top) is not "directly on top"
+  assert.equal(CLEARANCE({ headCommit: HEAD_COMMIT({ parents: [PARENT_SHA, 'e5'.repeat(20)] }) }).allowed, false);
+  // a record with no clearing parent, or a commit whose parents were not read, fails closed
+  const unbound = CLEARANCE({ evidenceText: EVIDENCE({ provenance: STAMP({ clearingParent: undefined }) }) });
+  assert.equal(unbound.allowed, false);
+  assert.match(unbound.detail, /names no clearing parent/u);
+  assert.match(CLEARANCE({ headCommit: HEAD_COMMIT({ parents: undefined }) }).detail, /parents could not be read/u);
+
   // the predicate alone
   assert.deepEqual(evidenceFreshAtHead(JSON.parse(EVIDENCE()), HEAD_COMMIT()), { ok: true });
   assert.equal(evidenceFreshAtHead(JSON.parse(EVIDENCE()), { sha: HEAD_SHA, files: [] }).ok, false);
   assert.equal(evidenceFreshAtHead(JSON.parse(EVIDENCE()), null).ok, false);
   // the GitHub commit shape, with paginated files
   assert.deepEqual(
-    headCommitFromGitHub(HEAD_SHA, { sha: HEAD_SHA, commit: { committer: { date: '2026-10-02T09:30:00Z' } }, files: [{ filename: 'docs/STATUS.md' }, { filename: DRAIN_EVIDENCE_DOCUMENT }] }),
-    { sha: HEAD_SHA, files: ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT], committedAt: '2026-10-02T09:30:00Z' },
+    headCommitFromGitHub(HEAD_SHA, { sha: HEAD_SHA, parents: [{ sha: PARENT_SHA }], commit: { committer: { date: '2026-10-02T09:30:00Z' } }, files: [{ filename: 'docs/STATUS.md' }, { filename: DRAIN_EVIDENCE_DOCUMENT }] }),
+    { sha: HEAD_SHA, files: ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT], parents: [PARENT_SHA], committedAt: '2026-10-02T09:30:00Z' },
   );
   assert.equal(headCommitFromGitHub(HEAD_SHA, null), undefined);
   assert.equal(headCommitFromGitHub(HEAD_SHA, { sha: HEAD_SHA, commit: {} }).files, undefined);
@@ -246,7 +266,7 @@ test('provenance: the record must be byte-identical to the drain-evidence workfl
     assert.equal(verdict.ok, false, pattern.source);
     assert.match(verdict.reason, pattern);
   };
-  await refused(EVIDENCE({ recordedAt: new Date().toISOString() }), {}, /carries no provenance stamp/u);
+  await refused(EVIDENCE({ recordedAt: new Date().toISOString(), provenance: undefined }), {}, /carries no provenance stamp/u);
   // a hand-written record stamped with a REAL run: the bytes differ from that run's artifact
   await refused(STAMPED({ recordedAt: '2026-10-02T09:01:00.000Z' }), {}, /differs from run 4242's artifact/u);
   // the genuine record re-serialised (same JSON, different bytes): refused — commit the file unchanged
@@ -384,7 +404,7 @@ test('the shared wiring reads the head and base trees through injected readers, 
   const freshText = STAMPED({ recordedAt: new Date(Date.now() - 60_000).toISOString() });
   const fresh = () => freshText;
   const producer = () => PRODUCER(freshText);
-  const headCommit = (files = ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT]) => async () => ({ sha: HEAD_SHA, files, committedAt: new Date().toISOString() });
+  const headCommit = (files = ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT]) => async () => ({ sha: HEAD_SHA, files, parents: [PARENT_SHA], committedAt: new Date().toISOString() });
 
   // untouched STATUS: nothing to assess, nothing read
   assert.equal(await assessCommittedDirectiveClearance(operator, [{ filename: 'apps/api/src/thing.ts' }], { readHead: failing('must not read'), readBase: failing('must not read') }), null);
@@ -530,7 +550,7 @@ test('the two readers: the checkout beside this module, and one exact ref throug
     fetchImpl: async (url) => {
       commitRequests.push(String(url));
       const pageNumber = Number(new URL(url).searchParams.get('page'));
-      const body = { sha: HEAD_SHA, commit: { committer: { date: '2026-10-02T09:30:00Z' } }, files: pageNumber === 1 ? page(100) : [{ filename: DRAIN_EVIDENCE_DOCUMENT }] };
+      const body = { sha: HEAD_SHA, parents: [{ sha: PARENT_SHA }], commit: { committer: { date: '2026-10-02T09:30:00Z' } }, files: pageNumber === 1 ? page(100) : [{ filename: DRAIN_EVIDENCE_DOCUMENT }] };
       return new Response(JSON.stringify(body), { status: 200 });
     },
   });
@@ -539,6 +559,7 @@ test('the two readers: the checkout beside this module, and one exact ref throug
   assert.equal(commit.files.length, 101);
   assert.ok(commit.files.includes(DRAIN_EVIDENCE_DOCUMENT));
   assert.equal(commit.committedAt, '2026-10-02T09:30:00Z');
+  assert.deepEqual(commit.parents, [PARENT_SHA]);
   assert.deepEqual(commitRequests, [
     `https://api.github.com/repos/JagPat/PMCvitan/commits/${HEAD_SHA}?per_page=100&page=1`,
     `https://api.github.com/repos/JagPat/PMCvitan/commits/${HEAD_SHA}?per_page=100&page=2`,

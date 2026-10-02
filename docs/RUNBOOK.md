@@ -1309,19 +1309,21 @@ the trusted `drain-evidence` workflow produces a clearing record. The procedure:
    (`https://<coolify host>/api/v1`) and `DRAIN_COOLIFY_APP_UUID`. The production database must accept
    connections from GitHub-hosted runners.
 2. **Run** the "Phase 6 4d drain evidence" workflow (`.github/workflows/drain-evidence.yml`) from the
-   Actions tab on `main`. It runs this command from its own commit with the environment's credentials,
-   stamps the JSON with its run identity, uploads it as the artifact
+   Actions tab on `main`, with `clearing_parent` set to the clearing PR's CURRENT head SHA (all 40
+   characters). It runs this command from its own commit with the environment's credentials, stamps
+   the JSON with its run identity and that clearing parent, uploads it as the artifact
    `phase-6-4d-drain-evidence-<run>-<attempt>`, and is green only on `drained`; the job summary shows
    the verdict and any findings.
 3. **Commit** the artifact's one file, UNCHANGED, as `docs/rollout/phase-6-4d-drain-evidence.json` in
-   the HEAD commit of the PR that sets `blocking_directive: none`. Any later push to that PR, a merge of
-   `main` included, means running the workflow again and committing the new file in the new head.
+   ONE commit directly on top of that SHA (the commit may also carry the STATUS edit), and push it. Any
+   other commit after that SHA — a merge of `main`, a fix, a delete and re-add — means running the
+   workflow again with the new head and committing its new file on top of it.
 
 The review-scope gate and, again from the default branch against the exact head, the merge controller
 verify that PR (`scripts/autonomous-drain-clearance.mjs`): the committed record must be byte-identical
 to the artifact of the run its stamp names, and that run must be this workflow, dispatched on `main` at a
-commit on `main`, completed successfully; the head commit must change the record and the record must not
-be dated after it; the record must be at most 24 hours old; and it must be a `drained` verdict with no
+commit on `main`, completed successfully; the head commit must change the record, its one parent must be
+the run's `clearing_parent`, and the record must not be dated after it; the record must be at most 24 hours old; and it must be a `drained` verdict with no
 findings for this directive and the minimum release `f8274f4…`, with the platform inventory read,
 recorded after the directive was set and re-deriving to `drained` from its own inventory. The Now block
 must carry each key once. A STATUS edit without that record, or a record the workflow did not produce,

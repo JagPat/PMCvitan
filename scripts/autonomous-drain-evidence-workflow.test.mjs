@@ -22,7 +22,8 @@ const workflowUrl = new URL(`../${DRAIN_EVIDENCE_WORKFLOW}`, import.meta.url);
 const SHA = 'c3'.repeat(20);
 const ENV = (over = {}) => ({
   GITHUB_REF: 'refs/heads/main', GITHUB_RUN_ID: '4242', GITHUB_RUN_ATTEMPT: '1', GITHUB_SHA: SHA, GITHUB_REPOSITORY: 'JagPat/PMCvitan',
-  DATABASE_URL: 'postgres://read-only@db/prod', COOLIFY_TOKEN: 'token', COOLIFY_API_URL: 'https://coolify.example/api/v1', COOLIFY_APP_UUID: 'app', ...over,
+  DATABASE_URL: 'postgres://read-only@db/prod', COOLIFY_TOKEN: 'token', COOLIFY_API_URL: 'https://coolify.example/api/v1', COOLIFY_APP_UUID: 'app',
+  CLEARING_PARENT: 'b2'.repeat(20), ...over,
 });
 const CLI_JSON = (over = {}) => JSON.stringify({
   marker: 'DRAIN-EVIDENCE', directive: DRAIN_DIRECTIVE, minimumRelease: DRAIN_MINIMUM_RELEASE, verdict: 'drained', findings: [], recordedAt: '2026-10-02T09:00:00.000Z', ...over,
@@ -31,7 +32,11 @@ const CLI_JSON = (over = {}) => JSON.stringify({
 test('the workflow is the trusted producer: dispatch-only, main-only, read-only, environment-held credentials', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
   const on = /\non:\n([\s\S]*?)\n\S/u.exec(`\n${workflow}`)[1];
-  assert.match(on, /^ {2}workflow_dispatch: \{\}$/mu);
+  assert.match(on, /^ {2}workflow_dispatch:\n {4}inputs:\n {6}clearing_parent:\n/mu, 'one input: the commit the record is observed for');
+  assert.match(on, /required: true\n {8}type: string/u);
+  // the input reaches the runner through the environment, never interpolated into a script
+  assert.match(workflow, /\n {10}CLEARING_PARENT: \$\{\{ inputs\.clearing_parent \}\}\n {8}run: node scripts\/drain-evidence-workflow\.mjs\n/u);
+  assert.equal(workflow.match(/inputs\.clearing_parent/gu).length, 1);
   assert.doesNotMatch(on, /pull_request|push:|schedule|workflow_run/u, 'nothing but a dispatch starts it');
   assert.match(workflow, /\npermissions: \{\}\n/u, 'no default permissions');
   assert.match(workflow, /\n {4}if: github\.ref == 'refs\/heads\/main'\n/u, 'a dispatch from any other ref is refused');
@@ -56,7 +61,10 @@ test('the workflow is the trusted producer: dispatch-only, main-only, read-only,
 
 test('the runner stamps the CLI\'s record with this run\'s identity, and refuses anything else', () => {
   const stamped = stampProvenance(CLI_JSON(), ENV());
-  assert.deepEqual(stamped.provenance, { workflow: DRAIN_EVIDENCE_WORKFLOW, repository: 'JagPat/PMCvitan', runId: 4242, runAttempt: 1, workflowSha: SHA });
+  assert.deepEqual(stamped.provenance, { workflow: DRAIN_EVIDENCE_WORKFLOW, repository: 'JagPat/PMCvitan', runId: 4242, runAttempt: 1, workflowSha: SHA, clearingParent: 'b2'.repeat(20) });
+  assert.equal(stampProvenance(CLI_JSON(), ENV({ CLEARING_PARENT: ` ${'B2'.repeat(20)} ` })).provenance.clearingParent, 'b2'.repeat(20));
+  assert.throws(() => stampProvenance(CLI_JSON(), ENV({ CLEARING_PARENT: 'b2b2b2b' })), /full 40-character SHA/u);
+  assert.throws(() => stampProvenance(CLI_JSON(), ENV({ CLEARING_PARENT: '' })), /full 40-character SHA/u);
   assert.equal(stamped.verdict, 'drained');
   assert.equal(drainEvidenceArtifactName(4242, 1), 'phase-6-4d-drain-evidence-4242-1');
   assert.throws(() => stampProvenance('usage: …', ENV()), /printed no JSON record/u);
@@ -69,6 +77,7 @@ test('the runner stamps the CLI\'s record with this run\'s identity, and refuses
 test('the runner runs only on main, only with its environment, and writes the stamped file and outputs', async () => {
   assert.throws(() => main(ENV({ GITHUB_REF: 'refs/heads/feature' }), () => { throw new Error('must not run'); }), /runs on main only/u);
   assert.throws(() => main(ENV({ DATABASE_URL: '', COOLIFY_TOKEN: ' ' }), () => { throw new Error('must not run'); }), /missing DATABASE_URL, COOLIFY_TOKEN/u);
+  assert.throws(() => main(ENV({ CLEARING_PARENT: 'main' }), () => { throw new Error('must not run'); }), /full 40-character SHA/u);
 
   const directory = await mkdtemp(join(tmpdir(), 'drain-evidence-'));
   const previous = process.cwd();
@@ -87,7 +96,7 @@ test('the runner runs only on main, only with its environment, and writes the st
     const written = await readFile(join(directory, DRAIN_EVIDENCE_ARTIFACT_FILE), 'utf8');
     assert.equal(written, `${JSON.stringify(stamped, null, 2)}\n`);
     assert.equal(await readFile(join(directory, 'out'), 'utf8'), 'artifact_name=phase-6-4d-drain-evidence-4242-1\nverdict=drained\n');
-    assert.match(await readFile(join(directory, 'summary'), 'utf8'), /commit its one file, unchanged, as `docs\/rollout\/phase-6-4d-drain-evidence\.json`/u);
+    assert.match(await readFile(join(directory, 'summary'), 'utf8'), /commit its one file, unchanged, as `docs\/rollout\/phase-6-4d-drain-evidence\.json` in ONE commit directly on top of `b2b2/u);
     // a judged not-drained run still writes its record (exit 1), so the operator sees why
     const notDrained = main(env, () => ({ status: 1, stdout: CLI_JSON({ verdict: 'not-drained', findings: ['live lease i-0 is below the minimum'] }) }));
     assert.equal(notDrained.verdict, 'not-drained');

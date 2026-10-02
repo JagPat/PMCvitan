@@ -210,7 +210,7 @@ const carriesDirective = (now) => {
  * read); `headNow` the head tree's; `duplicateNowKeys` the keys the head Now fence repeats; `statusPatch`
  * the STATUS file's diff text (or undefined); `evidenceText` the committed record's text in the head tree
  * (or null when it has none); `evidenceChanged` whether this PR's cumulative diff adds or changes the
- * record; `headCommit` the exact head commit — `{ sha, files: [paths it changes], committedAt }` — or
+ * record; `headCommit` the exact head commit — `{ sha, files: [paths it changes], parents: [shas], committedAt }` — or
  * undefined when it could not be read; `provenance` the verdict of `verifyDrainProvenance` on the record
  * (`{ ok, reason, runId? }`), or undefined when it was not verified.
  *
@@ -290,6 +290,7 @@ export function assessDirectiveClearance({
 /**
  * Is the record REGENERATED ON THE CLEARING HEAD? The head commit must itself change the evidence file
  * (GitHub lists a file in a commit only when its content changed, so an unchanged re-add does not count),
+ * its one parent must be the commit the record's run was dispatched for (`provenance.clearingParent`),
  * and the record cannot be dated after the commit that carries it. A merge of the base into the branch,
  * or any later push, is a new head: the operator re-runs `rollout:drain-evidence` for it. The cumulative
  * PR diff says nothing about freshness (#686 finding 4163934196).
@@ -304,6 +305,26 @@ export function evidenceFreshAtHead(evidence, headCommit) {
       ok: false,
       reason: `was not regenerated on the clearing head: commit ${sha} does not change it, so the record is a snapshot of an earlier `
         + 'head\'s fleet; re-run rollout:drain-evidence and commit its output in the head that clears the directive',
+    };
+  }
+  // The observation is bound to the commit it was made FOR (#686 finding 4164136422): the workflow takes
+  // the clearing PR's head at dispatch time and stamps it as `clearingParent`, and the clearing commit
+  // must sit directly on that commit. A record re-added after any later commit — a delete and re-add, a
+  // merge of main, another push — names a parent that is no longer the clearing commit's, so the
+  // workflow must run again; a commit SHA cannot be predicted before the commit exists, so the run
+  // necessarily postdates the parent it names.
+  const clearingParent = evidence?.provenance?.clearingParent;
+  if (!/^[0-9a-f]{40}$/u.test(String(clearingParent ?? ''))) {
+    return { ok: false, reason: 'names no clearing parent: run the drain-evidence workflow with the clearing PR\'s current head as its input' };
+  }
+  const parents = Array.isArray(headCommit.parents) ? headCommit.parents : null;
+  if (!parents) return { ok: false, reason: `cannot be shown fresh: commit ${sha}'s parents could not be read` };
+  if (parents.length !== 1 || parents[0] !== clearingParent) {
+    return {
+      ok: false,
+      reason: `was observed for clearing parent ${clearingParent.slice(0, 7)}, but commit ${sha} sits on `
+        + `${parents.map((parent) => String(parent).slice(0, 7)).join(' + ') || 'nothing'}; re-run the drain-evidence workflow with the `
+        + 'PR\'s current head and commit its output directly on top of it',
     };
   }
   const committedAt = Date.parse(String(headCommit.committedAt ?? ''));
@@ -433,11 +454,12 @@ export function headCommitFromGitHub(sha, commit) {
   return {
     sha: commit.sha ?? sha,
     files: Array.isArray(commit.files) ? commit.files.map((file) => file?.filename).filter((name) => typeof name === 'string') : undefined,
+    parents: Array.isArray(commit.parents) ? commit.parents.map((parent) => parent?.sha).filter((parentSha) => typeof parentSha === 'string') : undefined,
     committedAt: commit.commit?.committer?.date ?? commit.commit?.author?.date,
   };
 }
 
-/** A reader of one exact commit through the API — its changed files (all pages) and committer date. */
+/** A reader of one exact commit through the API — its changed files (all pages), parents and committer date. */
 export function githubCommitReader({ fetchImpl = globalThis.fetch, repository, token, sha } = {}) {
   return async () => {
     if (typeof fetchImpl !== 'function' || !repository || !token) throw new Error('repository, GITHUB_TOKEN and fetch are required to read the head commit');

@@ -102,15 +102,18 @@ human `OPERATOR-ATTESTATION` was REQUIRED beside that evidence (the Board decisi
 2026-08-29 on #480; #482 comment 5569586836, 2026-09-07). The owner withdrew that requirement on
 2026-10-01 (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5929472784), and `docs/POLICY.md` records it: the fail-closed evidence IS the gate.
 
-**How to clear it.** (1) Run the `drain-evidence` workflow from the Actions tab on `main`
+**How to clear it.** (1) Open the clearing PR (its STATUS edit may already be on it) and note its
+current head SHA. Run the `drain-evidence` workflow from the Actions tab on `main`
 (`.github/workflows/drain-evidence.yml`; RUNBOOK §P6T4D, "Recording the drain's autonomous
-corroboration"). It runs `rollout:drain-evidence --minimum-release f8274f411191dbbd626cab9bc74468325951674a`
+corroboration"), giving it that SHA as `clearing_parent`. It runs `rollout:drain-evidence --minimum-release f8274f411191dbbd626cab9bc74468325951674a`
 from its own commit against the production database and the Coolify application, with the read-only
 credentials its `drain-evidence` environment holds (limited to `main`), stamps the JSON with its own run
-identity, uploads it as an artifact, and is green only on a `drained` verdict. (2) Download that
-artifact and commit its one file, UNCHANGED, as `docs/rollout/phase-6-4d-drain-evidence.json` in the
-head commit of the PR that sets `blocking_directive: none` and `task_state` to the state 4d-iii opens
-from. (3) Two trusted readers judge that PR by one rule (`scripts/autonomous-drain-clearance.mjs`,
+identity and that clearing parent, uploads it as an artifact, and is green only on a `drained`
+verdict. (2) Download that artifact and commit its one file, UNCHANGED, as
+`docs/rollout/phase-6-4d-drain-evidence.json` in ONE commit directly on top of the SHA you gave it —
+the head of the PR that sets `blocking_directive: none` and `task_state` to the state 4d-iii opens
+from. Any other commit after that SHA (a merge of `main`, a fix, a delete and re-add) means running the
+workflow again with the new head. (3) Two trusted readers judge that PR by one rule (`scripts/autonomous-drain-clearance.mjs`,
 pinned by `scripts/autonomous-drain-clearance.test.mjs`): the PR-side review-scope job, and the
 default-branch merge controller, which re-runs the same check against the exact head and base SHAs
 through the API before it permits merge — so a PR cannot admit itself by editing the rule in its own
@@ -121,9 +124,11 @@ is BYTE-IDENTICAL to the artifact of the run its stamp names, and that run is th
 workflow, dispatched on `main` at a commit on `main`, in this repository, completed successfully, its
 artifact unexpired and matching its digest — so a hand-written, edited or re-serialised record does not
 clear it, and a genuine record is a genuine production observation whoever commits it; the record is
-REGENERATED ON THE CLEARING HEAD — the head commit itself changes the evidence file, and the record is
-not dated after that commit, so a record left by an earlier PR or head is not reused and a merge of
-`main` into the branch or any later push means re-running the workflow; the record is at most 24 hours
+REGENERATED ON THE CLEARING HEAD — the head commit itself changes the evidence file, its one parent is
+the `clearing_parent` the record's run was given (#686 finding 4164136422: a commit SHA cannot be known
+before the commit exists, so the observation postdates that parent), and the record is not dated after
+the head commit — so a record left by an earlier PR or head, or deleted and re-added, is not reused and
+any later push means re-running the workflow; the record is at most 24 hours
 old when judged; and it is a `drained` verdict with no findings, names THIS directive and THIS minimum
 release (`f8274f4…`), was judged with the platform inventory read, was recorded after this directive was
 set (`2026-10-01T03:19:21Z`, #685's merge) and not in the future, AND re-derives to `drained` from its

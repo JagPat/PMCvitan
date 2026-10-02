@@ -38,6 +38,10 @@ export function stampProvenance(stdout, env) {
     throw new Error('GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT must name this run');
   }
   if (!/^[0-9a-f]{40}$/u.test(String(env.GITHUB_SHA ?? ''))) throw new Error('GITHUB_SHA must name this run\'s commit');
+  const clearingParent = String(env.CLEARING_PARENT ?? '').trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/u.test(clearingParent)) {
+    throw new Error('the clearing_parent input must be the full 40-character SHA of the clearing PR\'s current head');
+  }
   return {
     ...evidence,
     provenance: {
@@ -46,6 +50,8 @@ export function stampProvenance(stdout, env) {
       runId,
       runAttempt,
       workflowSha: env.GITHUB_SHA,
+      // the commit the record will be committed directly on top of (#686 finding 4164136422)
+      clearingParent,
     },
   };
 }
@@ -54,6 +60,9 @@ export function main(env = process.env, run = spawnSync) {
   if (env.GITHUB_REF !== 'refs/heads/main') throw new Error(`refusing to run from ${env.GITHUB_REF}: the trusted producer runs on main only`);
   const missing = REQUIRED_ENV.filter((name) => !String(env[name] ?? '').trim());
   if (missing.length) throw new Error(`the drain-evidence environment is not set up: missing ${missing.join(', ')}`);
+  if (!/^[0-9a-f]{40}$/u.test(String(env.CLEARING_PARENT ?? '').trim().toLowerCase())) {
+    throw new Error('the clearing_parent input must be the full 40-character SHA of the clearing PR\'s current head');
+  }
 
   const result = run('pnpm', [
     '--filter', 'api', 'exec', 'tsx', 'src/platform/rollout/drain-evidence.cli.ts',
@@ -75,7 +84,7 @@ export function main(env = process.env, run = spawnSync) {
       `## Drain evidence: \`${stamped.verdict}\``, '',
       `Run ${stamped.provenance.runId} attempt ${stamped.provenance.runAttempt} on \`${stamped.provenance.workflowSha}\`, recorded at ${stamped.recordedAt}.`, '',
       stamped.verdict === 'drained'
-        ? `Download the artifact \`${name}\` and commit its one file, unchanged, as \`docs/rollout/phase-6-4d-drain-evidence.json\` in the head commit that sets \`blocking_directive: none\`.`
+        ? `Download the artifact \`${name}\` and commit its one file, unchanged, as \`docs/rollout/phase-6-4d-drain-evidence.json\` in ONE commit directly on top of \`${stamped.provenance.clearingParent}\`, the commit that sets \`blocking_directive: none\`. Any other commit in between means running this workflow again.`
         : 'This record cannot clear the directive. Findings:',
       '',
       ...stamped.findings.map((finding) => `- ${finding}`),

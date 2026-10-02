@@ -9,16 +9,22 @@ name: Phase 6 4d drain evidence (manual, read-only)
 #
 # The clearance gate (scripts/autonomous-drain-clearance.mjs) admits a committed record only when its bytes
 # equal this workflow's artifact from a successful run on `main`, so a hand-written record cannot clear the
-# directive. To use it: run this workflow from the Actions tab on `main`; when it is green, download the
-# artifact and commit its one file, unchanged, as docs/rollout/phase-6-4d-drain-evidence.json in the head
-# commit that sets `blocking_directive: none` (RUNBOOK §P6T4D).
+# directive. To use it: run this workflow from the Actions tab on `main`, giving it the clearing PR's
+# current head SHA; when it is green, download the artifact and commit its one file, unchanged, as
+# docs/rollout/phase-6-4d-drain-evidence.json in ONE commit directly on top of that SHA, the commit that
+# sets `blocking_directive: none` (RUNBOOK §P6T4D). Any other commit after it means running it again.
 #
 # Setup (the owner's, once): an environment named `drain-evidence` whose deployment branches are limited to
 # `main`, holding the secrets DRAIN_DATABASE_URL (a read-only production role) and DRAIN_COOLIFY_TOKEN (a
 # read-only Coolify token), and the variables DRAIN_COOLIFY_API_URL (`https://<coolify host>/api/v1`) and
 # DRAIN_COOLIFY_APP_UUID. The production database must be reachable from GitHub-hosted runners.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      clearing_parent:
+        description: The clearing PR's current head SHA (40 characters). Commit the artifact directly on top of it.
+        required: true
+        type: string
 
 # No permissions by default; the single job reads its own checkout only.
 permissions: {}
@@ -63,6 +69,8 @@ jobs:
           COOLIFY_TOKEN: ${{ secrets.DRAIN_COOLIFY_TOKEN }}
           COOLIFY_API_URL: ${{ vars.DRAIN_COOLIFY_API_URL }}
           COOLIFY_APP_UUID: ${{ vars.DRAIN_COOLIFY_APP_UUID }}
+          # passed through the environment, never interpolated into the script
+          CLEARING_PARENT: ${{ inputs.clearing_parent }}
         run: node scripts/drain-evidence-workflow.mjs
       - name: Upload the stamped evidence
         if: always() && steps.judge.outputs.artifact_name != ''

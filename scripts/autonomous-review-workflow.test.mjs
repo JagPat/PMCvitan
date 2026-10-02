@@ -3382,7 +3382,7 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
     platform: { available: true, source: 'coolify', application: { uuid: 'app', name: 'pmc-api', status: 'running:healthy', gitCommitSha: 'f8274f411191dbbd626cab9bc74468325951674a', classification: 'at-or-after' }, deploymentsInProgress: [] },
     leases: [{ instanceId: 'i-1', catalogVersion: 3, release: 'f8274f411191dbbd626cab9bc74468325951674a', classification: 'at-or-after' }],
     findings: [], verdict: 'drained', recordedAt: new Date(Date.now() - 60_000).toISOString(),
-    provenance: { workflow: '.github/workflows/drain-evidence.yml', repository: 'JagPat/PMCvitan', runId: 4242, runAttempt: 1, workflowSha: 'c3'.repeat(20) },
+    provenance: { workflow: '.github/workflows/drain-evidence.yml', repository: 'JagPat/PMCvitan', runId: 4242, runAttempt: 1, workflowSha: 'c3'.repeat(20), clearingParent: 'b2'.repeat(20) },
   }, null, 2) + '\n';
   // The trusted producer's run and artifact, as the controller reads them: the artifact holds `produced`.
   const producerOf = (produced) => {
@@ -3405,7 +3405,7 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
   };
   const RECORD_ADDED = { filename: 'docs/rollout/phase-6-4d-drain-evidence.json', status: 'added', patch: '+{...}' };
 
-  const scenario = async ({ files, headTree, headCommitFiles = files.map((file) => file.filename), produced = record }) => {
+  const scenario = async ({ files, headTree, headCommitFiles = files.map((file) => file.filename), produced = record, headParents = ['b2'.repeat(20)] }) => {
     const reads = [];
     const statusWrites = [];
     const drafts = [];
@@ -3419,7 +3419,11 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
       drainProvenanceReader() { return producerOf(produced); },
       async commit(sha) {
         reads.push(['<commit>', sha]);
-        return { sha, commit: { message: 'clear the drain directive', committer: { date: new Date().toISOString() } }, files: headCommitFiles.map((filename) => ({ filename, status: 'modified' })) };
+        return {
+          sha, parents: headParents.map((parent) => ({ sha: parent })),
+          commit: { message: 'clear the drain directive', committer: { date: new Date().toISOString() } },
+          files: headCommitFiles.map((filename) => ({ filename, status: 'modified' })),
+        };
       },
       async fileContents(path, ref) {
         reads.push([path, ref]);
@@ -3471,6 +3475,17 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
   assert.equal(handWritten.result.allowed, false);
   assert.match(handWritten.result.detail, /not the trusted producer's output: the committed record differs from run 4242's artifact/u);
   assert.deepEqual(handWritten.drafts, [true]);
+
+  // 2c. The genuine record deleted and re-added on a later commit (finding 4164136422): the clearing head's
+  //     parent is not the commit the record was observed for — refused, drafted on the exact head.
+  const reAdded = await scenario({
+    files: [STATUS_CHANGE, RECORD_ADDED],
+    headTree: { 'docs/STATUS.md': statusDoc('none'), 'docs/rollout/phase-6-4d-drain-evidence.json': record },
+    headParents: ['d4'.repeat(20)],
+  });
+  assert.equal(reAdded.result.allowed, false);
+  assert.match(reAdded.result.detail, /observed for clearing parent b2b2b2b, but commit .* sits on d4d4d4d/u);
+  assert.deepEqual(reAdded.drafts, [true]);
 
   // 2b. The same record, added on an EARLIER head of the PR (finding 4163934196): the cumulative diff still
   //     lists it, the head commit does not change it — refused.
