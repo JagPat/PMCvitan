@@ -25,8 +25,9 @@
 // PR" while the fleet moves on; the cumulative diff is not freshness, the head commit is). Anything else
 // (no record, a reused or stale record, `not-drained`, `unclassified`, another directive, another
 // minimum, a verdict older than the directive, an unreadable record, an unreadable STATUS or head
-// commit) refuses. The CLI itself still changes nothing: the operator runs it where the platform token
-// is held and commits its stdout at the evidence path, in the commit that clears the directive.
+// commit, a record the trusted producer did not make) refuses. The CLI itself still changes nothing; the
+// trusted workflow below runs it, and its artifact is committed unchanged in the commit that clears the
+// directive.
 //
 // The record's SHAPE is not trusted (#686's shadow review, round 1): a `verdict` field can be edited. The
 // gate RE-DERIVES the verdict from the inventory the same record carries — the persisted generation
@@ -37,19 +38,26 @@
 // `findings` on a not-drained record therefore changes nothing: the lease or image it still carries
 // re-derives to not-drained.
 //
-// What this module does NOT establish is that the record came from a real run against production, or who
-// produced it: a wholly fabricated, internally consistent record is a provenance question the gate cannot
-// answer from the tree alone (the PR's `correction-owner` marker names who fixes review findings, not who
-// authored the change, so it is no handle for "the producer cannot clear the directive it landed"), and it
-// is recorded as such in STATUS, open for the owner's decision.
+// PROVENANCE (the owner's choice of 2026-10-02; #686 finding 4163934186): a record is evidence only when
+// the trusted producer made it. `.github/workflows/drain-evidence.yml` runs `rollout:drain-evidence` from
+// `main` against production with read-only credentials held in its environment, stamps the JSON with its
+// own run identity (`provenance`), and uploads it as an artifact. Both readers fetch the run the stamp
+// names through the API — it must be that workflow, dispatched on `main` at a commit on `main`, in this
+// repository, completed successfully — download its artifact (digest checked) and admit the committed
+// record only when its bytes EQUAL the artifact's file. A hand-written or edited record, or one stamped
+// with a run that never produced it, does not match; a genuine record is a genuine production observation
+// whoever commits it. Records are also bounded in age (24 hours at judging time), so a genuine but old run
+// cannot be replayed.
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import { isNoneValue, parseStatusNow } from './autonomous-status-state.mjs';
 import { STATUS_DOCUMENT } from './review-efficiency.mjs';
+import { readZipEntry } from './zip-entry.mjs';
 
 export const DRAIN_DIRECTIVE = 'phase-6-4d-previous-release-drained';
 export const DRAIN_EVIDENCE_MARKER = 'DRAIN-EVIDENCE';
-/** Where the operator commits `rollout:drain-evidence`'s JSON (its stdout) for the gate to read. */
+/** Where the clearing head commits the drain-evidence workflow's artifact file, unchanged. */
 export const DRAIN_EVIDENCE_DOCUMENT = 'docs/rollout/phase-6-4d-drain-evidence.json';
 /** The drain's minimum release: `main` at A8b (#673) — the server release carrying the bumped consumer
  *  contracts and the persisted server-generation minimum. 4d-ii-b was client-only, so it is unchanged. */
@@ -59,6 +67,14 @@ export const DRAIN_MINIMUM_RELEASE = 'f8274f411191dbbd626cab9bc74468325951674a';
 export const DRAIN_DIRECTIVE_SET_AT = '2026-10-01T03:19:21Z';
 /** Clock skew tolerated between the recording host and the judging host. */
 export const RECORDED_AT_SKEW_MS = 5 * 60 * 1000;
+/** The oldest record a clearance may carry, at judging time: the fleet is observed, not remembered. */
+export const MAX_EVIDENCE_AGE_MS = 24 * 60 * 60 * 1000;
+/** The trusted producer: the one workflow whose artifact a record must match, byte for byte. */
+export const DRAIN_EVIDENCE_WORKFLOW = '.github/workflows/drain-evidence.yml';
+/** The file inside the producer's artifact. */
+export const DRAIN_EVIDENCE_ARTIFACT_FILE = 'phase-6-4d-drain-evidence.json';
+/** The producer's artifact name for one run attempt. */
+export const drainEvidenceArtifactName = (runId, runAttempt) => `phase-6-4d-drain-evidence-${runId}-${runAttempt}`;
 
 const SHA_PREFIX = /^[0-9a-f]{7,40}$/u;
 
@@ -121,6 +137,7 @@ export function parseDrainEvidence(text, { minimumRelease = DRAIN_MINIMUM_RELEAS
   if (!Number.isFinite(recordedAt)) return { ok: false, reason: `the record's recordedAt ${JSON.stringify(evidence.recordedAt)} is not a timestamp` };
   if (recordedAt < Date.parse(setAt)) return { ok: false, reason: `the record was recorded at ${evidence.recordedAt}, before the directive was set (${setAt}); a clearing verdict must be fresh` };
   if (recordedAt > now + RECORDED_AT_SKEW_MS) return { ok: false, reason: `the record was recorded at ${evidence.recordedAt}, in the future of the judging clock (${new Date(now).toISOString()})` };
+  if (recordedAt < now - MAX_EVIDENCE_AGE_MS) return { ok: false, reason: `the record was recorded at ${evidence.recordedAt}, more than 24 hours before the judging clock (${new Date(now).toISOString()}); re-run the drain-evidence workflow` };
   const derived = rederiveDrainVerdict(evidence);
   if (derived.verdict !== 'drained') {
     return { ok: false, reason: `the record says "drained" but its own inventory re-derives to ${derived.verdict}: ${derived.findings.join('; ')}` };
@@ -194,7 +211,8 @@ const carriesDirective = (now) => {
  * the STATUS file's diff text (or undefined); `evidenceText` the committed record's text in the head tree
  * (or null when it has none); `evidenceChanged` whether this PR's cumulative diff adds or changes the
  * record; `headCommit` the exact head commit — `{ sha, files: [paths it changes], committedAt }` — or
- * undefined when it could not be read.
+ * undefined when it could not be read; `provenance` the verdict of `verifyDrainProvenance` on the record
+ * (`{ ok, reason, runId? }`), or undefined when it was not verified.
  *
  * Returns `{ applies: false, allowed: true }` when the PR does not clear the drain directive, else the
  * verdict on the evidence. Unknown provenance fails closed: when the head no longer carries the directive
@@ -202,7 +220,8 @@ const carriesDirective = (now) => {
  * record cannot be shown fresh and is refused.
  */
 export function assessDirectiveClearance({
-  baseNow, headNow, duplicateNowKeys = [], statusPatch, evidenceText, evidenceChanged = false, headCommit, now = Date.now(),
+  baseNow, headNow, duplicateNowKeys = [], statusPatch, evidenceText, evidenceChanged = false, headCommit,
+  provenance: clearanceProvenance, now = Date.now(),
 } = {}) {
   if (Array.isArray(duplicateNowKeys) && duplicateNowKeys.length > 0) {
     return {
@@ -250,12 +269,21 @@ export function assessDirectiveClearance({
   if (!freshness.ok) {
     return { applies: true, allowed: false, detail: `${provenance}, but ${DRAIN_EVIDENCE_DOCUMENT} ${freshness.reason}` };
   }
+  if (!clearanceProvenance || clearanceProvenance.ok !== true) {
+    return {
+      applies: true,
+      allowed: false,
+      detail: `${provenance}, but ${DRAIN_EVIDENCE_DOCUMENT} is not the trusted producer's output: `
+        + `${clearanceProvenance?.reason ?? 'its provenance was not verified'}`,
+    };
+  }
   return {
     applies: true,
     allowed: true,
     evidence: parsed.evidence,
     detail: `${provenance}; ${DRAIN_EVIDENCE_DOCUMENT} records a drained verdict for minimum release `
-      + `${parsed.evidence.minimumRelease} at ${parsed.evidence.recordedAt}, regenerated in head ${String(headCommit.sha).slice(0, 7)}`,
+      + `${parsed.evidence.minimumRelease} at ${parsed.evidence.recordedAt}, regenerated in head ${String(headCommit.sha).slice(0, 7)}, `
+      + `byte-identical to ${DRAIN_EVIDENCE_WORKFLOW} run ${clearanceProvenance.runId}`,
   };
 }
 
@@ -321,6 +349,84 @@ export function githubContentsReader({ fetchImpl = globalThis.fetch, repository,
   };
 }
 
+/**
+ * Is this committed record the trusted producer's output? `evidenceText` is the committed file; `reader`
+ * reads GitHub (`runAttempt(runId, attempt)`, `runArtifacts(runId, name)`, `artifactZip(artifactId)`,
+ * `onMain(sha)`), each throwing on a failed read. Returns `{ ok: true, runId }` only when the run the
+ * record's own stamp names is the drain-evidence workflow, dispatched on `main` at a commit on `main`, in
+ * this repository, completed successfully on that exact attempt, and its unexpired artifact (digest
+ * checked) holds a file byte-identical to the committed record. Everything else, read failures included,
+ * is `{ ok: false, reason }`.
+ */
+export async function verifyDrainProvenance({ evidenceText, repository, reader } = {}) {
+  let stamp;
+  try {
+    stamp = JSON.parse(String(evidenceText ?? ''))?.provenance;
+  } catch {
+    return { ok: false, reason: 'the record is not JSON' };
+  }
+  if (!stamp || typeof stamp !== 'object') return { ok: false, reason: `the record carries no provenance stamp; only ${DRAIN_EVIDENCE_WORKFLOW} produces a clearing record` };
+  const { workflow, runId, runAttempt, workflowSha } = stamp;
+  if (workflow !== DRAIN_EVIDENCE_WORKFLOW) return { ok: false, reason: `the stamp names workflow ${JSON.stringify(workflow)}, not ${DRAIN_EVIDENCE_WORKFLOW}` };
+  if (stamp.repository !== repository) return { ok: false, reason: `the stamp names repository ${JSON.stringify(stamp.repository)}, not ${repository}` };
+  if (!Number.isInteger(runId) || runId < 1 || !Number.isInteger(runAttempt) || runAttempt < 1) return { ok: false, reason: 'the stamp names no run attempt' };
+  if (!/^[0-9a-f]{40}$/u.test(String(workflowSha ?? ''))) return { ok: false, reason: 'the stamp names no workflow commit' };
+  if (!reader) return { ok: false, reason: 'no GitHub reader to verify the stamp' };
+
+  try {
+    const run = await reader.runAttempt(runId, runAttempt);
+    const mismatch = [
+      [run?.id === runId, `run ${runId} was not found`],
+      [run?.run_attempt === runAttempt, `run ${runId} has no attempt ${runAttempt}`],
+      [run?.path === DRAIN_EVIDENCE_WORKFLOW, `run ${runId} is ${JSON.stringify(run?.path)}, not ${DRAIN_EVIDENCE_WORKFLOW}`],
+      [run?.event === 'workflow_dispatch', `run ${runId} was triggered by ${JSON.stringify(run?.event)}, not a dispatch`],
+      [run?.head_branch === 'main', `run ${runId} ran on ${JSON.stringify(run?.head_branch)}, not main`],
+      [run?.head_sha === workflowSha, `run ${runId} ran at ${run?.head_sha}, not the stamped commit ${workflowSha}`],
+      [run?.repository?.full_name === repository && (run?.head_repository?.full_name ?? repository) === repository, `run ${runId} is not this repository's`],
+      [run?.status === 'completed' && run?.conclusion === 'success', `run ${runId} attempt ${runAttempt} concluded ${JSON.stringify(run?.conclusion ?? run?.status)}, not success`],
+    ].find(([holds]) => !holds);
+    if (mismatch) return { ok: false, reason: mismatch[1] };
+    if (await reader.onMain(workflowSha) !== true) return { ok: false, reason: `run ${runId}'s commit ${workflowSha.slice(0, 7)} is not on main` };
+
+    const name = drainEvidenceArtifactName(runId, runAttempt);
+    const artifacts = (await reader.runArtifacts(runId, name)).filter((artifact) => artifact?.name === name);
+    if (artifacts.length !== 1) return { ok: false, reason: `run ${runId} holds ${artifacts.length} artifacts named ${name}, not one` };
+    const [artifact] = artifacts;
+    if (artifact.expired !== false) return { ok: false, reason: `run ${runId}'s artifact ${name} has expired; re-run the workflow` };
+    const zip = await reader.artifactZip(artifact.id);
+    if (artifact.digest && `sha256:${createHash('sha256').update(zip).digest('hex')}` !== artifact.digest) {
+      return { ok: false, reason: `run ${runId}'s artifact download does not match its digest` };
+    }
+    const produced = readZipEntry(zip, DRAIN_EVIDENCE_ARTIFACT_FILE);
+    if (!produced) return { ok: false, reason: `run ${runId}'s artifact holds no readable ${DRAIN_EVIDENCE_ARTIFACT_FILE}` };
+    if (!produced.equals(Buffer.from(String(evidenceText), 'utf8'))) {
+      return { ok: false, reason: `the committed record differs from run ${runId}'s artifact; commit the artifact's file unchanged` };
+    }
+    return { ok: true, runId };
+  } catch (error) {
+    return { ok: false, reason: `the stamp could not be verified (${error.message})` };
+  }
+}
+
+/** The provenance reader over the GitHub REST API. The artifact download is a redirect to short-lived
+ *  storage; fetch follows it and does not forward the token across origins. */
+export function githubProvenanceReader({ fetchImpl = globalThis.fetch, repository, token } = {}) {
+  const headers = { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28' };
+  const get = async (path) => {
+    if (typeof fetchImpl !== 'function' || !repository || !token) throw new Error('repository, GITHUB_TOKEN and fetch are required to verify provenance');
+    const response = await fetchImpl(`https://api.github.com/repos/${repository}${path}`, { headers });
+    if (!response.ok) throw new Error(`GitHub GET ${path} failed with HTTP ${response.status}`);
+    return response;
+  };
+  return {
+    runAttempt: async (runId, attempt) => (await get(`/actions/runs/${runId}/attempts/${attempt}`)).json(),
+    runArtifacts: async (runId, name) => (await (await get(`/actions/runs/${runId}/artifacts?name=${encodeURIComponent(name)}&per_page=100`)).json())?.artifacts ?? [],
+    artifactZip: async (artifactId) => Buffer.from(await (await get(`/actions/artifacts/${artifactId}/zip`)).arrayBuffer()),
+    // The stamped commit is on main when main is identical to it or ahead of it.
+    onMain: async (sha) => ['identical', 'ahead'].includes((await (await get(`/compare/${sha}...main`)).json())?.status),
+  };
+}
+
 /** The shape `assessDirectiveClearance` needs from a GitHub commit object with its (paginated) `files`. */
 export function headCommitFromGitHub(sha, commit) {
   if (!commit || typeof commit !== 'object') return undefined;
@@ -364,9 +470,10 @@ export function githubCommitReader({ fetchImpl = globalThis.fetch, repository, t
  * The gate's wiring, shared by the review-scope job and the controller: null when the PR does not touch
  * STATUS. `readHead(path)` reads the head tree, `readBase(path)` the base tree; each returns text, or
  * null when the path is absent, or throws. `readHeadCommit()` returns the exact head commit's shape
- * (`headCommitFromGitHub`) or throws. The STATUS diff text comes from the PR files listing.
+ * (`headCommitFromGitHub`) or throws. `provenanceReader` (`githubProvenanceReader`) and `repository` verify
+ * the record against the trusted producer's artifact. The STATUS diff text comes from the PR files listing.
  */
-export async function assessCommittedDirectiveClearance(pullRequest, changedFiles, { readHead, readBase, readHeadCommit } = {}) {
+export async function assessCommittedDirectiveClearance(pullRequest, changedFiles, { readHead, readBase, readHeadCommit, provenanceReader, repository } = {}) {
   if (!Array.isArray(changedFiles)) return null;
   const statusFile = changedFiles.find((file) =>
     file?.filename === STATUS_DOCUMENT || file?.previous_filename === STATUS_DOCUMENT);
@@ -414,12 +521,20 @@ export async function assessCommittedDirectiveClearance(pullRequest, changedFile
   }
   const evidenceChanged = changedFiles.some((file) => file?.filename === DRAIN_EVIDENCE_DOCUMENT && file?.status !== 'removed');
   let headCommit;
-  if (evidenceText !== null && evidenceChanged && typeof readHeadCommit === 'function') {
-    try {
-      headCommit = await readHeadCommit();
-    } catch {
-      headCommit = undefined; // unknown: the record cannot be shown fresh, refused below
+  let provenance;
+  if (evidenceText !== null && evidenceChanged) {
+    if (typeof readHeadCommit === 'function') {
+      try {
+        headCommit = await readHeadCommit();
+      } catch {
+        headCommit = undefined; // unknown: the record cannot be shown fresh, refused below
+      }
     }
+    provenance = await verifyDrainProvenance({
+      evidenceText,
+      repository: repository ?? pullRequest?.base?.repo?.full_name,
+      reader: provenanceReader,
+    });
   }
   return assessDirectiveClearance({
     baseNow,
@@ -429,5 +544,6 @@ export async function assessCommittedDirectiveClearance(pullRequest, changedFile
     evidenceText,
     evidenceChanged,
     headCommit,
+    provenance,
   });
 }

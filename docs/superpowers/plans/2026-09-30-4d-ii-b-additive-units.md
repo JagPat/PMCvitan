@@ -341,6 +341,6 @@ complete; the drain attestation is the next step, and it is the operator's.
 
 **Gate changed (2026-10-01, PR #686).** The human attestation is withdrawn by the owner's own decision on
 the controlling issue (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5929472784; `docs/POLICY.md`; the 4d plan's head amendment). The directive now clears
-only on a `drained` verdict from `rollout:drain-evidence` committed in the PR that removes it, verified
-there by the review-scope gate and again by the merge controller; the directive stands until the operator
-commits that record.
+only on a `drained` verdict produced by the trusted `drain-evidence` workflow on `main` and committed
+byte-identical in the PR that removes it, verified there by the review-scope gate and again by the merge
+controller; the directive stands until that record is committed.

@@ -62,6 +62,8 @@ test('all agent entrypoints require the canonical contract instead of embedding 
   // the drain directive's clearing path since 2026-10-01: the committed verdict, verified by the gate
   assert.match(contract, /rollout:drain-evidence/u);
   assert.match(contract, /docs\/rollout\/phase-6-4d-drain-evidence\.json/u);
+  // ...produced only by the trusted workflow (the owner's choice of 2026-10-02)
+  assert.match(contract, /the trusted `drain-evidence` workflow on `main`/u);
   assert.match(contract, /scripts\/review-policy\.mjs/u);
 });
 

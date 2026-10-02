@@ -18,8 +18,10 @@ import {
  * to `--out`), and exits 0 only on `drained`. An OBSERVER: it drains, stops, deploys and posts
  * nothing; the runner records the body on the controlling issue. The token is read from the
  * environment only (an argument would be visible to every process on the host) and never printed.
- * Since 2026-10-01 (docs/POLICY.md) the committed `drained` verdict is what clears the gate: commit the
- * stdout JSON as docs/rollout/phase-6-4d-drain-evidence.json in the PR that clears the directive.
+ * Since 2026-10-01 (docs/POLICY.md) a committed `drained` verdict is what clears the gate, and since
+ * 2026-10-02 only the trusted `drain-evidence` workflow's output counts: it runs this command on `main`,
+ * stamps the JSON with its run, and the gate admits only a committed copy byte-identical to that artifact.
+ * A hand run is for diagnosis.
  */
 function parseFlags(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};

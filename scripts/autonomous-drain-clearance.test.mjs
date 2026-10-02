@@ -1,26 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import {
   DRAIN_DIRECTIVE,
   DRAIN_DIRECTIVE_SET_AT,
+  DRAIN_EVIDENCE_ARTIFACT_FILE,
   DRAIN_EVIDENCE_DOCUMENT,
+  DRAIN_EVIDENCE_WORKFLOW,
   DRAIN_MINIMUM_RELEASE,
+  drainEvidenceArtifactName,
   assessCommittedDirectiveClearance,
   assessDirectiveClearance,
   evidenceFreshAtHead,
   fileSystemReader,
   githubCommitReader,
   githubContentsReader,
+  githubProvenanceReader,
   headCommitFromGitHub,
   nowBlockDuplicateKeys,
   parseDrainEvidence,
   rederiveDrainVerdict,
   statusPatchRemovesDirective,
+  verifyDrainProvenance,
 } from './autonomous-drain-clearance.mjs';
 import { parseStatusNow } from './autonomous-status-state.mjs';
 import { run } from './review-scope.mjs';
+import { buildZip } from './zip-test-fixture.mjs';
 
 // PR #686, Codex finding 4157323191: with the human attestation withdrawn, nothing trusted read
 // `rollout:drain-evidence`, so a STATUS-only PR could have cleared `phase-6-4d-previous-release-drained`
@@ -65,13 +72,42 @@ const EVIDENCE = (over = {}) => JSON.stringify({
   ...over,
 });
 
+// The trusted producer: a stamped record, and a fake GitHub that holds the run and artifact that made it.
+const REPO = 'JagPat/PMCvitan';
+const RUN_ID = 4242;
+const WORKFLOW_SHA = 'c3'.repeat(20);
+const STAMP = (over = {}) => ({ workflow: DRAIN_EVIDENCE_WORKFLOW, repository: REPO, runId: RUN_ID, runAttempt: 1, workflowSha: WORKFLOW_SHA, ...over });
+const STAMPED = (evidenceOver = {}, stampOver = {}) => `${JSON.stringify({ ...JSON.parse(EVIDENCE(evidenceOver)), provenance: STAMP(stampOver) }, null, 2)}\n`;
+const PRODUCER = (producedText, { run: runOver = {}, artifact: artifactOver = {}, onMain = true, artifacts, zip } = {}) => {
+  const archive = zip ?? buildZip([{ name: DRAIN_EVIDENCE_ARTIFACT_FILE, data: producedText }]);
+  const name = drainEvidenceArtifactName(RUN_ID, 1);
+  const reads = [];
+  return {
+    reads,
+    async runAttempt(runId, attempt) {
+      reads.push(['run', runId, attempt]);
+      return {
+        id: runId, run_attempt: attempt, path: DRAIN_EVIDENCE_WORKFLOW, event: 'workflow_dispatch', head_branch: 'main',
+        head_sha: WORKFLOW_SHA, repository: { full_name: REPO }, head_repository: { full_name: REPO }, status: 'completed', conclusion: 'success', ...runOver,
+      };
+    },
+    async runArtifacts(runId, artifactName) {
+      reads.push(['artifacts', runId, artifactName]);
+      return artifacts ?? [{ id: 77, name, expired: false, digest: `sha256:${createHash('sha256').update(archive).digest('hex')}`, ...artifactOver }];
+    },
+    async artifactZip(id) { reads.push(['zip', id]); return archive; },
+    async onMain(sha) { reads.push(['onMain', sha]); return onMain; },
+  };
+};
+
 // The exact head commit as the readers see it: it changes STATUS and the record, committed after the record.
 const HEAD_SHA = 'a1'.repeat(20);
 const HEAD_COMMIT = (over = {}) => ({ sha: HEAD_SHA, files: ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT], committedAt: '2026-10-02T09:30:00.000Z', ...over });
 
 // A clearance as the readers see it: base carries the directive, head does not, the record regenerated here.
 const CLEARANCE = (over = {}) => assessDirectiveClearance({
-  baseNow: STANDING(), headNow: NOW(), statusPatch: CLEARING_PATCH, evidenceText: EVIDENCE(), evidenceChanged: true, headCommit: HEAD_COMMIT(), now: JUDGED_AT, ...over,
+  baseNow: STANDING(), headNow: NOW(), statusPatch: CLEARING_PATCH, evidenceText: EVIDENCE(), evidenceChanged: true, headCommit: HEAD_COMMIT(),
+  provenance: { ok: true, runId: RUN_ID }, now: JUDGED_AT, ...over,
 });
 
 test('the STATUS diff is read for the removed directive line, and only that line', () => {
@@ -175,6 +211,83 @@ test('the record must be regenerated on the clearing head (finding 4163934196)',
   assert.equal(headCommitFromGitHub(HEAD_SHA, { sha: HEAD_SHA, commit: {} }).files, undefined);
 });
 
+test('a record older than 24 hours at judging time does not clear it', () => {
+  const old = CLEARANCE({ evidenceText: EVIDENCE({ recordedAt: '2026-10-01T11:59:00.000Z' }), headCommit: HEAD_COMMIT({ committedAt: '2026-10-01T12:30:00.000Z' }) });
+  assert.equal(old.allowed, false);
+  assert.match(old.detail, /more than 24 hours before the judging clock/u);
+  assert.equal(CLEARANCE({ evidenceText: EVIDENCE({ recordedAt: '2026-10-01T12:01:00.000Z' }), headCommit: HEAD_COMMIT({ committedAt: '2026-10-01T12:30:00.000Z' }) }).allowed, true);
+});
+
+test('only the trusted producer\'s output clears it (finding 4163934186, the owner\'s choice of 2026-10-02)', () => {
+  const unverified = CLEARANCE({ provenance: undefined });
+  assert.equal(unverified.applies, true);
+  assert.equal(unverified.allowed, false);
+  assert.match(unverified.detail, /is not the trusted producer's output: its provenance was not verified/u);
+  const forged = CLEARANCE({ provenance: { ok: false, reason: 'the committed record differs from run 4242\'s artifact' } });
+  assert.equal(forged.allowed, false);
+  assert.match(forged.detail, /differs from run 4242's artifact/u);
+});
+
+test('provenance: the record must be byte-identical to the drain-evidence workflow\'s artifact from a green run on main', async () => {
+  const text = STAMPED();
+  const verify = (evidenceText, producer) => verifyDrainProvenance({ evidenceText, repository: REPO, reader: producer });
+
+  // the genuine record, exactly as the artifact holds it
+  const producer = PRODUCER(text);
+  assert.deepEqual(await verify(text, producer), { ok: true, runId: RUN_ID });
+  assert.deepEqual(producer.reads.map(([kind]) => kind), ['run', 'onMain', 'artifacts', 'zip']);
+  assert.deepEqual(producer.reads[0], ['run', RUN_ID, 1]);
+  assert.deepEqual(producer.reads[2], ['artifacts', RUN_ID, drainEvidenceArtifactName(RUN_ID, 1)]);
+
+  // the shadow review's attack: a hand-written record (the test fixture with a fresh timestamp) — no stamp
+  const refused = async (evidenceText, producerOrOver, pattern) => {
+    const reader = producerOrOver && typeof producerOrOver.runAttempt === 'function' ? producerOrOver : PRODUCER(text, producerOrOver);
+    const verdict = await verify(evidenceText, reader);
+    assert.equal(verdict.ok, false, pattern.source);
+    assert.match(verdict.reason, pattern);
+  };
+  await refused(EVIDENCE({ recordedAt: new Date().toISOString() }), {}, /carries no provenance stamp/u);
+  // a hand-written record stamped with a REAL run: the bytes differ from that run's artifact
+  await refused(STAMPED({ recordedAt: '2026-10-02T09:01:00.000Z' }), {}, /differs from run 4242's artifact/u);
+  // the genuine record re-serialised (same JSON, different bytes): refused — commit the file unchanged
+  await refused(`${JSON.stringify(JSON.parse(text))}\n`, {}, /differs from run 4242's artifact/u);
+  // a genuine NOT-DRAINED record edited to drained: the bytes differ
+  const notDrained = STAMPED({ verdict: 'not-drained', findings: ['live lease i-0 is below the minimum'] });
+  await refused(STAMPED(), PRODUCER(notDrained), /differs from run 4242's artifact/u);
+
+  // the stamp itself
+  await refused(STAMPED({}, { workflow: '.github/workflows/ci.yml' }), {}, /not \.github\/workflows\/drain-evidence\.yml/u);
+  await refused(STAMPED({}, { repository: 'someone/fork' }), {}, /names repository "someone\/fork"/u);
+  await refused(STAMPED({}, { runId: 0 }), {}, /names no run attempt/u);
+  await refused(STAMPED({}, { workflowSha: 'main' }), {}, /names no workflow commit/u);
+  await refused('{', {}, /not JSON/u);
+  assert.equal((await verify(text, undefined)).ok, false);
+
+  // the run the stamp names
+  await refused(text, { run: { id: 1 } }, /run 4242 was not found/u);
+  await refused(text, { run: { run_attempt: 2 } }, /has no attempt 1/u);
+  await refused(text, { run: { path: '.github/workflows/evil.yml' } }, /is "\.github\/workflows\/evil\.yml"/u);
+  await refused(text, { run: { event: 'pull_request' } }, /triggered by "pull_request", not a dispatch/u);
+  await refused(text, { run: { event: 'push' } }, /not a dispatch/u);
+  await refused(text, { run: { head_branch: 'feature' } }, /ran on "feature", not main/u);
+  await refused(text, { run: { head_sha: 'd4'.repeat(20) } }, /not the stamped commit/u);
+  await refused(text, { run: { repository: { full_name: 'someone/fork' } } }, /not this repository's/u);
+  await refused(text, { run: { head_repository: { full_name: 'someone/fork' } } }, /not this repository's/u);
+  await refused(text, { run: { conclusion: 'failure' } }, /concluded "failure", not success/u);
+  await refused(text, { run: { status: 'in_progress', conclusion: null } }, /concluded "in_progress", not success/u);
+  await refused(text, { onMain: false }, /is not on main/u);
+
+  // its artifact
+  await refused(text, { artifacts: [] }, /holds 0 artifacts/u);
+  await refused(text, { artifact: { expired: true } }, /has expired/u);
+  await refused(text, { artifact: { digest: `sha256:${'0'.repeat(64)}` } }, /does not match its digest/u);
+  await refused(text, { zip: buildZip([{ name: 'other.json', data: text }]) }, /holds no readable phase-6-4d-drain-evidence\.json/u);
+
+  // any read failure fails closed
+  const broken = { ...PRODUCER(text), async runAttempt() { throw new Error('HTTP 502'); } };
+  await refused(text, broken, /could not be verified \(HTTP 502\)/u);
+});
+
 test('only a fresh drained verdict for THIS directive and THIS minimum release clears it', () => {
   const refused = (over, pattern) => {
     const parsed = parseDrainEvidence(EVIDENCE(over), { now: JUDGED_AT });
@@ -205,7 +318,7 @@ test('only a fresh drained verdict for THIS directive and THIS minimum release c
   const full = CLEARANCE();
   assert.equal(full.applies, true);
   assert.equal(full.allowed, true, full.detail);
-  assert.match(full.detail, /records a drained verdict .* regenerated in head a1a1a1a/u);
+  assert.match(full.detail, /records a drained verdict .* regenerated in head a1a1a1a, byte-identical to \.github\/workflows\/drain-evidence\.yml run 4242/u);
   assert.equal(CLEARANCE({ evidenceText: EVIDENCE({ minimumRelease: 'f8274f4' }) }).allowed, true);
   assert.equal(Date.parse(DRAIN_DIRECTIVE_SET_AT) > Date.parse('2026-10-01T00:00:00Z'), true);
 });
@@ -268,7 +381,9 @@ test('the shared wiring reads the head and base trees through injected readers, 
   const STATUS_CHANGE = { filename: 'docs/STATUS.md', status: 'modified', patch: CLEARING_PATCH };
   const RECORD_ADDED = { filename: DRAIN_EVIDENCE_DOCUMENT, status: 'added', patch: '+{...}' };
   const operator = { number: 700, body: '<!-- correction-owner: operator -->' };
-  const fresh = () => EVIDENCE({ recordedAt: new Date(Date.now() - 60_000).toISOString() });
+  const freshText = STAMPED({ recordedAt: new Date(Date.now() - 60_000).toISOString() });
+  const fresh = () => freshText;
+  const producer = () => PRODUCER(freshText);
   const headCommit = (files = ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT]) => async () => ({ sha: HEAD_SHA, files, committedAt: new Date().toISOString() });
 
   // untouched STATUS: nothing to assess, nothing read
@@ -296,9 +411,22 @@ test('the shared wiring reads the head and base trees through injected readers, 
   // the record regenerated on the clearing head: allowed
   const recorded = await assessCommittedDirectiveClearance(
     operator, [STATUS_CHANGE, RECORD_ADDED],
-    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }), readHeadCommit: headCommit() },
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }), readHeadCommit: headCommit(), provenanceReader: producer(), repository: REPO },
   );
   assert.equal(recorded.allowed, true, recorded.detail);
+  // ...the same clearance without a provenance reader, or with a record the producer did not make: refused
+  const unverified = await assessCommittedDirectiveClearance(
+    operator, [STATUS_CHANGE, RECORD_ADDED],
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }), readHeadCommit: headCommit(), repository: REPO },
+  );
+  assert.equal(unverified.allowed, false);
+  assert.match(unverified.detail, /not the trusted producer's output/u);
+  const handWritten = await assessCommittedDirectiveClearance(
+    operator, [STATUS_CHANGE, RECORD_ADDED],
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }), readHeadCommit: headCommit(), provenanceReader: PRODUCER(STAMPED({ verdict: 'not-drained', findings: ['x'] })), repository: REPO },
+  );
+  assert.equal(handWritten.allowed, false);
+  assert.match(handWritten.detail, /differs from run 4242's artifact/u);
   // ...the same record added on an EARLIER head of this PR (in the cumulative diff, not in the head commit): refused
   const earlyHead = await assessCommittedDirectiveClearance(
     operator, [STATUS_CHANGE, RECORD_ADDED],
@@ -321,7 +449,7 @@ test('the shared wiring reads the head and base trees through injected readers, 
   // the record in the tree but NOT in this PR's files: refused (finding 4163577348), and the head commit is not read for it
   const reused = await assessCommittedDirectiveClearance(
     operator, [STATUS_CHANGE],
-    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }), readHeadCommit: failing('must not read') },
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }), readHeadCommit: failing('must not read'), provenanceReader: { runAttempt: failing('must not read') }, repository: REPO },
   );
   assert.equal(reused.allowed, false);
   assert.match(reused.detail, /does not add or change/u);
@@ -345,7 +473,7 @@ test('the shared wiring reads the head and base trees through injected readers, 
   assert.match(baseDown.detail, /removes .* from the Now block/u);
   const baseDownRecorded = await assessCommittedDirectiveClearance(
     operator, [STATUS_CHANGE, RECORD_ADDED],
-    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: failing('HTTP 502'), readHeadCommit: headCommit() },
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: failing('HTTP 502'), readHeadCommit: headCommit(), provenanceReader: producer(), repository: REPO },
   );
   assert.equal(baseDownRecorded.allowed, true, baseDownRecorded.detail);
 
@@ -417,6 +545,32 @@ test('the two readers: the checkout beside this module, and one exact ref throug
   ]);
   await assert.rejects(githubCommitReader({ repository: 'r', token: 't', sha: HEAD_SHA, fetchImpl: async () => new Response('x', { status: 502 }) })(), /HTTP 502/u);
   await assert.rejects(githubCommitReader({ repository: 'r', token: 't', sha: 'main', fetchImpl: async () => new Response('') })(), /no exact head SHA/u);
+
+  // the provenance reader: the run attempt, the named artifact, the artifact zip, main's ancestry
+  const provenanceRequests = [];
+  const provenance = githubProvenanceReader({
+    repository: REPO, token: 't',
+    fetchImpl: async (url) => {
+      provenanceRequests.push(String(url));
+      if (String(url).includes('/compare/')) return new Response(JSON.stringify({ status: String(url).includes('dead') ? 'diverged' : 'ahead' }));
+      if (String(url).endsWith('/zip')) return new Response(Buffer.from('PK-bytes'));
+      if (String(url).includes('/artifacts?')) return new Response(JSON.stringify({ artifacts: [{ id: 77 }] }));
+      if (String(url).includes('/attempts/')) return new Response(JSON.stringify({ id: RUN_ID, run_attempt: 1 }));
+      return new Response('nope', { status: 404 });
+    },
+  });
+  assert.deepEqual(await provenance.runAttempt(RUN_ID, 1), { id: RUN_ID, run_attempt: 1 });
+  assert.deepEqual(await provenance.runArtifacts(RUN_ID, 'phase-6-4d-drain-evidence-4242-1'), [{ id: 77 }]);
+  assert.equal((await provenance.artifactZip(77)).toString(), 'PK-bytes');
+  assert.equal(await provenance.onMain(WORKFLOW_SHA), true);
+  assert.equal(await provenance.onMain('dead'.repeat(10)), false);
+  assert.deepEqual(provenanceRequests.slice(0, 4), [
+    `https://api.github.com/repos/${REPO}/actions/runs/${RUN_ID}/attempts/1`,
+    `https://api.github.com/repos/${REPO}/actions/runs/${RUN_ID}/artifacts?name=phase-6-4d-drain-evidence-4242-1&per_page=100`,
+    `https://api.github.com/repos/${REPO}/actions/artifacts/77/zip`,
+    `https://api.github.com/repos/${REPO}/compare/${WORKFLOW_SHA}...main`,
+  ]);
+  await assert.rejects(githubProvenanceReader({ repository: REPO, token: 't', fetchImpl: async () => new Response('x', { status: 403 }) }).runAttempt(1, 1), /HTTP 403/u);
 });
 
 test('the live repository: the directive stands and no clearing record exists, so a clearance here would refuse', async () => {

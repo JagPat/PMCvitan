@@ -13,8 +13,10 @@ import { SERVER_GENERATION, readServerMinimum, type PersistedServerMinimum } fro
  *
  * WHAT IT IS, SINCE 2026-10-01. The owner withdrew the human operator attestation the gate
  * `phase-6-4d-previous-release-drained` used to require (docs/POLICY.md; #482 comment 5929472784), so
- * this command's `drained` verdict IS what clears the gate — once the operator commits the JSON it
- * prints as `docs/rollout/phase-6-4d-drain-evidence.json`, where the review-scope gate verifies it
+ * this command's `drained` verdict IS what clears the gate — once the trusted `drain-evidence` workflow
+ * (.github/workflows/drain-evidence.yml, the owner's choice of 2026-10-02) has run it on `main` and its
+ * stamped JSON is committed unchanged as `docs/rollout/phase-6-4d-drain-evidence.json`, where the
+ * review-scope gate and the merge controller verify it against that run's artifact
  * (`scripts/autonomous-drain-clearance.mjs`) on the PR that removes the directive. The command still
  * only reads; it starts, stops, deploys and drains nothing, and it posts nothing itself — it renders
  * the comment body for the operator to record, so no platform or GitHub credential passes through it
@@ -201,7 +203,7 @@ export function renderDrainEvidence(ev: DrainEvidence): string {
     : 'NO persisted minimum';
   const lines = [
     `${ev.marker} — autonomous corroboration for \`${ev.directive}\`, recorded ${ev.recordedAt}.`,
-    `This is an OBSERVATION, not an attestation: the gate clears only when this command's drained verdict is committed as docs/rollout/phase-6-4d-drain-evidence.json and the review-scope gate verifies it (docs/POLICY.md). Nothing was drained, stopped, deployed or changed.`,
+    `This is an OBSERVATION, not an attestation: the gate clears only when the drain-evidence workflow's drained verdict is committed unchanged as docs/rollout/phase-6-4d-drain-evidence.json and the review-scope gate verifies it (docs/POLICY.md). Nothing was drained, stopped, deployed or changed.`,
     '',
     `- **Verdict: ${verdict}**`,
     `- Minimum release: \`${ev.minimumRelease}\`; minimum consumer-catalog version: ${ev.minimumCatalogVersion.value} (${ev.minimumCatalogVersion.source})`,

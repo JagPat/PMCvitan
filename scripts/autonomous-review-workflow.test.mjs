@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import * as reviewGate from './autonomous-review-gate.mjs';
+import { buildZip } from './zip-test-fixture.mjs';
 import {
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
@@ -3381,14 +3382,30 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
     platform: { available: true, source: 'coolify', application: { uuid: 'app', name: 'pmc-api', status: 'running:healthy', gitCommitSha: 'f8274f411191dbbd626cab9bc74468325951674a', classification: 'at-or-after' }, deploymentsInProgress: [] },
     leases: [{ instanceId: 'i-1', catalogVersion: 3, release: 'f8274f411191dbbd626cab9bc74468325951674a', classification: 'at-or-after' }],
     findings: [], verdict: 'drained', recordedAt: new Date(Date.now() - 60_000).toISOString(),
-  });
+    provenance: { workflow: '.github/workflows/drain-evidence.yml', repository: 'JagPat/PMCvitan', runId: 4242, runAttempt: 1, workflowSha: 'c3'.repeat(20) },
+  }, null, 2) + '\n';
+  // The trusted producer's run and artifact, as the controller reads them: the artifact holds `produced`.
+  const producerOf = (produced) => {
+    const zip = buildZip([{ name: 'phase-6-4d-drain-evidence.json', data: produced }]);
+    return {
+      async runAttempt(runId, attempt) {
+        return {
+          id: runId, run_attempt: attempt, path: '.github/workflows/drain-evidence.yml', event: 'workflow_dispatch', head_branch: 'main',
+          head_sha: 'c3'.repeat(20), repository: { full_name: 'JagPat/PMCvitan' }, status: 'completed', conclusion: 'success',
+        };
+      },
+      async runArtifacts() { return [{ id: 77, name: 'phase-6-4d-drain-evidence-4242-1', expired: false }]; },
+      async artifactZip() { return zip; },
+      async onMain() { return true; },
+    };
+  };
   const STATUS_CHANGE = {
     filename: 'docs/STATUS.md', status: 'modified',
     patch: '@@ -9,3 +9,3 @@\n next_task: phase-6-task-4d-iii\n-blocking_directive: phase-6-4d-previous-release-drained\n+blocking_directive: none\n updated: 2026-10-02',
   };
   const RECORD_ADDED = { filename: 'docs/rollout/phase-6-4d-drain-evidence.json', status: 'added', patch: '+{...}' };
 
-  const scenario = async ({ files, headTree, headCommitFiles = files.map((file) => file.filename) }) => {
+  const scenario = async ({ files, headTree, headCommitFiles = files.map((file) => file.filename), produced = record }) => {
     const reads = [];
     const statusWrites = [];
     const drafts = [];
@@ -3398,6 +3415,8 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
       async pullRequest() { return pull(); },
       async pullRequestFiles() { return files; },
       async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+      repository: 'JagPat/PMCvitan',
+      drainProvenanceReader() { return producerOf(produced); },
       async commit(sha) {
         reads.push(['<commit>', sha]);
         return { sha, commit: { message: 'clear the drain directive', committer: { date: new Date().toISOString() } }, files: headCommitFiles.map((filename) => ({ filename, status: 'modified' })) };
@@ -3441,6 +3460,17 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
   assert.deepEqual(recorded.drafts, []);
   assert.deepEqual(recorded.statusWrites, []);
   assert.ok(recorded.reads.some(([path, ref]) => path === '<commit>' && ref === head));
+
+  // 2a. A hand-written record (finding 4163934186): stamped with a real run, but not that run's artifact —
+  //     refused, drafted on the exact head.
+  const handWritten = await scenario({
+    files: [STATUS_CHANGE, RECORD_ADDED],
+    headTree: { 'docs/STATUS.md': statusDoc('none'), 'docs/rollout/phase-6-4d-drain-evidence.json': record },
+    produced: record.replace('"verdict": "drained"', '"verdict": "not-drained"'),
+  });
+  assert.equal(handWritten.result.allowed, false);
+  assert.match(handWritten.result.detail, /not the trusted producer's output: the committed record differs from run 4242's artifact/u);
+  assert.deepEqual(handWritten.drafts, [true]);
 
   // 2b. The same record, added on an EARLIER head of the PR (finding 4163934196): the cumulative diff still
   //     lists it, the head commit does not change it — refused.
@@ -3488,6 +3518,7 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
   };
   try {
     const client = new reviewGate.GitHubClient({ repository: 'JagPat/PMCvitan', token: 't' });
+    assert.equal(typeof client.drainProvenanceReader().runAttempt, 'function');
     assert.equal(await client.fileContents('docs/STATUS.md', head), '# STATUS');
     assert.equal(await client.fileContents('docs/rollout/phase-6-4d-drain-evidence.json', head), null);
     await assert.rejects(client.fileContents('docs/STATUS.md', 'main'), /no exact ref/u);

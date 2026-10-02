@@ -47,7 +47,7 @@ import {
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
 } from './review-efficiency.mjs';
-import { assessCommittedDirectiveClearance, headCommitFromGitHub } from './autonomous-drain-clearance.mjs';
+import { assessCommittedDirectiveClearance, githubProvenanceReader, headCommitFromGitHub } from './autonomous-drain-clearance.mjs';
 import {
   PRODUCT_CHECKS,
   attemptGateStamps,
@@ -695,6 +695,12 @@ export class GitHubClient {
     return this.paginated(
       `/repos/${this.repository}/pulls/${number}/comments`,
     );
+  }
+
+  // The reader the drain clearance verifies a committed record's provenance with (the producer's run,
+  // its artifact, and main's ancestry), over this client's repository and token.
+  drainProvenanceReader() {
+    return githubProvenanceReader({ repository: this.repository, token: this.token });
   }
 
   // One file of one exact ref, as text (the raw media type, so a file over the 1 MB JSON limit —
@@ -1568,6 +1574,9 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       readBase: (path) => client.fileContents(path, pullRequest.base?.sha),
       // the exact head commit's files and date: the record must be regenerated on the clearing head
       readHeadCommit: async () => headCommitFromGitHub(expectedHead, await client.commit(expectedHead)),
+      // the trusted producer's artifact: the committed record must be byte-identical to it
+      provenanceReader: typeof client.drainProvenanceReader === 'function' ? client.drainProvenanceReader() : undefined,
+      repository: client.repository ?? pullRequest.base?.repo?.full_name,
     });
     if (clearance?.applies && !clearance.allowed) {
       result = { ...result, allowed: false, state: 'drain_clearance_refused', detail: `drain clearance: ${clearance.detail}`, clearance };

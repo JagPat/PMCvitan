@@ -19,6 +19,7 @@ import {
   fileSystemReader,
   githubCommitReader,
   githubContentsReader,
+  githubProvenanceReader,
 } from './autonomous-drain-clearance.mjs';
 
 async function pullRequestFiles({ fetchImpl, repository, number, token }) {
@@ -165,6 +166,13 @@ export async function run({
       token,
       sha: event.pull_request.head?.sha,
     }),
+    // the trusted producer's artifact: the committed record must be byte-identical to it
+    provenanceReader: githubProvenanceReader({
+      fetchImpl,
+      repository: repository || event.repository?.full_name,
+      token,
+    }),
+    repository: repository || event.repository?.full_name,
   });
   if (clearance?.applies) {
     if (clearance.allowed) {
