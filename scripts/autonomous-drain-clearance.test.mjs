@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 import {
   DRAIN_DIRECTIVE,
+  rederiveDrainVerdict,
   DRAIN_DIRECTIVE_SET_AT,
   DRAIN_EVIDENCE_DOCUMENT,
   DRAIN_MINIMUM_RELEASE,
@@ -104,6 +105,43 @@ test('only a fresh drained verdict for THIS directive and THIS minimum release c
   const abbreviated = assessDirectiveClearance({ headNow: NOW(), statusPatch: CLEARING_PATCH, evidenceText: EVIDENCE({ minimumRelease: 'f8274f4' }) });
   assert.equal(abbreviated.allowed, true, abbreviated.detail);
   assert.equal(Date.parse(DRAIN_DIRECTIVE_SET_AT) > Date.parse('2026-10-01T00:00:00Z'), true);
+});
+
+test('the stated verdict is never trusted: the gate re-derives it from the record\'s own inventory', () => {
+  // the shadow review's example on #686: a real not-drained record with `verdict` and `findings` edited
+  const notDrained = EVIDENCE({
+    verdict: 'not-drained',
+    findings: ['live lease i-0 (release deadbeef) serves at catalog version 2, below the minimum 3'],
+    leases: [{ instanceId: 'i-0', catalogVersion: 2, release: 'deadbeef', classification: 'before' }],
+  });
+  assert.equal(parseDrainEvidence(notDrained).ok, false);
+  const edited = JSON.stringify({ ...JSON.parse(notDrained), verdict: 'drained', findings: [] });
+  const parsed = parseDrainEvidence(edited);
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.reason, /re-derives to not-drained/u);
+  assert.match(parsed.reason, /below the minimum/u);
+  assert.equal(assessDirectiveClearance({ headNow: NOW(), statusPatch: CLEARING_PATCH, evidenceText: edited }).allowed, false);
+
+  // every inventory fact judgeDrain reads is re-read here, by the same rules
+  const rederived = (over) => rederiveDrainVerdict(JSON.parse(EVIDENCE(over)));
+  assert.equal(rederived({}).verdict, 'drained');
+  assert.equal(rederived({ leases: [{ instanceId: 'i-9', catalogVersion: 3, release: 'old', classification: 'before' }] }).verdict, 'not-drained');
+  assert.equal(rederived({ leases: [{ instanceId: 'i-9', catalogVersion: 3, release: 'x', classification: 'unclassifiable' }] }).verdict, 'unclassified');
+  assert.equal(rederived({ leases: [] }).verdict, 'unclassified'); // no serving lease is not a drained fleet
+  assert.equal(rederived({ platform: { available: true, source: 'coolify', application: { uuid: 'app', name: 'pmc-api', status: 'running:healthy', gitCommitSha: 'old', classification: 'before' }, deploymentsInProgress: [] } }).verdict, 'not-drained');
+  assert.equal(rederived({ platform: { available: true, source: 'coolify', application: { uuid: 'app', name: 'pmc-api', status: 'exited', gitCommitSha: DRAIN_MINIMUM_RELEASE, classification: 'at-or-after' }, deploymentsInProgress: [] } }).verdict, 'unclassified');
+  assert.equal(rederived({ platform: { available: true, source: 'coolify', application: { uuid: 'app', name: 'pmc-api', status: 'running:healthy', gitCommitSha: DRAIN_MINIMUM_RELEASE, classification: 'at-or-after' }, deploymentsInProgress: [{ deploymentUuid: 'd1', applicationId: 1, status: 'in_progress', commit: null }] } }).verdict, 'unclassified');
+  assert.equal(rederived({ generation: { compiled: 2, persistedMinimum: { minimumGeneration: 3, raisedBy: 'a8b', raisedAt: '2026-09-29T00:00:00.000Z' } } }).verdict, 'unclassified');
+  assert.equal(rederived({ generation: { compiled: 3, persistedMinimum: null } }).verdict, 'unclassified');
+  assert.equal(rederived({ minimumCatalogVersion: { value: 0, source: 'no persisted catalog row' } }).verdict, 'unclassified');
+  // a lease's stated catalog version below the record's own minimum is not-drained even if classified at-or-after
+  assert.equal(rederived({ leases: [{ instanceId: 'i-2', catalogVersion: 2, release: DRAIN_MINIMUM_RELEASE, classification: 'at-or-after' }] }).verdict, 'not-drained');
+  // each re-derived refusal blocks the clearance
+  for (const over of [{ leases: [] }, { generation: { compiled: 3, persistedMinimum: null } }]) {
+    const verdict = assessDirectiveClearance({ headNow: NOW(), statusPatch: CLEARING_PATCH, evidenceText: EVIDENCE(over) });
+    assert.equal(verdict.allowed, false, JSON.stringify(over));
+    assert.match(verdict.detail, /re-derives to/u);
+  }
 });
 
 test('a PR that leaves the directive standing, or never touched it, is not a clearance', () => {

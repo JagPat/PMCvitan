@@ -104,9 +104,18 @@ corroboration") and commits its stdout — the JSON evidence — at
 `docs/rollout/phase-6-4d-drain-evidence.json`, in the same PR that sets `blocking_directive: none`
 and `task_state` to the state 4d-iii opens from. (2) The review-scope gate admits that PR only when
 the committed record is a `drained` verdict with no findings, names THIS directive and THIS minimum
-release (`f8274f4…`), was judged with the platform inventory read, and was recorded after this
-directive was set (`2026-10-01T03:19:21Z`, #685's merge) — `scripts/autonomous-drain-clearance.mjs`,
-pinned by `scripts/autonomous-drain-clearance.test.mjs`. Nothing else clears it: not a STATUS edit
+release (`f8274f4…`), was judged with the platform inventory read, was recorded after this
+directive was set (`2026-10-01T03:19:21Z`, #685's merge), AND re-derives to `drained` from its own
+inventory — the gate re-judges the persisted generation fence, the application's status, image
+classification and in-progress deployments, and every live lease's catalog version and classification
+by `judgeDrain`'s rules, so editing the `verdict` field of a not-drained record changes nothing
+(#686's shadow review, round 1) — `scripts/autonomous-drain-clearance.mjs`, pinned by
+`scripts/autonomous-drain-clearance.test.mjs`. What the gate cannot establish from the tree alone is that
+the record came from a real run against production: a wholly fabricated, internally consistent record is
+a PROVENANCE question — run the CLI in a trusted workflow with the platform read token and the
+production database, or restore a human step — and it is open for the owner's decision; until then the
+record's committer is the operator, and 4d-iii's migration preflight on the live `ReleaseLease` register
+is the door that no committed file can forge. Nothing else clears it: not a STATUS edit
 without the record, not a `not-drained` or `unclassified` record, not a record for another directive or
 minimum, not a verdict older than the directive, not a Board call relayed by an agent, not the handoff
 watchdog, not the drift shepherd, not a clean signal on any PR, not a review finding asking for its

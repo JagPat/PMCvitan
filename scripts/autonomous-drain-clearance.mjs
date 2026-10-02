@@ -15,6 +15,16 @@
 // `not-drained`, `unclassified`, another directive, another minimum, a verdict older than the directive,
 // an unreadable record, an unreadable STATUS diff) refuses. The CLI itself still changes nothing: the
 // operator runs it where the platform token is held and commits its stdout at the evidence path.
+//
+// The record's SHAPE is not trusted (#686's shadow review, round 1): a `verdict` field can be edited. The
+// gate RE-DERIVES the verdict from the inventory the same record carries — the persisted generation
+// fence, the application's status, classification and in-progress deployments, every live lease's
+// catalog version and classification — with the same rules `judgeDrain` applies, and admits the record
+// only when that derivation is `drained` AND agrees with the stated verdict. Editing `verdict` and
+// `findings` on a not-drained record therefore changes nothing: the lease or image it still carries
+// re-derives to not-drained. What this does NOT establish is that the record came from a real run against
+// production; a wholly fabricated, internally consistent record is a provenance question the gate cannot
+// answer from the tree alone, and it is recorded as such in STATUS.
 import { readFile } from 'node:fs/promises';
 
 import { isNoneValue, parseStatusNow } from './autonomous-status-state.mjs';
@@ -63,7 +73,62 @@ export function parseDrainEvidence(text, { minimumRelease = DRAIN_MINIMUM_RELEAS
   const recordedAt = Date.parse(String(evidence.recordedAt ?? ''));
   if (!Number.isFinite(recordedAt)) return { ok: false, reason: `the record's recordedAt ${JSON.stringify(evidence.recordedAt)} is not a timestamp` };
   if (recordedAt < Date.parse(setAt)) return { ok: false, reason: `the record was recorded at ${evidence.recordedAt}, before the directive was set (${setAt}); a clearing verdict must be fresh` };
+  const derived = rederiveDrainVerdict(evidence);
+  if (derived.verdict !== 'drained') {
+    return { ok: false, reason: `the record says "drained" but its own inventory re-derives to ${derived.verdict}: ${derived.findings.join('; ')}` };
+  }
   return { ok: true, evidence };
+}
+
+/**
+ * The verdict the record's OWN inventory supports, by `judgeDrain`'s rules (apps/api/src/platform/
+ * rollout/drain-evidence.ts): `not-drained` on anything provably older than the minimum, `unclassified` on
+ * anything that cannot be placed or that makes the fleet unjudgeable, else `drained`. A record whose stated
+ * verdict disagrees with this is not evidence of anything.
+ */
+export function rederiveDrainVerdict(evidence) {
+  const findings = [];
+  let notDrained = false;
+  let unclassified = false;
+  const refuse = (f) => { notDrained = true; findings.push(f); };
+  const cannot = (f) => { unclassified = true; findings.push(f); };
+
+  const minimumCatalog = Number(evidence?.minimumCatalogVersion?.value);
+  if (!Number.isInteger(minimumCatalog) || minimumCatalog < 1) cannot(`minimum catalog version ${JSON.stringify(evidence?.minimumCatalogVersion?.value)} is not a registered generation`);
+
+  const generation = evidence?.generation;
+  const compiled = Number(generation?.compiled);
+  const persisted = generation?.persistedMinimum;
+  if (!persisted || !Number.isInteger(Number(persisted.minimumGeneration))) cannot('no persisted server-generation minimum was read');
+  else if (!Number.isInteger(compiled) || Number(persisted.minimumGeneration) > compiled) cannot(`the judging build compiles generation ${JSON.stringify(generation?.compiled)}, below the persisted minimum ${persisted.minimumGeneration}`);
+
+  const platform = evidence?.platform;
+  if (!platform || platform.available !== true) {
+    cannot('the platform inventory was not read');
+  } else {
+    const app = platform.application ?? {};
+    if (!/^running\b/u.test(String(app.status ?? ''))) cannot(`application status ${JSON.stringify(app.status)} is not running`);
+    if (!Array.isArray(platform.deploymentsInProgress)) cannot('the deployments in progress were not recorded');
+    else if (platform.deploymentsInProgress.length > 0) cannot(`${platform.deploymentsInProgress.length} deployment(s) in progress`);
+    if (app.classification === 'before') refuse(`application image ${app.gitCommitSha} is BEFORE the minimum release`);
+    else if (app.classification !== 'at-or-after') cannot(`application image classification ${JSON.stringify(app.classification)} is not at-or-after`);
+  }
+
+  const leases = Array.isArray(evidence?.leases) ? evidence.leases : null;
+  if (!leases) {
+    cannot('the lease register was not read');
+  } else if (leases.length === 0) {
+    cannot('no live lease: a serving release at or after the minimum registers its own lease, so an empty register is not a drained fleet');
+  } else {
+    for (const lease of leases) {
+      const version = Number(lease?.catalogVersion);
+      if (!Number.isInteger(version) || version < minimumCatalog) refuse(`live lease ${lease?.instanceId} serves at catalog version ${JSON.stringify(lease?.catalogVersion)}, below the minimum ${minimumCatalog}`);
+      if (lease?.classification === 'before') refuse(`live lease ${lease?.instanceId} names a release BEFORE the minimum`);
+      else if (lease?.classification !== 'at-or-after') cannot(`live lease ${lease?.instanceId} classification ${JSON.stringify(lease?.classification)} is not at-or-after`);
+    }
+  }
+
+  return { verdict: notDrained ? 'not-drained' : unclassified ? 'unclassified' : 'drained', findings };
 }
 
 /**
