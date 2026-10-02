@@ -20,6 +20,7 @@ export function CrewStepper({ onClose, today = true }: { onClose: () => void; to
   const lang = useStore((s) => s.lang);
   const crew = useStore(useShallow((s) => s.dailyLog?.crew ?? []));
   const crewStep = useStore((s) => s.crewStep);
+  const confirmCrew = useStore((s) => s.confirmCrew);
   // a send on its way has already captured the counts it carries; Today closes the stepper then,
   // and the controls are disabled here as well so no tap can land in that window
   const sending = useStore(dailyLogSendPending);
@@ -37,11 +38,16 @@ export function CrewStepper({ onClose, today = true }: { onClose: () => void; to
   const last = at === crew.length - 1;
   const ahead = crew.slice(at + 1);
   const step = (delta: number) => {
-    // by trade, not by a remembered index: the log on screen can be replaced by a reconcile
-    const i = useStore.getState().dailyLog?.crew.findIndex((c) => c.trade === row.trade) ?? -1;
-    if (i >= 0) crewStep(i, delta);
+    // the row on screen, by its position — two rows may carry the same trade text — and only while
+    // that position still holds the row asked about (Today closes the stepper on a replaced log)
+    if (useStore.getState().dailyLog?.crew[at]?.trade === row.trade) crewStep(at, delta);
   };
-  const advance = () => (last ? onClose() : setPos(at + 1));
+  // reaching the end is the engineer's answer for the whole crew, a no-crew day included
+  const advance = () => {
+    if (!last) return setPos(at + 1);
+    confirmCrew();
+    onClose();
+  };
 
   return (
     <section className={styles.stepper} data-testid="crew-stepper" data-trade={row.trade}>
@@ -50,8 +56,8 @@ export function CrewStepper({ onClose, today = true }: { onClose: () => void; to
           <ChevronLeft size={22} aria-hidden />
         </button>
         <div className={styles.bar} role="img" aria-label={engineerCrewPosition(at + 1, crew.length, lang)}>
-          {crew.map((c, i) => (
-            <span key={c.trade} className={`${styles.seg} ${i < at ? styles.segDone : i === at ? styles.segNow : ''}`} />
+          {crew.map((_, i) => (
+            <span key={i} className={`${styles.seg} ${i < at ? styles.segDone : i === at ? styles.segNow : ''}`} />
           ))}
         </div>
         <span className={styles.pos} data-testid="crew-position" aria-hidden>

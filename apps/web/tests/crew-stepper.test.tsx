@@ -175,6 +175,48 @@ describe('U1 — the crew step, one trade at a time', () => {
     expect(r.queryByTestId('crew-stepper')).toBeNull();
   });
 
+  it('another log of the same civil day (a different server id) closes the questions too', async () => {
+    const { useStore, r } = await loadToday({ dailyLog: log({ id: 'log-a' }) });
+    fireEvent.click(r.getByTestId('today-action'));
+    fireEvent.click(r.getByTestId('crew-next'));
+    expect(r.getByTestId('crew-position').textContent).toBe(`2 / ${TRADES.length}`);
+    // another device sent log-a and started log-b today; the reconcile jumps straight to it
+    act(() => useStore.setState({ dailyLog: log({ id: 'log-b' }) }));
+    expect(r.queryByTestId('crew-stepper')).toBeNull();
+    expect(r.getByTestId('engineer-today')).toBeTruthy();
+  });
+
+  it('two rows with the same trade text: each question edits its own row', async () => {
+    const twin = log();
+    twin.crew = [{ trade: 'Mason', count: 1 }, { trade: 'Mason', count: 5 }];
+    const { useStore, r } = await loadToday({ dailyLog: twin });
+    fireEvent.click(r.getByTestId('today-step-crew'));
+    fireEvent.click(r.getByTestId('crew-next'));
+    expect(r.getByTestId('crew-count').textContent).toBe('5');
+    fireEvent.click(r.getByTestId('crew-more'));
+    expect(counts(useStore)).toEqual([1, 6]);
+    expect(r.getByTestId('crew-count').textContent).toBe('6');
+  });
+
+  it('"Nobody today" for every trade is an answer: Today reads the crew step as done', async () => {
+    const { useStore, r } = await loadToday();
+    fireEvent.click(r.getByTestId('today-action'));
+    for (let i = 0; i < TRADES.length; i++) fireEvent.click(r.getByTestId('crew-nobody'));
+    expect(r.queryByTestId('crew-stepper')).toBeNull();
+    expect(counts(useStore)).toEqual([0, 0, 0, 0, 0]);
+    expect(r.getByTestId('today-step-crew').dataset.state).toBe('done');
+    expect(r.getByTestId('today-now').dataset.action).toBe('photos');
+    expect(useStore.getState().dailyLogDraft?.crewConfirmed).toBe(true);
+  });
+
+  it('Back before the last trade is not an answer: the crew step stays open', async () => {
+    const { r } = await loadToday();
+    fireEvent.click(r.getByTestId('today-action'));
+    fireEvent.click(r.getByTestId('crew-nobody'));
+    fireEvent.click(r.getByTestId('crew-back'));
+    expect(r.getByTestId('today-step-crew').dataset.state).toBe('next');
+  });
+
   it("an earlier day's unsent log is asked about without calling it today's", async () => {
     const { r } = await loadToday({ dailyLog: log({ logDate: '2026-09-28' }) });
     fireEvent.click(r.getByTestId('today-action'));

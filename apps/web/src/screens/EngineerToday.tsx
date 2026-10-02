@@ -5,7 +5,7 @@ import { selectTotalWorkers } from '@/store/selectors';
 import { todayPath, TODAY_STEPS } from '@/lib/engineerToday';
 import { todayCivil } from '@/lib/civilDate';
 import { dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
-import { dailyLogKey } from '@/store/dailyLogDraft';
+import { dailyLogIdentity, draftAppliesTo } from '@/store/dailyLogDraft';
 import { CrewStepper } from './CrewStepper';
 import { ArrowRight, Circle, CircleCheck, Crosshair, Plus, RefreshCw } from '@/lib/icons';
 import { can, engineerNavLabels, engineerTodayLabels as L, engineerTodayLogFor, engineerTodayOverdue, engineerTodayProgress, type Lang } from '@vitan/shared';
@@ -58,7 +58,9 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   }, []);
   const today = todayCivil(timeZone);
 
-  const path = todayPath(dailyLog, total, today);
+  // the engineer's own "every crew question answered" for THIS unsent log (U1): a no-crew day is done
+  const crewConfirmed = useStore((s) => !!s.dailyLogDraft?.crewConfirmed && draftAppliesTo(s.dailyLogDraft, s.dailyLog, s.activeProjectId));
+  const path = todayPath(dailyLog, total, today, crewConfirmed);
   const overdueDate = path.overdue ? formatLogDate(LOCALE[lang], path.overdue) : null;
   const next = path.action === 'start' || path.action === 'done' ? null : path.action;
   const openSite = () => setScreen('daily-log');
@@ -67,13 +69,14 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   // the crew questions are asked only of an open, settled log that nothing is on its way for —
   // the same log the Site screen edits. Anything else (no trades yet, a read unsettled, a start or
   // send in flight, the log sent) leaves the crew step on the Site screen, and closes the stepper.
-  // The stepper stays bound to the log it was opened for (the pending draft's own key: project and
-  // log day), so a project switch or a replaced log brings the engineer back to Today.
+  // The stepper stays bound to the log it was opened for — the project and the log's own server id
+  // (two logs can share a civil day; the civil date only where the server sent no id) — so a project
+  // switch or a replaced log, even one of the same day, brings the engineer back to Today.
   const [askingFor, setAskingFor] = useState<string | null>(null);
   const canAsk =
     !reading && !unavailable && !pendingStart && !pendingSend &&
     path.action !== 'start' && path.action !== 'done' && (dailyLog?.crew.length ?? 0) > 0;
-  const logFor = dailyLog ? `${projectId}|${dailyLogKey(dailyLog)}` : null;
+  const logFor = dailyLog ? `${projectId}|${dailyLogIdentity(dailyLog)}` : null;
   useEffect(() => {
     if (!canAsk || askingFor !== logFor) setAskingFor(null);
   }, [canAsk, askingFor, logFor]);

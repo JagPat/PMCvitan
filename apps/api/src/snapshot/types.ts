@@ -352,6 +352,8 @@ export interface PhotoDto {
 }
 
 export interface DailyLogDto {
+  /** U1 — the log's own id, so a client can tell two logs of the same civil day apart */
+  id?: string;
   date: string;
   /** Task 6: the civil day the site work belongs to (ISO) */
   logDate: string | null;

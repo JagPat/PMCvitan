@@ -19,18 +19,25 @@ import type { DailyLog } from '@vitan/shared';
  * written against: the log was sent (the send landed; the server now holds the values), a new day's
  * log replaced it, or the project has no log. Two logs can start on the same civil day, so the key is
  * the civil date of the UNSENT log the draft was written against; a sent log drops the draft first.
+ * A reconcile can also jump straight from one unsent log to ANOTHER of the same civil day (another
+ * device sent the first and started a second), with no sent state in between, so the draft also
+ * records the server's id for its log and applies to no log with a different id (U1, #690).
  */
 export type DailyLogDraft = {
   /** the project the draft belongs to — applied to no other project's log */
   projectId: string;
   /** the log the draft was written against: its civil date (`logDate`), or the legacy display date */
   logKey: string;
+  /** that log's server id, when the server sent one — a draft never applies to a log with another id */
+  logId?: string;
   /** the engineer's check-in (or check-out) on this device, when recorded */
   checkIn?: { checkedIn: boolean; checkinTime: string | null };
   /** the crew counts the engineer set, by trade (absolute — the latest count, not a delta) */
   crew?: Record<string, number>;
   /** progress photos taken for this log on this device, beyond what the server holds */
   photosAdded?: number;
+  /** the engineer answered every crew question for this log (a no-crew day is an answer, not a gap) */
+  crewConfirmed?: boolean;
 };
 
 /** the identity a draft is written against: the civil date of the log, or its legacy display date */
@@ -38,10 +45,19 @@ export function dailyLogKey(log: Pick<DailyLog, 'date' | 'logDate'>): string {
   return log.logDate ? `civil:${log.logDate}` : `date:${log.date}`;
 }
 
-/** A draft that still applies to the server's log: same project, same log, and the log is unsent. */
+/** THIS log's identity: its server id when it has one (two logs can share a civil day), else the
+ *  civil-date key. */
+export function dailyLogIdentity(log: Pick<DailyLog, 'id' | 'date' | 'logDate'>): string {
+  return log.id ? `id:${log.id}` : dailyLogKey(log);
+}
+
+/** A draft that still applies to the server's log: same project, same log, and the log is unsent.
+ *  When both carry a server id the ids must match; a draft or a log without one (written or served
+ *  before the id existed) is matched on the civil-date key, as before. */
 export function draftAppliesTo(draft: DailyLogDraft | null, serverLog: DailyLog | null, projectId: string): boolean {
   if (!draft || draft.projectId !== projectId) return false;
   if (!serverLog || serverLog.submitted) return false;
+  if (draft.logId && serverLog.id) return draft.logId === serverLog.id;
   return dailyLogKey(serverLog) === draft.logKey;
 }
 
@@ -81,6 +97,7 @@ export function parseDailyLogDraft(raw: unknown): DailyLogDraft | null {
   const d = raw as Record<string, unknown>;
   if (typeof d.projectId !== 'string' || typeof d.logKey !== 'string') return null;
   const draft: DailyLogDraft = { projectId: d.projectId, logKey: d.logKey };
+  if (typeof d.logId === 'string' && d.logId) draft.logId = d.logId;
   if (d.checkIn && typeof d.checkIn === 'object') {
     const c = d.checkIn as Record<string, unknown>;
     if (typeof c.checkedIn === 'boolean' && (c.checkinTime === null || typeof c.checkinTime === 'string')) {
@@ -95,5 +112,6 @@ export function parseDailyLogDraft(raw: unknown): DailyLogDraft | null {
     draft.crew = crew;
   }
   if (typeof d.photosAdded === 'number' && Number.isInteger(d.photosAdded) && d.photosAdded >= 0) draft.photosAdded = d.photosAdded;
+  if (d.crewConfirmed === true) draft.crewConfirmed = true;
   return draft;
 }

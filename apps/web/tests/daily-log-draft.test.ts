@@ -261,3 +261,65 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.anon.ambli')).toContain('"checkedIn":true');
   });
 });
+
+// U1 (#690, Codex finding 4165349940): a reconcile can jump straight from one unsent log to ANOTHER of
+// the same civil day (another device sent the first and started a second), with no sent state between.
+// The draft records its log's server id and is never laid over a log with a different id.
+describe('U1 — the draft is bound to its log by server id, not only by civil date', () => {
+  const draftFor = (logId?: string): DailyLogDraft => ({
+    projectId: 'ambli', logKey: 'civil:2026-07-03', ...(logId ? { logId } : {}),
+    checkIn: { checkedIn: true, checkinTime: '9:05 AM' }, crew: { Plumber: 4 }, photosAdded: 1,
+  });
+
+  it('a draft written for one log is dropped, not laid over another log of the same civil day', () => {
+    const replacement = serverLog({ id: 'log-b' });
+    const r = overlayDailyLogDraft(replacement, draftFor('log-a'), 'ambli');
+    expect(r.draft).toBeNull();
+    expect(r.log).toEqual(replacement); // no check-in, crew or photos carried onto the other log
+  });
+
+  it('the same log by id keeps its draft', () => {
+    const r = overlayDailyLogDraft(serverLog({ id: 'log-a' }), draftFor('log-a'), 'ambli');
+    expect(r.draft).not.toBeNull();
+    expect(r.log?.checkedIn).toBe(true);
+    expect(r.log?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
+  });
+
+  it('a draft or a log without an id (written or served before the field) is matched by civil date, as before', () => {
+    expect(overlayDailyLogDraft(serverLog({ id: 'log-a' }), draftFor(), 'ambli').draft).not.toBeNull();
+    expect(overlayDailyLogDraft(serverLog(), draftFor('log-a'), 'ambli').draft).not.toBeNull();
+  });
+
+  it('the draft records the id of the log it was written against, and a persisted draft keeps it', () => {
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-a' }) });
+    s().crewStep(1, 1);
+    expect(s().dailyLogDraft).toMatchObject({ projectId: 'ambli', logKey: dailyLogKey(serverLog()), logId: 'log-a' });
+    expect(parseDailyLogDraft(JSON.parse(JSON.stringify(s().dailyLogDraft)))?.logId).toBe('log-a');
+  });
+
+  it('a tap on another log of the same day starts a fresh draft instead of extending the old one', () => {
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-b' }), dailyLogDraft: draftFor('log-a') });
+    s().crewStep(0, 1);
+    expect(s().dailyLogDraft?.logId).toBe('log-b');
+    expect(s().dailyLogDraft?.checkIn).toBeUndefined();
+    expect(s().dailyLogDraft?.crew).toEqual({ 'Flooring mason': 3 });
+  });
+});
+
+// U1 (#690, Codex finding 4165349950): answering every crew question with "Nobody today" is an answer.
+describe('U1 — a no-crew day the engineer confirmed is a done crew step until the log is sent', () => {
+  it('todayPath reads crew as done for an unsent log the engineer confirmed, and never for a sent one', () => {
+    const empty = serverLog({ checkedIn: true, progress: 0, crew: serverLog().crew.map((c) => ({ ...c, count: 0 })) });
+    expect(todayPath(empty, 0).done.crew).toBe(false);
+    expect(todayPath(empty, 0, undefined, true).done.crew).toBe(true);
+    expect(todayPath(empty, 0, undefined, true).action).toBe('photos');
+    expect(todayPath({ ...empty, submitted: true }, 0, undefined, true).done.crew).toBe(false);
+  });
+
+  it('confirmCrew records it in the log draft, and it survives a persist round trip', () => {
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-a' }) });
+    s().confirmCrew();
+    expect(s().dailyLogDraft).toMatchObject({ logId: 'log-a', crewConfirmed: true });
+    expect(parseDailyLogDraft(JSON.parse(JSON.stringify(s().dailyLogDraft)))?.crewConfirmed).toBe(true);
+  });
+});

@@ -674,6 +674,8 @@ export interface AppActions {
   checkOut: () => void;
   scanWorker: () => void;
   crewStep: (idx: number, delta: number) => void;
+  /** U1 — the engineer answered every crew question for the open log (a no-crew day included) */
+  confirmCrew: () => void;
   addProgress: () => void;
   /**
    * `stamp` is what the PHOTO's own EXIF carries — empty when the file records nothing.
@@ -1294,10 +1296,16 @@ export const useStore = create<Store>()(
     const recordDailyLogDraft = (s: AppState, mutate: (d: DailyLogDraft) => void): void => {
       if (!s.dailyLog || s.dailyLog.submitted) return;
       const logKey = dailyLogKey(s.dailyLog);
-      if (!s.dailyLogDraft || s.dailyLogDraft.projectId !== s.activeProjectId || s.dailyLogDraft.logKey !== logKey) {
-        s.dailyLogDraft = { projectId: s.activeProjectId, logKey };
-      }
-      mutate(s.dailyLogDraft);
+      const logId = s.dailyLog.id;
+      // a draft written against another log — another project, another civil day, or another log of
+      // the same day (a different server id) — is superseded, never carried over (U1, #690)
+      const other = !s.dailyLogDraft
+        || s.dailyLogDraft.projectId !== s.activeProjectId
+        || s.dailyLogDraft.logKey !== logKey
+        || (!!logId && !!s.dailyLogDraft.logId && s.dailyLogDraft.logId !== logId);
+      if (other) s.dailyLogDraft = { projectId: s.activeProjectId, logKey, ...(logId ? { logId } : {}) };
+      else if (logId && !s.dailyLogDraft!.logId) s.dailyLogDraft!.logId = logId;
+      mutate(s.dailyLogDraft!);
     };
     /** …a crew count set by trade (absolute — the latest count), the draft's crew rule. */
     const recordDraftCrew = (s: AppState, trade: string, count: number): void =>
@@ -4620,6 +4628,12 @@ export const useStore = create<Store>()(
       persistDailyLogDraft();
       get().record('QR check-in · Helper');
       get().flash('Worker checked in via QR · Helper · 9:03 AM · face verified.');
+    },
+    confirmCrew: () => {
+      set((s) => {
+        recordDailyLogDraft(s, (d) => { d.crewConfirmed = true; });
+      });
+      persistDailyLogDraft();
     },
     crewStep: (idx, delta) => {
       set((s) => {
