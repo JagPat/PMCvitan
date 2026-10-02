@@ -14,12 +14,12 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: correction_required
-work_item: none
+work_item: countersign-impact-inputs
 reviewed_merge: e4ac5d8
-open_pr: none
+open_pr: 687
 next_task: phase-6-task-4d-iii
 blocking_directive: phase-6-4d-previous-release-drained
-updated: 2026-10-01
+updated: 2026-10-02
 ```
 
 ### Now — 4d-ii-b is COMPLETE: B6 merged as #684 (`e4ac5d8`); the drain directive STANDS, and its clearing path is now the verified drain verdict
@@ -76,6 +76,34 @@ landing. `next_task: phase-6-task-4d-iii` records that 4d-iii is the ORDERING; t
 decides WHEN it may open. No unit of 4d waits on a fresh GO — this is a ROLLOUT ordering prerequisite,
 not a scope authorization. Task 4 is not complete until 4d-iii merges, so no unit's merge — B6's
 included — may be treated as the end of the task.
+
+### Open correction — the countersign impact inputs (#687, `claude/countersign-impact-inputs`)
+
+The correction named in #482 comment 5923291892 is the ONE open `claude/**` draft, acknowledged in this
+lane. It does not touch the drain directive above or below: the directive still stands, `task_state`
+stays `correction_required`, and `assessRunnerState` still resolves to
+`directive:phase-6-4d-previous-release-drained`. The open PR is recorded here so the shepherd sees it:
+the runner's instruction to shepherd an open PR comes from the live PR set, not from that step, so
+#687 is shepherded to completion while the directive keeps every later task unreachable, and leaving
+`open_pr` at `none` beside the live PR would read as drift (#687 Codex finding 4164784153; pinned in
+`scripts/runner-continuation-open-correction.test.mjs`).
+
+The countersign chain's optional impact inputs (Reject back, Forward on, the PMC's stranded Return)
+stripped every character but digits and an ASCII minus and fell back to 0, so "12.50" was sent as 1250
+rupees, "1.5" days as 15, "abc" as 0 and a Unicode minus "−5" as +5. The fix reads them through
+`apps/web/src/lib/impactInput.ts` (`readImpact`): blank is the agreed 0, a supported whole number is sent
+exactly as typed with its sign, and anything else is refused under its field with Send disabled. As POLICY's
+family-wide rule requires (#687's shadow review), the same reader now also covers the two other writers
+of the same parsing defect: the DELIVERED Change Request (`submitChange` and `ChangeModal`, writing the
+same `ChangeRequest.costImpact` / `timeImpactDays`) and the option price delta when a decision is issued
+(`IssueDecisionModal`). The countersign controls are gated client code; the two delivered writers are live,
+and now refuse what they used to silently alter. No API, schema or migration change; nothing activated or
+deployed. RED at `4707c5d` on every path, GREEN here.
+
+**Owed before the chain is activated (the next unit):** the activated disposable-fixture proof the
+comment asks for — browser → API → persisted values, and refused inputs creating no command or request —
+needs a new api-e2e mode that drops the doors in the disposable database and seeds an architect with an
+awaiting decision.
 
 ### Directive `phase-6-4d-previous-release-drained`
 

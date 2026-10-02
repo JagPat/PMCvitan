@@ -66,6 +66,7 @@ import {
   deciderNoun,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
+import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
 import { type DailyLogDraft, dailyLogKey, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type ProjectLoadState, type ProjectScope } from './projectScope';
@@ -2460,8 +2461,14 @@ export const useStore = create<Store>()(
       const { decId, changeText, changeCost, changeTime } = get().modal;
       if (decId == null) return;
       const reason = changeText?.trim() || 'Change requested';
-      const costImpact = parseInt(String(changeCost ?? '').replace(/[^\d-]/g, ''), 10) || 0;
-      const timeImpactDays = parseInt(String(changeTime ?? '').replace(/[^\d-]/g, ''), 10) || 0;
+      // #482 comment 5923291892 (family-wide): the impacts are read exactly or refused, never repaired —
+      // "12.50" is not 1250, "abc" is not 0, and a Unicode minus keeps its sign. A refused entry sends
+      // NOTHING and leaves the modal open on its field's reason (the modal disables Submit as well).
+      const costReading = readImpact(String(changeCost ?? ''), 'cost');
+      const timeReading = readImpact(String(changeTime ?? ''), 'days');
+      if (!costReading.ok || !timeReading.ok) return;
+      const costImpact = costReading.value;
+      const timeImpactDays = timeReading.value;
       // round-11 Codex F2 — the confirmation names the ACTUAL decider whose re-approval the
       // request now awaits; the client-held text stays byte-identical (the legacy default)
       const changeKind = get().decisions.find((x) => x.id === decId)?.deciderKind ?? 'client';
