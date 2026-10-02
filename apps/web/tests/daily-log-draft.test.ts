@@ -191,6 +191,26 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     expect(s().dailyLogDraft).toBeNull();
   });
 
+  // U1b: "Same as yesterday" reads the log before this one on either read path
+  it('both read paths carry the log before this one onto `s.dailyLog`', async () => {
+    const previous = { logDate: '2026-07-02', crew: [{ trade: 'Flooring mason', count: 4 }] };
+    const snap = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog({ previous }))) };
+    s()._setGateway(snap as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.previous).toEqual(previous);
+
+    vi.stubEnv('VITE_DAILYLOG_READ', 'moduleQuery');
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog())),
+      dailyLog: vi.fn().mockResolvedValue(moduleRead(serverLog({ id: 'log-a', previous }))),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.previous).toEqual(previous);
+  });
+
   // U1 (#690, shadow review on ae76494): two rows sharing a trade keep their own counts across a reconcile
   it('two crew rows with the same trade keep their own counts through a reconcile', async () => {
     const twin = serverLog({ crew: [{ trade: 'Mason', count: 1 }, { trade: 'Mason', count: 5 }] });

@@ -1487,6 +1487,10 @@ export const useStore = create<Store>()(
                 date: core.date, logDate: core.logDate, checkedIn: core.checkedIn, checkinTime: core.checkinTime,
                 submitted: core.submitted, progress: core.progress,
                 crew: core.crew.map((c) => ({ trade: c.trade, count: c.count })),
+                // the log before it (U1b): "Same as yesterday" reads it on either read path
+                ...(core.previous !== undefined
+                  ? { previous: core.previous && { logDate: core.previous.logDate, crew: core.previous.crew.map((c) => ({ trade: c.trade, count: c.count })) } }
+                  : {}),
                 materials: core.materials.map((m) => ({ name: m.name, decisionId: m.decisionId, qty: m.qty, zone: m.zone, matched: m.matched, swatch: m.swatch as SwatchKey, photo: m.photo })),
                 photos: progressPhotos,
               }

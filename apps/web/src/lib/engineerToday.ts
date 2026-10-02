@@ -65,3 +65,25 @@ export function todayPath(latest: DailyLog | null, totalWorkers: number, today?:
 function hasPhotoEvidence(log: DailyLog): boolean {
   return log.progress > 0;
 }
+
+/** U1b — the count the log before this one recorded for the crew row at `at` (the row's position,
+ *  checked against its trade, since a new log copies the last one's trades in order; else the first
+ *  row of that trade), or `undefined` when that log had no such trade or there is no earlier log. */
+export function previousCrewCount(log: Pick<DailyLog, 'crew' | 'previous'> | null, at: number): number | undefined {
+  const row = log?.crew[at];
+  const prev = log?.previous?.crew;
+  if (!row || !prev) return undefined;
+  if (prev[at]?.trade === row.trade) return prev[at]!.count;
+  return prev.find((c) => c.trade === row.trade)?.count;
+}
+
+/** U1b — was the log before this one sent for the civil day right before it? (Both civil dates are
+ *  ISO `YYYY-MM-DD`; a log without one is never "yesterday".) */
+export function previousIsDayBefore(log: Pick<DailyLog, 'logDate' | 'previous'> | null): boolean {
+  const day = log?.logDate;
+  const before = log?.previous?.logDate;
+  if (!day || !before) return false;
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10) === before;
+}

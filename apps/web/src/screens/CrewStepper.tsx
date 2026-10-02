@@ -3,7 +3,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { dailyLogSendPending } from '@/store/dailyLogPending';
 import { ArrowRight, ChevronLeft, Minus, Plus } from '@/lib/icons';
-import { engineerCrewLabels as C, engineerCrewMore, engineerCrewPosition, engineerCrewQuestion } from '@vitan/shared';
+import { engineerCrewLabels as C, engineerCrewMore, engineerCrewPosition, engineerCrewQuestion, engineerCrewSame } from '@vitan/shared';
+import { previousCrewCount, previousIsDayBefore } from '@/lib/engineerToday';
 import styles from './CrewStepper.module.css';
 
 /** How many of the next trades are named under "Next we'll ask"; the rest are counted. */
@@ -23,6 +24,9 @@ export function CrewStepper({ onClose, today = true }: { onClose: () => void; to
   const lang = useStore((s) => s.lang);
   const crew = useStore(useShallow((s) => s.dailyLog?.crew ?? []));
   const crewStep = useStore((s) => s.crewStep);
+  // the log before this one, as sent (U1b): "Same as yesterday" offers its count for each trade
+  const previous = useStore((s) => s.dailyLog?.previous);
+  const logDate = useStore((s) => s.dailyLog?.logDate);
   const confirmCrew = useStore((s) => s.confirmCrew);
   // a send on its way has already captured the counts it carries; Today closes the stepper then,
   // and the controls are disabled here as well so no tap can land in that window
@@ -40,6 +44,9 @@ export function CrewStepper({ onClose, today = true }: { onClose: () => void; to
   const row = crew[at];
   const last = at === crew.length - 1;
   const ahead = crew.slice(at + 1);
+  const previousCount = previousCrewCount({ crew, previous }, at);
+  // "yesterday" only on today's log whose last log was sent for the day before; else "last time"
+  const yesterday = today && previousIsDayBefore({ logDate, previous });
   const step = (delta: number) => {
     // the row on screen, by its position — two rows may carry the same trade text — and only while
     // that position still holds the row asked about (Today closes the stepper on a replaced log)
@@ -88,6 +95,11 @@ export function CrewStepper({ onClose, today = true }: { onClose: () => void; to
             <Plus size={28} aria-hidden />
           </button>
         </div>
+        {previousCount !== undefined && previousCount > 0 && (
+          <button className={styles.same} onClick={() => step(previousCount - row.count)} disabled={sending || row.count === previousCount} data-testid="crew-same">
+            {engineerCrewSame(previousCount, lang, yesterday)}
+          </button>
+        )}
       </div>
 
       <div className={styles.foot}>

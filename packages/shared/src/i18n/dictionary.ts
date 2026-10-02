@@ -214,6 +214,14 @@ export function engineerCrewPosition(at: number, total: number, lang: Lang): str
   return `Question ${at} of ${total}`;
 }
 
+/** U1b — set this trade's count to the last log's: "Same as yesterday (6)" when that log was the day
+ *  before today's, else "Same as last time (6)" (a gap of days, or an earlier day's unsent log). */
+export function engineerCrewSame(n: number, lang: Lang, yesterday: boolean): string {
+  if (lang === 'hi') return yesterday ? `कल जितने (${n})` : `पिछली बार जितने (${n})`;
+  if (lang === 'gu') return yesterday ? `ગઈકાલ જેટલા (${n})` : `છેલ્લી વખત જેટલા (${n})`;
+  return yesterday ? `Same as yesterday (${n})` : `Same as last time (${n})`;
+}
+
 /** "3 more", after the next trade names. */
 export function engineerCrewMore(n: number, lang: Lang): string {
   if (lang === 'hi') return `${n} और`;

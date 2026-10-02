@@ -361,6 +361,9 @@ export interface DailyLogDto {
   checkinTime: string | null;
   submitted: boolean;
   crew: { trade: string; count: number }[];
+  /** U1b — the log before this one (its civil day and crew counts as sent), for "Same as yesterday";
+   *  null when there is none. Optional: a projection row serialized before it existed lacks it. */
+  previous?: { logDate: string | null; crew: { trade: string; count: number }[] } | null;
   materials: { name: string; decisionId: string; qty: string; zone: string; matched: boolean; swatch: string; photo: boolean }[];
   progress: number;
   photos: { id: string; url: string; takenAt?: string }[];
