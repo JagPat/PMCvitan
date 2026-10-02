@@ -950,8 +950,11 @@ guarantee and the coverage seal are per-catalog: an old instance still sending u
 catalog while a new seal is recorded would race the cutover. Zero old instances before step 2.
 
 For the Phase 6 4d drain, `rollout:drain-evidence` (§P6T4D, "Recording the drain's autonomous
-corroboration") records what the platform and the `ReleaseLease` register show, beside — never
-instead of — the human operator attestation the gate requires.
+corroboration") records what the platform and the `ReleaseLease` register show. Since the owner's
+decision of 2026-10-01 (`docs/POLICY.md`) its `drained` verdict, produced by the trusted
+`drain-evidence` workflow on `main`, committed unchanged in the head commit that clears the drain
+directive and verified there by review-scope and again by the merge controller, is what clears it; no
+human operator attestation is required beside it.
 
 ## 2. Deploy the new build in LEGACY/SHADOW sender mode
 
@@ -1296,9 +1299,36 @@ database connection dropped during it: look there, not at the fence.
 
 ### Recording the drain's autonomous corroboration: `rollout:drain-evidence`
 
-The gate `phase-6-4d-previous-release-drained` clears ONLY on the direct explicit human
-`OPERATOR-ATTESTATION` (docs/POLICY.md). Beside it — never instead of it — the runner records the
-evidence it can verify fail-closed, as a `DRAIN-EVIDENCE` comment on the controlling issue:
+The gate `phase-6-4d-previous-release-drained` no longer requires a human `OPERATOR-ATTESTATION`:
+the owner withdrew that requirement on 2026-10-01 (docs/POLICY.md), and on 2026-10-02 chose that only
+the trusted `drain-evidence` workflow produces a clearing record. The procedure:
+
+1. **Once, the owner:** create the GitHub environment `drain-evidence` with deployment branches limited
+   to `main`; add its secrets `DRAIN_DATABASE_URL` (a READ-ONLY production role) and
+   `DRAIN_COOLIFY_TOKEN` (a read-only Coolify token), and its variables `DRAIN_COOLIFY_API_URL`
+   (`https://<coolify host>/api/v1`) and `DRAIN_COOLIFY_APP_UUID`. The production database must accept
+   connections from GitHub-hosted runners.
+2. **Run** the "Phase 6 4d drain evidence" workflow (`.github/workflows/drain-evidence.yml`) from the
+   Actions tab on `main`, with `clearing_parent` set to the clearing PR's CURRENT head SHA (all 40
+   characters). It runs this command from its own commit with the environment's credentials, stamps
+   the JSON with its run identity and that clearing parent, uploads it as the artifact
+   `phase-6-4d-drain-evidence-<run>-<attempt>`, and is green only on `drained`; the job summary shows
+   the verdict and any findings.
+3. **Commit** the artifact's one file, UNCHANGED, as `docs/rollout/phase-6-4d-drain-evidence.json` in
+   ONE commit directly on top of that SHA (the commit may also carry the STATUS edit), and push it. Any
+   other commit after that SHA — a merge of `main`, a fix, a delete and re-add — means running the
+   workflow again with the new head and committing its new file on top of it.
+
+The review-scope gate and, again from the default branch against the exact head, the merge controller
+verify that PR (`scripts/autonomous-drain-clearance.mjs`): the committed record must be byte-identical
+to the artifact of the run its stamp names, and that run must be this workflow, dispatched on `main` at a
+commit on `main`, completed successfully; the head commit must change the record, its one parent must be
+the run's `clearing_parent`, and the record must not be dated after it; the record must be at most 24 hours old; and it must be a `drained` verdict with no
+findings for this directive and the minimum release `f8274f4…`, with the platform inventory read,
+recorded after the directive was set and re-deriving to `drained` from its own inventory. The Now block
+must carry each key once. A STATUS edit without that record, or a record the workflow did not produce,
+is refused. For diagnosis only, the command can also be run by hand where the credentials are held; a
+hand-run record does not clear the directive:
 
 ```
 COOLIFY_TOKEN='<read token>' pnpm --filter api rollout:drain-evidence \
@@ -1320,9 +1350,11 @@ at or after the minimum, no deployment of it is in progress, and every live leas
 catalog version; anything provably older is `not-drained`; anything it cannot place — no token, a
 failed read, a stopped application, a deployment in progress, a release that is not a commit in the
 checkout, an `unreleased` lease — is `unclassified`, and the command exits non-zero for both. The
-JSON evidence goes to stdout; the comment body to `--out` (else stderr), for the runner to post. The
-token comes from the environment only and is never printed. The command drains, stops, deploys and
-posts nothing.
+JSON evidence goes to stdout (the workflow stamps and uploads it); the comment body goes to `--out`
+(else stderr). The token comes from the environment only and is never
+printed. The command drains, stops, deploys and posts nothing; the deploy that drains the fleet is the
+operator's, and 4d-iii's own migration preflight on the lease register still refuses to run while any
+live lease is below the minimum.
 
 ### A restored database that lost its migration ledger
 

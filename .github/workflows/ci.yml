@@ -26,6 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      # actions: read — the drain clearance verifies a committed record against the trusted
+      # drain-evidence workflow's run and artifact (scripts/autonomous-drain-clearance.mjs).
+      actions: read
       contents: read
       pull-requests: read
     steps:

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import * as reviewGate from './autonomous-review-gate.mjs';
+import { buildZip } from './zip-test-fixture.mjs';
 import {
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
@@ -3338,4 +3339,206 @@ test('PR #639/#640: a CI run whose battery was skipped defers to the run still d
   const settleWait = runBody.indexOf('await waitForRequiredChecks(');
   assert.ok(ciHandler >= 0 && ciHandler < deferral, 'the deferral follows the CI-failure branch');
   assert.ok(deferral < pendingStatus && pendingStatus < settleWait, 'the deferral precedes any status write and the settle wait');
+});
+
+test('finding 4163577352 on #686: the controller re-runs the drain clearance from the trusted branch against the exact head and base SHAs', async () => {
+  // The PR-side `review-scope` job runs the clearance rule from the PR's own checkout, which the PR can
+  // edit. The controller runs the same rule here, reading BOTH trees through the API at the exact SHAs,
+  // never from its default-branch checkout — so a STATUS-only clearance is refused as `scope:` whatever
+  // the PR did to its own copy of the rule, and the clearance that commits the record is admitted.
+  const head = 'a1'.repeat(20);
+  const baseSha = 'b2'.repeat(20);
+  const body = [
+    '<!-- review-size: standard -->',
+    '<!-- migration-scope: none -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    '- [x] `concurrency-serialization` — checked against this cumulative diff',
+    '- [x] `old-release-migration-compatibility` — checked against this cumulative diff',
+    '- [x] `trigger-alternate-writers` — checked against this cumulative diff',
+    '- [x] `authorization-tenancy` — checked against this cumulative diff',
+    '- [x] `ci-reproduce-first` — checked against this cumulative diff',
+    '',
+    '- Migration/service seam: n/a',
+  ].join('\n');
+  const pull = () => ({
+    number: 700, additions: 4, deletions: 2, changed_files: 1, body,
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/700',
+    head: { sha: head, ref: 'operator/clear-drain', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: baseSha, repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const statusDoc = (directive) => [
+    '# STATUS', '', '## Now', '', '```yaml', 'phase: 6', 'task: 4', 'task_state: in_progress', 'work_item: none',
+    'reviewed_merge: 4707c5d', 'open_pr: none', 'next_task: phase-6-task-4d-iii', `blocking_directive: ${directive}`,
+    'updated: 2026-10-02', '```', '', '## Maintenance queue', '', 'none', '',
+  ].join('\n');
+  const record = JSON.stringify({
+    marker: 'DRAIN-EVIDENCE', directive: 'phase-6-4d-previous-release-drained',
+    minimumRelease: 'f8274f411191dbbd626cab9bc74468325951674a',
+    minimumCatalogVersion: { value: 3, source: 'the persisted catalog maximum' },
+    generation: { compiled: 3, persistedMinimum: { minimumGeneration: 3, raisedBy: 'a8b', raisedAt: '2026-09-29T00:00:00.000Z' } },
+    platform: { available: true, source: 'coolify', application: { uuid: 'app', name: 'pmc-api', status: 'running:healthy', gitCommitSha: 'f8274f411191dbbd626cab9bc74468325951674a', classification: 'at-or-after' }, deploymentsInProgress: [] },
+    leases: [{ instanceId: 'i-1', catalogVersion: 3, release: 'f8274f411191dbbd626cab9bc74468325951674a', classification: 'at-or-after' }],
+    findings: [], verdict: 'drained', recordedAt: new Date(Date.now() - 60_000).toISOString(),
+    provenance: { workflow: '.github/workflows/drain-evidence.yml', repository: 'JagPat/PMCvitan', runId: 4242, runAttempt: 1, workflowSha: 'c3'.repeat(20), clearingParent: 'b2'.repeat(20) },
+  }, null, 2) + '\n';
+  // The trusted producer's run and artifact, as the controller reads them: the artifact holds `produced`.
+  const producerOf = (produced) => {
+    const zip = buildZip([{ name: 'phase-6-4d-drain-evidence.json', data: produced }]);
+    return {
+      async runAttempt(runId, attempt) {
+        return {
+          id: runId, run_attempt: attempt, path: '.github/workflows/drain-evidence.yml', event: 'workflow_dispatch', head_branch: 'main',
+          head_sha: 'c3'.repeat(20), repository: { full_name: 'JagPat/PMCvitan' }, status: 'completed', conclusion: 'success',
+        };
+      },
+      async runArtifacts() { return [{ id: 77, name: 'phase-6-4d-drain-evidence-4242-1', expired: false }]; },
+      async artifactZip() { return zip; },
+      async onMain() { return true; },
+    };
+  };
+  const STATUS_CHANGE = {
+    filename: 'docs/STATUS.md', status: 'modified',
+    patch: '@@ -9,3 +9,3 @@\n next_task: phase-6-task-4d-iii\n-blocking_directive: phase-6-4d-previous-release-drained\n+blocking_directive: none\n updated: 2026-10-02',
+  };
+  const RECORD_ADDED = { filename: 'docs/rollout/phase-6-4d-drain-evidence.json', status: 'added', patch: '+{...}' };
+
+  const scenario = async ({ files, headTree, headCommitFiles = files.map((file) => file.filename), produced = record, headParents = ['b2'.repeat(20)] }) => {
+    const reads = [];
+    const statusWrites = [];
+    const drafts = [];
+    const stickies = [];
+    const trees = { [head]: headTree, [baseSha]: { 'docs/STATUS.md': statusDoc('phase-6-4d-previous-release-drained') } };
+    const client = {
+      async pullRequest() { return pull(); },
+      async pullRequestFiles() { return files; },
+      async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+      repository: 'JagPat/PMCvitan',
+      drainProvenanceReader() { return producerOf(produced); },
+      async commit(sha) {
+        reads.push(['<commit>', sha]);
+        return {
+          sha, parents: headParents.map((parent) => ({ sha: parent })),
+          commit: { message: 'clear the drain directive', committer: { date: new Date().toISOString() } },
+          files: headCommitFiles.map((filename) => ({ filename, status: 'modified' })),
+        };
+      },
+      async fileContents(path, ref) {
+        reads.push([path, ref]);
+        if (!(ref in trees)) throw new Error(`no such ref ${ref}`);
+        return trees[ref][path] ?? null;
+      },
+      async setDraft(live, draft) { drafts.push(draft); return { ...live, draft }; },
+      async setStatus(sha, state, description) { statusWrites.push({ sha, state, description }); },
+      async updateStickyComment(number, text) { stickies.push(text); },
+      async markReplacementRequired() {},
+    };
+    const result = await reviewGate.enforceReviewScope(client, pull(), head);
+    return { result, reads, statusWrites, drafts, stickies };
+  };
+
+  // 1. STATUS-only: the head no longer carries the directive, no record. Refused as a scope hold on the exact head.
+  const bare = await scenario({ files: [STATUS_CHANGE], headTree: { 'docs/STATUS.md': statusDoc('none') } });
+  assert.equal(bare.result.allowed, false);
+  assert.equal(bare.result.state, 'drain_clearance_refused');
+  assert.match(bare.result.detail, /^drain clearance: the base Now block carries phase-6-4d-previous-release-drained and this head does not, and the tree carries no docs\/rollout\/phase-6-4d-drain-evidence\.json/u);
+  assert.deepEqual(bare.drafts, [true]);
+  assert.equal(bare.statusWrites.at(-1).sha, head);
+  assert.equal(bare.statusWrites.at(-1).state, 'failure');
+  assert.match(bare.statusWrites.at(-1).description, /^scope: drain clearance: /u);
+  assert.match(bare.stickies.at(-1), /scope_required/u);
+  // every read named an exact SHA: the head's STATUS and record, the base's STATUS — none from the checkout
+  assert.deepEqual(bare.reads.map(([path, ref]) => `${path}@${ref === head ? 'head' : ref === baseSha ? 'base' : ref}`).sort(), [
+    'docs/STATUS.md@base', 'docs/STATUS.md@head', 'docs/rollout/phase-6-4d-drain-evidence.json@head',
+  ]);
+
+  // 2. The record regenerated on the clearing head: admitted, nothing drafted, no status written here; the
+  //    head commit is read at the exact SHA.
+  const recorded = await scenario({
+    files: [STATUS_CHANGE, RECORD_ADDED],
+    headTree: { 'docs/STATUS.md': statusDoc('none'), 'docs/rollout/phase-6-4d-drain-evidence.json': record },
+  });
+  assert.equal(recorded.result.allowed, true, recorded.result.detail);
+  assert.deepEqual(recorded.drafts, []);
+  assert.deepEqual(recorded.statusWrites, []);
+  assert.ok(recorded.reads.some(([path, ref]) => path === '<commit>' && ref === head));
+
+  // 2a. A hand-written record (finding 4163934186): stamped with a real run, but not that run's artifact —
+  //     refused, drafted on the exact head.
+  const handWritten = await scenario({
+    files: [STATUS_CHANGE, RECORD_ADDED],
+    headTree: { 'docs/STATUS.md': statusDoc('none'), 'docs/rollout/phase-6-4d-drain-evidence.json': record },
+    produced: record.replace('"verdict": "drained"', '"verdict": "not-drained"'),
+  });
+  assert.equal(handWritten.result.allowed, false);
+  assert.match(handWritten.result.detail, /not the trusted producer's output: the committed record differs from run 4242's artifact/u);
+  assert.deepEqual(handWritten.drafts, [true]);
+
+  // 2c. The genuine record deleted and re-added on a later commit (finding 4164136422): the clearing head's
+  //     parent is not the commit the record was observed for — refused, drafted on the exact head.
+  const reAdded = await scenario({
+    files: [STATUS_CHANGE, RECORD_ADDED],
+    headTree: { 'docs/STATUS.md': statusDoc('none'), 'docs/rollout/phase-6-4d-drain-evidence.json': record },
+    headParents: ['d4'.repeat(20)],
+  });
+  assert.equal(reAdded.result.allowed, false);
+  assert.match(reAdded.result.detail, /observed for clearing parent b2b2b2b, but commit .* sits on d4d4d4d/u);
+  assert.deepEqual(reAdded.drafts, [true]);
+
+  // 2b. The same record, added on an EARLIER head of the PR (finding 4163934196): the cumulative diff still
+  //     lists it, the head commit does not change it — refused.
+  const earlyHead = await scenario({
+    files: [STATUS_CHANGE, RECORD_ADDED],
+    headTree: { 'docs/STATUS.md': statusDoc('none'), 'docs/rollout/phase-6-4d-drain-evidence.json': record },
+    headCommitFiles: ['docs/STATUS.md'],
+  });
+  assert.equal(earlyHead.result.allowed, false);
+  assert.match(earlyHead.result.detail, /not regenerated on the clearing head/u);
+  assert.deepEqual(earlyHead.drafts, [true]);
+
+  // 3. The record already in the head tree but not in this PR's files (finding 4163577348): refused.
+  const reused = await scenario({
+    files: [STATUS_CHANGE],
+    headTree: { 'docs/STATUS.md': statusDoc('none'), 'docs/rollout/phase-6-4d-drain-evidence.json': record },
+  });
+  assert.equal(reused.result.allowed, false);
+  assert.match(reused.result.detail, /does not add or change docs\/rollout\/phase-6-4d-drain-evidence\.json/u);
+
+  // 4. The duplicate-key encoding (finding 4163577340): the diff removes nothing, the head parses as cleared.
+  const appended = await scenario({
+    files: [{ filename: 'docs/STATUS.md', status: 'modified', patch: '@@ -10,2 +10,4 @@\n updated: 2026-10-02\n+task_state: merged\n+blocking_directive: none' }],
+    headTree: { 'docs/STATUS.md': statusDoc('phase-6-4d-previous-release-drained').replace('updated: 2026-10-02', 'updated: 2026-10-02\ntask_state: merged\nblocking_directive: none') },
+  });
+  assert.equal(appended.result.allowed, false);
+  assert.match(appended.result.detail, /repeats `blocking_directive`, `task_state`/u);
+
+  // 5. The directive standing on the head: not a clearance; the base is not read, and nothing is refused.
+  const standing = await scenario({ files: [STATUS_CHANGE], headTree: { 'docs/STATUS.md': statusDoc('phase-6-4d-previous-release-drained') } });
+  assert.equal(standing.result.allowed, true, standing.result.detail);
+  assert.deepEqual(standing.reads, [['docs/STATUS.md', head]]);
+
+  // 6. A PR that does not touch STATUS reads nothing.
+  const untouched = await scenario({ files: [{ filename: 'apps/api/src/thing.ts', status: 'modified' }], headTree: {} });
+  assert.equal(untouched.result.allowed, true, untouched.result.detail);
+  assert.deepEqual(untouched.reads, []);
+
+  // The real client reads one exact ref through the contents API with the raw media type, and a 404 is null.
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push([String(url), init.headers.Accept]);
+    return String(url).includes('drain-evidence') ? new Response('nope', { status: 404 }) : new Response('# STATUS', { status: 200 });
+  };
+  try {
+    const client = new reviewGate.GitHubClient({ repository: 'JagPat/PMCvitan', token: 't' });
+    assert.equal(typeof client.drainProvenanceReader().runAttempt, 'function');
+    assert.equal(await client.fileContents('docs/STATUS.md', head), '# STATUS');
+    assert.equal(await client.fileContents('docs/rollout/phase-6-4d-drain-evidence.json', head), null);
+    await assert.rejects(client.fileContents('docs/STATUS.md', 'main'), /no exact ref/u);
+    assert.deepEqual(requests[0], [`https://api.github.com/repos/JagPat/PMCvitan/contents/docs/STATUS.md?ref=${head}`, 'application/vnd.github.raw+json']);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

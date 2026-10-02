@@ -138,3 +138,45 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
     expect(broken.classify(head, head)).toBe('unclassifiable');
   });
 });
+
+// The gate that clears `phase-6-4d-previous-release-drained` (scripts/autonomous-drain-clearance.mjs)
+// re-derives a committed record's verdict from the record's own inventory, by THIS module's rules. The
+// two implementations cannot share code (the gate is a dependency-free Node script that runs before
+// `pnpm install`), so parity is pinned here against the real `judgeDrain` over the JSON round-trip the
+// record goes through (#686's shadow review, round 3: an empty lease register is `drained` in both).
+describe('the drain-clearance gate re-derives exactly what judgeDrain judges', async () => {
+  const gate = await import('../../../../../scripts/autonomous-drain-clearance.mjs');
+  const roundTrip = (input: DrainEvidenceInput) => {
+    const judged = judgeDrain(input);
+    const rederived = gate.rederiveDrainVerdict(JSON.parse(JSON.stringify(judged)));
+    return { judged, rederived };
+  };
+  const cases: Array<[string, Partial<DrainEvidenceInput>]> = [
+    ['drained, one lease', {}],
+    ['drained, empty lease register', { leases: [] }],
+    ['drained, several leases', { leases: [lease('i-1', 3, 'bbbbbbbb'), lease('i-2', 4, 'aaaaaaaa')] }],
+    ['not drained: image before the minimum', { platform: { inventory: inventory({ gitCommitSha: '99999999' }) } }],
+    ['not drained: lease below the minimum catalog version', { leases: [lease('i-old', 2, 'bbbbbbbb')] }],
+    ['not drained: lease naming an earlier release', { leases: [lease('i-old', 3, '99999999')] }],
+    ['not drained dominates unclassifiable', { platform: { unavailable: 'HTTP 503' }, leases: [lease('i-old', 2, 'bbbbbbbb')] }],
+    ['unclassified: no platform read', { platform: { unavailable: 'COOLIFY_TOKEN is not set' } }],
+    ['unclassified: stopped application', { platform: { inventory: inventory({ status: 'exited' }) } }],
+    ['unclassified: deployment in progress', { platform: { inventory: inventory({}, [{ deploymentUuid: 'd1', applicationId: 7, status: 'in_progress', commit: null }]) } }],
+    ['unclassified: unplaceable image', { platform: { inventory: inventory({ gitCommitSha: 'cccccccc' }) } }],
+    ['unclassified: unplaceable lease', { leases: [lease('i-x', 3, 'cccccccc')] }],
+    ['unclassified: no persisted minimum', { persistedMinimum: null }],
+    ['unclassified: stale command build', { compiledGeneration: 0 }],
+  ];
+  for (const [label, over] of cases) {
+    it(label, () => {
+      const { judged, rederived } = roundTrip(base(over));
+      expect(rederived.verdict, `${label}: judgeDrain said ${judged.verdict} (${judged.findings.join('; ')}) but the gate re-derives ${rederived.verdict} (${rederived.findings.join('; ')})`).toBe(judged.verdict);
+      // and a drained record passes the gate's full record validation when it is fresh and names the directive's minimum
+      if (judged.verdict === 'drained') {
+        const record = JSON.stringify({ ...judged, minimumRelease: gate.DRAIN_MINIMUM_RELEASE, recordedAt: '2026-10-02T09:00:00.000Z' });
+        const parsed = gate.parseDrainEvidence(record, { now: Date.parse('2026-10-02T12:00:00.000Z') });
+        expect(parsed.ok, `${label}: ${parsed.reason}`).toBe(true);
+      }
+    });
+  }
+});

@@ -113,10 +113,10 @@ gates still prevent completion. The implementer cannot supply independent review
 clearance; it must come from the configured review integration.
 
 No routine human technical approval substitutes for CI or independent review.
-The retained production-drain exception is different: clearing
-`phase-6-4d-previous-release-drained` requires the human `OPERATOR-ATTESTATION`.
-Automated release-lease/fleet evidence is fail-closed corroboration, not a substitute.
-This consolidation does not reverse that decision or authorize a production action.
+The production-drain exception previously retained here — clearing
+`phase-6-4d-previous-release-drained` required the human `OPERATOR-ATTESTATION` — is withdrawn by
+the owner's decision of 2026-10-01 (#482 comment 5929472784). The directive clears only on a `drained` verdict from `rollout:drain-evidence` produced by the trusted `drain-evidence` workflow on `main` (read-only production credentials in its environment),
+committed byte-identical at `docs/rollout/phase-6-4d-drain-evidence.json` in the clearing head and verified by `review-scope` and again by the merge controller; a STATUS edit alone never clears it.
 
 ## Correction routing and recovery
 
