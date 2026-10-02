@@ -10,6 +10,17 @@
 > recorded in `2026-09-30-4d-ii-b-additive-units.md`, not as the single `justified-large` PR §D stages. That
 > record maps every §D 4d-ii-b inventory item to exactly one unit; §A remains the specification. The STATUS
 > fold that sets the drain directive rides the last B-unit's post-merge record. The text below is left as reviewed.
+>
+> **Gate decision (owner, 2026-10-01; PR #686).** The human `OPERATOR-ATTESTATION` that §D's "drain
+> attestation" paragraph and the lineage header below retain as the controlling default is WITHDRAWN by the
+> owner's own decision, recorded in the owner's own words on the controlling issue (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5929472784; owner account, no
+> agent marker) — the one channel the lineage header names as able to lift it. `docs/POLICY.md` records it.
+> The gate is now the fail-closed autonomous evidence alone, and it is MECHANICALLY enforced:
+> `phase-6-4d-previous-release-drained` clears only on a committed `drained` verdict from
+> `rollout:drain-evidence` at `docs/rollout/phase-6-4d-drain-evidence.json`, verified by the review-scope
+> gate on the PR that removes the directive (`scripts/autonomous-drain-clearance.mjs`); a STATUS edit alone
+> never clears it, and 4d-iii's migration preflight on the `ReleaseLease` register stays its own door. The
+> text below is left as reviewed; where it says the attestation is REQUIRED, this amendment governs.
 
 **Status: PLANNING — this is the docs-only 4d plan unit the merged 4b plan's §E order requires**
 (`docs/superpowers/plans/2026-08-14-decision-workflow-4b.md`

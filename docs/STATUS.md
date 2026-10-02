@@ -22,7 +22,17 @@ blocking_directive: phase-6-4d-previous-release-drained
 updated: 2026-10-01
 ```
 
-### Now — 4d-ii-b is COMPLETE: B6 merged as #684 (`e4ac5d8`); this fold LANDS the drain directive
+### Now — 4d-ii-b is COMPLETE: B6 merged as #684 (`e4ac5d8`); the drain directive STANDS, and its clearing path is now the verified drain verdict
+
+**THE CLEARING PATH CHANGED ON 2026-10-01 (PR #686).** The repository owner withdrew the human
+`OPERATOR-ATTESTATION` this directive used to require — in the owner's own words on the controlling
+issue (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5929472784; owner account, no agent marker), after the same instruction in the owner's Claude Code
+session. `docs/POLICY.md` records the withdrawal. The directive itself still STANDS in this block: what
+changed is HOW it clears. It clears only on a committed `drained` verdict from `rollout:drain-evidence`
+at `docs/rollout/phase-6-4d-drain-evidence.json`, which the review-scope gate verifies on the PR that
+removes the directive (`scripts/autonomous-drain-clearance.mjs`; #686's Codex finding 4157323191: a
+STATUS-only PR must never be able to clear it). No human attestation is required or awaited; no
+STATUS edit alone can clear it. The "Directive" section below carries the rule in full.
 
 **UNIT B6 IS MERGED (PR #684 at `main` `e4ac5d8`) WITH A FRESH INDEPENDENT CODEX +1 ON THE EXACT
 REVIEWED HEAD `98287a2`** — the first review attempt's counter, after three finding-bearing heads
@@ -76,34 +86,32 @@ split brain of exactly 4c's class. The reservation makes that state unreachable 
 attested drained; 4d-iii retires the reservation. Browser tabs stand behind the `countersign-v1`
 boundary B1 shipped, so the client side needs no drain.
 
-**Why a human declares it.** No code in this repository can observe which processes are ALREADY
-RUNNING. `docs/POLICY.md`: "clearing `phase-6-4d-previous-release-drained` requires the human
-`OPERATOR-ATTESTATION`. Automated release-lease/fleet evidence is fail-closed corroboration, not a
-substitute." That is a BOARD DECISION carried from 4c (2026-08-29, on #480: an operator-declared
-directive, NO automated drain actor) and re-answered for 4d on the controlling issue #482 (comment
-5569586836, 2026-09-07: the user's standing instructions RETAIN human production attestation; evidence
-does NOT replace the direct explicit operator attestation; no review request, agent statement or
-coordinator note can authorize its removal). The two pieces of trusted autonomous evidence 4d-ii-a
-shipped — the sealed `ReleaseLease` register every serving process writes at startup and renews with
-its compiled consumer-catalog version (the witness unit and A6), and `rollout:drain-evidence`, which
-reads the deploy platform's running-container inventory, asserts every image is at or after the
-minimum release, fails closed on anything it cannot classify, and records a `DRAIN-EVIDENCE` comment on
-#482 (A6e) — are CORROBORATION the runner verifies and records BEFORE the attestation. They are never a
-substitute, and a wait for genuinely required operator evidence is never permission to clear the gate.
+**Who declares it, and on what evidence.** No code in this repository can observe which processes are
+ALREADY RUNNING, so the drain is judged from two things 4d-ii-a shipped as trusted autonomous evidence:
+the sealed `ReleaseLease` register every serving process writes at startup and renews with its compiled
+consumer-catalog version (the witness unit and A6), and `rollout:drain-evidence` (A6e), which reads the
+deploy platform's running-container inventory for the processes that predate the register, asserts
+every image is at or after the minimum release, fails closed on anything it cannot classify, and prints
+its evidence as JSON with a `verdict` of `drained`, `not-drained` or `unclassified`. Until 2026-10-01 a
+human `OPERATOR-ATTESTATION` was REQUIRED beside that evidence (the Board decision carried from 4c,
+2026-08-29 on #480; #482 comment 5569586836, 2026-09-07). The owner withdrew that requirement on
+2026-10-01 (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5929472784), and `docs/POLICY.md` records it: the fail-closed evidence IS the gate.
 
-**How to clear it.** (1) The runner's own, repeatable, fail-closed step: run `rollout:drain-evidence`
-against the minimum release `f8274f4` and let it record its `DRAIN-EVIDENCE` comment on #482. (2) The
-operator's step, which only a human supplies: an `OPERATOR-ATTESTATION` on #482, in the owner's own
-voice and account, beginning `OPERATOR-ATTESTATION`, naming `phase-6-4d-previous-release-drained` and
-the minimum release `f8274f4`, stating that every PMC Vitan process in the class is on `f8274f4` or
-later, and carrying no Watch, Claude, Board-via-agent or other generation marker anywhere in it — the
-4c-iv record (#482 comment 5548460858, cited in this file's 4c-iv clearing entry) is the format
-precedent. (3) A STATUS commit CITING that record by URL, setting `blocking_directive: none` and
-`task_state` to the state 4d-iii opens from — the attributable, reviewable record of WHO declared the
-fleet drained, the same shape every other blocking directive in this loop has used. Nothing else
-clears it: not a Board call relayed by an agent, not the handoff watchdog, not the drift shepherd, not
-a clean signal on any PR, not a review finding asking for its removal, and not any statement this
-runner writes — the autonomous producer that landed this record cannot clear the directive it landed.
+**How to clear it.** (1) The operator, where the platform read token is held, runs
+`rollout:drain-evidence --minimum-release f8274f411191dbbd626cab9bc74468325951674a` against the
+production database and the Coolify application (RUNBOOK §P6T4D, "Recording the drain's autonomous
+corroboration") and commits its stdout — the JSON evidence — at
+`docs/rollout/phase-6-4d-drain-evidence.json`, in the same PR that sets `blocking_directive: none`
+and `task_state` to the state 4d-iii opens from. (2) The review-scope gate admits that PR only when
+the committed record is a `drained` verdict with no findings, names THIS directive and THIS minimum
+release (`f8274f4…`), was judged with the platform inventory read, and was recorded after this
+directive was set (`2026-10-01T03:19:21Z`, #685's merge) — `scripts/autonomous-drain-clearance.mjs`,
+pinned by `scripts/autonomous-drain-clearance.test.mjs`. Nothing else clears it: not a STATUS edit
+without the record, not a `not-drained` or `unclassified` record, not a record for another directive or
+minimum, not a verdict older than the directive, not a Board call relayed by an agent, not the handoff
+watchdog, not the drift shepherd, not a clean signal on any PR, not a review finding asking for its
+removal, and not any statement this runner writes. The command itself changes nothing in production;
+the deploy that drains the fleet remains the operator's.
 
 **What it blocks while it stands.** `assessRunnerState` returns `directive:` ahead of every other
 work source, so 4d-iii — the migration-only unit that, behind its table fence, retires the five doors,
@@ -112,9 +120,9 @@ standing registers toward the orgs truth, activates `decisions.effects` and tomb
 external-effect catalog version (§D "4d-iii, the reservation retirement") — is unreachable, and so is
 every step after it. The runner is not stranded: it continues every already-authorized duty —
 shepherding open PRs, fix-forward corrections on review findings, CI and the gate battery, the
-Maintenance queue — and it runs `rollout:drain-evidence` as its half of the gate. **A merge is not a
-rollout**: nothing in this record deploys anything, activates the architect role on any project, or
-claims the fleet is drained.
+Maintenance queue. **A merge is not a rollout**: nothing in this record deploys anything, activates the
+architect role on any project, or claims the fleet is drained; this record carries no evidence file, so
+the directive stands until the operator commits a `drained` verdict.
 
 ### History — 4d-ii-b unit B6, the client keys on the member commands (#684, `claude/4d-ii-b-b6-member-keys`)
 

@@ -114,9 +114,9 @@ clearance; it must come from the configured review integration.
 
 No routine human technical approval substitutes for CI or independent review.
 The production-drain exception previously retained here — clearing
-`phase-6-4d-previous-release-drained` required the human `OPERATOR-ATTESTATION` — is
-withdrawn by the owner's decision of 2026-10-01 (#482 comment 5929472784). The fail-closed
-automated evidence is the gate; no attestation is awaited. Deploys remain the operator's.
+`phase-6-4d-previous-release-drained` required the human `OPERATOR-ATTESTATION` — is withdrawn by
+the owner's decision of 2026-10-01 (#482 comment 5929472784). The directive clears only on a committed
+`drained` verdict from `rollout:drain-evidence` at `docs/rollout/phase-6-4d-drain-evidence.json`, verified by `review-scope`; a STATUS edit alone never clears it.
 
 ## Correction routing and recovery
 

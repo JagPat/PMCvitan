@@ -11,12 +11,14 @@ import { SERVER_GENERATION, readServerMinimum, type PersistedServerMinimum } fro
  * `DRAIN-EVIDENCE` comment on the controlling issue — an OBSERVER of the platform's state, never an
  * actor that drains anything").
  *
- * WHAT IT IS NOT. The gate `phase-6-4d-previous-release-drained` clears ONLY on the direct explicit
- * human operator attestation (docs/POLICY.md; the Board decision carried from 4c). This evidence is
- * corroboration the runner records BESIDE it: never a substitute, never a reason to treat a wait
- * for the attestation as permission to clear the gate. The command reads; it starts, stops, deploys
- * and drains nothing, and it posts nothing itself — it renders the comment body for the runner to
- * record, so no platform or GitHub credential passes through it beyond the read token it is given.
+ * WHAT IT IS, SINCE 2026-10-01. The owner withdrew the human operator attestation the gate
+ * `phase-6-4d-previous-release-drained` used to require (docs/POLICY.md; #482 comment 5929472784), so
+ * this command's `drained` verdict IS what clears the gate — once the operator commits the JSON it
+ * prints as `docs/rollout/phase-6-4d-drain-evidence.json`, where the review-scope gate verifies it
+ * (`scripts/autonomous-drain-clearance.mjs`) on the PR that removes the directive. The command still
+ * only reads; it starts, stops, deploys and drains nothing, and it posts nothing itself — it renders
+ * the comment body for the operator to record, so no platform or GitHub credential passes through it
+ * beyond the read token it is given.
  *
  * TWO PIECES OF EVIDENCE, both read here:
  *   (i) the `ReleaseLease` register — every serving process from 4d-ii on writes and renews a lease
@@ -199,7 +201,7 @@ export function renderDrainEvidence(ev: DrainEvidence): string {
     : 'NO persisted minimum';
   const lines = [
     `${ev.marker} — autonomous corroboration for \`${ev.directive}\`, recorded ${ev.recordedAt}.`,
-    `This is an OBSERVATION, not an attestation: the gate clears only on the direct explicit human operator attestation (docs/POLICY.md). Nothing was drained, stopped, deployed or changed.`,
+    `This is an OBSERVATION, not an attestation: the gate clears only when this command's drained verdict is committed as docs/rollout/phase-6-4d-drain-evidence.json and the review-scope gate verifies it (docs/POLICY.md). Nothing was drained, stopped, deployed or changed.`,
     '',
     `- **Verdict: ${verdict}**`,
     `- Minimum release: \`${ev.minimumRelease}\`; minimum consumer-catalog version: ${ev.minimumCatalogVersion.value} (${ev.minimumCatalogVersion.source})`,

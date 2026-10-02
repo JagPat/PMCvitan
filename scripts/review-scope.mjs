@@ -14,6 +14,7 @@ import {
   parseMaintenanceQueue,
   parseStatusNow,
 } from './autonomous-status-state.mjs';
+import { assessCommittedDirectiveClearance } from './autonomous-drain-clearance.mjs';
 
 async function pullRequestFiles({ fetchImpl, repository, number, token }) {
   if (typeof fetchImpl !== 'function' || !repository || !token) {
@@ -136,6 +137,21 @@ export async function run({
     }
   }
 
+  // The drain directive's clearance, checked HERE for the same reason: the PR tree is on disk, and the
+  // STATUS diff text is already in hand. A PR that removes `phase-6-4d-previous-release-drained` from
+  // the Now block is admitted only when the tree carries a committed `drained` verdict from
+  // `rollout:drain-evidence` for the directive's minimum release (docs/POLICY.md; #686 finding
+  // 4157323191). Reported independently, like the two checks above.
+  const clearance = await assessCommittedDirectiveClearance(event.pull_request, changedFiles);
+  if (clearance?.applies) {
+    if (clearance.allowed) {
+      console.log(`review-scope: drain directive clearance verified — ${clearance.detail}`);
+    } else {
+      console.error(`::error title=Drain directive clearance::${clearance.detail}`);
+      process.exitCode = 1;
+    }
+  }
+
   // The tracked tree itself, checked HERE for the same reason: this is the one
   // job that runs BEFORE `pnpm install`, so it is the only place a packaging
   // defect can be named instead of reported five times as an install failure.
@@ -147,7 +163,7 @@ export async function run({
     process.exitCode = 1;
   }
 
-  return { ...result, status: statusResult, tree: treeResult };
+  return { ...result, status: statusResult, clearance, tree: treeResult };
 }
 
 const DEPENDENCY_DIRECTORY = 'node_modules';

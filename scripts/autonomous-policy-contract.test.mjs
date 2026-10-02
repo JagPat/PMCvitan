@@ -59,6 +59,9 @@ test('all agent entrypoints require the canonical contract instead of embedding 
   assert.match(contract, /Keep unresolved PRs open/u);
   assert.match(contract, /Deployed migrations are immutable/u);
   assert.match(contract, /OPERATOR-ATTESTATION/u);
+  // the drain directive's clearing path since 2026-10-01: the committed verdict, verified by the gate
+  assert.match(contract, /rollout:drain-evidence/u);
+  assert.match(contract, /docs\/rollout\/phase-6-4d-drain-evidence\.json/u);
   assert.match(contract, /scripts\/review-policy\.mjs/u);
 });
 

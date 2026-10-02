@@ -950,8 +950,9 @@ guarantee and the coverage seal are per-catalog: an old instance still sending u
 catalog while a new seal is recorded would race the cutover. Zero old instances before step 2.
 
 For the Phase 6 4d drain, `rollout:drain-evidence` (§P6T4D, "Recording the drain's autonomous
-corroboration") records what the platform and the `ReleaseLease` register show, beside — never
-instead of — the human operator attestation the gate requires.
+corroboration") records what the platform and the `ReleaseLease` register show. Since the owner's
+decision of 2026-10-01 (`docs/POLICY.md`) its committed `drained` verdict is what clears the drain
+directive; no human operator attestation is required beside it.
 
 ## 2. Deploy the new build in LEGACY/SHADOW sender mode
 
@@ -1296,9 +1297,14 @@ database connection dropped during it: look there, not at the fence.
 
 ### Recording the drain's autonomous corroboration: `rollout:drain-evidence`
 
-The gate `phase-6-4d-previous-release-drained` clears ONLY on the direct explicit human
-`OPERATOR-ATTESTATION` (docs/POLICY.md). Beside it — never instead of it — the runner records the
-evidence it can verify fail-closed, as a `DRAIN-EVIDENCE` comment on the controlling issue:
+The gate `phase-6-4d-previous-release-drained` no longer requires a human `OPERATOR-ATTESTATION`:
+the owner withdrew that requirement on 2026-10-01 (docs/POLICY.md). It clears ONLY on this command's
+`drained` verdict, COMMITTED as `docs/rollout/phase-6-4d-drain-evidence.json` (the JSON it prints on
+stdout) in the same PR that sets `blocking_directive: none`; the review-scope gate verifies that record
+(`scripts/autonomous-drain-clearance.mjs`: a `drained` verdict with no findings, this directive, the
+minimum release `f8274f4…`, the platform inventory read, recorded after the directive was set) and
+refuses a STATUS edit without it. Run it where the platform token is held, with the production
+database as `DATABASE_URL`; the comment body it renders may also be posted on the controlling issue:
 
 ```
 COOLIFY_TOKEN='<read token>' pnpm --filter api rollout:drain-evidence \
@@ -1320,9 +1326,11 @@ at or after the minimum, no deployment of it is in progress, and every live leas
 catalog version; anything provably older is `not-drained`; anything it cannot place — no token, a
 failed read, a stopped application, a deployment in progress, a release that is not a commit in the
 checkout, an `unreleased` lease — is `unclassified`, and the command exits non-zero for both. The
-JSON evidence goes to stdout; the comment body to `--out` (else stderr), for the runner to post. The
-token comes from the environment only and is never printed. The command drains, stops, deploys and
-posts nothing.
+JSON evidence goes to stdout — commit it, byte for byte, as `docs/rollout/phase-6-4d-drain-evidence.json`;
+the comment body goes to `--out` (else stderr). The token comes from the environment only and is never
+printed. The command drains, stops, deploys and posts nothing; the deploy that drains the fleet is the
+operator's, and 4d-iii's own migration preflight on the lease register still refuses to run while any
+live lease is below the minimum.
 
 ### A restored database that lost its migration ledger
 

@@ -338,3 +338,8 @@ corroboration) follows before 4d-iii.
 directive in the directive landing shape (`task_state: correction_required`, `work_item: none`,
 `open_pr: none`, `next_task: phase-6-task-4d-iii`), naming `f8274f4` as the minimum release. 4d-ii-b is
 complete; the drain attestation is the next step, and it is the operator's.
+
+**Gate changed (2026-10-01, PR #686).** The human attestation is withdrawn by the owner's own decision on
+the controlling issue (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5929472784; `docs/POLICY.md`; the 4d plan's head amendment). The directive now clears
+only on a committed `drained` verdict from `rollout:drain-evidence`, verified by the review-scope gate on
+the PR that removes it; the directive stands until the operator commits that record.
