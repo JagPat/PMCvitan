@@ -18,8 +18,9 @@ import { ConflictException } from '@nestjs/common';
  */
 export type Phase6_4dRollout = 'reserved' | 'open';
 
-/** The drain directive every refusal names (docs/POLICY.md): the human operator attestation that the
- *  previous release is drained, which 4d-iii requires before it drops the doors. */
+/** The drain directive every refusal names (docs/POLICY.md): the verified drain of the previous release
+ *  (since 2026-10-01 a committed `drained` verdict from `rollout:drain-evidence`, no human attestation),
+ *  which 4d-iii requires before it drops the doors. */
 export const PHASE6_4D_DRAIN_DIRECTIVE = 'phase-6-4d-previous-release-drained';
 
 /** The reservation doors 4d-i installs and 4d-iii drops, by trigger name. */

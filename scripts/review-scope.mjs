@@ -14,6 +14,13 @@ import {
   parseMaintenanceQueue,
   parseStatusNow,
 } from './autonomous-status-state.mjs';
+import {
+  assessCommittedDirectiveClearance,
+  fileSystemReader,
+  githubCommitReader,
+  githubContentsReader,
+  githubProvenanceReader,
+} from './autonomous-drain-clearance.mjs';
 
 async function pullRequestFiles({ fetchImpl, repository, number, token }) {
   if (typeof fetchImpl !== 'function' || !repository || !token) {
@@ -136,6 +143,46 @@ export async function run({
     }
   }
 
+  // The drain directive's clearance, checked HERE for the same reason: the PR tree is on disk, and the
+  // STATUS diff text is already in hand; the BASE Now block is read from the base SHA through the API,
+  // so the base and head VALUES decide, not the diff text alone. A PR whose head no longer carries
+  // `phase-6-4d-previous-release-drained` is admitted only when it commits a `drained` verdict from
+  // `rollout:drain-evidence` for the directive's minimum release (docs/POLICY.md; #686 findings
+  // 4157323191, 4163577340, 4163577348). The controller re-runs this same check from the default
+  // branch against the exact head before it permits merge (#686 finding 4163577352). Reported
+  // independently, like the two checks above.
+  const clearance = await assessCommittedDirectiveClearance(event.pull_request, changedFiles, {
+    readHead: fileSystemReader(),
+    readBase: githubContentsReader({
+      fetchImpl,
+      repository: repository || event.repository?.full_name,
+      token,
+      ref: event.pull_request.base?.sha,
+    }),
+    // the exact head commit: the record must be regenerated on the clearing head (#686 finding 4163934196)
+    readHeadCommit: githubCommitReader({
+      fetchImpl,
+      repository: repository || event.repository?.full_name,
+      token,
+      sha: event.pull_request.head?.sha,
+    }),
+    // the trusted producer's artifact: the committed record must be byte-identical to it
+    provenanceReader: githubProvenanceReader({
+      fetchImpl,
+      repository: repository || event.repository?.full_name,
+      token,
+    }),
+    repository: repository || event.repository?.full_name,
+  });
+  if (clearance?.applies) {
+    if (clearance.allowed) {
+      console.log(`review-scope: drain directive clearance verified — ${clearance.detail}`);
+    } else {
+      console.error(`::error title=Drain directive clearance::${clearance.detail}`);
+      process.exitCode = 1;
+    }
+  }
+
   // The tracked tree itself, checked HERE for the same reason: this is the one
   // job that runs BEFORE `pnpm install`, so it is the only place a packaging
   // defect can be named instead of reported five times as an install failure.
@@ -147,7 +194,7 @@ export async function run({
     process.exitCode = 1;
   }
 
-  return { ...result, status: statusResult, tree: treeResult };
+  return { ...result, status: statusResult, clearance, tree: treeResult };
 }
 
 const DEPENDENCY_DIRECTORY = 'node_modules';

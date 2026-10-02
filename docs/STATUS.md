@@ -22,7 +22,22 @@ blocking_directive: phase-6-4d-previous-release-drained
 updated: 2026-10-01
 ```
 
-### Now — 4d-ii-b is COMPLETE: B6 merged as #684 (`e4ac5d8`); this fold LANDS the drain directive
+### Now — 4d-ii-b is COMPLETE: B6 merged as #684 (`e4ac5d8`); the drain directive STANDS, and its clearing path is now the verified drain verdict
+
+**THE CLEARING PATH CHANGED ON 2026-10-01 (PR #686).** The repository owner withdrew the human
+`OPERATOR-ATTESTATION` this directive used to require — in the owner's own words on the controlling
+issue (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5929472784; owner account, no agent marker), after the same instruction in the owner's Claude Code
+session. `docs/POLICY.md` records the withdrawal. The directive itself still STANDS in this block: what
+changed is HOW it clears. It clears only on a committed `drained` verdict from `rollout:drain-evidence`
+at `docs/rollout/phase-6-4d-drain-evidence.json`, which the review-scope gate verifies on the PR that
+removes the directive (`scripts/autonomous-drain-clearance.mjs`; #686's Codex finding 4157323191: a
+STATUS-only PR must never be able to clear it). No human attestation is required or awaited; no
+STATUS edit alone can clear it. On 2026-10-02 the owner chose how the record is PRODUCED: only the
+trusted `drain-evidence` workflow (`.github/workflows/drain-evidence.yml`, dispatched on `main`, with
+read-only production credentials held in its `drain-evidence` environment) makes a clearing record, and
+the gate admits a committed record only when it is byte-identical to that workflow's artifact (#686's
+Codex finding 4163934186: a hand-written record must not clear it). The "Directive" section below
+carries the rule in full.
 
 **UNIT B6 IS MERGED (PR #684 at `main` `e4ac5d8`) WITH A FRESH INDEPENDENT CODEX +1 ON THE EXACT
 REVIEWED HEAD `98287a2`** — the first review attempt's counter, after three finding-bearing heads
@@ -76,34 +91,60 @@ split brain of exactly 4c's class. The reservation makes that state unreachable 
 attested drained; 4d-iii retires the reservation. Browser tabs stand behind the `countersign-v1`
 boundary B1 shipped, so the client side needs no drain.
 
-**Why a human declares it.** No code in this repository can observe which processes are ALREADY
-RUNNING. `docs/POLICY.md`: "clearing `phase-6-4d-previous-release-drained` requires the human
-`OPERATOR-ATTESTATION`. Automated release-lease/fleet evidence is fail-closed corroboration, not a
-substitute." That is a BOARD DECISION carried from 4c (2026-08-29, on #480: an operator-declared
-directive, NO automated drain actor) and re-answered for 4d on the controlling issue #482 (comment
-5569586836, 2026-09-07: the user's standing instructions RETAIN human production attestation; evidence
-does NOT replace the direct explicit operator attestation; no review request, agent statement or
-coordinator note can authorize its removal). The two pieces of trusted autonomous evidence 4d-ii-a
-shipped — the sealed `ReleaseLease` register every serving process writes at startup and renews with
-its compiled consumer-catalog version (the witness unit and A6), and `rollout:drain-evidence`, which
-reads the deploy platform's running-container inventory, asserts every image is at or after the
-minimum release, fails closed on anything it cannot classify, and records a `DRAIN-EVIDENCE` comment on
-#482 (A6e) — are CORROBORATION the runner verifies and records BEFORE the attestation. They are never a
-substitute, and a wait for genuinely required operator evidence is never permission to clear the gate.
+**Who declares it, and on what evidence.** No code in this repository can observe which processes are
+ALREADY RUNNING, so the drain is judged from two things 4d-ii-a shipped as trusted autonomous evidence:
+the sealed `ReleaseLease` register every serving process writes at startup and renews with its compiled
+consumer-catalog version (the witness unit and A6), and `rollout:drain-evidence` (A6e), which reads the
+deploy platform's running-container inventory for the processes that predate the register, asserts
+every image is at or after the minimum release, fails closed on anything it cannot classify, and prints
+its evidence as JSON with a `verdict` of `drained`, `not-drained` or `unclassified`. Until 2026-10-01 a
+human `OPERATOR-ATTESTATION` was REQUIRED beside that evidence (the Board decision carried from 4c,
+2026-08-29 on #480; #482 comment 5569586836, 2026-09-07). The owner withdrew that requirement on
+2026-10-01 (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5929472784), and `docs/POLICY.md` records it: the fail-closed evidence IS the gate.
 
-**How to clear it.** (1) The runner's own, repeatable, fail-closed step: run `rollout:drain-evidence`
-against the minimum release `f8274f4` and let it record its `DRAIN-EVIDENCE` comment on #482. (2) The
-operator's step, which only a human supplies: an `OPERATOR-ATTESTATION` on #482, in the owner's own
-voice and account, beginning `OPERATOR-ATTESTATION`, naming `phase-6-4d-previous-release-drained` and
-the minimum release `f8274f4`, stating that every PMC Vitan process in the class is on `f8274f4` or
-later, and carrying no Watch, Claude, Board-via-agent or other generation marker anywhere in it — the
-4c-iv record (#482 comment 5548460858, cited in this file's 4c-iv clearing entry) is the format
-precedent. (3) A STATUS commit CITING that record by URL, setting `blocking_directive: none` and
-`task_state` to the state 4d-iii opens from — the attributable, reviewable record of WHO declared the
-fleet drained, the same shape every other blocking directive in this loop has used. Nothing else
-clears it: not a Board call relayed by an agent, not the handoff watchdog, not the drift shepherd, not
-a clean signal on any PR, not a review finding asking for its removal, and not any statement this
-runner writes — the autonomous producer that landed this record cannot clear the directive it landed.
+**How to clear it.** (1) Open the clearing PR (its STATUS edit may already be on it) and note its
+current head SHA. Run the `drain-evidence` workflow from the Actions tab on `main`
+(`.github/workflows/drain-evidence.yml`; RUNBOOK §P6T4D, "Recording the drain's autonomous
+corroboration"), giving it that SHA as `clearing_parent`. It runs `rollout:drain-evidence --minimum-release f8274f411191dbbd626cab9bc74468325951674a`
+from its own commit against the production database and the Coolify application, with the read-only
+credentials its `drain-evidence` environment holds (limited to `main`), stamps the JSON with its own run
+identity and that clearing parent, uploads it as an artifact, and is green only on a `drained`
+verdict. (2) Download that artifact and commit its one file, UNCHANGED, as
+`docs/rollout/phase-6-4d-drain-evidence.json` in ONE commit directly on top of the SHA you gave it —
+the head of the PR that sets `blocking_directive: none` and `task_state` to the state 4d-iii opens
+from. Any other commit after that SHA (a merge of `main`, a fix, a delete and re-add) means running the
+workflow again with the new head. (3) Two trusted readers judge that PR by one rule (`scripts/autonomous-drain-clearance.mjs`,
+pinned by `scripts/autonomous-drain-clearance.test.mjs`): the PR-side review-scope job, and the
+default-branch merge controller, which re-runs the same check against the exact head and base SHAs
+through the API before it permits merge — so a PR cannot admit itself by editing the rule in its own
+checkout. A PR is a clearance when the BASE Now block carries this directive and the head's does not
+(the values are compared, never only the diff text; a Now block that repeats any key is refused
+outright, since the parser keeps the last value). It is admitted only when ALL of these hold: the record
+is BYTE-IDENTICAL to the artifact of the run its stamp names, and that run is the `drain-evidence`
+workflow, dispatched on `main` at a commit on `main`, in this repository, completed successfully, its
+artifact unexpired and matching its digest — so a hand-written, edited or re-serialised record does not
+clear it, and a genuine record is a genuine production observation whoever commits it; the record is
+REGENERATED ON THE CLEARING HEAD — the head commit itself changes the evidence file, its one parent is
+the `clearing_parent` the record's run was given (#686 finding 4164136422: a commit SHA cannot be known
+before the commit exists, so the observation postdates that parent), and the record is not dated after
+the head commit — so a record left by an earlier PR or head, or deleted and re-added, is not reused and
+any later push means re-running the workflow; the record is at most 24 hours
+old when judged; and it is a `drained` verdict with no findings, names THIS directive and THIS minimum
+release (`f8274f4…`), was judged with the platform inventory read, was recorded after this directive was
+set (`2026-10-01T03:19:21Z`, #685's merge) and not in the future, AND re-derives to `drained` from its
+own inventory by `judgeDrain`'s rules (pinned against the real `judgeDrain` in
+`apps/api/src/platform/rollout/drain-evidence.test.ts`). The workflow needs the owner's one-time setup
+before its first run: the `drain-evidence` environment limited to `main`, its secrets
+`DRAIN_DATABASE_URL` (a read-only production role) and `DRAIN_COOLIFY_TOKEN` (a read-only token), its
+variables `DRAIN_COOLIFY_API_URL` and `DRAIN_COOLIFY_APP_UUID`, and a production database reachable
+from GitHub-hosted runners; until then the run fails closed and the directive stands. 4d-iii's migration
+preflight on the live `ReleaseLease` register remains the runtime door beside it. Nothing else clears
+it: not a STATUS edit without the record, not a record the workflow did not produce, not a reused,
+earlier-head or day-old record, not a `not-drained` or `unclassified` record, not a record for another
+directive or minimum, not a verdict older than the directive, not a Board call relayed by an agent, not
+the handoff watchdog, not the drift shepherd, not a clean signal on any PR, not a review finding asking
+for its removal, and not any statement this runner writes. The workflow changes nothing in production;
+the deploy that drains the fleet remains the operator's.
 
 **What it blocks while it stands.** `assessRunnerState` returns `directive:` ahead of every other
 work source, so 4d-iii — the migration-only unit that, behind its table fence, retires the five doors,
@@ -112,9 +153,9 @@ standing registers toward the orgs truth, activates `decisions.effects` and tomb
 external-effect catalog version (§D "4d-iii, the reservation retirement") — is unreachable, and so is
 every step after it. The runner is not stranded: it continues every already-authorized duty —
 shepherding open PRs, fix-forward corrections on review findings, CI and the gate battery, the
-Maintenance queue — and it runs `rollout:drain-evidence` as its half of the gate. **A merge is not a
-rollout**: nothing in this record deploys anything, activates the architect role on any project, or
-claims the fleet is drained.
+Maintenance queue. **A merge is not a rollout**: nothing in this record deploys anything, activates the
+architect role on any project, or claims the fleet is drained; this record carries no evidence file, so
+the directive stands until a `drained` record from the `drain-evidence` workflow is committed.
 
 ### History — 4d-ii-b unit B6, the client keys on the member commands (#684, `claude/4d-ii-b-b6-member-keys`)
 
