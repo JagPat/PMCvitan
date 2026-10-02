@@ -32,24 +32,18 @@ export type DailyLogDraft = {
   logId?: string;
   /** the engineer's check-in (or check-out) on this device, when recorded */
   checkIn?: { checkedIn: boolean; checkinTime: string | null };
-  /** the crew counts the engineer set, by row (absolute — the latest count, not a delta), keyed by
-   *  `crewDraftKey`: the trade, plus its occurrence where two rows share a trade */
+  /** LEGACY (drafts written before U1 round 4): crew counts keyed by trade text. Still read, for the
+   *  first row of each trade only; never written. */
   crew?: Record<string, number>;
+  /** the crew counts the engineer set, by ROW POSITION (absolute — the latest count, not a delta),
+   *  each with the trade it was set on: a free-text trade can never collide with another row's key,
+   *  and a count is applied only where that position still holds that trade */
+  crewRows?: Record<string, { trade: string; count: number }>;
   /** progress photos taken for this log on this device, beyond what the server holds */
   photosAdded?: number;
   /** the engineer answered every crew question for this log (a no-crew day is an answer, not a gap) */
   crewConfirmed?: boolean;
 };
-
-/** The draft key for crew row `i`: its trade, and for a second (third, …) row with the same trade
- *  that trade plus its occurrence, so two rows sharing a trade keep their own counts across a
- *  reconcile. A first occurrence keys by the bare trade, as drafts written before this did. */
-export function crewDraftKey(crew: readonly { trade: string }[], i: number): string {
-  const trade = crew[i]!.trade;
-  let occurrence = 0;
-  for (let j = 0; j < i; j++) if (crew[j]!.trade === trade) occurrence++;
-  return occurrence === 0 ? trade : `${trade}\u241f${occurrence}`;
-}
 
 /** the identity a draft is written against: the civil date of the log, or its legacy display date */
 export function dailyLogKey(log: Pick<DailyLog, 'date' | 'logDate'>): string {
@@ -97,8 +91,11 @@ export function overlayDailyLogDraft(
     checkedIn: serverLog.checkedIn || (kept.checkIn?.checkedIn ?? false),
     checkinTime: serverLog.checkinTime ?? (kept.checkIn?.checkedIn ? kept.checkIn.checkinTime : null),
     crew: serverLog.crew.map((c, i) => {
-      const key = crewDraftKey(serverLog.crew, i);
-      return kept.crew && key in kept.crew ? { ...c, count: kept.crew[key]! } : c;
+      const row = kept.crewRows?.[String(i)];
+      if (row && row.trade === c.trade) return { ...c, count: row.count };
+      // a legacy trade-keyed count applies to the first row of that trade only
+      const first = serverLog.crew.findIndex((x) => x.trade === c.trade) === i;
+      return first && kept.crew && Object.hasOwn(kept.crew, c.trade) ? { ...c, count: kept.crew[c.trade]! } : c;
     }),
     progress: serverLog.progress + (kept.photosAdded ?? 0),
   };
@@ -131,6 +128,16 @@ export function parseDailyLogDraft(raw: unknown): DailyLogDraft | null {
     draft.crew = crew;
   }
   if (typeof d.photosAdded === 'number' && Number.isInteger(d.photosAdded) && d.photosAdded >= 0) draft.photosAdded = d.photosAdded;
+  if (d.crewRows && typeof d.crewRows === 'object') {
+    const rows: Record<string, { trade: string; count: number }> = {};
+    for (const [at, v] of Object.entries(d.crewRows as Record<string, unknown>)) {
+      const r = v as Record<string, unknown> | null;
+      if (/^\d+$/u.test(at) && r && typeof r.trade === 'string' && typeof r.count === 'number' && Number.isInteger(r.count) && r.count >= 0) {
+        rows[at] = { trade: r.trade, count: r.count };
+      }
+    }
+    draft.crewRows = rows;
+  }
   if (d.crewConfirmed === true) draft.crewConfirmed = true;
   return draft;
 }

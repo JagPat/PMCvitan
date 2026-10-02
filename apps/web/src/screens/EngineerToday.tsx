@@ -140,7 +140,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
     const Icon = a === 'start' ? Plus : a === 'checkIn' ? Crosshair : ArrowRight;
     // an earlier day's unsent log is never called today's: its own date is named, and sending it
     // says "this log"
-    const label = a === 'send' && overdueDate ? L.sendThisLog[lang] : L.action[a][lang];
+    const label = overdueDate && a === 'send' ? L.sendThisLog[lang] : overdueDate && a === 'crew' ? L.crewThisLog[lang] : L.action[a][lang];
     // crew and photos are suggestions, never gates: the server sends any checked-in log, so a
     // rain-day or holiday log can go with nothing more recorded
     const sendAnyway = (a === 'crew' || a === 'photos') && path.canSend && can('dailyLog.submit', role);
@@ -150,7 +150,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
         {overdueDate && <div className={styles.nowOverdue} data-testid="today-overdue">{engineerTodayOverdue(overdueDate, lang)}</div>}
         {/* the action names itself once, on the button; a reader who can't act sees it as the title */}
         {!canAct && <div className={styles.nowTitle}>{label}</div>}
-        <div className={styles.nowDetail}>{L.actionDetail[a][lang]}</div>
+        <div className={styles.nowDetail}>{overdueDate && a === 'crew' ? L.crewThisLogDetail[lang] : L.actionDetail[a][lang]}</div>
         {canAct && (
           <button className={styles.nowAction} onClick={run} data-testid="today-action">
             <Icon size={20} aria-hidden /> {label}

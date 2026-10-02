@@ -122,6 +122,8 @@ export const engineerTodayLabels = {
   notRecorded: { en: 'Not recorded', hi: 'दर्ज नहीं', gu: 'નોંધાયું નથી' },
   sendAnyway: { en: 'Nothing more today — send to PMC', hi: 'आज और कुछ नहीं — PMC को भेजें', gu: 'આજે બીજું કંઈ નથી — PMC ને મોકલો' },
   sendThisLog: { en: 'Send this log to PMC', hi: 'यह लॉग PMC को भेजें', gu: 'આ લોગ PMC ને મોકલો' },
+  crewThisLog: { en: "Add this log's crew", hi: 'इस लॉग की टीम जोड़ें', gu: 'આ લોગની ટીમ ઉમેરો' },
+  crewThisLogDetail: { en: 'Who came, and what material arrived.', hi: 'कौन आया और कौन सा सामान आया।', gu: 'કોણ આવ્યું અને કયો માલ આવ્યો.' },
   alsoWaiting: { en: 'Also waiting on you', hi: 'यह भी आपका इंतज़ार कर रहा है', gu: 'આ પણ તમારી રાહ જુએ છે' },
   loading: { en: "Getting today's log…", hi: 'आज का लॉग आ रहा है…', gu: 'આજનો લોગ આવી રહ્યો છે…' },
   unavailable: { en: "Today's log didn't load", hi: 'आज का लॉग नहीं खुला', gu: 'આજનો લોગ ખૂલ્યો નહીં' },
@@ -192,6 +194,8 @@ export const engineerCrewLabels = {
   next: { en: 'Next', hi: 'आगे', gu: 'આગળ' },
   finish: { en: 'Done — back to Today', hi: 'हो गया — आज पर वापस', gu: 'થઈ ગયું — આજે પર પાછા' },
   nobody: { en: 'Nobody today', hi: 'आज कोई नहीं आया', gu: 'આજે કોઈ નથી આવ્યું' },
+  /** the same answer for an earlier day's unsent log, which is not today's */
+  nobodyEarlier: { en: 'Nobody came', hi: 'कोई नहीं आया', gu: 'કોઈ નથી આવ્યું' },
   laterAsk: { en: "Next we'll ask", hi: 'आगे पूछेंगे', gu: 'પછી પૂછીશું' },
 } as const;
 

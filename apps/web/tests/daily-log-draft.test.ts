@@ -144,7 +144,7 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     await settles(() => gw.addSiteMaterial.mock.calls.length === 1 && s().outbox.length === 0);
     await flush();
     expectTheMorningKept();
-    expect(s().dailyLogDraft).toEqual({ projectId: 'ambli', logKey: 'civil:2026-07-03', checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crew: { 'Flooring mason': 3 }, photosAdded: 1 });
+    expect(s().dailyLogDraft).toEqual({ projectId: 'ambli', logKey: 'civil:2026-07-03', checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crewRows: { 0: { trade: 'Flooring mason', count: 3 } }, photosAdded: 1 });
   });
 
   it('moduleQuery mode: the post-command module read keeps all three too (RED at c6cfec7)', async () => {
@@ -204,9 +204,30 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     await s().requestFreshSnapshot(); // the server still holds the unsent [1, 5]
     await flush();
     expect(s().dailyLog?.crew.map((c) => c.count)).toEqual([2, 6]);
-    // a draft written before the occurrence key (bare trade) still applies to the first row only
+    // a draft written before the row key (bare trade) still applies to the first row only
     const legacy = overlayDailyLogDraft(twin, { projectId: 'ambli', logKey: dailyLogKey(twin), crew: { Mason: 3 } }, 'ambli');
     expect(legacy.log?.crew.map((c) => c.count)).toEqual([3, 5]);
+  });
+
+  // U1 (#690, Codex finding 4166618228): free-text trade names can never collide with another row's key
+  it('a trade whose text looks like an encoded key keeps its own count beside the rows it resembles', async () => {
+    const odd = serverLog({ crew: [{ trade: 'Mason\u241f1', count: 0 }, { trade: 'Mason', count: 1 }, { trade: 'Mason', count: 5 }] });
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(odd)) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().crewStep(0, 4);
+    s().crewStep(2, 1);
+    expect(s().dailyLog?.crew.map((c) => c.count)).toEqual([4, 1, 6]);
+    await s().requestFreshSnapshot(); // the server still holds the unsent [0, 1, 5]
+    await flush();
+    expect(s().dailyLog?.crew.map((c) => c.count)).toEqual([4, 1, 6]);
+    // a row key applies only where that position still holds the trade it was set on
+    const moved = overlayDailyLogDraft(serverLog({ crew: [{ trade: 'Plumber', count: 2 }] }), { projectId: 'ambli', logKey: dailyLogKey(odd), crewRows: { 0: { trade: 'Mason\u241f1', count: 4 } } }, 'ambli');
+    expect(moved.log?.crew.map((c) => c.count)).toEqual([2]);
+    // and the row map survives a persist round trip, refusing a malformed entry
+    expect(parseDailyLogDraft({ projectId: 'ambli', logKey: 'civil:2026-07-03', crewRows: { 0: { trade: 'Mason', count: 3 }, x: { trade: 'Bad', count: 1 }, 1: { trade: 'Odd', count: -1 } } })?.crewRows)
+      .toEqual({ 0: { trade: 'Mason', count: 3 } });
   });
 
   it('a photo uploaded online is counted once, and a refresh right after it keeps the count', async () => {
@@ -366,7 +387,7 @@ describe('U1 — the draft is bound to its log by server id, not only by civil d
     s().crewStep(0, 1);
     expect(s().dailyLogDraft?.logId).toBe('log-b');
     expect(s().dailyLogDraft?.checkIn).toBeUndefined();
-    expect(s().dailyLogDraft?.crew).toEqual({ 'Flooring mason': 3 });
+    expect(s().dailyLogDraft?.crewRows).toEqual({ 0: { trade: 'Flooring mason', count: 3 } });
   });
 });
 

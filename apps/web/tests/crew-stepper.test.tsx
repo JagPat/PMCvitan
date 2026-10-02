@@ -96,7 +96,7 @@ describe('U1 — the crew step, one trade at a time', () => {
     fireEvent.click(r.getByTestId('crew-less'));
     expect(counts(useStore)).toEqual([2, 0, 0, 0, 0]);
     // kept in the device's pending draft, as the Site screen's stepper does, so a reconcile keeps it
-    expect(useStore.getState().dailyLogDraft?.crew?.[TRADES[0]]).toBe(2);
+    expect(useStore.getState().dailyLogDraft?.crewRows?.[0]).toEqual({ trade: TRADES[0], count: 2 });
 
     const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
     const site = render(<DailyLogScreen />);
@@ -219,8 +219,14 @@ describe('U1 — the crew step, one trade at a time', () => {
 
   it("an earlier day's unsent log is asked about without calling it today's", async () => {
     const { r } = await loadToday({ dailyLog: log({ logDate: '2026-09-28' }) });
+    // U1 (#690, Codex finding 4166618236): nothing on the way in or in the questions calls it today's
+    expect(r.getByTestId('today-action').textContent).toContain(L.crewThisLog.en);
+    expect(r.getByTestId('today-now').textContent).toContain(L.crewThisLogDetail.en);
+    expect(r.getByTestId('today-now').textContent).not.toMatch(/today/iu);
     fireEvent.click(r.getByTestId('today-action'));
     expect(r.getByTestId('crew-question').textContent).toBe(`${TRADES[0]}: how many came?`);
+    expect(r.getByTestId('crew-nobody').textContent).toBe(C.nobodyEarlier.en);
+    expect(r.getByTestId('crew-stepper').textContent).not.toMatch(/today/iu);
   });
 
   it("asks in the engineer's language", async () => {

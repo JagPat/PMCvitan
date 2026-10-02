@@ -68,7 +68,7 @@ import {
 import { screensFor } from '@/lib/screens';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
-import { type DailyLogDraft, crewDraftKey, dailyLogKey, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
+import { type DailyLogDraft, dailyLogKey, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
@@ -1308,14 +1308,13 @@ export const useStore = create<Store>()(
       else if (logId && !s.dailyLogDraft!.logId) s.dailyLogDraft!.logId = logId;
       mutate(s.dailyLogDraft!);
     };
-    /** …a crew count set on one row (absolute — the latest count), the draft's crew rule. The key is
-     *  the row's trade, and its occurrence when two rows share a trade (`crewDraftKey`), so each row's
-     *  count is kept for that row. */
+    /** …a crew count set on one row (absolute — the latest count), the draft's crew rule. Keyed by the
+     *  row's position with its trade (`crewRows`), so a free-text trade name can never collide with
+     *  another row's key and each row's count is kept for that row. */
     const recordDraftCrew = (s: AppState, idx: number, count: number): void => {
-      const crew = s.dailyLog?.crew;
-      if (!crew?.[idx]) return;
-      const key = crewDraftKey(crew, idx);
-      recordDailyLogDraft(s, (d) => { d.crew = { ...(d.crew ?? {}), [key]: count }; });
+      const row = s.dailyLog?.crew[idx];
+      if (!row) return;
+      recordDailyLogDraft(s, (d) => { d.crewRows = { ...(d.crewRows ?? {}), [String(idx)]: { trade: row.trade, count } }; });
     };
     /** …one more progress photo taken for this log on this device. */
     const recordDraftPhoto = (s: AppState): void =>

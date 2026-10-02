@@ -85,7 +85,7 @@ export function CrewStepper({ onClose, today = true }: { onClose: () => void; to
       <div className={styles.foot}>
         {ahead.length > 0 && (
           <div className={styles.ahead} data-testid="crew-ahead">
-            <span>
+            <span className={styles.aheadNames}>
               {C.laterAsk[lang]}: {ahead.slice(0, NAMED_AHEAD).map((c) => c.trade).join(', ')}
             </span>
             {ahead.length > NAMED_AHEAD && <span className={styles.aheadMore}>{engineerCrewMore(ahead.length - NAMED_AHEAD, lang)}</span>}
@@ -103,7 +103,7 @@ export function CrewStepper({ onClose, today = true }: { onClose: () => void; to
           disabled={sending}
           data-testid="crew-nobody"
         >
-          {C.nobody[lang]}
+          {today ? C.nobody[lang] : C.nobodyEarlier[lang]}
         </button>
       </div>
     </section>

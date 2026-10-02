@@ -1197,3 +1197,30 @@ test("the engineer's crew questions meet the target floor and fit the phone, in 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test("a long free-text trade name wraps within the phone's width on the crew question", async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  // U1 (#690, Codex finding 4166618246): trades are each site's own free text, of any length
+  const long = 'Waterproofingmembraneapplicatorforterraceandwetareassubcontractgang'; // one unbroken token
+  await page.evaluate((trade) => {
+    const seed = (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed;
+    seed({ dailyLog: { date: '02 Oct 2026', logDate: null, checkedIn: true, checkinTime: '9:00 AM', submitted: false, progress: 0,
+      crew: [{ trade: 'Mason', count: 0 }, { trade, count: 0 }, { trade: `${trade}-second`, count: 0 }], materials: [], photos: [] } });
+  }, long);
+  await page.getByTestId('today-step-crew').click();
+  for (const step of [0, 1]) {
+    const box = await page.getByTestId('crew-question').boundingBox();
+    expect(box && box.x >= 0 && box.x + box.width <= 390 + 0.1).toBe(true);
+    const fits = await page.getByTestId('crew-question').evaluate((el) => el.scrollWidth <= el.clientWidth + 0.5);
+    expect(fits).toBe(true);
+    if (step === 0) {
+      const ahead = await page.getByTestId('crew-ahead').boundingBox();
+      expect(ahead && ahead.x + ahead.width <= 390 + 0.1).toBe(true);
+      await page.getByTestId('crew-next').click();
+      await expect(page.getByTestId('crew-question')).toContainText(long);
+    }
+  }
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});
