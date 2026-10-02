@@ -17,6 +17,7 @@ import {
 import {
   assessCommittedDirectiveClearance,
   fileSystemReader,
+  githubCommitReader,
   githubContentsReader,
 } from './autonomous-drain-clearance.mjs';
 
@@ -156,6 +157,13 @@ export async function run({
       repository: repository || event.repository?.full_name,
       token,
       ref: event.pull_request.base?.sha,
+    }),
+    // the exact head commit: the record must be regenerated on the clearing head (#686 finding 4163934196)
+    readHeadCommit: githubCommitReader({
+      fetchImpl,
+      repository: repository || event.repository?.full_name,
+      token,
+      sha: event.pull_request.head?.sha,
     }),
   });
   if (clearance?.applies) {

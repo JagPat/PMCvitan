@@ -3388,7 +3388,7 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
   };
   const RECORD_ADDED = { filename: 'docs/rollout/phase-6-4d-drain-evidence.json', status: 'added', patch: '+{...}' };
 
-  const scenario = async ({ files, headTree }) => {
+  const scenario = async ({ files, headTree, headCommitFiles = files.map((file) => file.filename) }) => {
     const reads = [];
     const statusWrites = [];
     const drafts = [];
@@ -3398,6 +3398,10 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
       async pullRequest() { return pull(); },
       async pullRequestFiles() { return files; },
       async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+      async commit(sha) {
+        reads.push(['<commit>', sha]);
+        return { sha, commit: { message: 'clear the drain directive', committer: { date: new Date().toISOString() } }, files: headCommitFiles.map((filename) => ({ filename, status: 'modified' })) };
+      },
       async fileContents(path, ref) {
         reads.push([path, ref]);
         if (!(ref in trees)) throw new Error(`no such ref ${ref}`);
@@ -3427,7 +3431,8 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
     'docs/STATUS.md@base', 'docs/STATUS.md@head', 'docs/rollout/phase-6-4d-drain-evidence.json@head',
   ]);
 
-  // 2. The record committed in the same PR: admitted, nothing drafted, no status written here.
+  // 2. The record regenerated on the clearing head: admitted, nothing drafted, no status written here; the
+  //    head commit is read at the exact SHA.
   const recorded = await scenario({
     files: [STATUS_CHANGE, RECORD_ADDED],
     headTree: { 'docs/STATUS.md': statusDoc('none'), 'docs/rollout/phase-6-4d-drain-evidence.json': record },
@@ -3435,6 +3440,18 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
   assert.equal(recorded.result.allowed, true, recorded.result.detail);
   assert.deepEqual(recorded.drafts, []);
   assert.deepEqual(recorded.statusWrites, []);
+  assert.ok(recorded.reads.some(([path, ref]) => path === '<commit>' && ref === head));
+
+  // 2b. The same record, added on an EARLIER head of the PR (finding 4163934196): the cumulative diff still
+  //     lists it, the head commit does not change it — refused.
+  const earlyHead = await scenario({
+    files: [STATUS_CHANGE, RECORD_ADDED],
+    headTree: { 'docs/STATUS.md': statusDoc('none'), 'docs/rollout/phase-6-4d-drain-evidence.json': record },
+    headCommitFiles: ['docs/STATUS.md'],
+  });
+  assert.equal(earlyHead.result.allowed, false);
+  assert.match(earlyHead.result.detail, /not regenerated on the clearing head/u);
+  assert.deepEqual(earlyHead.drafts, [true]);
 
   // 3. The record already in the head tree but not in this PR's files (finding 4163577348): refused.
   const reused = await scenario({

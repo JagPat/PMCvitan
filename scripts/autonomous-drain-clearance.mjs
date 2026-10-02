@@ -19,10 +19,14 @@
 // JSON `rollout:drain-evidence` prints — at docs/rollout/phase-6-4d-drain-evidence.json (a record
 // already in the tree is a snapshot of an earlier fleet and is not reused — #686 finding 4163577348),
 // and that record is a `drained` verdict for THIS directive and THIS minimum release, recorded after
-// the directive was set and not in the future. Anything else (no record, a reused record, `not-drained`,
-// `unclassified`, another directive, another minimum, a verdict older than the directive, an unreadable
-// record, an unreadable STATUS) refuses. The CLI itself still changes nothing: the operator runs it where
-// the platform token is held and commits its stdout at the evidence path.
+// the directive was set and not in the future. The record must be REGENERATED ON THE CLEARING HEAD: the
+// head commit itself must change the evidence file, and the record cannot be dated after that commit
+// (#686 finding 4163934196 — a record added on an early head of a long-open PR stays "changed in this
+// PR" while the fleet moves on; the cumulative diff is not freshness, the head commit is). Anything else
+// (no record, a reused or stale record, `not-drained`, `unclassified`, another directive, another
+// minimum, a verdict older than the directive, an unreadable record, an unreadable STATUS or head
+// commit) refuses. The CLI itself still changes nothing: the operator runs it where the platform token
+// is held and commits its stdout at the evidence path, in the commit that clears the directive.
 //
 // The record's SHAPE is not trusted (#686's shadow review, round 1): a `verdict` field can be edited. The
 // gate RE-DERIVES the verdict from the inventory the same record carries — the persisted generation
@@ -188,14 +192,17 @@ const carriesDirective = (now) => {
  * The pure judgement. `baseNow` is the BASE tree's parsed Now block (undefined/null when it could not be
  * read); `headNow` the head tree's; `duplicateNowKeys` the keys the head Now fence repeats; `statusPatch`
  * the STATUS file's diff text (or undefined); `evidenceText` the committed record's text in the head tree
- * (or null when it has none); `evidenceChanged` whether this PR adds or changes the record.
+ * (or null when it has none); `evidenceChanged` whether this PR's cumulative diff adds or changes the
+ * record; `headCommit` the exact head commit — `{ sha, files: [paths it changes], committedAt }` — or
+ * undefined when it could not be read.
  *
  * Returns `{ applies: false, allowed: true }` when the PR does not clear the drain directive, else the
  * verdict on the evidence. Unknown provenance fails closed: when the head no longer carries the directive
- * and the base could not be read, the record is required.
+ * and the base could not be read, the record is required; when the head commit could not be read, the
+ * record cannot be shown fresh and is refused.
  */
 export function assessDirectiveClearance({
-  baseNow, headNow, duplicateNowKeys = [], statusPatch, evidenceText, evidenceChanged = false, now = Date.now(),
+  baseNow, headNow, duplicateNowKeys = [], statusPatch, evidenceText, evidenceChanged = false, headCommit, now = Date.now(),
 } = {}) {
   if (Array.isArray(duplicateNowKeys) && duplicateNowKeys.length > 0) {
     return {
@@ -239,13 +246,45 @@ export function assessDirectiveClearance({
   if (!parsed.ok) {
     return { applies: true, allowed: false, detail: `${provenance}, but ${DRAIN_EVIDENCE_DOCUMENT} does not clear it: ${parsed.reason}` };
   }
+  const freshness = evidenceFreshAtHead(parsed.evidence, headCommit);
+  if (!freshness.ok) {
+    return { applies: true, allowed: false, detail: `${provenance}, but ${DRAIN_EVIDENCE_DOCUMENT} ${freshness.reason}` };
+  }
   return {
     applies: true,
     allowed: true,
     evidence: parsed.evidence,
     detail: `${provenance}; ${DRAIN_EVIDENCE_DOCUMENT} records a drained verdict for minimum release `
-      + `${parsed.evidence.minimumRelease} at ${parsed.evidence.recordedAt}, committed in this PR`,
+      + `${parsed.evidence.minimumRelease} at ${parsed.evidence.recordedAt}, regenerated in head ${String(headCommit.sha).slice(0, 7)}`,
   };
+}
+
+/**
+ * Is the record REGENERATED ON THE CLEARING HEAD? The head commit must itself change the evidence file
+ * (GitHub lists a file in a commit only when its content changed, so an unchanged re-add does not count),
+ * and the record cannot be dated after the commit that carries it. A merge of the base into the branch,
+ * or any later push, is a new head: the operator re-runs `rollout:drain-evidence` for it. The cumulative
+ * PR diff says nothing about freshness (#686 finding 4163934196).
+ */
+export function evidenceFreshAtHead(evidence, headCommit) {
+  if (!headCommit || typeof headCommit !== 'object' || !Array.isArray(headCommit.files)) {
+    return { ok: false, reason: 'cannot be shown fresh: the head commit could not be read' };
+  }
+  const sha = String(headCommit.sha ?? '').slice(0, 7) || 'head';
+  if (!headCommit.files.includes(DRAIN_EVIDENCE_DOCUMENT)) {
+    return {
+      ok: false,
+      reason: `was not regenerated on the clearing head: commit ${sha} does not change it, so the record is a snapshot of an earlier `
+        + 'head\'s fleet; re-run rollout:drain-evidence and commit its output in the head that clears the directive',
+    };
+  }
+  const committedAt = Date.parse(String(headCommit.committedAt ?? ''));
+  if (!Number.isFinite(committedAt)) return { ok: false, reason: `cannot be shown fresh: commit ${sha} carries no committer date` };
+  const recordedAt = Date.parse(String(evidence.recordedAt));
+  if (recordedAt > committedAt + RECORDED_AT_SKEW_MS) {
+    return { ok: false, reason: `is dated ${evidence.recordedAt}, after the commit ${sha} that carries it (${new Date(committedAt).toISOString()})` };
+  }
+  return { ok: true };
 }
 
 /** A reader over the checked-out tree beside this module: text, or null when the path does not exist. */
@@ -282,12 +321,52 @@ export function githubContentsReader({ fetchImpl = globalThis.fetch, repository,
   };
 }
 
+/** The shape `assessDirectiveClearance` needs from a GitHub commit object with its (paginated) `files`. */
+export function headCommitFromGitHub(sha, commit) {
+  if (!commit || typeof commit !== 'object') return undefined;
+  return {
+    sha: commit.sha ?? sha,
+    files: Array.isArray(commit.files) ? commit.files.map((file) => file?.filename).filter((name) => typeof name === 'string') : undefined,
+    committedAt: commit.commit?.committer?.date ?? commit.commit?.author?.date,
+  };
+}
+
+/** A reader of one exact commit through the API — its changed files (all pages) and committer date. */
+export function githubCommitReader({ fetchImpl = globalThis.fetch, repository, token, sha } = {}) {
+  return async () => {
+    if (typeof fetchImpl !== 'function' || !repository || !token) throw new Error('repository, GITHUB_TOKEN and fetch are required to read the head commit');
+    if (!/^[0-9a-f]{40}$/u.test(String(sha ?? ''))) throw new Error('no exact head SHA to read');
+    let commit;
+    const files = [];
+    for (let page = 1; ; page += 1) {
+      const response = await fetchImpl(
+        `https://api.github.com/repos/${repository}/commits/${sha}?per_page=100&page=${page}`,
+        {
+          headers: {
+            accept: 'application/vnd.github+json',
+            authorization: `Bearer ${token}`,
+            'x-github-api-version': '2022-11-28',
+          },
+        },
+      );
+      if (!response.ok) throw new Error(`GitHub commit request for ${sha.slice(0, 7)} failed with HTTP ${response.status}`);
+      const batch = await response.json();
+      commit ??= batch;
+      const pageFiles = Array.isArray(batch?.files) ? batch.files : [];
+      files.push(...pageFiles);
+      if (pageFiles.length < 100) break;
+    }
+    return headCommitFromGitHub(sha, { ...commit, files });
+  };
+}
+
 /**
  * The gate's wiring, shared by the review-scope job and the controller: null when the PR does not touch
  * STATUS. `readHead(path)` reads the head tree, `readBase(path)` the base tree; each returns text, or
- * null when the path is absent, or throws. The STATUS diff text comes from the PR files listing.
+ * null when the path is absent, or throws. `readHeadCommit()` returns the exact head commit's shape
+ * (`headCommitFromGitHub`) or throws. The STATUS diff text comes from the PR files listing.
  */
-export async function assessCommittedDirectiveClearance(pullRequest, changedFiles, { readHead, readBase } = {}) {
+export async function assessCommittedDirectiveClearance(pullRequest, changedFiles, { readHead, readBase, readHeadCommit } = {}) {
   if (!Array.isArray(changedFiles)) return null;
   const statusFile = changedFiles.find((file) =>
     file?.filename === STATUS_DOCUMENT || file?.previous_filename === STATUS_DOCUMENT);
@@ -334,6 +413,14 @@ export async function assessCommittedDirectiveClearance(pullRequest, changedFile
     return { applies: true, allowed: false, detail: `${DRAIN_EVIDENCE_DOCUMENT} could not be read (${error.message})` };
   }
   const evidenceChanged = changedFiles.some((file) => file?.filename === DRAIN_EVIDENCE_DOCUMENT && file?.status !== 'removed');
+  let headCommit;
+  if (evidenceText !== null && evidenceChanged && typeof readHeadCommit === 'function') {
+    try {
+      headCommit = await readHeadCommit();
+    } catch {
+      headCommit = undefined; // unknown: the record cannot be shown fresh, refused below
+    }
+  }
   return assessDirectiveClearance({
     baseNow,
     headNow,
@@ -341,5 +428,6 @@ export async function assessCommittedDirectiveClearance(pullRequest, changedFile
     statusPatch: statusFile.patch,
     evidenceText,
     evidenceChanged,
+    headCommit,
   });
 }

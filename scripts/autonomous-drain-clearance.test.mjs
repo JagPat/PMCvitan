@@ -9,8 +9,11 @@ import {
   DRAIN_MINIMUM_RELEASE,
   assessCommittedDirectiveClearance,
   assessDirectiveClearance,
+  evidenceFreshAtHead,
   fileSystemReader,
+  githubCommitReader,
   githubContentsReader,
+  headCommitFromGitHub,
   nowBlockDuplicateKeys,
   parseDrainEvidence,
   rederiveDrainVerdict,
@@ -62,9 +65,13 @@ const EVIDENCE = (over = {}) => JSON.stringify({
   ...over,
 });
 
-// A clearance as the readers see it: base carries the directive, head does not, the record committed here.
+// The exact head commit as the readers see it: it changes STATUS and the record, committed after the record.
+const HEAD_SHA = 'a1'.repeat(20);
+const HEAD_COMMIT = (over = {}) => ({ sha: HEAD_SHA, files: ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT], committedAt: '2026-10-02T09:30:00.000Z', ...over });
+
+// A clearance as the readers see it: base carries the directive, head does not, the record regenerated here.
 const CLEARANCE = (over = {}) => assessDirectiveClearance({
-  baseNow: STANDING(), headNow: NOW(), statusPatch: CLEARING_PATCH, evidenceText: EVIDENCE(), evidenceChanged: true, now: JUDGED_AT, ...over,
+  baseNow: STANDING(), headNow: NOW(), statusPatch: CLEARING_PATCH, evidenceText: EVIDENCE(), evidenceChanged: true, headCommit: HEAD_COMMIT(), now: JUDGED_AT, ...over,
 });
 
 test('the STATUS diff is read for the removed directive line, and only that line', () => {
@@ -131,10 +138,41 @@ test('the record must be committed in the clearance PR itself (finding 416357734
   assert.equal(CLEARANCE({ evidenceChanged: undefined }).allowed, false);
   assert.equal(CLEARANCE({ evidenceChanged: true }).allowed, true);
   // freshness: recorded after the directive was set, and not in the future of the judging clock
-  assert.equal(CLEARANCE({ evidenceText: EVIDENCE({ recordedAt: '2026-10-02T12:04:59.000Z' }) }).allowed, true);
-  const future = CLEARANCE({ evidenceText: EVIDENCE({ recordedAt: '2026-10-02T12:06:00.000Z' }) });
+  const late = HEAD_COMMIT({ committedAt: '2026-10-02T12:05:00.000Z' });
+  assert.equal(CLEARANCE({ evidenceText: EVIDENCE({ recordedAt: '2026-10-02T12:04:59.000Z' }), headCommit: late }).allowed, true);
+  const future = CLEARANCE({ evidenceText: EVIDENCE({ recordedAt: '2026-10-02T12:06:00.000Z' }), headCommit: HEAD_COMMIT({ committedAt: '2026-10-02T12:07:00.000Z' }) });
   assert.equal(future.allowed, false);
   assert.match(future.detail, /in the future of the judging clock/u);
+});
+
+test('the record must be regenerated on the clearing head (finding 4163934196)', () => {
+  // a record added on an early head of a long-open PR: still in the cumulative diff, absent from the head commit
+  const early = CLEARANCE({ headCommit: HEAD_COMMIT({ files: ['docs/STATUS.md'] }) });
+  assert.equal(early.applies, true);
+  assert.equal(early.allowed, false);
+  assert.match(early.detail, /was not regenerated on the clearing head: commit a1a1a1a does not change it/u);
+  assert.match(early.detail, /re-run rollout:drain-evidence/u);
+  // a record dated after the commit that carries it is not that commit's observation
+  const postdated = CLEARANCE({ evidenceText: EVIDENCE({ recordedAt: '2026-10-02T09:40:00.000Z' }) });
+  assert.equal(postdated.allowed, false);
+  assert.match(postdated.detail, /after the commit a1a1a1a that carries it/u);
+  assert.equal(CLEARANCE({ evidenceText: EVIDENCE({ recordedAt: '2026-10-02T09:34:00.000Z' }) }).allowed, true); // within skew
+  // an unreadable head commit fails closed
+  const unknown = CLEARANCE({ headCommit: undefined });
+  assert.equal(unknown.allowed, false);
+  assert.match(unknown.detail, /head commit could not be read/u);
+  assert.equal(CLEARANCE({ headCommit: HEAD_COMMIT({ committedAt: undefined }) }).allowed, false);
+  // the predicate alone
+  assert.deepEqual(evidenceFreshAtHead(JSON.parse(EVIDENCE()), HEAD_COMMIT()), { ok: true });
+  assert.equal(evidenceFreshAtHead(JSON.parse(EVIDENCE()), { sha: HEAD_SHA, files: [] }).ok, false);
+  assert.equal(evidenceFreshAtHead(JSON.parse(EVIDENCE()), null).ok, false);
+  // the GitHub commit shape, with paginated files
+  assert.deepEqual(
+    headCommitFromGitHub(HEAD_SHA, { sha: HEAD_SHA, commit: { committer: { date: '2026-10-02T09:30:00Z' } }, files: [{ filename: 'docs/STATUS.md' }, { filename: DRAIN_EVIDENCE_DOCUMENT }] }),
+    { sha: HEAD_SHA, files: ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT], committedAt: '2026-10-02T09:30:00Z' },
+  );
+  assert.equal(headCommitFromGitHub(HEAD_SHA, null), undefined);
+  assert.equal(headCommitFromGitHub(HEAD_SHA, { sha: HEAD_SHA, commit: {} }).files, undefined);
 });
 
 test('only a fresh drained verdict for THIS directive and THIS minimum release clears it', () => {
@@ -167,7 +205,7 @@ test('only a fresh drained verdict for THIS directive and THIS minimum release c
   const full = CLEARANCE();
   assert.equal(full.applies, true);
   assert.equal(full.allowed, true, full.detail);
-  assert.match(full.detail, /records a drained verdict .* committed in this PR/u);
+  assert.match(full.detail, /records a drained verdict .* regenerated in head a1a1a1a/u);
   assert.equal(CLEARANCE({ evidenceText: EVIDENCE({ minimumRelease: 'f8274f4' }) }).allowed, true);
   assert.equal(Date.parse(DRAIN_DIRECTIVE_SET_AT) > Date.parse('2026-10-01T00:00:00Z'), true);
 });
@@ -230,6 +268,8 @@ test('the shared wiring reads the head and base trees through injected readers, 
   const STATUS_CHANGE = { filename: 'docs/STATUS.md', status: 'modified', patch: CLEARING_PATCH };
   const RECORD_ADDED = { filename: DRAIN_EVIDENCE_DOCUMENT, status: 'added', patch: '+{...}' };
   const operator = { number: 700, body: '<!-- correction-owner: operator -->' };
+  const fresh = () => EVIDENCE({ recordedAt: new Date(Date.now() - 60_000).toISOString() });
+  const headCommit = (files = ['docs/STATUS.md', DRAIN_EVIDENCE_DOCUMENT]) => async () => ({ sha: HEAD_SHA, files, committedAt: new Date().toISOString() });
 
   // untouched STATUS: nothing to assess, nothing read
   assert.equal(await assessCommittedDirectiveClearance(operator, [{ filename: 'apps/api/src/thing.ts' }], { readHead: failing('must not read'), readBase: failing('must not read') }), null);
@@ -253,16 +293,35 @@ test('the shared wiring reads the head and base trees through injected readers, 
   assert.equal(appended.allowed, false);
   assert.match(appended.detail, /repeats/u);
 
-  // the record committed beside the clearance: allowed
+  // the record regenerated on the clearing head: allowed
   const recorded = await assessCommittedDirectiveClearance(
     operator, [STATUS_CHANGE, RECORD_ADDED],
-    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: EVIDENCE({ recordedAt: new Date(Date.now() - 60_000).toISOString() }) }), readBase: tree({ 'docs/STATUS.md': standing }) },
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }), readHeadCommit: headCommit() },
   );
   assert.equal(recorded.allowed, true, recorded.detail);
-  // the record in the tree but NOT in this PR's files: refused (finding 4163577348)
+  // ...the same record added on an EARLIER head of this PR (in the cumulative diff, not in the head commit): refused
+  const earlyHead = await assessCommittedDirectiveClearance(
+    operator, [STATUS_CHANGE, RECORD_ADDED],
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }), readHeadCommit: headCommit(['docs/STATUS.md']) },
+  );
+  assert.equal(earlyHead.allowed, false);
+  assert.match(earlyHead.detail, /not regenerated on the clearing head/u);
+  // ...an unreadable head commit fails closed; a wiring without a commit reader does too
+  const commitDown = await assessCommittedDirectiveClearance(
+    operator, [STATUS_CHANGE, RECORD_ADDED],
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }), readHeadCommit: failing('HTTP 502') },
+  );
+  assert.equal(commitDown.allowed, false);
+  assert.match(commitDown.detail, /head commit could not be read/u);
+  const noReader = await assessCommittedDirectiveClearance(
+    operator, [STATUS_CHANGE, RECORD_ADDED],
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }) },
+  );
+  assert.equal(noReader.allowed, false);
+  // the record in the tree but NOT in this PR's files: refused (finding 4163577348), and the head commit is not read for it
   const reused = await assessCommittedDirectiveClearance(
     operator, [STATUS_CHANGE],
-    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: EVIDENCE({ recordedAt: new Date(Date.now() - 60_000).toISOString() }) }), readBase: tree({ 'docs/STATUS.md': standing }) },
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: tree({ 'docs/STATUS.md': standing }), readHeadCommit: failing('must not read') },
   );
   assert.equal(reused.allowed, false);
   assert.match(reused.detail, /does not add or change/u);
@@ -286,7 +345,7 @@ test('the shared wiring reads the head and base trees through injected readers, 
   assert.match(baseDown.detail, /removes .* from the Now block/u);
   const baseDownRecorded = await assessCommittedDirectiveClearance(
     operator, [STATUS_CHANGE, RECORD_ADDED],
-    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: EVIDENCE({ recordedAt: new Date(Date.now() - 60_000).toISOString() }) }), readBase: failing('HTTP 502') },
+    { readHead: tree({ 'docs/STATUS.md': clearing, [DRAIN_EVIDENCE_DOCUMENT]: fresh() }), readBase: failing('HTTP 502'), readHeadCommit: headCommit() },
   );
   assert.equal(baseDownRecorded.allowed, true, baseDownRecorded.detail);
 
@@ -334,6 +393,30 @@ test('the two readers: the checkout beside this module, and one exact ref throug
   assert.equal(requests[0][1], 'application/vnd.github.raw+json');
   // no exact ref, no read: the caller treats a thrown base read as unknown and fails closed
   await assert.rejects(githubContentsReader({ repository: 'r', token: 't', ref: 'main', fetchImpl: async () => new Response('') })('docs/STATUS.md'), /no exact ref/u);
+
+  // the head commit reader: files across pages, the committer date, failures thrown
+  const commitRequests = [];
+  const page = (n) => Array.from({ length: n }, (_, i) => ({ filename: `file-${i}.txt` }));
+  const commitReader = githubCommitReader({
+    repository: 'JagPat/PMCvitan', token: 't', sha: HEAD_SHA,
+    fetchImpl: async (url) => {
+      commitRequests.push(String(url));
+      const pageNumber = Number(new URL(url).searchParams.get('page'));
+      const body = { sha: HEAD_SHA, commit: { committer: { date: '2026-10-02T09:30:00Z' } }, files: pageNumber === 1 ? page(100) : [{ filename: DRAIN_EVIDENCE_DOCUMENT }] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    },
+  });
+  const commit = await commitReader();
+  assert.equal(commit.sha, HEAD_SHA);
+  assert.equal(commit.files.length, 101);
+  assert.ok(commit.files.includes(DRAIN_EVIDENCE_DOCUMENT));
+  assert.equal(commit.committedAt, '2026-10-02T09:30:00Z');
+  assert.deepEqual(commitRequests, [
+    `https://api.github.com/repos/JagPat/PMCvitan/commits/${HEAD_SHA}?per_page=100&page=1`,
+    `https://api.github.com/repos/JagPat/PMCvitan/commits/${HEAD_SHA}?per_page=100&page=2`,
+  ]);
+  await assert.rejects(githubCommitReader({ repository: 'r', token: 't', sha: HEAD_SHA, fetchImpl: async () => new Response('x', { status: 502 }) })(), /HTTP 502/u);
+  await assert.rejects(githubCommitReader({ repository: 'r', token: 't', sha: 'main', fetchImpl: async () => new Response('') })(), /no exact head SHA/u);
 });
 
 test('the live repository: the directive stands and no clearing record exists, so a clearance here would refuse', async () => {
@@ -344,7 +427,7 @@ test('the live repository: the directive stands and no clearing record exists, s
   // it commits (the tests above are the ones that keep applying).
   if (now.blocking_directive === DRAIN_DIRECTIVE) {
     const evidenceText = await fileSystemReader()(DRAIN_EVIDENCE_DOCUMENT);
-    const verdict = assessDirectiveClearance({ baseNow: now, headNow: NOW(), statusPatch: CLEARING_PATCH, evidenceText, evidenceChanged: evidenceText !== null });
+    const verdict = assessDirectiveClearance({ baseNow: now, headNow: NOW(), statusPatch: CLEARING_PATCH, evidenceText, evidenceChanged: evidenceText !== null, headCommit: HEAD_COMMIT() });
     assert.equal(verdict.allowed, false, 'no committed drained verdict exists yet, so nothing may clear the directive');
   }
   assert.match(markdown, /rollout:drain-evidence/u);

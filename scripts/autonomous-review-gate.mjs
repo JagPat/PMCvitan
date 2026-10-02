@@ -47,7 +47,7 @@ import {
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
 } from './review-efficiency.mjs';
-import { assessCommittedDirectiveClearance } from './autonomous-drain-clearance.mjs';
+import { assessCommittedDirectiveClearance, headCommitFromGitHub } from './autonomous-drain-clearance.mjs';
 import {
   PRODUCT_CHECKS,
   attemptGateStamps,
@@ -1566,6 +1566,8 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
     const clearance = await assessCommittedDirectiveClearance(pullRequest, changedFiles, {
       readHead: (path) => client.fileContents(path, expectedHead),
       readBase: (path) => client.fileContents(path, pullRequest.base?.sha),
+      // the exact head commit's files and date: the record must be regenerated on the clearing head
+      readHeadCommit: async () => headCommitFromGitHub(expectedHead, await client.commit(expectedHead)),
     });
     if (clearance?.applies && !clearance.allowed) {
       result = { ...result, allowed: false, state: 'drain_clearance_refused', detail: `drain clearance: ${clearance.detail}`, clearance };

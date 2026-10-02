@@ -1301,12 +1301,15 @@ database connection dropped during it: look there, not at the fence.
 The gate `phase-6-4d-previous-release-drained` no longer requires a human `OPERATOR-ATTESTATION`:
 the owner withdrew that requirement on 2026-10-01 (docs/POLICY.md). It clears ONLY on this command's
 `drained` verdict, COMMITTED as `docs/rollout/phase-6-4d-drain-evidence.json` (the JSON it prints on
-stdout) in the same PR that sets `blocking_directive: none` — added or changed by THAT PR; a record an
-earlier PR left in the tree is not reused. The review-scope gate and, again from the default branch
-against the exact head, the merge controller verify that record (`scripts/autonomous-drain-clearance.mjs`:
-a `drained` verdict with no findings, this directive, the minimum release `f8274f4…`, the platform
-inventory read, recorded after the directive was set and not in the future, re-deriving to `drained`
-from its own inventory) and refuse a STATUS edit without it; the Now block must carry each key once.
+stdout) in the same PR that sets `blocking_directive: none` — and in that PR's HEAD COMMIT: the gate
+requires the clearing head itself to change the evidence file and the record not to be dated after that
+commit, so a record an earlier PR or an earlier head left in the tree is not reused, and a merge of
+`main` into the branch or any later push means running the command again. The review-scope gate and,
+again from the default branch against the exact head, the merge controller verify that record
+(`scripts/autonomous-drain-clearance.mjs`: a `drained` verdict with no findings, this directive, the
+minimum release `f8274f4…`, the platform inventory read, recorded after the directive was set and not
+in the future, re-deriving to `drained` from its own inventory) and refuse a STATUS edit without it;
+the Now block must carry each key once.
 Run it where the platform token is held, with the production database as `DATABASE_URL`; the comment
 body it renders may also be posted on the controlling issue:
 
