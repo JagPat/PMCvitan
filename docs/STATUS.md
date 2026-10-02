@@ -82,7 +82,11 @@ included — may be treated as the end of the task.
 The correction named in #482 comment 5923291892 is the ONE open `claude/**` draft, acknowledged in this
 lane. It does not touch the drain directive above or below: the directive still stands, `task_state`
 stays `correction_required`, and `assessRunnerState` still resolves to
-`directive:phase-6-4d-previous-release-drained`. The open PR is recorded here so the shepherd sees it.
+`directive:phase-6-4d-previous-release-drained`. The open PR is recorded here so the shepherd sees it:
+the runner's instruction to shepherd an open PR comes from the live PR set, not from that step, so
+#687 is shepherded to completion while the directive keeps every later task unreachable, and leaving
+`open_pr` at `none` beside the live PR would read as drift (#687 Codex finding 4164784153; pinned in
+`scripts/runner-continuation-open-correction.test.mjs`).
 
 The countersign chain's optional impact inputs (Reject back, Forward on, the PMC's stranded Return)
 stripped every character but digits and an ASCII minus and fell back to 0, so "12.50" was sent as 1250
