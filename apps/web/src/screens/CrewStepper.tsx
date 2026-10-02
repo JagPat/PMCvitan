@@ -8,6 +8,9 @@ import styles from './CrewStepper.module.css';
 
 /** How many of the next trades are named under "Next we'll ask"; the rest are counted. */
 const NAMED_AHEAD = 3;
+/** Up to this many trades the bar is one segment per trade; a larger roster (it has no size cap,
+ *  and a new log copies the last one's) is one continuous bar, so the gaps never outgrow the phone. */
+const SEGMENTED_UP_TO = 12;
 
 /**
  * The crew step of the engineer's Today, asked one trade at a time: a large count with one-less /
@@ -55,10 +58,15 @@ export function CrewStepper({ onClose, today = true }: { onClose: () => void; to
         <button className={styles.back} onClick={onClose} aria-label={C.back[lang]} data-testid="crew-back">
           <ChevronLeft size={22} aria-hidden />
         </button>
-        <div className={styles.bar} role="img" aria-label={engineerCrewPosition(at + 1, crew.length, lang)}>
-          {crew.map((_, i) => (
-            <span key={i} className={`${styles.seg} ${i < at ? styles.segDone : i === at ? styles.segNow : ''}`} />
-          ))}
+        <div className={styles.bar} role="img" aria-label={engineerCrewPosition(at + 1, crew.length, lang)} data-testid="crew-progress">
+          {crew.length <= SEGMENTED_UP_TO ? (
+            crew.map((_, i) => <span key={i} className={`${styles.seg} ${i < at ? styles.segDone : i === at ? styles.segNow : ''}`} />)
+          ) : (
+            <span className={styles.track}>
+              <span className={styles.segDone} style={{ width: `${(at / crew.length) * 100}%` }} />
+              <span className={styles.segNow} style={{ width: `${100 / crew.length}%` }} />
+            </span>
+          )}
         </div>
         <span className={styles.pos} data-testid="crew-position" aria-hidden>
           {at + 1} / {crew.length}

@@ -28,6 +28,7 @@
 }
 .bar {
   flex: 1;
+  min-width: 0;
   display: flex;
   gap: 6px;
 }
@@ -42,6 +43,15 @@
 }
 .segNow {
   background: var(--accent);
+}
+/* a large roster: one continuous bar, done then the current trade */
+.track {
+  flex: 1;
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--hairline);
 }
 .pos {
   font-size: 14px;
