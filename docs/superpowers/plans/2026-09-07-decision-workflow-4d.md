@@ -17,8 +17,9 @@
 > agent marker) — the one channel the lineage header names as able to lift it. `docs/POLICY.md` records it.
 > The gate is now the fail-closed autonomous evidence alone, and it is MECHANICALLY enforced:
 > `phase-6-4d-previous-release-drained` clears only on a committed `drained` verdict from
-> `rollout:drain-evidence` at `docs/rollout/phase-6-4d-drain-evidence.json`, verified by the review-scope
-> gate on the PR that removes the directive (`scripts/autonomous-drain-clearance.mjs`); a STATUS edit alone
+> `rollout:drain-evidence` at `docs/rollout/phase-6-4d-drain-evidence.json`, committed by the PR that removes
+> the directive and verified by the review-scope gate and again by the merge controller
+> (`scripts/autonomous-drain-clearance.mjs`); a STATUS edit alone
 > never clears it, and 4d-iii's migration preflight on the `ReleaseLease` register stays its own door. The
 > text below is left as reviewed; where it says the attestation is REQUIRED, this amendment governs.
 

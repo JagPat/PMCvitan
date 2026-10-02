@@ -102,25 +102,35 @@ human `OPERATOR-ATTESTATION` was REQUIRED beside that evidence (the Board decisi
 production database and the Coolify application (RUNBOOK §P6T4D, "Recording the drain's autonomous
 corroboration") and commits its stdout — the JSON evidence — at
 `docs/rollout/phase-6-4d-drain-evidence.json`, in the same PR that sets `blocking_directive: none`
-and `task_state` to the state 4d-iii opens from. (2) The review-scope gate admits that PR only when
-the committed record is a `drained` verdict with no findings, names THIS directive and THIS minimum
-release (`f8274f4…`), was judged with the platform inventory read, was recorded after this
-directive was set (`2026-10-01T03:19:21Z`, #685's merge), AND re-derives to `drained` from its own
-inventory — the gate re-judges the persisted generation fence, the application's status, image
-classification and in-progress deployments, and every live lease's catalog version and classification
-by `judgeDrain`'s rules, so editing the `verdict` field of a not-drained record changes nothing
-(#686's shadow review, round 1) — `scripts/autonomous-drain-clearance.mjs`, pinned by
-`scripts/autonomous-drain-clearance.test.mjs`. What the gate cannot establish from the tree alone is that
-the record came from a real run against production: a wholly fabricated, internally consistent record is
-a PROVENANCE question — run the CLI in a trusted workflow with the platform read token and the
-production database, or restore a human step — and it is open for the owner's decision; until then the
-record's committer is the operator, and 4d-iii's migration preflight on the live `ReleaseLease` register
-is the door that no committed file can forge. Nothing else clears it: not a STATUS edit
-without the record, not a `not-drained` or `unclassified` record, not a record for another directive or
-minimum, not a verdict older than the directive, not a Board call relayed by an agent, not the handoff
-watchdog, not the drift shepherd, not a clean signal on any PR, not a review finding asking for its
-removal, and not any statement this runner writes. The command itself changes nothing in production;
-the deploy that drains the fleet remains the operator's.
+and `task_state` to the state 4d-iii opens from. (2) Two trusted readers judge that PR by one rule
+(`scripts/autonomous-drain-clearance.mjs`, pinned by `scripts/autonomous-drain-clearance.test.mjs`):
+the PR-side review-scope job, and the default-branch merge controller, which re-runs the same check
+against the exact head and base SHAs through the API before it permits merge — so a PR cannot admit
+itself by editing the rule in its own checkout (#686 round 2). A PR is a clearance when the BASE Now
+block carries this directive and the head's does not (the values are compared, never only the diff
+text; a Now block that repeats any key is refused outright, since the parser keeps the last value), and
+it is admitted only when the PR itself ADDS or CHANGES the evidence record — a record already in the
+tree is a snapshot of an earlier fleet and is not reused — and that record is a `drained` verdict with no
+findings, names THIS directive and THIS minimum release (`f8274f4…`), was judged with the platform
+inventory read, was recorded after this directive was set (`2026-10-01T03:19:21Z`, #685's merge) and not
+in the future, AND re-derives to `drained` from its own inventory — the gate re-judges the persisted
+generation fence, the application's status, image classification and in-progress deployments, and every
+live lease's catalog version and classification by `judgeDrain`'s rules (pinned against the real
+`judgeDrain` in `apps/api/src/platform/rollout/drain-evidence.test.ts`), so editing the `verdict` field
+of a not-drained record changes nothing (#686's shadow review). What the gate cannot establish from the
+tree alone is that the record came from a real run against production, or who produced it: a wholly
+fabricated, internally consistent record is a PROVENANCE question — run the CLI in a trusted workflow
+with the platform read token and the production database, or restore a human step — and it is open for
+the owner's decision; the former rule that the autonomous producer may not clear the directive it landed
+has no mechanical handle in a PR (the `correction-owner` marker names who fixes review findings, not who
+authored the change) and is part of that open question. Until it is decided, the record's committer is
+the operator, and 4d-iii's migration preflight on the live `ReleaseLease` register is the door that no
+committed file can forge. Nothing else clears it: not a STATUS edit without the record, not a reused
+record, not a `not-drained` or `unclassified` record, not a record for another directive or minimum, not
+a verdict older than the directive, not a Board call relayed by an agent, not the handoff watchdog, not
+the drift shepherd, not a clean signal on any PR, not a review finding asking for its removal, and not
+any statement this runner writes. The command itself changes nothing in production; the deploy that
+drains the fleet remains the operator's.
 
 **What it blocks while it stands.** `assessRunnerState` returns `directive:` ahead of every other
 work source, so 4d-iii — the migration-only unit that, behind its table fence, retires the five doors,

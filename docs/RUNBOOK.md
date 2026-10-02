@@ -951,8 +951,9 @@ catalog while a new seal is recorded would race the cutover. Zero old instances 
 
 For the Phase 6 4d drain, `rollout:drain-evidence` (§P6T4D, "Recording the drain's autonomous
 corroboration") records what the platform and the `ReleaseLease` register show. Since the owner's
-decision of 2026-10-01 (`docs/POLICY.md`) its committed `drained` verdict is what clears the drain
-directive; no human operator attestation is required beside it.
+decision of 2026-10-01 (`docs/POLICY.md`) its `drained` verdict, committed in the PR that clears the
+drain directive and verified there by review-scope and again by the merge controller, is what clears
+it; no human operator attestation is required beside it.
 
 ## 2. Deploy the new build in LEGACY/SHADOW sender mode
 
@@ -1300,11 +1301,14 @@ database connection dropped during it: look there, not at the fence.
 The gate `phase-6-4d-previous-release-drained` no longer requires a human `OPERATOR-ATTESTATION`:
 the owner withdrew that requirement on 2026-10-01 (docs/POLICY.md). It clears ONLY on this command's
 `drained` verdict, COMMITTED as `docs/rollout/phase-6-4d-drain-evidence.json` (the JSON it prints on
-stdout) in the same PR that sets `blocking_directive: none`; the review-scope gate verifies that record
-(`scripts/autonomous-drain-clearance.mjs`: a `drained` verdict with no findings, this directive, the
-minimum release `f8274f4…`, the platform inventory read, recorded after the directive was set) and
-refuses a STATUS edit without it. Run it where the platform token is held, with the production
-database as `DATABASE_URL`; the comment body it renders may also be posted on the controlling issue:
+stdout) in the same PR that sets `blocking_directive: none` — added or changed by THAT PR; a record an
+earlier PR left in the tree is not reused. The review-scope gate and, again from the default branch
+against the exact head, the merge controller verify that record (`scripts/autonomous-drain-clearance.mjs`:
+a `drained` verdict with no findings, this directive, the minimum release `f8274f4…`, the platform
+inventory read, recorded after the directive was set and not in the future, re-deriving to `drained`
+from its own inventory) and refuse a STATUS edit without it; the Now block must carry each key once.
+Run it where the platform token is held, with the production database as `DATABASE_URL`; the comment
+body it renders may also be posted on the controlling issue:
 
 ```
 COOLIFY_TOKEN='<read token>' pnpm --filter api rollout:drain-evidence \

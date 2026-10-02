@@ -14,7 +14,11 @@ import {
   parseMaintenanceQueue,
   parseStatusNow,
 } from './autonomous-status-state.mjs';
-import { assessCommittedDirectiveClearance } from './autonomous-drain-clearance.mjs';
+import {
+  assessCommittedDirectiveClearance,
+  fileSystemReader,
+  githubContentsReader,
+} from './autonomous-drain-clearance.mjs';
 
 async function pullRequestFiles({ fetchImpl, repository, number, token }) {
   if (typeof fetchImpl !== 'function' || !repository || !token) {
@@ -138,11 +142,22 @@ export async function run({
   }
 
   // The drain directive's clearance, checked HERE for the same reason: the PR tree is on disk, and the
-  // STATUS diff text is already in hand. A PR that removes `phase-6-4d-previous-release-drained` from
-  // the Now block is admitted only when the tree carries a committed `drained` verdict from
-  // `rollout:drain-evidence` for the directive's minimum release (docs/POLICY.md; #686 finding
-  // 4157323191). Reported independently, like the two checks above.
-  const clearance = await assessCommittedDirectiveClearance(event.pull_request, changedFiles);
+  // STATUS diff text is already in hand; the BASE Now block is read from the base SHA through the API,
+  // so the base and head VALUES decide, not the diff text alone. A PR whose head no longer carries
+  // `phase-6-4d-previous-release-drained` is admitted only when it commits a `drained` verdict from
+  // `rollout:drain-evidence` for the directive's minimum release (docs/POLICY.md; #686 findings
+  // 4157323191, 4163577340, 4163577348). The controller re-runs this same check from the default
+  // branch against the exact head before it permits merge (#686 finding 4163577352). Reported
+  // independently, like the two checks above.
+  const clearance = await assessCommittedDirectiveClearance(event.pull_request, changedFiles, {
+    readHead: fileSystemReader(),
+    readBase: githubContentsReader({
+      fetchImpl,
+      repository: repository || event.repository?.full_name,
+      token,
+      ref: event.pull_request.base?.sha,
+    }),
+  });
   if (clearance?.applies) {
     if (clearance.allowed) {
       console.log(`review-scope: drain directive clearance verified — ${clearance.detail}`);

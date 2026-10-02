@@ -116,7 +116,7 @@ No routine human technical approval substitutes for CI or independent review.
 The production-drain exception previously retained here — clearing
 `phase-6-4d-previous-release-drained` required the human `OPERATOR-ATTESTATION` — is withdrawn by
 the owner's decision of 2026-10-01 (#482 comment 5929472784). The directive clears only on a committed
-`drained` verdict from `rollout:drain-evidence` at `docs/rollout/phase-6-4d-drain-evidence.json`, verified by `review-scope`; a STATUS edit alone never clears it.
+`drained` verdict from `rollout:drain-evidence` at `docs/rollout/phase-6-4d-drain-evidence.json`, committed in the clearing PR itself and verified by `review-scope` and again by the merge controller; a STATUS edit alone never clears it.
 
 ## Correction routing and recovery
 

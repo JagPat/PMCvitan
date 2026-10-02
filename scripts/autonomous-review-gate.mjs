@@ -47,6 +47,7 @@ import {
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
 } from './review-efficiency.mjs';
+import { assessCommittedDirectiveClearance } from './autonomous-drain-clearance.mjs';
 import {
   PRODUCT_CHECKS,
   attemptGateStamps,
@@ -694,6 +695,38 @@ export class GitHubClient {
     return this.paginated(
       `/repos/${this.repository}/pulls/${number}/comments`,
     );
+  }
+
+  // One file of one exact ref, as text (the raw media type, so a file over the 1 MB JSON limit —
+  // docs/STATUS.md — still reads); null when the path is absent at that ref. Retried on 5xx like
+  // `request`; any other failure throws.
+  async fileContents(path, ref) {
+    if (!/^[0-9a-f]{40}$/u.test(String(ref ?? ''))) throw new Error(`no exact ref to read ${path} from`);
+    const url = `${API_ROOT}/repos/${this.repository}/contents/${path}?ref=${ref}`;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      let response;
+      try {
+        response = await fetch(url, {
+          headers: {
+            Accept: 'application/vnd.github.raw+json',
+            Authorization: `Bearer ${this.token}`,
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        });
+      } catch (error) {
+        if (attempt === 3) throw error;
+        await sleep(attempt * 250);
+        continue;
+      }
+      if (response.status === 404) return null;
+      if (response.ok) return response.text();
+      if (response.status >= 500 && attempt < 3) {
+        await sleep(attempt * 250);
+        continue;
+      }
+      throw new Error(`GitHub GET contents ${path}@${ref.slice(0, 7)} failed (${response.status})`);
+    }
+    throw new Error(`GitHub GET contents ${path} retry loop exhausted`);
   }
 
   // The PR's CUMULATIVE diff against its base — every file the review unit touches,
@@ -1514,7 +1547,7 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       typeof client.pause === 'function' ? { sleep: client.pause.bind(client) } : {},
     );
   }
-  const result = assessReviewScope(pullRequest, {
+  let result = assessReviewScope(pullRequest, {
     changedFiles,
     requireChangedFiles: true,
     headCommitMessage,
@@ -1522,6 +1555,22 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
     requiredReplacements: lineage?.requiredReplacements,
     replacementPullRequests: lineage?.replacementPullRequests,
   });
+  // The drain directive's clearance, re-run HERE from the trusted default branch against the exact head
+  // and base SHAs (#686 finding 4163577352): the PR-side `review-scope` job runs the same rule from the
+  // PR's own checkout, which the PR could edit. Both trees are read through the API, never from this
+  // checkout, so a STATUS edit that drops `phase-6-4d-previous-release-drained` is refused unless the PR
+  // commits the `drained` verdict the rule demands (`scripts/autonomous-drain-clearance.mjs`). A read
+  // failure propagates: the controller re-runs on the next event rather than drafting the PR over a
+  // transient API error.
+  if (result.allowed && Array.isArray(changedFiles)) {
+    const clearance = await assessCommittedDirectiveClearance(pullRequest, changedFiles, {
+      readHead: (path) => client.fileContents(path, expectedHead),
+      readBase: (path) => client.fileContents(path, pullRequest.base?.sha),
+    });
+    if (clearance?.applies && !clearance.allowed) {
+      result = { ...result, allowed: false, state: 'drain_clearance_refused', detail: `drain clearance: ${clearance.detail}`, clearance };
+    }
+  }
   if (result.allowed) return result;
   // An unread candidate head is RETRYABLE on this same SHA (Codex finding 4101926931 on #630): no draft, no
   // `scope:` hold, no correction notice. The caller publishes the retryable `OWNERSHIP_READ_RETRY` (or, on a
