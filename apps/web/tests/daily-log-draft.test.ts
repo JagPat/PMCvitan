@@ -167,6 +167,48 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     expectTheMorningKept();
   });
 
+  // U1 (#690, shadow review on ae76494): the module read carries the log's id onto `s.dailyLog`, as the
+  // snapshot path does, so the draft's binding holds in this mode too
+  it('moduleQuery mode: the module read carries the log id, and a draft for another same-day log is not laid over it', async () => {
+    vi.stubEnv('VITE_DAILYLOG_READ', 'moduleQuery');
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog())),
+      dailyLog: vi.fn().mockResolvedValue(moduleRead(serverLog({ id: 'log-a' }))),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.id).toBe('log-a');
+
+    doTheMorning();
+    expect(s().dailyLogDraft?.logId).toBe('log-a');
+    // another device sent log-a and started log-b today; the next module read serves log-b
+    gw.dailyLog.mockResolvedValue(moduleRead(serverLog({ id: 'log-b' })));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.id).toBe('log-b');
+    expect(s().dailyLog).toMatchObject({ checkedIn: false, progress: 2 });
+    expect(s().dailyLogDraft).toBeNull();
+  });
+
+  // U1 (#690, shadow review on ae76494): two rows sharing a trade keep their own counts across a reconcile
+  it('two crew rows with the same trade keep their own counts through a reconcile', async () => {
+    const twin = serverLog({ crew: [{ trade: 'Mason', count: 1 }, { trade: 'Mason', count: 5 }] });
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(twin)) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().crewStep(1, 1);
+    s().crewStep(0, 1);
+    expect(s().dailyLog?.crew.map((c) => c.count)).toEqual([2, 6]);
+    await s().requestFreshSnapshot(); // the server still holds the unsent [1, 5]
+    await flush();
+    expect(s().dailyLog?.crew.map((c) => c.count)).toEqual([2, 6]);
+    // a draft written before the occurrence key (bare trade) still applies to the first row only
+    const legacy = overlayDailyLogDraft(twin, { projectId: 'ambli', logKey: dailyLogKey(twin), crew: { Mason: 3 } }, 'ambli');
+    expect(legacy.log?.crew.map((c) => c.count)).toEqual([3, 5]);
+  });
+
   it('a photo uploaded online is counted once, and a refresh right after it keeps the count', async () => {
     const gw = {
       snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog())),

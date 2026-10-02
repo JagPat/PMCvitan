@@ -32,13 +32,24 @@ export type DailyLogDraft = {
   logId?: string;
   /** the engineer's check-in (or check-out) on this device, when recorded */
   checkIn?: { checkedIn: boolean; checkinTime: string | null };
-  /** the crew counts the engineer set, by trade (absolute — the latest count, not a delta) */
+  /** the crew counts the engineer set, by row (absolute — the latest count, not a delta), keyed by
+   *  `crewDraftKey`: the trade, plus its occurrence where two rows share a trade */
   crew?: Record<string, number>;
   /** progress photos taken for this log on this device, beyond what the server holds */
   photosAdded?: number;
   /** the engineer answered every crew question for this log (a no-crew day is an answer, not a gap) */
   crewConfirmed?: boolean;
 };
+
+/** The draft key for crew row `i`: its trade, and for a second (third, …) row with the same trade
+ *  that trade plus its occurrence, so two rows sharing a trade keep their own counts across a
+ *  reconcile. A first occurrence keys by the bare trade, as drafts written before this did. */
+export function crewDraftKey(crew: readonly { trade: string }[], i: number): string {
+  const trade = crew[i]!.trade;
+  let occurrence = 0;
+  for (let j = 0; j < i; j++) if (crew[j]!.trade === trade) occurrence++;
+  return occurrence === 0 ? trade : `${trade}\u241f${occurrence}`;
+}
 
 /** the identity a draft is written against: the civil date of the log, or its legacy display date */
 export function dailyLogKey(log: Pick<DailyLog, 'date' | 'logDate'>): string {
@@ -85,7 +96,10 @@ export function overlayDailyLogDraft(
     ...serverLog,
     checkedIn: serverLog.checkedIn || (kept.checkIn?.checkedIn ?? false),
     checkinTime: serverLog.checkinTime ?? (kept.checkIn?.checkedIn ? kept.checkIn.checkinTime : null),
-    crew: serverLog.crew.map((c) => (kept.crew && c.trade in kept.crew ? { ...c, count: kept.crew[c.trade]! } : c)),
+    crew: serverLog.crew.map((c, i) => {
+      const key = crewDraftKey(serverLog.crew, i);
+      return kept.crew && key in kept.crew ? { ...c, count: kept.crew[key]! } : c;
+    }),
     progress: serverLog.progress + (kept.photosAdded ?? 0),
   };
   // a check-OUT recorded here after the server never saw the check-in: the engineer's latest word stands
