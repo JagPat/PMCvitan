@@ -230,3 +230,124 @@ describe('B5b — disabled while an act on the row is in flight; the register re
     expect(r.queryByTestId('forward-OK')).toBeNull();
   });
 });
+
+// #482 comment 5923291892 — the impact inputs on Reject back, Forward on and the stranded Return used to strip
+// every character but digits and an ASCII minus, then fall back to 0: "12.50" sent 1250, "1.5" days sent 15,
+// "abc" sent 0, and a Unicode minus "−5" sent +5. Each path now refuses an unsupported entry VISIBLY, sends
+// nothing while it stands, and sends a supported whole number exactly as typed. RED at e4ac5d8 (main).
+type ImpactPath = {
+  name: string;
+  role: Role;
+  userId: string;
+  decision: (id: string) => Decision;
+  open: string;
+  ready: (r: ReturnType<typeof render>, id: string) => void;
+  spy: (spies: ReturnType<typeof acts>) => ReturnType<typeof vi.fn>;
+  expected: (id: string, impacts: { costImpact: number; timeImpactDays: number }) => [string, Record<string, unknown>];
+};
+const IMPACT_PATHS: ImpactPath[] = [
+  {
+    name: 'Reject back', role: 'architect', userId: 'u-arch', decision: (id) => awaiting(id), open: 'reject-back',
+    ready: (r, id) => fireEvent.change(r.getByTestId(`chain-reason-${id}`), { target: { value: 'Grain' } }),
+    spy: (x) => x.disagreeDecision,
+    expected: (id, i) => [id, { path: 'reject_back', reason: 'Grain', ...i }],
+  },
+  {
+    name: 'Forward on', role: 'architect', userId: 'u-arch', decision: (id) => awaiting(id), open: 'forward-on',
+    ready: (r, id) => {
+      fireEvent.change(r.getByTestId(`chain-kind-${id}`), { target: { value: 'client' } });
+      fireEvent.change(r.getByTestId(`chain-reason-${id}`), { target: { value: 'Re-decide' } });
+    },
+    spy: (x) => x.disagreeDecision,
+    expected: (id, i) => [id, { path: 'forward_on', reason: 'Re-decide', ...i, toDesignationKind: 'client' }],
+  },
+  {
+    name: 'stranded Return', role: 'pmc', userId: 'u-pmc', decision: (id) => stranded(id), open: 'stranded-return',
+    ready: (r, id) => fireEvent.change(r.getByTestId(`chain-reason-${id}`), { target: { value: 'Re-check' } }),
+    spy: (x) => x.resolveStrandedCountersign,
+    expected: (id, i) => [id, { outcome: 'returned', reason: 'Re-check', ...i }],
+  },
+];
+
+describe('the impact inputs are read exactly or refused visibly — never repaired (#482 comment 5923291892)', () => {
+  const REFUSED: Array<[field: 'cost' | 'days', raw: string, reason: RegExp]> = [
+    ['cost', '12.50', /whole rupees only/i], // was sent as 1250
+    ['days', '1.5', /whole days only/i], // was sent as 15
+    ['cost', 'abc', /enter whole rupees/i], // was sent as 0
+    ['days', 'abc', /enter whole days/i], // was sent as 0
+    ['cost', '12,50', /enter whole rupees/i], // a decimal comma would read as 1250
+  ];
+
+  for (const path of IMPACT_PATHS) {
+    it(`${path.name}: an unsupported entry shows its reason, disables the send, and sends nothing`, () => {
+      const spies = acts();
+      as(path.role, path.userId);
+      const id = 'X1';
+      const r = render(<CountersignControls decision={path.decision(id)} />);
+      fireEvent.click(r.getByTestId(`${path.open}-${id}`));
+      path.ready(r, id);
+      const send = r.getByTestId(`chain-send-${id}`) as HTMLButtonElement;
+      expect(send.disabled).toBe(false); // ready to send with blank impacts…
+
+      for (const [field, raw, reason] of REFUSED) {
+        const other = field === 'cost' ? 'days' : 'cost';
+        fireEvent.change(r.getByTestId(`chain-${other}-${id}`), { target: { value: '' } });
+        fireEvent.change(r.getByTestId(`chain-${field}-${id}`), { target: { value: raw } });
+        const error = r.getByTestId(`chain-${field}-error-${id}`);
+        expect(error.textContent, raw).toMatch(reason);
+        expect(error.getAttribute('role')).toBe('alert');
+        expect(r.getByTestId(`chain-${field}-${id}`).getAttribute('aria-invalid'), raw).toBe('true');
+        expect(r.queryByTestId(`chain-${other}-error-${id}`), raw).toBeNull();
+        expect(send.disabled, raw).toBe(true); // …and NOT while an impact is refused
+        fireEvent.click(send); // a click on the disabled button
+        expect(path.spy(spies), raw).not.toHaveBeenCalled(); // no act, so no outbox entry and no request
+      }
+      // clearing the refused entry restores the send, with the agreed zero default
+      fireEvent.change(r.getByTestId(`chain-cost-${id}`), { target: { value: '' } });
+      expect(r.queryByTestId(`chain-cost-error-${id}`)).toBeNull();
+      expect(send.disabled).toBe(false);
+      fireEvent.click(send);
+      expect(path.spy(spies)).toHaveBeenCalledTimes(1);
+      expect(path.spy(spies)).toHaveBeenLastCalledWith(...path.expected(id, { costImpact: 0, timeImpactDays: 0 }));
+    });
+
+    it(`${path.name}: a supported whole number is sent exactly as typed, its sign kept`, () => {
+      const cases: Array<[cost: string, days: string, costImpact: number, timeImpactDays: number]> = [
+        ['', '', 0, 0], // blank → the agreed zero default
+        ['₹ 5,000', '2 days', 5000, 2], // the formats the existing test pins
+        ['1,00,000', '3', 100000, 3], // Indian grouping
+        ['−5', '−2', -5, -2], // a Unicode minus keeps its sign (was +5 / +2)
+        ['-₹ 1,200', '-1 day', -1200, -1],
+      ];
+      for (const [cost, days, costImpact, timeImpactDays] of cases) {
+        const spies = acts();
+        as(path.role, path.userId);
+        const id = 'X2';
+        const r = render(<CountersignControls decision={path.decision(id)} />);
+        fireEvent.click(r.getByTestId(`${path.open}-${id}`));
+        path.ready(r, id);
+        fireEvent.change(r.getByTestId(`chain-cost-${id}`), { target: { value: cost } });
+        fireEvent.change(r.getByTestId(`chain-days-${id}`), { target: { value: days } });
+        expect(r.queryByTestId(`chain-cost-error-${id}`), cost).toBeNull();
+        expect(r.queryByTestId(`chain-days-error-${id}`), days).toBeNull();
+        fireEvent.click(r.getByTestId(`chain-send-${id}`));
+        expect(path.spy(spies), `${cost} / ${days}`).toHaveBeenLastCalledWith(...path.expected(id, { costImpact, timeImpactDays }));
+        cleanup();
+      }
+    });
+  }
+
+  it('the panels without impacts (Forward, Complete) are not gated by a stale impact entry', () => {
+    const spies = acts();
+    as('pmc', 'u-pmc');
+    const r = render(<CountersignControls decision={stranded('S9')} />);
+    fireEvent.click(r.getByTestId('stranded-return-S9'));
+    fireEvent.change(r.getByTestId('chain-cost-S9'), { target: { value: '12.50' } });
+    // switching to Complete resets the form, shows no impact fields, and sends the PMC's reason alone
+    fireEvent.click(r.getByTestId('stranded-complete-S9'));
+    expect(r.queryByTestId('chain-cost-S9')).toBeNull();
+    fireEvent.change(r.getByTestId('chain-reason-S9'), { target: { value: 'Done' } });
+    fireEvent.click(r.getByTestId('chain-send-S9'));
+    expect(spies.resolveStrandedCountersign).toHaveBeenLastCalledWith('S9', { outcome: 'completed', reason: 'Done' });
+  });
+});

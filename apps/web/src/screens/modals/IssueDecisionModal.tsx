@@ -6,6 +6,7 @@ import { Button, Modal, InheritedContext, MoreDetails } from '@/components';
 import { X } from '@/lib/icons';
 import { swatch as swatchGradient, SW, type DeciderKind, type SwatchKey } from '@vitan/shared';
 import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
+import { readImpact } from '@/lib/impactInput';
 
 /**
  * PMC issues a new decision: a place, a title, and 2–4 options for the client to choose.
@@ -62,10 +63,17 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
 
   // A RECORD (`none`) carries exactly ZERO options (an optioned record is a category error);
   // every deciding kind keeps the 2–4 option contract. A named member decider needs its member.
+  // #482 comment 5923291892 (family-wide): each option's rupee delta is read exactly or refused with a
+  // reason — "12.50" is not 1250, "abc" is not 0, a Unicode minus keeps its sign. A refused delta blocks
+  // the save, and its reason shows beside the field AND above the buttons (the field sits in a collapsible
+  // "More details", so a refusal must not be hidden behind it).
+  const deltas = options.map((o) => readImpact(o.delta, 'cost'));
+  const refusedDelta = record ? -1 : deltas.findIndex((d) => !d.ok);
   const ready = Boolean(
     title.trim() &&
       nodeId &&
       (record || options.every((o) => o.material.trim())) &&
+      refusedDelta < 0 &&
       (deciderKind !== 'member' || deciderMembershipId),
   );
   const save = (publish: boolean) => {
@@ -76,9 +84,9 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
       publish,
       options: record
         ? []
-        : options.map((o) => ({
+        : options.map((o, i) => ({
             material: o.material.trim(),
-            delta: parseInt(o.delta.replace(/[^\d-]/g, ''), 10) || 0,
+            delta: (deltas[i] as { ok: true; value: number }).value, // `ready` holds only when every delta read exactly
             swatch: o.swatch,
             recommended: o.recommended,
             ...(o.photo ? { photo: { mime: o.photo.mime, data: o.photo.data } } : {}),
@@ -151,7 +159,9 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
 
             <MoreDetails testId={`dec-opt-${i}-more`}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <input value={o.delta} onChange={(e) => setOpt(i, { delta: e.target.value })} placeholder="₹ delta (0 = base)" style={{ ...fldD, flex: '0 0 130px' }} />
+                <input value={o.delta} onChange={(e) => setOpt(i, { delta: e.target.value })} placeholder="₹ delta (0 = base)" aria-label={`Option ${i + 1} price delta (₹)`}
+                  aria-invalid={!deltas[i].ok} aria-describedby={!deltas[i].ok ? `dec-opt-${i}-delta-error` : undefined} data-testid={`dec-opt-${i}-delta`}
+                  style={{ ...fldD, flex: '0 0 130px', ...(deltas[i].ok ? null : { borderColor: 'var(--red-solid)' }) }} />
                 <select value={o.swatch} onChange={(e) => setOpt(i, { swatch: e.target.value as SwatchKey })} style={{ ...fldD, flex: '0 0 120px' }} aria-label="Swatch">
                   {SWATCH_KEYS.map((k) => <option key={k} value={k}>{k}</option>)}
                 </select>
@@ -170,6 +180,11 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
                 </label>
               </div>
             </MoreDetails>
+            {!deltas[i].ok && (
+              <div id={`dec-opt-${i}-delta-error`} role="alert" data-testid={`dec-opt-${i}-delta-error`} style={{ fontSize: 11.5, lineHeight: 1.35, color: 'var(--red-solid)', marginTop: 6 }}>
+                Price delta: {(deltas[i] as { ok: false; reason: string }).reason}
+              </div>
+            )}
           </div>
         ))}
 

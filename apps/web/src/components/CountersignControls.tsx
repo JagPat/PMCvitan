@@ -6,6 +6,7 @@ import { isCountersignChainOp } from '@/data/apiGateway';
 // the LEAF module, not the `@/components` barrel (the `ConsultationThread` convention: this component is
 // itself exported from that barrel, so importing through it would close a cycle)
 import { Button } from './Button';
+import { readImpact } from '@/lib/impactInput';
 import { can, viewerIsDecider, type Decision } from '@vitan/shared';
 
 /**
@@ -25,8 +26,11 @@ import { can, viewerIsDecider, type Decision } from '@vitan/shared';
  *
  * Every control dispatches one of B5a's write-ahead acts (one key per act; the server's refusal surfaced as
  * its own words) and is DISABLED while an act on this decision is still in the outbox ("Working…"). The
- * reason is required at the client layer where the shared contract requires it. Nothing here renders for a
- * delivered role while the doors stand: no row can be awaiting and the rollout reads reserved.
+ * reason is required at the client layer where the shared contract requires it. The optional cost and
+ * schedule impacts (Reject back, Forward on, the stranded Return) are read by `readImpact`: blank is 0, a
+ * whole number is sent exactly as typed, and anything else is REFUSED with the reason shown under its field
+ * and the send disabled — never repaired into a different amount (#482 comment 5923291892). Nothing here
+ * renders for a delivered role while the doors stand: no row can be awaiting and the rollout reads reserved.
  */
 type Designation = 'client' | 'pmc' | 'member' | 'architect';
 type Panel = 'forward' | 'reject_back' | 'forward_on' | 'completed' | 'returned' | null;
@@ -76,17 +80,26 @@ export function CountersignControls({ decision: d }: { decision: Decision }) {
   // the target as the shared input carries it: absent when none was chosen (a stranded Return keeps its decider)
   const target = kind === '' ? {} : kind === 'member' ? { toDesignationKind: kind, toDesignationMembershipId: membershipId } : { toDesignationKind: kind };
   const targetComplete = (kind !== '' || !targetRequired) && (kind !== 'member' || !!membershipId);
-  const impacts = { costImpact: parseInt(cost.replace(/[^\d-]/g, ''), 10) || 0, timeImpactDays: parseInt(days.replace(/[^\d-]/g, ''), 10) || 0 };
+  // the impacts, read exactly or refused (never repaired); only the panels that show the fields carry them
+  const hasImpacts = panel === 'reject_back' || panel === 'forward_on' || panel === 'returned';
+  const costReading = readImpact(cost, 'cost');
+  const daysReading = readImpact(days, 'days');
+  const impactsValid = !hasImpacts || (costReading.ok && daysReading.ok);
+  const impacts = costReading.ok && daysReading.ok ? { costImpact: costReading.value, timeImpactDays: daysReading.value } : null;
   const send = () => {
     const r = reason.trim();
     if (!r || !targetComplete) return;
+    // a refused impact sends NOTHING: the button is disabled, and this guard holds even if it is not
+    if (hasImpacts && !impacts) return;
+    // only the three impact panels read `chosen`, and for them it is the exact reading (the guard above)
+    const chosen = impacts ?? { costImpact: 0, timeImpactDays: 0 };
     if (panel === 'forward') forwardDecision(d.id, { ...target, reason: r } as Parameters<typeof forwardDecision>[1]);
-    if (panel === 'reject_back') disagreeDecision(d.id, { path: 'reject_back', reason: r, ...impacts });
-    if (panel === 'forward_on') disagreeDecision(d.id, { path: 'forward_on', reason: r, ...impacts, ...target });
+    if (panel === 'reject_back') disagreeDecision(d.id, { path: 'reject_back', reason: r, ...chosen });
+    if (panel === 'forward_on') disagreeDecision(d.id, { path: 'forward_on', reason: r, ...chosen, ...target });
     // the PMC's OWN reason on both outcomes: the service persists it as the immutable resolution reason
     // (#683 review, finding 4149247987), so Complete goes through the same required-reason form as Return
     if (panel === 'completed') resolveStrandedCountersign(d.id, { outcome: 'completed', reason: r });
-    if (panel === 'returned') resolveStrandedCountersign(d.id, { outcome: 'returned', reason: r, ...impacts, ...target });
+    if (panel === 'returned') resolveStrandedCountersign(d.id, { outcome: 'returned', reason: r, ...chosen, ...target });
     setPanel(null);
   };
   const askable = members.filter((m) => m.status === 'active' && m.membershipId);
@@ -137,14 +150,24 @@ export function CountersignControls({ decision: d }: { decision: Decision }) {
           )}
           <textarea aria-label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} rows={2} placeholder="Reason (required)" data-testid={`chain-reason-${d.id}`}
             style={{ width: '100%', fontSize: 12.5, padding: 8, borderRadius: 8, border: '1px solid var(--hairline)', font: 'inherit' }} />
-          {(panel === 'reject_back' || panel === 'forward_on' || panel === 'returned') && (
+          {hasImpacts && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <input aria-label="Cost impact" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="Cost impact (₹, optional)" style={{ ...fld, flex: '1 1 140px' }} data-testid={`chain-cost-${d.id}`} />
-              <input aria-label="Schedule impact (days)" value={days} onChange={(e) => setDays(e.target.value)} placeholder="Days (optional)" style={{ ...fld, flex: '1 1 120px' }} data-testid={`chain-days-${d.id}`} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 140px' }}>
+                <input aria-label="Cost impact" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="Cost impact (₹, optional)"
+                  aria-invalid={!costReading.ok} aria-describedby={!costReading.ok ? `chain-cost-error-${d.id}` : undefined}
+                  style={{ ...fld, ...(costReading.ok ? null : invalid) }} data-testid={`chain-cost-${d.id}`} />
+                {!costReading.ok && <div id={`chain-cost-error-${d.id}`} role="alert" style={err} data-testid={`chain-cost-error-${d.id}`}>{costReading.reason}</div>}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 120px' }}>
+                <input aria-label="Schedule impact (days)" value={days} onChange={(e) => setDays(e.target.value)} placeholder="Days (optional)"
+                  aria-invalid={!daysReading.ok} aria-describedby={!daysReading.ok ? `chain-days-error-${d.id}` : undefined}
+                  style={{ ...fld, ...(daysReading.ok ? null : invalid) }} data-testid={`chain-days-${d.id}`} />
+                {!daysReading.ok && <div id={`chain-days-error-${d.id}`} role="alert" style={err} data-testid={`chain-days-error-${d.id}`}>{daysReading.reason}</div>}
+              </div>
             </div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
-            <Button variant="ink" style={btn} disabled={pending || !reason.trim() || !targetComplete} onClick={send} data-testid={`chain-send-${d.id}`}>
+            <Button variant="ink" style={btn} disabled={pending || !reason.trim() || !targetComplete || !impactsValid} onClick={send} data-testid={`chain-send-${d.id}`}>
               {panel === 'forward' ? 'Forward' : panel === 'reject_back' ? 'Send back' : panel === 'forward_on' ? 'Forward on' : panel === 'completed' ? 'Complete' : 'Return'}
             </Button>
             <Button variant="outline" style={btn} onClick={() => setPanel(null)} data-testid={`chain-cancel-${d.id}`}>Cancel</Button>
@@ -156,3 +179,5 @@ export function CountersignControls({ decision: d }: { decision: Decision }) {
 }
 
 const fld: CSSProperties = { height: 40, padding: '0 10px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', outline: 'none' };
+const invalid: CSSProperties = { borderColor: 'var(--red-solid)' };
+const err: CSSProperties = { fontSize: 11.5, lineHeight: 1.35, color: 'var(--red-solid)' };
