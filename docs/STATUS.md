@@ -14,12 +14,12 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: correction_required
-work_item: none
+work_item: countersign-impact-inputs
 reviewed_merge: e4ac5d8
-open_pr: none
+open_pr: 687
 next_task: phase-6-task-4d-iii
 blocking_directive: phase-6-4d-previous-release-drained
-updated: 2026-10-01
+updated: 2026-10-02
 ```
 
 ### Now — 4d-ii-b is COMPLETE: B6 merged as #684 (`e4ac5d8`); this fold LANDS the drain directive
@@ -61,6 +61,28 @@ landing. `next_task: phase-6-task-4d-iii` records that 4d-iii is the ORDERING; t
 decides WHEN it may open. No unit of 4d waits on a fresh GO — this is a ROLLOUT ordering prerequisite,
 not a scope authorization. Task 4 is not complete until 4d-iii merges, so no unit's merge — B6's
 included — may be treated as the end of the task.
+
+### Open correction — the countersign impact inputs (#687, `claude/countersign-impact-inputs`)
+
+The correction named in #482 comment 5923291892 is the ONE open `claude/**` draft, acknowledged in this
+lane. It does not touch the drain directive above or below: the directive still stands, `task_state`
+stays `correction_required`, and `assessRunnerState` still resolves to
+`directive:phase-6-4d-previous-release-drained`. The open PR is recorded here so the shepherd sees it.
+
+The countersign chain's optional impact inputs (Reject back, Forward on, the PMC's stranded Return)
+stripped every character but digits and an ASCII minus and fell back to 0, so "12.50" was sent as 1250
+rupees, "1.5" days as 15, "abc" as 0 and a Unicode minus "−5" as +5. The fix reads them through
+`apps/web/src/lib/impactInput.ts` (`readImpact`): blank is the agreed 0, a supported whole number is sent
+exactly as typed with its sign, and anything else is refused under its field with Send disabled. It is
+gated client code (nothing renders for a delivered role while the doors stand); no API, schema or
+migration change, nothing activated or deployed. RED at `4707c5d` on all three paths, GREEN here.
+
+**Owed before the chain is activated (the next unit):** the activated disposable-fixture proof the
+comment asks for — browser → API → persisted values, and refused inputs creating no command or request —
+needs a new api-e2e mode that drops the doors in the disposable database and seeds an architect with an
+awaiting decision. **Reported, not widened:** the same strip-and-default parsing remains in the delivered
+change-request submit (`apps/web/src/store/store.ts`, `submitChange`) and the option delta in
+`IssueDecisionModal`; both are reported on #482 for the owner's scheduling.
 
 ### Directive `phase-6-4d-previous-release-drained`
 
