@@ -52,8 +52,10 @@ export function dailyLogIdentity(log: Pick<DailyLog, 'id' | 'date' | 'logDate'>)
 }
 
 /** A draft that still applies to the server's log: same project, same log, and the log is unsent.
- *  When both carry a server id the ids must match; a draft or a log without one (written or served
- *  before the id existed) is matched on the civil-date key, as before. */
+ *  When both carry a server id the ids must match. A draft written before the id existed is matched
+ *  on the civil-date key once, and is then bound to that log's id by `overlayDailyLogDraft` (dropping
+ *  it instead would lose every in-flight draft at upgrade, the #675 regression); the server serves no
+ *  log without an id from this release on (`DailyLogQueryService.projectionSlice`). */
 export function draftAppliesTo(draft: DailyLogDraft | null, serverLog: DailyLog | null, projectId: string): boolean {
   if (!draft || draft.projectId !== projectId) return false;
   if (!serverLog || serverLog.submitted) return false;
@@ -76,19 +78,22 @@ export function overlayDailyLogDraft(
   // a draft written for another project is not this project's business — leave it as it is
   if (draft && draft.projectId !== projectId) return { log: serverLog, draft };
   if (!draft || !serverLog || !draftAppliesTo(draft, serverLog, projectId)) return { log: serverLog, draft: null };
+  // a draft written before the log carried an id is bound to the first log it is laid over, so from
+  // then on it never applies to another log of the same day
+  const kept: DailyLogDraft = !draft.logId && serverLog.id ? { ...draft, logId: serverLog.id } : draft;
   const log: DailyLog = {
     ...serverLog,
-    checkedIn: serverLog.checkedIn || (draft.checkIn?.checkedIn ?? false),
-    checkinTime: serverLog.checkinTime ?? (draft.checkIn?.checkedIn ? draft.checkIn.checkinTime : null),
-    crew: serverLog.crew.map((c) => (draft.crew && c.trade in draft.crew ? { ...c, count: draft.crew[c.trade]! } : c)),
-    progress: serverLog.progress + (draft.photosAdded ?? 0),
+    checkedIn: serverLog.checkedIn || (kept.checkIn?.checkedIn ?? false),
+    checkinTime: serverLog.checkinTime ?? (kept.checkIn?.checkedIn ? kept.checkIn.checkinTime : null),
+    crew: serverLog.crew.map((c) => (kept.crew && c.trade in kept.crew ? { ...c, count: kept.crew[c.trade]! } : c)),
+    progress: serverLog.progress + (kept.photosAdded ?? 0),
   };
   // a check-OUT recorded here after the server never saw the check-in: the engineer's latest word stands
-  if (draft.checkIn && !draft.checkIn.checkedIn && !serverLog.checkedIn) {
+  if (kept.checkIn && !kept.checkIn.checkedIn && !serverLog.checkedIn) {
     log.checkedIn = false;
     log.checkinTime = null;
   }
-  return { log, draft };
+  return { log, draft: kept };
 }
 
 /** Parse a persisted draft, admitting only the shape this module writes (anything else is dropped). */

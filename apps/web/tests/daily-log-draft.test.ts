@@ -290,6 +290,28 @@ describe('U1 — the draft is bound to its log by server id, not only by civil d
     expect(overlayDailyLogDraft(serverLog(), draftFor('log-a'), 'ambli').draft).not.toBeNull();
   });
 
+  it('a draft written before the id existed is bound to the first log it is laid over, and then never to another', () => {
+    const legacy = draftFor(); // persisted before the field: no logId
+    const first = overlayDailyLogDraft(serverLog({ id: 'log-a' }), legacy, 'ambli');
+    expect(first.draft?.logId).toBe('log-a');
+    expect(first.log?.checkedIn).toBe(true);
+    // another device sent log-a and started log-b today: the bound draft is dropped, not carried over
+    const next = overlayDailyLogDraft(serverLog({ id: 'log-b' }), first.draft, 'ambli');
+    expect(next.draft).toBeNull();
+    expect(next.log?.checkedIn).toBe(false);
+  });
+
+  it('the store persists the binding on the reconcile that makes it', async () => {
+    globalThis.localStorage?.clear();
+    useStore.setState(getInitialState());
+    useStore.setState((st) => { st.online = true; st.activeProjectId = 'ambli'; st.projectScopeGeneration = 1; st.outbox = []; st.syncQueue = []; st.dailyLogDraft = draftFor(); });
+    s()._setGateway({ snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog({ id: 'log-a' }))) } as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLogDraft?.logId).toBe('log-a');
+    expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.anon.ambli')).toContain('"logId":"log-a"');
+  });
+
   it('the draft records the id of the log it was written against, and a persisted draft keeps it', () => {
     useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-a' }) });
     s().crewStep(1, 1);
