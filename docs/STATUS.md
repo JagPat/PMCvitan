@@ -13,14 +13,18 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
-task_state: correction_required
+task_state: in_progress
 work_item: none
 reviewed_merge: cffb251
 open_pr: none
 next_task: phase-6-task-4d-iii
-blocking_directive: phase-6-4d-previous-release-drained
-updated: 2026-10-02
+blocking_directive: none
+updated: 2026-10-03
 ```
+
+### Now — the drain directive's CLEARING PR (waits on the owner's drain-evidence run)
+
+This PR sets `blocking_directive: none` and `task_state: in_progress` (the parent task 4 still has work; `next_task: phase-6-task-4d-iii` is the unit that opens). It is a DRAFT and **cannot merge until the trusted `drain-evidence` workflow's artifact is committed, unchanged, as `docs/rollout/phase-6-4d-drain-evidence.json` in one commit directly on top of this PR's head** (`scripts/autonomous-drain-clearance.mjs`). The record is not written here. Owner action: see the ask on #482 and on this PR.
 
 ### Now — 4d-ii-b is COMPLETE: B6 merged as #684 (`e4ac5d8`); the drain directive STANDS, and its clearing path is now the verified drain verdict
 
