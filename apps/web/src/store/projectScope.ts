@@ -73,6 +73,9 @@ export interface ProjectDataState {
   /** U2b — the one decision the client's decisions screen is showing on its own (a decision id is
    *  project-contained, so it tears down with the scope like `placeFocus`) */
   decisionFocus: string | null;
+  /** Audit F-02 — the activity the schedule should bring into view when it is opened from a place
+   *  (an activity id is project-contained, so it tears down with the scope like `placeFocus`) */
+  activityFocus: string | null;
   checklist: Checklist | null;
   /** EVERY issued, unsubmitted checklist for THIS project. Project data like `checklist` itself:
    *  an inspection id is project-contained, so carrying the list across a switch would show one
@@ -172,6 +175,7 @@ export function emptyProjectData(): ProjectDataState {
     nodes: [],
     placeFocus: null,
     decisionFocus: null,
+    activityFocus: null,
     checklist: null,
     openChecklists: [],
     selectedChecklistId: null,

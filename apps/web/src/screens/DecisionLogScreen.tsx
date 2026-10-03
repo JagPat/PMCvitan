@@ -4,6 +4,7 @@ import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, DecisionChip, Button, Modal, LocationContext, EditState, ConsultationThread, CountersignControls } from '@/components';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
+import { ConfirmLocationDelete } from '@/screens/modals/ConfirmLocationDelete';
 import { Lock, Plus, ChevronRight, Pencil, Trash2, BookmarkPlus } from '@/lib/icons';
 import { deciderNoun, signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
 import { childrenOf, groupDecisions, locationSegments, type GroupBy } from '@/lib/locationTree';
@@ -63,7 +64,6 @@ export function DecisionLogScreen() {
   const mayWithdrawDecision = (d: Decision): boolean =>
     can('decision.withdraw', role) && d.status === 'pending' && !d.draft;
   const [issuing, setIssuing] = useState(false);
-  const [managing, setManaging] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupBy>('location');
   const [query, setQuery] = useState('');
   const [statuses, setStatuses] = useState<Set<Decision['status']>>(new Set());
@@ -94,7 +94,6 @@ export function DecisionLogScreen() {
       else next.add(key);
       return next;
     });
-  const canManage = can('node.manage', role);
 
   return (
     <div className={`${styles.screen} ${styles.narrow}`}>
@@ -103,11 +102,6 @@ export function DecisionLogScreen() {
         <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' }}>Decision Register</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)' }}>{filtered.length} DECISIONS</div>
-          {canManage && (
-            <Button variant="outline" onClick={() => setManaging(true)} data-testid="manage-locations" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 12px', fontSize: 12.5 }}>
-              Locations
-            </Button>
-          )}
           {can('decision.create', role) && (
             <Button variant="ink" onClick={() => setIssuing(true)} data-testid="issue-decision" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5 }}>
               <Plus size={15} /> Issue decision
@@ -116,7 +110,6 @@ export function DecisionLogScreen() {
         </div>
       </div>
       {issuing && <IssueDecisionModal onClose={() => setIssuing(false)} />}
-      {managing && <ManageLocationsModal onClose={() => setManaging(false)} />}
 
       {/* controls: group-by, search, status filter */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', margin: '12px 0 4px' }}>
@@ -347,7 +340,6 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
 export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   const nodes = useStore(useShallow((s) => s.nodes));
   const renameNode = useStore((s) => s.renameNode);
-  const deleteNode = useStore((s) => s.deleteNode);
   const publishNode = useStore((s) => s.publishNode);
   const addLocationNode = useStore((s) => s.addLocationNode);
   const saveZoneAsModule = useStore((s) => s.saveZoneAsModule);
@@ -355,12 +347,17 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   const [newZone, setNewZone] = useState('');
   const [asDraft, setAsDraft] = useState(false);
   const [tplName, setTplName] = useState('');
+  // Audit B4 — a delete is confirmed first; the confirmation stands in for this dialog, so one
+  // Escape never closes both
+  const [deleting, setDeleting] = useState<string | null>(null);
   const saveTemplate = () => { if (tplName.trim()) { saveProjectAsTemplate(tplName.trim()); setTplName(''); } };
 
   const rowsFor = (parentId: string | null, depth: number): { id: string; name: string; kind: string; depth: number; draft: boolean }[] =>
     childrenOf(nodes, parentId).flatMap((n) => [{ id: n.id, name: n.name, kind: n.kind, depth, draft: Boolean(n.draft) }, ...rowsFor(n.id, depth + 1)]);
   const list = rowsFor(null, 0);
   const addZone = () => { if (newZone.trim()) { void addLocationNode({ name: newZone.trim(), kind: 'zone', parentId: null, publish: !asDraft }); setNewZone(''); } };
+
+  if (deleting) return <ConfirmLocationDelete nodeId={deleting} onClose={() => setDeleting(null)} />;
 
   return (
     <Modal onClose={onClose} maxWidth={480} labelledBy="manage-loc-title">
@@ -395,7 +392,7 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
               draft={n.draft}
               onRename={(name) => renameNode(n.id, name)}
               onPublish={() => publishNode(n.id)}
-              onDelete={() => deleteNode(n.id)}
+              onDelete={() => setDeleting(n.id)}
               onSaveAsModule={n.kind === 'zone' ? () => saveZoneAsModule(n.id, n.name) : undefined}
               // add-child per the tree rule: a zone or room takes a room or an object while the
               // child would land within the 5-level cap (row depth is 0-based → child level is

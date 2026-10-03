@@ -9,8 +9,7 @@ test('location drafts: a PMC builds a location privately, then publishes it live
   await expect(page.getByRole('button', { name: 'Ground Floor' })).toBeVisible(); // published tree is there
   await expect(page.getByText('Basement', { exact: true })).toHaveCount(0); // the draft is hidden
 
-  // The PMC opens the Locations editor from the Decision Log — the draft's private home.
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  // The PMC opens the full Locations editor from the Site Map (audit B3) — the draft's private home.
   await page.getByTestId('manage-locations').click();
 
   // The Basement row shows a DRAFT chip and a Publish button; a published zone shows neither.

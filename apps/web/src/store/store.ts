@@ -308,6 +308,8 @@ export interface AppState {
   placeFocus: string | null;
   /** U2b — the decision the client's decisions screen shows on its own screen (project-owned) */
   decisionFocus: string | null;
+  /** Audit F-02 — the activity the schedule brings into view when opened from a place (project-owned) */
+  activityFocus: string | null;
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   /** EVERY open (issued, unsubmitted) checklist. `checklist` is the one the field view opens;
    *  this is the whole outstanding set, so a second issued checklist no longer hides the first
@@ -434,6 +436,10 @@ export interface AppActions {
   openPlace: (nodeId: string | null) => void;
   /** the Site Map has adopted `placeFocus` and will not re-adopt it */
   clearPlaceFocus: () => void;
+  /** Audit F-02 — open the schedule with one activity brought into view (from a place's Work list) */
+  openActivity: (activityId: string) => void;
+  /** the schedule has shown `activityFocus` and will not re-show it */
+  clearActivityFocus: () => void;
   /** U2b — open one decision on its own screen (the Pulse's "one thing needs you") */
   openDecision: (decisionId: string) => void;
   /** …and back to the list of decisions */
@@ -1108,6 +1114,7 @@ export function getInitialState(): AppState {
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     placeFocus: null,
     decisionFocus: null,
+    activityFocus: null,
     checklist: structuredClone(SEED_CHECKLIST),
     openChecklists: [structuredClone(SEED_CHECKLIST)],
     selectedChecklistId: null,
@@ -2401,6 +2408,16 @@ export const useStore = create<Store>()(
     clearPlaceFocus: () =>
       set((s) => {
         s.placeFocus = null;
+      }),
+    openActivity: (activityId) =>
+      set((s) => {
+        s.activityFocus = activityId;
+        s.screen = 'site-schedule';
+        s.notifOpen = false;
+      }),
+    clearActivityFocus: () =>
+      set((s) => {
+        s.activityFocus = null;
       }),
     setLang: (l) => set((s) => { s.lang = l; }),
     toggleNotif: () => set((s) => { s.notifOpen = !s.notifOpen; }),
