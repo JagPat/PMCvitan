@@ -1,37 +1,26 @@
-import { useMemo } from 'react';
 import { useStore } from '@/store/store';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { describeLocationDelete, locationDeleteBlocked, locationDeleteImpact, locationDeleteSettled, LOCATION_DELETE_UNSETTLED } from '@/lib/locationDelete';
+import { describeLocationDelete, locationDeleteBlocked, locationDeleteSettled, visibleDecisionsUnder, LOCATION_DELETE_UNSETTLED } from '@/lib/locationDelete';
 
-/** Audit B4 — "Delete Ground Floor?", naming what goes with it and what is unfiled, from the
- *  Site Map or the Locations editor alike. A location with decisions on it offers only Close. */
+/** Audit B4 — "Delete Ground Floor?", stating what the server does when a location goes, from the
+ *  Site Map or the Locations editor alike. A decision the viewer can see below it offers only Close;
+ *  so does a decisions slice that has not loaded (#699 review: the rule, never an unvouched count). */
 export function ConfirmLocationDelete({ nodeId, onClose, onDeleted }: { nodeId: string; onClose: () => void; onDeleted?: () => void }) {
-  const nodes = useStore((s) => s.nodes);
-  const decisions = useStore((s) => s.decisions);
-  const activities = useStore((s) => s.activities);
-  const drawings = useStore((s) => s.drawings);
-  const inspections = useStore((s) => s.placedInspections);
-  const materials = useStore((s) => s.materials);
-  const photos = useStore((s) => s.photos);
-  const deleteNode = useStore((s) => s.deleteNode);
-  // #699 Codex 4174074843 — the impact is described only from settled data; otherwise only Close
+  const node = useStore((s) => s.nodes.find((n) => n.id === nodeId));
+  const visibleDecisions = useStore((s) => visibleDecisionsUnder(s.nodes, nodeId, s.decisions));
   const settled = useStore((s) => locationDeleteSettled(s));
-  const impact = useMemo(
-    () => locationDeleteImpact(nodes, nodeId, { decisions, activities, drawings, inspections, materials, photos }),
-    [nodes, nodeId, decisions, activities, drawings, inspections, materials, photos],
-  );
-  const node = nodes.find((n) => n.id === nodeId);
+  const deleteNode = useStore((s) => s.deleteNode);
   if (!node) return null;
   return (
     <ConfirmDialog
       title={`Delete ${node.name}?`}
       confirmLabel="Delete"
-      blocked={settled ? (locationDeleteBlocked(impact) ?? undefined) : LOCATION_DELETE_UNSETTLED}
+      blocked={settled ? (locationDeleteBlocked(visibleDecisions) ?? undefined) : LOCATION_DELETE_UNSETTLED}
       onConfirm={() => { deleteNode(nodeId); onDeleted?.(); }}
       onCancel={onClose}
       testId="confirm-location-delete"
     >
-      {settled ? describeLocationDelete(impact) : null}
+      {settled ? describeLocationDelete(node.kind) : null}
     </ConfirmDialog>
   );
 }

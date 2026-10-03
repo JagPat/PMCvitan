@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
-import { describeLocationDelete, locationDeleteBlocked, locationDeleteImpact } from '@/lib/locationDelete';
+import { describeLocationDelete, locationDeleteBlocked, visibleDecisionsUnder } from '@/lib/locationDelete';
 import type { Activity, Decision, Phase, ProjectNode } from '@vitan/shared';
 
 /**
@@ -54,28 +54,24 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe('locationDeleteImpact — the server rule, said before the delete', () => {
-  it('counts the locations that go with it and the records that are unfiled', () => {
-    const impact = locationDeleteImpact(NODES, 'gf', {
-      decisions: [], activities: [{ nodeId: 'kit' }, { nodeId: 'other' }], drawings: [{ nodeId: 'gf' }],
-      inspections: [], materials: [], photos: [{ nodeId: 'door' }, { nodeId: 'door' }],
-    });
-    expect(impact.descendants).toBe(2);
-    expect(impact.unfiled).toEqual({ activities: 1, drawings: 1, inspections: 0, materials: 0, photos: 2 });
-    expect(describeLocationDelete(impact)).toBe(
-      '2 locations inside it are deleted too. 1 activity, 1 drawing and 2 photos will be kept but no longer filed to a location.',
-    );
-    expect(locationDeleteBlocked(impact)).toBeNull();
+describe('the location delete states the server rule, never a count it cannot vouch for (#699 root cause)', () => {
+  it('a zone or room: children and other people’s drafts go; placed records are unfiled', () => {
+    const text = describeLocationDelete('zone');
+    expect(text).toContain('Every room and object inside it is deleted too, including private drafts other people are preparing.');
+    expect(text).toContain('Activities, drawings, inspections, material deliveries and photos filed here or inside it are kept, but no longer filed to a location.');
+    expect(text).toContain('the server refuses and says why');
+    expect(text).not.toMatch(/\d/); // no count: the viewer never holds the whole subtree (hidden drafts, capped photos)
   });
 
-  it('a decision anywhere below blocks the delete, as the server refuses it', () => {
-    const impact = locationDeleteImpact(NODES, 'gf', { decisions: [{ nodeId: 'kit' }], activities: [], drawings: [], inspections: [], materials: [], photos: [] });
-    expect(locationDeleteBlocked(impact)).toBe('1 decision is filed here. Move or remove it in the Decision Log first.');
+  it('an object has no children to mention', () => {
+    expect(describeLocationDelete('element')).not.toContain('room and object inside it');
   });
 
-  it('an empty leaf says nothing else is affected', () => {
-    const impact = locationDeleteImpact(NODES, 'door', { decisions: [], activities: [], drawings: [], inspections: [], materials: [], photos: [] });
-    expect(describeLocationDelete(impact)).toBe('Nothing else you can see is filed here.');
+  it('a decision the viewer can see anywhere below is a certain refusal', () => {
+    const n = visibleDecisionsUnder(NODES, 'gf', [{ nodeId: 'kit' }, { nodeId: 'elsewhere' }]);
+    expect(n).toBe(1);
+    expect(locationDeleteBlocked(n)).toBe('1 decision is filed here. Move or remove it in the Decision Log first.');
+    expect(locationDeleteBlocked(0)).toBeNull();
   });
 });
 
@@ -151,8 +147,8 @@ describe('B4 — a location delete is confirmed first', () => {
     expect(deleteNode).not.toHaveBeenCalled();
     const dlg = r.getByTestId('confirm-location-delete');
     expect(dlg.textContent).toContain('Delete Ground Floor?');
-    expect(dlg.textContent).toContain('2 locations inside it are deleted too.');
-    expect(dlg.textContent).toContain('1 activity will be kept but no longer filed to a location.');
+    expect(dlg.textContent).toContain('Every room and object inside it is deleted too, including private drafts other people are preparing.');
+    expect(dlg.textContent).not.toMatch(/\d/); // the rule, not the browser's partial count
     fireEvent.click(r.getByTestId('confirm-location-delete-cancel'));
     expect(r.queryByTestId('confirm-location-delete')).toBeNull();
     expect(deleteNode).not.toHaveBeenCalled();
@@ -239,7 +235,8 @@ describe('B4 — schedule deletes are confirmed first', () => {
     const r = render(<ScheduleScreen />);
     fireEvent.click(r.getByRole('button', { name: 'Remove phase Finishing' }));
     expect(deletePhase).not.toHaveBeenCalled();
-    expect(r.getByTestId('confirm-phase-delete').textContent).toContain('Its 1 activity stays in the schedule, under Unphased.');
+    expect(r.getByTestId('confirm-phase-delete').textContent).toContain('Its activities stay in the schedule, under Unphased.');
+    expect(r.getByTestId('confirm-phase-delete').textContent).not.toMatch(/\d/); // no count a stale read could falsify (4174270527)
     fireEvent.click(r.getByTestId('confirm-phase-delete-confirm'));
     expect(deletePhase).toHaveBeenCalledWith('ph-fin');
   });
@@ -340,20 +337,20 @@ describe('#699 Codex round 1', () => {
     act(() => { useStore.getState().openPlace('gf'); });
     const r = render(<PlacesScreen />);
     fireEvent.click(r.getByTestId('place-delete'));
-    expect(r.getByTestId('confirm-location-delete-blocked').textContent).toContain("hasn't finished loading");
-    expect(r.getByTestId('confirm-location-delete').textContent).not.toContain('Nothing else');
+    expect(r.getByTestId('confirm-location-delete-blocked').textContent).toContain("haven't finished loading");
+    expect(r.getByTestId('confirm-location-delete').textContent).not.toContain('Every room');
     expect(r.queryByTestId('confirm-location-delete-confirm')).toBeNull();
   });
 
-  it('a module-owned read that failed also withholds the delete', async () => {
-    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
-    const { useStore, PlacesScreen } = await load({ activitiesLoad: 'error' });
+  it('a failed module-owned decisions read also withholds the delete', async () => {
+    vi.stubEnv('VITE_DECISIONS_READ', 'moduleQuery');
+    const { useStore, PlacesScreen } = await load({ decisionsLoad: 'error' });
     act(() => { useStore.getState().openPlace('door'); });
     const r = render(<PlacesScreen />);
     fireEvent.click(r.getByTestId('place-delete'));
     expect(r.queryByTestId('confirm-location-delete-confirm')).toBeNull();
     cleanup();
-    useStore.setState({ activitiesLoad: 'ready' });
+    useStore.setState({ decisionsLoad: 'ready' });
     const again = render(<PlacesScreen />);
     act(() => { useStore.getState().openPlace('door'); });
     fireEvent.click(again.getByTestId('place-delete'));
@@ -394,5 +391,24 @@ describe('#699 shadow review round 2', () => {
     useStore.getState().deleteNode('gf');
     await flush();
     expect(useStore.getState().toast).toBe("Couldn't delete this location — the server refused it");
+  });
+});
+
+describe('#699 Codex round 2 — no partial count is ever shown as complete', () => {
+  it("another PMC's hidden draft room below is covered by the rule, not missed by a count (4174270523)", async () => {
+    // the viewer's tree has no children under Main Door's zone sibling; the server may hold drafts there
+    const { useStore, PlacesScreen } = await load({ nodes: [{ id: 'gf', parentId: null, name: 'Ground Floor', kind: 'zone', order: 0 }] });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-delete'));
+    expect(r.getByTestId('confirm-location-delete').textContent).toContain('including private drafts other people are preparing');
+  });
+
+  it('photos beyond the snapshot cap are covered by the rule, not left out of a count (4174270519)', async () => {
+    const { useStore, PlacesScreen } = await load({ photos: [] }); // the snapshot holds none of this place's photos
+    act(() => { useStore.getState().openPlace('kit'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-delete'));
+    expect(r.getByTestId('confirm-location-delete').textContent).toContain('photos filed here or inside it are kept, but no longer filed to a location');
   });
 });

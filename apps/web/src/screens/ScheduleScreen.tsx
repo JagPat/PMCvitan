@@ -454,7 +454,7 @@ export function ScheduleScreen() {
           onCancel={() => setPhaseToDelete(null)}
           testId="confirm-phase-delete"
         >
-          {phaseNote(activitiesInPhase(activities, [phaseToDelete], phaseToDelete.id).length)}
+          {PHASE_DELETE_NOTE}
         </ConfirmDialog>
       )}
 
@@ -496,11 +496,10 @@ export function ScheduleScreen() {
   );
 }
 
-/** What removing a phase does to its work: the server keeps the activities, unphased. */
-function phaseNote(n: number): string {
-  if (n === 0) return 'It has no activities.';
-  return `Its ${n} ${n === 1 ? 'activity stays' : 'activities stay'} in the schedule, under Unphased.`;
-}
+/** What removing a phase does (`PhasesService.remove`): its activities stay, unphased. Stated as the
+ *  server's rule, never as a count of the activities this browser holds, which a failed or stale
+ *  read can leave short (#699 Codex 4174270527). */
+const PHASE_DELETE_NOTE = 'Its activities stay in the schedule, under Unphased.';
 
 const GATE_VALUES: Gate[] = ['na', 'wait', 'ok', 'fail'];
 
