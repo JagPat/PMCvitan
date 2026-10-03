@@ -29,11 +29,13 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   const [value, setValue] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [allOpen, setAllOpen] = useState(false);
-  // #699 Codex 4174074853 — a create is not keyed, so the form takes one submission at a time
+  // #699 Codex 4174074853 — the form takes one submission at a time (`addLocationNode` also joins
+  // an identical create in flight and keys it, so a retry replays rather than adding a second place)
   const [pending, setPending] = useState(false);
-  // #699 Codex 4174429320 — after a create that did not come back applied, the server may still hold
-  // the new place. The form stays locked until the tree the store re-reads arrives; the name guard
-  // below then judges the retry against what the server actually has. Cancel stays available.
+  // #699 Codex 4174429320 — after a create that did not come back applied, the server may hold the
+  // new place. The retry reuses the create's key, so it cannot add a second one; the form still waits
+  // for the tree the store re-reads, so the name guard below can say the place is already there
+  // rather than replaying it. Cancel stays available.
   const [checking, setChecking] = useState(false);
   const nodesAtFailure = useRef<typeof nodes | null>(null);
   useEffect(() => {

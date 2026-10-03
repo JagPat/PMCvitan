@@ -777,6 +777,10 @@ export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): bool
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+/** #699 — location creates by intent (project, parent, kind, name, publish): the one in flight,
+ *  or the key of one whose outcome was lost, which its retry must reuse (`addLocationNode`). */
+interface NodeCreate { key: string; inFlight: Promise<string | null> | null }
+const nodeCreates = new Map<string, NodeCreate>();
 /** U3b — the newest brief request; a reply to any earlier one is superseded and dropped (the landing,
  *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
 let briefRequestSeq = 0;
@@ -4403,35 +4407,58 @@ export const useStore = create<Store>()(
       }
       const before = new Set(get().nodes.map((n) => n.id));
       const scope = currentScope();
-      try {
-        const lease = beginSnapshotLease(scope); // gate round 11: before the create request
-        const snap = await gateway.createNode(input);
-        const result = acceptSnapshot(snap, lease);
-        if (result !== 'applied') {
-          // a newer refresh owns the tree (superseded) or the payload was wrong-project;
-          // don't claim success or return a node id the current tree may not reflect.
-          // gate round 12/13: on superseded the node WAS created — record a command
-          // reconcile requirement so it lands (or exposes Retry) even if the newer
-          // refresh fails; on wrong-project, recover.
-          if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
-          else if (result === 'invalid-project') void requestFreshSnapshot();
+      // #699 shadow review — one create per intent, whichever screen sends it (the Site Map, the
+      // Locations editor, the filing picker). The exact body is the intent: an identical create
+      // already in flight is joined, not re-sent; a create whose outcome was lost keeps its
+      // `Idempotency-Key`, so the retry replays on the server instead of adding a second place.
+      const body = { name: input.name.trim(), kind: input.kind, parentId: input.parentId ?? null, publish: input.publish ?? true };
+      const intent = JSON.stringify([scope.projectId, body.parentId, body.kind, body.name, body.publish]);
+      const prior = nodeCreates.get(intent);
+      if (prior?.inFlight) return prior.inFlight;
+      const key = prior?.key ?? newIdempotencyKey();
+      let answered = false;
+      const run = (async (): Promise<string | null> => {
+        try {
+          const lease = beginSnapshotLease(scope); // gate round 11: before the create request
+          const snap = await gateway!.createNode(body, key);
+          answered = true;
+          const result = acceptSnapshot(snap, lease);
+          if (result !== 'applied') {
+            // a newer refresh owns the tree (superseded) or the payload was wrong-project;
+            // don't claim success or return a node id the current tree may not reflect.
+            // gate round 12/13: on superseded the node WAS created — record a command
+            // reconcile requirement so it lands (or exposes Retry) even if the newer
+            // refresh fails; on wrong-project, recover.
+            if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+            else if (result === 'invalid-project') void requestFreshSnapshot();
+            return null;
+          }
+          get().flash(`Added ${body.kind}: ${body.name}.`);
+          // the newly-created node is the one whose id wasn't present before; a replayed create's
+          // node may already have been in the tree, so fall back to the sibling it created
+          const nodes = get().nodes;
+          const same = (n: ProjectNode) => n.name === body.name && n.kind === body.kind && (n.parentId ?? null) === body.parentId;
+          return (nodes.find((n) => !before.has(n.id) && same(n)) ?? nodes.find(same))?.id ?? null;
+        } catch {
+          // gate round 12: a failure landing after a switch must not toast into project B.
+          if (!scopeStillCurrent(scope)) return null;
+          get().flash('Could not add the location — check your access and try again.');
+          // #699 Codex 4174429320 — re-read the tree, so the form judges a retry against what the
+          // server holds (the Site Map refuses a name its parent already has).
+          void requestFreshSnapshot();
           return null;
         }
-        get().flash(`Added ${input.kind}: ${input.name}.`);
-        // the newly-created node is the one whose id wasn't present before
-        const created = get().nodes.find((n) => !before.has(n.id) && n.name === input.name && n.kind === input.kind);
-        return created?.id ?? null;
-      } catch {
-        // gate round 12: a failure landing after a switch must not toast into project B.
-        if (!scopeStillCurrent(scope)) return null;
-        get().flash('Could not add the location — check your access and try again.');
-        // #699 Codex 4174429320 — node creates are not keyed, so a failure is UNCERTAIN: the server may
-        // have created it and lost the reply. Re-read the tree, so a retry is judged against what the
-        // server actually holds (the Site Map refuses a name its parent already has) rather than
-        // sending a second create blind.
-        void requestFreshSnapshot();
-        return null;
-      }
+      })();
+      const entry: NodeCreate = { key, inFlight: run };
+      nodeCreates.set(intent, entry);
+      // settled asynchronously (after this entry is stored, before the caller resumes): the server's
+      // answer ends the intent, so the next create of it is a new one; an unknown outcome keeps the
+      // key with the intent for the retry
+      void run.finally(() => {
+        if (answered) nodeCreates.delete(intent);
+        else entry.inFlight = null;
+      });
+      return run;
     },
     renameNode: (nodeId, name) => {
       if (!gateway) {

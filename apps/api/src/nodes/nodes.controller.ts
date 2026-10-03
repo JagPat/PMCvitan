@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Headers, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { NodesService } from './nodes.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
@@ -14,8 +14,13 @@ export class NodesController {
 
   @Post()
   @RolesFor('node.manage')
-  create(@Param('projectId') projectId: string, @Body(new ZodPipe(createNodeSchema)) body: CreateNodeInput, @CurrentUser() user: AuthUser) {
-    return this.nodes.create(projectId, body, user);
+  create(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(createNodeSchema)) body: CreateNodeInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.nodes.create(projectId, body, user, idempotencyKey);
   }
 
   @Patch(':nodeId')

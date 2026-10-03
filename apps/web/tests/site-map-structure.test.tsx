@@ -468,3 +468,52 @@ describe('#699 Codex round 3', () => {
     expect(renameNode).not.toHaveBeenCalled();
   });
 });
+
+describe('#699 shadow review on ffe055d — one create per intent, from every screen that creates', () => {
+  const PANTRY = { name: 'Pantry', kind: 'room' as const, parentId: 'gf', publish: true };
+  const store = async (createNode: (...a: unknown[]) => Promise<unknown>) => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    useStore.setState({ activeProjectId: 'villa-b', projectLoadState: 'ready', role: 'pmc', nodes: NODES });
+    useStore.getState()._setGateway({ createNode: vi.fn(createNode), snapshot: vi.fn(() => new Promise(() => {})) } as never);
+    return useStore;
+  };
+
+  it('an identical create already in flight is joined, never sent twice (the Locations editor and the picker included)', async () => {
+    let calls = 0;
+    const useStore = await store(() => { calls += 1; return new Promise(() => {}); });
+    void useStore.getState().addLocationNode(PANTRY);
+    void useStore.getState().addLocationNode({ ...PANTRY, name: ' Pantry ' });
+    expect(calls).toBe(1);
+  });
+
+  it('a retry after a lost reply carries the SAME Idempotency-Key, so the server replays it', async () => {
+    const keys: unknown[] = [];
+    const useStore = await store((_body, key) => { keys.push(key); return Promise.reject(new Error('lost')); });
+    await useStore.getState().addLocationNode(PANTRY);
+    await useStore.getState().addLocationNode(PANTRY);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toEqual(expect.any(String));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('once the server has answered, the next create of the same name is a new one (new key)', async () => {
+    const keys: unknown[] = [];
+    const useStore = await store((_body, key) => { keys.push(key); return Promise.resolve({}); });
+    await useStore.getState().addLocationNode(PANTRY).catch(() => null);
+    await useStore.getState().addLocationNode(PANTRY).catch(() => null);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  it('a different place is a different intent', async () => {
+    const keys: unknown[] = [];
+    const useStore = await store((_body, key) => { keys.push(key); return new Promise(() => {}); });
+    void useStore.getState().addLocationNode(PANTRY);
+    void useStore.getState().addLocationNode({ ...PANTRY, parentId: 'kit' });
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+});
