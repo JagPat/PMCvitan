@@ -655,11 +655,14 @@ export class DecisionsQueryService {
   }
 
   /** U3a — the client approvals recorded at or after `since` (the PMC brief's "client approvals"):
-   *  approval revisions of client-held decisions, a PMC-recorded consent on the client's behalf
-   *  included. */
+   *  judged from each approval revision's OWN frozen attribution, never the decision's current
+   *  decider (`deciderKind` moves when a decision is forwarded, so it cannot say who approved an
+   *  older revision). A revision counts when the client approved it (`approvedByRole`, the role held
+   *  at the act) or a PMC recorded the client's consent (`onBehalfOf`). A revision that froze no role
+   *  (a pre-4d row) and recorded no consent is not guessed into the count. */
   async clientApprovalsSince(projectId: string, since: Date): Promise<number> {
     return this.prisma.decisionApprovalRevision.count({
-      where: { projectId, approvedAt: { gte: since }, OR: [{ decision: { deciderKind: 'client' } }, { onBehalfOf: 'client' }] },
+      where: { projectId, approvedAt: { gte: since }, OR: [{ approvedByRole: 'client' }, { onBehalfOf: 'client' }] },
     });
   }
 

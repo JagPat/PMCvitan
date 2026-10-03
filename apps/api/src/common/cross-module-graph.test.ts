@@ -318,7 +318,7 @@ const NO_WRITE_SERVICES: Record<string, string> = {
   'media/storage.service.ts': 'blob storage (S3 / dev stub; no DB write)',
   'prisma.service.ts': 'the PrismaClient itself',
   'snapshot/snapshot.service.ts': 'the read-side snapshot builder (no write)',
-  'orgs/brief.service.ts': 'U3a — the PMC\'s cross-project daily brief (`GET /me/brief`): reads through the daily-log, inspections and decisions query contracts and counts media (no write)',
+  'orgs/brief.service.ts': 'U3a — the PMC\'s cross-project daily brief (`GET /me/brief`): reads through the daily-log, inspections, decisions and media query contracts (no write)',
   'platform/module-registry/module-registry.service.ts': 'Task 7 — validates the module registry at startup (no DB write)',
 };
 

@@ -6,6 +6,7 @@ import { addCivilDays, civilDayStartInstant } from '../common/civil-date';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
+import { MediaQueryService } from '../media/media.query';
 import { projectsInReach } from './project-reach';
 
 /**
@@ -17,8 +18,7 @@ import { projectsInReach } from './project-reach';
  * from a project outside it is read.
  *
  * WHAT: each project's figures come from its owning module's query contract (daily-log, inspections,
- * decisions), never their tables, on that project's own civil calendar (`Project.timeZone`). Progress
- * photos are counted from `media`, which is not read-encapsulated (the snapshot reads it the same way).
+ * decisions, media), never their tables, on that project's own civil calendar (`Project.timeZone`).
  */
 @Injectable()
 export class BriefService {
@@ -28,6 +28,7 @@ export class BriefService {
     private readonly dailyLog: DailyLogQueryService,
     private readonly decisions: DecisionsQueryService,
     private readonly inspections: InspectionsQueryService,
+    private readonly media: MediaQueryService,
   ) {}
 
   async brief(userId: string): Promise<PmcBriefResult> {
@@ -44,7 +45,7 @@ export class BriefService {
       this.inspections.openInspectionCount(project.id),
       this.decisions.waitingOnClient(project.id),
       this.decisions.clientApprovalsSince(project.id, since),
-      this.prisma.media.count({ where: { projectId: project.id, kind: 'progress', createdAt: { gte: since } } }),
+      this.media.progressPhotoCountSince(project.id, since),
       this.inspections.rejectedSince(project.id, since),
     ]);
     return {
