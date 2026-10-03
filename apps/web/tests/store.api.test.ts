@@ -559,3 +559,37 @@ describe('Phase 0 Task 3 — every project-scoped response is generation-guarded
     expect(s().decisions).toEqual([]);
   });
 });
+
+describe('#699 — a location create keeps its key until an applied snapshot settles it', () => {
+  const PANTRY = { name: 'Pantry', kind: 'room' as const, parentId: null, publish: true };
+  const pantryNode = { id: 'n-pantry', parentId: null, name: 'Pantry', kind: 'room' as const, order: 0 };
+
+  it('an applied create ends the intent: the next create of the same name is a new one (new key)', async () => {
+    const keys: unknown[] = [];
+    const gw = { createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.resolve(makeSnapshot({ nodes: [pantryNode] })); }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    expect(await s().addLocationNode(PANTRY)).toBe('n-pantry');
+    await s().addLocationNode(PANTRY);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  it('a create whose snapshot was superseded keeps its key, so the retry replays (Codex 4175348826)', async () => {
+    const keys: unknown[] = [];
+    let finish!: (snap: ApiSnapshot) => void;
+    const gw = {
+      createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return keys.length === 1 ? new Promise<ApiSnapshot>((r) => { finish = r; }) : Promise.resolve(makeSnapshot({ nodes: [pantryNode] })); }),
+      renameNode: vi.fn(() => Promise.resolve(makeSnapshot())),
+      snapshot: vi.fn(() => new Promise(() => {})), // the recovery read never lands
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    const first = s().addLocationNode(PANTRY);
+    s().renameNode('other', 'Lobby'); // a newer command's snapshot leases and applies first
+    await flush();
+    finish(makeSnapshot({ nodes: [pantryNode] })); // the create's reply is now superseded
+    expect(await first).toBeNull();
+    await s().addLocationNode(PANTRY); // the PMC retries
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+  });
+});

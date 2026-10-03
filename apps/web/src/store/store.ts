@@ -4421,8 +4421,11 @@ export const useStore = create<Store>()(
         try {
           const lease = beginSnapshotLease(scope); // gate round 11: before the create request
           const snap = await gateway!.createNode(body, key);
-          answered = true;
           const result = acceptSnapshot(snap, lease);
+          // #699 Codex 4175348826 — only an APPLIED snapshot settles the intent. A superseded one means
+          // the place was created but this tree may not show it yet (and the recovery read can fail),
+          // so the key stays: a retry replays the committed create instead of adding a second place.
+          answered = result === 'applied';
           if (result !== 'applied') {
             // a newer refresh owns the tree (superseded) or the payload was wrong-project;
             // don't claim success or return a node id the current tree may not reflect.
@@ -4451,8 +4454,8 @@ export const useStore = create<Store>()(
       })();
       const entry: NodeCreate = { key, inFlight: run };
       nodeCreates.set(intent, entry);
-      // settled asynchronously (after this entry is stored, before the caller resumes): the server's
-      // answer ends the intent, so the next create of it is a new one; an unknown outcome keeps the
+      // settled asynchronously (after this entry is stored, before the caller resumes): an applied
+      // result ends the intent, so the next create of it is a new one; any other outcome keeps the
       // key with the intent for the retry
       void run.finally(() => {
         if (answered) nodeCreates.delete(intent);

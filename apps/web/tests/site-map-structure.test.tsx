@@ -357,7 +357,7 @@ describe('#699 Codex round 1', () => {
     expect(again.getByTestId('confirm-location-delete-confirm')).toBeInTheDocument();
   });
 
-  it('the activity delete names every server blocker (4174074850)', async () => {
+  it('the activity delete states the server rule: anything referring to it blocks the delete (4174074850, 4175348825)', async () => {
     const { ScheduleScreen } = await (async () => {
       await load({ phases: [PHASE], activities: [activity('A-1', 'Tiling', 'kit', 'ph-fin')] });
       return import('@/screens/ScheduleScreen');
@@ -365,7 +365,7 @@ describe('#699 Codex round 1', () => {
     const r = render(<ScheduleScreen />);
     fireEvent.click(r.getByTestId('edit-A-1'));
     fireEvent.click(r.getByTestId('activity-delete'));
-    expect(r.getByTestId('confirm-activity-delete').textContent).toContain('inspections, material records or a gate override');
+    expect(r.getByTestId('confirm-activity-delete').textContent).toContain('a schedule link, recorded work or anything else');
   });
 
   it('the Locations editor is its own module; the Decision Log no longer carries it (4174074847)', async () => {
@@ -516,15 +516,6 @@ describe('#699 shadow review on ffe055d — one create per intent, from every sc
     expect(keys).toHaveLength(2);
     expect(keys[0]).toEqual(expect.any(String));
     expect(keys[1]).toBe(keys[0]);
-  });
-
-  it('once the server has answered, the next create of the same name is a new one (new key)', async () => {
-    const keys: unknown[] = [];
-    const useStore = await store((_body, key) => { keys.push(key); return Promise.resolve({}); });
-    await useStore.getState().addLocationNode(PANTRY).catch(() => null);
-    await useStore.getState().addLocationNode(PANTRY).catch(() => null);
-    expect(keys).toHaveLength(2);
-    expect(keys[1]).not.toBe(keys[0]);
   });
 
   it('a different place is a different intent', async () => {
