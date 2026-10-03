@@ -412,3 +412,59 @@ describe('#699 Codex round 2 — no partial count is ever shown as complete', ()
     expect(r.getByTestId('confirm-location-delete').textContent).toContain('photos filed here or inside it are kept, but no longer filed to a location');
   });
 });
+
+describe('#699 Codex round 3', () => {
+  it('after an uncertain create, the retry waits for a fresh tree, which then refuses the duplicate (4174429320)', async () => {
+    const addLocationNode = vi.fn(async () => null); // failed or unconfirmed: the server may have created it
+    const { useStore, PlacesScreen } = await load({ addLocationNode });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add-room'));
+    fireEvent.change(r.getByLabelText('New room in Ground Floor'), { target: { value: 'Pantry' } });
+    fireEvent.click(r.getByTestId('place-structure-save'));
+    await vi.waitFor(() => expect(r.getByTestId('place-structure-checking')).toBeInTheDocument());
+    expect(r.getByTestId('place-structure-save')).toBeDisabled();
+    fireEvent.submit(r.getByTestId('place-structure-form'));
+    expect(addLocationNode).toHaveBeenCalledTimes(1); // no blind second create
+    // the re-read tree shows the server DID create it: the retry is refused, never sent
+    act(() => { useStore.setState({ nodes: [...useStore.getState().nodes, { id: 'p1', parentId: 'gf', name: 'Pantry', kind: 'room', order: 9 }] }); });
+    expect(r.queryByTestId('place-structure-checking')).toBeNull();
+    expect(r.getByTestId('place-structure-duplicate')).toBeInTheDocument();
+    expect(r.getByTestId('place-structure-save')).toBeDisabled();
+  });
+
+  it('a fresh tree without the place lets the retry through', async () => {
+    const addLocationNode = vi.fn(async () => null);
+    const { useStore, PlacesScreen } = await load({ addLocationNode });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add-room'));
+    fireEvent.change(r.getByLabelText('New room in Ground Floor'), { target: { value: 'Pantry' } });
+    fireEvent.click(r.getByTestId('place-structure-save'));
+    await vi.waitFor(() => expect(r.getByTestId('place-structure-checking')).toBeInTheDocument());
+    act(() => { useStore.setState({ nodes: [...useStore.getState().nodes] }); }); // re-read: not there
+    expect(r.getByTestId('place-structure-save')).not.toBeDisabled();
+  });
+
+  it('a failed create re-reads the tree from the server', async () => {
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const snapshot = vi.fn(() => new Promise(() => {}));
+    useStore.getState()._setGateway({ createNode: vi.fn(() => Promise.reject(new Error('lost'))), snapshot } as never);
+    await useStore.getState().addLocationNode({ name: 'Pantry', kind: 'room', parentId: 'gf', publish: true });
+    expect(snapshot).toHaveBeenCalled();
+  });
+
+  it('walking to another place closes the form, so Save never acts on a place it was not opened for (4174429322)', async () => {
+    const renameNode = vi.fn();
+    const { useStore, PlacesScreen } = await load({ renameNode });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-rename'));
+    fireEvent.change(r.getByRole('textbox', { name: 'Rename Ground Floor' }), { target: { value: 'Level 0' } });
+    fireEvent.click(r.getByTestId('place-node-kit')); // into Kitchen
+    expect(r.queryByTestId('place-structure-form')).toBeNull();
+    expect(renameNode).not.toHaveBeenCalled();
+  });
+});

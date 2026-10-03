@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { useStore } from '@/store/store';
 import { Button } from '@/components';
 import { Plus, Pencil, Trash2 } from '@/lib/icons';
@@ -31,16 +31,31 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   const [allOpen, setAllOpen] = useState(false);
   // #699 Codex 4174074853 — a create is not keyed, so the form takes one submission at a time
   const [pending, setPending] = useState(false);
+  // #699 Codex 4174429320 — after a create that did not come back applied, the server may still hold
+  // the new place. The form stays locked until the tree the store re-reads arrives; the name guard
+  // below then judges the retry against what the server actually has. Cancel stays available.
+  const [checking, setChecking] = useState(false);
+  const nodesAtFailure = useRef<typeof nodes | null>(null);
+  useEffect(() => {
+    if (checking && nodesAtFailure.current !== null && nodes !== nodesAtFailure.current) {
+      nodesAtFailure.current = null;
+      setChecking(false);
+    }
+  }, [nodes, checking]);
   const inputId = useId();
-
-  if (!can('node.manage', role)) return null;
 
   const placeName = active?.name ?? 'the project';
   // a zone or room takes children while they would land within the cap (`depth` is the active
   // place's level, 1 for a zone); an object is a leaf
   const takesChildren = active ? active.kind !== 'element' && depth + 1 <= MAX_TREE_DEPTH : true;
 
-  const close = () => { setAdding(null); setRenaming(false); setValue(''); };
+  const close = () => { setAdding(null); setRenaming(false); setValue(''); setChecking(false); nodesAtFailure.current = null; };
+  // #699 Codex 4174429322 — the form acts on the place it was OPENED for: walking to another place
+  // (a child card, a crumb) closes it, so Save can never rename or add under a place it was not opened on
+  const activeId = active?.id ?? null;
+  useEffect(() => { close(); }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!can('node.manage', role)) return null;
   // …and refuses a name this place already holds (drafts included): a second "Kitchen" under the same
   // floor is either a repeated click, a retry after a lost reply that DID create it, or a name the
   // pickers could not tell apart. Case and spacing do not make a different name.
@@ -56,7 +71,7 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   const startRename = () => { setAdding(null); setValue(active?.name ?? ''); setRenaming(true); };
   const submit = async () => {
     const name = value.trim();
-    if (!name || pending || duplicate) return;
+    if (!name || pending || checking || duplicate) return;
     if (renaming && active) {
       renameNode(active.id, name);
       close();
@@ -69,6 +84,8 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
         // here at once; the server defaults `publish` to true, but the intent is stated, not inherited
         const id = await addLocationNode({ name, kind: adding, parentId: active?.id ?? null, publish: true });
         if (id) close();
+        // the tree as it stood at the failure: only a tree read AFTER it can say whether the place exists
+        else { nodesAtFailure.current = useStore.getState().nodes; setChecking(true); }
       } finally {
         setPending(false);
       }
@@ -123,7 +140,7 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
               autoFocus
               value={value}
               maxLength={80}
-              disabled={pending}
+              disabled={pending || checking}
               aria-invalid={duplicate || undefined}
               aria-describedby={duplicate ? `${inputId}-dup` : undefined}
               onChange={(e) => setValue(e.target.value)}
@@ -132,11 +149,16 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
               data-testid="place-structure-input"
               style={field}
             />
-            <Button variant="ink" type="submit" disabled={!value.trim() || pending || duplicate} data-testid="place-structure-save" style={btn}>
+            <Button variant="ink" type="submit" disabled={!value.trim() || pending || checking || duplicate} data-testid="place-structure-save" style={btn}>
               {renaming ? 'Save' : pending ? 'Adding…' : 'Add'}
             </Button>
             <Button variant="outline" type="button" onClick={close} disabled={pending} style={btn}>Cancel</Button>
           </div>
+          {checking && !duplicate && (
+            <div role="status" style={{ fontSize: 12.5, color: 'var(--muted)' }} data-testid="place-structure-checking">
+              Checking whether “{value.trim()}” was added…
+            </div>
+          )}
           {duplicate && (
             <div id={`${inputId}-dup`} role="status" style={{ fontSize: 12.5, color: 'var(--red-solid)' }} data-testid="place-structure-duplicate">
               {renaming ? (nodes.find((n) => n.id === active?.parentId)?.name ?? 'The project') : placeName} already has “{value.trim()}”.

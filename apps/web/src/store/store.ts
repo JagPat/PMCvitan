@@ -4423,7 +4423,13 @@ export const useStore = create<Store>()(
         return created?.id ?? null;
       } catch {
         // gate round 12: a failure landing after a switch must not toast into project B.
-        if (scopeStillCurrent(scope)) get().flash('Could not add the location — check your access and try again.');
+        if (!scopeStillCurrent(scope)) return null;
+        get().flash('Could not add the location — check your access and try again.');
+        // #699 Codex 4174429320 — node creates are not keyed, so a failure is UNCERTAIN: the server may
+        // have created it and lost the reply. Re-read the tree, so a retry is judged against what the
+        // server actually holds (the Site Map refuses a name its parent already has) rather than
+        // sending a second create blind.
+        void requestFreshSnapshot();
         return null;
       }
     },
