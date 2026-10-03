@@ -63,6 +63,19 @@ describe('civilDayStartInstant — a civil day\'s local midnight as an instant',
     expect(civilDayStartInstant('2026-11-01', 'America/New_York').toISOString()).toBe('2026-11-01T04:00:00.000Z');
   });
 
+  it('a day whose midnight does not exist starts at the transition, never in the day before', async () => {
+    const { civilDayStartInstant } = await import('./civil-date');
+    // America/Santiago springs forward AT midnight on 6 Sep 2026 (00:00 -04 becomes 01:00 -03): the day
+    // begins at 04:00Z, and 03:00Z would be 23:00 on 5 September (#696 review round 2)
+    expect(civilDayStartInstant('2026-09-06', 'America/Santiago').toISOString()).toBe('2026-09-06T04:00:00.000Z');
+    expect(civilDayStartInstant('2026-09-07', 'America/Santiago').toISOString()).toBe('2026-09-07T03:00:00.000Z');
+    expect(civilDayStartInstant('2026-09-05', 'America/Santiago').toISOString()).toBe('2026-09-05T04:00:00.000Z');
+    // the day it falls back at midnight (5 Apr 2026: 00:00 -03 becomes 23:00 -04 on the 4th, repeating
+    // the 4th's last hour) starts at its one local midnight, under the new offset
+    expect(civilDayStartInstant('2026-04-05', 'America/Santiago').toISOString()).toBe('2026-04-05T04:00:00.000Z');
+    expect(civilDayStartInstant('2026-04-04', 'America/Santiago').toISOString()).toBe('2026-04-04T03:00:00.000Z');
+  });
+
   it('an unknown zone fails loudly', async () => {
     const { civilDayStartInstant } = await import('./civil-date');
     expect(() => civilDayStartInstant('2026-10-03', 'Mars/Olympus')).toThrow();
