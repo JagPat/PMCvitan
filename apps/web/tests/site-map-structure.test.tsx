@@ -365,7 +365,7 @@ describe('#699 Codex round 1', () => {
     const r = render(<ScheduleScreen />);
     fireEvent.click(r.getByTestId('edit-A-1'));
     fireEvent.click(r.getByTestId('activity-delete'));
-    expect(r.getByTestId('confirm-activity-delete').textContent).toContain('inspections or material records');
+    expect(r.getByTestId('confirm-activity-delete').textContent).toContain('inspections, material records or a gate override');
   });
 
   it('the Locations editor is its own module; the Decision Log no longer carries it (4174074847)', async () => {
