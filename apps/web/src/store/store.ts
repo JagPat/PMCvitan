@@ -352,6 +352,8 @@ export interface AppState {
   portfolio: PortfolioProject[]; // cross-project monitoring rollup (Orgs Slice 3)
   /** U3b — the PMC's cross-project daily brief (`GET /me/brief`); null until a server answers */
   brief: PmcBriefResult | null;
+  /** when `brief` was read (epoch ms); the screen shows it only while fresh (`briefIsFresh`) */
+  briefAt: number | null;
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
@@ -1125,6 +1127,7 @@ export function getInitialState(): AppState {
     members: [],
     portfolio: [],
     brief: null,
+    briefAt: null,
     online: true,
     syncQueue: [],
     outbox: [],
@@ -2169,7 +2172,7 @@ export const useStore = create<Store>()(
         s.sessionToken = res.token;
         s.userName = res.name ?? null;
         // the brief spans this person's projects, so a switch keeps it; another identity never sees it
-        if (jwtSub(res.token) !== s.sessionUserId) s.brief = null;
+        if (jwtSub(res.token) !== s.sessionUserId) { s.brief = null; s.briefAt = null; }
         s.sessionUserId = jwtSub(res.token);
         s.access = freshAccess(s.access.generation + 1);
         // EVERY auth result is a new session identity, so it always starts a new
@@ -2327,6 +2330,7 @@ export const useStore = create<Store>()(
         s.userName = null;
         s.sessionUserId = null;
         s.brief = null; // the departing PMC's cross-project brief leaves with them
+        s.briefAt = null;
         s.access = freshAccess(s.access.generation + 1);
         s.role = 'client';
         s.screen = screensFor('client')[0].key;
@@ -3345,7 +3349,7 @@ export const useStore = create<Store>()(
     loadBrief: () => {
       if (!gateway) return;
       const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
-      gateway.getBrief().then((b) => set((s) => { if (s.sessionToken === tok) s.brief = castDraft(b); })).catch(() => {});
+      gateway.getBrief().then((b) => set((s) => { if (s.sessionToken === tok) { s.brief = castDraft(b); s.briefAt = Date.now(); } })).catch(() => {});
     },
     // Phase 2 Task 9 — the project-shell summary: populate `enabledModules` for the manifest-driven
     // nav. Project-scoped — a reply that lands after a switch / re-auth is dropped (guarded by scope).

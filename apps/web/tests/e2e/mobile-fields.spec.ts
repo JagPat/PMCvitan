@@ -1325,6 +1325,7 @@ test("the PMC's brief meets the target floor and fits the phone, in Gujarati", a
     const seed = (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed;
     seed({
       lang: 'gu',
+      briefAt: Date.now(), // a brief the server just answered with (an older one is never shown)
       brief: { projects: [
         row('ambli', 'Ambli', { reviewsWaiting: 3 }),
         row('bopal', 'Bopal', { waitingOnClient: 2, oldestWaitingSince: '2026-09-28T06:00:00Z', logToday: 'missing' }),

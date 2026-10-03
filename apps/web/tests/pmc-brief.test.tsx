@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { PmcBriefProject } from '@vitan/shared';
 import { pmcBrief } from '@/lib/pmcBrief';
 
@@ -77,6 +77,7 @@ async function loadInbox(overrides: Record<string, unknown> = {}) {
     screen: 'inbox',
     switchProject,
     loadBrief,
+    briefAt: Date.now(), // a brief the server just answered with
     ...overrides,
   });
   const { InboxScreen } = await import('@/screens/InboxScreen');
@@ -155,6 +156,40 @@ describe('U3b — the brief on the PMC\'s home', () => {
     expect(r.getByText(/FOR YOU/u)).toBeTruthy();
   });
 
+  it('a brief older than its freshness window is never shown: the project list is, until a fresh one lands', async () => {
+    const { BRIEF_MAX_AGE_MS } = await import('@/lib/pmcBrief');
+    const { useStore, r } = await loadInbox({ brief, briefAt: Date.now() - BRIEF_MAX_AGE_MS - 1 });
+    expect(r.queryByTestId('pmc-brief')).toBeNull();
+    expect(r.getByText(/FOR YOU/u)).toBeTruthy();
+    // the refreshed answer no longer carries Bopal (access removed there): only what it says is shown
+    await act(async () => { useStore.setState({ brief: { projects: [brief.projects[0]!] }, briefAt: Date.now() }); });
+    expect(r.getByTestId('pmc-brief')).toBeTruthy();
+    expect(r.queryByTestId('brief-project-bopal')).toBeNull();
+  });
+
+  it('while on screen it is re-read every minute and whenever the page is shown again, and ages out if no answer comes', async () => {
+    vi.useFakeTimers();
+    try {
+      const { BRIEF_REFRESH_MS, BRIEF_MAX_AGE_MS } = await import('@/lib/pmcBrief');
+      const { loadBrief, r } = await loadInbox({ brief });
+      expect(loadBrief).toHaveBeenCalledTimes(1); // on landing
+      expect(r.getByTestId('pmc-brief')).toBeTruthy();
+      await act(async () => { vi.advanceTimersByTime(BRIEF_REFRESH_MS); });
+      expect(loadBrief).toHaveBeenCalledTimes(2);
+      await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+      expect(loadBrief).toHaveBeenCalledTimes(3);
+      // the mocked read never answers: once the last answer is past its window the brief gives way
+      await act(async () => { vi.advanceTimersByTime(BRIEF_MAX_AGE_MS); });
+      expect(r.queryByTestId('pmc-brief')).toBeNull();
+      const reads = loadBrief.mock.calls.length;
+      r.unmount();
+      await act(async () => { vi.advanceTimersByTime(BRIEF_REFRESH_MS * 3); });
+      expect(loadBrief).toHaveBeenCalledTimes(reads); // no reads once it is off screen
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("speaks the PMC's language", async () => {
     const { r } = await loadInbox({ brief, lang: 'gu' });
     expect(r.getByTestId('pmc-brief').textContent).toContain('આજનો અહેવાલ');
@@ -181,11 +216,13 @@ describe('U3b — the brief in the store', () => {
     useStore.getState().loadBrief();
     await flush();
     expect(useStore.getState().brief).toEqual(reply);
+    expect(useStore.getState().briefAt).toBeGreaterThan(0); // stamped, so the screen can judge its age
 
     useStore.getState().loadBrief(); // still in flight when the PMC signs out
     useStore.getState()._setGateway(null);
     useStore.getState().signOut();
     expect(useStore.getState().brief).toBeNull();
+    expect(useStore.getState().briefAt).toBeNull();
     release(reply);
     await flush();
     expect(useStore.getState().brief).toBeNull();

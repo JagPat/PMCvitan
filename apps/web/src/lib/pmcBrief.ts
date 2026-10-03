@@ -3,6 +3,18 @@ import type { PmcBriefProject, ScreenKey } from '@vitan/shared';
 /** How many tasks "Do these first" names. */
 export const FIRST_COUNT = 3;
 
+/** While the brief is on screen it is re-read this often (and whenever the page is shown again): it
+ *  spans projects whose access and civil day change without any signal reaching this session. */
+export const BRIEF_REFRESH_MS = 60_000;
+/** A brief older than this is never shown (the project's own list is, until a fresh one lands): a
+ *  revoked project or a past civil day cannot linger however the refreshes fare. */
+export const BRIEF_MAX_AGE_MS = 120_000;
+
+/** Whether a brief read at `at` may still be shown at `now`. */
+export function briefIsFresh(at: number | null, now: number): boolean {
+  return at !== null && now - at <= BRIEF_MAX_AGE_MS;
+}
+
 const DAY_MS = 86_400_000;
 
 /** One thing for the PMC to do, in one project, and the screen where it is done. */
