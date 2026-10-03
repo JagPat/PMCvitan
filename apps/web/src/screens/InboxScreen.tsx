@@ -39,10 +39,12 @@ export function InboxScreen() {
   const loadBrief = useStore((s) => s.loadBrief);
   const activeProjectId = useStore((s) => s.activeProjectId);
 
-  // the PMC's brief (U3b) is read fresh each time they land here, and again after a project switch
+  // the PMC's brief (U3b) is read fresh each time they land here. A sign-in or project switch reads it
+  // in `useApiSync`, once the new gateway is installed (a read from this effect in that same commit
+  // would meet the previous one)
   useEffect(() => {
     if (role === 'pmc') loadBrief();
-  }, [role, loadBrief, activeProjectId]);
+  }, [role, loadBrief]);
 
   // the engineer's home is their day: Today's path carries the site log, so its "not submitted"
   // card would only repeat it; everything else still waiting on them follows below

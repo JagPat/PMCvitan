@@ -130,6 +130,14 @@ describe('U3b — the brief on the PMC\'s home', () => {
     expect(again.r.getByTestId('inbox-item-pmc-reviews')).toBeTruthy();
   });
 
+  it("the header carries the date of the project on screen, never another site's", async () => {
+    // Bopal's site is already past midnight; Ambli, the active project, is still on the 3rd
+    const split = { projects: [proj('bopal', { short: 'Bopal', today: '2026-10-04' }), proj('ambli', { short: 'Ambli', today: '2026-10-03' })] };
+    const { r } = await loadInbox({ brief: split });
+    expect(r.getByTestId('pmc-brief').querySelector('header')?.textContent).toContain('3 October');
+    expect(r.getByTestId('pmc-brief').querySelector('header')?.textContent).not.toContain('4 October');
+  });
+
   it('says nothing it cannot back: no verdict, no nudge', async () => {
     const { r } = await loadInbox({ brief });
     expect(r.getByTestId('pmc-brief').textContent).not.toMatch(/on track|watch|at risk|nudge|remind/iu);
@@ -194,5 +202,58 @@ describe('U3b — the brief in the store', () => {
     gw.switchProject.mockResolvedValue({ token: token('u-other'), role: 'pmc', projectId: 'ambli' });
     await useStore.getState().switchProject('ambli');
     expect(useStore.getState().brief).toBeNull();
+  });
+});
+
+const socketHandlers: Record<string, (...a: unknown[]) => void> = {};
+vi.mock('socket.io-client', () => ({
+  io: vi.fn(() => ({
+    on: (ev: string, cb: (...a: unknown[]) => void) => { socketHandlers[ev] = cb; },
+    emit: vi.fn(),
+    disconnect: vi.fn(),
+  })),
+}));
+vi.mock('@/data/push', () => ({ subscribeToPush: vi.fn().mockResolvedValue(undefined) }));
+
+describe('U3b — the brief is read once the signed-in gateway is installed (#697 review round 1)', () => {
+  const flushAll = async () => { for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0)); };
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  async function syncAs(role: 'pmc' | 'engineer') {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const calls: string[] = [];
+    const reply = { projects: [proj('ambli')] };
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+      calls.push(`${url} ${init?.headers?.Authorization ?? '(none)'}`);
+      return { ok: true, status: 200, json: async () => (String(url).endsWith('/me/brief') ? reply : []) };
+    }) as never);
+    const { useStore, getInitialState } = await import('@/store/store');
+    const { useApiSync } = await import('@/data/useApiSync');
+    const { renderHook } = await import('@testing-library/react');
+    useStore.setState({
+      ...getInitialState(),
+      role, sessionToken: token('u-pmc'), sessionUserId: 'u-pmc', activeProjectId: 'ambli',
+      requestFreshSnapshot: vi.fn(), hydrateOutbox: vi.fn(), loadOrgData: vi.fn(), loadPortfolio: vi.fn(), loadShell: vi.fn(),
+    } as never);
+    renderHook(() => useApiSync());
+    await flushAll();
+    return { useStore, calls };
+  }
+
+  it("a PMC's sign-in (or switch) reads the brief through the new, authenticated gateway", async () => {
+    const { useStore, calls } = await syncAs('pmc');
+    const briefCalls = calls.filter((c) => c.includes('/me/brief'));
+    expect(briefCalls).toHaveLength(1);
+    expect(briefCalls[0]).toContain(`Bearer ${token('u-pmc')}`);
+    expect(useStore.getState().brief?.projects).toHaveLength(1);
+  });
+
+  it('no other role reads it', async () => {
+    const { calls } = await syncAs('engineer');
+    expect(calls.some((c) => c.includes('/me/brief'))).toBe(false);
   });
 });

@@ -33,9 +33,9 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
 
   const view = useMemo(() => pmcBrief(brief.projects, Date.now()), [brief]);
   const { digest } = view;
-  // the site's today on the first project; every project carries its own, and they agree but for a
-  // brief window around a midnight in another zone
-  const today = brief.projects[0]?.today;
+  // the site's today of the project on screen: every project carries its own civil today, and sites on
+  // either side of a midnight disagree, so the header never borrows another site's date
+  const today = (brief.projects.find((p) => p.projectId === activeProjectId) ?? brief.projects[0])?.today;
 
   // the active project opens in place; another one is switched to, landing on the task's screen
   const go = (projectId: string, target: ScreenKey) => {
