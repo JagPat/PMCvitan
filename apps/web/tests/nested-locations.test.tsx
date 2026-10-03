@@ -124,7 +124,7 @@ describe('P13 — LocationPicker on a nested tree', () => {
 describe('P9 — the Locations dialog add-child control', () => {
   const renderDialog = async (nodes: ProjectNode[], addLocationNode = vi.fn(async () => 'new-id')) => {
     await loadStore(nodes, { addLocationNode });
-    const { ManageLocationsModal } = await import('@/screens/DecisionLogScreen');
+    const { ManageLocationsModal } = await import('@/screens/modals/ManageLocationsModal');
     const r = render(<ManageLocationsModal onClose={() => {}} />);
     return { r, addLocationNode };
   };

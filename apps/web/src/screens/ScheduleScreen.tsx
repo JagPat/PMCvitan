@@ -559,7 +559,7 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
         onCancel={() => setConfirmingDelete(false)}
         testId="confirm-activity-delete"
       >
-        It is removed from the schedule for everyone. A drawing that governs it is kept and no longer linked to it. An activity that already has inspections can&apos;t be deleted.
+        It is removed from the schedule for everyone. A drawing that governs it is kept and no longer linked to it. An activity that already has inspections or material records can&apos;t be deleted; if so, the server says why and nothing changes.
       </ConfirmDialog>
     );
   }

@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useStore } from '@/store/store';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { describeLocationDelete, locationDeleteBlocked, locationDeleteImpact } from '@/lib/locationDelete';
+import { describeLocationDelete, locationDeleteBlocked, locationDeleteImpact, locationDeleteSettled, LOCATION_DELETE_UNSETTLED } from '@/lib/locationDelete';
 
 /** Audit B4 — "Delete Ground Floor?", naming what goes with it and what is unfiled, from the
  *  Site Map or the Locations editor alike. A location with decisions on it offers only Close. */
@@ -14,6 +14,8 @@ export function ConfirmLocationDelete({ nodeId, onClose, onDeleted }: { nodeId: 
   const materials = useStore((s) => s.materials);
   const photos = useStore((s) => s.photos);
   const deleteNode = useStore((s) => s.deleteNode);
+  // #699 Codex 4174074843 — the impact is described only from settled data; otherwise only Close
+  const settled = useStore((s) => locationDeleteSettled(s));
   const impact = useMemo(
     () => locationDeleteImpact(nodes, nodeId, { decisions, activities, drawings, inspections, materials, photos }),
     [nodes, nodeId, decisions, activities, drawings, inspections, materials, photos],
@@ -24,12 +26,12 @@ export function ConfirmLocationDelete({ nodeId, onClose, onDeleted }: { nodeId: 
     <ConfirmDialog
       title={`Delete ${node.name}?`}
       confirmLabel="Delete"
-      blocked={locationDeleteBlocked(impact) ?? undefined}
+      blocked={settled ? (locationDeleteBlocked(impact) ?? undefined) : LOCATION_DELETE_UNSETTLED}
       onConfirm={() => { deleteNode(nodeId); onDeleted?.(); }}
       onCancel={onClose}
       testId="confirm-location-delete"
     >
-      {describeLocationDelete(impact)}
+      {settled ? describeLocationDelete(impact) : null}
     </ConfirmDialog>
   );
 }

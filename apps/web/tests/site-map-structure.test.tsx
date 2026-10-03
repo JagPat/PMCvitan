@@ -75,7 +75,7 @@ describe('locationDeleteImpact — the server rule, said before the delete', () 
 
   it('an empty leaf says nothing else is affected', () => {
     const impact = locationDeleteImpact(NODES, 'door', { decisions: [], activities: [], drawings: [], inspections: [], materials: [], photos: [] });
-    expect(describeLocationDelete(impact)).toBe('Nothing else is filed here.');
+    expect(describeLocationDelete(impact)).toBe('Nothing else you can see is filed here.');
   });
 });
 
@@ -176,7 +176,7 @@ describe('B4 — a location delete is confirmed first', () => {
     const deleteNode = vi.fn();
     const { useStore } = await load({ deleteNode });
     void useStore;
-    const { ManageLocationsModal } = await import('@/screens/DecisionLogScreen');
+    const { ManageLocationsModal } = await import('@/screens/modals/ManageLocationsModal');
     const r = render(<ManageLocationsModal onClose={() => {}} />);
     fireEvent.click(r.getByRole('button', { name: 'Delete Main Door' }));
     expect(deleteNode).not.toHaveBeenCalled();
@@ -288,5 +288,93 @@ describe('#699 shadow review — a delete the server refuses says why', () => {
     useStore.getState().deleteNode('gf');
     await flush();
     expect(useStore.getState().toast).toBe('Could not reach the server — please try again.');
+  });
+});
+
+describe('#699 Codex round 1', () => {
+  it('a create is submitted once: Add is disabled while the request is pending (4174074853)', async () => {
+    let finish!: (id: string) => void;
+    const addLocationNode = vi.fn(() => new Promise<string>((r) => { finish = r; }));
+    const { useStore, PlacesScreen } = await load({ addLocationNode });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add-room'));
+    fireEvent.change(r.getByLabelText('New room in Ground Floor'), { target: { value: 'Pantry' } });
+    fireEvent.click(r.getByTestId('place-structure-save'));
+    fireEvent.click(r.getByTestId('place-structure-save')); // the double-click
+    fireEvent.submit(r.getByTestId('place-structure-form')); // and Enter
+    expect(addLocationNode).toHaveBeenCalledTimes(1);
+    expect(r.getByTestId('place-structure-save')).toBeDisabled();
+    await act(async () => { finish('new-room'); });
+    expect(r.queryByTestId('place-structure-form')).toBeNull();
+  });
+
+  it('a name the place already holds is refused, whatever its case or spacing (retries cannot duplicate)', async () => {
+    const addLocationNode = vi.fn(async () => 'x');
+    const { useStore, PlacesScreen } = await load({ addLocationNode });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add-room'));
+    fireEvent.change(r.getByLabelText('New room in Ground Floor'), { target: { value: '  kitchen ' } });
+    expect(r.getByTestId('place-structure-duplicate').textContent).toBe('Ground Floor already has “kitchen”.');
+    expect(r.getByTestId('place-structure-save')).toBeDisabled();
+    fireEvent.submit(r.getByTestId('place-structure-form'));
+    expect(addLocationNode).not.toHaveBeenCalled();
+  });
+
+  it('renaming to a sibling’s name is refused, naming the parent', async () => {
+    const renameNode = vi.fn();
+    const { useStore, PlacesScreen } = await load({ renameNode });
+    act(() => { useStore.getState().openPlace('kit'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-rename'));
+    fireEvent.change(r.getByRole('textbox', { name: 'Rename Kitchen' }), { target: { value: 'Main Door' } });
+    expect(r.getByTestId('place-structure-duplicate').textContent).toBe('Ground Floor already has “Main Door”.');
+    fireEvent.submit(r.getByTestId('place-structure-form'));
+    expect(renameNode).not.toHaveBeenCalled();
+  });
+
+  it('the delete is not described, nor offered, while what is filed there has not loaded (4174074843)', async () => {
+    const deleteNode = vi.fn();
+    const { useStore, PlacesScreen } = await load({ deleteNode, projectLoadState: 'error' });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-delete'));
+    expect(r.getByTestId('confirm-location-delete-blocked').textContent).toContain("hasn't finished loading");
+    expect(r.getByTestId('confirm-location-delete').textContent).not.toContain('Nothing else');
+    expect(r.queryByTestId('confirm-location-delete-confirm')).toBeNull();
+  });
+
+  it('a module-owned read that failed also withholds the delete', async () => {
+    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
+    const { useStore, PlacesScreen } = await load({ activitiesLoad: 'error' });
+    act(() => { useStore.getState().openPlace('door'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-delete'));
+    expect(r.queryByTestId('confirm-location-delete-confirm')).toBeNull();
+    cleanup();
+    useStore.setState({ activitiesLoad: 'ready' });
+    const again = render(<PlacesScreen />);
+    act(() => { useStore.getState().openPlace('door'); });
+    fireEvent.click(again.getByTestId('place-delete'));
+    expect(again.getByTestId('confirm-location-delete-confirm')).toBeInTheDocument();
+  });
+
+  it('the activity delete names every server blocker (4174074850)', async () => {
+    const { ScheduleScreen } = await (async () => {
+      await load({ phases: [PHASE], activities: [activity('A-1', 'Tiling', 'kit', 'ph-fin')] });
+      return import('@/screens/ScheduleScreen');
+    })();
+    const r = render(<ScheduleScreen />);
+    fireEvent.click(r.getByTestId('edit-A-1'));
+    fireEvent.click(r.getByTestId('activity-delete'));
+    expect(r.getByTestId('confirm-activity-delete').textContent).toContain('inspections or material records');
+  });
+
+  it('the Locations editor is its own module; the Decision Log no longer carries it (4174074847)', async () => {
+    const log = await import('@/screens/DecisionLogScreen');
+    expect('ManageLocationsModal' in log).toBe(false);
+    const mod = await import('@/screens/modals/ManageLocationsModal');
+    expect(typeof mod.ManageLocationsModal).toBe('function');
   });
 });

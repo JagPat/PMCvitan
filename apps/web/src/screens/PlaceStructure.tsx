@@ -3,7 +3,7 @@ import { useStore } from '@/store/store';
 import { Button } from '@/components';
 import { Plus, Pencil, Trash2 } from '@/lib/icons';
 import { can, type ProjectNode } from '@vitan/shared';
-import { ManageLocationsModal } from '@/screens/DecisionLogScreen';
+import { ManageLocationsModal } from '@/screens/modals/ManageLocationsModal';
 import { ConfirmLocationDelete } from '@/screens/modals/ConfirmLocationDelete';
 
 /** Locations nest to 5 levels; the server refuses deeper (`MAX_TREE_DEPTH`). */
@@ -23,11 +23,14 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   const role = useStore((s) => s.role);
   const addLocationNode = useStore((s) => s.addLocationNode);
   const renameNode = useStore((s) => s.renameNode);
+  const nodes = useStore((s) => s.nodes);
   const [adding, setAdding] = useState<NewKind | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [value, setValue] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [allOpen, setAllOpen] = useState(false);
+  // #699 Codex 4174074853 — a create is not keyed, so the form takes one submission at a time
+  const [pending, setPending] = useState(false);
   const inputId = useId();
 
   if (!can('node.manage', role)) return null;
@@ -38,19 +41,35 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   const takesChildren = active ? active.kind !== 'element' && depth + 1 <= MAX_TREE_DEPTH : true;
 
   const close = () => { setAdding(null); setRenaming(false); setValue(''); };
+  // …and refuses a name this place already holds (drafts included): a second "Kitchen" under the same
+  // floor is either a repeated click, a retry after a lost reply that DID create it, or a name the
+  // pickers could not tell apart. Case and spacing do not make a different name.
+  const norm = (n: string) => n.trim().replace(/\s+/g, ' ').toLowerCase();
+  const siblingsNamed = (name: string, parentId: string | null, except?: string) =>
+    nodes.some((n) => n.parentId === parentId && n.id !== except && norm(n.name) === norm(name));
+  const duplicate = value.trim() !== '' && (
+    renaming && active
+      ? siblingsNamed(value, active.parentId, active.id)
+      : adding !== null && siblingsNamed(value, active?.id ?? null)
+  );
   const startAdd = (kind: NewKind) => { setRenaming(false); setValue(''); setAdding(kind); };
   const startRename = () => { setAdding(null); setValue(active?.name ?? ''); setRenaming(true); };
   const submit = async () => {
     const name = value.trim();
-    if (!name) return;
+    if (!name || pending || duplicate) return;
     if (renaming && active) {
       renameNode(active.id, name);
       close();
       return;
     }
     if (adding) {
-      const id = await addLocationNode({ name, kind: adding, parentId: active?.id ?? null });
-      if (id) close();
+      setPending(true);
+      try {
+        const id = await addLocationNode({ name, kind: adding, parentId: active?.id ?? null });
+        if (id) close();
+      } finally {
+        setPending(false);
+      }
     }
   };
 
@@ -102,17 +121,25 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
               autoFocus
               value={value}
               maxLength={80}
+              disabled={pending}
+              aria-invalid={duplicate || undefined}
+              aria-describedby={duplicate ? `${inputId}-dup` : undefined}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Escape') close(); }}
               placeholder={adding === 'zone' ? 'e.g. Ground Floor' : adding === 'room' ? 'e.g. Kitchen' : adding === 'element' ? 'e.g. Main Door' : ''}
               data-testid="place-structure-input"
               style={field}
             />
-            <Button variant="ink" type="submit" disabled={!value.trim()} data-testid="place-structure-save" style={btn}>
-              {renaming ? 'Save' : 'Add'}
+            <Button variant="ink" type="submit" disabled={!value.trim() || pending || duplicate} data-testid="place-structure-save" style={btn}>
+              {renaming ? 'Save' : pending ? 'Adding…' : 'Add'}
             </Button>
-            <Button variant="outline" type="button" onClick={close} style={btn}>Cancel</Button>
+            <Button variant="outline" type="button" onClick={close} disabled={pending} style={btn}>Cancel</Button>
           </div>
+          {duplicate && (
+            <div id={`${inputId}-dup`} role="status" style={{ fontSize: 12.5, color: 'var(--red-solid)' }} data-testid="place-structure-duplicate">
+              {renaming ? (nodes.find((n) => n.id === active?.parentId)?.name ?? 'The project') : placeName} already has “{value.trim()}”.
+            </div>
+          )}
         </form>
       )}
 
