@@ -1,28 +1,29 @@
 import { test, expect } from '@playwright/test';
 
-test('For You: the client lands on their action queue and a card jumps straight to the decisions', async ({ page }) => {
+// U2a — the client's home is their project's Pulse: the decisions waiting on them are its
+// "one thing needs you" (a reopened one first), so it replaces their old approval cards.
+test("For You: the client lands on their project's Pulse, and its waiting decision jumps straight to the decisions", async ({ page }) => {
   await page.goto('/');
 
-  // switch to the Client persona — every role now lands on the "For You" home,
-  // scoped to (and naming) the active project
   await page.getByRole('button', { name: 'Client', exact: true }).click();
-  await expect(page.getByText(/Everything waiting on you in/)).toBeVisible();
+  await expect(page.getByTestId('client-pulse')).toBeVisible();
+  await expect(page.getByTestId('pulse-progress')).toBeVisible();
 
-  // their pending-decisions action is listed, with a one-tap CTA
-  const card = page.getByTestId('inbox-item-client-pending');
-  await expect(card).toBeVisible();
-  await expect(card).toContainText('awaiting your approval');
+  // three decisions wait on the seeded client; the reopened DL-003 comes first
+  const needs = page.getByTestId('pulse-needs');
+  await expect(needs).toContainText('3 things need you');
+  await expect(needs).toHaveAttribute('data-decision', 'DL-003');
+  await expect(needs).toContainText('Reopened by a change request');
 
-  // the CTA takes them straight to the Decisions Waiting screen
-  await page.getByTestId('inbox-cta-client-pending').click();
+  await page.getByTestId('pulse-needs-go').click();
   await expect(page.getByText('Decisions waiting for you')).toBeVisible();
 });
 
-test('For You: acting on everything empties the queue (the item disappears once done)', async ({ page }) => {
+test('For You: acting on everything empties the Pulse (the waiting decision disappears once done)', async ({ page }) => {
   await page.goto('/');
 
   await page.getByRole('button', { name: 'Client', exact: true }).click();
-  await page.getByTestId('inbox-cta-client-pending').click();
+  await page.getByTestId('pulse-needs-go').click();
 
   // approve & lock both seeded pending decisions
   for (const opt of ['approve-DL-014-B', 'approve-DL-011-A']) {
@@ -34,12 +35,12 @@ test('For You: acting on everything empties the queue (the item disappears once 
   // back on For You: the seeded reopened decision (DL-003) still needs the client —
   // mandatory re-approval IS their work now (Phase 1 Task 2)
   await page.getByRole('button', { name: 'For You' }).click();
-  const reapprove = page.getByTestId('inbox-item-client-reapprove');
-  await expect(reapprove).toBeVisible();
-  await expect(reapprove).toContainText('re-approval');
+  const needs = page.getByTestId('pulse-needs');
+  await expect(needs).toHaveAttribute('data-decision', 'DL-003');
+  await expect(needs).toContainText('One thing needs you');
 
-  // its CTA lands on Decisions Waiting, where the change-request context is shown…
-  await page.getByTestId('inbox-cta-client-reapprove').click();
+  // its way in lands on Decisions Waiting, where the change-request context is shown…
+  await page.getByTestId('pulse-needs-go').click();
   await expect(page.getByText('Needs your re-approval')).toBeVisible();
   await expect(page.getByTestId('cr-context-DL-003')).toContainText('Change requested');
 
@@ -48,8 +49,9 @@ test('For You: acting on everything empties the queue (the item disappears once 
   await page.getByTestId('approve-lock').click();
   await expect(page.getByText(/Approved & locked/)).toBeVisible();
 
-  // NOW the client is all caught up
+  // NOW nothing waits on the client
   await page.getByRole('button', { name: 'For You' }).click();
-  await expect(page.getByTestId('inbox-empty')).toBeVisible();
+  await expect(page.getByTestId('pulse-nothing')).toBeVisible();
   await expect(page.getByText('Nothing needs you right now')).toBeVisible();
+  await expect(page.getByTestId('pulse-needs')).toHaveCount(0);
 });

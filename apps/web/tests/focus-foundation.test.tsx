@@ -449,6 +449,8 @@ describe('F-1a ink-surface inventory', () => {
     'screens/EngineerToday.module.css': 'element-data-surface',
     // the crew question's "one more" button: an ink-FILLED control on the light canvas (U1)
     'screens/CrewStepper.module.css': 'light-ring-fill',
+    // the Pulse's "what happens next" dots: ink DECORATIONS on the light page, holding no control (U2a)
+    'screens/ClientPulse.module.css': 'light-ring-fill',
   };
 
   // vitest runs with cwd = apps/web; a wrong cwd fails LOUDLY (ENOENT), and

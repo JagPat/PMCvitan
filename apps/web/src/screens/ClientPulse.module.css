@@ -1,0 +1,179 @@
+/* The client's Pulse (U2a): progress, what is being built, the one thing waiting on them, and what
+   happens next. Targets are 44px or more; labels 13px or more; progress is a figure AND a ring. */
+
+.pulse {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-width: 0;
+}
+.heading {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  min-width: 0;
+}
+.ring {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  flex: none;
+}
+.track {
+  stroke: var(--hairline-strong);
+}
+.fill {
+  stroke: var(--green-solid);
+}
+.ringText {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.pct {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+}
+.pctLabel {
+  font-size: 13px;
+  color: var(--muted);
+}
+.week {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.weekLine {
+  font-size: 18px;
+  font-weight: 600;
+}
+.underWay {
+  font-size: 16px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.needs {
+  background: var(--paper);
+  border-radius: 20px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: var(--sh-subtle);
+}
+.needsEyebrow {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.needsTitle {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.needsNote {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.needsGo {
+  min-height: 52px;
+  border: none;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.calm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px dashed var(--hairline-strong);
+  border-radius: 16px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--green-text);
+}
+
+.nextBlock,
+.also {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.nextHeading {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: 500;
+}
+.nextList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.nextItem {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 7px;
+  border-radius: 5px;
+  background: var(--ink);
+  flex: none;
+}
+.dotHeld {
+  background: transparent;
+  border: 2px solid var(--accent);
+  box-sizing: border-box;
+}
+.nextText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.nextName {
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.nextWhen {
+  font-size: 14px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
