@@ -123,6 +123,9 @@ export interface DailyLogCoreView {
   readonly submitted: boolean;
   readonly progress: number;
   readonly crew: readonly CrewRowView[];
+  /** U1b — the log before this one, as sent: its civil day and crew counts; null when there is none.
+   *  Optional: a projection row serialized before it existed lacks it. */
+  readonly previous?: { readonly logDate: string | null; readonly crew: readonly CrewRowView[] } | null;
   readonly materials: readonly DailyLogMaterialView[];
 }
 

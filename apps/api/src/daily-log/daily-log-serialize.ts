@@ -32,12 +32,14 @@ export async function computeDailyLogSlice(
   client: Prisma.TransactionClient,
   projectId: string,
 ): Promise<DailyLogSlice> {
-  const [dailyLog, allMaterials] = await Promise.all([
-    client.dailyLog.findFirst({
+  const [[dailyLog, previous], allMaterials] = await Promise.all([
+    // the latest log, and the one before it (U1b: "Same as yesterday" offers its crew counts)
+    client.dailyLog.findMany({
       where: { projectId },
       include: { crew: { orderBy: { order: 'asc' } }, materials: { orderBy: { order: 'asc' } } },
       // real civil day first (Task 6); creation instant is only the tie-breaker
       orderBy: [{ logDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
+      take: 2,
     }),
     // All materials across the project's daily logs (for the Site Map), not just the current day.
     client.siteMaterial.findMany({ where: { dailyLog: { projectId } }, orderBy: { order: 'asc' } }),
@@ -53,6 +55,11 @@ export async function computeDailyLogSlice(
           submitted: dailyLog.submitted,
           progress: dailyLog.progress,
           crew: dailyLog.crew.map((c) => ({ trade: c.trade, count: c.count })),
+          // the log before this one, as SENT (a new log starts only once it is): its civil day and
+          // crew counts. Null when there is none.
+          previous: previous
+            ? { logDate: toIsoCivilDate(previous.logDate), crew: previous.crew.map((c) => ({ trade: c.trade, count: c.count })) }
+            : null,
           materials: dailyLog.materials.map((m) => ({
             name: m.name,
             decisionId: m.decisionId ?? '',

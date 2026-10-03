@@ -601,6 +601,9 @@ export interface DailyLog {
   checkinTime: string | null;
   submitted: boolean;
   crew: CrewRow[];
+  /** U1b — the log before this one, as sent: its civil day and crew counts ("Same as yesterday").
+   *  Null when there is none; absent from a server that does not send it. */
+  previous?: { logDate: string | null; crew: CrewRow[] } | null;
   materials: SiteMaterial[];
   progress: number;
   photos: MediaRef[];

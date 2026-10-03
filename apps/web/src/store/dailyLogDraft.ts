@@ -57,15 +57,98 @@ export function dailyLogIdentity(log: Pick<DailyLog, 'id' | 'date' | 'logDate'>)
 }
 
 /** A draft that still applies to the server's log: same project, same log, and the log is unsent.
- *  When both carry a server id the ids must match. A draft written before the id existed is matched
- *  on the civil-date key once, and is then bound to that log's id by `overlayDailyLogDraft` (dropping
- *  it instead would lose every in-flight draft at upgrade, the #675 regression); the server serves no
- *  log without an id from this release on (`DailyLogQueryService.projectionSlice`). */
+ *  When both carry a server id the ids must match. A draft WITHOUT an id (written by a release before
+ *  the log carried one) never applies to a log that has one: nothing in it can tell that log from
+ *  another log of the same civil day, so it is set aside as a legacy draft for the engineer to
+ *  confirm or discard (`isLegacyDraftFor`), never attached on its own (owner ruling, #692). Only when
+ *  neither carries an id (an older server) is the civil date the match, as before. */
 export function draftAppliesTo(draft: DailyLogDraft | null, serverLog: DailyLog | null, projectId: string): boolean {
   if (!draft || draft.projectId !== projectId) return false;
   if (!serverLog || serverLog.submitted) return false;
-  if (draft.logId && serverLog.id) return draft.logId === serverLog.id;
+  if (serverLog.id) return draft.logId === serverLog.id;
   return dailyLogKey(serverLog) === draft.logKey;
+}
+
+/** A draft written before the log carried an id, met by a log that has one: it cannot be proven to be
+ *  this log's, so it is kept aside (recoverable), never laid over the log. */
+export function isLegacyDraftFor(draft: DailyLogDraft | null, serverLog: DailyLog | null, projectId: string): boolean {
+  return !!draft && draft.projectId === projectId && !draft.logId && !!serverLog?.id;
+}
+
+/** Does a draft hold any of the engineer's work? (An empty one is not worth keeping aside.) */
+export function draftHoldsWork(draft: DailyLogDraft): boolean {
+  return !!draft.checkIn
+    || (!!draft.crew && Object.keys(draft.crew).length > 0)
+    || (!!draft.crewRows && Object.keys(draft.crewRows).length > 0)
+    || (draft.photosAdded ?? 0) > 0
+    || !!draft.crewConfirmed;
+}
+
+/** What a legacy draft holds, for the engineer to recognise before choosing: the check-in, the crew
+ *  counts it set (by trade, the latest per row) and the photos taken. */
+export function legacyDraftSummary(draft: DailyLogDraft): { checkinTime: string | null; crew: { trade: string; count: number }[]; photos: number } {
+  const crew = new Map<string, number>();
+  for (const [trade, count] of Object.entries(draft.crew ?? {})) crew.set(trade, count);
+  for (const row of Object.values(draft.crewRows ?? {})) crew.set(row.trade, row.count);
+  return {
+    checkinTime: draft.checkIn?.checkedIn ? draft.checkIn.checkinTime : null,
+    crew: [...crew].map(([trade, count]) => ({ trade, count })),
+    photos: draft.photosAdded ?? 0,
+  };
+}
+
+/** May a legacy draft be added to this log, on the engineer's confirmation? Only to an unsent log of
+ *  the same project and the same civil day it was written for — never to another day's log. */
+export function canAdoptLegacyDraft(legacy: DailyLogDraft | null, serverLog: DailyLog | null, projectId: string): boolean {
+  return !!legacy && !!serverLog && !serverLog.submitted && legacy.projectId === projectId && dailyLogKey(serverLog) === legacy.logKey;
+}
+
+/** The engineer confirmed: the legacy draft becomes this log's draft, bound to its id. Work already
+ *  recorded on this log (the current draft) is the engineer's later word and stays; the legacy draft
+ *  only fills what the current one does not hold. `null` when it may not be adopted. */
+export function adoptLegacyDraft(
+  legacy: DailyLogDraft | null,
+  current: DailyLogDraft | null,
+  serverLog: DailyLog | null,
+  projectId: string,
+): DailyLogDraft | null {
+  if (!canAdoptLegacyDraft(legacy, serverLog, projectId)) return null;
+  const mine = current && draftAppliesTo(current, serverLog, projectId) ? current : null;
+  const out: DailyLogDraft = { projectId, logKey: legacy!.logKey, ...(serverLog!.id ? { logId: serverLog!.id } : {}) };
+  const checkIn = mine?.checkIn ?? legacy!.checkIn;
+  if (checkIn) out.checkIn = checkIn;
+  const crew = { ...(legacy!.crew ?? {}), ...(mine?.crew ?? {}) };
+  if (Object.keys(crew).length) out.crew = crew;
+  const crewRows = { ...(legacy!.crewRows ?? {}), ...(mine?.crewRows ?? {}) };
+  if (Object.keys(crewRows).length) out.crewRows = crewRows;
+  const photos = (legacy!.photosAdded ?? 0) + (mine?.photosAdded ?? 0);
+  if (photos) out.photosAdded = photos;
+  if (mine?.crewConfirmed ?? legacy!.crewConfirmed) out.crewConfirmed = true;
+  return out;
+}
+
+/** What adopting a legacy draft ADDS on top of the log on screen (which already carries the current
+ *  draft): the check-in if none is recorded, the crew counts for rows the current draft never set,
+ *  and the photos it took. Laid over the on-screen log, so nothing the current draft holds counts
+ *  twice; the next reconcile lays the whole adopted draft over the server's own log. */
+export function legacyDraftExtras(legacy: DailyLogDraft, current: DailyLogDraft | null, log: DailyLog): DailyLogDraft {
+  const mine = current ?? { projectId: legacy.projectId, logKey: legacy.logKey };
+  const out: DailyLogDraft = { projectId: legacy.projectId, logKey: legacy.logKey, ...(log.id ? { logId: log.id } : {}) };
+  if (legacy.checkIn && !mine.checkIn) out.checkIn = legacy.checkIn;
+  const setByMine = (i: number, trade: string): boolean =>
+    !!mine.crewRows?.[String(i)] || (log.crew.findIndex((c) => c.trade === trade) === i && !!mine.crew && Object.hasOwn(mine.crew, trade));
+  const rows: Record<string, { trade: string; count: number }> = {};
+  log.crew.forEach((c, i) => {
+    if (setByMine(i, c.trade)) return;
+    const row = legacy.crewRows?.[String(i)];
+    if (row && row.trade === c.trade) rows[String(i)] = row;
+    else if (log.crew.findIndex((x) => x.trade === c.trade) === i && legacy.crew && Object.hasOwn(legacy.crew, c.trade)) {
+      rows[String(i)] = { trade: c.trade, count: legacy.crew[c.trade]! };
+    }
+  });
+  if (Object.keys(rows).length) out.crewRows = rows;
+  if (legacy.photosAdded) out.photosAdded = legacy.photosAdded;
+  return out;
 }
 
 /**
@@ -79,13 +162,16 @@ export function overlayDailyLogDraft(
   serverLog: DailyLog | null,
   draft: DailyLogDraft | null,
   projectId: string,
-): { log: DailyLog | null; draft: DailyLogDraft | null } {
+): { log: DailyLog | null; draft: DailyLogDraft | null; legacy?: DailyLogDraft } {
   // a draft written for another project is not this project's business — leave it as it is
   if (draft && draft.projectId !== projectId) return { log: serverLog, draft };
+  // a draft written before the log carried an id is never laid over a log that has one: it is set
+  // aside, intact, for the engineer to confirm or discard (owner ruling, #692)
+  if (isLegacyDraftFor(draft, serverLog, projectId)) {
+    return { log: serverLog, draft: null, ...(draftHoldsWork(draft!) ? { legacy: draft! } : {}) };
+  }
   if (!draft || !serverLog || !draftAppliesTo(draft, serverLog, projectId)) return { log: serverLog, draft: null };
-  // a draft written before the log carried an id is bound to the first log it is laid over, so from
-  // then on it never applies to another log of the same day
-  const kept: DailyLogDraft = !draft.logId && serverLog.id ? { ...draft, logId: serverLog.id } : draft;
+  const kept = draft;
   const log: DailyLog = {
     ...serverLog,
     checkedIn: serverLog.checkedIn || (kept.checkIn?.checkedIn ?? false),

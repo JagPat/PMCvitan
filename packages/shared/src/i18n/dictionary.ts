@@ -214,6 +214,47 @@ export function engineerCrewPosition(at: number, total: number, lang: Lang): str
   return `Question ${at} of ${total}`;
 }
 
+/** U1b — set this trade's count to the last log's: "Same as yesterday (6)" when that log was the day
+ *  before today's, else "Same as last time (6)" (a gap of days, or an earlier day's unsent log). */
+export function engineerCrewSame(n: number, lang: Lang, yesterday: boolean): string {
+  if (lang === 'hi') return yesterday ? `कल जितने (${n})` : `पिछली बार जितने (${n})`;
+  if (lang === 'gu') return yesterday ? `ગઈકાલ જેટલા (${n})` : `છેલ્લી વખત જેટલા (${n})`;
+  return yesterday ? `Same as yesterday (${n})` : `Same as last time (${n})`;
+}
+
+/** Owner ruling (#692) — unsent work saved by a release before the log carried its id. It is never
+ *  added to a log on its own; the engineer sees it here and adds it to this log or discards it. */
+export const engineerLegacyDraftLabels = {
+  title: { en: 'Unsent work saved before the app updated', hi: 'ऐप अपडेट से पहले सहेजा गया, न भेजा गया काम', gu: 'ઍપ અપડેટ પહેલાં સાચવેલું, ન મોકલેલું કામ' },
+  check: { en: 'Add it only if it is this log\'s.', hi: 'इसे तभी जोड़ें जब यह इसी लॉग का हो।', gu: 'આ લૉગનું જ હોય તો જ ઉમેરો.' },
+  /** it was for another day, or this log is already sent: it can be read and discarded, not added */
+  otherDay: { en: 'It cannot be added to this log: it was for another day, or this log is already sent.', hi: 'यह इस लॉग में नहीं जुड़ सकता: यह किसी और दिन का था, या यह लॉग भेजा जा चुका है।', gu: 'આ લૉગમાં ઉમેરી શકાતું નથી: આ બીજા દિવસનું હતું, અથવા આ લૉગ મોકલાઈ ગયો છે.' },
+  add: { en: 'Add it to this log', hi: 'इस लॉग में जोड़ें', gu: 'આ લૉગમાં ઉમેરો' },
+  discard: { en: 'Discard', hi: 'हटाएँ', gu: 'કાઢી નાખો' },
+  discardSure: { en: 'Discard it for good?', hi: 'हमेशा के लिए हटाएँ?', gu: 'કાયમ માટે કાઢી નાખવું?' },
+  discardYes: { en: 'Yes, discard', hi: 'हाँ, हटाएँ', gu: 'હા, કાઢી નાખો' },
+  keep: { en: 'Keep it', hi: 'रखें', gu: 'રાખો' },
+} as const;
+
+/** "Saved for 2 October" — the day the kept-aside work was written for. */
+export function engineerLegacyDraftFor(date: string, lang: Lang): string {
+  if (lang === 'hi') return `${date} के लिए सहेजा गया`;
+  if (lang === 'gu') return `${date} માટે સાચવેલું`;
+  return `Saved for ${date}`;
+}
+
+/** The kept-aside work, in one line: "Checked in 9:05 AM · Plumber 4, Mason 2 · 1 photo". */
+export function engineerLegacyDraftSummary(
+  s: { checkinTime: string | null; crew: readonly { trade: string; count: number }[]; photos: number },
+  lang: Lang,
+): string {
+  const parts: string[] = [];
+  if (s.checkinTime) parts.push(lang === 'hi' ? `चेक-इन ${s.checkinTime}` : lang === 'gu' ? `ચેક-ઇન ${s.checkinTime}` : `Checked in ${s.checkinTime}`);
+  if (s.crew.length) parts.push(s.crew.map((c) => `${c.trade} ${c.count}`).join(', '));
+  if (s.photos) parts.push(lang === 'hi' ? `${s.photos} फ़ोटो` : lang === 'gu' ? `${s.photos} ફોટો` : `${s.photos} photo${s.photos === 1 ? '' : 's'}`);
+  return parts.join(' · ');
+}
+
 /** "3 more", after the next trade names. */
 export function engineerCrewMore(n: number, lang: Lang): string {
   if (lang === 'hi') return `${n} और`;

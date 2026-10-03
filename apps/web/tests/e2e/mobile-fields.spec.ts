@@ -1244,3 +1244,28 @@ test("a large crew roster's progress bar stays within the phone's width", async 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test('"Same as yesterday" meets the target floor and fits the phone, in Gujarati', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  // U1b — the last log's count for this trade, one tap; an engineer lands in Gujarati, the longest copy
+  await page.evaluate(() => {
+    const d = new Date();
+    const iso = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+    const today = iso(d);
+    d.setDate(d.getDate() - 1);
+    const seed = (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed;
+    seed({ dailyLog: { date: today, logDate: today, checkedIn: true, checkinTime: '9:00 AM', submitted: false, progress: 0,
+      crew: [{ trade: 'Mason', count: 0 }, { trade: 'Helper', count: 0 }], materials: [], photos: [],
+      previous: { logDate: iso(d), crew: [{ trade: 'Mason', count: 6 }, { trade: 'Helper', count: 3 }] } } });
+  });
+  await page.getByTestId('today-step-crew').click();
+  await expect(page.getByTestId('crew-same')).toHaveText('ગઈકાલ જેટલા (6)');
+  await sweepActionTargets(page, 'Crew question, same as yesterday');
+  const box = await page.getByTestId('crew-same').boundingBox();
+  expect(box && box.height >= 44 && box.x >= 0 && box.x + box.width <= 390 + 0.1).toBe(true);
+  await page.getByTestId('crew-same').click();
+  await expect(page.getByTestId('crew-count')).toHaveText('6');
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});

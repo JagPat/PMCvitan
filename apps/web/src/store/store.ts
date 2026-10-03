@@ -68,7 +68,7 @@ import {
 import { screensFor } from '@/lib/screens';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
-import { type DailyLogDraft, dailyLogKey, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
+import { type DailyLogDraft, adoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
@@ -367,6 +367,11 @@ export interface AppState {
   // the server's log, it is persisted beside the outbox (same user + project key) and dropped once
   // the server's log is no longer the one it was written against (see store/dailyLogDraft.ts).
   dailyLogDraft: DailyLogDraft | null;
+  // Owner ruling (#692) — a draft written by a release before the log carried its id, met by a log
+  // that has one: nothing in it proves which log of its civil day it was for, so it is never laid
+  // over the log. It is kept here, intact and persisted beside the draft, until the engineer adds it
+  // to this log (same unsent civil day only) or discards it.
+  legacyDailyLogDraft: DailyLogDraft | null;
   notifications: AppNotification[];
   // real session (set by a phone-OTP sign-in; null = passwordless dev auth)
   sessionToken: string | null;
@@ -677,6 +682,10 @@ export interface AppActions {
   crewStep: (idx: number, delta: number) => void;
   /** U1 — the engineer answered every crew question for the open log (a no-crew day included) */
   confirmCrew: () => void;
+  /** Owner ruling (#692) — the engineer confirmed: the kept-aside legacy draft becomes this log's */
+  adoptLegacyDailyLogDraft: () => void;
+  /** …or discarded it */
+  discardLegacyDailyLogDraft: () => void;
   addProgress: () => void;
   /**
    * `stamp` is what the PHOTO's own EXIF carries — empty when the file records nothing.
@@ -1112,6 +1121,7 @@ export function getInitialState(): AppState {
     activities: structuredClone(SEED_ACTIVITIES),
     dailyLog: structuredClone(SEED_DAILY_LOG),
     dailyLogDraft: null,
+    legacyDailyLogDraft: null,
     notifications: structuredClone(SEED_NOTIFICATIONS),
     sessionToken: null,
     userName: null,
@@ -1272,6 +1282,8 @@ export const useStore = create<Store>()(
     // Persisted beside the outbox under the SAME user + project scope (WEB-02), so work recorded in
     // one project (or by one user on a shared device) is never laid over another's log.
     const dailyLogDraftKey = (): string => `vitan.dailyLogDraft.${sessionSub()}.${get().activeProjectId}`;
+    // the kept-aside legacy draft (owner ruling, #692), under its own key in the same scope
+    const legacyDailyLogDraftKey = (): string => `vitan.dailyLogDraft.legacy.${sessionSub()}.${get().activeProjectId}`;
     const persistDailyLogDraft = (): void => {
       try {
         const storage = globalThis.localStorage;
@@ -1280,6 +1292,9 @@ export const useStore = create<Store>()(
         if (!draft) storage.removeItem(dailyLogDraftKey());
         else if (draft.projectId === get().activeProjectId) storage.setItem(dailyLogDraftKey(), JSON.stringify(draft));
         // a draft for another project is never written under this project's key
+        const legacy = get().legacyDailyLogDraft;
+        if (!legacy) storage.removeItem(legacyDailyLogDraftKey());
+        else if (legacy.projectId === get().activeProjectId) storage.setItem(legacyDailyLogDraftKey(), JSON.stringify(legacy));
       } catch {
         /* storage unavailable — the in-session draft still works */
       }
@@ -1291,6 +1306,8 @@ export const useStore = create<Store>()(
       const r = overlayDailyLogDraft(serverLog, s.dailyLogDraft, projectId);
       s.dailyLog = r.log;
       s.dailyLogDraft = r.draft;
+      // a draft written before the log carried an id is kept aside, never laid over it (#692)
+      if (r.legacy) s.legacyDailyLogDraft = r.legacy;
     };
     /** Record what the engineer just did on the log on screen into the pending draft for THAT log
      *  (a draft written against another log is superseded). A sent log takes no draft. */
@@ -1300,12 +1317,17 @@ export const useStore = create<Store>()(
       const logId = s.dailyLog.id;
       // a draft written against another log — another project, another civil day, or another log of
       // the same day (a different server id) — is superseded, never carried over (U1, #690)
-      const other = !s.dailyLogDraft
-        || s.dailyLogDraft.projectId !== s.activeProjectId
-        || s.dailyLogDraft.logKey !== logKey
-        || (!!logId && !!s.dailyLogDraft.logId && s.dailyLogDraft.logId !== logId);
+      const prior = s.dailyLogDraft;
+      // a draft written before the log carried an id is never bound to this one by a tap: it is kept
+      // aside, intact, for the engineer to confirm or discard (owner ruling, #692)
+      if (prior && !prior.logId && logId && prior.projectId === s.activeProjectId && draftHoldsWork(prior)) {
+        s.legacyDailyLogDraft = prior;
+      }
+      const other = !prior
+        || prior.projectId !== s.activeProjectId
+        || prior.logKey !== logKey
+        || (!!logId && prior.logId !== logId);
       if (other) s.dailyLogDraft = { projectId: s.activeProjectId, logKey, ...(logId ? { logId } : {}) };
-      else if (logId && !s.dailyLogDraft!.logId) s.dailyLogDraft!.logId = logId;
       mutate(s.dailyLogDraft!);
     };
     /** …a crew count set on one row (absolute — the latest count), the draft's crew rule. Keyed by the
@@ -1487,6 +1509,10 @@ export const useStore = create<Store>()(
                 date: core.date, logDate: core.logDate, checkedIn: core.checkedIn, checkinTime: core.checkinTime,
                 submitted: core.submitted, progress: core.progress,
                 crew: core.crew.map((c) => ({ trade: c.trade, count: c.count })),
+                // the log before it (U1b): "Same as yesterday" reads it on either read path
+                ...(core.previous !== undefined
+                  ? { previous: core.previous && { logDate: core.previous.logDate, crew: core.previous.crew.map((c) => ({ trade: c.trade, count: c.count })) } }
+                  : {}),
                 materials: core.materials.map((m) => ({ name: m.name, decisionId: m.decisionId, qty: m.qty, zone: m.zone, matched: m.matched, swatch: m.swatch as SwatchKey, photo: m.photo })),
                 photos: progressPhotos,
               }
@@ -4650,6 +4676,25 @@ export const useStore = create<Store>()(
       });
       persistDailyLogDraft();
     },
+    adoptLegacyDailyLogDraft: () => {
+      set((s) => {
+        // never while a start or send is on its way: the log on screen predates it
+        if (dailyLogCommandInFlight(s)) return;
+        const adopted = adoptLegacyDraft(s.legacyDailyLogDraft, s.dailyLogDraft, s.dailyLog, s.activeProjectId);
+        if (!adopted || !s.dailyLog) return;
+        // the log on screen already carries the current draft: lay only what the legacy draft adds
+        const mine = draftAppliesTo(s.dailyLogDraft, s.dailyLog, s.activeProjectId) ? s.dailyLogDraft : null;
+        const extras = legacyDraftExtras(s.legacyDailyLogDraft!, mine, s.dailyLog);
+        s.dailyLog = overlayDailyLogDraft(s.dailyLog, extras, s.activeProjectId).log;
+        s.dailyLogDraft = adopted;
+        s.legacyDailyLogDraft = null;
+      });
+      persistDailyLogDraft();
+    },
+    discardLegacyDailyLogDraft: () => {
+      set((s) => { s.legacyDailyLogDraft = null; });
+      persistDailyLogDraft();
+    },
     crewStep: (idx, delta) => {
       set((s) => {
         const c = s.dailyLog?.crew[idx];
@@ -5158,9 +5203,19 @@ export const useStore = create<Store>()(
             draft = null;
           }
           if (draft && draft.projectId !== get().activeProjectId) draft = null; // never another project's
+          // the kept-aside legacy draft (owner ruling, #692) comes back with it, until confirmed or discarded
+          let keptAside: DailyLogDraft | null = null;
+          try {
+            const rawKept = storage.getItem(legacyDailyLogDraftKey());
+            keptAside = rawKept ? parseDailyLogDraft(JSON.parse(rawKept) as unknown) : null;
+          } catch {
+            keptAside = null;
+          }
+          if (keptAside && keptAside.projectId !== get().activeProjectId) keptAside = null;
           set((s) => {
             s.outbox = ops;
             s.dailyLogDraft = draft;
+            s.legacyDailyLogDraft = keptAside;
             // gate round 8: rebuild an offline submit's freeze from the durable
             // outbox, so a reload keeps the checklist frozen until the queued
             // submit replays (also covered from the snapshot side by applySnapshot).

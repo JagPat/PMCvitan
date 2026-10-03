@@ -91,6 +91,8 @@ export interface ProjectDataState {
   dailyLog: DailyLog | null;
   // #669 — the engineer's unsent work on that log; project-owned like the log (store/dailyLogDraft.ts)
   dailyLogDraft: DailyLogDraft | null;
+  // a draft written before the log carried an id, kept aside for the engineer to confirm or discard
+  legacyDailyLogDraft: DailyLogDraft | null;
   notifications: AppNotification[];
   companies: ProjectCompany[];
   // Phase 3 Task 7 — the PER-PROJECT pilot capabilities (`['materials']` on a pilot project) + the
@@ -181,6 +183,7 @@ export function emptyProjectData(): ProjectDataState {
     activities: [],
     dailyLog: null,
     dailyLogDraft: null,
+    legacyDailyLogDraft: null,
     notifications: [],
     companies: [],
     capabilities: [],

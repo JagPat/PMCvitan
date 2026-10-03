@@ -65,10 +65,11 @@ export class DailyLogQueryService {
     // A caught-up generation with NO row yet is not authoritative empty data — fall back to canonical.
     if (!row) return { dailyLog: null, materials: [], generation: null };
     const slice = row.dto as unknown as DailyLogSlice;
-    // A row serialized before the log carried its own `id` (U1, #690) is older than the read contract:
-    // the client binds unsent work to that id, and two logs can share a civil day. Fall back to the
-    // canonical live slice, which always carries it, until the projection refreshes the row.
-    if (slice.dailyLog && !slice.dailyLog.id) return { dailyLog: null, materials: [], generation: null };
+    // A row serialized before the log carried its own `id` (U1, #690) or the log before it (`previous`,
+    // U1b) is older than the read contract: the client binds unsent work to that id, and two logs can
+    // share a civil day. Fall back to the canonical live slice, which always carries both, until the
+    // projection refreshes the row.
+    if (slice.dailyLog && (!slice.dailyLog.id || !('previous' in slice.dailyLog))) return { dailyLog: null, materials: [], generation: null };
     return { dailyLog: slice.dailyLog, materials: slice.materials, generation: gen.generation };
   }
 

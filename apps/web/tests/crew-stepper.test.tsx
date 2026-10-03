@@ -237,3 +237,77 @@ describe('U1 — the crew step, one trade at a time', () => {
     expect(r.getByRole('button', { name: `${C.more.gu}: ${TRADES[0]}` })).toBeTruthy();
   });
 });
+
+describe('U1b — "Same as yesterday (N)": the last log\'s count for this trade', () => {
+  const dayBefore = (iso: string, days = 1): string => {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - days);
+    return d.toISOString().slice(0, 10);
+  };
+  const yesterdaysCrew = SEED_DAILY_LOG.crew.map((c, i) => ({ trade: c.trade, count: i + 3 }));
+
+  it("sets this trade's count to yesterday's, and moves on only with Next", async () => {
+    const { useStore, r } = await loadToday({ dailyLog: log({ previous: { logDate: dayBefore(TODAY), crew: yesterdaysCrew } }) });
+    fireEvent.click(r.getByTestId('today-action'));
+    expect(r.getByTestId('crew-same').textContent).toBe('Same as yesterday (3)');
+    fireEvent.click(r.getByTestId('crew-same'));
+    expect(r.getByTestId('crew-count').textContent).toBe('3');
+    expect(counts(useStore)[0]).toBe(3);
+    // the answer is already given: the button rests until the count changes
+    expect((r.getByTestId('crew-same') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(r.getByTestId('crew-more'));
+    fireEvent.click(r.getByTestId('crew-same'));
+    expect(counts(useStore)[0]).toBe(3);
+    expect(r.getByTestId('crew-position').textContent).toBe(`1 / ${TRADES.length}`);
+    fireEvent.click(r.getByTestId('crew-next'));
+    expect(r.getByTestId('crew-same').textContent).toBe('Same as yesterday (4)');
+  });
+
+  it('the count is kept in the pending draft, as every other tap is', async () => {
+    const { useStore, r } = await loadToday({ dailyLog: log({ id: 'log-b', previous: { logDate: dayBefore(TODAY), crew: yesterdaysCrew } }) });
+    fireEvent.click(r.getByTestId('today-action'));
+    fireEvent.click(r.getByTestId('crew-same'));
+    const draft = (useStore.getState() as unknown as { dailyLogDraft: { crewRows?: Record<string, { trade: string; count: number }> } }).dailyLogDraft;
+    expect(draft.crewRows?.['0']).toEqual({ trade: TRADES[0], count: 3 });
+  });
+
+  it('a last log sent before the day before reads "Same as last time"', async () => {
+    const { r } = await loadToday({ dailyLog: log({ previous: { logDate: dayBefore(TODAY, 3), crew: yesterdaysCrew } }) });
+    fireEvent.click(r.getByTestId('today-action'));
+    expect(r.getByTestId('crew-same').textContent).toBe('Same as last time (3)');
+  });
+
+  it('an earlier day\'s unsent log never says "yesterday" (nor "today")', async () => {
+    const earlier = dayBefore(TODAY, 4);
+    const { r } = await loadToday({ dailyLog: log({ logDate: earlier, previous: { logDate: dayBefore(earlier), crew: yesterdaysCrew } }) });
+    fireEvent.click(r.getByTestId('today-action'));
+    expect(r.getByTestId('crew-same').textContent).toBe('Same as last time (3)');
+    expect(r.getByTestId('crew-stepper').textContent).not.toMatch(/today|yesterday/iu);
+  });
+
+  it('no button where there is nothing to repeat: no earlier log, a new trade, or nobody came', async () => {
+    const none = await loadToday();
+    fireEvent.click(none.r.getByTestId('today-action'));
+    expect(none.r.queryByTestId('crew-same')).toBeNull();
+    cleanup();
+    const prev = [{ trade: TRADES[0]!, count: 0 }, { trade: 'Welder', count: 2 }];
+    const { r } = await loadToday({ dailyLog: log({ previous: { logDate: dayBefore(TODAY), crew: prev } }) });
+    fireEvent.click(r.getByTestId('today-action'));
+    expect(r.queryByTestId('crew-same')).toBeNull(); // nobody came yesterday: "Nobody today" covers it
+    fireEvent.click(r.getByTestId('crew-next'));
+    expect(r.queryByTestId('crew-same')).toBeNull(); // this trade was not on the last log
+  });
+
+  it('a trade at another position on the last log still finds its own count', async () => {
+    const moved = [...yesterdaysCrew].reverse();
+    const { r } = await loadToday({ dailyLog: log({ previous: { logDate: dayBefore(TODAY), crew: moved } }) });
+    fireEvent.click(r.getByTestId('today-action'));
+    expect(r.getByTestId('crew-same').textContent).toBe('Same as yesterday (3)');
+  });
+
+  it("speaks the engineer's language", async () => {
+    const { r } = await loadToday({ lang: 'gu', dailyLog: log({ previous: { logDate: dayBefore(TODAY), crew: yesterdaysCrew } }) });
+    fireEvent.click(r.getByTestId('today-action'));
+    expect(r.getByTestId('crew-same').textContent).toBe('ગઈકાલ જેટલા (3)');
+  });
+});

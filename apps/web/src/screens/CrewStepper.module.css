@@ -112,6 +112,24 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+/* U1b: "Same as yesterday (6)" sets this trade's count to the last log's */
+.same {
+  min-height: 44px;
+  max-width: 100%;
+  padding: 0 18px;
+  border: 1px solid var(--hairline);
+  border-radius: 22px;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.same:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .count {
   min-width: 88px;
   font-size: 64px;
