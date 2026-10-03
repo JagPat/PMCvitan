@@ -771,6 +771,9 @@ export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): bool
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+/** U3b — the newest brief request; a reply to any earlier one is superseded and dropped (the landing,
+ *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
+let briefRequestSeq = 0;
 
 /** A pristine access-flow state (used to init and to reset after sign-out). */
 function freshAccess(generation = 0): AccessState {
@@ -3349,7 +3352,19 @@ export const useStore = create<Store>()(
     loadBrief: () => {
       if (!gateway) return;
       const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
-      gateway.getBrief().then((b) => set((s) => { if (s.sessionToken === tok) { s.brief = castDraft(b); s.briefAt = Date.now(); } })).catch(() => {});
+      // only the NEWEST request's reply is kept, and it is stamped with when it was ASKED (the server's
+      // answer is as of then): an older reply landing late can neither bring back a project the newer
+      // one dropped nor restart the freshness window
+      const seq = ++briefRequestSeq;
+      const askedAt = Date.now();
+      gateway
+        .getBrief()
+        .then((b) => set((s) => {
+          if (s.sessionToken !== tok || seq !== briefRequestSeq) return;
+          s.brief = castDraft(b);
+          s.briefAt = askedAt;
+        }))
+        .catch(() => {});
     },
     // Phase 2 Task 9 — the project-shell summary: populate `enabledModules` for the manifest-driven
     // nav. Project-scoped — a reply that lands after a switch / re-auth is dropped (guarded by scope).

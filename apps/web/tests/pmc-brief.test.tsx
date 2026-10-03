@@ -228,6 +228,35 @@ describe('U3b — the brief in the store', () => {
     expect(useStore.getState().brief).toBeNull();
   });
 
+  it('only the newest read lands: an older reply arriving late cannot bring back a dropped project (#697 round 3)', async () => {
+    const useStore = await store();
+    const withBopal = { projects: [proj('ambli'), proj('bopal')] }; // read A, asked before the removal
+    const withoutBopal = { projects: [proj('ambli')] }; // read B, asked after it
+    let answerA!: (v: typeof withBopal) => void;
+    let answerB!: (v: typeof withoutBopal) => void;
+    const gw = { getBrief: vi.fn()
+      .mockReturnValueOnce(new Promise((r) => { answerA = r; }))
+      .mockReturnValueOnce(new Promise((r) => { answerB = r; })) };
+    useStore.getState()._setGateway(gw as never);
+    vi.useFakeTimers({ now: Date.parse('2026-10-03T10:00:00Z') });
+    try {
+      useStore.getState().loadBrief(); // A, asked at 10:00:00
+      vi.setSystemTime(Date.parse('2026-10-03T10:01:00Z'));
+      useStore.getState().loadBrief(); // B, asked at 10:01:00
+      vi.setSystemTime(Date.parse('2026-10-03T10:01:05Z'));
+      answerB(withoutBopal);
+      await vi.runAllTimersAsync();
+      expect(useStore.getState().brief?.projects.map((p) => p.projectId)).toEqual(['ambli']);
+      expect(useStore.getState().briefAt).toBe(Date.parse('2026-10-03T10:01:00Z')); // as of when it was asked
+      answerA(withBopal); // the superseded read lands last
+      await vi.runAllTimersAsync();
+      expect(useStore.getState().brief?.projects.map((p) => p.projectId)).toEqual(['ambli']);
+      expect(useStore.getState().briefAt).toBe(Date.parse('2026-10-03T10:01:00Z'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a switch keeps the same person\'s brief; another identity never inherits it', async () => {
     const useStore = await store();
     useStore.setState({ brief: { projects: [proj('ambli')] }, memberships: [{ projectId: 'bopal', name: 'Bopal', short: 'Bopal', role: 'pmc', orgId: 'o', orgName: 'Vitan' }] });
