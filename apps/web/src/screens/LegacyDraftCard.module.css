@@ -1,0 +1,64 @@
+/* Unsent work kept aside from before the update (#692): a light amber notice with its own choices.
+   Targets are 44px or more; labels 13px or more. */
+
+.card {
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid var(--amber-border);
+  border-radius: var(--r-card);
+  background: var(--amber-chip);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.title {
+  font-size: 16px;
+  font-weight: 700;
+}
+.meta,
+.note {
+  font-size: 14px;
+  color: var(--amber-text);
+}
+.summary {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.actions {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.sure {
+  font-size: 14px;
+  font-weight: 600;
+}
+.primary,
+.secondary,
+.danger {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: var(--r-btn);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.primary {
+  border: none;
+  background: var(--accent);
+  color: #fff;
+}
+.secondary {
+  border: 1px solid var(--hairline-strong);
+  background: var(--paper);
+  color: var(--ink);
+}
+.danger {
+  border: none;
+  background: var(--red-solid);
+  color: #fff;
+}

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, ApiSnapshot, ModuleDailyLog } from '@/data/apiGateway';
 import type { DailyLog, DailyLogCoreView } from '@vitan/shared';
-import { overlayDailyLogDraft, parseDailyLogDraft, dailyLogKey, type DailyLogDraft } from '@/store/dailyLogDraft';
+import { adoptLegacyDraft, canAdoptLegacyDraft, overlayDailyLogDraft, parseDailyLogDraft, dailyLogKey, type DailyLogDraft } from '@/store/dailyLogDraft';
 import { todayPath } from '@/lib/engineerToday';
 
 /**
@@ -368,31 +368,132 @@ describe('U1 — the draft is bound to its log by server id, not only by civil d
     expect(r.log?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
   });
 
-  it('a draft or a log without an id (written or served before the field) is matched by civil date, as before', () => {
-    expect(overlayDailyLogDraft(serverLog({ id: 'log-a' }), draftFor(), 'ambli').draft).not.toBeNull();
+  it('only with neither id (an older server) is the civil date the match, as before', () => {
+    expect(overlayDailyLogDraft(serverLog(), draftFor(), 'ambli').draft).not.toBeNull();
     expect(overlayDailyLogDraft(serverLog(), draftFor('log-a'), 'ambli').draft).not.toBeNull();
   });
+});
 
-  it('a draft written before the id existed is bound to the first log it is laid over, and then never to another', () => {
-    const legacy = draftFor(); // persisted before the field: no logId
-    const first = overlayDailyLogDraft(serverLog({ id: 'log-a' }), legacy, 'ambli');
-    expect(first.draft?.logId).toBe('log-a');
-    expect(first.log?.checkedIn).toBe(true);
-    // another device sent log-a and started log-b today: the bound draft is dropped, not carried over
-    const next = overlayDailyLogDraft(serverLog({ id: 'log-b' }), first.draft, 'ambli');
-    expect(next.draft).toBeNull();
-    expect(next.log?.checkedIn).toBe(false);
+// Owner ruling (#692, after the shadow review on 26af429): a draft written before the log carried its
+// id cannot be proven to be any one log's — another device may have sent that log and started a second
+// of the same day before this device's first reconcile. It is kept aside, intact and persisted, never
+// laid over a log on its own; the engineer adds it to this log (same unsent day only) or discards it.
+describe('#692 — a legacy draft (no log id) is kept aside and reused only on confirmation', () => {
+  const draftFor = (logId?: string): DailyLogDraft => ({
+    projectId: 'ambli', logKey: 'civil:2026-07-03', ...(logId ? { logId } : {}),
+    checkIn: { checkedIn: true, checkinTime: '9:05 AM' }, crew: { Plumber: 4 }, photosAdded: 1,
+  });
+  const legacyDraft = (over: Partial<DailyLogDraft> = {}): DailyLogDraft => ({
+    projectId: 'ambli', logKey: 'civil:2026-07-03',
+    checkIn: { checkedIn: true, checkinTime: '9:05 AM' }, crew: { Plumber: 4 }, photosAdded: 1, ...over,
   });
 
-  it('the store persists the binding on the reconcile that makes it', async () => {
+  it('is never laid over a log with an id — not the log it was for, not its replacement — and is kept intact', () => {
+    for (const id of ['log-a', 'log-b']) {
+      const replacement = serverLog({ id });
+      const r = overlayDailyLogDraft(replacement, legacyDraft(), 'ambli');
+      expect(r.log).toEqual(replacement); // no check-in, crew or photos attached
+      expect(r.draft).toBeNull();
+      expect(r.legacy).toEqual(legacyDraft());
+    }
+    // an empty one is not worth keeping
+    expect(overlayDailyLogDraft(serverLog({ id: 'log-a' }), { projectId: 'ambli', logKey: 'civil:2026-07-03' }, 'ambli').legacy).toBeUndefined();
+  });
+
+  it('the shadow review\'s case: the first reconcile after the update serves a replacement log — it stays untouched, the work is kept', async () => {
     globalThis.localStorage?.clear();
     useStore.setState(getInitialState());
-    useStore.setState((st) => { st.online = true; st.activeProjectId = 'ambli'; st.projectScopeGeneration = 1; st.outbox = []; st.syncQueue = []; st.dailyLogDraft = draftFor(); });
-    s()._setGateway({ snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog({ id: 'log-a' }))) } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.activeProjectId = 'ambli'; st.projectScopeGeneration = 1; st.outbox = []; st.syncQueue = []; st.dailyLogDraft = legacyDraft(); });
+    s()._setGateway({ snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog({ id: 'log-b' }))) } as unknown as ApiGateway);
     await s().requestFreshSnapshot();
     await flush();
-    expect(s().dailyLogDraft?.logId).toBe('log-a');
-    expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.anon.ambli')).toContain('"logId":"log-a"');
+    expect(s().dailyLog).toMatchObject({ id: 'log-b', checkedIn: false, progress: 2 });
+    expect(s().dailyLog?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(1);
+    expect(s().dailyLogDraft).toBeNull();
+    expect(s().legacyDailyLogDraft).toEqual(legacyDraft());
+    // persisted under its own key, so a reload keeps it until the engineer chooses
+    expect(JSON.parse(globalThis.localStorage.getItem('vitan.dailyLogDraft.legacy.anon.ambli')!)).toEqual(legacyDraft());
+    expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.anon.ambli')).toBeNull();
+    // another reconcile does not attach it either
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.checkedIn).toBe(false);
+    expect(s().legacyDailyLogDraft).toEqual(legacyDraft());
+  });
+
+  it('a tap on the log never binds it: the tap starts this log\'s own draft and the legacy one is kept aside', () => {
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-b' }), dailyLogDraft: legacyDraft() });
+    s().crewStep(0, 1);
+    expect(s().dailyLogDraft).toMatchObject({ logId: 'log-b', crewRows: { 0: { trade: 'Flooring mason', count: 3 } } });
+    expect(s().dailyLogDraft?.checkIn).toBeUndefined();
+    expect(s().legacyDailyLogDraft).toEqual(legacyDraft());
+  });
+
+  it('confirmed, it is added to this unsent log of its day and bound to its id; this log\'s own work wins and nothing counts twice', () => {
+    const log = serverLog({ id: 'log-b' });
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: log, legacyDailyLogDraft: legacyDraft({ crew: { Plumber: 4, 'Flooring mason': 9 } }) });
+    s().crewStep(0, 1); // this log's own word for Flooring mason (2 → 3), and one photo of its own
+    s().addProgress();
+    expect(s().dailyLog).toMatchObject({ progress: 3, checkedIn: false });
+    s().adoptLegacyDailyLogDraft();
+    expect(s().legacyDailyLogDraft).toBeNull();
+    expect(s().dailyLogDraft).toMatchObject({ logId: 'log-b', checkIn: { checkedIn: true, checkinTime: '9:05 AM' }, photosAdded: 2 });
+    expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '9:05 AM', progress: 4 }); // 2 on the server + 1 here + 1 kept
+    expect(s().dailyLog?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
+    expect(s().dailyLog?.crew.find((c) => c.trade === 'Flooring mason')?.count).toBe(3); // not the legacy 9
+    // the next reconcile lays the adopted draft over the server's own log: the same result
+    const again = overlayDailyLogDraft(log, s().dailyLogDraft, 'ambli');
+    expect(again.log).toMatchObject({ checkedIn: true, progress: 4 });
+    expect(again.log?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
+    expect(again.log?.crew.find((c) => c.trade === 'Flooring mason')?.count).toBe(3);
+  });
+
+  it('a draft held for another log never masks the kept-aside work when it is added', () => {
+    const log = serverLog({ id: 'log-b' });
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: log,
+      dailyLogDraft: { projectId: 'ambli', logKey: 'civil:2026-07-03', logId: 'log-a', crew: { Plumber: 7 }, checkIn: { checkedIn: false, checkinTime: null } },
+      legacyDailyLogDraft: legacyDraft() });
+    s().adoptLegacyDailyLogDraft();
+    expect(s().dailyLog?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
+    expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '9:05 AM', progress: 3 });
+    expect(s().dailyLogDraft).toMatchObject({ logId: 'log-b', crew: { Plumber: 4 } });
+  });
+
+  it('it is never added to another day\'s log, a sent log, or while a start or send is on its way', () => {
+    expect(canAdoptLegacyDraft(legacyDraft(), serverLog({ id: 'log-b' }), 'ambli')).toBe(true);
+    expect(canAdoptLegacyDraft(legacyDraft(), serverLog({ id: 'log-c', logDate: '2026-07-04' }), 'ambli')).toBe(false);
+    expect(canAdoptLegacyDraft(legacyDraft(), serverLog({ id: 'log-b', submitted: true }), 'ambli')).toBe(false);
+    expect(canAdoptLegacyDraft(legacyDraft(), serverLog({ id: 'log-b' }), 'other')).toBe(false);
+    expect(adoptLegacyDraft(legacyDraft(), null, serverLog({ id: 'log-c', logDate: '2026-07-04' }), 'ambli')).toBeNull();
+
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-b' }), legacyDailyLogDraft: legacyDraft(),
+      outbox: [{ t: 'submitDailyLog', log: { checkedIn: false, checkinTime: null, progress: 2, crew: [] }, idempotencyKey: 'k' }] } as never);
+    s().adoptLegacyDailyLogDraft();
+    expect(s().legacyDailyLogDraft).toEqual(legacyDraft()); // refused, and still kept
+    expect(s().dailyLog?.checkedIn).toBe(false);
+  });
+
+  it('a reload brings it back from its own key, still aside', () => {
+    globalThis.localStorage?.clear();
+    globalThis.localStorage.setItem('vitan.dailyLogDraft.legacy.anon.ambli', JSON.stringify(legacyDraft()));
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer' });
+    s().hydrateOutbox();
+    expect(s().legacyDailyLogDraft).toEqual(legacyDraft());
+    expect(s().dailyLogDraft).toBeNull();
+    // never another project's
+    useStore.setState({ ...getInitialState(), activeProjectId: 'other', role: 'engineer' });
+    s().hydrateOutbox();
+    expect(s().legacyDailyLogDraft).toBeNull();
+  });
+
+  it('discarded, it is gone from memory and from storage', () => {
+    globalThis.localStorage?.clear();
+    useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-b' }), legacyDailyLogDraft: legacyDraft() });
+    s().addProgress(); // persists the slot
+    expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.legacy.anon.ambli')).not.toBeNull();
+    s().discardLegacyDailyLogDraft();
+    expect(s().legacyDailyLogDraft).toBeNull();
+    expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.legacy.anon.ambli')).toBeNull();
   });
 
   it('the draft records the id of the log it was written against, and a persisted draft keeps it', () => {

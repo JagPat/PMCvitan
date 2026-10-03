@@ -7,6 +7,7 @@ import { todayCivil } from '@/lib/civilDate';
 import { dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { dailyLogIdentity, draftAppliesTo } from '@/store/dailyLogDraft';
 import { CrewStepper } from './CrewStepper';
+import { LegacyDraftCard } from './LegacyDraftCard';
 import { ArrowRight, Circle, CircleCheck, Crosshair, Plus, RefreshCw } from '@/lib/icons';
 import { can, engineerNavLabels, engineerTodayLabels as L, engineerTodayLogFor, engineerTodayOverdue, engineerTodayProgress, type Lang } from '@vitan/shared';
 import styles from './EngineerToday.module.css';
@@ -172,6 +173,9 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
         <div className={styles.date}>{date}</div>
         <div style={{ fontSize: 15, color: 'var(--muted)', marginTop: 2 }}>{short}</div>
       </div>
+
+      {/* unsent work kept aside from before the update: never added on its own (#692) */}
+      {!unsettled && <LegacyDraftCard />}
 
       {card}
 
