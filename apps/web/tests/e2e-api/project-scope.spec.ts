@@ -130,6 +130,9 @@ test('history preserves scope and screen', async ({ page }) => {
     await optionB2.click({ timeout: 2000 });
   }).toPass();
   await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
+  // the switcher shows the target's name the moment the switch STARTS; B's role home becomes a
+  // history entry only once B has loaded, and the walk back below expects that entry, so wait for it
+  await expect(page).toHaveURL(new RegExp(`/projects/${B}/`));
   await page.getByRole('button', { name: 'Decision Log' }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${B}/decisions`));
   await page.getByRole('button', { name: 'Drawings' }).click();
