@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { ConflictException } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { NodesService } from '../../src/nodes/nodes.service';
+import { treeLockKey } from '../../src/common/tree-lock';
 import type { AuthUser } from '../../src/common/auth';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -50,10 +52,59 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
     expect(await t.prisma.commandExecution.count({ where: { projectId: p(), commandType: 'nodes.create', idempotencyKey: 'k-node' } })).toBe(1);
   });
 
-  it('two CONCURRENT same-key creates (a request still in flight when the retry goes) make one place', async () => {
+  const ungrantedLocks = async (): Promise<number> => {
+    const rows = await t.prisma.$queryRawUnsafe<{ n: number }[]>('SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted');
+    return rows[0]?.n ?? 0;
+  };
+  /** Condition-based wait (never a fixed sleep) until a NEW ungranted lock appears; a call that
+   *  settles instead has escaped the race shape, which fails the probe. */
+  const blocked = async (p: Promise<unknown>, baseline: number): Promise<void> => {
+    const state = { settled: false };
+    void p.then(() => { state.settled = true; }, () => { state.settled = true; });
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      if (state.settled) throw new Error('the create settled instead of blocking: the race shape was lost');
+      if ((await ungrantedLocks()) > baseline) return;
+      if (Date.now() > deadline) throw new Error('the create did not block within 8s');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
+
+  it('two CONCURRENT same-key creates collide on the reservation and resolve to one place (barrier)', async () => {
+    // #700 Codex 4174927446 — a held session takes the project's tree lock, so the FIRST create
+    // reserves its key and then waits on the tree lock with the reservation uncommitted. The SECOND
+    // create then finds no committed receipt (no fast-path replay) and blocks on the reservation's
+    // unique index. Releasing the holder lets the first commit; the second's insert fails on the
+    // unique key and replays the winner. Both calls are observed blocked before the release.
     const input = { name: 'Idem Concurrent', kind: 'zone' as const, parentId: null, publish: true };
-    await Promise.all([svc.create(p(), input, pmc(), 'k-cc'), svc.create(p(), input, pmc(), 'k-cc')]);
+    const other = new PrismaClient();
+    try {
+      let release!: () => void;
+      const released = new Promise<void>((r) => { release = r; });
+      let held!: () => void;
+      const heldArrived = new Promise<void>((r) => { held = r; });
+      const holder = other.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', treeLockKey(p()));
+        held();
+        await released;
+      }, { timeout: 30_000 });
+      await heldArrived;
+
+      const first = svc.create(p(), input, pmc(), 'k-cc');
+      await blocked(first, await ungrantedLocks()); // reserved, waiting on the tree lock
+      const second = svc.create(p(), input, pmc(), 'k-cc');
+      await blocked(second, await ungrantedLocks()); // waiting on the first's reservation
+
+      release();
+      await holder;
+      await Promise.all([first, second]);
+    } finally {
+      await other.$disconnect();
+    }
     expect(await zones('Idem Concurrent')).toBe(1);
+    const node = await t.prisma.projectNode.findFirstOrThrow({ where: { projectId: p(), name: 'Idem Concurrent' } });
+    expect(await t.prisma.domainEvent.count({ where: { projectId: p(), eventType: 'node.created', entityId: node.id } })).toBe(1);
+    expect(await t.prisma.commandExecution.count({ where: { projectId: p(), commandType: 'nodes.create', idempotencyKey: 'k-cc' } })).toBe(1);
   });
 
   it('a DIFFERENT body under the same key is a 409 and adds nothing', async () => {
