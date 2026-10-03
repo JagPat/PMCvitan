@@ -29,21 +29,14 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   const [value, setValue] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [allOpen, setAllOpen] = useState(false);
-  // #699 Codex 4174074853 — the form takes one submission at a time (`addLocationNode` also joins
-  // an identical create in flight and keys it, so a retry replays rather than adding a second place)
+  // #699 Codex 4174074853 — the form takes one submission at a time. Safety against a second place
+  // does not live here: `addLocationNode` joins an identical create in flight and keys it, so a retry
+  // after a lost reply replays on the server (#700) instead of adding one.
   const [pending, setPending] = useState(false);
-  // #699 Codex 4174429320 — after a create that did not come back applied, the server may hold the
-  // new place. The retry reuses the create's key, so it cannot add a second one; the form still waits
-  // for the tree the store re-reads, so the name guard below can say the place is already there
-  // rather than replaying it. Cancel stays available.
-  const [checking, setChecking] = useState(false);
-  const nodesAtFailure = useRef<typeof nodes | null>(null);
-  useEffect(() => {
-    if (checking && nodesAtFailure.current !== null && nodes !== nodesAtFailure.current) {
-      nodesAtFailure.current = null;
-      setChecking(false);
-    }
-  }, [nodes, checking]);
+  // #699 shadow review on 3d0503b — a submission belongs to the form session that sent it. Closing the
+  // form (Cancel, Escape, walking to another place) or opening a new one starts a new session, so a
+  // reply that lands later never disables, closes or edits a form it was not sent from.
+  const session = useRef(0);
   const inputId = useId();
 
   const placeName = active?.name ?? 'the project';
@@ -51,7 +44,7 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   // place's level, 1 for a zone); an object is a leaf
   const takesChildren = active ? active.kind !== 'element' && depth + 1 <= MAX_TREE_DEPTH : true;
 
-  const close = () => { setAdding(null); setRenaming(false); setValue(''); setChecking(false); nodesAtFailure.current = null; };
+  const close = () => { session.current += 1; setAdding(null); setRenaming(false); setValue(''); setPending(false); };
   // #699 Codex 4174429322 — the form acts on the place it was OPENED for: walking to another place
   // (a child card, a crumb) closes it, so Save can never rename or add under a place it was not opened on
   const activeId = active?.id ?? null;
@@ -69,28 +62,27 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
       ? siblingsNamed(value, active.parentId, active.id)
       : adding !== null && siblingsNamed(value, active?.id ?? null)
   );
-  const startAdd = (kind: NewKind) => { setRenaming(false); setValue(''); setAdding(kind); };
-  const startRename = () => { setAdding(null); setValue(active?.name ?? ''); setRenaming(true); };
+  const startAdd = (kind: NewKind) => { close(); setAdding(kind); };
+  const startRename = () => { close(); setValue(active?.name ?? ''); setRenaming(true); };
   const submit = async () => {
     const name = value.trim();
-    if (!name || pending || checking || duplicate) return;
+    if (!name || pending || duplicate) return;
     if (renaming && active) {
       renameNode(active.id, name);
       close();
       return;
     }
     if (adding) {
+      const mine = session.current;
       setPending(true);
-      try {
-        // published explicitly: the Site Map shows only published places, so what is added here must appear
-        // here at once; the server defaults `publish` to true, but the intent is stated, not inherited
-        const id = await addLocationNode({ name, kind: adding, parentId: active?.id ?? null, publish: true });
-        if (id) close();
-        // the tree as it stood at the failure: only a tree read AFTER it can say whether the place exists
-        else { nodesAtFailure.current = useStore.getState().nodes; setChecking(true); }
-      } finally {
-        setPending(false);
-      }
+      // published explicitly: the Site Map shows only published places, so what is added here must appear
+      // here at once; the server defaults `publish` to true, but the intent is stated, not inherited
+      const id = await addLocationNode({ name, kind: adding, parentId: active?.id ?? null, publish: true }).catch(() => null);
+      if (session.current !== mine) return; // the form this was sent from is gone
+      if (id) close();
+      // not confirmed: the form stays as typed, so Add retries under the same key, and the name guard
+      // says so if the re-read tree shows the place was added after all
+      else setPending(false);
     }
   };
 
@@ -142,7 +134,7 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
               autoFocus
               value={value}
               maxLength={80}
-              disabled={pending || checking}
+              disabled={pending}
               aria-invalid={duplicate || undefined}
               aria-describedby={duplicate ? `${inputId}-dup` : undefined}
               onChange={(e) => setValue(e.target.value)}
@@ -151,16 +143,11 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
               data-testid="place-structure-input"
               style={field}
             />
-            <Button variant="ink" type="submit" disabled={!value.trim() || pending || checking || duplicate} data-testid="place-structure-save" style={btn}>
+            <Button variant="ink" type="submit" disabled={!value.trim() || pending || duplicate} data-testid="place-structure-save" style={btn}>
               {renaming ? 'Save' : pending ? 'Adding…' : 'Add'}
             </Button>
-            <Button variant="outline" type="button" onClick={close} disabled={pending} style={btn}>Cancel</Button>
+            <Button variant="outline" type="button" onClick={close} style={btn}>Cancel</Button>
           </div>
-          {checking && !duplicate && (
-            <div role="status" style={{ fontSize: 12.5, color: 'var(--muted)' }} data-testid="place-structure-checking">
-              Checking whether “{value.trim()}” was added…
-            </div>
-          )}
           {duplicate && (
             <div id={`${inputId}-dup`} role="status" style={{ fontSize: 12.5, color: 'var(--red-solid)' }} data-testid="place-structure-duplicate">
               {renaming ? (nodes.find((n) => n.id === active?.parentId)?.name ?? 'The project') : placeName} already has “{value.trim()}”.

@@ -414,7 +414,7 @@ describe('#699 Codex round 2 — no partial count is ever shown as complete', ()
 });
 
 describe('#699 Codex round 3', () => {
-  it('after an uncertain create, the retry waits for a fresh tree, which then refuses the duplicate (4174429320)', async () => {
+  it('after an unconfirmed create the form stays as typed; the re-read tree that shows the place refuses the retry (4174429320)', async () => {
     const addLocationNode = vi.fn(async () => null); // failed or unconfirmed: the server may have created it
     const { useStore, PlacesScreen } = await load({ addLocationNode });
     act(() => { useStore.getState().openPlace('gf'); });
@@ -422,28 +422,47 @@ describe('#699 Codex round 3', () => {
     fireEvent.click(r.getByTestId('place-add-room'));
     fireEvent.change(r.getByLabelText('New room in Ground Floor'), { target: { value: 'Pantry' } });
     fireEvent.click(r.getByTestId('place-structure-save'));
-    await vi.waitFor(() => expect(r.getByTestId('place-structure-checking')).toBeInTheDocument());
-    expect(r.getByTestId('place-structure-save')).toBeDisabled();
-    fireEvent.submit(r.getByTestId('place-structure-form'));
-    expect(addLocationNode).toHaveBeenCalledTimes(1); // no blind second create
+    await vi.waitFor(() => expect(r.getByTestId('place-structure-save')).not.toBeDisabled());
+    expect((r.getByTestId('place-structure-input') as HTMLInputElement).value).toBe('Pantry');
     // the re-read tree shows the server DID create it: the retry is refused, never sent
     act(() => { useStore.setState({ nodes: [...useStore.getState().nodes, { id: 'p1', parentId: 'gf', name: 'Pantry', kind: 'room', order: 9 }] }); });
-    expect(r.queryByTestId('place-structure-checking')).toBeNull();
     expect(r.getByTestId('place-structure-duplicate')).toBeInTheDocument();
     expect(r.getByTestId('place-structure-save')).toBeDisabled();
+    expect(addLocationNode).toHaveBeenCalledTimes(1);
   });
 
-  it('a fresh tree without the place lets the retry through', async () => {
-    const addLocationNode = vi.fn(async () => null);
+  it('a reply that lands after the PMC walked to another place never touches the new form (#699 shadow review on 3d0503b)', async () => {
+    let finish!: (id: string | null) => void;
+    const addLocationNode = vi.fn(() => new Promise<string | null>((r) => { finish = r; }));
+    const { useStore, PlacesScreen } = await load({ addLocationNode });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add-room'));
+    fireEvent.change(r.getByLabelText('New room in Ground Floor'), { target: { value: 'Pantry' } });
+    fireEvent.click(r.getByTestId('place-structure-save')); // in flight
+    fireEvent.click(r.getByTestId('place-node-kit')); // into Kitchen: Ground Floor's form closes
+    fireEvent.click(r.getByTestId('place-add-object'));
+    const input = r.getByLabelText('New object in Kitchen');
+    expect(input).not.toBeDisabled(); // Ground Floor's pending create does not lock Kitchen's form
+    fireEvent.change(input, { target: { value: 'Sink' } });
+    await act(async () => { finish(null); }); // the old reply lands, unconfirmed
+    expect(r.getByTestId('place-structure-save')).not.toBeDisabled();
+    expect((r.getByLabelText('New object in Kitchen') as HTMLInputElement).value).toBe('Sink');
+  });
+
+  it('a confirmed reply from an abandoned form does not close the form opened since', async () => {
+    let finish!: (id: string | null) => void;
+    const addLocationNode = vi.fn(() => new Promise<string | null>((r) => { finish = r; }));
     const { useStore, PlacesScreen } = await load({ addLocationNode });
     act(() => { useStore.getState().openPlace('gf'); });
     const r = render(<PlacesScreen />);
     fireEvent.click(r.getByTestId('place-add-room'));
     fireEvent.change(r.getByLabelText('New room in Ground Floor'), { target: { value: 'Pantry' } });
     fireEvent.click(r.getByTestId('place-structure-save'));
-    await vi.waitFor(() => expect(r.getByTestId('place-structure-checking')).toBeInTheDocument());
-    act(() => { useStore.setState({ nodes: [...useStore.getState().nodes] }); }); // re-read: not there
-    expect(r.getByTestId('place-structure-save')).not.toBeDisabled();
+    fireEvent.click(r.getByTestId('place-add-object')); // a new form on the same place
+    fireEvent.change(r.getByLabelText('New object in Ground Floor'), { target: { value: 'Gate' } });
+    await act(async () => { finish('new-room'); });
+    expect((r.getByLabelText('New object in Ground Floor') as HTMLInputElement).value).toBe('Gate');
   });
 
   it('a failed create re-reads the tree from the server', async () => {
