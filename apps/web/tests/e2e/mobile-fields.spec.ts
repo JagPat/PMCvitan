@@ -1311,3 +1311,34 @@ test('one decision on its own screen meets the target floor and fits the phone',
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test("the PMC's brief meets the target floor and fits the phone, in Gujarati", async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('pmc');
+  // U3b — the PMC's home across their projects (the demo has no server, so the brief is seeded)
+  await page.evaluate(() => {
+    const row = (projectId: string, short: string, over: Record<string, unknown>) => ({
+      projectId, name: `Residence at ${short}, Ahmedabad`, short, orgName: 'Vitan', today: '2026-10-03', logToday: 'sent',
+      reviewsWaiting: 0, waitingOnClient: 0, oldestWaitingSince: null,
+      sinceYesterday: { approvals: 2, photos: 14, rejectedInspections: 1 }, ...over,
+    });
+    const seed = (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed;
+    seed({
+      lang: 'gu',
+      brief: { projects: [
+        row('ambli', 'Ambli', { reviewsWaiting: 3 }),
+        row('bopal', 'Bopal', { waitingOnClient: 2, oldestWaitingSince: '2026-09-28T06:00:00Z', logToday: 'missing' }),
+        row('thaltej', 'Thaltej', { logToday: 'open' }),
+      ] },
+    });
+  });
+  await expect(page.getByTestId('pmc-brief')).toBeVisible();
+  await expect(page.getByTestId('brief-first').locator('li')).toHaveCount(3);
+  await sweepActionTargets(page, 'PMC brief');
+  for (const id of ['brief-task-client-bopal', 'brief-task-reviews-ambli', 'brief-since', 'brief-project-thaltej']) {
+    const box = await page.getByTestId(id).boundingBox();
+    expect(box && box.height >= 44 && box.x >= 0 && box.x + box.width <= 390 + 0.1, id).toBe(true);
+  }
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});

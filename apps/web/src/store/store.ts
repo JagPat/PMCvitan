@@ -42,6 +42,7 @@ import {
   type OrgRole,
   type OrgSummary,
   type Phase,
+  type PmcBriefResult,
   type PortfolioProject,
   type ProjectMember,
   type ProjectCompany,
@@ -349,6 +350,8 @@ export interface AppState {
   orgTemplates: OrgProjectTemplate[]; // the org's named presets (Templates Slice 3)
   members: ProjectMember[]; // the active project's team (Team screen)
   portfolio: PortfolioProject[]; // cross-project monitoring rollup (Orgs Slice 3)
+  /** U3b — the PMC's cross-project daily brief (`GET /me/brief`); null until a server answers */
+  brief: PmcBriefResult | null;
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
@@ -511,6 +514,8 @@ export interface AppActions {
   // multi-project + team
   loadOrgData: () => void;
   loadPortfolio: () => void;
+  /** U3b — load the PMC's daily brief (session-scoped, like the portfolio) */
+  loadBrief: () => void;
   loadShell: () => void;
   /** Phase 3 Task 7 — fetch the pilot Materials bundle (readiness + requirements + procurement + POs +
    *  stock + issues) together, ONLY when the active project has the `materials` capability. Scope-guarded
@@ -1119,6 +1124,7 @@ export function getInitialState(): AppState {
     orgTemplates: [],
     members: [],
     portfolio: [],
+    brief: null,
     online: true,
     syncQueue: [],
     outbox: [],
@@ -2162,6 +2168,8 @@ export const useStore = create<Store>()(
         s.screen = opts?.targetScreen && allowed.includes(opts.targetScreen) ? opts.targetScreen : (allowed[0] ?? 'inbox');
         s.sessionToken = res.token;
         s.userName = res.name ?? null;
+        // the brief spans this person's projects, so a switch keeps it; another identity never sees it
+        if (jwtSub(res.token) !== s.sessionUserId) s.brief = null;
         s.sessionUserId = jwtSub(res.token);
         s.access = freshAccess(s.access.generation + 1);
         // EVERY auth result is a new session identity, so it always starts a new
@@ -2318,6 +2326,7 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
+        s.brief = null; // the departing PMC's cross-project brief leaves with them
         s.access = freshAccess(s.access.generation + 1);
         s.role = 'client';
         s.screen = screensFor('client')[0].key;
@@ -3332,6 +3341,11 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
       gateway.getPortfolio().then((p) => set((s) => { if (s.sessionToken === tok) s.portfolio = p; })).catch(() => {});
+    },
+    loadBrief: () => {
+      if (!gateway) return;
+      const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
+      gateway.getBrief().then((b) => set((s) => { if (s.sessionToken === tok) s.brief = castDraft(b); })).catch(() => {});
     },
     // Phase 2 Task 9 — the project-shell summary: populate `enabledModules` for the manifest-driven
     // nav. Project-scoped — a reply that lands after a switch / re-auth is dropped (guarded by scope).
