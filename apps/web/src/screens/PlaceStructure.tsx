@@ -65,7 +65,9 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
     if (adding) {
       setPending(true);
       try {
-        const id = await addLocationNode({ name, kind: adding, parentId: active?.id ?? null });
+        // published explicitly: the Site Map shows only published places, so what is added here must appear
+        // here at once; the server defaults `publish` to true, but the intent is stated, not inherited
+        const id = await addLocationNode({ name, kind: adding, parentId: active?.id ?? null, publish: true });
         if (id) close();
       } finally {
         setPending(false);

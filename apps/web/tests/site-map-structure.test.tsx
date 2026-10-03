@@ -98,7 +98,7 @@ describe('B3 — the PMC builds the tree on the Site Map', () => {
     const input = r.getByLabelText('New room in Ground Floor');
     fireEvent.change(input, { target: { value: 'Pantry' } });
     fireEvent.click(r.getByTestId('place-structure-save'));
-    await vi.waitFor(() => expect(addLocationNode).toHaveBeenCalledWith({ name: 'Pantry', kind: 'room', parentId: 'gf' }));
+    await vi.waitFor(() => expect(addLocationNode).toHaveBeenCalledWith({ name: 'Pantry', kind: 'room', parentId: 'gf', publish: true }));
     await vi.waitFor(() => expect(r.queryByTestId('place-structure-form')).toBeNull());
   });
 
@@ -376,5 +376,23 @@ describe('#699 Codex round 1', () => {
     expect('ManageLocationsModal' in log).toBe(false);
     const mod = await import('@/screens/modals/ManageLocationsModal');
     expect(typeof mod.ManageLocationsModal).toBe('function');
+  });
+});
+
+describe('#699 shadow review round 2', () => {
+  async function storeWith(deleteNode: () => Promise<unknown>) {
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway({ deleteNode, snapshot: vi.fn(() => new Promise(() => {})) } as never);
+    return useStore;
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it('a refusal with no readable reason still says it was refused, never "could not reach the server"', async () => {
+    const useStore = await storeWith(() => Promise.reject(Object.assign(new Error('DELETE 403'), { status: 403 })));
+    useStore.getState().deleteNode('gf');
+    await flush();
+    expect(useStore.getState().toast).toBe("Couldn't delete this location — the server refused it");
   });
 });

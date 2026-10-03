@@ -1848,8 +1848,10 @@ export const useStore = create<Store>()(
         .then((snap) => { consumeSnapshotResult(acceptSnapshot(snap, lease), typeof okMsg === 'function' ? okMsg(snap) : okMsg, lease.scope); return true; })
         .catch((err: unknown) => {
           if (!scopeStillCurrent(lease.scope)) return false;
-          const why = refused && isTerminalOutboxError(err) ? refusalMessage(err) : null;
-          get().flash(why ? refused!(why) : 'Could not reach the server — please try again.');
+          // a terminal refusal is never reported as a network failure, even when its body carried no
+          // readable reason (a proxy's error page): retrying it would fail the same way (#699 shadow review)
+          if (refused && isTerminalOutboxError(err)) get().flash(refused(refusalMessage(err) ?? 'the server refused it'));
+          else get().flash('Could not reach the server — please try again.');
           return false;
         });
     };
