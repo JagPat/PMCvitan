@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectDeciderPending, selectDeciderReapproval } from '@/store/selectors';
@@ -5,6 +6,7 @@ import { Eyebrow, Swatch, Button, LocationContext } from '@/components';
 import { Check } from '@/lib/icons';
 import { signed, type Decision } from '@vitan/shared';
 import { groupDecisions } from '@/lib/locationTree';
+import { DecisionFocus, ChangeRequestContext } from './DecisionFocus';
 import styles from './responsive.module.css';
 
 export function ClientDecisionsScreen() {
@@ -15,11 +17,28 @@ export function ClientDecisionsScreen() {
   const nodes = useStore(useShallow((s) => s.nodes));
   const openApprove = useStore((s) => s.openApprove);
   const short = useStore((s) => s.short); // live project identity, not the seed
+  const decisionFocus = useStore((s) => s.decisionFocus);
+  const closeDecision = useStore((s) => s.closeDecision);
+
+  // U2b — one decision on its own screen, while it still waits on THIS viewer. Once it is approved
+  // (or is no longer theirs) the focus is let go and the list shows what is left.
+  const focused = decisionFocus ? [...reapprovals, ...pending].find((d) => d.id === decisionFocus) ?? null : null;
+  useEffect(() => {
+    if (decisionFocus && !focused) closeDecision();
+  }, [decisionFocus, focused, closeDecision]);
 
   const waiting = pending.length + reapprovals.length;
   const countLabel = `${waiting} ${waiting === 1 ? 'decision waiting' : 'decisions waiting'}`;
   // group by location so the client can work through a zone/room at a time
   const groups = groupDecisions(pending, nodes, 'location');
+
+  if (focused) {
+    return (
+      <div className={styles.clientScreen}>
+        <DecisionFocus d={focused} reopened={reapprovals.some((r) => r.id === focused.id)} />
+      </div>
+    );
+  }
 
   return (
     <div className={styles.clientScreen}>
@@ -84,21 +103,7 @@ function PendingCard({ d, subLabel, onApprove }: { d: Decision; subLabel: string
             and the architect read one coordinate. Falls back to the legacy free-text room. */}
         <LocationContext nodeId={d.nodeId} fallback={subLabel || d.room} compact testId={`client-decision-place-${d.id}`} />
         <div style={{ fontWeight: 700, fontSize: 18, marginTop: 3 }}>{d.title}</div>
-        {d.status === 'change' && d.changeRequest && (
-          <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 10, background: 'var(--red-chip, rgba(180,70,46,.08))', fontSize: 12.5 }} data-testid={`cr-context-${d.id}`}>
-            {/* Phase 6 task 4d-ii-b / B4 — a countersign rejection reads as what it is (see DecisionLogScreen) */}
-            <div style={{ fontWeight: 600, color: 'var(--red-text)' }}>
-              {d.changeRequest.origin === 'countersign_rejection'
-                ? <span data-testid={`cr-origin-${d.id}`}>Sent back by the architect: {d.changeRequest.reason}</span>
-                : <>Change requested: {d.changeRequest.reason}</>}
-            </div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
-              {d.changeRequest.costImpact === 0 ? 'No cost change' : signed(d.changeRequest.costImpact)}
-              {' · '}
-              {d.changeRequest.timeImpactDays === 0 ? 'no schedule impact' : `${d.changeRequest.timeImpactDays} day${d.changeRequest.timeImpactDays === 1 ? '' : 's'}`}
-            </div>
-          </div>
-        )}
+        {d.status === 'change' && d.changeRequest && <ChangeRequestContext d={d} />}
       </div>
       <div style={{ padding: '12px 16px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {d.options.map((o, i) => {

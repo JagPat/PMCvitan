@@ -1,0 +1,123 @@
+/* One decision on its own screen (U2b): pick one option, then approve. Targets are 44px or more;
+   labels 13px or more; the chosen option is marked by border AND its radio state, not colour alone. */
+
+.focus {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 6px 0 24px;
+}
+.top {
+  display: flex;
+}
+.back {
+  min-height: 44px;
+  padding: 0 12px 0 6px;
+  border: none;
+  border-radius: 22px;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+.intro,
+.reopened {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.reopened {
+  color: var(--red-text);
+  font-weight: 600;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.option {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  width: 100%;
+  min-height: 96px;
+  padding: 12px;
+  text-align: left;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 18px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+.optionPicked {
+  border: 2px solid var(--accent);
+  padding: 11px;
+}
+.optionText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.recommended {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--green-chip);
+  color: var(--green-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.optionName {
+  font-size: 17px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.delta {
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.lockNote {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--panel);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.approve {
+  min-height: 56px;
+  border: none;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.approve:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

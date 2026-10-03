@@ -317,6 +317,33 @@ export function clientPulseWaitsOn(title: string, lang: Lang): string {
   return `Waits on your choice: ${title}`;
 }
 
+/** U2b — one decision on its own screen (design review, Client · Decision board). There is no due
+ *  date, per-option note or client question path behind the board's other elements, so none is drawn. */
+export const clientDecisionLabels = {
+  back: { en: 'All your decisions', hi: 'आपके सभी फ़ैसले', gu: 'તમારા બધા નિર્ણયો' },
+  pick: { en: 'Pick one. The price shown is the change to your budget.', hi: 'एक चुनें। दिखाई गई कीमत आपके बजट में बदलाव है।', gu: 'એક પસંદ કરો. બતાવેલી કિંમત તમારા બજેટમાં ફેરફાર છે.' },
+  recommends: { en: 'Architect recommends', hi: 'आर्किटेक्ट की सलाह', gu: 'આર્કિટેક્ટની ભલામણ' },
+  noChange: { en: 'No change to budget', hi: 'बजट में कोई बदलाव नहीं', gu: 'બજેટમાં કોઈ ફેરફાર નહીં' },
+  reopened: { en: 'Reopened by a change request — please decide again.', hi: 'बदलाव के अनुरोध से फिर खुला — कृपया फिर से तय करें।', gu: 'ફેરફારની વિનંતીથી ફરી ખુલ્યું — કૃપા કરી ફરી નક્કી કરો.' },
+  lock: { en: 'Once you approve, this choice is locked. You can still ask for a change later; your architect will show what it costs.', hi: 'मंज़ूरी के बाद यह चुनाव लॉक हो जाएगा। बाद में भी बदलाव माँग सकते हैं; आर्किटेक्ट उसकी लागत बताएँगे।', gu: 'મંજૂરી પછી આ પસંદગી લૉક થઈ જશે. પછીથી પણ ફેરફાર માગી શકો છો; આર્કિટેક્ટ તેનો ખર્ચ બતાવશે.' },
+  lockCountersign: { en: 'Once you approve, it goes to the architect to countersign, and is then locked. You can still ask for a change later.', hi: 'मंज़ूरी के बाद यह आर्किटेक्ट के प्रतिहस्ताक्षर के लिए जाएगा, फिर लॉक होगा। बाद में भी बदलाव माँग सकते हैं।', gu: 'મંજૂરી પછી તે આર્કિટેક્ટની સહી માટે જશે, પછી લૉક થશે. પછીથી પણ ફેરફાર માગી શકો છો.' },
+  pickFirst: { en: 'Pick one to approve', hi: 'मंज़ूर करने के लिए एक चुनें', gu: 'મંજૂર કરવા એક પસંદ કરો' },
+} as const;
+
+/** "Approve Italian Marble" — the primary action names the option chosen. */
+export function clientDecisionApprove(material: string, lang: Lang): string {
+  if (lang === 'hi') return `${material} मंज़ूर करें`;
+  if (lang === 'gu') return `${material} મંજૂર કરો`;
+  return `Approve ${material}`;
+}
+
+/** "+ ₹20,000" / "− ₹5,000" — an option's change to the budget (Indian digit grouping), or the
+ *  no-change label at zero. */
+export function clientDecisionDelta(delta: number, lang: Lang): string {
+  if (delta === 0) return clientDecisionLabels.noChange[lang];
+  return `${delta > 0 ? '+' : '\u2212'} \u20b9${Math.abs(delta).toLocaleString('en-IN')}`;
+}
+
 /** Shell chrome shared by every role: the More tab and the language control. */
 export const shellLabels: Record<'more' | 'language' | 'close' | 'screens', Record<Lang, string>> = {
   more: { en: 'More', hi: 'और', gu: 'વધુ' },
