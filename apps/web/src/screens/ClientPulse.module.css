@@ -112,6 +112,20 @@
   gap: 10px;
   cursor: pointer;
 }
+.needsAll {
+  min-height: 44px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+}
 .calm {
   display: flex;
   align-items: center;

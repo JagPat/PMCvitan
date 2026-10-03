@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectApprovedDecisions, selectPending, selectTotalWorkers } from '@/store/selectors';
+import { selectApprovedDecisions, selectDecisionsNeedingViewer, selectTotalWorkers } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, ProgressBar, Swatch } from '@/components';
 import { ArrowRight } from '@/lib/icons';
@@ -10,7 +10,8 @@ import styles from './responsive.module.css';
 
 export function ClientHealthScreen() {
   const approved = useStore(useShallow(selectApprovedDecisions));
-  const pending = useStore(useShallow(selectPending));
+  // the decisions THIS VIEWER decides, re-approvals included — the same count as the Pulse and badges
+  const pending = useStore(useShallow(selectDecisionsNeedingViewer));
   const workers = useStore(selectTotalWorkers);
   const checkedIn = useStore((s) => s.dailyLog?.checkedIn ?? false);
   const setScreen = useStore((s) => s.setScreen);
