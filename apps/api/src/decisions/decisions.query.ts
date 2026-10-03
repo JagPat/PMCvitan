@@ -659,10 +659,13 @@ export class DecisionsQueryService {
    *  decider (`deciderKind` moves when a decision is forwarded, so it cannot say who approved an
    *  older revision). A revision counts when the client approved it (`approvedByRole`, the role held
    *  at the act) or a PMC recorded the client's consent (`onBehalfOf`). A revision that froze no role
-   *  (a pre-4d row) and recorded no consent is not guessed into the count. */
+   *  (a pre-4d row) and recorded no consent is not guessed into the count.
+   *  Only FINALIZED revisions count, as the consultation cycle counts them: under an architect chain an
+   *  approval is provisional until countersigned, and a rejected one (`disagree`, a stranded return)
+   *  keeps its row but never became an approval. */
   async clientApprovalsSince(projectId: string, since: Date): Promise<number> {
     return this.prisma.decisionApprovalRevision.count({
-      where: { projectId, approvedAt: { gte: since }, OR: [{ approvedByRole: 'client' }, { onBehalfOf: 'client' }] },
+      where: { projectId, approvedAt: { gte: since }, finalized: true, OR: [{ approvedByRole: 'client' }, { onBehalfOf: 'client' }] },
     });
   }
 

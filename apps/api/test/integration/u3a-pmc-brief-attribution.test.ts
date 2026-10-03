@@ -15,6 +15,9 @@ import { PHASE6_4D_RESERVATION_DOORS } from '../../src/platform/phase6-4d-rollou
  *   - a named engineer's approval stays uncounted after the decision is reopened and forwarded to the
  *     client;
  *   - a client's approval stays counted after the decision is reopened and forwarded to an engineer.
+ * And only a FINALIZED approval counts (#696 shadow review): under an active architect chain the
+ * client's approval is provisional until countersigned, and one the architect rejects keeps its row
+ * but never became an approval.
  *
  * Forwarding is a 4d shape its reservation doors hold, so — exactly as the A8a suite does — the doors are
  * captured from the catalog, dropped for this suite, and re-created after. Every other seal stays on.
@@ -28,6 +31,7 @@ describe('U3a — the brief counts approvals by their frozen attribution (live P
   const run = randomUUID().slice(0, 8);
   let doorDefs: Array<{ tgname: string; def: string }> = [];
   const eng = { id: '', membershipId: '' };
+  const architect = { id: '' };
   const createdUserIds: string[] = [];
 
   beforeAll(async () => {
@@ -58,7 +62,7 @@ describe('U3a — the brief counts approvals by their frozen attribution (live P
       if (t?.prisma && projectId) {
         await wipeDecisionEvents(t.prisma, { decision: { projectId } });
         await sanctionedReset(t.prisma, [
-          'Notification', 'DecisionApprovalRevision', 'ChangeRequest',
+          'Notification', 'DecisionCountersign', 'DecisionStrandedResolution', 'DecisionApprovalRevision', 'ChangeRequest',
           'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'CommandExecution',
           'DecisionProjection', 'ProjectionGeneration', 'DomainEventPairingClaim',
         ], { cascade: true });
@@ -67,6 +71,12 @@ describe('U3a — the brief counts approvals by their frozen attribution (live P
           await tx.decisionOption.deleteMany({ where: { decision: { projectId } } });
           await tx.decision.deleteMany({ where: { projectId } });
         });
+        // an ACTIVE architect membership is a standing the seals let only an attributable act end
+        if (architect.id && (await t.prisma.membership.count({ where: { userId: architect.id, status: 'active' } })) > 0) {
+          const rm = await http().delete(`/projects/${projectId}/members/${architect.id}`).set('Authorization', `Bearer ${pmcToken}`).set('Idempotency-Key', randomUUID()).send();
+          expect(rm.status, rm.text).toBe(200);
+        }
+        await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'CommandExecution', 'DomainEventPairingClaim'], { cascade: true });
         await t.prisma.auditLog.deleteMany({ where: { projectId } });
         const provisioned = await t.prisma.user.findMany({ where: { email: { startsWith: 'u3a-', endsWith: `-${run}@test.local` } }, select: { id: true } });
         const ids = [...new Set([...createdUserIds, ...provisioned.map((u) => u.id)])];
@@ -130,5 +140,28 @@ describe('U3a — the brief counts approvals by their frozen attribution (live P
     expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).deciderKind).toBe('member');
     // the engineer holds it now, but the recorded approval was the client's
     expect(await approvals()).toBe(1);
+  });
+
+  it('under an architect chain only a countersigned approval counts; a rejected one never does', async () => {
+    const r = await http().post(`/projects/${f.projectA.id}/members`).set('Authorization', `Bearer ${pmcToken}`).set('Idempotency-Key', randomUUID())
+      .send({ name: `U3a Architect ${run}`, role: 'architect', email: `u3a-arch-${run}@test.local` });
+    expect(r.status, r.text).toBe(201);
+    architect.id = r.body.userId;
+    createdUserIds.push(architect.id);
+    const architectToken = t.issueProjectToken(architect.id, f.projectA.id, 'architect');
+    const before = await approvals();
+
+    const id = await issue();
+    await expectStatus(await approve(clientToken, id), 201);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('awaiting_countersign');
+    expect(await approvals(), 'a provisional approval is not yet an approval').toBe(before);
+    await expectStatus(await post(architectToken, `${decisions()}/${id}/disagree`, { path: 'reject_back', reason: 'the wear rating is wrong for a kitchen', costImpact: 0, timeImpactDays: 0 }), 201);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('change');
+    expect(await approvals(), 'a rejected approval keeps its row but is never counted').toBe(before);
+
+    await expectStatus(await approve(clientToken, id), 201);
+    await expectStatus(await post(architectToken, `${decisions()}/${id}/countersign`, {}), 201);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('approved');
+    expect(await approvals(), 'the countersigned approval counts once').toBe(before + 1);
   });
 });
