@@ -1839,11 +1839,19 @@ export const useStore = create<Store>()(
       get().loadBrief();
     };
 
-    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg): Promise<boolean> => {
+    /** `refused` (#699 shadow review): a command the server can REFUSE for a reason the viewer must see
+     *  (a location still holding decisions they cannot see, an inspected activity) says that reason,
+     *  instead of the network copy that would send them retrying a request that will never succeed. */
+    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg, refused?: (why: string) => string): Promise<boolean> => {
       const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
       return call()
         .then((snap) => { consumeSnapshotResult(acceptSnapshot(snap, lease), typeof okMsg === 'function' ? okMsg(snap) : okMsg, lease.scope); return true; })
-        .catch(() => { if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.'); return false; });
+        .catch((err: unknown) => {
+          if (!scopeStillCurrent(lease.scope)) return false;
+          const why = refused && isTerminalOutboxError(err) ? refusalMessage(err) : null;
+          get().flash(why ? refused!(why) : 'Could not reach the server — please try again.');
+          return false;
+        });
     };
 
     // WEB-02: queued offline writes are scoped to WHO queued them and WHERE — the
@@ -4448,7 +4456,7 @@ export const useStore = create<Store>()(
         get().flash('Managing locations needs the server.');
         return;
       }
-      runRemote(() => gateway!.deleteNode(nodeId), 'Location removed.');
+      runRemote(() => gateway!.deleteNode(nodeId), 'Location removed.', (why) => `Couldn't delete this location — ${why}`);
     },
     createActivity: (input) => {
       if (!gateway) {
@@ -4469,7 +4477,7 @@ export const useStore = create<Store>()(
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), 'Activity removed from the plan.');
+      runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), 'Activity removed from the plan.', (why) => `Couldn't delete this activity — ${why}`);
     },
     // Task 6: a manual readiness exception — attributable, reasoned, expiring (server records it)
     overrideGate: (activityId, input) => {
@@ -4498,7 +4506,7 @@ export const useStore = create<Store>()(
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), 'Phase removed — its activities stay in the flat list.');
+      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), 'Phase removed — its activities stay in the flat list.', (why) => `Couldn't remove this phase — ${why}`);
     },
     issueChecklist: (input) => {
       if (!gateway) {

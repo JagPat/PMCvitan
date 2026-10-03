@@ -261,3 +261,32 @@ describe('B4 — schedule deletes are confirmed first', () => {
     expect(deleteActivity).toHaveBeenCalledWith('A-1');
   });
 });
+
+describe('#699 shadow review — a delete the server refuses says why', () => {
+  // Another PMC's private draft is never sent to this viewer, so the dialog can offer Delete while
+  // the server's guard (which counts every decision) refuses it. The refusal must reach the viewer
+  // as the server's reason, not as a network failure that sends them retrying.
+  async function storeWith(deleteNode: () => Promise<unknown>) {
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway({ deleteNode, snapshot: vi.fn(() => new Promise(() => {})) } as never);
+    return useStore;
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it("a refused location delete shows the server's reason", async () => {
+    const refusal = Object.assign(new Error('DELETE 400'), { status: 400, serverMessage: 'Move or remove the 1 decision(s) under this location before deleting it.' });
+    const useStore = await storeWith(() => Promise.reject(refusal));
+    useStore.getState().deleteNode('gf');
+    await flush();
+    expect(useStore.getState().toast).toBe("Couldn't delete this location — Move or remove the 1 decision(s) under this location before deleting it.");
+  });
+
+  it('a network failure still says so', async () => {
+    const useStore = await storeWith(() => Promise.reject(new Error('offline')));
+    useStore.getState().deleteNode('gf');
+    await flush();
+    expect(useStore.getState().toast).toBe('Could not reach the server — please try again.');
+  });
+});

@@ -15,8 +15,11 @@ export interface LocationDeleteImpact {
 /**
  * Audit B4 — what deleting a location does, read from the same subtree rule the server applies
  * (`NodesService.remove`): child locations cascade, placed records are unfiled, and any decision in
- * the subtree blocks the delete. Counts every decision the viewer holds, drafts included, since the
- * server's guard does too.
+ * the subtree blocks the delete. The count is of the decisions THIS VIEWER can see, their own drafts
+ * included. The server's guard counts every decision, and another PMC's private draft is never sent
+ * to this viewer (`decisionVisibleToViewer`), so a delete shown here as allowed can still be refused.
+ * That refusal is then shown with the server's own reason (`deleteNode`'s `refused` copy), never as a
+ * network failure (#699 shadow review).
  */
 export function locationDeleteImpact(
   nodes: ProjectNode[],
