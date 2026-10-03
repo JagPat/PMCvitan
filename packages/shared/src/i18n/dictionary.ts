@@ -262,6 +262,61 @@ export function engineerCrewMore(n: number, lang: Lang): string {
   return `${n} more`;
 }
 
+/** U2a — the client's Pulse (design review, Client · Pulse board). No schedule verdict: there is no
+ *  field or rule for one yet. */
+export const clientPulseLabels = {
+  done: { en: 'done', hi: 'पूरा', gu: 'પૂર્ણ' },
+  underWay: { en: 'Under way', hi: 'अभी चल रहा है', gu: 'હાલ ચાલુ છે' },
+  needsOne: { en: 'One thing needs you', hi: 'एक काम आपका इंतज़ार कर रहा है', gu: 'એક કામ તમારી રાહ જુએ છે' },
+  reopened: { en: 'Reopened by a change request — please approve it again.', hi: 'बदलाव के अनुरोध से फिर खुला — कृपया फिर से मंज़ूर करें।', gu: 'ફેરફારની વિનંતીથી ફરી ખુલ્યું — કૃપા કરી ફરી મંજૂર કરો.' },
+  open: { en: 'Open it', hi: 'खोलें', gu: 'ખોલો' },
+  nothing: { en: 'Nothing needs you right now', hi: 'अभी आपके लिए कुछ बाकी नहीं', gu: 'હમણાં તમારે કંઈ કરવાનું નથી' },
+  next: { en: 'What happens next', hi: 'आगे क्या होगा', gu: 'આગળ શું થશે' },
+  also: { en: 'Also waiting on you', hi: 'यह भी आपका इंतज़ार कर रहा है', gu: 'આ પણ તમારી રાહ જુએ છે' },
+} as const;
+
+/** "Ambli, this week" — the Pulse heading, named for the project on screen. */
+export function clientPulseHeading(project: string, lang: Lang): string {
+  if (lang === 'hi') return `${project}, इस हफ़्ते`;
+  if (lang === 'gu') return `${project}, આ અઠવાડિયે`;
+  return `${project}, this week`;
+}
+
+/** "Week 18 of 40", counted from the schedule's own start date. */
+export function clientPulseWeek(at: number, of: number, lang: Lang): string {
+  if (lang === 'hi') return `${of} में से हफ़्ता ${at}`;
+  if (lang === 'gu') return `${of} માંથી અઠવાડિયું ${at}`;
+  return `Week ${at} of ${of}`;
+}
+
+/** "3 things need you", when more than one decision waits on the client. */
+export function clientPulseNeedsMany(n: number, lang: Lang): string {
+  if (lang === 'hi') return `${n} काम आपका इंतज़ार कर रहे हैं`;
+  if (lang === 'gu') return `${n} કામ તમારી રાહ જુએ છે`;
+  return `${n} things need you`;
+}
+
+/** "See the 2 options" — the decision's own options, the way into choosing one. */
+export function clientPulseSeeOptions(n: number, lang: Lang): string {
+  if (lang === 'hi') return `${n} विकल्प देखें`;
+  if (lang === 'gu') return `${n} વિકલ્પ જુઓ`;
+  return `See the ${n} options`;
+}
+
+/** "From about 5 October" — an activity's planned start, never promised to the day. */
+export function clientPulseFrom(date: string, lang: Lang): string {
+  if (lang === 'hi') return `लगभग ${date} से`;
+  if (lang === 'gu') return `આશરે ${date} થી`;
+  return `From about ${date}`;
+}
+
+/** "Waits on your choice: Kitchen countertop" — an upcoming activity held by a decision of theirs. */
+export function clientPulseWaitsOn(title: string, lang: Lang): string {
+  if (lang === 'hi') return `आपके फ़ैसले का इंतज़ार: ${title}`;
+  if (lang === 'gu') return `તમારા નિર્ણયની રાહ: ${title}`;
+  return `Waits on your choice: ${title}`;
+}
+
 /** Shell chrome shared by every role: the More tab and the language control. */
 export const shellLabels: Record<'more' | 'language' | 'close' | 'screens', Record<Lang, string>> = {
   more: { en: 'More', hi: 'और', gu: 'વધુ' },

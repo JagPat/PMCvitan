@@ -5,6 +5,7 @@ import { ROLE_LABEL } from '@/lib/screens';
 import { Eyebrow, Button } from '@/components';
 import { ArrowRight, CircleCheck } from '@/lib/icons';
 import { EngineerToday } from './EngineerToday';
+import { ClientPulse } from './ClientPulse';
 import styles from './responsive.module.css';
 
 type Tone = ActionItem['tone'];
@@ -40,6 +41,17 @@ export function InboxScreen() {
     return (
       <div className={`${styles.screen} ${styles.mid}`}>
         <EngineerToday also={rest.length ? <ActionList items={rest} onOpen={setScreen} /> : undefined} />
+      </div>
+    );
+  }
+
+  // the client's home is their project's Pulse (U2a): the decisions waiting on them are its "one thing
+  // needs you", so their approval cards would only repeat it; anything else still follows below
+  if (role === 'client') {
+    const rest = items.filter((it) => it.key !== 'client-pending' && it.key !== 'client-reapprove');
+    return (
+      <div className={`${styles.screen} ${styles.mid}`}>
+        <ClientPulse also={rest.length ? <ActionList items={rest} onOpen={setScreen} /> : undefined} />
       </div>
     );
   }

@@ -1269,3 +1269,18 @@ test('"Same as yesterday" meets the target floor and fits the phone, in Gujarati
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test("the client's Pulse meets the target floor and fits the phone", async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('client');
+  // U2a — the client's home: progress, what is being built, the one thing waiting, what happens next
+  await expect(page.getByTestId('client-pulse')).toBeVisible();
+  await expect(page.getByTestId('pulse-needs')).toBeVisible();
+  await sweepActionTargets(page, 'Client Pulse');
+  for (const id of ['pulse-progress', 'pulse-needs', 'pulse-needs-go']) {
+    const box = await page.getByTestId(id).boundingBox();
+    expect(box && box.x >= 0 && box.x + box.width <= 390 + 0.1, id).toBe(true);
+  }
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});
