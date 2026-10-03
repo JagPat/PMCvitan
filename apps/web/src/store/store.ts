@@ -305,6 +305,8 @@ export interface AppState {
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
   placeFocus: string | null;
+  /** U2b — the decision the client's decisions screen shows on its own screen (project-owned) */
+  decisionFocus: string | null;
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   /** EVERY open (issued, unsubmitted) checklist. `checklist` is the one the field view opens;
    *  this is the whole outstanding set, so a second issued checklist no longer hides the first
@@ -427,6 +429,10 @@ export interface AppActions {
   openPlace: (nodeId: string | null) => void;
   /** the Site Map has adopted `placeFocus` and will not re-adopt it */
   clearPlaceFocus: () => void;
+  /** U2b — open one decision on its own screen (the Pulse's "one thing needs you") */
+  openDecision: (decisionId: string) => void;
+  /** …and back to the list of decisions */
+  closeDecision: () => void;
   setLang: (l: Lang) => void;
   toggleNotif: () => void;
   openCreate: () => void;
@@ -1091,6 +1097,7 @@ export function getInitialState(): AppState {
     labourBindPending: {},
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     placeFocus: null,
+    decisionFocus: null,
     checklist: structuredClone(SEED_CHECKLIST),
     openChecklists: [structuredClone(SEED_CHECKLIST)],
     selectedChecklistId: null,
@@ -2337,6 +2344,18 @@ export const useStore = create<Store>()(
       set((s) => {
         s.screen = k;
         s.notifOpen = false;
+        // a screen opened from the nav starts at its list, never at a decision left open earlier
+        s.decisionFocus = null;
+      }),
+    openDecision: (decisionId) =>
+      set((s) => {
+        s.decisionFocus = decisionId;
+        s.screen = 'client-decisions';
+        s.notifOpen = false;
+      }),
+    closeDecision: () =>
+      set((s) => {
+        s.decisionFocus = null;
       }),
     openPlace: (nodeId) =>
       set((s) => {

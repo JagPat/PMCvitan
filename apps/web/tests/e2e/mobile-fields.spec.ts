@@ -1284,3 +1284,30 @@ test("the client's Pulse meets the target floor and fits the phone", async ({ pa
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test('one decision on its own screen meets the target floor and fits the phone', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('client');
+  // U2b — the Pulse's way in opens that one decision: pick one, then approve
+  await page.getByTestId('pulse-needs-go').click();
+  await expect(page.getByTestId('decision-focus')).toBeVisible();
+  await page.getByTestId('decision-option-DL-003-A').click();
+  await sweepActionTargets(page, 'One decision');
+  for (const id of ['decision-focus-back', 'decision-option-DL-003-A', 'decision-focus-lock', 'decision-focus-approve']) {
+    const box = await page.getByTestId(id).boundingBox();
+    expect(box && box.x >= 0 && box.x + box.width <= 390 + 0.1, id).toBe(true);
+  }
+  // scrolled to the end, Approve clears the bottom tabs: it is the element under a tap on it
+  const approveReachable = await page.getByTestId('decision-focus-approve').evaluate((el) => {
+    let p: HTMLElement | null = el.parentElement;
+    while (p && !(p.scrollHeight > p.clientHeight && /(auto|scroll)/.test(getComputedStyle(p).overflowY))) p = p.parentElement;
+    const scroller = p ?? (document.scrollingElement as HTMLElement);
+    scroller.scrollTop = scroller.scrollHeight;
+    const r = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return !!hit && (hit === el || el.contains(hit));
+  });
+  expect(approveReachable).toBe(true);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});

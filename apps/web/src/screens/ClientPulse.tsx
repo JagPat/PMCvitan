@@ -35,7 +35,7 @@ export function ClientPulse({ also }: { also?: ReactNode }) {
   const activities = useStore((s) => s.activities);
   const reapprovals = useStore(useShallow(selectDeciderReapproval));
   const pending = useStore(useShallow(selectDeciderPending));
-  const setScreen = useStore((s) => s.setScreen);
+  const openDecision = useStore((s) => s.openDecision);
 
   // the site's civil day; a minute tick moves "week" and "next" on across the site's midnight
   const [, setMinute] = useState(0);
@@ -85,7 +85,7 @@ export function ClientPulse({ also }: { also?: ReactNode }) {
           <span className={styles.needsEyebrow}>{needs.count > 1 ? clientPulseNeedsMany(needs.count, lang) : L.needsOne[lang]}</span>
           <h2 className={styles.needsTitle}>{needs.first.title}</h2>
           {needs.reapproval && <p className={styles.needsNote}>{L.reopened[lang]}</p>}
-          <button className={styles.needsGo} onClick={() => setScreen('client-decisions')} data-testid="pulse-needs-go">
+          <button className={styles.needsGo} onClick={() => openDecision(needs.first.id)} data-testid="pulse-needs-go">
             {needs.first.options.length > 1 ? clientPulseSeeOptions(needs.first.options.length, lang) : L.open[lang]}
             <ArrowRight size={20} aria-hidden />
           </button>

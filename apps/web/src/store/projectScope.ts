@@ -70,6 +70,9 @@ export interface ProjectDataState {
    *  location breadcrumb. A node id is PROJECT-CONTAINED, so it is project-owned and tears down
    *  on every scope change: another project's Site Map can never open at this project's node. */
   placeFocus: string | null;
+  /** U2b — the one decision the client's decisions screen is showing on its own (a decision id is
+   *  project-contained, so it tears down with the scope like `placeFocus`) */
+  decisionFocus: string | null;
   checklist: Checklist | null;
   /** EVERY issued, unsubmitted checklist for THIS project. Project data like `checklist` itself:
    *  an inspection id is project-contained, so carrying the list across a switch would show one
@@ -168,6 +171,7 @@ export function emptyProjectData(): ProjectDataState {
     decisions: [],
     nodes: [],
     placeFocus: null,
+    decisionFocus: null,
     checklist: null,
     openChecklists: [],
     selectedChecklistId: null,
