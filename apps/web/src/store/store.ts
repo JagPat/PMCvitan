@@ -1813,6 +1813,18 @@ export const useStore = create<Store>()(
     // (evaluated once, before the reconcile announces it), so an approval can say what actually
     // happened — locked, or parked awaiting the architect's countersign — from the row as served.
     type OkMsg = string | ((snap: ApiSnapshot) => string);
+    /** #698 Codex finding (audit B1 on the brief-backed home) — the PMC's brief counts each project's
+     *  inspections awaiting review as of when it was ASKED, so a decision the server has just committed
+     *  leaves it naming that inspection while it is still fresh. Once a review decision commits, the
+     *  brief stops counting as fresh (For You falls back to the live list, whose `pmc-reviews` already
+     *  drops the decided review) and is asked again: the new read supersedes any earlier one in flight
+     *  (`briefRequestSeq`), so a reply taken before the decision can no longer land. */
+    const refreshBriefAfterReview = (): void => {
+      if (get().brief === null) return;
+      set((s) => { s.briefAt = null; });
+      get().loadBrief();
+    };
+
     const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg): Promise<boolean> => {
       const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
       return call()
@@ -3003,7 +3015,7 @@ export const useStore = create<Store>()(
       // Task 10 (Module 3) correction — one stable idempotency key for this decision: the online send
       // and any offline replay reach the server under it, so a lost-response retry decides once.
       const approveReviewKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, 'Approve inspection', () => gateway!.decideReview(review.id, true, [], approveReviewKey), msg)) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, 'Approve inspection', () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(); return snap; }), msg)) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) s.reviews[j].decided = true;
@@ -3028,7 +3040,7 @@ export const useStore = create<Store>()(
       const rejectedIds = review.items.filter((it) => it.rejected && it.id).map((it) => it.id!);
       // Task 10 (Module 3) correction — the rejection decision carries its own stable idempotency key.
       const rejectReviewKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey), n + ' re-inspection task(s) created with due dates.')) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(); return snap; }), n + ' re-inspection task(s) created with due dates.')) return;
       set((s) => {
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);
@@ -5026,6 +5038,7 @@ export const useStore = create<Store>()(
         try {
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
+          if (ops[i].t === 'decideReview') refreshBriefAfterReview();
           if (ops[i].t === 'startDailyLog') dailyLogCommitted = 'start';
           else if (ops[i].t === 'submitDailyLog') dailyLogCommitted = 'send';
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);

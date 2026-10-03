@@ -257,6 +257,46 @@ describe('U3b — the brief in the store', () => {
     }
   });
 
+  it('deciding an inspection retires the brief that still names it, and only a read asked after the decision lands (#698 Codex)', async () => {
+    const useStore = await store();
+    const before = { projects: [proj('ambli', { reviewsWaiting: 1 })] }; // asked before the decision
+    const after = { projects: [proj('ambli', { reviewsWaiting: 0 })] }; // asked once it committed
+    let answerBefore!: (v: typeof before) => void;
+    let answerAfter!: (v: typeof after) => void;
+    let commit!: (v: unknown) => void;
+    const gw = {
+      getBrief: vi.fn()
+        .mockReturnValueOnce(Promise.resolve(before))
+        .mockReturnValueOnce(new Promise((r) => { answerBefore = r; }))
+        .mockReturnValueOnce(new Promise((r) => { answerAfter = r; })),
+      decideReview: vi.fn(() => new Promise((r) => { commit = r; })),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    useStore.getState()._setGateway(gw as never);
+    useStore.setState({ online: true, activeProjectId: 'ambli' });
+    useStore.getState().loadBrief();
+    await flush();
+    expect(useStore.getState().brief?.projects[0].reviewsWaiting).toBe(1);
+    useStore.getState().loadBrief(); // a poll still in flight when the PMC decides
+
+    useStore.getState().approveInspection();
+    expect(gw.decideReview).toHaveBeenCalled();
+    expect(useStore.getState().briefAt).not.toBeNull(); // nothing changes until the server commits
+    commit({ projectId: 'ambli', decisions: [] });
+    await flush();
+    // committed: the brief that still names the review is no longer fresh, and it is asked again
+    expect(useStore.getState().briefAt).toBeNull();
+    expect(gw.getBrief).toHaveBeenCalledTimes(3);
+
+    answerBefore(before); // the poll asked before the decision lands late — it is superseded
+    await flush();
+    expect(useStore.getState().briefAt).toBeNull();
+    answerAfter(after);
+    await flush();
+    expect(useStore.getState().brief?.projects[0].reviewsWaiting).toBe(0);
+    expect(useStore.getState().briefAt).toBeGreaterThan(0);
+  });
+
   it('a switch keeps the same person\'s brief; another identity never inherits it', async () => {
     const useStore = await store();
     useStore.setState({ brief: { projects: [proj('ambli')] }, memberships: [{ projectId: 'bopal', name: 'Bopal', short: 'Bopal', role: 'pmc', orgId: 'o', orgName: 'Vitan' }] });
