@@ -249,6 +249,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/api/src/decisions/decisions.service.ts :: cur.status === 'recorded'": 'excludes: a draft’s record/pending flip; a draft is never awaiting',
     "apps/api/src/decisions/decisions.service.ts :: d.status === 'approved' || d.status === 'change' || d.status === 'awaiting_countersign'": 'answered',
     "apps/api/src/decisions/decisions.service.ts :: d.status === 'withdrawn'": 'excludes: already withdrawn',
+    "apps/api/src/decisions/decisions.query.ts :: ['pending', 'change']": 'excludes: the PMC brief\u2019s "waiting on the client" (U3a): the client-held decisions open for their decision, new or reopened; an awaiting-countersign row waits on the architect, not the client',
     "apps/api/src/decisions/decisions.query.ts :: status: 'pending'": 'excludes: `countPending`’s pending count; the countersign obligations are counted by their own filter',
     "apps/api/src/decisions/decisions.query.ts :: status: 'awaiting_countersign'": 'answered',
     "apps/api/src/decisions/decisions.service.ts :: status: 'approved'": 'excludes: the change request’s compare-and-set from a FINAL approval',

@@ -35,5 +35,7 @@ export * from './contracts/inspections';
 export * from './contracts/labour';
 // Module contracts: the commercial command/query contract (Phase 5 Task 1 — the commercial SINK)
 export * from './contracts/commercial';
+// U3a — the PMC's cross-project daily brief (`GET /me/brief`)
+export * from './contracts/brief';
 // i18n dictionaries
 export * from './i18n/dictionary';

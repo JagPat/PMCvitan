@@ -642,6 +642,33 @@ export class DecisionsQueryService {
    *  pending decisions designated to the role) and the viewer's COUNTERSIGN obligations: every
    *  decision awaiting countersign is an architect's, and while the chain is INACTIVE (no active
    *  architect) each one is STRANDED and is the PMC's to resolve. */
+  /** U3a — the PMC brief's view of what waits on the CLIENT: the published decisions the client holds
+   *  that are open (pending, or reopened for re-approval), and when the longest-waiting one was
+   *  published. A draft is weightless, as everywhere. */
+  async waitingOnClient(projectId: string): Promise<{ count: number; oldestPublishedAt: Date | null }> {
+    const where: Prisma.DecisionWhereInput = { projectId, publishedAt: { not: null }, deciderKind: 'client', status: { in: ['pending', 'change'] } };
+    const [count, oldest] = await Promise.all([
+      this.prisma.decision.count({ where }),
+      this.prisma.decision.findFirst({ where, orderBy: [{ publishedAt: 'asc' }, { id: 'asc' }], select: { publishedAt: true } }),
+    ]);
+    return { count, oldestPublishedAt: oldest?.publishedAt ?? null };
+  }
+
+  /** U3a — the client approvals recorded at or after `since` (the PMC brief's "client approvals"):
+   *  judged from each approval revision's OWN frozen attribution, never the decision's current
+   *  decider (`deciderKind` moves when a decision is forwarded, so it cannot say who approved an
+   *  older revision). A revision counts when the client approved it (`approvedByRole`, the role held
+   *  at the act) or a PMC recorded the client's consent (`onBehalfOf`). A revision that froze no role
+   *  (a pre-4d row) and recorded no consent is not guessed into the count.
+   *  Only FINALIZED revisions count, as the consultation cycle counts them: under an architect chain an
+   *  approval is provisional until countersigned, and a rejected one (`disagree`, a stranded return)
+   *  keeps its row but never became an approval. */
+  async clientApprovalsSince(projectId: string, since: Date): Promise<number> {
+    return this.prisma.decisionApprovalRevision.count({
+      where: { projectId, approvedAt: { gte: since }, finalized: true, OR: [{ approvedByRole: 'client' }, { onBehalfOf: 'client' }] },
+    });
+  }
+
   async countPending(projectId: string, viewer: { role: Role; userId?: string }): Promise<number> {
     const published = { projectId, publishedAt: { not: null } };
     const base: Prisma.DecisionWhereInput = { ...published, status: 'pending' };

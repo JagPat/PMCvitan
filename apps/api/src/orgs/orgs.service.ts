@@ -24,6 +24,7 @@ import type { AuthUser, Role } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
+import { projectsInReach } from './project-reach';
 import {
   lockInitializationDisplayIds,
   runSerializableProjectInit,
@@ -1239,29 +1240,9 @@ export class OrgsService {
    * so a PMC running several sites sees them all at a glance.
    */
   async portfolio(userId: string): Promise<PortfolioProject[]> {
-    const memberships = await this.prisma.membership.findMany({
-      where: { userId, status: 'active' },
-      include: { project: { include: { org: true } } },
-    });
-    // archived projects are hidden from the board
-    const scoped = memberships.filter((m) => !m.project.archivedAt).map((m) => ({ project: m.project, role: m.role }));
-
-    // Org super-admin reach: owners/admins see every (non-archived) project in their org (as PMC).
-    const adminOrgs = await this.prisma.orgMembership.findMany({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
-    if (adminOrgs.length) {
-      const have = new Set(scoped.map((s) => s.project.id));
-      const projects = await this.prisma.project.findMany({ where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null }, include: { org: true } });
-      for (const p of projects) {
-        if (!have.has(p.id)) { scoped.push({ project: p, role: 'pmc' }); have.add(p.id); }
-      }
-    }
-
-    // No legacy `User.projectId`/`User.role` fallback (org-escalation fix, mirrors
-    // AuthService.listMemberships): the portfolio board is built from active memberships
-    // and org owner/admin reach only. Falling back to the per-user home fields would put a
-    // project card — with pending-decision counts when the stale role is pmc/client — in
-    // front of a roster `member` or a removed user. Genuine pre-membership accounts are
-    // covered by the `ensure-accounts` membership backfill.
+    // the shared reach (active memberships + org owner/admin reach, archived dropped, no legacy
+    // home-field fallback) — one definition with the PMC brief (`project-reach.ts`)
+    const scoped = await projectsInReach(this.prisma, userId);
 
     return Promise.all(
       scoped.map(async ({ project, role }) => {
