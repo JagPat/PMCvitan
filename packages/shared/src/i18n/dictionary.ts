@@ -351,6 +351,75 @@ export function clientDecisionDelta(delta: number, lang: Lang): string {
   return `${delta > 0 ? '+' : '\u2212'} \u20b9${Math.abs(delta).toLocaleString('en-IN')}`;
 }
 
+/** U3b — the PMC's daily brief across their projects (design review, PMC · Brief board). No schedule
+ *  verdict ("Watch", "At risk") and no nudge: no rule or command stands behind either yet. */
+export const pmcBriefLabels = {
+  heading: { en: 'Today’s brief', hi: 'आज की रिपोर्ट', gu: 'આજનો અહેવાલ' },
+  first: { en: 'Do these first', hi: 'पहले ये करें', gu: 'પહેલાં આ કરો' },
+  clear: { en: 'Nothing is waiting on you across your projects', hi: 'आपके किसी प्रोजेक्ट में कुछ बाकी नहीं', gu: 'તમારા કોઈ પ્રોજેક્ટમાં કંઈ બાકી નથી' },
+  since: { en: 'Since yesterday', hi: 'कल से अब तक', gu: 'ગઈકાલથી અત્યાર સુધી' },
+  projects: { en: 'Your projects', hi: 'आपके प्रोजेक्ट', gu: 'તમારા પ્રોજેક્ટ' },
+  logSent: { en: 'Today’s log sent', hi: 'आज की लॉग भेजी गई', gu: 'આજનો લૉગ મોકલાયો' },
+  logOpen: { en: 'Today’s log started, not sent', hi: 'आज की लॉग शुरू, भेजी नहीं', gu: 'આજનો લૉગ શરૂ, મોકલ્યો નથી' },
+  logMissing: { en: 'No site log yet today', hi: 'आज अभी साइट लॉग नहीं', gu: 'આજે હજી સાઇટ લૉગ નથી' },
+  openDecisions: { en: 'Decisions', hi: 'फ़ैसले', gu: 'નિર્ણયો' },
+  openReviews: { en: 'Review', hi: 'जाँचें', gu: 'તપાસો' },
+  openSite: { en: 'Site', hi: 'साइट', gu: 'સાઇટ' },
+} as const;
+
+/** "Ambli: 2 decisions waiting on the client, oldest 5 days" — client-held decisions not yet answered. */
+export function pmcBriefClientWaiting(n: number, days: number, lang: Lang): string {
+  const age = days > 0 ? days : 0;
+  if (lang === 'hi') return `${n} फ़ैसले क्लाइंट के इंतज़ार में${age ? `, सबसे पुराना ${age} दिन` : ''}`;
+  if (lang === 'gu') return `${n} નિર્ણય ક્લાયન્ટની રાહમાં${age ? `, સૌથી જૂનો ${age} દિવસ` : ''}`;
+  return `${n} decision${n === 1 ? '' : 's'} waiting on the client${age ? `, oldest ${age} day${age === 1 ? '' : 's'}` : ''}`;
+}
+
+/** "3 inspections to review". */
+export function pmcBriefReviews(n: number, lang: Lang): string {
+  if (lang === 'hi') return `${n} निरीक्षण जाँचने हैं`;
+  if (lang === 'gu') return `${n} નિરીક્ષણ તપાસવાના છે`;
+  return `${n} inspection${n === 1 ? '' : 's'} to review`;
+}
+
+/** "4 projects · 3 of 4 logs sent today". */
+export function pmcBriefSummary(projects: number, logsSent: number, lang: Lang): string {
+  if (lang === 'hi') return `${projects} प्रोजेक्ट · आज ${projects} में से ${logsSent} लॉग भेजी गईं`;
+  if (lang === 'gu') return `${projects} પ્રોજેક્ટ · આજે ${projects} માંથી ${logsSent} લૉગ મોકલાયા`;
+  return `${projects} project${projects === 1 ? '' : 's'} · ${logsSent} of ${projects} logs sent today`;
+}
+
+/** "and 2 more", under "Do these first" when more tasks wait than it names. */
+export function pmcBriefMore(n: number, lang: Lang): string {
+  if (lang === 'hi') return `और ${n} काम`;
+  if (lang === 'gu') return `અને ${n} કામ`;
+  return `and ${n} more`;
+}
+
+/** The "Since yesterday" figures: client approvals, progress photos, inspections rejected. */
+export function pmcBriefSince(kind: 'approvals' | 'photos' | 'rejected', n: number, lang: Lang): string {
+  if (kind === 'approvals') {
+    if (lang === 'hi') return `क्लाइंट मंज़ूरियाँ`;
+    if (lang === 'gu') return `ક્લાયન્ટ મંજૂરીઓ`;
+    return `client approval${n === 1 ? '' : 's'}`;
+  }
+  if (kind === 'photos') {
+    if (lang === 'hi') return `प्रगति फ़ोटो`;
+    if (lang === 'gu') return `પ્રગતિ ફોટો`;
+    return `progress photo${n === 1 ? '' : 's'}`;
+  }
+  if (lang === 'hi') return `निरीक्षण अस्वीकृत`;
+  if (lang === 'gu') return `નિરીક્ષણ નામંજૂર`;
+  return `inspection${n === 1 ? '' : 's'} rejected`;
+}
+
+/** "Also in Ambli" — what else waits on the PMC in the project on screen. */
+export function pmcBriefAlsoIn(project: string, lang: Lang): string {
+  if (lang === 'hi') return `${project} में और`;
+  if (lang === 'gu') return `${project} માં વધુ`;
+  return `Also in ${project}`;
+}
+
 /** Shell chrome shared by every role: the More tab and the language control. */
 export const shellLabels: Record<'more' | 'language' | 'close' | 'screens', Record<Lang, string>> = {
   more: { en: 'More', hi: 'और', gu: 'વધુ' },

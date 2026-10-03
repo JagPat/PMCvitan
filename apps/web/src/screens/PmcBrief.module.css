@@ -1,0 +1,152 @@
+/* The PMC's brief (U3b): what to do first across their projects, what moved since yesterday, and
+   each project's site log. Targets are 44px or more; labels 13px or more; a log's state is a word,
+   never colour alone. */
+
+.brief {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+.date {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.heading {
+  margin: 4px 0 0;
+  font-family: var(--font-serif);
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+.summary {
+  margin: 6px 0 0;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.blockHeading {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.tasks,
+.projects {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.task,
+.project {
+  width: 100%;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.task {
+  border: 1px solid var(--amber-border);
+  box-shadow: var(--sh-subtle);
+}
+.project {
+  border: 1px solid var(--hairline);
+}
+.taskText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.taskProject {
+  font-size: 16px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.taskWhat {
+  font-size: 15px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.taskGo {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.more {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+.calm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px dashed var(--hairline-strong);
+  border-radius: 16px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--green-text);
+}
+
+.since {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.figure {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  min-width: 0;
+}
+.figureN {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.figureLabel {
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.log {
+  font-size: 14px;
+  color: var(--amber-text);
+}
+.logSent {
+  color: var(--green-text);
+}
