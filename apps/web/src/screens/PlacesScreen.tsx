@@ -11,9 +11,12 @@ import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { captureAtPlace } from '@/lib/captureContext';
 import { stampText } from '@/lib/captureStamp';
 import { DrawingViewer } from '@/screens/DrawingsScreen';
+import { PlaceStructure } from '@/screens/PlaceStructure';
+import { useNavItems } from '@/layout/useNavItems';
+import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
 import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
-import { type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
+import { can, type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 const KIND_LABEL: Record<string, string> = { zone: 'ZONE', room: 'ROOM', element: 'OBJECT' };
@@ -32,7 +35,7 @@ const RELATION_META: Record<DrawingRelation, { label: string; color: string }> =
 export function PlacesScreen() {
   // drafts are private WIP — the Site Map shows shared reality, so draft locations (and the
   // draft decisions/drawings below) are excluded here. A PMC publishes a draft location from
-  // the Decision Log's Locations editor; only then does it appear on the map.
+  // the "All locations" editor (PlaceStructure); only then does it appear on the map.
   const nodes = useStore(useShallow((s) => s.nodes.filter((n) => !n.draft)));
   // Phase 6 task 4a round 6 (Codex): the shared audience rule — a withdrawn decision's
   // title/location never renders to a role the server filters it from
@@ -41,6 +44,10 @@ export function PlacesScreen() {
   const drawings = useStore(useShallow((s) => s.drawings.filter((d) => !d.draft)));
   const photos = useStore(useShallow((s) => s.photos));
   const activities = useStore(useShallow((s) => s.activities));
+  const phases = useStore(useShallow((s) => s.phases));
+  const openActivity = useStore((s) => s.openActivity);
+  // Audit F-02 — a place's work leads to its schedule row, for a role that has the schedule
+  const canOpenSchedule = useNavItems().some((n) => n.key === 'site-schedule');
   const materials = useStore(useShallow((s) => s.materials));
   // AUTH-02: inspections are a pmc/engineer surface — never fed to the client/contractor/
   // consultant Place view (the server already sends them [] for those roles; this mirrors it
@@ -99,6 +106,7 @@ export function PlacesScreen() {
   };
 
   const activeNode = nodes.find((n) => n.id === active);
+  const canManagePlaces = can('node.manage', role);
   const total = contents.counts;
   // Only truly empty when there's no tree AND nothing filed anywhere — otherwise the
   // whole-project view still lists unfiled items (e.g. the seeded demo).
@@ -116,7 +124,14 @@ export function PlacesScreen() {
         <div style={{ marginTop: 34, textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '30px 16px', border: '1px dashed var(--hairline)', borderRadius: 14 }}>
           <LayoutGrid size={26} color="#b8b2a6" />
           <div style={{ marginTop: 10, fontWeight: 600, color: 'var(--ink)' }}>No locations yet</div>
-          <div style={{ marginTop: 4 }}>Add zones, rooms and objects from the Decision Log&apos;s <b>Locations</b> editor, then file decisions, drawings and photos to them.</div>
+          <div style={{ marginTop: 4 }}>
+            {canManagePlaces
+              ? 'Start with a zone — a floor, a wing or the site itself — then add its rooms and objects here.'
+              : 'Your PMC sets up the zones, rooms and objects. Decisions, drawings and photos are then filed to them.'}
+          </div>
+          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'center' }}>
+            <PlaceStructure active={undefined} depth={0} />
+          </div>
           {/* An empty project is exactly when the first location-backed record gets made, so
               this is the wrong moment to withhold the create action. The forms' own picker
               creates the first zone inline, so nothing here depends on a tree existing. */}
@@ -148,6 +163,10 @@ export function PlacesScreen() {
               );
             })}
           </div>
+
+          {/* Build the tree HERE (audit B3): the PMC adds, renames and deletes locations at the
+              place they are standing on */}
+          <PlaceStructure active={activeNode} depth={trail.length - 1} />
 
           {/* Create AT this place. The record inherits the coordinate the user is already
               standing on, so the form never re-asks where — the point of the Site Map is
@@ -207,18 +226,30 @@ export function PlacesScreen() {
               <Empty>No activities planned here yet.</Empty>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                {contents.activities.map((a) => (
-                  <div key={a.id} data-testid={`place-activity-${a.id}`} style={{ ...rowCard, cursor: 'default' }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{a.id}</span>
-                        <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name}</span>
+                {contents.activities.map((a) => {
+                  // Audit F-02 — which phase this work belongs to and when it is planned, as the schedule says
+                  const phase = phases.find((p) => p.id === a.phaseId);
+                  return (
+                    <div key={a.id} data-testid={`place-activity-${a.id}`} style={{ ...rowCard, cursor: 'default', flexWrap: 'wrap' }}>
+                      <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{a.id}</span>
+                          <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name}</span>
+                        </div>
+                        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }} data-testid={`place-activity-plan-${a.id}`}>
+                          {phase ? phase.name : 'Unphased'} · Plan {plannedWindow(a)}
+                        </div>
+                        {a.block && <div style={{ fontSize: 11.5, color: 'var(--red-solid)', marginTop: 2 }}>{a.block}</div>}
                       </div>
-                      {a.block && <div style={{ fontSize: 11.5, color: 'var(--red-solid)', marginTop: 2 }}>{a.block}</div>}
+                      <ActivityChip status={a.status} />
+                      {canOpenSchedule && (
+                        <Button variant="light" onClick={() => openActivity(a.id)} data-testid={`place-activity-open-${a.id}`} aria-label={`View ${a.name} in the schedule`} style={{ padding: '8px 11px', fontSize: 12 }}>
+                          View in schedule
+                        </Button>
+                      )}
                     </div>
-                    <ActivityChip status={a.status} />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </Section>
