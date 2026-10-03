@@ -1813,6 +1813,25 @@ export const useStore = create<Store>()(
     // (evaluated once, before the reconcile announces it), so an approval can say what actually
     // happened — locked, or parked awaiting the architect's countersign — from the row as served.
     type OkMsg = string | ((snap: ApiSnapshot) => string);
+    /** #698 Codex findings (audit B1 on the brief-backed home) — the PMC's brief counts each project's
+     *  inspections awaiting review as of when it was ASKED, so a decision the server has just committed
+     *  leaves it naming that inspection while it is still fresh. The rule: once a review decision
+     *  commits, NO brief read asked before the commit may land. So the brief stops counting as fresh
+     *  (For You falls back to the live list, whose `pmc-reviews` already drops the decided review) and
+     *  is asked again; the new read supersedes every earlier one (`briefRequestSeq`). That holds
+     *  whether or not a brief has landed yet: a FIRST read still in flight is superseded too (finding
+     *  4173586628). Only a session that has never asked for a brief has nothing to supersede.
+     *  The brief is the PERSON's (kept across their project switches, dropped on any identity change),
+     *  so the refresh is the decider's alone: `decidedBy` is who was signed in when the decision was
+     *  sent, and a reply landing after someone else signed in leaves that person's brief untouched
+     *  (finding 4173756348). A project switch by the same person still refreshes it: their decision
+     *  changed the count their cross-project brief carries. */
+    const refreshBriefAfterReview = (decidedBy: string | null): void => {
+      if (briefRequestSeq === 0 || decidedBy === null || get().sessionUserId !== decidedBy) return;
+      set((s) => { s.briefAt = null; });
+      get().loadBrief();
+    };
+
     const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg): Promise<boolean> => {
       const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
       return call()
@@ -3003,7 +3022,8 @@ export const useStore = create<Store>()(
       // Task 10 (Module 3) correction — one stable idempotency key for this decision: the online send
       // and any offline replay reach the server under it, so a lost-response retry decides once.
       const approveReviewKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, 'Approve inspection', () => gateway!.decideReview(review.id, true, [], approveReviewKey), msg)) return;
+      const decidedBy = get().sessionUserId;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, 'Approve inspection', () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), msg)) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) s.reviews[j].decided = true;
@@ -3028,7 +3048,8 @@ export const useStore = create<Store>()(
       const rejectedIds = review.items.filter((it) => it.rejected && it.id).map((it) => it.id!);
       // Task 10 (Module 3) correction — the rejection decision carries its own stable idempotency key.
       const rejectReviewKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey), n + ' re-inspection task(s) created with due dates.')) return;
+      const decidedBy = get().sessionUserId;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), n + ' re-inspection task(s) created with due dates.')) return;
       set((s) => {
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);
@@ -4962,6 +4983,7 @@ export const useStore = create<Store>()(
       // `gateway` is swapped on a project switch — reading it live mid-loop
       // would replay project A's remaining operations INTO project B.
       const flushGateway = gateway;
+      const flushedBy = get().sessionUserId; // whose queued work this flush replays (the outbox is scoped to them)
       const flushScope = currentScope();
       const flushToken = get().sessionToken;
       const flushKey = outboxKey();
@@ -5026,6 +5048,7 @@ export const useStore = create<Store>()(
         try {
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
+          if (ops[i].t === 'decideReview') refreshBriefAfterReview(flushedBy);
           if (ops[i].t === 'startDailyLog') dailyLogCommitted = 'start';
           else if (ops[i].t === 'submitDailyLog') dailyLogCommitted = 'send';
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);

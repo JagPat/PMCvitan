@@ -296,6 +296,13 @@ export function clientPulseNeedsMany(n: number, lang: Lang): string {
   return `${n} things need you`;
 }
 
+/** "See all 3" — the way from the one decision the Pulse shows to the full list waiting on the client. */
+export function clientPulseSeeAll(n: number, lang: Lang): string {
+  if (lang === 'hi') return `सभी ${n} देखें`;
+  if (lang === 'gu') return `બધા ${n} જુઓ`;
+  return `See all ${n}`;
+}
+
 /** "See the 2 options" — the decision's own options, the way into choosing one. */
 export function clientPulseSeeOptions(n: number, lang: Lang): string {
   if (lang === 'hi') return `${n} विकल्प देखें`;

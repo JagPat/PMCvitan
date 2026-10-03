@@ -257,6 +257,159 @@ describe('U3b — the brief in the store', () => {
     }
   });
 
+  it('deciding an inspection retires the brief that still names it, and only a read asked after the decision lands (#698 Codex)', async () => {
+    const useStore = await store();
+    const before = { projects: [proj('ambli', { reviewsWaiting: 1 })] }; // asked before the decision
+    const after = { projects: [proj('ambli', { reviewsWaiting: 0 })] }; // asked once it committed
+    let answerBefore!: (v: typeof before) => void;
+    let answerAfter!: (v: typeof after) => void;
+    let commit!: (v: unknown) => void;
+    const gw = {
+      getBrief: vi.fn()
+        .mockReturnValueOnce(Promise.resolve(before))
+        .mockReturnValueOnce(new Promise((r) => { answerBefore = r; }))
+        .mockReturnValueOnce(new Promise((r) => { answerAfter = r; })),
+      decideReview: vi.fn(() => new Promise((r) => { commit = r; })),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    useStore.getState()._setGateway(gw as never);
+    useStore.setState({ online: true, activeProjectId: 'ambli' });
+    useStore.getState().loadBrief();
+    await flush();
+    expect(useStore.getState().brief?.projects[0].reviewsWaiting).toBe(1);
+    useStore.getState().loadBrief(); // a poll still in flight when the PMC decides
+
+    useStore.getState().approveInspection();
+    expect(gw.decideReview).toHaveBeenCalled();
+    expect(useStore.getState().briefAt).not.toBeNull(); // nothing changes until the server commits
+    commit({ projectId: 'ambli', decisions: [] });
+    await flush();
+    // committed: the brief that still names the review is no longer fresh, and it is asked again
+    expect(useStore.getState().briefAt).toBeNull();
+    expect(gw.getBrief).toHaveBeenCalledTimes(3);
+
+    answerBefore(before); // the poll asked before the decision lands late — it is superseded
+    await flush();
+    expect(useStore.getState().briefAt).toBeNull();
+    answerAfter(after);
+    await flush();
+    expect(useStore.getState().brief?.projects[0].reviewsWaiting).toBe(0);
+    expect(useStore.getState().briefAt).toBeGreaterThan(0);
+  });
+
+  it('a FIRST read still in flight when the decision commits is superseded too (#698 Codex, 4173586628)', async () => {
+    const useStore = await store();
+    const before = { projects: [proj('ambli', { reviewsWaiting: 1 })] };
+    const after = { projects: [proj('ambli', { reviewsWaiting: 0 })] };
+    let answerFirst!: (v: typeof before) => void;
+    let answerAfter!: (v: typeof after) => void;
+    let commit!: (v: unknown) => void;
+    const gw = {
+      getBrief: vi.fn()
+        .mockReturnValueOnce(new Promise((r) => { answerFirst = r; }))
+        .mockReturnValueOnce(new Promise((r) => { answerAfter = r; })),
+      decideReview: vi.fn(() => new Promise((r) => { commit = r; })),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    useStore.getState()._setGateway(gw as never);
+    useStore.setState({ online: true, activeProjectId: 'ambli' });
+    useStore.getState().loadBrief(); // the landing read — nothing has arrived yet
+    expect(useStore.getState().brief).toBeNull();
+
+    useStore.getState().approveInspection();
+    commit({ projectId: 'ambli', decisions: [] });
+    await flush();
+    expect(gw.getBrief).toHaveBeenCalledTimes(2); // asked again once the decision committed
+
+    answerFirst(before); // asked before the decision, lands after it: never shown
+    await flush();
+    expect(useStore.getState().brief).toBeNull();
+    expect(useStore.getState().briefAt).toBeNull();
+    answerAfter(after);
+    await flush();
+    expect(useStore.getState().brief?.projects[0].reviewsWaiting).toBe(0);
+  });
+
+  it('rejecting an inspection retires the brief the same way', async () => {
+    const useStore = await store();
+    let commit!: (v: unknown) => void;
+    const gw = {
+      getBrief: vi.fn(() => Promise.resolve({ projects: [proj('ambli', { reviewsWaiting: 1 })] })),
+      decideReview: vi.fn(() => new Promise((r) => { commit = r; })),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    useStore.getState()._setGateway(gw as never);
+    useStore.setState({ online: true, activeProjectId: 'ambli' });
+    useStore.getState().loadBrief();
+    await flush();
+    useStore.getState().toggleReject(0);
+    useStore.getState().sendReinspection();
+    expect(gw.decideReview).toHaveBeenCalledWith(expect.any(String), false, expect.any(Array), expect.any(String));
+    commit({ projectId: 'ambli', decisions: [] });
+    await flush();
+    expect(gw.getBrief).toHaveBeenCalledTimes(2);
+  });
+
+  it('a session that never asked for a brief is not made to read one by a decision', async () => {
+    const useStore = await store();
+    let commit!: (v: unknown) => void;
+    const gw = {
+      getBrief: vi.fn(() => Promise.resolve({ projects: [] })),
+      decideReview: vi.fn(() => new Promise((r) => { commit = r; })),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    useStore.getState()._setGateway(gw as never);
+    useStore.setState({ online: true, activeProjectId: 'ambli' });
+    useStore.getState().approveInspection();
+    commit({ projectId: 'ambli', decisions: [] });
+    await flush();
+    expect(gw.getBrief).not.toHaveBeenCalled();
+  });
+
+  it("a decision's reply landing after ANOTHER person signed in leaves their brief alone (#698 Codex, 4173756348)", async () => {
+    const useStore = await store();
+    let commit!: (v: unknown) => void;
+    const theirs = { projects: [proj('bopal', { reviewsWaiting: 3 })] };
+    const gw = {
+      getBrief: vi.fn(() => Promise.resolve({ projects: [proj('ambli', { reviewsWaiting: 1 })] })),
+      decideReview: vi.fn(() => new Promise((r) => { commit = r; })),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    useStore.getState()._setGateway(gw as never);
+    useStore.setState({ online: true, activeProjectId: 'ambli' });
+    useStore.getState().loadBrief();
+    await flush();
+    useStore.getState().approveInspection(); // decided by u-pmc…
+    // …who signs out; another PMC signs in and has their own fresh brief before the reply lands
+    useStore.setState({ sessionToken: token('u-other'), sessionUserId: 'u-other', brief: theirs, briefAt: Date.now() });
+    const calls = gw.getBrief.mock.calls.length;
+    commit({ projectId: 'ambli', decisions: [] });
+    await flush();
+    expect(useStore.getState().brief).toEqual(theirs);
+    expect(useStore.getState().briefAt).not.toBeNull();
+    expect(gw.getBrief).toHaveBeenCalledTimes(calls);
+  });
+
+  it('the same person switching project before the reply lands still gets their brief refreshed', async () => {
+    const useStore = await store();
+    let commit!: (v: unknown) => void;
+    const gw = {
+      getBrief: vi.fn(() => Promise.resolve({ projects: [proj('ambli', { reviewsWaiting: 1 })] })),
+      decideReview: vi.fn(() => new Promise((r) => { commit = r; })),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    useStore.getState()._setGateway(gw as never);
+    useStore.setState({ online: true, activeProjectId: 'ambli' });
+    useStore.getState().loadBrief();
+    await flush();
+    useStore.getState().approveInspection();
+    // a switch issues a new project-scoped token for the SAME person; their brief spans both projects
+    useStore.setState({ sessionToken: `${token('u-pmc')}2`, activeProjectId: 'bopal' });
+    commit({ projectId: 'ambli', decisions: [] });
+    await flush();
+    expect(gw.getBrief).toHaveBeenCalledTimes(2);
+  });
+
   it('a switch keeps the same person\'s brief; another identity never inherits it', async () => {
     const useStore = await store();
     useStore.setState({ brief: { projects: [proj('ambli')] }, memberships: [{ projectId: 'bopal', name: 'Bopal', short: 'Bopal', role: 'pmc', orgId: 'o', orgName: 'Vitan' }] });

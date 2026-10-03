@@ -10,6 +10,7 @@ import {
   clientPulseHeading,
   clientPulseLabels as L,
   clientPulseNeedsMany,
+  clientPulseSeeAll,
   clientPulseSeeOptions,
   clientPulseWaitsOn,
   clientPulseWeek,
@@ -36,6 +37,7 @@ export function ClientPulse({ also }: { also?: ReactNode }) {
   const reapprovals = useStore(useShallow(selectDeciderReapproval));
   const pending = useStore(useShallow(selectDeciderPending));
   const openDecision = useStore((s) => s.openDecision);
+  const setScreen = useStore((s) => s.setScreen);
 
   // the site's civil day; a minute tick moves "week" and "next" on across the site's midnight
   const [, setMinute] = useState(0);
@@ -89,6 +91,12 @@ export function ClientPulse({ also }: { also?: ReactNode }) {
             {needs.first.options.length > 1 ? clientPulseSeeOptions(needs.first.options.length, lang) : L.open[lang]}
             <ArrowRight size={20} aria-hidden />
           </button>
+          {needs.count > 1 && (
+            <button className={styles.needsAll} onClick={() => setScreen('client-decisions')} data-testid="pulse-needs-all">
+              {clientPulseSeeAll(needs.count, lang)}
+              <ArrowRight size={16} aria-hidden />
+            </button>
+          )}
         </div>
       ) : (
         <div className={styles.calm} data-testid="pulse-nothing">

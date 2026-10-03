@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
-import { selectActionItems } from '@/store/selectors';
+import { countActionItems, selectActionItems, selectDecisionsNeedingViewer } from '@/store/selectors';
 
 const s = () => useStore.getState();
 const keys = () => selectActionItems(s()).map((i) => i.key);
@@ -92,5 +92,43 @@ describe('selectActionItems — the per-role "For You" action queue', () => {
     expect(item).toBeTruthy();
     expect(item.title).toContain('structural'); // the demo persona falls back to structural
     expect(item.screen).toBe('drawings');
+  });
+});
+
+describe('For You counts (audit B1/B2)', () => {
+  it('pmc: an approved inspection leaves the queue at once — decided reviews are not "awaiting your review"', () => {
+    expect(keys()).toContain('pmc-reviews');
+    s().approveInspection();
+    expect(s().reviews.every((r) => r.decided)).toBe(true);
+    expect(keys()).not.toContain('pmc-reviews');
+  });
+
+  it('pmc: the item names and counts only the undecided reviews', () => {
+    const [first] = s().reviews;
+    useStore.setState({
+      reviews: [{ ...first, decided: true }, { ...first, id: 'INSP-99', title: 'Second check', decided: false }],
+    });
+    const item = selectActionItems(s()).find((i) => i.key === 'pmc-reviews')!;
+    expect(item.title).toBe('1 inspection awaiting your review');
+    expect(item.detail).toBe('Second check');
+  });
+
+  it('client: the For You count equals the decisions waiting on them (pending + re-approval), not the number of cards', () => {
+    s().setRole('client');
+    const waiting = selectDecisionsNeedingViewer(s());
+    // seeded: DL-003 reopened first, then DL-014 and DL-011
+    expect(waiting.map((d) => d.id)).toEqual(['DL-003', 'DL-014', 'DL-011']);
+    const items = selectActionItems(s());
+    expect(items).toHaveLength(2); // one pending card, one re-approval card…
+    expect(countActionItems(items)).toBe(3); // …standing for three decisions
+  });
+
+  it('a viewer who decides nothing has nothing waiting on them', () => {
+    s().setRole('consultant');
+    expect(selectDecisionsNeedingViewer(s())).toEqual([]);
+  });
+
+  it('an item without a count still counts once', () => {
+    expect(countActionItems([{ key: 'k', title: 't', screen: 'inbox', cta: 'c', tone: 'ink' }])).toBe(1);
   });
 });

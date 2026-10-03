@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useStore } from '@/store/store';
-import { selectActionItems, type ActionItem } from '@/store/selectors';
+import { countActionItems, selectActionItems, type ActionItem } from '@/store/selectors';
 import { ROLE_LABEL } from '@/lib/screens';
 import { Eyebrow, Button } from '@/components';
 import { ArrowRight, CircleCheck } from '@/lib/icons';
@@ -32,6 +32,7 @@ export function InboxScreen() {
   // the state object actually changes, which is exactly when the queue can change.
   const state = useStore((s) => s);
   const items = useMemo(() => selectActionItems(state), [state]);
+  const total = countActionItems(items);
   const role = useStore((s) => s.role);
   const short = useStore((s) => s.short); // this queue is scoped to the active project
   const setScreen = useStore((s) => s.setScreen);
@@ -109,7 +110,7 @@ export function InboxScreen() {
     <div className={`${styles.screen} ${styles.mid}`}>
       <Eyebrow>FOR YOU · {ROLE_LABEL[role].toUpperCase()}</Eyebrow>
       <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em', marginTop: 4 }}>
-        {items.length ? `${items.length} thing${items.length === 1 ? ' needs' : 's need'} you` : 'You’re all caught up'}
+        {total ? `${total} thing${total === 1 ? ' needs' : 's need'} you` : 'You’re all caught up'}
       </div>
       <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, maxWidth: 560 }}>
         Everything waiting on you in <b>{short}</b> — decisions, drawings, inspections and the site log — in one place. Tap a card to go straight there. Use the project switcher to see another project.

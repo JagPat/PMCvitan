@@ -58,3 +58,21 @@ test('For You: acting on everything empties the Pulse (each decision disappears 
   await expect(page.getByText('Nothing needs you right now')).toBeVisible();
   await expect(page.getByTestId('pulse-needs')).toHaveCount(0);
 });
+
+// Audit B2 — one count everywhere: the Pulse, its way to the full list, the For You and Decisions
+// Waiting badges and Project Health all count the same three decisions (two new, one reopened).
+test('For You: every client surface counts the same decisions waiting on them', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Client', exact: true }).click();
+
+  const rail = page.getByRole('navigation').first();
+  await expect(page.getByTestId('pulse-needs')).toContainText('3 things need you');
+  await expect(rail.getByRole('button', { name: /^For You/ })).toContainText('3');
+  await expect(rail.getByRole('button', { name: /^Decisions Waiting/ })).toContainText('3');
+
+  await page.getByTestId('pulse-needs-all').click();
+  await expect(page.getByText('Decisions waiting for you')).toBeVisible();
+
+  await rail.getByRole('button', { name: /^Project Health/ }).click();
+  await expect(page.getByText('3 decisions waiting for you')).toBeVisible();
+});
