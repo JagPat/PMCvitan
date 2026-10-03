@@ -63,7 +63,7 @@ async function signInToProject(page: Page, email: string, projectName: string): 
   await page.getByTestId('login-submit').click();
   const switcher = page.getByTestId('project-switcher');
   await expect(switcher).toBeVisible();
-  const option = page.getByRole('button', { name: new RegExp(projectName) }).first();
+  const option = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: new RegExp(projectName) }).first();
   await expect(async () => {
     if (!(await option.isVisible())) await switcher.click();
     await option.click({ timeout: 2000 });

@@ -24,6 +24,7 @@ import type {
   OrgRole,
   OrgSummary,
   Phase,
+  PmcBriefResult,
   PortfolioProject,
   ProjectCompany,
   CompanyKind,
@@ -609,6 +610,10 @@ export class ApiGateway {
   /** Cross-project monitoring rollup (one row per project the user can access). */
   getPortfolio(): Promise<PortfolioProject[]> {
     return this.req('/me/portfolio');
+  }
+  /** U3a/U3b — the PMC's cross-project daily brief (one row per project they run as PMC). */
+  getBrief(): Promise<PmcBriefResult> {
+    return this.req('/me/brief');
   }
   /** Re-scope the session to another project; returns a fresh token. */
   switchProject(projectId: string): Promise<AuthResult> {

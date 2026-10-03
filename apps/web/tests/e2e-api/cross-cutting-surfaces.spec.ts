@@ -69,7 +69,7 @@ test.describe('cross-cutting surfaces under all-module reads', () => {
     const switcher = page.getByTestId('project-switcher');
     await expect(switcher).toContainText(/Residence at Ambli|Test Empty Site/);
     if (!(await switcher.textContent())?.includes('Residence at Ambli')) {
-      const option = page.getByRole('button', { name: /Residence at Ambli/ });
+      const option = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Residence at Ambli/ });
       await expect(async () => {
         if (!(await option.isVisible())) await switcher.click();
         await option.click({ timeout: 2000 });

@@ -58,7 +58,7 @@ test.describe('inspections module-owned read (moduleQuery)', () => {
     // fetches on load.
     const switcher = page.getByTestId('project-switcher');
     await expect(switcher).toBeVisible();
-    const option = page.getByRole('button', { name: /Residence at Ambli/ }).first();
+    const option = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Residence at Ambli/ }).first();
     await expect(async () => {
       if (((await switcher.textContent()) ?? '').includes('Residence at Ambli')) return;
       if (!(await option.isVisible())) await switcher.click();

@@ -123,6 +123,10 @@ export function useApiSync(): void {
       // load the projects the user can switch between + their orgs + portfolio rollup
       useStore.getState().loadOrgData();
       useStore.getState().loadPortfolio();
+      // U3b — the PMC's brief (their For You), read here, once the authenticated gateway is installed:
+      // a sign-in and every project switch re-run this effect, and a read started by the screen in the
+      // same commit would still meet the previous (or no) gateway
+      if (role === 'pmc') useStore.getState().loadBrief();
       // Task 9 — the project-shell summary (enabledModules) for the manifest-driven nav
       useStore.getState().loadShell();
 

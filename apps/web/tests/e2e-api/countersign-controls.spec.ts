@@ -27,7 +27,7 @@ test('with the doors standing, the PMC’s register renders no Forward, no count
   await page.goto('/');
   await signIn(page, PMC);
   await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
-  const optionA = page.getByRole('button', { name: /Residence at Ambli/ });
+  const optionA = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Residence at Ambli/ });
   await expect(async () => {
     if (!(await optionA.isVisible())) await page.getByTestId('project-switcher').click();
     await optionA.click({ timeout: 2000 });

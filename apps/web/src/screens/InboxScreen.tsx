@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useStore } from '@/store/store';
 import { selectActionItems, type ActionItem } from '@/store/selectors';
 import { ROLE_LABEL } from '@/lib/screens';
@@ -6,6 +6,8 @@ import { Eyebrow, Button } from '@/components';
 import { ArrowRight, CircleCheck } from '@/lib/icons';
 import { EngineerToday } from './EngineerToday';
 import { ClientPulse } from './ClientPulse';
+import { PmcBrief } from './PmcBrief';
+import { BRIEF_REFRESH_MS, briefIsFresh, pmcBrief } from '@/lib/pmcBrief';
 import styles from './responsive.module.css';
 
 type Tone = ActionItem['tone'];
@@ -33,6 +35,38 @@ export function InboxScreen() {
   const role = useStore((s) => s.role);
   const short = useStore((s) => s.short); // this queue is scoped to the active project
   const setScreen = useStore((s) => s.setScreen);
+  const brief = useStore((s) => s.brief);
+  const briefAt = useStore((s) => s.briefAt);
+  const loadBrief = useStore((s) => s.loadBrief);
+  const activeProjectId = useStore((s) => s.activeProjectId);
+
+  // the PMC's brief (U3b) is read fresh each time they land here, then every minute and whenever the
+  // page is shown again while it stays on screen: it spans projects whose access and civil day change
+  // with no signal reaching this session (a removal elsewhere, a site's midnight). A sign-in or project
+  // switch reads it in `useApiSync`, once the new gateway is installed. `now` ticks so a brief that is
+  // no longer fresh stops being shown even if no newer one arrives.
+  const [, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (role !== 'pmc') return;
+    loadBrief();
+    const refresh = () => {
+      setNow(Date.now());
+      loadBrief();
+    };
+    const onShown = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    const poll = setInterval(refresh, BRIEF_REFRESH_MS);
+    const tick = setInterval(() => setNow(Date.now()), 15_000);
+    document.addEventListener('visibilitychange', onShown);
+    window.addEventListener('focus', onShown);
+    return () => {
+      clearInterval(poll);
+      clearInterval(tick);
+      document.removeEventListener('visibilitychange', onShown);
+      window.removeEventListener('focus', onShown);
+    };
+  }, [role, loadBrief]);
 
   // the engineer's home is their day: Today's path carries the site log, so its "not submitted"
   // card would only repeat it; everything else still waiting on them follows below
@@ -52,6 +86,21 @@ export function InboxScreen() {
     return (
       <div className={`${styles.screen} ${styles.mid}`}>
         <ClientPulse also={rest.length ? <ActionList items={rest} onOpen={setScreen} /> : undefined} />
+      </div>
+    );
+  }
+
+  // the PMC's home is their brief across every project they run (U3b). The active project's own cards
+  // follow below it; its inspection card is dropped only while "Do these first" already names that
+  // task, so nothing is hidden behind the brief's cut. Until a server answers (or in the demo, which
+  // has none), and whenever the last answer is no longer fresh, the PMC keeps the list below.
+  if (role === 'pmc' && brief && brief.projects.length > 0 && briefIsFresh(briefAt, Date.now())) {
+    const named = pmcBrief(brief.projects, Date.now()).first;
+    const reviewsNamed = named.some((t) => t.kind === 'reviews' && t.projectId === activeProjectId);
+    const rest = items.filter((it) => !(reviewsNamed && it.key === 'pmc-reviews'));
+    return (
+      <div className={`${styles.screen} ${styles.mid}`}>
+        <PmcBrief brief={brief} also={rest.length ? <ActionList items={rest} onOpen={setScreen} /> : undefined} />
       </div>
     );
   }

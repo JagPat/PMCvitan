@@ -61,7 +61,7 @@ test('populated A to empty B is atomic', async ({ page }) => {
   // over to populated A, onto its decision log
   // open-and-pick retries as one unit — a post-sign-in re-render can close the dropdown between
   // the two clicks (deterministic on slow containers, amplified under all-module reads)
-  const optionA = page.getByRole('button', { name: /Residence at Ambli/ });
+  const optionA = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Residence at Ambli/ });
   await expect(async () => {
     if (!(await optionA.isVisible())) await page.getByTestId('project-switcher').click();
     await optionA.click({ timeout: 2000 });
@@ -77,7 +77,7 @@ test('populated A to empty B is atomic', async ({ page }) => {
   });
   // the same one-unit open-and-pick retry as above (a re-render can close the dropdown between
   // the two one-shot clicks and swallow the pick)
-  const optionB = page.getByRole('button', { name: /Test Empty Site/ });
+  const optionB = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Test Empty Site/ });
   await expect(async () => {
     if (!(await optionB.isVisible())) await page.getByTestId('project-switcher').click();
     await optionB.click({ timeout: 2000 });
@@ -115,7 +115,7 @@ test('history preserves scope and screen', async ({ page }) => {
   await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
 
   // the same one-unit open-and-pick retry as above
-  const optionA2 = page.getByRole('button', { name: /Residence at Ambli/ });
+  const optionA2 = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Residence at Ambli/ });
   await expect(async () => {
     if (!(await optionA2.isVisible())) await page.getByTestId('project-switcher').click();
     await optionA2.click({ timeout: 2000 });
@@ -124,12 +124,15 @@ test('history preserves scope and screen', async ({ page }) => {
   await page.getByRole('button', { name: 'Dashboard' }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${A}/dashboard`));
 
-  const optionB2 = page.getByRole('button', { name: /Test Empty Site/ });
+  const optionB2 = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Test Empty Site/ });
   await expect(async () => {
     if (!(await optionB2.isVisible())) await page.getByTestId('project-switcher').click();
     await optionB2.click({ timeout: 2000 });
   }).toPass();
   await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
+  // the switcher shows the target's name the moment the switch STARTS; B's role home becomes a
+  // history entry only once B has loaded, and the walk back below expects that entry, so wait for it
+  await expect(page).toHaveURL(new RegExp(`/projects/${B}/`));
   await page.getByRole('button', { name: 'Decision Log' }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${B}/decisions`));
   await page.getByRole('button', { name: 'Drawings' }).click();
