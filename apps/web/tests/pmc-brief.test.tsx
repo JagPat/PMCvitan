@@ -366,6 +366,50 @@ describe('U3b — the brief in the store', () => {
     expect(gw.getBrief).not.toHaveBeenCalled();
   });
 
+  it("a decision's reply landing after ANOTHER person signed in leaves their brief alone (#698 Codex, 4173756348)", async () => {
+    const useStore = await store();
+    let commit!: (v: unknown) => void;
+    const theirs = { projects: [proj('bopal', { reviewsWaiting: 3 })] };
+    const gw = {
+      getBrief: vi.fn(() => Promise.resolve({ projects: [proj('ambli', { reviewsWaiting: 1 })] })),
+      decideReview: vi.fn(() => new Promise((r) => { commit = r; })),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    useStore.getState()._setGateway(gw as never);
+    useStore.setState({ online: true, activeProjectId: 'ambli' });
+    useStore.getState().loadBrief();
+    await flush();
+    useStore.getState().approveInspection(); // decided by u-pmc…
+    // …who signs out; another PMC signs in and has their own fresh brief before the reply lands
+    useStore.setState({ sessionToken: token('u-other'), sessionUserId: 'u-other', brief: theirs, briefAt: Date.now() });
+    const calls = gw.getBrief.mock.calls.length;
+    commit({ projectId: 'ambli', decisions: [] });
+    await flush();
+    expect(useStore.getState().brief).toEqual(theirs);
+    expect(useStore.getState().briefAt).not.toBeNull();
+    expect(gw.getBrief).toHaveBeenCalledTimes(calls);
+  });
+
+  it('the same person switching project before the reply lands still gets their brief refreshed', async () => {
+    const useStore = await store();
+    let commit!: (v: unknown) => void;
+    const gw = {
+      getBrief: vi.fn(() => Promise.resolve({ projects: [proj('ambli', { reviewsWaiting: 1 })] })),
+      decideReview: vi.fn(() => new Promise((r) => { commit = r; })),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    useStore.getState()._setGateway(gw as never);
+    useStore.setState({ online: true, activeProjectId: 'ambli' });
+    useStore.getState().loadBrief();
+    await flush();
+    useStore.getState().approveInspection();
+    // a switch issues a new project-scoped token for the SAME person; their brief spans both projects
+    useStore.setState({ sessionToken: `${token('u-pmc')}2`, activeProjectId: 'bopal' });
+    commit({ projectId: 'ambli', decisions: [] });
+    await flush();
+    expect(gw.getBrief).toHaveBeenCalledTimes(2);
+  });
+
   it('a switch keeps the same person\'s brief; another identity never inherits it', async () => {
     const useStore = await store();
     useStore.setState({ brief: { projects: [proj('ambli')] }, memberships: [{ projectId: 'bopal', name: 'Bopal', short: 'Bopal', role: 'pmc', orgId: 'o', orgName: 'Vitan' }] });
