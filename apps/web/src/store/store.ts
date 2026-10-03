@@ -1813,14 +1813,16 @@ export const useStore = create<Store>()(
     // (evaluated once, before the reconcile announces it), so an approval can say what actually
     // happened — locked, or parked awaiting the architect's countersign — from the row as served.
     type OkMsg = string | ((snap: ApiSnapshot) => string);
-    /** #698 Codex finding (audit B1 on the brief-backed home) — the PMC's brief counts each project's
+    /** #698 Codex findings (audit B1 on the brief-backed home) — the PMC's brief counts each project's
      *  inspections awaiting review as of when it was ASKED, so a decision the server has just committed
-     *  leaves it naming that inspection while it is still fresh. Once a review decision commits, the
-     *  brief stops counting as fresh (For You falls back to the live list, whose `pmc-reviews` already
-     *  drops the decided review) and is asked again: the new read supersedes any earlier one in flight
-     *  (`briefRequestSeq`), so a reply taken before the decision can no longer land. */
+     *  leaves it naming that inspection while it is still fresh. The rule: once a review decision
+     *  commits, NO brief read asked before the commit may land. So the brief stops counting as fresh
+     *  (For You falls back to the live list, whose `pmc-reviews` already drops the decided review) and
+     *  is asked again; the new read supersedes every earlier one (`briefRequestSeq`). That holds
+     *  whether or not a brief has landed yet: a FIRST read still in flight is superseded too (finding
+     *  4173586628). Only a session that has never asked for a brief has nothing to supersede. */
     const refreshBriefAfterReview = (): void => {
-      if (get().brief === null) return;
+      if (briefRequestSeq === 0) return;
       set((s) => { s.briefAt = null; });
       get().loadBrief();
     };
