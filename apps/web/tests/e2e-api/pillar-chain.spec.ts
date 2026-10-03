@@ -71,7 +71,7 @@ async function signInToChain(page: Page, email: string, chainName: string): Prom
   await signIn(page, email);
   const switcher = page.getByTestId('project-switcher');
   await expect(switcher).toBeVisible();
-  const option = page.getByRole('button', { name: new RegExp(chainName) }).first();
+  const option = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: new RegExp(chainName) }).first();
   await expect(async () => {
     if (!(await option.isVisible())) await switcher.click();
     await option.click({ timeout: 2000 });
@@ -497,7 +497,7 @@ test('OFFLINE EVIDENCE: a captured photo survives a reload and replays exactly o
   await signIn(page, ENG);
   await expect(page.getByTestId('project-switcher')).toBeVisible();
   // one-unit open-and-pick retry (a re-render can close the dropdown and swallow the pick)
-  const chainOption = page.getByRole('button', { name: new RegExp(chainName) }).first();
+  const chainOption = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: new RegExp(chainName) }).first();
   await expect(async () => {
     if (!(await chainOption.isVisible())) await page.getByTestId('project-switcher').click();
     await chainOption.click({ timeout: 2000 });
