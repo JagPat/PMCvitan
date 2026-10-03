@@ -26,7 +26,9 @@ export const orgsManifest: ModuleManifest = {
   // Phase 4 Task 3 — the WorkerDevice bind command reads the trusted-worker lifecycle through
   // Labour's query contract (`Worker` is Labour-owned + read-encapsulated). Labour is a LEAF, so
   // this edge closes no cycle.
-  dependsOn: ['decisions', 'inspections', 'labour'],
+  // U3a adds `daily-log`: the PMC brief reads a project's log status through DailyLogQueryService
+  // (daily-log depends only on decisions, so orgs → daily-log closes no cycle).
+  dependsOn: ['decisions', 'inspections', 'labour', 'daily-log'],
   // Phase 6 task 4b (§A.1) — the membership/org-membership standing writes consult the
   // DECISIONS-owned open-holder answer (`DecisionsParticipant.holdsOpenDecisions`) inside their
   // own transaction before committing — the orgs → decisions half of the bidirectional

@@ -46,3 +46,25 @@ describe('civil dates — imported identity with @vitan/shared (mirror retired)'
     expect(fromIsoCivilDate(null)).toBeNull();
   });
 });
+
+// U3a — "since yesterday" on a site's own calendar needs the instant its civil day begins
+describe('civilDayStartInstant — a civil day\'s local midnight as an instant', () => {
+  it('India (no DST): midnight IST is 18:30 UTC the day before', async () => {
+    const { civilDayStartInstant } = await import('./civil-date');
+    expect(civilDayStartInstant('2026-10-03', 'Asia/Kolkata').toISOString()).toBe('2026-10-02T18:30:00.000Z');
+    expect(civilDayStartInstant('2026-10-03', 'UTC').toISOString()).toBe('2026-10-03T00:00:00.000Z');
+  });
+
+  it('a zone west of UTC, on both sides of a DST change', async () => {
+    const { civilDayStartInstant } = await import('./civil-date');
+    expect(civilDayStartInstant('2026-07-01', 'America/New_York').toISOString()).toBe('2026-07-01T04:00:00.000Z'); // EDT
+    expect(civilDayStartInstant('2026-12-01', 'America/New_York').toISOString()).toBe('2026-12-01T05:00:00.000Z'); // EST
+    // the day DST ends (1 Nov 2026) still starts at its own local midnight (EDT)
+    expect(civilDayStartInstant('2026-11-01', 'America/New_York').toISOString()).toBe('2026-11-01T04:00:00.000Z');
+  });
+
+  it('an unknown zone fails loudly', async () => {
+    const { civilDayStartInstant } = await import('./civil-date');
+    expect(() => civilDayStartInstant('2026-10-03', 'Mars/Olympus')).toThrow();
+  });
+});

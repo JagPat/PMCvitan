@@ -5,6 +5,7 @@ import type { MaterialDto } from '../snapshot/types';
 import { computeDailyLogSlice, type DailyLogCore, type DailyLogSlice } from './daily-log-serialize';
 import { DAILY_LOG_PROJECTION } from './daily-log.projection';
 import { readServableGeneration } from '../platform/projections/generation';
+import { fromIsoCivilDate } from '../common/civil-date';
 
 // Re-export the module's read-model core type so consumers keep importing it from the query boundary.
 export type { DailyLogCore } from './daily-log-serialize';
@@ -91,6 +92,19 @@ export class DailyLogQueryService {
 
   /** Does daily log `dailyLogId` exist in project `projectId`? The tenant-ownership check a consumer
    *  (media upload with a `dailyLogId` link) runs before storing a reference to it. */
+  /** U3a — the PMC brief's "daily log received": the state of the project's log for one civil day.
+   *  `sent` when that day's latest log was sent, `open` when it was started and not sent, `missing`
+   *  when no log was started for that day. */
+  async logStatusOn(projectId: string, civilDate: string): Promise<'sent' | 'open' | 'missing'> {
+    const log = await this.prisma.dailyLog.findFirst({
+      where: { projectId, logDate: fromIsoCivilDate(civilDate) },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { submitted: true },
+    });
+    if (!log) return 'missing';
+    return log.submitted ? 'sent' : 'open';
+  }
+
   async existsInProject(projectId: string, dailyLogId: string): Promise<boolean> {
     const row = await this.prisma.dailyLog.findFirst({ where: { id: dailyLogId, projectId }, select: { id: true } });
     return row !== null;

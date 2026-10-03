@@ -91,8 +91,8 @@ describe('4d-ii-a / A5e — the countersign-v1 boundary with the doors standing 
     expect(reads[1]).toEqual(reads[2]);
   });
 
-  it('the shell, the roster, memberships and portfolio are served to every contract identically', async () => {
-    for (const path of [`/projects/${f.projectA.id}/shell`, `/projects/${f.projectA.id}/members`, '/me/memberships', '/me/portfolio']) {
+  it('the shell, the roster, memberships, portfolio and the PMC brief are served to every contract identically', async () => {
+    for (const path of [`/projects/${f.projectA.id}/shell`, `/projects/${f.projectA.id}/members`, '/me/memberships', '/me/portfolio', '/me/brief']) {
       const bodies = [];
       for (const contract of CONTRACTS) {
         const r = await call('get', path, pmcToken, contract);

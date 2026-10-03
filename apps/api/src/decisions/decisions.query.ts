@@ -642,6 +642,27 @@ export class DecisionsQueryService {
    *  pending decisions designated to the role) and the viewer's COUNTERSIGN obligations: every
    *  decision awaiting countersign is an architect's, and while the chain is INACTIVE (no active
    *  architect) each one is STRANDED and is the PMC's to resolve. */
+  /** U3a — the PMC brief's view of what waits on the CLIENT: the published decisions the client holds
+   *  that are open (pending, or reopened for re-approval), and when the longest-waiting one was
+   *  published. A draft is weightless, as everywhere. */
+  async waitingOnClient(projectId: string): Promise<{ count: number; oldestPublishedAt: Date | null }> {
+    const where: Prisma.DecisionWhereInput = { projectId, publishedAt: { not: null }, deciderKind: 'client', status: { in: ['pending', 'change'] } };
+    const [count, oldest] = await Promise.all([
+      this.prisma.decision.count({ where }),
+      this.prisma.decision.findFirst({ where, orderBy: [{ publishedAt: 'asc' }, { id: 'asc' }], select: { publishedAt: true } }),
+    ]);
+    return { count, oldestPublishedAt: oldest?.publishedAt ?? null };
+  }
+
+  /** U3a — the client approvals recorded at or after `since` (the PMC brief's "client approvals"):
+   *  approval revisions of client-held decisions, a PMC-recorded consent on the client's behalf
+   *  included. */
+  async clientApprovalsSince(projectId: string, since: Date): Promise<number> {
+    return this.prisma.decisionApprovalRevision.count({
+      where: { projectId, approvedAt: { gte: since }, OR: [{ decision: { deciderKind: 'client' } }, { onBehalfOf: 'client' }] },
+    });
+  }
+
   async countPending(projectId: string, viewer: { role: Role; userId?: string }): Promise<number> {
     const published = { projectId, publishedAt: { not: null } };
     const base: Prisma.DecisionWhereInput = { ...published, status: 'pending' };

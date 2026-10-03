@@ -23,3 +23,22 @@ export function fromIsoCivilDate(value: string | null | undefined): Date | null 
   if (!value) return null;
   return parseCivilDate(value);
 }
+
+/**
+ * U3a — the INSTANT a civil day begins in an IANA time zone (its local midnight, as a UTC `Date`),
+ * for windowing `DateTime` columns ("since yesterday" on a site's own calendar). Computed from the
+ * zone's offset at that midnight, re-checked once so a day that starts on a DST change still lands
+ * on the zone's real midnight. An unknown zone throws, like `Clock.today`.
+ */
+export function civilDayStartInstant(isoDate: string, timeZone: string): Date {
+  const guess = parseCivilDate(isoDate).getTime(); // UTC midnight of that calendar day
+  const offsetAt = (instant: number): number => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(new Date(instant));
+    const n = (t: string): number => Number(parts.find((p) => p.type === t)!.value);
+    return Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second')) - instant;
+  };
+  const first = guess - offsetAt(guess);
+  return new Date(guess - offsetAt(first));
+}
