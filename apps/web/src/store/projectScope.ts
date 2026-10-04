@@ -24,9 +24,10 @@ import type { CommercialBillRow, CommercialClaimView, CommercialView } from './c
 import type { AllocateLabourInput, Phase6_4dRollout } from '../data/apiGateway';
 
 /** #704 — one unsettled location create: the `Idempotency-Key` every send of it carries, how many of
- *  those sends are still out, and whether any of them failed (an unknown outcome, so a retry must
- *  replay under the same key). */
-export type NodeCreatePending = { key: string; inflight: number; failed: boolean };
+ *  those sends are still out, whether any of them failed (an unknown outcome, so a retry must replay
+ *  under the same key), and the place an answered but unconfirmed send named (`''` when the server
+ *  named none), which retires the key once this tab's tree shows it. */
+export type NodeCreatePending = { key: string; inflight: number; failed: boolean; awaiting: string | null };
 
 /**
  * The frontend project-scope lifecycle (Phase 0 Task 2).

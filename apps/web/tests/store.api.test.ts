@@ -610,7 +610,7 @@ describe('#704 — a location create uses the place the server names, bound to t
     expect(new Set(keys).size).toBe(3);
   });
 
-  it('a SUPERSEDED reply settles its key too: a later identical create is a new one (#704 Codex 4178318908)', async () => {
+  it('a SUPERSEDED reply keeps its key until the tree shows the place, then a new create is a new one (Codex 4178318908, shadow on 441bb0c)', async () => {
     const keys: unknown[] = [];
     let finish!: (snap: ApiSnapshot) => void;
     const gw = {
@@ -624,9 +624,13 @@ describe('#704 — a location create uses the place the server names, bound to t
     await flush();
     finish({ ...makeSnapshot({ nodes: [{ ...pantry('n-1'), name: 'Still Room' }] }), createdNodeId: 'n-1' } as ApiSnapshot);
     expect(await first).toBeNull(); // superseded: not claimed here, reconciled by the newer read
-    expect(s().nodeCreatePending).toEqual({});
+    // the tree does not show it yet: a retry replays under the same key (the server would otherwise add one)
     await s().addLocationNode({ ...PANTRY, name: 'Still Room' });
-    expect(keys[1]).not.toBe(keys[0]);
+    expect(keys[1]).toBe(keys[0]);
+    // the reconcile lands the place: the next identical create is a deliberate new one
+    useStore.setState({ nodes: [{ ...pantry('n-1'), name: 'Still Room' }] });
+    await s().addLocationNode({ ...PANTRY, name: 'Still Room' });
+    expect(keys[2]).not.toBe(keys[0]);
   });
 
   it('overlapping sends share the key until the LAST settles; a lost one keeps it for the retry (#704 Codex 4178462360)', async () => {

@@ -4450,21 +4450,29 @@ export const useStore = create<Store>()(
       // of adding a sibling. In memory only.
       const intent = JSON.stringify([identity, body.parentId, body.kind, body.name, body.publish]);
       // #704 Codex 4178462360 — overlapping sends of one intent share the key, which is kept until the
-      // LAST of them settles: retired then if every send was answered (the server made or replayed the
-      // place), kept if any failed (its outcome is unknown, so the retry must replay under it).
+      // LAST of them settles. It is retired only when the create is CONFIRMED in this tab's tree: an
+      // applied reply, or (for a reply that was superseded or dropped) a later read that shows the place
+      // the server named (shadow on 441bb0c; the labour-onboarding rule). A failed send keeps it, as
+      // its outcome is unknown: the retry replays under it (Codex 4178318908 for the rest).
+      const held = get().nodeCreatePending[intent];
+      if (held && held.inflight === 0 && held.awaiting && get().nodes.some((n) => n.id === held.awaiting)) {
+        set((s) => { delete s.nodeCreatePending[intent]; }); // the earlier create is confirmed: a new one
+      }
       const key = get().nodeCreatePending[intent]?.key ?? newIdempotencyKey();
       set((s) => {
         const p = s.nodeCreatePending[intent];
         if (p && p.key === key) p.inflight += 1;
-        else s.nodeCreatePending[intent] = { key, inflight: 1, failed: false };
+        else s.nodeCreatePending[intent] = { key, inflight: 1, failed: false, awaiting: null };
       });
-      const settle = (failed: boolean) => set((s) => {
+      const settle = (outcome: 'confirmed' | 'unconfirmed' | 'failed', placeId?: string) => set((s) => {
         const p = s.nodeCreatePending[intent];
         if (!p || p.key !== key) return; // torn down with the scope, or a newer intent's
         p.inflight -= 1;
-        if (failed) p.failed = true;
+        if (outcome === 'failed') p.failed = true;
+        if (outcome === 'unconfirmed') p.awaiting = placeId ?? p.awaiting ?? '';
+        if (outcome === 'confirmed') p.awaiting = null;
         if (p.inflight > 0) return;
-        if (p.failed) p.failed = false; // kept for the retry, which starts a fresh round
+        if (p.failed || p.awaiting !== null) p.failed = false; // kept: the retry replays under it
         else delete s.nodeCreatePending[intent];
       });
       try {
@@ -4473,12 +4481,12 @@ export const useStore = create<Store>()(
         try {
           snap = await gw.createNode(body, key);
         } catch (e) {
-          settle(true);
+          settle('failed');
           throw e;
         }
-        settle(false); // answered: the server made (or replayed) the place under this key
-        if (!sentBySameUser()) return null;
+        if (!sentBySameUser()) { settle('unconfirmed', snap.createdNodeId); return null; }
         const result = acceptSnapshot(snap, lease);
+        settle(result === 'applied' ? 'confirmed' : 'unconfirmed', snap.createdNodeId);
         if (result !== 'applied') {
           // a newer refresh owns the tree (superseded) or the payload was wrong-project;
           // don't claim success or return a node id the current tree may not reflect.
