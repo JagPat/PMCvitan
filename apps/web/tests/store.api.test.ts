@@ -610,6 +610,25 @@ describe('#704 — a location create uses the place the server names, bound to t
     expect(new Set(keys).size).toBe(3);
   });
 
+  it('a SUPERSEDED reply settles its key too: a later identical create is a new one (#704 Codex 4178318908)', async () => {
+    const keys: unknown[] = [];
+    let finish!: (snap: ApiSnapshot) => void;
+    const gw = {
+      createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return keys.length === 1 ? new Promise<ApiSnapshot>((r) => { finish = r; }) : Promise.reject(new Error('lost')); }),
+      renameNode: vi.fn(() => Promise.resolve(makeSnapshot())),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    const first = s().addLocationNode({ ...PANTRY, name: 'Still Room' });
+    s().renameNode('other', 'Lobby'); // a newer command's snapshot leases and applies first
+    await flush();
+    finish({ ...makeSnapshot({ nodes: [{ ...pantry('n-1'), name: 'Still Room' }] }), createdNodeId: 'n-1' } as ApiSnapshot);
+    expect(await first).toBeNull(); // superseded: not claimed here, reconciled by the newer read
+    expect(s().nodeCreatePending).toEqual({});
+    await s().addLocationNode({ ...PANTRY, name: 'Still Room' });
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
   it('a pending create key is project data: sign-out tears it down (#704 shadow P2 on 1aba8fa)', async () => {
     s()._setGateway({ createNode: vi.fn(() => Promise.reject(new Error('lost'))) } as unknown as ApiGateway);
     await s().addLocationNode({ ...PANTRY, name: 'Boot Room' });

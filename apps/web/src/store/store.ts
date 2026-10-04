@@ -4446,7 +4446,7 @@ export const useStore = create<Store>()(
       const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === identity;
       const gw = gateway;
       // one key per user and exact body, kept in this project's data (`nodeCreatePending`, torn down on
-      // a switch or sign-out) until an applied reply settles it: a retry after a lost reply replays on
+      // a switch or sign-out) until a server reply settles it: a retry after a lost reply replays on
       // the server (#700's ledger) instead of adding a sibling. In memory only.
       const intent = JSON.stringify([identity, body.parentId, body.kind, body.name, body.publish]);
       const key = get().nodeCreatePending[intent] ?? newIdempotencyKey();
@@ -4454,6 +4454,9 @@ export const useStore = create<Store>()(
       try {
         const lease = beginSnapshotLease(scope); // gate round 11: before the create request
         const snap = await gw.createNode(body, key);
+        // the server answered, so it made (or replayed) the place under this key: the intent is settled
+        // whatever this tab does with the reply. Only a request that failed keeps its key for the retry.
+        set((s) => { if (s.nodeCreatePending[intent] === key) delete s.nodeCreatePending[intent]; });
         if (!sentBySameUser()) return null;
         const result = acceptSnapshot(snap, lease);
         if (result !== 'applied') {
@@ -4466,7 +4469,6 @@ export const useStore = create<Store>()(
           else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
-        set((s) => { if (s.nodeCreatePending[intent] === key) delete s.nodeCreatePending[intent]; }); // applied: settled
         get().flash(`Added ${body.kind}: ${body.name}.`);
         // the server names the place (#703) — the one it made, or (#705) the one already holding the
         // name, which was in the tree before: never pick it by name or by what is new. A server without
