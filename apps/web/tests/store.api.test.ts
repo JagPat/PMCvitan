@@ -629,6 +629,24 @@ describe('#704 — a location create uses the place the server names, bound to t
     expect(keys[1]).not.toBe(keys[0]);
   });
 
+  it('overlapping sends share the key until the LAST settles; a lost one keeps it for the retry (#704 Codex 4178462360)', async () => {
+    const keys: unknown[] = [];
+    const replies: Array<{ ok: (s: ApiSnapshot) => void; fail: (e: Error) => void }> = [];
+    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return new Promise<ApiSnapshot>((ok, fail) => { replies.push({ ok, fail }); }); }) } as unknown as ApiGateway);
+    const BAY = { ...PANTRY, name: 'Bay' };
+    const a = s().addLocationNode(BAY);
+    const b = s().addLocationNode(BAY); // the same create, sent again before the first answered
+    replies[0]!.ok({ ...makeSnapshot({ nodes: [{ ...pantry('n-bay'), name: 'Bay' }] }), createdNodeId: 'n-bay' } as ApiSnapshot);
+    await a;
+    expect(s().nodeCreatePending).not.toEqual({}); // the second send is still out: the key stays
+    replies[1]!.fail(new Error('lost'));
+    await b;
+    s().addLocationNode(BAY); // the retry
+    expect(keys).toHaveLength(3);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).toBe(keys[0]); // replays, never a new command
+  });
+
   it('a pending create key is project data: sign-out tears it down (#704 shadow P2 on 1aba8fa)', async () => {
     s()._setGateway({ createNode: vi.fn(() => Promise.reject(new Error('lost'))) } as unknown as ApiGateway);
     await s().addLocationNode({ ...PANTRY, name: 'Boot Room' });

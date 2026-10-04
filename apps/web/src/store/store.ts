@@ -70,7 +70,7 @@ import { screensFor } from '@/lib/screens';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
 import { type DailyLogDraft, adoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
-import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type ProjectLoadState, type ProjectScope } from './projectScope';
+import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type NodeCreatePending, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
@@ -79,7 +79,7 @@ import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
 import { unlinkPushOnSignOut } from '@/data/push';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -303,7 +303,7 @@ export interface AppState {
   labourPendingInputs: Record<string, AllocateLabourInput>;
   labourOnboardPending: Record<string, string>;
   labourBindPending: Record<string, string>;
-  nodeCreatePending: Record<string, string>;
+  nodeCreatePending: Record<string, NodeCreatePending>;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
   placeFocus: string | null;
@@ -4446,17 +4446,37 @@ export const useStore = create<Store>()(
       const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === identity;
       const gw = gateway;
       // one key per user and exact body, kept in this project's data (`nodeCreatePending`, torn down on
-      // a switch or sign-out) until a server reply settles it: a retry after a lost reply replays on
-      // the server (#700's ledger) instead of adding a sibling. In memory only.
+      // a switch or sign-out): a retry after a lost reply replays on the server (#700's ledger) instead
+      // of adding a sibling. In memory only.
       const intent = JSON.stringify([identity, body.parentId, body.kind, body.name, body.publish]);
-      const key = get().nodeCreatePending[intent] ?? newIdempotencyKey();
-      set((s) => { s.nodeCreatePending[intent] = key; });
+      // #704 Codex 4178462360 — overlapping sends of one intent share the key, which is kept until the
+      // LAST of them settles: retired then if every send was answered (the server made or replayed the
+      // place), kept if any failed (its outcome is unknown, so the retry must replay under it).
+      const key = get().nodeCreatePending[intent]?.key ?? newIdempotencyKey();
+      set((s) => {
+        const p = s.nodeCreatePending[intent];
+        if (p && p.key === key) p.inflight += 1;
+        else s.nodeCreatePending[intent] = { key, inflight: 1, failed: false };
+      });
+      const settle = (failed: boolean) => set((s) => {
+        const p = s.nodeCreatePending[intent];
+        if (!p || p.key !== key) return; // torn down with the scope, or a newer intent's
+        p.inflight -= 1;
+        if (failed) p.failed = true;
+        if (p.inflight > 0) return;
+        if (p.failed) p.failed = false; // kept for the retry, which starts a fresh round
+        else delete s.nodeCreatePending[intent];
+      });
       try {
         const lease = beginSnapshotLease(scope); // gate round 11: before the create request
-        const snap = await gw.createNode(body, key);
-        // the server answered, so it made (or replayed) the place under this key: the intent is settled
-        // whatever this tab does with the reply. Only a request that failed keeps its key for the retry.
-        set((s) => { if (s.nodeCreatePending[intent] === key) delete s.nodeCreatePending[intent]; });
+        let snap: NodeCreatedSnapshot;
+        try {
+          snap = await gw.createNode(body, key);
+        } catch (e) {
+          settle(true);
+          throw e;
+        }
+        settle(false); // answered: the server made (or replayed) the place under this key
         if (!sentBySameUser()) return null;
         const result = acceptSnapshot(snap, lease);
         if (result !== 'applied') {
