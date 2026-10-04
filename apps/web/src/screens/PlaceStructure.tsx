@@ -31,9 +31,8 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   // the place being viewed: if that place goes (another PMC deleted it), nothing opens for the next one
   const [deleting, setDeleting] = useState<string | null>(null);
   const [allOpen, setAllOpen] = useState(false);
-  // #699 Codex 4174074853 — the form takes one submission at a time. Safety against a second place
-  // does not live here: `addLocationNode` joins an identical create in flight and keys it, so a retry
-  // after a lost reply replays on the server (#700) instead of adding one.
+  // #699 Codex 4174074853 — the form takes one submission at a time. A create that is retried after a
+  // lost reply is made exactly-once by the keyed create (server: #700; the client key is a follow-up unit)
   const [pending, setPending] = useState(false);
   // #699 shadow review on 3d0503b — a submission belongs to the form session that sent it. Closing the
   // form (Cancel, Escape, walking to another place) or opening a new one starts a new session, so a
@@ -82,8 +81,8 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
       const id = await addLocationNode({ name, kind: adding, parentId: active?.id ?? null, publish: true }).catch(() => null);
       if (session.current !== mine) return; // the form this was sent from is gone
       if (id) close();
-      // not confirmed: the form stays as typed, so Add retries under the same key, and the name guard
-      // says so if the re-read tree shows the place was added after all
+      // not confirmed: the form stays as typed, and the name guard says so if a re-read tree shows the
+      // place was added after all
       else setPending(false);
     }
   };

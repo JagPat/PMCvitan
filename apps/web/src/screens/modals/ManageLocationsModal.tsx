@@ -31,7 +31,9 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   const list = rowsFor(null, 0);
   const addZone = () => { if (newZone.trim()) { void addLocationNode({ name: newZone.trim(), kind: 'zone', parentId: null, publish: !asDraft }); setNewZone(''); } };
 
-  if (deleting) return <ConfirmLocationDelete nodeId={deleting} onClose={() => setDeleting(null)} />;
+  // #699 Codex 4175901889 — a delete whose place another PMC removed meanwhile has nothing left to
+  // confirm: the editor comes back rather than rendering an empty confirmation in its place
+  if (deleting && nodes.some((n) => n.id === deleting)) return <ConfirmLocationDelete nodeId={deleting} onClose={() => setDeleting(null)} />;
 
   return (
     <Modal onClose={onClose} maxWidth={480} labelledBy="manage-loc-title">

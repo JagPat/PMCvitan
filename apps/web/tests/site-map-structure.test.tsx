@@ -138,6 +138,17 @@ describe('B3 — the PMC builds the tree on the Site Map', () => {
 });
 
 describe('B4 — a location delete is confirmed first', () => {
+  it('the Locations editor comes back when the place it was deleting is removed elsewhere (Codex 4175901889)', async () => {
+    const { useStore, PlacesScreen } = await load();
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('manage-locations'));
+    fireEvent.click(r.getByRole('button', { name: /delete kitchen/i }));
+    expect(r.getByTestId('confirm-location-delete')).toBeInTheDocument();
+    act(() => { useStore.setState({ nodes: NODES.filter((n) => n.id !== 'kit') }); }); // removed elsewhere
+    expect(r.queryByTestId('confirm-location-delete')).toBeNull();
+    expect(r.getByText('Locations')).toBeInTheDocument(); // the editor, not a blank modal
+  });
+
   it('a delete opened for a place another PMC removes never re-opens for the next place viewed (Codex 4175744399)', async () => {
     const { useStore, PlacesScreen } = await load();
     act(() => { useStore.getState().openPlace('kit'); });
@@ -500,16 +511,6 @@ describe('#699 Codex round 3', () => {
     expect((r.getByLabelText('New object in Ground Floor') as HTMLInputElement).value).toBe('Gate');
   });
 
-  it('a failed create re-reads the tree from the server', async () => {
-    vi.resetModules();
-    const { useStore, getInitialState } = await import('@/store/store');
-    useStore.setState(getInitialState());
-    const snapshot = vi.fn(() => new Promise(() => {}));
-    useStore.getState()._setGateway({ createNode: vi.fn(() => Promise.reject(new Error('lost'))), snapshot } as never);
-    await useStore.getState().addLocationNode({ name: 'Pantry', kind: 'room', parentId: 'gf', publish: true });
-    expect(snapshot).toHaveBeenCalled();
-  });
-
   it('walking to another place closes the form, so Save never acts on a place it was not opened for (4174429322)', async () => {
     const renameNode = vi.fn();
     const { useStore, PlacesScreen } = await load({ renameNode });
@@ -520,58 +521,5 @@ describe('#699 Codex round 3', () => {
     fireEvent.click(r.getByTestId('place-node-kit')); // into Kitchen
     expect(r.queryByTestId('place-structure-form')).toBeNull();
     expect(renameNode).not.toHaveBeenCalled();
-  });
-});
-
-describe('#699 shadow review on ffe055d — one create per intent, from every screen that creates', () => {
-  const PANTRY = { name: 'Pantry', kind: 'room' as const, parentId: 'gf', publish: true };
-  const store = async (createNode: (...a: unknown[]) => Promise<unknown>) => {
-    vi.stubEnv('VITE_API_URL', 'http://api.test');
-    vi.resetModules();
-    const { useStore, getInitialState } = await import('@/store/store');
-    useStore.setState(getInitialState());
-    useStore.setState({ activeProjectId: 'villa-b', projectLoadState: 'ready', role: 'pmc', nodes: NODES });
-    useStore.getState()._setGateway({ createNode: vi.fn(createNode), snapshot: vi.fn(() => new Promise(() => {})) } as never);
-    return useStore;
-  };
-
-  it('an identical create sent again while the first is in flight carries the SAME key, so the server makes one place', async () => {
-    const keys: unknown[] = [];
-    const useStore = await store((_body, key) => { keys.push(key); return new Promise(() => {}); });
-    void useStore.getState().addLocationNode(PANTRY);
-    void useStore.getState().addLocationNode({ ...PANTRY, name: ' Pantry ' }); // the editor or picker, same intent
-    expect(keys).toHaveLength(2);
-    expect(keys[1]).toBe(keys[0]);
-  });
-
-  it('the same user in a new session sends their own request under the same key, never a stale joined promise (Codex 4175744400)', async () => {
-    const keys: unknown[] = [];
-    let call = 0;
-    const useStore = await store((_body, key) => { keys.push(key); call += 1; return call === 1 ? new Promise(() => {}) : Promise.reject(new Error('lost')); });
-    void useStore.getState().addLocationNode(PANTRY); // session 1's create, still pending
-    act(() => { useStore.setState({ activeProjectId: 'villa-c' }); }); // leaves the project…
-    act(() => { useStore.setState({ activeProjectId: 'villa-b' }); }); // …and comes back
-    await useStore.getState().addLocationNode(PANTRY);
-    expect(keys).toHaveLength(2); // the new session's own request was sent
-    expect(keys[1]).toBe(keys[0]); // under the intent's key, so the server replays one place
-  });
-
-  it('a retry after a lost reply carries the SAME Idempotency-Key, so the server replays it', async () => {
-    const keys: unknown[] = [];
-    const useStore = await store((_body, key) => { keys.push(key); return Promise.reject(new Error('lost')); });
-    await useStore.getState().addLocationNode(PANTRY);
-    await useStore.getState().addLocationNode(PANTRY);
-    expect(keys).toHaveLength(2);
-    expect(keys[0]).toEqual(expect.any(String));
-    expect(keys[1]).toBe(keys[0]);
-  });
-
-  it('a different place is a different intent', async () => {
-    const keys: unknown[] = [];
-    const useStore = await store((_body, key) => { keys.push(key); return new Promise(() => {}); });
-    void useStore.getState().addLocationNode(PANTRY);
-    void useStore.getState().addLocationNode({ ...PANTRY, parentId: 'kit' });
-    expect(keys).toHaveLength(2);
-    expect(keys[1]).not.toBe(keys[0]);
   });
 });
