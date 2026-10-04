@@ -27,7 +27,9 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   const [adding, setAdding] = useState<NewKind | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [value, setValue] = useState('');
-  const [deleting, setDeleting] = useState(false);
+  // #699 Codex 4175744399 — the delete is bound to the place it was opened for, never re-derived from
+  // the place being viewed: if that place goes (another PMC deleted it), nothing opens for the next one
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [allOpen, setAllOpen] = useState(false);
   // #699 Codex 4174074853 — the form takes one submission at a time. Safety against a second place
   // does not live here: `addLocationNode` joins an identical create in flight and keys it, so a retry
@@ -48,7 +50,7 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   // #699 Codex 4174429322 — the form acts on the place it was OPENED for: walking to another place
   // (a child card, a crumb) closes it, so Save can never rename or add under a place it was not opened on
   const activeId = active?.id ?? null;
-  useEffect(() => { close(); }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { close(); setDeleting(null); }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!can('node.manage', role)) return null;
   // …and refuses a name this place already holds (drafts included): a second "Kitchen" under the same
@@ -111,7 +113,7 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
             <Button variant="light" onClick={startRename} data-testid="place-rename" aria-label={`Rename ${active.name}`} style={btn}>
               <Pencil size={13} /> Rename
             </Button>
-            <Button variant="dangerOutline" onClick={() => setDeleting(true)} data-testid="place-delete" aria-label={`Delete ${active.name}`} style={btn}>
+            <Button variant="dangerOutline" onClick={() => setDeleting(active.id)} data-testid="place-delete" aria-label={`Delete ${active.name}`} style={btn}>
               <Trash2 size={13} /> Delete
             </Button>
           </>
@@ -156,7 +158,7 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
         </form>
       )}
 
-      {deleting && active && <ConfirmLocationDelete nodeId={active.id} onClose={() => setDeleting(false)} />}
+      {deleting && <ConfirmLocationDelete nodeId={deleting} onClose={() => setDeleting(null)} />}
       {allOpen && <ManageLocationsModal onClose={() => setAllOpen(false)} />}
     </div>
   );

@@ -777,10 +777,9 @@ export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): bool
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
-/** #699 — location creates by intent (user, project, parent, kind, name, publish): the one in flight,
- *  or the key of one whose outcome was lost, which its retry must reuse (`addLocationNode`). */
-interface NodeCreate { key: string; inFlight: Promise<string | null> | null }
-const nodeCreates = new Map<string, NodeCreate>();
+/** #699 — the `Idempotency-Key` of each unsettled location create, by intent (user, project, parent,
+ *  kind, name, publish): reused by every send of that intent until an applied snapshot settles it. */
+const nodeCreateKeys = new Map<string, string>();
 /** U3b — the newest brief request; a reply to any earlier one is superseded and dropped (the landing,
  *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
 let briefRequestSeq = 0;
@@ -4407,63 +4406,52 @@ export const useStore = create<Store>()(
       }
       const before = new Set(get().nodes.map((n) => n.id));
       const scope = currentScope();
-      // #699 shadow review — one create per intent, whichever screen sends it (the Site Map, the
-      // Locations editor, the filing picker). The exact body is the intent: an identical create
-      // already in flight is joined, not re-sent; a create whose outcome was lost keeps its
-      // `Idempotency-Key`, so the retry replays on the server instead of adding a second place.
+      // #699 — one place per create intent, whichever screen sends it (the Site Map, the Locations
+      // editor, the filing picker). The intent carries ONE `Idempotency-Key` until an applied snapshot
+      // settles it, so a double submit, a retry after a lost or superseded reply, or the same create
+      // sent again from a new session all reach the server under the same key, and #700's ledger
+      // replays the one committed create. Nothing is shared but the key: each call sends its own
+      // request and reads its own reply against its own scope (Codex 4175744400: a joined promise
+      // from an older session would answer for the new one).
       const body = { name: input.name.trim(), kind: input.kind, parentId: input.parentId ?? null, publish: input.publish ?? true };
       // #699 Codex 4175492269 — the intent is the submitting identity's: the server's replay receipt is
-      // scoped by actor, so another user signed in on this device never joins or reuses it
+      // scoped by actor, so another user signed in on this device never reuses it
       const intent = JSON.stringify([get().sessionUserId, scope.projectId, body.parentId, body.kind, body.name, body.publish]);
-      const prior = nodeCreates.get(intent);
-      if (prior?.inFlight) return prior.inFlight;
-      const key = prior?.key ?? newIdempotencyKey();
-      let answered = false;
-      const run = (async (): Promise<string | null> => {
-        try {
-          const lease = beginSnapshotLease(scope); // gate round 11: before the create request
-          const snap = await gateway!.createNode(body, key);
-          const result = acceptSnapshot(snap, lease);
+      const key = nodeCreateKeys.get(intent) ?? newIdempotencyKey();
+      nodeCreateKeys.set(intent, key);
+      try {
+        const lease = beginSnapshotLease(scope); // gate round 11: before the create request
+        const snap = await gateway.createNode(body, key);
+        const result = acceptSnapshot(snap, lease);
+        if (result !== 'applied') {
           // #699 Codex 4175348826 — only an APPLIED snapshot settles the intent. A superseded one means
           // the place was created but this tree may not show it yet (and the recovery read can fail),
           // so the key stays: a retry replays the committed create instead of adding a second place.
-          answered = result === 'applied';
-          if (result !== 'applied') {
-            // a newer refresh owns the tree (superseded) or the payload was wrong-project;
-            // don't claim success or return a node id the current tree may not reflect.
-            // gate round 12/13: on superseded the node WAS created — record a command
-            // reconcile requirement so it lands (or exposes Retry) even if the newer
-            // refresh fails; on wrong-project, recover.
-            if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
-            else if (result === 'invalid-project') void requestFreshSnapshot();
-            return null;
-          }
-          get().flash(`Added ${body.kind}: ${body.name}.`);
-          // the newly-created node is the one whose id wasn't present before; a replayed create's
-          // node may already have been in the tree, so fall back to the sibling it created
-          const nodes = get().nodes;
-          const same = (n: ProjectNode) => n.name === body.name && n.kind === body.kind && (n.parentId ?? null) === body.parentId;
-          return (nodes.find((n) => !before.has(n.id) && same(n)) ?? nodes.find(same))?.id ?? null;
-        } catch {
-          // gate round 12: a failure landing after a switch must not toast into project B.
-          if (!scopeStillCurrent(scope)) return null;
-          get().flash('Could not add the location — check your access and try again.');
-          // #699 Codex 4174429320 — re-read the tree, so the form judges a retry against what the
-          // server holds (the Site Map refuses a name its parent already has).
-          void requestFreshSnapshot();
+          // gate round 12/13: on superseded the node WAS created — record a command reconcile
+          // requirement so it lands (or exposes Retry) even if the newer refresh fails; on
+          // wrong-project, recover.
+          if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+          else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
-      })();
-      const entry: NodeCreate = { key, inFlight: run };
-      nodeCreates.set(intent, entry);
-      // settled asynchronously (after this entry is stored, before the caller resumes): an applied
-      // result ends the intent, so the next create of it is a new one; any other outcome keeps the
-      // key with the intent for the retry
-      void run.finally(() => {
-        if (answered) nodeCreates.delete(intent);
-        else entry.inFlight = null;
-      });
-      return run;
+        // applied: the intent is settled, so the next create of it is a new one
+        if (nodeCreateKeys.get(intent) === key) nodeCreateKeys.delete(intent);
+        get().flash(`Added ${body.kind}: ${body.name}.`);
+        // the newly-created node is the one whose id wasn't present before; a replayed create's
+        // node may already have been in the tree, so fall back to the sibling it created
+        const nodes = get().nodes;
+        const same = (n: ProjectNode) => n.name === body.name && n.kind === body.kind && (n.parentId ?? null) === body.parentId;
+        return (nodes.find((n) => !before.has(n.id) && same(n)) ?? nodes.find(same))?.id ?? null;
+      } catch {
+        // the outcome is unknown: the key stays with the intent for the retry
+        // gate round 12: a failure landing after a switch must not toast into project B.
+        if (!scopeStillCurrent(scope)) return null;
+        get().flash('Could not add the location — check your access and try again.');
+        // #699 Codex 4174429320 — re-read the tree, so the form judges a retry against what the
+        // server holds (the Site Map refuses a name its parent already has).
+        void requestFreshSnapshot();
+        return null;
+      }
     },
     renameNode: (nodeId, name) => {
       if (!gateway) {

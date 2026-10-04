@@ -138,6 +138,18 @@ describe('B3 — the PMC builds the tree on the Site Map', () => {
 });
 
 describe('B4 — a location delete is confirmed first', () => {
+  it('a delete opened for a place another PMC removes never re-opens for the next place viewed (Codex 4175744399)', async () => {
+    const { useStore, PlacesScreen } = await load();
+    act(() => { useStore.getState().openPlace('kit'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-delete'));
+    expect(r.getByTestId('confirm-location-delete')).toBeInTheDocument();
+    act(() => { useStore.setState({ nodes: NODES.filter((n) => n.id !== 'kit') }); }); // removed elsewhere
+    expect(r.queryByTestId('confirm-location-delete')).toBeNull();
+    act(() => { useStore.getState().openPlace('door'); });
+    expect(r.queryByTestId('confirm-location-delete')).toBeNull(); // Main Door's delete was never asked for
+  });
+
   it('nothing is deleted until the PMC confirms, and the dialog says what happens', async () => {
     const deleteNode = vi.fn();
     const { useStore, PlacesScreen } = await load({ deleteNode, activities: [activity('A-1', 'Tiling', 'kit')] });
@@ -523,12 +535,25 @@ describe('#699 shadow review on ffe055d — one create per intent, from every sc
     return useStore;
   };
 
-  it('an identical create already in flight is joined, never sent twice (the Locations editor and the picker included)', async () => {
-    let calls = 0;
-    const useStore = await store(() => { calls += 1; return new Promise(() => {}); });
+  it('an identical create sent again while the first is in flight carries the SAME key, so the server makes one place', async () => {
+    const keys: unknown[] = [];
+    const useStore = await store((_body, key) => { keys.push(key); return new Promise(() => {}); });
     void useStore.getState().addLocationNode(PANTRY);
-    void useStore.getState().addLocationNode({ ...PANTRY, name: ' Pantry ' });
-    expect(calls).toBe(1);
+    void useStore.getState().addLocationNode({ ...PANTRY, name: ' Pantry ' }); // the editor or picker, same intent
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('the same user in a new session sends their own request under the same key, never a stale joined promise (Codex 4175744400)', async () => {
+    const keys: unknown[] = [];
+    let call = 0;
+    const useStore = await store((_body, key) => { keys.push(key); call += 1; return call === 1 ? new Promise(() => {}) : Promise.reject(new Error('lost')); });
+    void useStore.getState().addLocationNode(PANTRY); // session 1's create, still pending
+    act(() => { useStore.setState({ activeProjectId: 'villa-c' }); }); // leaves the project…
+    act(() => { useStore.setState({ activeProjectId: 'villa-b' }); }); // …and comes back
+    await useStore.getState().addLocationNode(PANTRY);
+    expect(keys).toHaveLength(2); // the new session's own request was sent
+    expect(keys[1]).toBe(keys[0]); // under the intent's key, so the server replays one place
   });
 
   it('a retry after a lost reply carries the SAME Idempotency-Key, so the server replays it', async () => {
