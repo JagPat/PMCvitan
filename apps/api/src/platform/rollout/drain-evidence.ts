@@ -281,12 +281,15 @@ export function isGitCommitSha(value: string): boolean {
 }
 
 /**
- * Build packs whose production image tag is the deployment commit (`{uuid}:{commit}`), from Coolify's
+ * Build packs whose one production image is tagged `{uuid}:{commit}`, from Coolify's
  * `ApplicationDeploymentJob::generate_image_names`. `dockerimage` tags a registry image instead.
- * A pasted Dockerfile (the `dockerfile` column) tags `:latest`, but that column is hidden from a
- * read-only token; when the response actually carries a non-empty value the commit is refused.
+ * `dockercompose` is not here: a compose file can keep a service on an image that is not that commit,
+ * and the read-only API does not return every running service image, so a deployment commit is not
+ * an inventory of what is serving. A pasted Dockerfile (the `dockerfile` column) tags `:latest`, but
+ * that column is hidden from a read-only token; when the response actually carries a non-empty value
+ * the commit is refused.
  */
-const COMMIT_TAGGED_BUILD_PACKS: ReadonlySet<string> = new Set(['dockerfile', 'nixpacks', 'static', 'dockercompose']);
+const COMMIT_TAGGED_BUILD_PACKS: ReadonlySet<string> = new Set(['dockerfile', 'nixpacks', 'static']);
 
 /** One page of `GET /deployments/applications/{uuid}`. Coolify's own default page is 10; this stays bounded. */
 export const DEPLOYMENT_HISTORY_PAGE = 20;
@@ -504,7 +507,10 @@ export function coolifyInventoryReader(opts: { baseUrl: string; token: string; f
         if (inlineDockerfile !== '') {
           resolved = { decision: 'unresolved', reason: 'an inline Dockerfile is set, so the running image is tagged latest rather than with a commit', inProgress: [] };
         } else if (!COMMIT_TAGGED_BUILD_PACKS.has(pack)) {
-          resolved = { decision: 'unresolved', reason: `build_pack ${JSON.stringify(pack || null)} does not tag the running image with the deployment commit`, inProgress: [] };
+          const reason = pack === 'dockercompose'
+            ? 'build_pack "dockercompose" can serve a service from an image that is not the deployment commit, and this command cannot see every running service image'
+            : `build_pack ${JSON.stringify(pack || null)} does not tag the running image with the deployment commit`;
+          resolved = { decision: 'unresolved', reason, inProgress: [] };
         } else {
           try {
             resolved = await history(appUuid, application.id);

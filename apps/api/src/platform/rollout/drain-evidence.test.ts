@@ -209,23 +209,30 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
     expect(stuckJudged.findings.join('\n')).toMatch(/git_commit_sha is "HEAD", not a commit SHA/);
     expect(stuckJudged.findings.join('\n')).toMatch(/not a commit SHA/);
 
-    // a registry image is not a git commit, and a pasted Dockerfile tags :latest; neither consults deployment history
+    // a registry image is not a git commit, a pasted Dockerfile tags :latest, and a compose file can
+    // keep a service on some other image; none of them is the deployment commit, even when history has one
     for (const application of [
-      { build_pack: 'dockerimage', dockerfile: '' },
-      { build_pack: 'dockerfile', dockerfile: 'FROM node:22' },
+      { build_pack: 'dockerimage', dockerfile: '', finding: /does not tag the running image with the deployment commit/ },
+      { build_pack: 'dockerfile', dockerfile: 'FROM node:22', finding: /inline Dockerfile/ },
+      { build_pack: 'dockercompose', dockerfile: '', finding: /cannot see every running service image/ },
     ]) {
       const urls: string[] = [];
       const refused = await coolifyInventoryReader({
         baseUrl: 'https://coolify.example/api/v1', token: 't',
         fetch: vi.fn(async (url: string) => {
           urls.push(url);
-          if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => ({ id: 7, uuid: 'app-1', name: 'n', status: 'running:healthy', git_commit_sha: 'HEAD', ...application }) };
+          if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => ({ id: 7, uuid: 'app-1', name: 'n', status: 'running:healthy', git_commit_sha: 'HEAD', build_pack: application.build_pack, dockerfile: application.dockerfile }) };
           if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [] };
+          if (url.includes('/deployments/applications/')) return { ok: true, status: 200, json: async () => ({ count: 1, deployments: [historyRow()] }) };
           return { ok: false, status: 404, json: async () => ({}) };
         }),
       }).read('app-1');
-      expect(urls.some((url) => url.includes('/deployments/applications/'))).toBe(false);
-      expect(judgeDrain(base({ platform: { inventory: refused } })).verdict).toBe('unclassified');
+      expect(urls.some((url) => url.includes('/deployments/applications/')), application.build_pack).toBe(false);
+      expect(refused.application.gitCommitSha).toBe('HEAD');
+      expect(refused.application.runningCommit).toBeUndefined();
+      const judged = judgeDrain(base({ platform: { inventory: refused }, classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [IMAGE]: 'at-or-after' }) }));
+      expect(judged.verdict, application.build_pack).toBe('unclassified');
+      expect(judged.findings.join('\n'), application.build_pack).toMatch(application.finding);
     }
 
     // history is paged until a finished production deployment; a full page of failures is not the end

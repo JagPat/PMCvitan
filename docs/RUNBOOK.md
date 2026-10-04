@@ -1348,9 +1348,11 @@ the command does not know is counted in progress and named. `git_commit_sha` is 
 was built from when it is a commit. Coolify's default is the literal `HEAD`, which means "track the
 branch tip" and is not the running image; the image is tagged `{application uuid}:{commit}` from the
 deployment that produced it. In that case the command reads `GET /deployments/applications/{uuid}`
-(the same read-only token) and uses the newest finished production deployment's `commit`. A value it
-cannot verify — no such deployment, a commit that is still `HEAD`, a status it does not know — stays
-unclassified. Each release is placed against the
+(the same read-only token) and uses the newest finished production deployment's `commit`, for a
+build pack whose one image is that tag (`dockerfile`, `nixpacks`, `static`). A Docker Compose
+application stays unclassified: that commit does not identify every service image, and the read-only
+API does not return them. A value it cannot verify — no such deployment, a commit that is still
+`HEAD`, a status it does not know — stays unclassified. Each release is placed against the
 minimum by git ancestry in `--repo`. The verdict is `drained` only when the application runs an image
 at or after the minimum, no deployment of it is in progress, and every live lease is at the minimum
 catalog version; anything provably older is `not-drained`; anything it cannot place — no token, a
