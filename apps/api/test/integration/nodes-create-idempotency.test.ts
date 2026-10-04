@@ -10,11 +10,11 @@ import type { AuthUser } from '../../src/common/auth';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * #699 (shadow review on `ffe055d`) — a location create is idempotent under its `Idempotency-Key`.
- * A place has no natural key (two rooms may share a name), so before this a double submit, or a
- * retry sent while the first request was still in flight, created two same-named siblings. The
- * create now runs through the command ledger: the same key + body creates the place once and
- * replays; concurrent same-key creates resolve to one winner; a different body under the key is a
- * 409; an unkeyed create keeps today's behavior.
+ * Before this a double submit, or a retry sent while the first request was still in flight,
+ * created two same-named siblings. The create runs through the command ledger: the same key + body
+ * creates the place once and replays; concurrent same-key creates resolve to one winner; a
+ * different body under the key is a 409. #704 redesign: a name already held under the parent is
+ * the place's natural key, so a create of it under any key (or none) names that place.
  */
 describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
   let t: TestApp;
@@ -48,8 +48,8 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
     const replay = await svc.create(p(), input, pmc(), 'k-node'); // retry after a lost reply
     expect(await zones('Idem Ground')).toBe(1);
     const node = await t.prisma.projectNode.findFirstOrThrow({ where: { projectId: p(), name: 'Idem Ground' } });
-    // the reply names the place it made, and the replay names the same one (names may repeat, so a
-    // client must never have to find it by name)
+    // the reply names the place it made, and the replay names the same one (places that already
+    // share a name may exist, so a client must never have to find it by name)
     expect(first.createdNodeId).toBe(node.id);
     expect(replay.createdNodeId).toBe(node.id);
     expect(await t.prisma.domainEvent.count({ where: { projectId: p(), eventType: 'node.created', entityId: node.id } })).toBe(1);

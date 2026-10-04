@@ -15,8 +15,8 @@ import type { CreateNodeInput, MoveNodeInput, RenameNodeInput } from '../contrac
 import type { SnapshotDto } from '../snapshot/types';
 
 /** The `POST /nodes` reply: the caller's snapshot plus the id of the place this create made, the same
- *  id on a replay, so a client never has to pick its new place out of the tree by name (names may
- *  repeat). The snapshot's own key set is unchanged. */
+ *  id on a replay, so a client never has to pick its new place out of the tree by name (places made
+ *  before the sibling-name rule may share one). The snapshot's own key set is unchanged. */
 export type NodeCreatedDto = SnapshotDto & { createdNodeId: string };
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
