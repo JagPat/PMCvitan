@@ -237,6 +237,10 @@ export interface UpdateDecisionDraftInput {
 }
 
 /** Create a location-tree node (PMC). */
+/** The `POST /nodes` reply (#703): the snapshot plus the id of the place the create made, the same id
+ *  on a replay. Absent from a server older than #703. Not part of `ApiSnapshot`'s key set. */
+export type NodeCreatedSnapshot = ApiSnapshot & { createdNodeId?: string };
+
 export interface NewNodeInput {
   name: string;
   kind: NodeKind;
@@ -730,9 +734,11 @@ export class ApiGateway {
   updateDecisionDraft(decisionId: string, input: UpdateDecisionDraftInput, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.req(`/projects/${this.projectId}/decisions/${decisionId}/draft`, { method: 'PATCH', body: JSON.stringify(input), headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined });
   }
-  /** Create a location node (zone/room/element) — PMC. Returns a node-carrying snapshot. */
-  createNode(input: NewNodeInput): Promise<ApiSnapshot> {
-    return this.p('/nodes', input);
+  /** Create a location node (zone/room/element) — PMC. Returns a node-carrying snapshot plus the
+   *  created node's id (#703). An `idempotencyKey` makes a retried create land once: the server
+   *  replays it and names the same node. */
+  createNode(input: NewNodeInput, idempotencyKey?: string): Promise<NodeCreatedSnapshot> {
+    return this.p('/nodes', input, idempotencyKey) as Promise<NodeCreatedSnapshot>;
   }
   /** Publish a private draft node (PMC) — reveals it (and its draft branch) to everyone. */
   publishNode(nodeId: string): Promise<ApiSnapshot> {

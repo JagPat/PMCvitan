@@ -777,6 +777,8 @@ export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): bool
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+/** #699 follow-up — the in-session copy of the location-create keys (`readCreateKeys`). */
+const createKeysMemo = new Map<string, Record<string, string>>();
 /** U3b — the newest brief request; a reply to any earlier one is superseded and dropped (the landing,
  *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
 let briefRequestSeq = 0;
@@ -1324,6 +1326,30 @@ export const useStore = create<Store>()(
      *  unsequenced apply cannot be reintroduced. */
     // ── #669 Today regression — the pending daily-log draft (store/dailyLogDraft.ts) ──
     // The signed-in user (JWT sub), as the outbox scopes it — 'anon' for the passwordless dev session.
+    /** #699 follow-up — the unsettled location-create keys of one user + project, kept across reloads.
+     *  Storage that is unavailable or corrupt reads as none: the create still works, only unkeyed. */
+    const readCreateKeys = (at: string): Record<string, string> => {
+      try {
+        const storage = globalThis.localStorage;
+        if (!storage) return { ...(createKeysMemo.get(at) ?? {}) };
+        const raw = storage.getItem(at);
+        const parsed: unknown = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {};
+      } catch {
+        return { ...(createKeysMemo.get(at) ?? {}) };
+      }
+    };
+    const writeCreateKeys = (at: string, keys: Record<string, string>): void => {
+      createKeysMemo.set(at, keys); // this session's copy, for when storage is unavailable
+      try {
+        const storage = globalThis.localStorage;
+        if (!storage) return;
+        if (Object.keys(keys).length === 0) storage.removeItem(at);
+        else storage.setItem(at, JSON.stringify(keys));
+      } catch {
+        /* storage unavailable — the key still covers this session's retries */
+      }
+    };
     const sessionSub = (): string => {
       const token = get().sessionToken;
       if (!token) return 'anon';
@@ -4434,25 +4460,40 @@ export const useStore = create<Store>()(
       }
       const before = new Set(get().nodes.map((n) => n.id));
       const scope = currentScope();
+      // #699 follow-up — one place per create intent, from whichever screen sends it. The intent (the
+      // exact body) carries ONE `Idempotency-Key` until an applied snapshot settles it, so a double
+      // submit, a retry after a lost or superseded reply, the same create from a new session, or a retry
+      // after a page reload all reach the server under the same key, and its ledger (#700) makes one
+      // place. Keys are kept per signed-in user and project (the server's receipt is actor-scoped).
+      const body = { name: input.name.trim(), kind: input.kind, parentId: input.parentId ?? null, publish: input.publish ?? true };
+      const intent = JSON.stringify([body.parentId, body.kind, body.name, body.publish]);
+      const keysAt = `vitan.nodeCreateKeys.${sessionSub()}.${scope.projectId}`;
+      const keys = readCreateKeys(keysAt);
+      const key = keys[intent] ?? newIdempotencyKey();
+      writeCreateKeys(keysAt, { ...keys, [intent]: key });
       try {
         const lease = beginSnapshotLease(scope); // gate round 11: before the create request
-        const snap = await gateway.createNode(input);
+        const snap = await gateway.createNode(body, key);
         const result = acceptSnapshot(snap, lease);
         if (result !== 'applied') {
-          // a newer refresh owns the tree (superseded) or the payload was wrong-project;
-          // don't claim success or return a node id the current tree may not reflect.
-          // gate round 12/13: on superseded the node WAS created — record a command
-          // reconcile requirement so it lands (or exposes Retry) even if the newer
-          // refresh fails; on wrong-project, recover.
+          // only an APPLIED snapshot settles the intent: on a superseded one the place WAS created but
+          // this tree may not show it yet, so the key stays and a retry replays it.
+          // gate round 12/13: on superseded record a command reconcile requirement so it lands (or
+          // exposes Retry) even if the newer refresh fails; on wrong-project, recover.
           if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
           else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
-        get().flash(`Added ${input.kind}: ${input.name}.`);
-        // the newly-created node is the one whose id wasn't present before
-        const created = get().nodes.find((n) => !before.has(n.id) && n.name === input.name && n.kind === input.kind);
-        return created?.id ?? null;
+        const settled = readCreateKeys(keysAt);
+        if (settled[intent] === key) { delete settled[intent]; writeCreateKeys(keysAt, settled); }
+        get().flash(`Added ${body.kind}: ${body.name}.`);
+        // the server names the place it made (#703), the same one on a replay: never pick it by name,
+        // which may repeat. A server without the field: the node that was not in the tree before.
+        const nodes = get().nodes;
+        if (snap.createdNodeId) return nodes.some((n) => n.id === snap.createdNodeId) ? snap.createdNodeId : null;
+        return nodes.find((n) => !before.has(n.id) && n.name === body.name && n.kind === body.kind)?.id ?? null;
       } catch {
+        // the outcome is unknown: the key stays with the intent for the retry
         // gate round 12: a failure landing after a switch must not toast into project B.
         if (scopeStillCurrent(scope)) get().flash('Could not add the location — check your access and try again.');
         return null;
