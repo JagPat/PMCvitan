@@ -592,4 +592,16 @@ describe('#699 — a location create keeps its key until an applied snapshot set
     expect(keys).toHaveLength(2);
     expect(keys[1]).toBe(keys[0]);
   });
+
+  it('another signed-in user never joins or reuses a create (Codex 4175492269)', async () => {
+    const keys: unknown[] = [];
+    const gw = { createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return new Promise<ApiSnapshot>(() => {}); }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState({ sessionUserId: 'u-a' });
+    void s().addLocationNode(PANTRY); // A's create, still in flight
+    useStore.setState({ sessionUserId: 'u-b' });
+    void s().addLocationNode(PANTRY); // B submits the same body
+    expect(keys).toHaveLength(2); // B's request is sent, not joined to A's
+    expect(keys[1]).not.toBe(keys[0]);
+  });
 });

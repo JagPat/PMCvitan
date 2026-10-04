@@ -777,7 +777,7 @@ export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): bool
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
-/** #699 — location creates by intent (project, parent, kind, name, publish): the one in flight,
+/** #699 — location creates by intent (user, project, parent, kind, name, publish): the one in flight,
  *  or the key of one whose outcome was lost, which its retry must reuse (`addLocationNode`). */
 interface NodeCreate { key: string; inFlight: Promise<string | null> | null }
 const nodeCreates = new Map<string, NodeCreate>();
@@ -4412,7 +4412,9 @@ export const useStore = create<Store>()(
       // already in flight is joined, not re-sent; a create whose outcome was lost keeps its
       // `Idempotency-Key`, so the retry replays on the server instead of adding a second place.
       const body = { name: input.name.trim(), kind: input.kind, parentId: input.parentId ?? null, publish: input.publish ?? true };
-      const intent = JSON.stringify([scope.projectId, body.parentId, body.kind, body.name, body.publish]);
+      // #699 Codex 4175492269 — the intent is the submitting identity's: the server's replay receipt is
+      // scoped by actor, so another user signed in on this device never joins or reuses it
+      const intent = JSON.stringify([get().sessionUserId, scope.projectId, body.parentId, body.kind, body.name, body.publish]);
       const prior = nodeCreates.get(intent);
       if (prior?.inFlight) return prior.inFlight;
       const key = prior?.key ?? newIdempotencyKey();

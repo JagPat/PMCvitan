@@ -346,13 +346,17 @@ export function ScheduleScreen() {
   useEffect(() => {
     if (activityFocus === null) return;
     const row = document.getElementById(`sched-${activityFocus}`);
+    // #699 Codex 4175492267 — a module-owned read still in flight has not rendered the row yet: keep
+    // the intent until it lands. Once the read has settled (or failed, which shows its own boundary)
+    // an absent row is not coming, so the intent is dropped.
+    if (!row && reading) return;
     if (row) {
       row.scrollIntoView?.({ block: 'center' });
       row.focus({ preventScroll: true });
       setHighlight(activityFocus);
     }
     clearActivityFocus();
-  }, [activityFocus, clearActivityFocus, activities]);
+  }, [activityFocus, clearActivityFocus, activities, reading]);
   useEffect(() => {
     if (highlight === null) return;
     const t = setTimeout(() => setHighlight(null), 2500);

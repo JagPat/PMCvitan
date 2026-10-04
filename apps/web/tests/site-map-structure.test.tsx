@@ -223,6 +223,29 @@ describe("F-02 — a place's work names its phase and dates and leads to the sch
     expect(document.activeElement).toBe(row);
     expect(useStore.getState().activityFocus).toBeNull();
   });
+
+  it('a module-owned activity read still loading keeps the focus until the row arrives (Codex 4175492267)', async () => {
+    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
+    const { useStore } = await load({ phases: [PHASE], activities: [], activitiesLoad: 'loading' });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    act(() => { useStore.getState().openActivity('A-1'); });
+    const r = render(<ScheduleScreen />);
+    expect(useStore.getState().activityFocus).toBe('A-1'); // the row is not there yet: the intent stays
+    act(() => { useStore.setState({ activities: [activity('A-1', 'Tiling', 'kit', 'ph-fin')], activitiesLoad: 'ready' }); });
+    const row = r.getByTestId('sched-A-1');
+    expect(row).toHaveAttribute('data-highlighted', 'true');
+    expect(document.activeElement).toBe(row);
+    expect(useStore.getState().activityFocus).toBeNull();
+  });
+
+  it('a settled read without the row lets the focus go', async () => {
+    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
+    const { useStore } = await load({ phases: [PHASE], activities: [activity('A-2', 'Paint', 'kit', 'ph-fin')], activitiesLoad: 'ready' });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    act(() => { useStore.getState().openActivity('A-gone'); });
+    render(<ScheduleScreen />);
+    expect(useStore.getState().activityFocus).toBeNull();
+  });
 });
 
 describe('B4 — schedule deletes are confirmed first', () => {
