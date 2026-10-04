@@ -777,10 +777,6 @@ export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): bool
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
-/** #699 follow-up — the in-session copy of the location-create keys (`readCreateKeys`). */
-const createKeysMemo = new Map<string, Record<string, string>>();
-/** The scopes whose last storage write failed, so `readCreateKeys` merges the in-session copy. */
-const createKeysWriteFailed = new Set<string>();
 /** U3b — the newest brief request; a reply to any earlier one is superseded and dropped (the landing,
  *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
 let briefRequestSeq = 0;
@@ -1328,60 +1324,6 @@ export const useStore = create<Store>()(
      *  unsequenced apply cannot be reintroduced. */
     // ── #669 Today regression — the pending daily-log draft (store/dailyLogDraft.ts) ──
     // The signed-in user (JWT sub), as the outbox scopes it — 'anon' for the passwordless dev session.
-    /** #699 follow-up — the unsettled location-create keys of one user + project, kept across reloads.
-     *  Storage that is unavailable or corrupt reads as none: the create still works, only unkeyed. When
-     *  a WRITE has failed (quota), this session's copy is merged over what storage still holds, so a
-     *  retry in this session keeps its key (#704 Codex 4176579840). */
-    const readCreateKeys = (at: string): Record<string, string> => {
-      const memo = createKeysWriteFailed.has(at) ? (createKeysMemo.get(at) ?? {}) : {};
-      try {
-        const storage = globalThis.localStorage;
-        if (!storage) return { ...(createKeysMemo.get(at) ?? {}) };
-        const raw = storage.getItem(at);
-        const parsed: unknown = raw ? JSON.parse(raw) : {};
-        // #704 Codex 4176703614 — only non-empty string keys count: a falsy value would send no
-        // `Idempotency-Key` at all (the server's unkeyed path), so a corrupt entry reads as absent
-        const stored: Record<string, string> = {};
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          for (const [intent, key] of Object.entries(parsed as Record<string, unknown>)) {
-            if (typeof key === 'string' && key.length > 0) stored[intent] = key;
-          }
-        }
-        return { ...stored, ...memo };
-      } catch {
-        return { ...(createKeysMemo.get(at) ?? {}) };
-      }
-    };
-    const writeCreateKeys = (at: string, keys: Record<string, string>): void => {
-      createKeysMemo.set(at, keys); // this session's copy, for when storage is unavailable
-      try {
-        const storage = globalThis.localStorage;
-        if (!storage) return;
-        if (Object.keys(keys).length === 0) storage.removeItem(at);
-        else storage.setItem(at, JSON.stringify(keys));
-        createKeysWriteFailed.delete(at);
-      } catch {
-        createKeysWriteFailed.add(at); // storage refused the write — this session's copy now leads
-      }
-    };
-    /** A read-modify-write of one scope's keys, serialized across this browser's tabs (#704 Codex
-     *  4176579832): two tabs creating the same place at once must not each mint a key, and one tab
-     *  settling an intent must not overwrite a key another tab just stored. Web Locks where the browser
-     *  has them; a single tab (and the test runtime) needs none. */
-    const updateCreateKeys = async <T,>(at: string, change: (keys: Record<string, string>) => { keys: Record<string, string>; value: T }): Promise<T> => {
-      const run = (): T => {
-        const { keys, value } = change(readCreateKeys(at));
-        writeCreateKeys(at, keys);
-        return value;
-      };
-      const locks = (globalThis.navigator as (Navigator & { locks?: LockManager }) | undefined)?.locks;
-      if (!locks) return run();
-      try {
-        return await locks.request(`vitan.nodeCreateKeys:${at}`, run);
-      } catch {
-        return run(); // the lock manager failed — fall back to this tab's own read-modify-write
-      }
-    };
     const sessionSub = (): string => {
       const token = get().sessionToken;
       if (!token) return 'anon';
@@ -4492,56 +4434,39 @@ export const useStore = create<Store>()(
       }
       const before = new Set(get().nodes.map((n) => n.id));
       const scope = currentScope();
-      // #699 follow-up — one place per create intent, from whichever screen sends it. The intent (the
-      // exact body) carries ONE `Idempotency-Key` until an applied snapshot settles it, so a double
-      // submit, a retry after a lost or superseded reply, the same create from a new session, or a retry
-      // after a page reload all reach the server under the same key, and its ledger (#700) makes one
-      // place. Keys are kept per signed-in user and project (the server's receipt is actor-scoped).
+      // #704 redesign — exactly-once is the server's (#705: a name already held under the parent names
+      // that place, whatever the key), so the client keeps no keys. It sends the create once, through
+      // the gateway live when the action started, and binds the reply to the user and project that
+      // sent it: a reply landing after either changed is dropped, never toasted or returned.
       const body = { name: input.name.trim(), kind: input.kind, parentId: input.parentId ?? null, publish: input.publish ?? true };
-      const intent = JSON.stringify([body.parentId, body.kind, body.name, body.publish]);
-      // #704 Codex 4176703613 — the effective identity: dev auth keeps its JWT inside the gateway and
-      // sets only `sessionUserId`, so the token alone would put every persona under 'anon'
-      const owner = sessionSub() !== 'anon' ? sessionSub() : (get().sessionUserId ?? 'anon');
-      const keysAt = `vitan.nodeCreateKeys.${owner}.${scope.projectId}`;
-      const key = await updateCreateKeys(keysAt, (keys) => {
-        const k = keys[intent] ?? newIdempotencyKey();
-        return { keys: { ...keys, [intent]: k }, value: k };
-      });
-      // #704 Codex 4176703609 — the lock wait can outlast a project switch, which retires this scope
-      // and replaces the gateway: a create that outlived its scope is dropped, never sent through the
-      // gateway now live (its key stays, so the same create from that project later still replays)
+      const identity = `${sessionSub()}|${get().sessionUserId ?? ''}`;
+      const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === identity;
       const gw = gateway;
-      if (!gw || !scopeStillCurrent(scope)) return null;
       try {
         const lease = beginSnapshotLease(scope); // gate round 11: before the create request
-        const snap = await gw.createNode(body, key);
+        const snap = await gw.createNode(body);
+        if (!sentBySameUser()) return null;
         const result = acceptSnapshot(snap, lease);
         if (result !== 'applied') {
-          // only an APPLIED snapshot settles the intent: on a superseded one the place WAS created but
-          // this tree may not show it yet, so the key stays and a retry replays it.
-          // gate round 12/13: on superseded record a command reconcile requirement so it lands (or
-          // exposes Retry) even if the newer refresh fails; on wrong-project, recover.
+          // a newer refresh owns the tree (superseded) or the payload was wrong-project;
+          // don't claim success or return a node id the current tree may not reflect.
+          // gate round 12/13: on superseded the node WAS created — record a command
+          // reconcile requirement so it lands (or exposes Retry) even if the newer
+          // refresh fails; on wrong-project, recover.
           if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
           else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
-        await updateCreateKeys(keysAt, (keys) => {
-          if (keys[intent] !== key) return { keys, value: undefined };
-          const rest = { ...keys };
-          delete rest[intent];
-          return { keys: rest, value: undefined };
-        });
-        if (!scopeStillCurrent(scope)) return null; // the settle's lock wait outlasted the scope
         get().flash(`Added ${body.kind}: ${body.name}.`);
-        // the server names the place it made (#703), the same one on a replay: never pick it by name,
-        // which may repeat. A server without the field: the node that was not in the tree before.
+        // the server names the place (#703) — the one it made, or (#705) the one already holding the
+        // name, which was in the tree before: never pick it by name or by what is new. A server without
+        // the field: the node that was not in the tree before.
         const nodes = get().nodes;
         if (snap.createdNodeId) return nodes.some((n) => n.id === snap.createdNodeId) ? snap.createdNodeId : null;
         return nodes.find((n) => !before.has(n.id) && n.name === body.name && n.kind === body.kind)?.id ?? null;
       } catch {
-        // the outcome is unknown: the key stays with the intent for the retry
-        // gate round 12: a failure landing after a switch must not toast into project B.
-        if (scopeStillCurrent(scope)) get().flash('Could not add the location — check your access and try again.');
+        // gate round 12: a failure landing after a switch (of project or of user) must not toast.
+        if (scopeStillCurrent(scope) && sentBySameUser()) get().flash('Could not add the location — check your access and try again.');
         return null;
       }
     },

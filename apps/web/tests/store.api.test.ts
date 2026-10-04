@@ -560,173 +560,54 @@ describe('Phase 0 Task 3 — every project-scoped response is generation-guarded
   });
 });
 
-describe('#699 follow-up — a location create carries one key per intent until an applied snapshot settles it', () => {
+describe('#704 — a location create uses the place the server names, bound to the user who sent it', () => {
   const PANTRY = { name: 'Pantry', kind: 'room' as const, parentId: null, publish: true };
   const pantry = (id: string) => ({ id, parentId: null, name: 'Pantry', kind: 'room' as const, order: 0 });
   const jwt = (sub: string) => `h.${btoa(JSON.stringify({ sub }))}.s`;
   beforeEach(() => { globalThis.localStorage.clear(); });
 
-  it('a retry after a lost reply carries the SAME key, so the server replays it', async () => {
-    const keys: unknown[] = [];
-    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
-    await s().addLocationNode(PANTRY);
-    await s().addLocationNode({ ...PANTRY, name: ' Pantry ' }); // the same intent, from another screen
-    expect(keys).toHaveLength(2);
-    expect(keys[0]).toEqual(expect.any(String));
-    expect(keys[1]).toBe(keys[0]);
-  });
-
-  it('the key survives a page reload (Codex 4175901885)', async () => {
-    const keys: unknown[] = [];
-    const gw = { createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) };
-    s()._setGateway(gw as unknown as ApiGateway);
-    await s().addLocationNode(PANTRY);
-    vi.resetModules(); // the reload: a fresh store module, the same browser storage
-    const reloaded = await import('@/store/store');
-    reloaded.useStore.setState(reloaded.getInitialState());
-    reloaded.useStore.getState()._setGateway(gw as unknown as ApiGateway);
-    await reloaded.useStore.getState().addLocationNode(PANTRY);
-    expect(keys).toHaveLength(2);
-    expect(keys[0]).toEqual(expect.any(String));
-    expect(keys[1]).toBe(keys[0]);
-  });
-
-  it('an applied create settles the intent: the next create of the same name is a new one', async () => {
-    const keys: unknown[] = [];
-    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.resolve({ ...makeSnapshot({ nodes: [pantry('n-1')] }), createdNodeId: 'n-1' }); }) } as unknown as ApiGateway);
-    expect(await s().addLocationNode(PANTRY)).toBe('n-1');
-    await s().addLocationNode(PANTRY);
-    expect(keys[1]).not.toBe(keys[0]);
+  it('a create of a name the parent already holds returns THAT place (#705 Codex 4177895010)', async () => {
+    // the server made nothing and named the place already in the tree — nothing is "new" in the reply
+    useStore.setState({ nodes: [pantry('n-held')] });
+    s()._setGateway({ createNode: vi.fn(() => Promise.resolve({ ...makeSnapshot({ nodes: [pantry('n-held')] }), createdNodeId: 'n-held' })) } as unknown as ApiGateway);
+    expect(await s().addLocationNode(PANTRY)).toBe('n-held');
   });
 
   it('returns the node the server names, never a same-named sibling (Codex 4175901888)', async () => {
-    // the replay case: the recovery read already showed the new place, and an older "Pantry" sorts first
-    useStore.setState({ nodes: [pantry('n-old'), pantry('n-new')] });
+    useStore.setState({ nodes: [pantry('n-old')] });
     s()._setGateway({ createNode: vi.fn(() => Promise.resolve({ ...makeSnapshot({ nodes: [pantry('n-old'), pantry('n-new')] }), createdNodeId: 'n-new' })) } as unknown as ApiGateway);
     expect(await s().addLocationNode(PANTRY)).toBe('n-new');
   });
 
-  it('a superseded reply keeps the key, so the retry replays', async () => {
-    const keys: unknown[] = [];
+  it('sends the trimmed body once, with no client-held key and nothing kept in storage', async () => {
+    const createNode = vi.fn((..._args: unknown[]) => Promise.reject(new Error('lost')));
+    s()._setGateway({ createNode } as unknown as ApiGateway);
+    await s().addLocationNode({ ...PANTRY, name: '  Pantry ' });
+    expect(createNode).toHaveBeenCalledTimes(1);
+    expect(createNode.mock.calls[0]).toEqual([{ name: 'Pantry', kind: 'room', parentId: null, publish: true }]);
+    expect(Object.keys(globalThis.localStorage).filter((k) => k.includes('nodeCreateKeys'))).toEqual([]);
+  });
+
+  it('a reply landing after the signed-in user changed is dropped: no place, no toast (Codex 4176831760)', async () => {
     let finish!: (snap: ApiSnapshot) => void;
-    const gw = {
-      createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return keys.length === 1 ? new Promise<ApiSnapshot>((r) => { finish = r; }) : Promise.reject(new Error('lost')); }),
-      renameNode: vi.fn(() => Promise.resolve(makeSnapshot())),
-      snapshot: vi.fn(() => new Promise(() => {})),
-    };
-    s()._setGateway(gw as unknown as ApiGateway);
-    const first = s().addLocationNode(PANTRY);
-    s().renameNode('other', 'Lobby'); // a newer command's snapshot leases and applies first
-    await flush();
+    s()._setGateway({ createNode: vi.fn(() => new Promise<ApiSnapshot>((r) => { finish = r; })) } as unknown as ApiGateway);
+    useStore.setState({ sessionToken: jwt('u-a'), toast: null });
+    const pending = s().addLocationNode(PANTRY);
+    useStore.setState({ sessionToken: jwt('u-b') }); // the persona switch while the request is out
     finish({ ...makeSnapshot({ nodes: [pantry('n-1')] }), createdNodeId: 'n-1' } as ApiSnapshot);
-    expect(await first).toBeNull();
-    await s().addLocationNode(PANTRY);
-    expect(keys[0]).toEqual(expect.any(String));
-    expect(keys[1]).toBe(keys[0]);
+    expect(await pending).toBeNull();
+    expect(s().nodes.some((n) => n.id === 'n-1')).toBe(false);
+    expect(s().toast).toBeNull();
   });
 
-  it('another signed-in user never reuses the key (the server receipt is actor-scoped)', async () => {
-    const keys: unknown[] = [];
-    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
-    useStore.setState({ sessionToken: jwt('u-a') });
-    await s().addLocationNode(PANTRY);
-    useStore.setState({ sessionToken: jwt('u-b') });
-    await s().addLocationNode(PANTRY);
-    expect(keys[1]).not.toBe(keys[0]);
-  });
-});
-
-describe('#704 review — location-create keys across tabs and failing storage', () => {
-  const PANTRY = { name: 'Pantry', kind: 'room' as const, parentId: null, publish: true };
-  beforeEach(() => { globalThis.localStorage.clear(); });
-
-  it('a storage write that fails keeps the key for this session\'s retry (Codex 4176579840)', async () => {
-    const keys: unknown[] = [];
-    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
-    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('QuotaExceededError'); });
-    try {
-      await s().addLocationNode(PANTRY);
-      await s().addLocationNode(PANTRY);
-    } finally {
-      setItem.mockRestore();
-    }
-    expect(keys[0]).toEqual(expect.any(String));
-    expect(keys[1]).toBe(keys[0]);
-  });
-
-  it('allocating a key waits on the browser-wide lock for this user and project (Codex 4176579832)', async () => {
-    let release!: () => void;
-    const held = new Promise<void>((r) => { release = r; });
-    const names: string[] = [];
-    const locks = {
-      request: vi.fn(async (name: string, cb: () => unknown) => { names.push(name); await held; return cb(); }),
-    };
-    const nav = globalThis.navigator as Navigator & { locks?: unknown };
-    const prior = Object.getOwnPropertyDescriptor(nav, 'locks');
-    Object.defineProperty(nav, 'locks', { value: locks, configurable: true });
-    try {
-      const createNode = vi.fn(() => new Promise<ApiSnapshot>(() => {}));
-      s()._setGateway({ createNode } as unknown as ApiGateway);
-      void s().addLocationNode(PANTRY);
-      await flush();
-      expect(createNode).not.toHaveBeenCalled(); // another tab holds the lock: no key, no request yet
-      expect(names[0]).toMatch(/^vitan\.nodeCreateKeys:vitan\.nodeCreateKeys\.anon\./);
-      release();
-      await flush();
-      expect(createNode).toHaveBeenCalledTimes(1);
-    } finally {
-      if (prior) Object.defineProperty(nav, 'locks', prior);
-      else delete (nav as { locks?: unknown }).locks;
-    }
-  });
-});
-
-describe('#704 review round 2', () => {
-  const PANTRY = { name: 'Pantry', kind: 'room' as const, parentId: null, publish: true };
-  beforeEach(() => { globalThis.localStorage.clear(); });
-
-  it('dev-auth personas (no store token) keep their own keys (Codex 4176703613)', async () => {
-    const keys: unknown[] = [];
-    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
-    useStore.setState({ sessionToken: null, sessionUserId: 'u-a' });
-    await s().addLocationNode(PANTRY);
-    useStore.setState({ sessionToken: null, sessionUserId: 'u-b' });
-    await s().addLocationNode(PANTRY);
-    useStore.setState({ sessionToken: null, sessionUserId: 'u-a' });
-    await s().addLocationNode(PANTRY); // A's retry
-    expect(keys[1]).not.toBe(keys[0]);
-    expect(keys[2]).toBe(keys[0]);
-  });
-
-  it('a create whose lock wait outlives a project switch is never sent (Codex 4176703609)', async () => {
-    let release!: () => void;
-    const held = new Promise<void>((r) => { release = r; });
-    const locks = { request: vi.fn(async (_name: string, cb: () => unknown) => { await held; return cb(); }) };
-    const nav = globalThis.navigator as Navigator & { locks?: unknown };
-    const prior = Object.getOwnPropertyDescriptor(nav, 'locks');
-    Object.defineProperty(nav, 'locks', { value: locks, configurable: true });
-    try {
-      const createNode = vi.fn(() => new Promise<ApiSnapshot>(() => {}));
-      s()._setGateway({ createNode } as unknown as ApiGateway);
-      const pending = s().addLocationNode(PANTRY);
-      await flush();
-      useStore.setState((st) => { st.activeProjectId = 'p-other'; st.projectScopeGeneration += 1; }); // the switch
-      release();
-      expect(await pending).toBeNull();
-      expect(createNode).not.toHaveBeenCalled();
-    } finally {
-      if (prior) Object.defineProperty(nav, 'locks', prior);
-      else delete (nav as { locks?: unknown }).locks;
-    }
-  });
-
-  it('a corrupt stored key never sends a create without one (Codex 4176703614)', async () => {
-    const intent = JSON.stringify([null, 'room', 'Pantry', true]);
-    globalThis.localStorage.setItem(`vitan.nodeCreateKeys.anon.${s().activeProjectId}`, JSON.stringify({ [intent]: false }));
-    const keys: unknown[] = [];
-    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
-    await s().addLocationNode(PANTRY);
-    expect(keys[0]).toEqual(expect.any(String));
-    expect((keys[0] as string).length).toBeGreaterThan(0);
+  it('the same holds for dev-auth personas, which have no store token', async () => {
+    let fail!: (e: Error) => void;
+    s()._setGateway({ createNode: vi.fn(() => new Promise<ApiSnapshot>((_r, j) => { fail = j; })) } as unknown as ApiGateway);
+    useStore.setState({ sessionToken: null, sessionUserId: 'u-a', toast: null });
+    const pending = s().addLocationNode(PANTRY);
+    useStore.setState({ sessionUserId: 'u-b' });
+    fail(new Error('lost'));
+    expect(await pending).toBeNull();
+    expect(s().toast).toBeNull(); // B is never told A's create failed
   });
 });
