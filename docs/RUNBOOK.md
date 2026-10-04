@@ -1344,7 +1344,12 @@ platform's inventory for the processes that predate the register — the applica
 (`GET /applications/{uuid}`: its running status and `git_commit_sha`) and the
 platform's deployment queue (`GET /deployments`), each record judged by its state: `queued` and
 `in_progress` are in progress, `finished`, `failed` and cancelled records are history, and a state
-the command does not know is counted in progress and named. `git_commit_sha` is the commit the image
+the command does not know is counted in progress and named. Coolify 4.3.23 strips the application
+`id` from `GET /applications/{uuid}` for every token. A queue row is this application's when its
+`deployment_url` path contains a single `/application/{uuid}` segment equal to that uuid. A row that
+names another application is not this one's. A row whose `deployment_url` does not name an
+application stays unclassified; the numeric `application_id` on the queue is not that name, because
+the application id it would match is not in the response. `git_commit_sha` is the commit the image
 was built from when it is a commit. Coolify's default is the literal `HEAD`, which means "track the
 branch tip" and is not the running image. The saved `build_pack` and `dockerfile` are the current
 application settings, not necessarily the settings of the running image: deployment history does not

@@ -81,7 +81,6 @@ export interface RunningCommitSource {
 }
 
 export interface PlatformApplication {
-  id: number;
   uuid: string;
   name: string;
   fqdn: string | null;
@@ -99,7 +98,12 @@ export interface PlatformApplication {
 
 export interface PlatformDeployment {
   deploymentUuid: string;
-  applicationId: number;
+  /**
+   * The application named by `deployment_url`. Null when that path does not name exactly one
+   * application. Judgement fails closed on null: the numeric `application_id` is not a substitute,
+   * because Coolify 4.3.23 strips the application `id` from the application response.
+   */
+  applicationUuid: string | null;
   status: string;
   commit: string | null;
 }
@@ -169,7 +173,11 @@ export function judgeDrain(input: DrainEvidenceInput): DrainEvidence {
     const { application, runningDeployments, source } = input.platform.inventory;
     // this application's records, judged by STATE: a finished, failed or cancelled record is history
     // (#663 round 4, finding 1); an unknown state is counted in progress and named
-    const own = runningDeployments.filter((d) => d.applicationId === application.id);
+    const untied = runningDeployments.filter((d) => d.applicationUuid === null);
+    if (untied.length > 0) {
+      cannot(`${untied.length} deployment(s) do not name an application (${untied.map((d) => d.deploymentUuid).join(', ')}): deployment_url has no single /application/{uuid} segment, and the application id Coolify strips cannot tie them`);
+    }
+    const own = runningDeployments.filter((d) => d.applicationUuid === application.uuid);
     const inProgress = own.filter((d) => deploymentInProgress(d.status).inProgress);
     const unknown = inProgress.filter((d) => !deploymentInProgress(d.status).known);
     const classification = input.classifier.classify(input.minimumRelease, application.gitCommitSha);
@@ -403,7 +411,7 @@ export function judgeDeploymentHistoryPage(
     if (deploymentUuid === '') return { decision: 'unresolved', reason: `${where} has no deployment_uuid`, inProgress };
     const commit = typeof row.commit === 'string' ? row.commit : null;
     if (progress.inProgress) {
-      inProgress.push({ deploymentUuid, applicationId, status, commit });
+      inProgress.push({ deploymentUuid, applicationUuid: null, status, commit });
       continue;
     }
     const parent = parentDeploymentUuid(row);
@@ -467,10 +475,46 @@ export function judgeDeploymentHistoryPage(
 }
 
 /**
+ * The application uuid Coolify writes into `deployment_url` when it queues a deployment
+ * (`queue_application_deployment`: `{application link}/deployment/{deployment_uuid}`, and
+ * `Application::link()` is `/project/{project}/environment/{environment}/application/{uuid}`).
+ * Returns null when the path does not name exactly one application.
+ */
+export function applicationUuidFromDeploymentUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const trimmed = value.trim();
+  let path = trimmed.split(/[?#]/, 1)[0];
+  if (/^[a-z][a-z0-9+.-]*:/i.test(path)) {
+    try {
+      path = new URL(trimmed).pathname;
+    } catch {
+      return null;
+    }
+  }
+  const matches = [...path.matchAll(/\/application\/([^/]+)(?=\/|$)/g)];
+  if (matches.length !== 1) return null;
+  let uuid: string;
+  try {
+    uuid = decodeURIComponent(matches[0][1]);
+  } catch {
+    return null;
+  }
+  if (uuid === '' || uuid.includes('/') || uuid === '.' || uuid === '..') return null;
+  return uuid;
+}
+
+/**
  * The Coolify reader: `GET /applications/{uuid}` (the resource, its `status` and `git_commit_sha`)
  * and `GET /deployments` (the platform's deployment queue; every record is returned with its
- * `status` and the judgement decides by state). `git_commit_sha` is the image commit only when it
- * is a commit. Coolify stores the literal `HEAD` to mean "track the branch tip". The saved
+ * `status` and the judgement decides by state). Coolify 4.3.23's `removeSensitiveData` always
+ * strips the application `id`, plus `resourceable`, `resourceable_id` and `resourceable_type`.
+ * A read-only token also omits `private_key_id`, `dockerfile`, compose files, custom labels and
+ * webhook secrets. None of those are required. The application is the `uuid` it returns, which
+ * must be the uuid that was requested. A queue row belongs to it only when `deployment_url`
+ * names that uuid; `application_id` is not used, because the application id it would match is
+ * not in the response. A row that does not name an application is kept, with `applicationUuid`
+ * null, and the judgement fails closed. `git_commit_sha` is the image commit only when it is a
+ * commit. Coolify stores the literal `HEAD` to mean "track the branch tip". The saved
  * `build_pack` and `dockerfile` are the current application settings. Deployment history does not
  * include `configuration_snapshot` (hidden even from a sensitive token) or the image tag, so it
  * cannot bind those settings to the running image. `config_hash` is written only when a deployment
@@ -495,19 +539,15 @@ export function coolifyInventoryReader(opts: { baseUrl: string; token: string; f
     if (typeof v !== 'string' || v.trim() === '') throw new Error(`${where}: field "${k}" is absent or not a non-empty string`);
     return v;
   };
-  const num = (o: Record<string, unknown>, k: string, where: string): number => {
-    const v = o[k];
-    if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`${where}: field "${k}" is absent or not a number`);
-    return v;
-  };
   return {
     async read(appUuid) {
       const app = await get(`/applications/${encodeURIComponent(appUuid)}`);
       if (!app || typeof app !== 'object' || Array.isArray(app)) throw new Error(`GET /applications/${appUuid}: not an object`);
       const a = app as Record<string, unknown>;
+      const uuid = str(a, 'uuid', `application ${appUuid}`);
+      if (uuid !== appUuid) throw new Error(`application ${appUuid}: response uuid ${JSON.stringify(uuid)} is not the requested application`);
       const application: PlatformApplication = {
-        id: num(a, 'id', `application ${appUuid}`),
-        uuid: str(a, 'uuid', `application ${appUuid}`),
+        uuid,
         name: str(a, 'name', `application ${appUuid}`),
         fqdn: typeof a.fqdn === 'string' && a.fqdn.trim() !== '' ? a.fqdn : null,
         status: str(a, 'status', `application ${appUuid}`),
@@ -520,7 +560,7 @@ export function coolifyInventoryReader(opts: { baseUrl: string; token: string; f
         const o = d as Record<string, unknown>;
         return {
           deploymentUuid: str(o, 'deployment_uuid', `deployment[${i}]`),
-          applicationId: num(o, 'application_id', `deployment[${i}]`),
+          applicationUuid: applicationUuidFromDeploymentUrl(o.deployment_url),
           status: str(o, 'status', `deployment[${i}]`),
           commit: typeof o.commit === 'string' ? o.commit : null,
         };
