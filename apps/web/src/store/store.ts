@@ -779,6 +779,8 @@ export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): bool
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 /** #699 follow-up — the in-session copy of the location-create keys (`readCreateKeys`). */
 const createKeysMemo = new Map<string, Record<string, string>>();
+/** The scopes whose last storage write failed, so `readCreateKeys` merges the in-session copy. */
+const createKeysWriteFailed = new Set<string>();
 /** U3b — the newest brief request; a reply to any earlier one is superseded and dropped (the landing,
  *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
 let briefRequestSeq = 0;
@@ -1327,14 +1329,18 @@ export const useStore = create<Store>()(
     // ── #669 Today regression — the pending daily-log draft (store/dailyLogDraft.ts) ──
     // The signed-in user (JWT sub), as the outbox scopes it — 'anon' for the passwordless dev session.
     /** #699 follow-up — the unsettled location-create keys of one user + project, kept across reloads.
-     *  Storage that is unavailable or corrupt reads as none: the create still works, only unkeyed. */
+     *  Storage that is unavailable or corrupt reads as none: the create still works, only unkeyed. When
+     *  a WRITE has failed (quota), this session's copy is merged over what storage still holds, so a
+     *  retry in this session keeps its key (#704 Codex 4176579840). */
     const readCreateKeys = (at: string): Record<string, string> => {
+      const memo = createKeysWriteFailed.has(at) ? (createKeysMemo.get(at) ?? {}) : {};
       try {
         const storage = globalThis.localStorage;
         if (!storage) return { ...(createKeysMemo.get(at) ?? {}) };
         const raw = storage.getItem(at);
         const parsed: unknown = raw ? JSON.parse(raw) : {};
-        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {};
+        const stored = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {};
+        return { ...stored, ...memo };
       } catch {
         return { ...(createKeysMemo.get(at) ?? {}) };
       }
@@ -1346,8 +1352,27 @@ export const useStore = create<Store>()(
         if (!storage) return;
         if (Object.keys(keys).length === 0) storage.removeItem(at);
         else storage.setItem(at, JSON.stringify(keys));
+        createKeysWriteFailed.delete(at);
       } catch {
-        /* storage unavailable — the key still covers this session's retries */
+        createKeysWriteFailed.add(at); // storage refused the write — this session's copy now leads
+      }
+    };
+    /** A read-modify-write of one scope's keys, serialized across this browser's tabs (#704 Codex
+     *  4176579832): two tabs creating the same place at once must not each mint a key, and one tab
+     *  settling an intent must not overwrite a key another tab just stored. Web Locks where the browser
+     *  has them; a single tab (and the test runtime) needs none. */
+    const updateCreateKeys = async <T,>(at: string, change: (keys: Record<string, string>) => { keys: Record<string, string>; value: T }): Promise<T> => {
+      const run = (): T => {
+        const { keys, value } = change(readCreateKeys(at));
+        writeCreateKeys(at, keys);
+        return value;
+      };
+      const locks = (globalThis.navigator as (Navigator & { locks?: LockManager }) | undefined)?.locks;
+      if (!locks) return run();
+      try {
+        return await locks.request(`vitan.nodeCreateKeys:${at}`, run);
+      } catch {
+        return run(); // the lock manager failed — fall back to this tab's own read-modify-write
       }
     };
     const sessionSub = (): string => {
@@ -4468,9 +4493,10 @@ export const useStore = create<Store>()(
       const body = { name: input.name.trim(), kind: input.kind, parentId: input.parentId ?? null, publish: input.publish ?? true };
       const intent = JSON.stringify([body.parentId, body.kind, body.name, body.publish]);
       const keysAt = `vitan.nodeCreateKeys.${sessionSub()}.${scope.projectId}`;
-      const keys = readCreateKeys(keysAt);
-      const key = keys[intent] ?? newIdempotencyKey();
-      writeCreateKeys(keysAt, { ...keys, [intent]: key });
+      const key = await updateCreateKeys(keysAt, (keys) => {
+        const k = keys[intent] ?? newIdempotencyKey();
+        return { keys: { ...keys, [intent]: k }, value: k };
+      });
       try {
         const lease = beginSnapshotLease(scope); // gate round 11: before the create request
         const snap = await gateway.createNode(body, key);
@@ -4484,8 +4510,12 @@ export const useStore = create<Store>()(
           else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
-        const settled = readCreateKeys(keysAt);
-        if (settled[intent] === key) { delete settled[intent]; writeCreateKeys(keysAt, settled); }
+        await updateCreateKeys(keysAt, (keys) => {
+          if (keys[intent] !== key) return { keys, value: undefined };
+          const rest = { ...keys };
+          delete rest[intent];
+          return { keys: rest, value: undefined };
+        });
         get().flash(`Added ${body.kind}: ${body.name}.`);
         // the server names the place it made (#703), the same one on a replay: never pick it by name,
         // which may repeat. A server without the field: the node that was not in the tree before.

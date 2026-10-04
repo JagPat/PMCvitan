@@ -635,3 +635,48 @@ describe('#699 follow-up — a location create carries one key per intent until 
     expect(keys[1]).not.toBe(keys[0]);
   });
 });
+
+describe('#704 review — location-create keys across tabs and failing storage', () => {
+  const PANTRY = { name: 'Pantry', kind: 'room' as const, parentId: null, publish: true };
+  beforeEach(() => { globalThis.localStorage.clear(); });
+
+  it('a storage write that fails keeps the key for this session\'s retry (Codex 4176579840)', async () => {
+    const keys: unknown[] = [];
+    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('QuotaExceededError'); });
+    try {
+      await s().addLocationNode(PANTRY);
+      await s().addLocationNode(PANTRY);
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(keys[0]).toEqual(expect.any(String));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('allocating a key waits on the browser-wide lock for this user and project (Codex 4176579832)', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const names: string[] = [];
+    const locks = {
+      request: vi.fn(async (name: string, cb: () => unknown) => { names.push(name); await held; return cb(); }),
+    };
+    const nav = globalThis.navigator as Navigator & { locks?: unknown };
+    const prior = Object.getOwnPropertyDescriptor(nav, 'locks');
+    Object.defineProperty(nav, 'locks', { value: locks, configurable: true });
+    try {
+      const createNode = vi.fn(() => new Promise<ApiSnapshot>(() => {}));
+      s()._setGateway({ createNode } as unknown as ApiGateway);
+      void s().addLocationNode(PANTRY);
+      await flush();
+      expect(createNode).not.toHaveBeenCalled(); // another tab holds the lock: no key, no request yet
+      expect(names[0]).toMatch(/^vitan\.nodeCreateKeys:vitan\.nodeCreateKeys\.anon\./);
+      release();
+      await flush();
+      expect(createNode).toHaveBeenCalledTimes(1);
+    } finally {
+      if (prior) Object.defineProperty(nav, 'locks', prior);
+      else delete (nav as { locks?: unknown }).locks;
+    }
+  });
+});
