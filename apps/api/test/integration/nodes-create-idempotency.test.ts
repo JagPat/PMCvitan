@@ -119,11 +119,78 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
     expect(await zones('Idem Second')).toBe(0);
   });
 
-  it('unkeyed creates keep today\'s behavior (each one creates)', async () => {
-    const input = { name: 'Idem Unkeyed', kind: 'zone' as const, parentId: null, publish: true };
-    const a = await svc.create(p(), input, pmc());
-    const b = await svc.create(p(), input, pmc());
-    expect(await zones('Idem Unkeyed')).toBe(2);
-    expect(a.createdNodeId).not.toBe(b.createdNodeId); // each unkeyed create names its own place
+  it('an unkeyed create still creates a new name', async () => {
+    const a = await svc.create(p(), { name: 'Idem Unkeyed A', kind: 'zone', parentId: null, publish: true }, pmc());
+    const b = await svc.create(p(), { name: 'Idem Unkeyed B', kind: 'zone', parentId: null, publish: true }, pmc());
+    expect(await zones('Idem Unkeyed A')).toBe(1);
+    expect(await zones('Idem Unkeyed B')).toBe(1);
+    expect(a.createdNodeId).not.toBe(b.createdNodeId);
+  });
+
+  // #704 redesign — a name already held under the same parent is the place's natural key: a second
+  // create of it, whatever its key (a fresh key from another tab or after a reload, or none), makes
+  // nothing and names the place that holds it.
+  it('a create of a name the parent already holds, under ANY key, names that place and adds nothing', async () => {
+    const first = await svc.create(p(), { name: 'Idem Kitchen', kind: 'zone', parentId: null, publish: true }, pmc(), 'k-tab-a');
+    const node = await t.prisma.projectNode.findFirstOrThrow({ where: { projectId: p(), name: 'Idem Kitchen' } });
+    const events = () => t.prisma.domainEvent.count({ where: { projectId: p(), eventType: 'node.created' } });
+    const before = await events();
+    const otherKey = await svc.create(p(), { name: 'Idem Kitchen', kind: 'zone', parentId: null, publish: true }, pmc(), 'k-tab-b');
+    const unkeyed = await svc.create(p(), { name: 'Idem Kitchen', kind: 'zone', parentId: null, publish: true }, pmc());
+    const spaced = await svc.create(p(), { name: '  idem   KITCHEN ', kind: 'zone', parentId: null, publish: true }, pmc(), 'k-tab-c');
+    expect(first.createdNodeId).toBe(node.id);
+    expect([otherKey.createdNodeId, unkeyed.createdNodeId, spaced.createdNodeId]).toEqual([node.id, node.id, node.id]);
+    expect(await t.prisma.projectNode.count({ where: { projectId: p(), name: { startsWith: 'Idem ' } } })).toBe(1);
+    expect(await events()).toBe(before); // nothing was created, so nothing was announced
+  });
+
+  it('the same name under a DIFFERENT parent is a different place', async () => {
+    const a = await svc.create(p(), { name: 'Idem Floor A', kind: 'zone', parentId: null, publish: true }, pmc());
+    const b = await svc.create(p(), { name: 'Idem Floor B', kind: 'zone', parentId: null, publish: true }, pmc());
+    const inA = await svc.create(p(), { name: 'Idem Pantry', kind: 'room', parentId: a.createdNodeId, publish: true }, pmc());
+    const inB = await svc.create(p(), { name: 'Idem Pantry', kind: 'room', parentId: b.createdNodeId, publish: true }, pmc());
+    expect(inA.createdNodeId).not.toBe(inB.createdNodeId);
+    expect(await t.prisma.projectNode.count({ where: { projectId: p(), name: 'Idem Pantry' } })).toBe(2);
+  });
+
+  it('the name held by a place of another kind is a 409 and adds nothing', async () => {
+    const zone = await svc.create(p(), { name: 'Idem Wing', kind: 'zone', parentId: null, publish: true }, pmc());
+    await svc.create(p(), { name: 'Idem Door', kind: 'room', parentId: zone.createdNodeId, publish: true }, pmc());
+    await expect(svc.create(p(), { name: 'idem door', kind: 'element', parentId: zone.createdNodeId, publish: true }, pmc(), 'k-kind'))
+      .rejects.toBeInstanceOf(ConflictException);
+    expect(await t.prisma.projectNode.count({ where: { projectId: p(), parentId: zone.createdNodeId } })).toBe(1);
+  });
+
+  it('two CONCURRENT creates of one name under DIFFERENT keys resolve to one place (barrier)', async () => {
+    // The cross-tab case the client key could not cover: each tab minted its own key. Both creates
+    // reserve distinct keys and wait on the held tree lock; released, the first creates and the
+    // second finds the name held and names the same place.
+    const input = { name: 'Idem Two Tabs', kind: 'zone' as const, parentId: null, publish: true };
+    const other = new PrismaClient();
+    try {
+      let release!: () => void;
+      const released = new Promise<void>((r) => { release = r; });
+      let held!: () => void;
+      const heldArrived = new Promise<void>((r) => { held = r; });
+      const holder = other.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', treeLockKey(p()));
+        held();
+        await released;
+      }, { timeout: 30_000 });
+      await heldArrived;
+
+      const first = svc.create(p(), input, pmc(), 'k-tab-1');
+      await blocked(first, await ungrantedLocks());
+      const second = svc.create(p(), input, pmc(), 'k-tab-2');
+      await blocked(second, await ungrantedLocks());
+
+      release();
+      await holder;
+      const [a, b] = await Promise.all([first, second]);
+      expect(b.createdNodeId).toBe(a.createdNodeId);
+    } finally {
+      await other.$disconnect();
+    }
+    expect(await zones('Idem Two Tabs')).toBe(1);
   });
 });

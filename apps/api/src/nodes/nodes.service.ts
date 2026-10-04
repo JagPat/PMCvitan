@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
@@ -27,6 +27,10 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
  *  only; a room sits under a zone OR another room; an element (the object, e.g.
  *  "Main Door") is a LEAF and sits under a room OR directly under a zone. The kind
  *  fixes the SET of legal parents — depth is bounded separately (5 levels). */
+/** Two places under one parent are the same place when their names match ignoring case and spacing
+ *  (the rule the Site Map form already applies before it sends). */
+export const normalizeNodeName = (name: string): string => name.trim().replace(/\s+/g, ' ').toLowerCase();
+
 const ALLOWED_PARENT_KINDS: Record<string, ReadonlyArray<'zone' | 'room'> | null> = {
   zone: null, // top level
   room: ['zone', 'room'],
@@ -65,8 +69,13 @@ export class NodesService {
    *  of its ancestry otherwise passes both checks on stale snapshots and lands at level 6.
    *  #699 — runs under the command ledger: the same `Idempotency-Key` + body creates the place
    *  exactly once, so a double submit or a retry after a lost reply replays instead of adding a
-   *  second same-named sibling (a create has no natural key — names may repeat). An absent key
-   *  keeps today's unkeyed path. */
+   *  second same-named sibling. An absent key keeps today's unkeyed path.
+   *  #704 redesign — a place's name is also its natural key among its siblings: a create whose
+   *  name (ignoring case and spacing) is already held under the same parent makes nothing and names
+   *  the place that holds it, so a retry that lost its reply, or minted a fresh key in another tab
+   *  or after a reload, can never add a second one. A different kind under that name is a 409.
+   *  Checked under the tree lock, so concurrent creates of one name serialize to one place. Places
+   *  that already share a name are left as they are. */
   async create(projectId: string, input: CreateNodeInput, user: AuthUser, idempotencyKey?: string): Promise<NodeCreatedDto> {
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
@@ -79,6 +88,19 @@ export class NodesService {
       run: async (tx) => {
         await lockProjectTree(tx, projectId);
         const parent = await this.requireParentForKind(projectId, input.kind, input.parentId ?? null, tx);
+        const siblings = await tx.projectNode.findMany({
+          where: { projectId, parentId: parent?.id ?? null },
+          select: { id: true, name: true, kind: true },
+          orderBy: [{ order: 'asc' }, { id: 'asc' }],
+        });
+        const wanted = normalizeNodeName(input.name);
+        const holder = siblings.find((row) => normalizeNodeName(row.name) === wanted);
+        if (holder) {
+          if (holder.kind !== input.kind) {
+            throw new ConflictException(`${parent ? `"${parent.name}"` : 'This project'} already has "${holder.name}"`);
+          }
+          return { resultRef: holder.id, events: [] };
+        }
         const tree = await this.loadTree(tx, projectId);
         const depth = parent ? depthOf(tree, parent.id) + 1 : 1;
         if (depth > MAX_TREE_DEPTH) {
