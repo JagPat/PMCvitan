@@ -579,13 +579,35 @@ describe('#704 — a location create uses the place the server names, bound to t
     expect(await s().addLocationNode(PANTRY)).toBe('n-new');
   });
 
-  it('sends the trimmed body once, with no client-held key and nothing kept in storage', async () => {
+  it('sends the trimmed body once with a key, and keeps nothing in storage', async () => {
     const createNode = vi.fn((..._args: unknown[]) => Promise.reject(new Error('lost')));
     s()._setGateway({ createNode } as unknown as ApiGateway);
-    await s().addLocationNode({ ...PANTRY, name: '  Pantry ' });
+    await s().addLocationNode({ ...PANTRY, name: '  Larder ' });
     expect(createNode).toHaveBeenCalledTimes(1);
-    expect(createNode.mock.calls[0]).toEqual([{ name: 'Pantry', kind: 'room', parentId: null, publish: true }]);
+    expect(createNode.mock.calls[0]).toEqual([{ name: 'Larder', kind: 'room', parentId: null, publish: true }, expect.any(String)]);
     expect(Object.keys(globalThis.localStorage).filter((k) => k.includes('nodeCreateKeys'))).toEqual([]);
+  });
+
+  it('a retry after a lost reply carries the SAME key, so the server replays it (#704 Codex 4178149929)', async () => {
+    const keys: unknown[] = [];
+    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
+    await s().addLocationNode({ ...PANTRY, name: 'Scullery' });
+    await s().addLocationNode({ ...PANTRY, name: ' Scullery ' }); // the same intent, retried
+    expect(keys[0]).toEqual(expect.any(String));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('an applied create settles its key; another user never reuses one', async () => {
+    const keys: unknown[] = [];
+    const ok = (id: string) => Promise.resolve({ ...makeSnapshot({ nodes: [{ ...pantry(id), name: 'Pantry Two' }] }), createdNodeId: id });
+    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return keys.length < 3 ? ok(`n-${keys.length}`) : Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
+    const TWO = { ...PANTRY, name: 'Pantry Two' };
+    useStore.setState({ sessionToken: jwt('u-a') });
+    await s().addLocationNode(TWO);
+    await s().addLocationNode(TWO); // settled: a new create of the same name is a new intent
+    useStore.setState({ sessionToken: jwt('u-b') });
+    await s().addLocationNode(TWO);
+    expect(new Set(keys).size).toBe(3);
   });
 
   it('a reply landing after the signed-in user changed is dropped: no place, no toast (Codex 4176831760)', async () => {

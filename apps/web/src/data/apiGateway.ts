@@ -735,9 +735,10 @@ export class ApiGateway {
     return this.req(`/projects/${this.projectId}/decisions/${decisionId}/draft`, { method: 'PATCH', body: JSON.stringify(input), headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined });
   }
   /** Create a location node (zone/room/element) — PMC. Returns a node-carrying snapshot plus the id
-   *  of the place the server names (#703): the one it made, or the one already holding the name. */
-  createNode(input: NewNodeInput): Promise<NodeCreatedSnapshot> {
-    return this.p('/nodes', input) as Promise<NodeCreatedSnapshot>;
+   *  of the place the server names (#703): the one it made, or the one already holding the name. An
+   *  `idempotencyKey` makes a retried create replay on the server instead of adding a second place. */
+  createNode(input: NewNodeInput, idempotencyKey?: string): Promise<NodeCreatedSnapshot> {
+    return this.p('/nodes', input, idempotencyKey) as Promise<NodeCreatedSnapshot>;
   }
   /** Publish a private draft node (PMC) — reveals it (and its draft branch) to everyone. */
   publishNode(nodeId: string): Promise<ApiSnapshot> {
