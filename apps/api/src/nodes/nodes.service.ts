@@ -13,9 +13,14 @@ import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dis
 import type { AuthUser } from '../common/auth';
 import type { CreateNodeInput, MoveNodeInput, RenameNodeInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
+
+/** The `POST /nodes` reply: the caller's snapshot plus the id of the place this create made, the same
+ *  id on a replay, so a client never has to pick its new place out of the tree by name (names may
+ *  repeat). The snapshot's own key set is unchanged. */
+export type NodeCreatedDto = SnapshotDto & { createdNodeId: string };
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
-import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
+import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 
 /** The location tree RULE (nested locations, phase-6-task-2): a zone is top-level
@@ -62,13 +67,13 @@ export class NodesService {
    *  exactly once, so a double submit or a retry after a lost reply replays instead of adding a
    *  second same-named sibling (a create has no natural key — names may repeat). An absent key
    *  keeps today's unkeyed path. */
-  async create(projectId: string, input: CreateNodeInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+  async create(projectId: string, input: CreateNodeInput, user: AuthUser, idempotencyKey?: string): Promise<NodeCreatedDto> {
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest(input);
-    if (await peekReplay(this.prisma, scope, actor.actorId, 'nodes.create', idempotencyKey, requestHash)) {
-      return this.snapshot.build(projectId, user.role, user.sub);
-    }
+    // No `peekReplay` pre-read: every validation read runs inside `run`, so the ledger's own fast path
+    // replays a committed create AND hands back its `resultRef` (the created node's id), which the
+    // reply carries either way.
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'nodes.create', idempotencyKey, requestHash,
       run: async (tx) => {
@@ -91,8 +96,10 @@ export class NodesService {
         return { resultRef: created.id, events: [ev] };
       },
     });
-    if (outcome.replayed) return this.snapshot.build(projectId, user.role, user.sub);
-    return this.done(projectId, user, outcome.events);
+    const snapshot = outcome.replayed
+      ? await this.snapshot.build(projectId, user.role, user.sub)
+      : await this.done(projectId, user, outcome.events);
+    return { ...snapshot, createdNodeId: outcome.resultRef };
   }
 
   /** Publish a private draft location → it (its subtree, and any draft ancestors so the path is
