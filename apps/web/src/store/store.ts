@@ -4454,15 +4454,21 @@ export const useStore = create<Store>()(
       // applied reply, or (for a reply that was superseded or dropped) a later read that shows the place
       // the server named (shadow on 441bb0c; the labour-onboarding rule). A failed send keeps it, as
       // its outcome is unknown: the retry replays under it (Codex 4178318908 for the rest).
+      const sameNamed = () => get().nodes.filter((n) => n.parentId === body.parentId && n.kind === body.kind && n.name === body.name).length;
       const held = get().nodeCreatePending[intent];
-      if (held && held.inflight === 0 && held.awaiting && get().nodes.some((n) => n.id === held.awaiting)) {
-        set((s) => { delete s.nodeCreatePending[intent]; }); // the earlier create is confirmed: a new one
-      }
+      const confirmed = held && held.inflight === 0 && held.awaiting !== null && (
+        held.awaiting
+          ? get().nodes.some((n) => n.id === held.awaiting)
+          // #704 Codex 4178633896 — no place was named (a server before #703): a read showing more places
+          // of this name and kind under the parent than before the send confirms it
+          : sameNamed() > held.sameNamedBefore
+      );
+      if (confirmed) set((s) => { delete s.nodeCreatePending[intent]; }); // the earlier create is confirmed: a new one
       const key = get().nodeCreatePending[intent]?.key ?? newIdempotencyKey();
       set((s) => {
         const p = s.nodeCreatePending[intent];
         if (p && p.key === key) p.inflight += 1;
-        else s.nodeCreatePending[intent] = { key, inflight: 1, failed: false, awaiting: null };
+        else s.nodeCreatePending[intent] = { key, inflight: 1, failed: false, awaiting: null, sameNamedBefore: sameNamed() };
       });
       const settle = (outcome: 'confirmed' | 'unconfirmed' | 'failed', placeId?: string) => set((s) => {
         const p = s.nodeCreatePending[intent];

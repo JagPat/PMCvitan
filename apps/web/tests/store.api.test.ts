@@ -633,6 +633,28 @@ describe('#704 — a location create uses the place the server names, bound to t
     expect(keys[2]).not.toBe(keys[0]);
   });
 
+  it('against a server that names no place, a superseded create is confirmed once the tree shows one more (#704 Codex 4178633896)', async () => {
+    const keys: unknown[] = [];
+    let finish!: (snap: ApiSnapshot) => void;
+    const gw = {
+      createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return keys.length === 1 ? new Promise<ApiSnapshot>((r) => { finish = r; }) : Promise.reject(new Error('lost')); }),
+      renameNode: vi.fn(() => Promise.resolve(makeSnapshot())),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState({ nodes: [{ ...pantry('n-old'), name: 'Coat Room' }] }); // a legacy same-named place
+    const first = s().addLocationNode({ ...PANTRY, name: 'Coat Room' });
+    s().renameNode('other', 'Lobby');
+    await flush();
+    finish(makeSnapshot({ nodes: [{ ...pantry('n-old'), name: 'Coat Room' }, { ...pantry('n-new'), name: 'Coat Room' }] })); // no createdNodeId
+    expect(await first).toBeNull();
+    await s().addLocationNode({ ...PANTRY, name: 'Coat Room' }); // the tree still shows one: replays
+    expect(keys[1]).toBe(keys[0]);
+    useStore.setState({ nodes: [{ ...pantry('n-old'), name: 'Coat Room' }, { ...pantry('n-new'), name: 'Coat Room' }] });
+    await s().addLocationNode({ ...PANTRY, name: 'Coat Room' }); // the reconcile shows the new one: a new create
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
   it('overlapping sends share the key until the LAST settles; a lost one keeps it for the retry (#704 Codex 4178462360)', async () => {
     const keys: unknown[] = [];
     const replies: Array<{ ok: (s: ApiSnapshot) => void; fail: (e: Error) => void }> = [];

@@ -26,8 +26,10 @@ import type { AllocateLabourInput, Phase6_4dRollout } from '../data/apiGateway';
 /** #704 — one unsettled location create: the `Idempotency-Key` every send of it carries, how many of
  *  those sends are still out, whether any of them failed (an unknown outcome, so a retry must replay
  *  under the same key), and the place an answered but unconfirmed send named (`''` when the server
- *  named none), which retires the key once this tab's tree shows it. */
-export type NodeCreatePending = { key: string; inflight: number; failed: boolean; awaiting: string | null };
+ *  named none), which retires the key once this tab's tree shows it. `sameNamedBefore` counts the
+ *  places of this name and kind under the parent when the intent was first sent: with no named place
+ *  (a server before #703), a later read showing more of them confirms the create. */
+export type NodeCreatePending = { key: string; inflight: number; failed: boolean; awaiting: string | null; sameNamedBefore: number };
 
 /**
  * The frontend project-scope lifecycle (Phase 0 Task 2).
