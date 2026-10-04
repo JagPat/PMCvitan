@@ -120,7 +120,11 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
   const IMAGE = 'ab8600c782bc686cfc64d538279c6e79f10ccf9c';
   const historyRow = (over: Record<string, unknown> = {}) => ({
     deployment_uuid: 'dep-finished', application_id: 7, pull_request_id: 0, status: 'finished', commit: IMAGE,
-    restart_only: false, only_this_server: false, created_at: '2026-10-04T12:00:00.000000Z', ...over,
+    restart_only: false, only_this_server: false, parent_deployment_uuid: null, created_at: '2026-10-04T12:00:00.000000Z', ...over,
+  });
+  const resolvableApplication = (over: Record<string, unknown> = {}) => ({
+    id: 7, uuid: 'app-1', name: 'pms-api', status: 'running:unknown', git_commit_sha: 'HEAD',
+    build_pack: 'dockerfile', dockerfile: null, additional_networks_count: 0, ...over,
   });
 
   it('resolves a non-commit git_commit_sha from the newest finished production deployment, and fails closed otherwise', () => {
@@ -152,13 +156,39 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
     // a string application id from the deployment model still matches, and a different id does not
     expect(judgeDeploymentHistoryPage([historyRow({ application_id: '7' })], 7, null).decision).toBe('resolved');
     expect(judgeDeploymentHistoryPage([historyRow({ application_id: 8 })], 7, null)).toMatchObject({ decision: 'unresolved', reason: expect.stringMatching(/application_id/) });
+    // a failed additional server is newer than the primary Coolify already marked finished, and that
+    // server may still be on the previous image. Skipping it would drain on the primary's commit.
+    const failedChild = judgeDeploymentHistoryPage([
+      historyRow({ deployment_uuid: 'child-failed', status: 'failed', parent_deployment_uuid: 'dep-finished', created_at: '2026-10-04T13:00:00.000000Z' }),
+      historyRow(),
+    ], 7, null, { additionalNetworksCount: 1, finishedChildren: new Map() });
+    expect(failedChild).toMatchObject({ decision: 'unresolved', reason: expect.stringMatching(/additional server of dep-finished and ended failed/) });
+    const noParent = historyRow({ deployment_uuid: 'dep-opaque', status: 'failed', created_at: '2026-10-04T13:00:00.000000Z' });
+    delete noParent.parent_deployment_uuid;
+    expect(judgeDeploymentHistoryPage([noParent, historyRow()], 7, null)).toMatchObject({ decision: 'unresolved', reason: expect.stringMatching(/parent_deployment_uuid/) });
+    // one additional destination, and its deployment finished the same commit: that is the fleet
+    const fleet = judgeDeploymentHistoryPage([
+      historyRow({ deployment_uuid: 'child-ok', parent_deployment_uuid: 'dep-finished', created_at: '2026-10-04T13:00:00.000000Z' }),
+      historyRow(),
+    ], 7, null, { additionalNetworksCount: 1, finishedChildren: new Map() });
+    expect(fleet).toMatchObject({ decision: 'resolved', commit: IMAGE, deploymentUuid: 'dep-finished' });
+    expect(judgeDeploymentHistoryPage([historyRow()], 7, null, { additionalNetworksCount: 1, finishedChildren: new Map() })).toMatchObject({
+      decision: 'unresolved', reason: expect.stringMatching(/1 additional destination/),
+    });
+    const other = 'b'.repeat(40);
+    expect(judgeDeploymentHistoryPage([
+      historyRow({ deployment_uuid: 'child-other', parent_deployment_uuid: 'dep-finished', commit: other, created_at: '2026-10-04T13:00:00.000000Z' }),
+      historyRow(),
+    ], 7, null, { additionalNetworksCount: 1, finishedChildren: new Map() })).toMatchObject({
+      decision: 'unresolved', reason: expect.stringMatching(/different commit/),
+    });
   });
 
   it('the Coolify reader uses that deployment commit when git_commit_sha is HEAD, and never when it is already a commit', async () => {
     const calls: string[] = [];
     const fetch = vi.fn(async (url: string) => {
       calls.push(url);
-      if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => ({ id: 7, uuid: 'app-1', name: 'pms-api', status: 'running:unknown', git_commit_sha: 'HEAD', build_pack: 'dockerfile' }) };
+      if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => resolvableApplication() };
       if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [] };
       if (url.includes('/deployments/applications/app-1')) return { ok: true, status: 200, json: async () => ({ count: 1, deployments: [historyRow()] }) };
       return { ok: false, status: 404, json: async () => ({}) };
@@ -185,7 +215,7 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
 
     // a deploy still in progress is part of the inventory even though the running image is the last finished one
     const busyFetch = vi.fn(async (url: string) => {
-      if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => ({ id: 7, uuid: 'app-1', name: 'pms-api', status: 'running:healthy', git_commit_sha: 'HEAD', build_pack: 'nixpacks' }) };
+      if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => resolvableApplication({ status: 'running:healthy', build_pack: 'nixpacks' }) };
       if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [] };
       if (url.includes('/deployments/applications/')) return { ok: true, status: 200, json: async () => ({ count: 2, deployments: [historyRow({ deployment_uuid: 'dep-busy', status: 'queued', commit: null, created_at: '2026-10-04T13:00:00.000000Z' }), historyRow()] }) };
       return { ok: false, status: 404, json: async () => ({}) };
@@ -196,7 +226,7 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
 
     // the newest finished row still saying HEAD is unclassified, with the reason, and an older SHA is not used
     const stuckFetch = vi.fn(async (url: string) => {
-      if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => ({ id: 7, uuid: 'app-1', name: 'pms-api', status: 'running:unknown', git_commit_sha: 'HEAD', build_pack: 'dockerfile' }) };
+      if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => resolvableApplication() };
       if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [] };
       if (url.includes('/deployments/applications/')) return { ok: true, status: 200, json: async () => ({ count: 1, deployments: [historyRow({ commit: 'HEAD' })] }) };
       return { ok: false, status: 404, json: async () => ({}) };
@@ -235,12 +265,46 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
       expect(judged.findings.join('\n'), application.build_pack).toMatch(application.finding);
     }
 
+    // a read-only token omits dockerfile even when the column is a pasted Dockerfile. Absence is not empty.
+    const hiddenUrls: string[] = [];
+    const hidden = await coolifyInventoryReader({
+      baseUrl: 'https://coolify.example/api/v1', token: 't',
+      fetch: vi.fn(async (url: string) => {
+        hiddenUrls.push(url);
+        if (url.endsWith('/applications/app-1')) {
+          const application = resolvableApplication();
+          delete application.dockerfile;
+          return { ok: true, status: 200, json: async () => application };
+        }
+        if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [] };
+        if (url.includes('/deployments/applications/')) return { ok: true, status: 200, json: async () => ({ count: 1, deployments: [historyRow()] }) };
+        return { ok: false, status: 404, json: async () => ({}) };
+      }),
+    }).read('app-1');
+    expect(hiddenUrls.some((url) => url.includes('/deployments/applications/'))).toBe(false);
+    expect(hidden.application.gitCommitSha).toBe('HEAD');
+    const hiddenJudged = judgeDrain(base({ platform: { inventory: hidden }, classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [IMAGE]: 'at-or-after' }) }));
+    expect(hiddenJudged.verdict).toBe('unclassified');
+    expect(hiddenJudged.findings.join('\n')).toMatch(/dockerfile column is hidden from this token/);
+
+    // railpack tags the production image with the deployment commit, same as nixpacks and static
+    const railpack = await coolifyInventoryReader({
+      baseUrl: 'https://coolify.example/api/v1', token: 't',
+      fetch: vi.fn(async (url: string) => {
+        if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => resolvableApplication({ build_pack: 'railpack' }) };
+        if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [] };
+        if (url.includes('/deployments/applications/')) return { ok: true, status: 200, json: async () => ({ count: 1, deployments: [historyRow()] }) };
+        return { ok: false, status: 404, json: async () => ({}) };
+      }),
+    }).read('app-1');
+    expect(railpack.application.gitCommitSha).toBe(IMAGE);
+
     // history is paged until a finished production deployment; a full page of failures is not the end
     let historyCalls = 0;
     const paged = await coolifyInventoryReader({
       baseUrl: 'https://coolify.example/api/v1', token: 't',
       fetch: vi.fn(async (url: string) => {
-        if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => ({ id: 7, uuid: 'app-1', name: 'n', status: 'running:healthy', git_commit_sha: 'HEAD', build_pack: 'static' }) };
+        if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => resolvableApplication({ name: 'n', status: 'running:healthy', build_pack: 'static' }) };
         if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [] };
         if (url.includes('/deployments/applications/')) {
           historyCalls += 1;
