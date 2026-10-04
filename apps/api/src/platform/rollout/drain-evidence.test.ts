@@ -20,7 +20,7 @@ const lease = (instanceId: string, catalogVersion: number, release: string): Liv
   ({ instanceId, catalogVersion, release, startedAt: at(), leaseUntil: at('2026-09-28T10:10:00Z') });
 const inventory = (over: Partial<PlatformInventory['application']> = {}, running: PlatformInventory['runningDeployments'] = []): PlatformInventory => ({
   source: 'Coolify https://coolify.example/api/v1',
-  application: { id: 7, uuid: 'app-1', name: 'pms-api', fqdn: 'https://pms-api.example', status: 'running:healthy', gitCommitSha: 'bbbbbbbb', ...over },
+  application: { uuid: 'app-1', name: 'pms-api', fqdn: 'https://pms-api.example', status: 'running:healthy', gitCommitSha: 'bbbbbbbb', ...over },
   runningDeployments: running,
 });
 const base = (over: Partial<DrainEvidenceInput> = {}): DrainEvidenceInput => ({
@@ -60,13 +60,15 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
     };
     unclassified({ platform: { unavailable: 'COOLIFY_TOKEN is not set' } }, /platform inventory unavailable: COOLIFY_TOKEN is not set/);
     unclassified({ platform: { inventory: inventory({ status: 'exited:unhealthy' }) } }, /is not running \(status "exited:unhealthy"\)/);
-    unclassified({ platform: { inventory: inventory({}, [{ deploymentUuid: 'd-1', applicationId: 7, status: 'in_progress', commit: 'cccccccc' }]) } }, /1 deployment\(s\) in progress .*d-1:in_progress/);
+    unclassified({ platform: { inventory: inventory({}, [{ deploymentUuid: 'd-1', applicationUuid: 'app-1', status: 'in_progress', commit: 'cccccccc' }]) } }, /1 deployment\(s\) in progress .*d-1:in_progress/);
     // a running deployment of ANOTHER application is not this one's
-    expect(judgeDrain(base({ platform: { inventory: inventory({}, [{ deploymentUuid: 'd-2', applicationId: 8, status: 'in_progress', commit: null }]) } })).verdict).toBe('drained');
+    expect(judgeDrain(base({ platform: { inventory: inventory({}, [{ deploymentUuid: 'd-2', applicationUuid: 'app-other', status: 'in_progress', commit: null }]) } })).verdict).toBe('drained');
+    // a queue row that does not name an application cannot be dropped: the stripped numeric id is not a tie
+    unclassified({ platform: { inventory: inventory({}, [{ deploymentUuid: 'd-untied', applicationUuid: null, status: 'in_progress', commit: null }]) } }, /do not name an application \(d-untied\)/);
     // a deployment record is judged by STATE (#663 round 4, finding 1): finished, failed and cancelled records
     // are history and leave the verdict drained; queued is in progress; an unknown state is counted in
     // progress and named in the finding
-    const dep = (status: string) => ({ deploymentUuid: `d-${status}`, applicationId: 7, status, commit: 'cccccccc' });
+    const dep = (status: string) => ({ deploymentUuid: `d-${status}`, applicationUuid: 'app-1', status, commit: 'cccccccc' });
     expect(judgeDrain(base({ platform: { inventory: inventory({}, [dep('finished'), dep('failed'), dep('cancelled-by-user')]) } })).verdict).toBe('drained');
     unclassified({ platform: { inventory: inventory({}, [dep('finished'), dep('queued')]) } }, /1 deployment\(s\) in progress .*d-queued:queued\)/);
     unclassified({ platform: { inventory: inventory({}, [dep('weird')]) } }, /d-weird:weird\).*"weird" is not a state this command knows and is counted in progress/);
@@ -96,16 +98,16 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
     const calls: Array<{ url: string; auth: string }> = [];
     const fetch = vi.fn(async (url: string, init: { headers: Record<string, string> }) => {
       calls.push({ url, auth: init.headers.Authorization! });
-      if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => ({ id: 7, uuid: 'app-1', name: 'pms-api', fqdn: 'https://pms-api.example', status: 'running:healthy', git_commit_sha: 'bbbbbbbb', extra: 'ignored' }) };
-      if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => ([{ deployment_uuid: 'd-1', application_id: 7, status: 'in_progress', commit: 'cccccccc' }]) };
+      if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => ({ uuid: 'app-1', name: 'pms-api', fqdn: 'https://pms-api.example', status: 'running:healthy', git_commit_sha: 'bbbbbbbb', extra: 'ignored' }) };
+      if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => ([{ deployment_uuid: 'd-1', application_id: 7, deployment_url: '/project/p/environment/e/application/app-1/deployment/d-1', status: 'in_progress', commit: 'cccccccc' }]) };
       return { ok: false, status: 404, json: async () => ({}) };
     });
     const reader = coolifyInventoryReader({ baseUrl: 'https://coolify.example/api/v1/', token: 'id|secret', fetch });
     const inv = await reader.read('app-1');
     expect(inv).toEqual({
       source: 'Coolify https://coolify.example/api/v1',
-      application: { id: 7, uuid: 'app-1', name: 'pms-api', fqdn: 'https://pms-api.example', status: 'running:healthy', gitCommitSha: 'bbbbbbbb' },
-      runningDeployments: [{ deploymentUuid: 'd-1', applicationId: 7, status: 'in_progress', commit: 'cccccccc' }],
+      application: { uuid: 'app-1', name: 'pms-api', fqdn: 'https://pms-api.example', status: 'running:healthy', gitCommitSha: 'bbbbbbbb' },
+      runningDeployments: [{ deploymentUuid: 'd-1', applicationUuid: 'app-1', status: 'in_progress', commit: 'cccccccc' }],
     });
     expect(calls.map((c) => c.url)).toEqual(['https://coolify.example/api/v1/applications/app-1', 'https://coolify.example/api/v1/deployments']);
     expect(calls.every((c) => c.auth === 'Bearer id|secret')).toBe(true);
@@ -113,8 +115,56 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
 
     const failing = coolifyInventoryReader({ baseUrl: 'https://coolify.example/api/v1', token: 't', fetch: vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) })) });
     await expect(failing.read('app-1')).rejects.toThrow(/HTTP 401/);
-    const noSha = coolifyInventoryReader({ baseUrl: 'https://coolify.example/api/v1', token: 't', fetch: vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ id: 7, uuid: 'app-1', name: 'n', status: 'running:healthy' }) })) });
+    const noSha = coolifyInventoryReader({ baseUrl: 'https://coolify.example/api/v1', token: 't', fetch: vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ uuid: 'app-1', name: 'n', status: 'running:healthy' }) })) });
     await expect(noSha.read('app-1')).rejects.toThrow(/"git_commit_sha" is absent/);
+    const wrongUuid = coolifyInventoryReader({ baseUrl: 'https://coolify.example/api/v1', token: 't', fetch: vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ uuid: 'other', name: 'n', status: 'running:healthy', git_commit_sha: 'bbbbbbbb' }) })) });
+    await expect(wrongUuid.read('app-1')).rejects.toThrow(/not the requested application/);
+  });
+
+  it('reads a Coolify 4.3.23 application with no id, and ties a queue row only by the uuid in deployment_url', async () => {
+    const pinned = '3dc195ff871095b8049b979b6e66415da0424136';
+    const redacted = {
+      uuid: 'app-1', name: 'pms-api', status: 'running:healthy', git_commit_sha: pinned, build_pack: 'dockerfile',
+      git_repository: 'JagPat/PMCvitan', dockerfile_location: '/apps/api/Dockerfile',
+    };
+    const queue = (rows: Array<Record<string, unknown>>) => vi.fn(async (url: string) => {
+      if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => redacted };
+      if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => rows };
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+    const read = (rows: Array<Record<string, unknown>>) => coolifyInventoryReader({ baseUrl: 'https://coolify.example/api/v1', token: 'read-only-token', fetch: queue(rows) }).read('app-1');
+    const idle = await read([
+      { deployment_uuid: 'other-app', application_id: 7, deployment_url: '/project/p/environment/e/application/app-other/deployment/other-app', status: 'in_progress', commit: 'HEAD' },
+    ]);
+    expect(idle.application).toEqual({ uuid: 'app-1', name: 'pms-api', fqdn: null, status: 'running:healthy', gitCommitSha: pinned });
+    expect(idle.runningDeployments).toEqual([{ deploymentUuid: 'other-app', applicationUuid: 'app-other', status: 'in_progress', commit: 'HEAD' }]);
+    expect(JSON.stringify(idle)).not.toContain('read-only-token');
+    expect(judgeDrain(base({
+      platform: { inventory: idle },
+      classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [pinned]: 'at-or-after' }),
+    })).verdict).toBe('drained');
+
+    const own = await read([
+      { deployment_uuid: 'own-busy', application_id: 99, deployment_url: '/project/p/environment/e/application/app-1/deployment/own-busy', status: 'queued', commit: null },
+    ]);
+    const ownJudged = judgeDrain(base({ platform: { inventory: own }, classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [pinned]: 'at-or-after' }) }));
+    expect(ownJudged.verdict).toBe('unclassified');
+    expect(ownJudged.findings.join('\n')).toMatch(/own-busy:queued/);
+
+    const numericOnly = await read([
+      { deployment_uuid: 'numeric-only', application_id: 7, status: 'in_progress', commit: pinned },
+    ]);
+    expect(numericOnly.runningDeployments[0].applicationUuid).toBeNull();
+    const numericJudged = judgeDrain(base({ platform: { inventory: numericOnly }, classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [pinned]: 'at-or-after' }) }));
+    expect(numericJudged.verdict).toBe('unclassified');
+    expect(numericJudged.findings.join('\n')).toMatch(/do not name an application \(numeric-only\)/);
+
+    const ambiguous = await read([
+      { deployment_uuid: 'two-apps', application_id: 7, deployment_url: '/application/app-1/application/app-other/deployment/two-apps', status: 'in_progress', commit: null },
+    ]);
+    const ambiguousJudged = judgeDrain(base({ platform: { inventory: ambiguous }, classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [pinned]: 'at-or-after' }) }));
+    expect(ambiguousJudged.verdict).toBe('unclassified');
+    expect(ambiguousJudged.findings.join('\n')).toMatch(/do not name an application \(two-apps\)/);
   });
 
   const IMAGE = 'ab8600c782bc686cfc64d538279c6e79f10ccf9c';
@@ -225,14 +275,14 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
       fetch: vi.fn(async (url: string) => {
         busyUrls.push(url);
         if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => resolvableApplication({ status: 'running:healthy', build_pack: 'nixpacks' }) };
-        if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [{ deployment_uuid: 'dep-busy', application_id: 7, status: 'queued', commit: null }] };
+        if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [{ deployment_uuid: 'dep-busy', application_id: 7, deployment_url: 'https://coolify.example/project/p/environment/e/application/app-1/deployment/dep-busy', status: 'queued', commit: null }] };
         if (url.includes('/deployments/applications/')) return { ok: true, status: 200, json: async () => ({ count: 1, deployments: [historyRow()] }) };
         return { ok: false, status: 404, json: async () => ({}) };
       }),
     }).read('app-1');
     expect(busyUrls.some((url) => url.includes('/deployments/applications/'))).toBe(false);
     expect(busy.application.gitCommitSha).toBe('HEAD');
-    expect(busy.runningDeployments).toEqual([{ deploymentUuid: 'dep-busy', applicationId: 7, status: 'queued', commit: null }]);
+    expect(busy.runningDeployments).toEqual([{ deploymentUuid: 'dep-busy', applicationUuid: 'app-1', status: 'queued', commit: null }]);
     expect(judgeDrain(base({ platform: { inventory: busy }, classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [IMAGE]: 'at-or-after' }) })).verdict).toBe('unclassified');
 
     // a registry image is not a git commit, a pasted Dockerfile tags :latest, and a compose file can
@@ -328,7 +378,7 @@ describe('the drain-clearance gate re-derives exactly what judgeDrain judges', a
     ['not drained dominates unclassifiable', { platform: { unavailable: 'HTTP 503' }, leases: [lease('i-old', 2, 'bbbbbbbb')] }],
     ['unclassified: no platform read', { platform: { unavailable: 'COOLIFY_TOKEN is not set' } }],
     ['unclassified: stopped application', { platform: { inventory: inventory({ status: 'exited' }) } }],
-    ['unclassified: deployment in progress', { platform: { inventory: inventory({}, [{ deploymentUuid: 'd1', applicationId: 7, status: 'in_progress', commit: null }]) } }],
+    ['unclassified: deployment in progress', { platform: { inventory: inventory({}, [{ deploymentUuid: 'd1', applicationUuid: 'app-1', status: 'in_progress', commit: null }]) } }],
     ['unclassified: unplaceable image', { platform: { inventory: inventory({ gitCommitSha: 'cccccccc' }) } }],
     ['unclassified: HEAD left unresolved', { platform: { inventory: inventory({ gitCommitSha: 'HEAD', runningCommitUnresolved: 'Coolify git_commit_sha is "HEAD", not a commit SHA; no finished production deployment recorded a commit SHA' }) } }],
     ['drained, an extra runningCommit note does not replace the image commit', { platform: { inventory: inventory({ runningCommit: { source: 'finished-deployment', deploymentUuid: 'dep-finished', configuredGitCommitSha: 'HEAD' } }) } }],
