@@ -161,6 +161,78 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
     expect(await t.prisma.projectNode.count({ where: { projectId: p(), parentId: zone.createdNodeId } })).toBe(1);
   });
 
+  const owner = (): AuthUser => ({ sub: f.ownerUser.id, role: 'owner', projectId: f.projectA.id }) as AuthUser;
+
+  it('another author\'s PRIVATE draft never counts: it is not named in a 409 nor returned as the created place', async () => {
+    const zone = await svc.create(p(), { name: 'Idem Shared Wing', kind: 'zone', parentId: null, publish: true }, pmc());
+    const draft = await svc.create(p(), { name: 'Idem Secret', kind: 'room', parentId: zone.createdNodeId, publish: false }, pmc());
+    const hidden = await svc.create(p(), { name: 'Idem Hidden', kind: 'room', parentId: zone.createdNodeId, publish: false }, pmc());
+    // another kind under a draft's name: no 409 that would quote it — the owner's object is made
+    const other = await svc.create(p(), { name: 'idem hidden', kind: 'element', parentId: zone.createdNodeId, publish: true }, owner());
+    expect(other.createdNodeId).not.toBe(hidden.createdNodeId);
+    // the same kind: the owner gets a place of their own, one their own tree holds
+    const mine = await svc.create(p(), { name: 'Idem Secret', kind: 'room', parentId: zone.createdNodeId, publish: true }, owner());
+    expect(mine.createdNodeId).not.toBe(draft.createdNodeId);
+    expect(mine.nodes.some((n) => n.id === mine.createdNodeId)).toBe(true);
+    expect(mine.nodes.some((n) => n.id === draft.createdNodeId)).toBe(false);
+    // the draft's author still finds their own draft by its name
+    const again = await svc.create(p(), { name: 'Idem Secret', kind: 'room', parentId: zone.createdNodeId, publish: false }, pmc());
+    expect(again.createdNodeId).toBe(draft.createdNodeId);
+  });
+
+  it('a RENAME to a name another place under the parent holds is a 409; a respacing of its own name is not', async () => {
+    const zone = await svc.create(p(), { name: 'Idem Rename Wing', kind: 'zone', parentId: null, publish: true }, pmc());
+    const kitchen = await svc.create(p(), { name: 'Idem Kitchen', kind: 'room', parentId: zone.createdNodeId, publish: true }, pmc());
+    const pantry = await svc.create(p(), { name: 'Idem Pantry', kind: 'room', parentId: zone.createdNodeId, publish: true }, pmc());
+    await expect(svc.rename(p(), pantry.createdNodeId, { name: 'idem  KITCHEN' }, pmc())).rejects.toBeInstanceOf(ConflictException);
+    expect((await t.prisma.projectNode.findUniqueOrThrow({ where: { id: pantry.createdNodeId } })).name).toBe('Idem Pantry');
+    await svc.rename(p(), kitchen.createdNodeId, { name: 'Idem kitchen' }, pmc());
+    expect((await t.prisma.projectNode.findUniqueOrThrow({ where: { id: kitchen.createdNodeId } })).name).toBe('Idem kitchen');
+  });
+
+  it('a MOVE into a parent that holds the name is a 409; a reorder among places that already share a name is not', async () => {
+    const a = await svc.create(p(), { name: 'Idem Move A', kind: 'zone', parentId: null, publish: true }, pmc());
+    const b = await svc.create(p(), { name: 'Idem Move B', kind: 'zone', parentId: null, publish: true }, pmc());
+    const inA = await svc.create(p(), { name: 'Idem Store', kind: 'room', parentId: a.createdNodeId, publish: true }, pmc());
+    await svc.create(p(), { name: 'Idem Store', kind: 'room', parentId: b.createdNodeId, publish: true }, pmc());
+    await expect(svc.move(p(), inA.createdNodeId, { parentId: b.createdNodeId }, pmc())).rejects.toBeInstanceOf(ConflictException);
+    expect((await t.prisma.projectNode.findUniqueOrThrow({ where: { id: inA.createdNodeId } })).parentId).toBe(a.createdNodeId);
+    // two places made before the rule that share a name may still be reordered within their parent
+    const legacy = await t.prisma.projectNode.create({ data: { projectId: p(), parentId: a.createdNodeId, name: 'Idem Store', kind: 'room', order: 9, authorId: f.memberUser.id, publishedAt: new Date() } });
+    await svc.move(p(), legacy.id, { parentId: a.createdNodeId, order: 0 }, pmc());
+    expect((await t.prisma.projectNode.findUniqueOrThrow({ where: { id: legacy.id } })).order).toBe(0);
+  });
+
+  it('a DELETE waits on the tree lock, so it serializes with a create that names its place (barrier)', async () => {
+    // A create that names an existing place reads it under the tree lock; a delete that ignored the
+    // lock could commit in between and leave the create naming a place that is gone. Holding the
+    // lock, the delete must block; released, it commits, and a create of that name makes a new place.
+    const zone = await svc.create(p(), { name: 'Idem Doomed', kind: 'zone', parentId: null, publish: true }, pmc());
+    const other = new PrismaClient();
+    try {
+      let release!: () => void;
+      const released = new Promise<void>((r) => { release = r; });
+      let held!: () => void;
+      const heldArrived = new Promise<void>((r) => { held = r; });
+      const holder = other.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', treeLockKey(p()));
+        held();
+        await released;
+      }, { timeout: 30_000 });
+      await heldArrived;
+      const removal = svc.remove(p(), zone.createdNodeId, pmc());
+      await blocked(removal, await ungrantedLocks());
+      release();
+      await holder;
+      await removal;
+    } finally {
+      await other.$disconnect();
+    }
+    const again = await svc.create(p(), { name: 'Idem Doomed', kind: 'zone', parentId: null, publish: true }, pmc(), 'k-after-delete');
+    expect(again.createdNodeId).not.toBe(zone.createdNodeId);
+    expect(again.nodes.some((n) => n.id === again.createdNodeId)).toBe(true);
+  });
+
   it('two CONCURRENT creates of one name under DIFFERENT keys resolve to one place (barrier)', async () => {
     // The cross-tab case the client key could not cover: each tab minted its own key. Both creates
     // reserve distinct keys and wait on the held tree lock; released, the first creates and the
