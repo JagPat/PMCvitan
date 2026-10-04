@@ -303,6 +303,7 @@ export interface AppState {
   labourPendingInputs: Record<string, AllocateLabourInput>;
   labourOnboardPending: Record<string, string>;
   labourBindPending: Record<string, string>;
+  nodeCreatePending: Record<string, string>;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
   placeFocus: string | null;
@@ -777,11 +778,6 @@ export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): bool
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
-/** #704 — this tab's unsettled location creates: one `Idempotency-Key` per user, project and exact
- *  body, kept until an applied reply settles it, so a retry after a lost reply replays on the server
- *  (#700's ledger) instead of adding a sibling. In memory only: retries across tabs and reloads are
- *  the server's sibling-name rule (#705). */
-const unsettledNodeCreates = new Map<string, string>();
 /** U3b — the newest brief request; a reply to any earlier one is superseded and dropped (the landing,
  *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
 let briefRequestSeq = 0;
@@ -1143,6 +1139,7 @@ export function getInitialState(): AppState {
     labourPending: [],
     labourPendingInputs: {},
     labourOnboardPending: {},
+    nodeCreatePending: {},
     labourBindPending: {},
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     placeFocus: null,
@@ -4441,16 +4438,19 @@ export const useStore = create<Store>()(
       const scope = currentScope();
       // #704 redesign — exactly-once across tabs and reloads is the server's (#705: a name already held
       // under the parent names that place, whatever the key); this tab only keeps its unsettled creates'
-      // keys in memory (`unsettledNodeCreates`). The create is sent through the gateway live when the
+      // keys in memory (`nodeCreatePending`). The create is sent through the gateway live when the
       // action started, and the reply is bound to the user and project that sent it: a reply landing
       // after either changed is dropped, never toasted or returned.
       const body = { name: input.name.trim(), kind: input.kind, parentId: input.parentId ?? null, publish: input.publish ?? true };
       const identity = `${sessionSub()}|${get().sessionUserId ?? ''}`;
       const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === identity;
       const gw = gateway;
-      const intent = JSON.stringify([identity, scope.projectId, body.parentId, body.kind, body.name, body.publish]);
-      const key = unsettledNodeCreates.get(intent) ?? newIdempotencyKey();
-      unsettledNodeCreates.set(intent, key);
+      // one key per user and exact body, kept in this project's data (`nodeCreatePending`, torn down on
+      // a switch or sign-out) until an applied reply settles it: a retry after a lost reply replays on
+      // the server (#700's ledger) instead of adding a sibling. In memory only.
+      const intent = JSON.stringify([identity, body.parentId, body.kind, body.name, body.publish]);
+      const key = get().nodeCreatePending[intent] ?? newIdempotencyKey();
+      set((s) => { s.nodeCreatePending[intent] = key; });
       try {
         const lease = beginSnapshotLease(scope); // gate round 11: before the create request
         const snap = await gw.createNode(body, key);
@@ -4466,7 +4466,7 @@ export const useStore = create<Store>()(
           else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
-        if (unsettledNodeCreates.get(intent) === key) unsettledNodeCreates.delete(intent); // applied: settled
+        set((s) => { if (s.nodeCreatePending[intent] === key) delete s.nodeCreatePending[intent]; }); // applied: settled
         get().flash(`Added ${body.kind}: ${body.name}.`);
         // the server names the place (#703) — the one it made, or (#705) the one already holding the
         // name, which was in the tree before: never pick it by name or by what is new. A server without

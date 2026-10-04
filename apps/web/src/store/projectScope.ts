@@ -160,6 +160,9 @@ export interface ProjectDataState {
    *  Each entry is reused verbatim on a retry of the SAME form and cleared only by that form's
    *  CONFIRMED success or a scope teardown. */
   labourOnboardPending: Record<string, string>;
+  /** #704 — the unsettled location creates' `Idempotency-Key`s (user + exact body → key). Project-owned
+   *  like every other pending set, so a switch or sign-out tears them down. */
+  nodeCreatePending: Record<string, string>;
   /** Codex rounds 6+8 — the same signature-keyed held-key discipline for the device-bind
    *  command: a committed-but-lost bind retried with a FRESH key is the server's "already bound
    *  to this worker" 409 (the CAS is on the still-unbound row), reported as failure for a
@@ -213,6 +216,7 @@ export function emptyProjectData(): ProjectDataState {
     commercialLineRegisters: {},
     labourPendingInputs: {},
     labourOnboardPending: {},
+    nodeCreatePending: {},
     labourBindPending: {},
   };
 }

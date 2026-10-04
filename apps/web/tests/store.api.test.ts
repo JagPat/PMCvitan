@@ -610,6 +610,14 @@ describe('#704 — a location create uses the place the server names, bound to t
     expect(new Set(keys).size).toBe(3);
   });
 
+  it('a pending create key is project data: sign-out tears it down (#704 shadow P2 on 1aba8fa)', async () => {
+    s()._setGateway({ createNode: vi.fn(() => Promise.reject(new Error('lost'))) } as unknown as ApiGateway);
+    await s().addLocationNode({ ...PANTRY, name: 'Boot Room' });
+    expect(Object.keys(s().nodeCreatePending)).toHaveLength(1); // kept for the retry
+    s().completeSignOut();
+    expect(s().nodeCreatePending).toEqual({});
+  });
+
   it('a reply landing after the signed-in user changed is dropped: no place, no toast (Codex 4176831760)', async () => {
     let finish!: (snap: ApiSnapshot) => void;
     s()._setGateway({ createNode: vi.fn(() => new Promise<ApiSnapshot>((r) => { finish = r; })) } as unknown as ApiGateway);
