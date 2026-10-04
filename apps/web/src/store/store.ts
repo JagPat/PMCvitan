@@ -854,6 +854,34 @@ function overlayChecklistMarks(s: AppState): void {
   }
 }
 
+/** The PMC's UNSENT rejection marks, by review then item row id: only undecided reviews carry them. */
+function reviewRejectionMarks(reviews: readonly Review[]): Map<string, Set<string>> {
+  const marks = new Map<string, Set<string>>();
+  for (const r of reviews) {
+    if (r.decided) continue;
+    const ids = r.items.filter((it) => it.rejected && it.id).map((it) => it.id!);
+    if (ids.length) marks.set(r.id, new Set(ids));
+  }
+  return marks;
+}
+
+/**
+ * The review queue's counterpart of `overlayChecklistMarks`: a PMC's "Reject item" marks exist only in
+ * this store until Send, and every reconcile replaces the queue with the server's copy, so a background
+ * refresh landing between the marks and Send used to wipe them (the decision then went out without the
+ * rows the PMC named). The marks are carried onto the SAME review while it is still undecided, matched by
+ * item row id; once the server reports the review decided, its own record of what was rejected stands.
+ */
+function restoreReviewRejectionMarks(reviews: Review[], marks: Map<string, Set<string>>): Review[] {
+  if (marks.size === 0) return reviews;
+  // new objects, never in-place writes: the server's copy may already be frozen in another slice
+  return reviews.map((r) => {
+    const ids = r.decided ? undefined : marks.get(r.id);
+    if (!ids) return r;
+    return { ...r, items: r.items.map((it) => (it.id && ids.has(it.id) ? { ...it, rejected: true } : it)) };
+  });
+}
+
 /**
  * Which checklist owns the edit slot after a read: the engineer's chosen one while it is still
  * open, else the server's default (the oldest open one). A selection that has left the open set —
@@ -1452,7 +1480,9 @@ export const useStore = create<Store>()(
         reconcileSubmission(s);
         // XOR (Task 10 Module 3): the review queue + reinspection flag follow the same ownership as the
         // checklist above. moduleQuery + result → module slices; moduleQuery + null/undefined → keep
-        // last-good (the checklist block already set the load/error state for this apply).
+        // last-good (the checklist block already set the load/error state for this apply). The PMC's
+        // unsent rejection marks survive the replacement (`restoreReviewRejectionMarks`).
+        const rejectionMarks = reviewRejectionMarks(s.reviews);
         if (!inspModule) {
           s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
           s.reinspectionCreated = snap.reinspectionCreated;
@@ -1460,6 +1490,7 @@ export const useStore = create<Store>()(
           s.reviews = [...inspectionsResult.reviews];
           s.reinspectionCreated = inspectionsResult.reinspectionCreated;
         }
+        s.reviews = restoreReviewRejectionMarks(s.reviews, rejectionMarks);
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         // Phase 2 Task 10 (Module 2 — Drawings) — XOR read-ownership for the drawing register, mirroring
         // decisions/daily-log. 'snapshot' mode (default): the snapshot slice OWNS `s.drawings` (unchanged).
