@@ -239,6 +239,14 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
     expect((await t.prisma.projectNode.findUniqueOrThrow({ where: { id: kitchen.createdNodeId } })).name).toBe('Idem kitchen');
   });
 
+  it('a RENAME to a name only another author\'s PRIVATE draft holds is allowed and never quotes that draft', async () => {
+    const zone = await svc.create(p(), { name: 'Idem Private Wing', kind: 'zone', parentId: null, publish: true }, pmc());
+    await svc.create(p(), { name: 'Idem Hideaway', kind: 'room', parentId: zone.createdNodeId, publish: false }, owner());
+    const mine = await svc.create(p(), { name: 'Idem Den', kind: 'room', parentId: zone.createdNodeId, publish: true }, pmc());
+    await svc.rename(p(), mine.createdNodeId, { name: 'idem hideaway' }, pmc()); // the PMC cannot see the owner's draft
+    expect((await t.prisma.projectNode.findUniqueOrThrow({ where: { id: mine.createdNodeId } })).name).toBe('idem hideaway');
+  });
+
   it('a MOVE into a parent that holds the name is a 409; a reorder among places that already share a name is not', async () => {
     const a = await svc.create(p(), { name: 'Idem Move A', kind: 'zone', parentId: null, publish: true }, pmc());
     const b = await svc.create(p(), { name: 'Idem Move B', kind: 'zone', parentId: null, publish: true }, pmc());
