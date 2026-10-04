@@ -11,7 +11,7 @@ import {
   DRAIN_MINIMUM_RELEASE,
   drainEvidenceArtifactName,
 } from './autonomous-drain-clearance.mjs';
-import { main, stampProvenance } from './drain-evidence-workflow.mjs';
+import { drainRecordFromStdout, main, stampProvenance } from './drain-evidence-workflow.mjs';
 
 // The trusted producer of the drain record (the owner's choice of 2026-10-02; #686 finding 4163934186).
 // The gate trusts a record only when it is byte-identical to this workflow's artifact from a green run on
@@ -68,6 +68,14 @@ test('the runner stamps the CLI\'s record with this run\'s identity, and refuses
   assert.equal(stamped.verdict, 'drained');
   assert.equal(drainEvidenceArtifactName(4242, 1), 'phase-6-4d-drain-evidence-4242-1');
   assert.throws(() => stampProvenance('usage: …', ENV()), /printed no JSON record/u);
+  // pnpm writes its failure banner to stdout after the record when the CLI exits non-zero. The record is
+  // still the first JSON value, including when a finding itself contains a brace.
+  const banner = '\n ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: tsx src/platform/rollout/drain-evidence.cli.ts\n';
+  const noisy = CLI_JSON({ verdict: 'unclassified', findings: ['image commit "HEAD" cannot be placed (brace } in the finding)'] }) + banner;
+  assert.equal(stampProvenance(noisy, ENV()).verdict, 'unclassified');
+  assert.equal(drainRecordFromStdout(noisy).findings[0], 'image commit "HEAD" cannot be placed (brace } in the finding)');
+  assert.throws(() => stampProvenance(`${banner}${CLI_JSON()}`, ENV()), /did not start with the record/u);
+  assert.throws(() => stampProvenance('{', ENV()), /truncated JSON/u);
   assert.throws(() => stampProvenance(CLI_JSON({ marker: 'X' }), ENV()), /other than a DRAIN-EVIDENCE record/u);
   assert.throws(() => stampProvenance(CLI_JSON({ directive: 'another' }), ENV()), /other than a DRAIN-EVIDENCE record/u);
   assert.throws(() => stampProvenance(CLI_JSON(), ENV({ GITHUB_RUN_ID: '' })), /must name this run/u);
@@ -100,6 +108,11 @@ test('the runner runs only on main, only with its environment, and writes the st
     // a judged not-drained run still writes its record (exit 1), so the operator sees why
     const notDrained = main(env, () => ({ status: 1, stdout: CLI_JSON({ verdict: 'not-drained', findings: ['live lease i-0 is below the minimum'] }) }));
     assert.equal(notDrained.verdict, 'not-drained');
+    // the same exit, with pnpm's banner after the JSON, still writes the record the job uploads
+    const noisyVerdict = main(env, () => ({ status: 1, stdout: `${CLI_JSON({ verdict: 'unclassified', findings: ['image commit "HEAD" cannot be placed'] })}\n ELIFECYCLE  Command failed with exit code 1.\n` }));
+    assert.equal(noisyVerdict.verdict, 'unclassified');
+    assert.equal(await readFile(join(directory, DRAIN_EVIDENCE_ARTIFACT_FILE), 'utf8'), `${JSON.stringify(noisyVerdict, null, 2)}\n`);
+    assert.match(await readFile(join(directory, 'out'), 'utf8'), /verdict=unclassified\n/u);
     // a usage or read failure has no record
     assert.throws(() => main(env, () => ({ status: 2, stdout: '' })), /failed \(exit 2\) without a verdict/u);
   } finally {

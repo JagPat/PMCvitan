@@ -79,3 +79,7 @@ export function heightOf(rows: readonly TreeRow[], rootId: string): number {
   };
   return walk(rootId);
 }
+
+/** Two places under one parent are the same place when their names match ignoring case and spacing
+ *  (the rule the Site Map form already applies before it sends). */
+export const normalizeNodeName = (name: string): string => name.trim().replace(/\s+/g, ' ').toLowerCase();
