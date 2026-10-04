@@ -1339,7 +1339,14 @@ export const useStore = create<Store>()(
         if (!storage) return { ...(createKeysMemo.get(at) ?? {}) };
         const raw = storage.getItem(at);
         const parsed: unknown = raw ? JSON.parse(raw) : {};
-        const stored = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {};
+        // #704 Codex 4176703614 — only non-empty string keys count: a falsy value would send no
+        // `Idempotency-Key` at all (the server's unkeyed path), so a corrupt entry reads as absent
+        const stored: Record<string, string> = {};
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          for (const [intent, key] of Object.entries(parsed as Record<string, unknown>)) {
+            if (typeof key === 'string' && key.length > 0) stored[intent] = key;
+          }
+        }
         return { ...stored, ...memo };
       } catch {
         return { ...(createKeysMemo.get(at) ?? {}) };
@@ -4492,14 +4499,22 @@ export const useStore = create<Store>()(
       // place. Keys are kept per signed-in user and project (the server's receipt is actor-scoped).
       const body = { name: input.name.trim(), kind: input.kind, parentId: input.parentId ?? null, publish: input.publish ?? true };
       const intent = JSON.stringify([body.parentId, body.kind, body.name, body.publish]);
-      const keysAt = `vitan.nodeCreateKeys.${sessionSub()}.${scope.projectId}`;
+      // #704 Codex 4176703613 — the effective identity: dev auth keeps its JWT inside the gateway and
+      // sets only `sessionUserId`, so the token alone would put every persona under 'anon'
+      const owner = sessionSub() !== 'anon' ? sessionSub() : (get().sessionUserId ?? 'anon');
+      const keysAt = `vitan.nodeCreateKeys.${owner}.${scope.projectId}`;
       const key = await updateCreateKeys(keysAt, (keys) => {
         const k = keys[intent] ?? newIdempotencyKey();
         return { keys: { ...keys, [intent]: k }, value: k };
       });
+      // #704 Codex 4176703609 — the lock wait can outlast a project switch, which retires this scope
+      // and replaces the gateway: a create that outlived its scope is dropped, never sent through the
+      // gateway now live (its key stays, so the same create from that project later still replays)
+      const gw = gateway;
+      if (!gw || !scopeStillCurrent(scope)) return null;
       try {
         const lease = beginSnapshotLease(scope); // gate round 11: before the create request
-        const snap = await gateway.createNode(body, key);
+        const snap = await gw.createNode(body, key);
         const result = acceptSnapshot(snap, lease);
         if (result !== 'applied') {
           // only an APPLIED snapshot settles the intent: on a superseded one the place WAS created but
@@ -4516,6 +4531,7 @@ export const useStore = create<Store>()(
           delete rest[intent];
           return { keys: rest, value: undefined };
         });
+        if (!scopeStillCurrent(scope)) return null; // the settle's lock wait outlasted the scope
         get().flash(`Added ${body.kind}: ${body.name}.`);
         // the server names the place it made (#703), the same one on a replay: never pick it by name,
         // which may repeat. A server without the field: the node that was not in the tree before.

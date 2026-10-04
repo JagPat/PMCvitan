@@ -680,3 +680,53 @@ describe('#704 review — location-create keys across tabs and failing storage',
     }
   });
 });
+
+describe('#704 review round 2', () => {
+  const PANTRY = { name: 'Pantry', kind: 'room' as const, parentId: null, publish: true };
+  beforeEach(() => { globalThis.localStorage.clear(); });
+
+  it('dev-auth personas (no store token) keep their own keys (Codex 4176703613)', async () => {
+    const keys: unknown[] = [];
+    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
+    useStore.setState({ sessionToken: null, sessionUserId: 'u-a' });
+    await s().addLocationNode(PANTRY);
+    useStore.setState({ sessionToken: null, sessionUserId: 'u-b' });
+    await s().addLocationNode(PANTRY);
+    useStore.setState({ sessionToken: null, sessionUserId: 'u-a' });
+    await s().addLocationNode(PANTRY); // A's retry
+    expect(keys[1]).not.toBe(keys[0]);
+    expect(keys[2]).toBe(keys[0]);
+  });
+
+  it('a create whose lock wait outlives a project switch is never sent (Codex 4176703609)', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const locks = { request: vi.fn(async (_name: string, cb: () => unknown) => { await held; return cb(); }) };
+    const nav = globalThis.navigator as Navigator & { locks?: unknown };
+    const prior = Object.getOwnPropertyDescriptor(nav, 'locks');
+    Object.defineProperty(nav, 'locks', { value: locks, configurable: true });
+    try {
+      const createNode = vi.fn(() => new Promise<ApiSnapshot>(() => {}));
+      s()._setGateway({ createNode } as unknown as ApiGateway);
+      const pending = s().addLocationNode(PANTRY);
+      await flush();
+      useStore.setState((st) => { st.activeProjectId = 'p-other'; st.projectScopeGeneration += 1; }); // the switch
+      release();
+      expect(await pending).toBeNull();
+      expect(createNode).not.toHaveBeenCalled();
+    } finally {
+      if (prior) Object.defineProperty(nav, 'locks', prior);
+      else delete (nav as { locks?: unknown }).locks;
+    }
+  });
+
+  it('a corrupt stored key never sends a create without one (Codex 4176703614)', async () => {
+    const intent = JSON.stringify([null, 'room', 'Pantry', true]);
+    globalThis.localStorage.setItem(`vitan.nodeCreateKeys.anon.${s().activeProjectId}`, JSON.stringify({ [intent]: false }));
+    const keys: unknown[] = [];
+    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
+    await s().addLocationNode(PANTRY);
+    expect(keys[0]).toEqual(expect.any(String));
+    expect((keys[0] as string).length).toBeGreaterThan(0);
+  });
+});
