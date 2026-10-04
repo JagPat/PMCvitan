@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { Eyebrow, Button, Modal } from '@/components';
+import { Eyebrow, Button, Modal, ConfirmDialog } from '@/components';
 import { Plus, X, Trash2, Pencil } from '@/lib/icons';
 import { CONSULTANT_DISCIPLINES, type OrgRole, type Role, type CompanyKind, type ProjectCompany } from '@vitan/shared';
 import { ROLE_LABEL } from '@/lib/screens';
@@ -33,6 +33,8 @@ export function TeamScreen() {
   const addMember = useStore((s) => s.addMember);
   const updateMemberRole = useStore((s) => s.updateMemberRole);
   const removeMember = useStore((s) => s.removeMember);
+  // Audit B4 — removing someone from the project is confirmed first
+  const [removing, setRemoving] = useState<{ userId: string; name: string } | null>(null);
   const deleteProject = useStore((s) => s.deleteProject);
   const projStart = useStore((s) => s.projStart);
   const projEnd = useStore((s) => s.projEnd);
@@ -84,6 +86,17 @@ export function TeamScreen() {
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
+      {removing && (
+        <ConfirmDialog
+          title={`Remove ${removing.name} from this project?`}
+          confirmLabel="Remove"
+          onConfirm={() => removeMember(removing.userId)}
+          onCancel={() => setRemoving(null)}
+          testId="confirm-member-remove"
+        >
+          They lose access to this project at once. Their past decisions, logs and photos stay on record.
+        </ConfirmDialog>
+      )}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <Eyebrow>PROJECT TEAM</Eyebrow>
@@ -156,7 +169,7 @@ export function TeamScreen() {
               <span style={roleChip}>{MEMBER_ROLE_LABEL[m.role]}{m.role === 'consultant' && m.discipline ? ` · ${discLabel(m.discipline)}` : ''}</span>
             )}
             {canManage && (
-              <button onClick={() => removeMember(m.userId)} aria-label={`Remove ${m.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, padding: 4 }}>
+              <button onClick={() => setRemoving({ userId: m.userId, name: m.name })} aria-label={`Remove ${m.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, padding: 4 }}>
                 <X size={17} />
               </button>
             )}
@@ -211,6 +224,7 @@ function OrgRoster({ orgId, canManageRoles, canCorrectEmails }: { orgId: string;
   const addOrgMember = useStore((s) => s.addOrgMember);
   const updateOrgMemberRole = useStore((s) => s.updateOrgMemberRole);
   const removeOrgMember = useStore((s) => s.removeOrgMember);
+  const [removingOrg, setRemovingOrg] = useState<{ userId: string; name: string } | null>(null);
   const correctInvitationEmail = useStore((s) => s.correctInvitationEmail);
   useEffect(() => { loadOrgMembers(orgId); }, [loadOrgMembers, orgId]);
   const ownerCount = orgMembers.filter((m) => m.orgRole === 'owner').length;
@@ -231,6 +245,17 @@ function OrgRoster({ orgId, canManageRoles, canCorrectEmails }: { orgId: string;
 
   return (
     <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }}>
+      {removingOrg && (
+        <ConfirmDialog
+          title={`Remove ${removingOrg.name} from the organization?`}
+          confirmLabel="Remove"
+          onConfirm={() => removeOrgMember(orgId, removingOrg.userId)}
+          onCancel={() => setRemovingOrg(null)}
+          testId="confirm-org-member-remove"
+        >
+          They lose the organization&apos;s access to its projects. A project they are on keeps them until they are removed there.
+        </ConfirmDialog>
+      )}
       <Eyebrow>ORGANIZATION ADMINS</Eyebrow>
       <div style={{ fontSize: 13, color: 'var(--muted)', margin: '6px 0 16px', maxWidth: 560 }}>
         Owners &amp; admins can create projects, build teams, and run every project in the org. A plain member gets no project access here — add them to a specific project&apos;s team for that.
@@ -306,7 +331,7 @@ function OrgRoster({ orgId, canManageRoles, canCorrectEmails }: { orgId: string;
                         {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
                       </select>
                       <button
-                        onClick={() => removeOrgMember(orgId, m.userId)}
+                        onClick={() => setRemovingOrg({ userId: m.userId, name: m.name })}
                         disabled={lastOwner}
                         aria-label={`Remove ${m.name}`}
                         title={lastOwner ? 'The org must keep at least one owner' : undefined}
@@ -415,11 +440,23 @@ function EditProjectModal({ orgId, projectId, initial, onClose }: { orgId: strin
 function CompaniesSection({ canManage }: { canManage: boolean }) {
   const companies = useStore(useShallow((s) => s.companies));
   const removeCompany = useStore((s) => s.removeCompany);
+  const [removingCo, setRemovingCo] = useState<ProjectCompany | null>(null);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<ProjectCompany | null>(null);
 
   return (
     <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }}>
+      {removingCo && (
+        <ConfirmDialog
+          title={`Remove ${removingCo.name}?`}
+          confirmLabel="Remove"
+          onConfirm={() => removeCompany(removingCo.id)}
+          onCancel={() => setRemovingCo(null)}
+          testId="confirm-company-remove"
+        >
+          It is removed from this project&apos;s companies and consultants.
+        </ConfirmDialog>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
         <Eyebrow>COMPANIES &amp; CONSULTANTS</Eyebrow>
         {canManage && (
@@ -445,7 +482,7 @@ function CompaniesSection({ canManage }: { canManage: boolean }) {
               {canManage && (
                 <>
                   <button onClick={() => { setAdding(false); setEditing(c); }} aria-label={`Edit ${c.name}`} style={iconBtn}><Pencil size={16} /></button>
-                  <button onClick={() => removeCompany(c.id)} aria-label={`Remove ${c.name}`} style={iconBtn}><X size={17} /></button>
+                  <button onClick={() => setRemovingCo(c)} aria-label={`Remove ${c.name}`} style={iconBtn}><X size={17} /></button>
                 </>
               )}
             </div>

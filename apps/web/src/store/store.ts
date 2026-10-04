@@ -308,6 +308,8 @@ export interface AppState {
   placeFocus: string | null;
   /** U2b — the decision the client's decisions screen shows on its own screen (project-owned) */
   decisionFocus: string | null;
+  /** Audit F-02 — the activity the schedule brings into view when opened from a place (project-owned) */
+  activityFocus: string | null;
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   /** EVERY open (issued, unsubmitted) checklist. `checklist` is the one the field view opens;
    *  this is the whole outstanding set, so a second issued checklist no longer hides the first
@@ -434,6 +436,10 @@ export interface AppActions {
   openPlace: (nodeId: string | null) => void;
   /** the Site Map has adopted `placeFocus` and will not re-adopt it */
   clearPlaceFocus: () => void;
+  /** Audit F-02 — open the schedule with one activity brought into view (from a place's Work list) */
+  openActivity: (activityId: string) => void;
+  /** the schedule has shown `activityFocus` and will not re-show it */
+  clearActivityFocus: () => void;
   /** U2b — open one decision on its own screen (the Pulse's "one thing needs you") */
   openDecision: (decisionId: string) => void;
   /** …and back to the list of decisions */
@@ -1136,6 +1142,7 @@ export function getInitialState(): AppState {
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     placeFocus: null,
     decisionFocus: null,
+    activityFocus: null,
     checklist: structuredClone(SEED_CHECKLIST),
     openChecklists: [structuredClone(SEED_CHECKLIST)],
     selectedChecklistId: null,
@@ -1863,11 +1870,21 @@ export const useStore = create<Store>()(
       get().loadBrief();
     };
 
-    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg): Promise<boolean> => {
+    /** `refused` (#699 shadow review): a command the server can REFUSE for a reason the viewer must see
+     *  (a location still holding decisions they cannot see, an inspected activity) says that reason,
+     *  instead of the network copy that would send them retrying a request that will never succeed. */
+    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg, refused?: (why: string) => string): Promise<boolean> => {
       const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
       return call()
         .then((snap) => { consumeSnapshotResult(acceptSnapshot(snap, lease), typeof okMsg === 'function' ? okMsg(snap) : okMsg, lease.scope); return true; })
-        .catch(() => { if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.'); return false; });
+        .catch((err: unknown) => {
+          if (!scopeStillCurrent(lease.scope)) return false;
+          // a terminal refusal is never reported as a network failure, even when its body carried no
+          // readable reason (a proxy's error page): retrying it would fail the same way (#699 shadow review)
+          if (refused && isTerminalOutboxError(err)) get().flash(refused(refusalMessage(err) ?? 'the server refused it'));
+          else get().flash('Could not reach the server — please try again.');
+          return false;
+        });
     };
 
     // WEB-02: queued offline writes are scoped to WHO queued them and WHERE — the
@@ -2432,6 +2449,16 @@ export const useStore = create<Store>()(
     clearPlaceFocus: () =>
       set((s) => {
         s.placeFocus = null;
+      }),
+    openActivity: (activityId) =>
+      set((s) => {
+        s.activityFocus = activityId;
+        s.screen = 'site-schedule';
+        s.notifOpen = false;
+      }),
+    clearActivityFocus: () =>
+      set((s) => {
+        s.activityFocus = null;
       }),
     setLang: (l) => set((s) => { s.lang = l; }),
     toggleNotif: () => set((s) => { s.notifOpen = !s.notifOpen; }),
@@ -4462,7 +4489,7 @@ export const useStore = create<Store>()(
         get().flash('Managing locations needs the server.');
         return;
       }
-      runRemote(() => gateway!.deleteNode(nodeId), 'Location removed.');
+      runRemote(() => gateway!.deleteNode(nodeId), 'Location removed.', (why) => `Couldn't delete this location — ${why}`);
     },
     createActivity: (input) => {
       if (!gateway) {
@@ -4483,7 +4510,7 @@ export const useStore = create<Store>()(
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), 'Activity removed from the plan.');
+      runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), 'Activity removed from the plan.', (why) => `Couldn't delete this activity — ${why}`);
     },
     // Task 6: a manual readiness exception — attributable, reasoned, expiring (server records it)
     overrideGate: (activityId, input) => {
@@ -4512,7 +4539,7 @@ export const useStore = create<Store>()(
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), 'Phase removed — its activities stay in the flat list.');
+      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), 'Phase removed — its activities stay in the flat list.', (why) => `Couldn't remove this phase — ${why}`);
     },
     issueChecklist: (input) => {
       if (!gateway) {

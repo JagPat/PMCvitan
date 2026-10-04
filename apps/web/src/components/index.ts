@@ -6,6 +6,7 @@ export { Button, type ButtonVariant } from './Button';
 export { ProgressBar } from './ProgressBar';
 export { GateDot } from './GateDot';
 export { Modal } from './Modal';
+export { ConfirmDialog } from './ConfirmDialog';
 export { Toast } from './Toast';
 export { StatTile } from './StatTile';
 export { PhotoViewer } from './PhotoViewer';
