@@ -3,7 +3,9 @@ import { ConflictException } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { BadRequestException } from '@nestjs/common';
 import { NodesService } from '../../src/nodes/nodes.service';
+import { NodeInitParticipant } from '../../src/nodes/node-init.participant';
 import { treeLockKey } from '../../src/common/tree-lock';
 import type { AuthUser } from '../../src/common/auth';
 
@@ -278,6 +280,50 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
     const again = await svc.create(p(), { name: 'Idem Doomed', kind: 'zone', parentId: null, publish: true }, pmc(), 'k-after-delete');
     expect(again.createdNodeId).not.toBe(zone.createdNodeId);
     expect(again.nodes.some((n) => n.id === again.createdNodeId)).toBe(true);
+  });
+
+  it('INITIALIZATION names the same-kind place a copied structure repeats, and refuses another kind', async () => {
+    const init = t.app.get(NodeInitParticipant);
+    const zone = await svc.create(p(), { name: 'Idem Init Wing', kind: 'zone', parentId: null, publish: true }, pmc());
+    const room = (name: string, kind: 'room' | 'element' = 'room') => ({
+      data: { projectId: p(), parentId: zone.createdNodeId, name, kind, order: 0, publishedAt: null, authorId: f.memberUser.id },
+    });
+    const [a, b] = await t.prisma.$transaction(async (tx) => [await init.createForInit(tx, room('Idem Galley')), await init.createForInit(tx, room(' idem  GALLEY'))]);
+    expect(b.id).toBe(a.id);
+    expect(await t.prisma.projectNode.count({ where: { projectId: p(), parentId: zone.createdNodeId } })).toBe(1);
+    await expect(t.prisma.$transaction((tx) => init.createForInit(tx, room('idem galley', 'element')))).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('a decision filed while a DELETE waits on the tree lock still refuses the delete with the guard\'s reason (barrier)', async () => {
+    const zone = await svc.create(p(), { name: 'Idem Filed Wing', kind: 'zone', parentId: null, publish: true }, pmc());
+    const other = new PrismaClient();
+    let decisionId: string | null = null;
+    try {
+      let release!: () => void;
+      const released = new Promise<void>((r) => { release = r; });
+      let held!: () => void;
+      const heldArrived = new Promise<void>((r) => { held = r; });
+      const holder = other.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', treeLockKey(p()));
+        held();
+        await released;
+      }, { timeout: 30_000 });
+      await heldArrived;
+      const removal = svc.remove(p(), zone.createdNodeId, pmc());
+      void removal.catch(() => undefined);
+      try {
+        await blocked(removal, await ungrantedLocks()); // past the fast guard (no decisions yet), waiting on the lock
+      } catch (e) { release(); throw e; }
+      const d = await t.prisma.decision.create({ data: { id: `idem-filed-${Date.now()}`, projectId: p(), title: 'Idem filed', room: 'Wing', photoSwatch: 'marble', status: 'pending', publishedAt: null, authorId: f.memberUser.id, nodeId: zone.createdNodeId } });
+      decisionId = d.id;
+      release();
+      await holder;
+      await expect(removal).rejects.toBeInstanceOf(BadRequestException);
+    } finally {
+      await other.$disconnect();
+      if (decisionId) await t.prisma.decision.delete({ where: { id: decisionId } });
+    }
+    expect(await t.prisma.projectNode.count({ where: { id: zone.createdNodeId } })).toBe(1);
   });
 
   it('two CONCURRENT creates of one name under DIFFERENT keys resolve to one place (barrier)', async () => {

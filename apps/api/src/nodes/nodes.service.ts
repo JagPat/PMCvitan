@@ -3,7 +3,7 @@ import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { lockProjectTree } from '../common/tree-lock';
-import { MAX_TREE_DEPTH, ancestorIdsOf, depthOf, heightOf, subtreeIdsOf, type TreeRow } from './tree-rules';
+import { MAX_TREE_DEPTH, ancestorIdsOf, depthOf, heightOf, normalizeNodeName, subtreeIdsOf, type TreeRow } from './tree-rules';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
@@ -27,9 +27,7 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
  *  only; a room sits under a zone OR another room; an element (the object, e.g.
  *  "Main Door") is a LEAF and sits under a room OR directly under a zone. The kind
  *  fixes the SET of legal parents — depth is bounded separately (5 levels). */
-/** Two places under one parent are the same place when their names match ignoring case and spacing
- *  (the rule the Site Map form already applies before it sends). */
-export const normalizeNodeName = (name: string): string => name.trim().replace(/\s+/g, ' ').toLowerCase();
+export { normalizeNodeName } from './tree-rules';
 
 const ALLOWED_PARENT_KINDS: Record<string, ReadonlyArray<'zone' | 'room'> | null> = {
   zone: null, // top level
@@ -233,6 +231,12 @@ export class NodesService {
       await lockProjectTree(tx, projectId);
       await this.requireNode(projectId, nodeId, tx);
       const subtree = subtreeIdsOf(await this.loadTree(tx, projectId), nodeId);
+      // the decisions guard again, on the locked subtree in this transaction (the read above is the
+      // fast refusal; the decisions FK stays NO ACTION as the backstop for a decision filed after it)
+      const attachedNow = await this.decisions.countByNodeIds(subtree, tx);
+      if (attachedNow > 0) {
+        throw new BadRequestException(`Move or remove the ${attachedNow} decision(s) under this location before deleting it.`);
+      }
       // Task 10 (Modules 3+4 + correction) — unfile EVERY placed record whose location is serialized
       // into a module projection FIRST, through each owning module's participant, which appends its
       // owner-aligned signal (`inspection.unfiled` / `activity.unfiled` / `drawing.unfiled` /
