@@ -42,6 +42,7 @@ import {
   type OrgRole,
   type OrgSummary,
   type Phase,
+  type PmcBriefResult,
   type PortfolioProject,
   type ProjectMember,
   type ProjectCompany,
@@ -305,6 +306,10 @@ export interface AppState {
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
   placeFocus: string | null;
+  /** U2b — the decision the client's decisions screen shows on its own screen (project-owned) */
+  decisionFocus: string | null;
+  /** Audit F-02 — the activity the schedule brings into view when opened from a place (project-owned) */
+  activityFocus: string | null;
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   /** EVERY open (issued, unsubmitted) checklist. `checklist` is the one the field view opens;
    *  this is the whole outstanding set, so a second issued checklist no longer hides the first
@@ -347,6 +352,10 @@ export interface AppState {
   orgTemplates: OrgProjectTemplate[]; // the org's named presets (Templates Slice 3)
   members: ProjectMember[]; // the active project's team (Team screen)
   portfolio: PortfolioProject[]; // cross-project monitoring rollup (Orgs Slice 3)
+  /** U3b — the PMC's cross-project daily brief (`GET /me/brief`); null until a server answers */
+  brief: PmcBriefResult | null;
+  /** when `brief` was read (epoch ms); the screen shows it only while fresh (`briefIsFresh`) */
+  briefAt: number | null;
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
@@ -427,6 +436,14 @@ export interface AppActions {
   openPlace: (nodeId: string | null) => void;
   /** the Site Map has adopted `placeFocus` and will not re-adopt it */
   clearPlaceFocus: () => void;
+  /** Audit F-02 — open the schedule with one activity brought into view (from a place's Work list) */
+  openActivity: (activityId: string) => void;
+  /** the schedule has shown `activityFocus` and will not re-show it */
+  clearActivityFocus: () => void;
+  /** U2b — open one decision on its own screen (the Pulse's "one thing needs you") */
+  openDecision: (decisionId: string) => void;
+  /** …and back to the list of decisions */
+  closeDecision: () => void;
   setLang: (l: Lang) => void;
   toggleNotif: () => void;
   openCreate: () => void;
@@ -505,6 +522,8 @@ export interface AppActions {
   // multi-project + team
   loadOrgData: () => void;
   loadPortfolio: () => void;
+  /** U3b — load the PMC's daily brief (session-scoped, like the portfolio) */
+  loadBrief: () => void;
   loadShell: () => void;
   /** Phase 3 Task 7 — fetch the pilot Materials bundle (readiness + requirements + procurement + POs +
    *  stock + issues) together, ONLY when the active project has the `materials` capability. Scope-guarded
@@ -758,6 +777,9 @@ export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): bool
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+/** U3b — the newest brief request; a reply to any earlier one is superseded and dropped (the landing,
+ *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
+let briefRequestSeq = 0;
 
 /** A pristine access-flow state (used to init and to reset after sign-out). */
 function freshAccess(generation = 0): AccessState {
@@ -836,6 +858,34 @@ function overlayChecklistMarks(s: AppState): void {
     if (edit?.state) it.state = edit.state.value;
     if (edit?.note) it.note = edit.note.value;
   }
+}
+
+/** The PMC's UNSENT rejection marks, by review then item row id: only undecided reviews carry them. */
+function reviewRejectionMarks(reviews: readonly Review[]): Map<string, Set<string>> {
+  const marks = new Map<string, Set<string>>();
+  for (const r of reviews) {
+    if (r.decided) continue;
+    const ids = r.items.filter((it) => it.rejected && it.id).map((it) => it.id!);
+    if (ids.length) marks.set(r.id, new Set(ids));
+  }
+  return marks;
+}
+
+/**
+ * The review queue's counterpart of `overlayChecklistMarks`: a PMC's "Reject item" marks exist only in
+ * this store until Send, and every reconcile replaces the queue with the server's copy, so a background
+ * refresh landing between the marks and Send used to wipe them (the decision then went out without the
+ * rows the PMC named). The marks are carried onto the SAME review while it is still undecided, matched by
+ * item row id; once the server reports the review decided, its own record of what was rejected stands.
+ */
+function restoreReviewRejectionMarks(reviews: Review[], marks: Map<string, Set<string>>): Review[] {
+  if (marks.size === 0) return reviews;
+  // new objects, never in-place writes: the server's copy may already be frozen in another slice
+  return reviews.map((r) => {
+    const ids = r.decided ? undefined : marks.get(r.id);
+    if (!ids) return r;
+    return { ...r, items: r.items.map((it) => (it.id && ids.has(it.id) ? { ...it, rejected: true } : it)) };
+  });
 }
 
 /**
@@ -1091,6 +1141,8 @@ export function getInitialState(): AppState {
     labourBindPending: {},
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     placeFocus: null,
+    decisionFocus: null,
+    activityFocus: null,
     checklist: structuredClone(SEED_CHECKLIST),
     openChecklists: [structuredClone(SEED_CHECKLIST)],
     selectedChecklistId: null,
@@ -1112,6 +1164,8 @@ export function getInitialState(): AppState {
     orgTemplates: [],
     members: [],
     portfolio: [],
+    brief: null,
+    briefAt: null,
     online: true,
     syncQueue: [],
     outbox: [],
@@ -1433,7 +1487,9 @@ export const useStore = create<Store>()(
         reconcileSubmission(s);
         // XOR (Task 10 Module 3): the review queue + reinspection flag follow the same ownership as the
         // checklist above. moduleQuery + result → module slices; moduleQuery + null/undefined → keep
-        // last-good (the checklist block already set the load/error state for this apply).
+        // last-good (the checklist block already set the load/error state for this apply). The PMC's
+        // unsent rejection marks survive the replacement (`restoreReviewRejectionMarks`).
+        const rejectionMarks = reviewRejectionMarks(s.reviews);
         if (!inspModule) {
           s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
           s.reinspectionCreated = snap.reinspectionCreated;
@@ -1441,6 +1497,7 @@ export const useStore = create<Store>()(
           s.reviews = [...inspectionsResult.reviews];
           s.reinspectionCreated = inspectionsResult.reinspectionCreated;
         }
+        s.reviews = restoreReviewRejectionMarks(s.reviews, rejectionMarks);
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         // Phase 2 Task 10 (Module 2 — Drawings) — XOR read-ownership for the drawing register, mirroring
         // decisions/daily-log. 'snapshot' mode (default): the snapshot slice OWNS `s.drawings` (unchanged).
@@ -1794,11 +1851,40 @@ export const useStore = create<Store>()(
     // (evaluated once, before the reconcile announces it), so an approval can say what actually
     // happened — locked, or parked awaiting the architect's countersign — from the row as served.
     type OkMsg = string | ((snap: ApiSnapshot) => string);
-    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg): Promise<boolean> => {
+    /** #698 Codex findings (audit B1 on the brief-backed home) — the PMC's brief counts each project's
+     *  inspections awaiting review as of when it was ASKED, so a decision the server has just committed
+     *  leaves it naming that inspection while it is still fresh. The rule: once a review decision
+     *  commits, NO brief read asked before the commit may land. So the brief stops counting as fresh
+     *  (For You falls back to the live list, whose `pmc-reviews` already drops the decided review) and
+     *  is asked again; the new read supersedes every earlier one (`briefRequestSeq`). That holds
+     *  whether or not a brief has landed yet: a FIRST read still in flight is superseded too (finding
+     *  4173586628). Only a session that has never asked for a brief has nothing to supersede.
+     *  The brief is the PERSON's (kept across their project switches, dropped on any identity change),
+     *  so the refresh is the decider's alone: `decidedBy` is who was signed in when the decision was
+     *  sent, and a reply landing after someone else signed in leaves that person's brief untouched
+     *  (finding 4173756348). A project switch by the same person still refreshes it: their decision
+     *  changed the count their cross-project brief carries. */
+    const refreshBriefAfterReview = (decidedBy: string | null): void => {
+      if (briefRequestSeq === 0 || decidedBy === null || get().sessionUserId !== decidedBy) return;
+      set((s) => { s.briefAt = null; });
+      get().loadBrief();
+    };
+
+    /** `refused` (#699 shadow review): a command the server can REFUSE for a reason the viewer must see
+     *  (a location still holding decisions they cannot see, an inspected activity) says that reason,
+     *  instead of the network copy that would send them retrying a request that will never succeed. */
+    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg, refused?: (why: string) => string): Promise<boolean> => {
       const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
       return call()
         .then((snap) => { consumeSnapshotResult(acceptSnapshot(snap, lease), typeof okMsg === 'function' ? okMsg(snap) : okMsg, lease.scope); return true; })
-        .catch(() => { if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.'); return false; });
+        .catch((err: unknown) => {
+          if (!scopeStillCurrent(lease.scope)) return false;
+          // a terminal refusal is never reported as a network failure, even when its body carried no
+          // readable reason (a proxy's error page): retrying it would fail the same way (#699 shadow review)
+          if (refused && isTerminalOutboxError(err)) get().flash(refused(refusalMessage(err) ?? 'the server refused it'));
+          else get().flash('Could not reach the server — please try again.');
+          return false;
+        });
     };
 
     // WEB-02: queued offline writes are scoped to WHO queued them and WHERE — the
@@ -2155,6 +2241,8 @@ export const useStore = create<Store>()(
         s.screen = opts?.targetScreen && allowed.includes(opts.targetScreen) ? opts.targetScreen : (allowed[0] ?? 'inbox');
         s.sessionToken = res.token;
         s.userName = res.name ?? null;
+        // the brief spans this person's projects, so a switch keeps it; another identity never sees it
+        if (jwtSub(res.token) !== s.sessionUserId) { s.brief = null; s.briefAt = null; }
         s.sessionUserId = jwtSub(res.token);
         s.access = freshAccess(s.access.generation + 1);
         // EVERY auth result is a new session identity, so it always starts a new
@@ -2311,6 +2399,8 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
+        s.brief = null; // the departing PMC's cross-project brief leaves with them
+        s.briefAt = null;
         s.access = freshAccess(s.access.generation + 1);
         s.role = 'client';
         s.screen = screensFor('client')[0].key;
@@ -2337,6 +2427,18 @@ export const useStore = create<Store>()(
       set((s) => {
         s.screen = k;
         s.notifOpen = false;
+        // a screen opened from the nav starts at its list, never at a decision left open earlier
+        s.decisionFocus = null;
+      }),
+    openDecision: (decisionId) =>
+      set((s) => {
+        s.decisionFocus = decisionId;
+        s.screen = 'client-decisions';
+        s.notifOpen = false;
+      }),
+    closeDecision: () =>
+      set((s) => {
+        s.decisionFocus = null;
       }),
     openPlace: (nodeId) =>
       set((s) => {
@@ -2347,6 +2449,16 @@ export const useStore = create<Store>()(
     clearPlaceFocus: () =>
       set((s) => {
         s.placeFocus = null;
+      }),
+    openActivity: (activityId) =>
+      set((s) => {
+        s.activityFocus = activityId;
+        s.screen = 'site-schedule';
+        s.notifOpen = false;
+      }),
+    clearActivityFocus: () =>
+      set((s) => {
+        s.activityFocus = null;
       }),
     setLang: (l) => set((s) => { s.lang = l; }),
     toggleNotif: () => set((s) => { s.notifOpen = !s.notifOpen; }),
@@ -2968,7 +3080,8 @@ export const useStore = create<Store>()(
       // Task 10 (Module 3) correction — one stable idempotency key for this decision: the online send
       // and any offline replay reach the server under it, so a lost-response retry decides once.
       const approveReviewKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, 'Approve inspection', () => gateway!.decideReview(review.id, true, [], approveReviewKey), msg)) return;
+      const decidedBy = get().sessionUserId;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, 'Approve inspection', () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), msg)) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) s.reviews[j].decided = true;
@@ -2993,7 +3106,8 @@ export const useStore = create<Store>()(
       const rejectedIds = review.items.filter((it) => it.rejected && it.id).map((it) => it.id!);
       // Task 10 (Module 3) correction — the rejection decision carries its own stable idempotency key.
       const rejectReviewKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey), n + ' re-inspection task(s) created with due dates.')) return;
+      const decidedBy = get().sessionUserId;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), n + ' re-inspection task(s) created with due dates.')) return;
       set((s) => {
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);
@@ -3313,6 +3427,23 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
       gateway.getPortfolio().then((p) => set((s) => { if (s.sessionToken === tok) s.portfolio = p; })).catch(() => {});
+    },
+    loadBrief: () => {
+      if (!gateway) return;
+      const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
+      // only the NEWEST request's reply is kept, and it is stamped with when it was ASKED (the server's
+      // answer is as of then): an older reply landing late can neither bring back a project the newer
+      // one dropped nor restart the freshness window
+      const seq = ++briefRequestSeq;
+      const askedAt = Date.now();
+      gateway
+        .getBrief()
+        .then((b) => set((s) => {
+          if (s.sessionToken !== tok || seq !== briefRequestSeq) return;
+          s.brief = castDraft(b);
+          s.briefAt = askedAt;
+        }))
+        .catch(() => {});
     },
     // Phase 2 Task 9 — the project-shell summary: populate `enabledModules` for the manifest-driven
     // nav. Project-scoped — a reply that lands after a switch / re-auth is dropped (guarded by scope).
@@ -4358,7 +4489,7 @@ export const useStore = create<Store>()(
         get().flash('Managing locations needs the server.');
         return;
       }
-      runRemote(() => gateway!.deleteNode(nodeId), 'Location removed.');
+      runRemote(() => gateway!.deleteNode(nodeId), 'Location removed.', (why) => `Couldn't delete this location — ${why}`);
     },
     createActivity: (input) => {
       if (!gateway) {
@@ -4379,7 +4510,7 @@ export const useStore = create<Store>()(
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), 'Activity removed from the plan.');
+      runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), 'Activity removed from the plan.', (why) => `Couldn't delete this activity — ${why}`);
     },
     // Task 6: a manual readiness exception — attributable, reasoned, expiring (server records it)
     overrideGate: (activityId, input) => {
@@ -4408,7 +4539,7 @@ export const useStore = create<Store>()(
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), 'Phase removed — its activities stay in the flat list.');
+      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), 'Phase removed — its activities stay in the flat list.', (why) => `Couldn't remove this phase — ${why}`);
     },
     issueChecklist: (input) => {
       if (!gateway) {
@@ -4910,6 +5041,7 @@ export const useStore = create<Store>()(
       // `gateway` is swapped on a project switch — reading it live mid-loop
       // would replay project A's remaining operations INTO project B.
       const flushGateway = gateway;
+      const flushedBy = get().sessionUserId; // whose queued work this flush replays (the outbox is scoped to them)
       const flushScope = currentScope();
       const flushToken = get().sessionToken;
       const flushKey = outboxKey();
@@ -4974,6 +5106,7 @@ export const useStore = create<Store>()(
         try {
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
+          if (ops[i].t === 'decideReview') refreshBriefAfterReview(flushedBy);
           if (ops[i].t === 'startDailyLog') dailyLogCommitted = 'start';
           else if (ops[i].t === 'submitDailyLog') dailyLogCommitted = 'send';
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);

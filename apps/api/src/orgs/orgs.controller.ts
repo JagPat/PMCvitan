@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
+import { BriefService } from './brief.service';
 import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { addOrgMemberSchema, correctInvitationEmailSchema, createModuleSchema, createOrgSchema, createProjectSchema, createTemplateSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
@@ -22,6 +23,7 @@ export class OrgsController {
   constructor(
     private readonly orgs: OrgsService,
     private readonly auth: AuthService,
+    private readonly briefs: BriefService,
   ) {}
 
   /** Projects the current user can access (their memberships) — drives the project switcher. */
@@ -42,6 +44,13 @@ export class OrgsController {
   @StripsArchitectRows()
   portfolio(@CurrentUser() user: AuthUser) {
     return this.orgs.portfolio(user.sub);
+  }
+
+  /** U3a — the PMC's daily brief across every project they run as PMC (the portfolio's reach,
+   *  narrowed to the PMC role; empty for anyone else). Identity-scoped: the reach is the access check. */
+  @Get('me/brief')
+  brief(@CurrentUser() user: AuthUser) {
+    return this.briefs.brief(user.sub);
   }
 
   /** Create a new org (the caller becomes its owner). Real account holders only — a

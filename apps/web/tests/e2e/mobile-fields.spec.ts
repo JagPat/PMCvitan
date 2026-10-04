@@ -1269,3 +1269,77 @@ test('"Same as yesterday" meets the target floor and fits the phone, in Gujarati
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test("the client's Pulse meets the target floor and fits the phone", async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('client');
+  // U2a — the client's home: progress, what is being built, the one thing waiting, what happens next
+  await expect(page.getByTestId('client-pulse')).toBeVisible();
+  await expect(page.getByTestId('pulse-needs')).toBeVisible();
+  await sweepActionTargets(page, 'Client Pulse');
+  for (const id of ['pulse-progress', 'pulse-needs', 'pulse-needs-go']) {
+    const box = await page.getByTestId(id).boundingBox();
+    expect(box && box.x >= 0 && box.x + box.width <= 390 + 0.1, id).toBe(true);
+  }
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test('one decision on its own screen meets the target floor and fits the phone', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('client');
+  // U2b — the Pulse's way in opens that one decision: pick one, then approve
+  await page.getByTestId('pulse-needs-go').click();
+  await expect(page.getByTestId('decision-focus')).toBeVisible();
+  await page.getByTestId('decision-option-DL-003-A').click();
+  await sweepActionTargets(page, 'One decision');
+  for (const id of ['decision-focus-back', 'decision-option-DL-003-A', 'decision-focus-lock', 'decision-focus-approve']) {
+    const box = await page.getByTestId(id).boundingBox();
+    expect(box && box.x >= 0 && box.x + box.width <= 390 + 0.1, id).toBe(true);
+  }
+  // scrolled to the end, Approve clears the bottom tabs: it is the element under a tap on it
+  const approveReachable = await page.getByTestId('decision-focus-approve').evaluate((el) => {
+    let p: HTMLElement | null = el.parentElement;
+    while (p && !(p.scrollHeight > p.clientHeight && /(auto|scroll)/.test(getComputedStyle(p).overflowY))) p = p.parentElement;
+    const scroller = p ?? (document.scrollingElement as HTMLElement);
+    scroller.scrollTop = scroller.scrollHeight;
+    const r = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return !!hit && (hit === el || el.contains(hit));
+  });
+  expect(approveReachable).toBe(true);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test("the PMC's brief meets the target floor and fits the phone, in Gujarati", async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('pmc');
+  // U3b — the PMC's home across their projects (the demo has no server, so the brief is seeded)
+  await page.evaluate(() => {
+    const row = (projectId: string, short: string, over: Record<string, unknown>) => ({
+      projectId, name: `Residence at ${short}, Ahmedabad`, short, orgName: 'Vitan', today: '2026-10-03', logToday: 'sent',
+      reviewsWaiting: 0, waitingOnClient: 0, oldestWaitingSince: null,
+      sinceYesterday: { approvals: 2, photos: 14, rejectedInspections: 1 }, ...over,
+    });
+    const seed = (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed;
+    seed({
+      lang: 'gu',
+      briefAt: Date.now(), // a brief the server just answered with (an older one is never shown)
+      brief: { projects: [
+        row('ambli', 'Ambli', { reviewsWaiting: 3 }),
+        row('bopal', 'Bopal', { waitingOnClient: 2, oldestWaitingSince: '2026-09-28T06:00:00Z', logToday: 'missing' }),
+        row('thaltej', 'Thaltej', { logToday: 'open' }),
+      ] },
+    });
+  });
+  await expect(page.getByTestId('pmc-brief')).toBeVisible();
+  await expect(page.getByTestId('brief-first').locator('li')).toHaveCount(3);
+  await sweepActionTargets(page, 'PMC brief');
+  for (const id of ['brief-task-client-bopal', 'brief-task-reviews-ambli', 'brief-since', 'brief-project-thaltej']) {
+    const box = await page.getByTestId(id).boundingBox();
+    expect(box && box.height >= 44 && box.x >= 0 && box.x + box.width <= 390 + 0.1, id).toBe(true);
+  }
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});

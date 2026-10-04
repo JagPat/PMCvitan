@@ -84,6 +84,7 @@ import { RealtimeGateway } from './realtime/realtime.gateway';
 import { StorageService } from './media/storage.service';
 import { SignedUrlService } from './media/signed-url.service';
 import { MediaService } from './media/media.service';
+import { MediaQueryService } from './media/media.query';
 import { MediaController } from './media/media.controller';
 import { DrawingsService } from './drawings/drawings.service';
 import { DrawingsQueryService } from './drawings/drawings.query';
@@ -93,6 +94,7 @@ import { DrawingsController } from './drawings/drawings.controller';
 import { PushService } from './push/push.service';
 import { PushController } from './push/push.controller';
 import { OrgsService } from './orgs/orgs.service';
+import { BriefService } from './orgs/brief.service';
 import { OrgsController } from './orgs/orgs.controller';
 import { MembersService } from './orgs/members.service';
 import { MembersController } from './orgs/members.controller';
@@ -220,10 +222,12 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     StorageService,
     SignedUrlService,
     MediaService,
+    MediaQueryService,
     DrawingsService,
     DrawingsQueryService,
     PushService,
     OrgsService,
+    BriefService, // U3a — the PMC's cross-project daily brief (`GET /me/brief`)
     MembersService,
     // Phase 7c-auth — the post-commit invite notice both roster writes hang off.
     InvitationsService,

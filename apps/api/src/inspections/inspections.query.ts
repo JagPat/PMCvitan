@@ -9,6 +9,7 @@ import { OrgsParticipant } from '../orgs/orgs.participant';
 import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import { nextSeqId } from '../domain/ids';
+import { AuditQuery } from '../platform/audit.query';
 
 /** The CHECKLIST-definition structure a project-copy/module-extract reads from a source project through
  *  the inspections boundary: title + place + ordered item names (never results — reviews aren't structure). */
@@ -218,6 +219,14 @@ export class InspectionsQueryService {
    */
   async openInspectionCount(projectId: string): Promise<number> {
     return this.prisma.inspection.count({ where: { projectId, submitted: true, decided: false } });
+  }
+
+  /** U3a — how many inspections were REJECTED at or after `since` (the PMC brief's "checks failed").
+   *  An inspection row keeps no decision instant, so this asks the platform's audit read
+   *  (`AuditQuery`) for the reject this module records (`inspection.reject`), one per inspection
+   *  however often it was rejected again. */
+  rejectedSince(projectId: string, since: Date): Promise<number> {
+    return AuditQuery.distinctEntitiesSince(this.prisma, projectId, 'inspection.reject', since);
   }
 
   /**

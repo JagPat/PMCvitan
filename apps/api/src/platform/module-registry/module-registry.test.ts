@@ -84,7 +84,9 @@ describe('Phase 2 Task 7 — module registry', () => {
       // Phase 4 Task 3 — the orgs-owned WorkerDevice bind command reads the trusted-worker
       // lifecycle through Labour's query contract (`Worker` is Labour-owned + read-encapsulated).
       // Labour is a LEAF, so orgs → labour closes no cycle.
-      orgs: ['decisions', 'inspections', 'labour'], drawings: ['decisions'],
+      // U3a — the PMC brief reads a project's daily-log status through DailyLogQueryService and its
+      // progress-photo count through MediaQueryService (media never depends back on orgs).
+      orgs: ['decisions', 'inspections', 'labour', 'daily-log', 'media'], drawings: ['decisions'],
       media: ['decisions', 'daily-log', 'inspections'],
       // Phase 3 Task 2 — procurement reads requirement revisions through the activities query
       // (the §F bound-1 allocation lock) and approved specifications through decisions; neither

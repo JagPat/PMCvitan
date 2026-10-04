@@ -71,7 +71,7 @@ async function signInToChain(page: Page, email: string, chainName: string): Prom
   await signIn(page, email);
   const switcher = page.getByTestId('project-switcher');
   await expect(switcher).toBeVisible();
-  const option = page.getByRole('button', { name: new RegExp(chainName) }).first();
+  const option = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: new RegExp(chainName) }).first();
   await expect(async () => {
     if (!(await option.isVisible())) await switcher.click();
     await option.click({ timeout: 2000 });
@@ -305,9 +305,12 @@ test('the ENGINEER fails an item with a REAL photo; the PMC rejects; the linked 
   await page.getByRole('button', { name: 'Inspection Review' }).click();
   await expect(page.getByText('Chain quality check').first()).toBeVisible();
   await page.getByRole('button', { name: 'Reject item' }).click(); // the PMC NAMES the rejected work
+  // the mark is store-only until Send; a relay-driven refresh landing here used to wipe it
+  await expect(page.getByText('1 item(s) marked for rejection')).toBeVisible();
   const decideDone = page.waitForResponse((r) => r.url().includes(`/projects/${chainId}/inspections/`) && r.url().endsWith('/decide') && r.request().method() === 'POST' && r.status() < 400);
   await page.getByTestId('send-reinspection').click();
-  await decideDone;
+  const decided = await decideDone;
+  expect((decided.request().postDataJSON() as { rejectedItemIds: string[] }).rejectedItemIds).toHaveLength(1);
   // DURABLE decided state, not the transient toast: this was the only pending review, so the
   // decided review LEAVES the queue and the empty state renders once the reconciled read lands
   await expect(page.getByText(/No inspections awaiting review/)).toBeVisible();
@@ -497,7 +500,7 @@ test('OFFLINE EVIDENCE: a captured photo survives a reload and replays exactly o
   await signIn(page, ENG);
   await expect(page.getByTestId('project-switcher')).toBeVisible();
   // one-unit open-and-pick retry (a re-render can close the dropdown and swallow the pick)
-  const chainOption = page.getByRole('button', { name: new RegExp(chainName) }).first();
+  const chainOption = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: new RegExp(chainName) }).first();
   await expect(async () => {
     if (!(await chainOption.isVisible())) await page.getByTestId('project-switcher').click();
     await chainOption.click({ timeout: 2000 });

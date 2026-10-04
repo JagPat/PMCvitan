@@ -59,6 +59,12 @@ export function selectDeciderReapproval(s: AppState): Decision[] {
   return selectReapproval(s).filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
 }
 
+/** Every open decision waiting on THIS VIEWER — re-approvals first, then new ones. The one count the
+ *  client's Pulse, Project Health, the For You badge and the Decisions Waiting badge all show. */
+export function selectDecisionsNeedingViewer(s: AppState): Decision[] {
+  return [...selectDeciderReapproval(s), ...selectDeciderPending(s)];
+}
+
 // ---- Phase 6 task 4d-ii-b / B3 — the countersign readers ----
 
 /** The published decisions AWAITING the architect's countersign: approved (provisionally) by their
@@ -346,6 +352,8 @@ export interface ActionItem {
   screen: ScreenKey;
   cta: string;
   tone: 'amber' | 'red' | 'green' | 'ink';
+  /** how many things the item stands for, when it groups several the viewer acts on one by one */
+  count?: number;
 }
 
 const plural = (n: number, s = 's') => (n === 1 ? '' : s);
@@ -381,11 +389,11 @@ export function selectActionItems(s: AppState): ActionItem[] {
   const myPending = pending.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
   const myChanges = changes.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
   if (myPending.length) {
-    items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber' });
+    items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber', count: myPending.length });
   }
   if (myChanges.length) {
     // a reopened decision BLOCKS the work driven by it until the decider re-approves
-    items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red' });
+    items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red', count: myChanges.length });
   }
 
   // Phase 6 task 4d-ii-b / B3 (the plan's §A.2 Inbox arm) — the AWAITING branch. The architect's item is
@@ -418,7 +426,9 @@ export function selectActionItems(s: AppState): ActionItem[] {
 
   if (s.role === 'pmc') {
     if (drafts.length) items.push({ key: 'pmc-drafts', title: `${drafts.length} draft${plural(drafts.length)} in progress`, detail: names(drafts), screen: 'drafts', cta: 'Review & publish', tone: 'ink' });
-    if (s.reviews.length) items.push({ key: 'pmc-reviews', title: `${s.reviews.length} inspection${plural(s.reviews.length)} awaiting your review`, detail: names(s.reviews), screen: 'inspect-review', cta: 'Review', tone: 'amber' });
+    // only the UNDECIDED reviews: an approved or rejected one stays in `s.reviews` with `decided` set
+    const toReview = s.reviews.filter((r) => !r.decided);
+    if (toReview.length) items.push({ key: 'pmc-reviews', title: `${toReview.length} inspection${plural(toReview.length)} awaiting your review`, detail: names(toReview), screen: 'inspect-review', cta: 'Review', tone: 'amber' });
     // round-3 Codex F1 — the PMC MANAGEMENT summaries cover only decisions held by OTHER
     // deciders: a PMC-held row is the PMC's own approval task (the decider items above), not
     // something to describe as awaiting someone else. When every other-held decision is
@@ -538,4 +548,10 @@ export function selectActionItems(s: AppState): ActionItem[] {
   }
 
   return items;
+}
+
+/** How many things need the viewer: an item that groups several decisions counts each of them, so the
+ *  For You badge and heading agree with the Pulse and the Decisions Waiting badge. */
+export function countActionItems(items: readonly ActionItem[]): number {
+  return items.reduce((n, it) => n + (it.count ?? 1), 0);
 }

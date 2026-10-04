@@ -13,8 +13,14 @@ import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dis
 import type { AuthUser } from '../common/auth';
 import type { CreateNodeInput, MoveNodeInput, RenameNodeInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
+
+/** The `POST /nodes` reply: the caller's snapshot plus the id of the place this create made, the same
+ *  id on a replay, so a client never has to pick its new place out of the tree by name (names may
+ *  repeat). The snapshot's own key set is unchanged. */
+export type NodeCreatedDto = SnapshotDto & { createdNodeId: string };
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
+import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 
 /** The location tree RULE (nested locations, phase-6-task-2): a zone is top-level
@@ -56,28 +62,44 @@ export class NodesService {
 
   /** Create a zone/room/element under the right kind of parent. The tree invariants (depth,
    *  visibility) are re-derived INSIDE the tree-lock transaction: a create racing a reparent
-   *  of its ancestry otherwise passes both checks on stale snapshots and lands at level 6. */
-  async create(projectId: string, input: CreateNodeInput, user: AuthUser): Promise<SnapshotDto> {
+   *  of its ancestry otherwise passes both checks on stale snapshots and lands at level 6.
+   *  #699 — runs under the command ledger: the same `Idempotency-Key` + body creates the place
+   *  exactly once, so a double submit or a retry after a lost reply replays instead of adding a
+   *  second same-named sibling (a create has no natural key — names may repeat). An absent key
+   *  keeps today's unkeyed path. */
+  async create(projectId: string, input: CreateNodeInput, user: AuthUser, idempotencyKey?: string): Promise<NodeCreatedDto> {
     const actor = await resolveActor(this.prisma, user);
-    const ev = await this.prisma.$transaction(async (tx) => {
-      await lockProjectTree(tx, projectId);
-      const parent = await this.requireParentForKind(projectId, input.kind, input.parentId ?? null, tx);
-      const tree = await this.loadTree(tx, projectId);
-      const depth = parent ? depthOf(tree, parent.id) + 1 : 1;
-      if (depth > MAX_TREE_DEPTH) {
-        throw new BadRequestException(`Cannot add "${input.name}" at level ${depth} — locations nest to ${MAX_TREE_DEPTH} levels`);
-      }
-      const order = this.nextOrderIn(tree, parent?.id ?? null);
-      // Draft → Publish: a node under a DRAFT parent must itself be a draft (a published child of a
-      // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
-      const parentIsDraft = parent ? parent.publishedAt === null : false;
-      const publishedAt = input.publish && !parentIsDraft ? new Date() : null;
-      const created = await tx.projectNode.create({
-        data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order, authorId: user.sub, publishedAt },
-      });
-      return emitEvent(tx, { projectId, actor, eventType: 'node.created', entityType: 'ProjectNode', entityId: created.id, payload: { name: input.name, kind: input.kind }, effectKey: 'node.created', dispatch: {} });
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest(input);
+    // No `peekReplay` pre-read: every validation read runs inside `run`, so the ledger's own fast path
+    // replays a committed create AND hands back its `resultRef` (the created node's id), which the
+    // reply carries either way.
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'nodes.create', idempotencyKey, requestHash,
+      run: async (tx) => {
+        await lockProjectTree(tx, projectId);
+        const parent = await this.requireParentForKind(projectId, input.kind, input.parentId ?? null, tx);
+        const tree = await this.loadTree(tx, projectId);
+        const depth = parent ? depthOf(tree, parent.id) + 1 : 1;
+        if (depth > MAX_TREE_DEPTH) {
+          throw new BadRequestException(`Cannot add "${input.name}" at level ${depth} — locations nest to ${MAX_TREE_DEPTH} levels`);
+        }
+        const order = this.nextOrderIn(tree, parent?.id ?? null);
+        // Draft → Publish: a node under a DRAFT parent must itself be a draft (a published child of a
+        // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
+        const parentIsDraft = parent ? parent.publishedAt === null : false;
+        const publishedAt = input.publish && !parentIsDraft ? new Date() : null;
+        const created = await tx.projectNode.create({
+          data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order, authorId: user.sub, publishedAt },
+        });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'node.created', entityType: 'ProjectNode', entityId: created.id, payload: { name: input.name, kind: input.kind }, effectKey: 'node.created', dispatch: {} });
+        return { resultRef: created.id, events: [ev] };
+      },
     });
-    return this.done(projectId, user, [ev]);
+    const snapshot = outcome.replayed
+      ? await this.snapshot.build(projectId, user.role, user.sub)
+      : await this.done(projectId, user, outcome.events);
+    return { ...snapshot, createdNodeId: outcome.resultRef };
   }
 
   /** Publish a private draft location → it (its subtree, and any draft ancestors so the path is

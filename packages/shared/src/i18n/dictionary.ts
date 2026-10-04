@@ -262,6 +262,164 @@ export function engineerCrewMore(n: number, lang: Lang): string {
   return `${n} more`;
 }
 
+/** U2a — the client's Pulse (design review, Client · Pulse board). No schedule verdict: there is no
+ *  field or rule for one yet. */
+export const clientPulseLabels = {
+  done: { en: 'done', hi: 'पूरा', gu: 'પૂર્ણ' },
+  underWay: { en: 'Under way', hi: 'अभी चल रहा है', gu: 'હાલ ચાલુ છે' },
+  needsOne: { en: 'One thing needs you', hi: 'एक काम आपका इंतज़ार कर रहा है', gu: 'એક કામ તમારી રાહ જુએ છે' },
+  reopened: { en: 'Reopened by a change request — please approve it again.', hi: 'बदलाव के अनुरोध से फिर खुला — कृपया फिर से मंज़ूर करें।', gu: 'ફેરફારની વિનંતીથી ફરી ખુલ્યું — કૃપા કરી ફરી મંજૂર કરો.' },
+  open: { en: 'Open it', hi: 'खोलें', gu: 'ખોલો' },
+  nothing: { en: 'Nothing needs you right now', hi: 'अभी आपके लिए कुछ बाकी नहीं', gu: 'હમણાં તમારે કંઈ કરવાનું નથી' },
+  next: { en: 'What happens next', hi: 'आगे क्या होगा', gu: 'આગળ શું થશે' },
+  also: { en: 'Also waiting on you', hi: 'यह भी आपका इंतज़ार कर रहा है', gu: 'આ પણ તમારી રાહ જુએ છે' },
+} as const;
+
+/** "Ambli, this week" — the Pulse heading, named for the project on screen. */
+export function clientPulseHeading(project: string, lang: Lang): string {
+  if (lang === 'hi') return `${project}, इस हफ़्ते`;
+  if (lang === 'gu') return `${project}, આ અઠવાડિયે`;
+  return `${project}, this week`;
+}
+
+/** "Week 18 of 40", counted from the schedule's own start date. */
+export function clientPulseWeek(at: number, of: number, lang: Lang): string {
+  if (lang === 'hi') return `${of} में से हफ़्ता ${at}`;
+  if (lang === 'gu') return `${of} માંથી અઠવાડિયું ${at}`;
+  return `Week ${at} of ${of}`;
+}
+
+/** "3 things need you", when more than one decision waits on the client. */
+export function clientPulseNeedsMany(n: number, lang: Lang): string {
+  if (lang === 'hi') return `${n} काम आपका इंतज़ार कर रहे हैं`;
+  if (lang === 'gu') return `${n} કામ તમારી રાહ જુએ છે`;
+  return `${n} things need you`;
+}
+
+/** "See all 3" — the way from the one decision the Pulse shows to the full list waiting on the client. */
+export function clientPulseSeeAll(n: number, lang: Lang): string {
+  if (lang === 'hi') return `सभी ${n} देखें`;
+  if (lang === 'gu') return `બધા ${n} જુઓ`;
+  return `See all ${n}`;
+}
+
+/** "See the 2 options" — the decision's own options, the way into choosing one. */
+export function clientPulseSeeOptions(n: number, lang: Lang): string {
+  if (lang === 'hi') return `${n} विकल्प देखें`;
+  if (lang === 'gu') return `${n} વિકલ્પ જુઓ`;
+  return `See the ${n} options`;
+}
+
+/** "From about 5 October" — an activity's planned start, never promised to the day. */
+export function clientPulseFrom(date: string, lang: Lang): string {
+  if (lang === 'hi') return `लगभग ${date} से`;
+  if (lang === 'gu') return `આશરે ${date} થી`;
+  return `From about ${date}`;
+}
+
+/** "Waits on your choice: Kitchen countertop" — an upcoming activity held by a decision of theirs. */
+export function clientPulseWaitsOn(title: string, lang: Lang): string {
+  if (lang === 'hi') return `आपके फ़ैसले का इंतज़ार: ${title}`;
+  if (lang === 'gu') return `તમારા નિર્ણયની રાહ: ${title}`;
+  return `Waits on your choice: ${title}`;
+}
+
+/** U2b — one decision on its own screen (design review, Client · Decision board). There is no due
+ *  date, per-option note or client question path behind the board's other elements, so none is drawn. */
+export const clientDecisionLabels = {
+  back: { en: 'All your decisions', hi: 'आपके सभी फ़ैसले', gu: 'તમારા બધા નિર્ણયો' },
+  pick: { en: 'Pick one. The price shown is the change to your budget.', hi: 'एक चुनें। दिखाई गई कीमत आपके बजट में बदलाव है।', gu: 'એક પસંદ કરો. બતાવેલી કિંમત તમારા બજેટમાં ફેરફાર છે.' },
+  recommends: { en: 'Architect recommends', hi: 'आर्किटेक्ट की सलाह', gu: 'આર્કિટેક્ટની ભલામણ' },
+  noChange: { en: 'No change to budget', hi: 'बजट में कोई बदलाव नहीं', gu: 'બજેટમાં કોઈ ફેરફાર નહીં' },
+  reopened: { en: 'Reopened by a change request — please decide again.', hi: 'बदलाव के अनुरोध से फिर खुला — कृपया फिर से तय करें।', gu: 'ફેરફારની વિનંતીથી ફરી ખુલ્યું — કૃપા કરી ફરી નક્કી કરો.' },
+  lock: { en: 'Once you approve, this choice is locked. You can still ask for a change later; your architect will show what it costs.', hi: 'मंज़ूरी के बाद यह चुनाव लॉक हो जाएगा। बाद में भी बदलाव माँग सकते हैं; आर्किटेक्ट उसकी लागत बताएँगे।', gu: 'મંજૂરી પછી આ પસંદગી લૉક થઈ જશે. પછીથી પણ ફેરફાર માગી શકો છો; આર્કિટેક્ટ તેનો ખર્ચ બતાવશે.' },
+  lockCountersign: { en: 'Once you approve, it goes to the architect to countersign, and is then locked. You can still ask for a change later.', hi: 'मंज़ूरी के बाद यह आर्किटेक्ट के प्रतिहस्ताक्षर के लिए जाएगा, फिर लॉक होगा। बाद में भी बदलाव माँग सकते हैं।', gu: 'મંજૂરી પછી તે આર્કિટેક્ટની સહી માટે જશે, પછી લૉક થશે. પછીથી પણ ફેરફાર માગી શકો છો.' },
+  pickFirst: { en: 'Pick one to approve', hi: 'मंज़ूर करने के लिए एक चुनें', gu: 'મંજૂર કરવા એક પસંદ કરો' },
+} as const;
+
+/** "Approve Italian Marble" — the primary action names the option chosen. */
+export function clientDecisionApprove(material: string, lang: Lang): string {
+  if (lang === 'hi') return `${material} मंज़ूर करें`;
+  if (lang === 'gu') return `${material} મંજૂર કરો`;
+  return `Approve ${material}`;
+}
+
+/** "+ ₹20,000" / "− ₹5,000" — an option's change to the budget (Indian digit grouping), or the
+ *  no-change label at zero. */
+export function clientDecisionDelta(delta: number, lang: Lang): string {
+  if (delta === 0) return clientDecisionLabels.noChange[lang];
+  return `${delta > 0 ? '+' : '\u2212'} \u20b9${Math.abs(delta).toLocaleString('en-IN')}`;
+}
+
+/** U3b — the PMC's daily brief across their projects (design review, PMC · Brief board). No schedule
+ *  verdict ("Watch", "At risk") and no nudge: no rule or command stands behind either yet. */
+export const pmcBriefLabels = {
+  heading: { en: 'Today’s brief', hi: 'आज की रिपोर्ट', gu: 'આજનો અહેવાલ' },
+  first: { en: 'Do these first', hi: 'पहले ये करें', gu: 'પહેલાં આ કરો' },
+  clear: { en: 'Nothing is waiting on you across your projects', hi: 'आपके किसी प्रोजेक्ट में कुछ बाकी नहीं', gu: 'તમારા કોઈ પ્રોજેક્ટમાં કંઈ બાકી નથી' },
+  since: { en: 'Since yesterday', hi: 'कल से अब तक', gu: 'ગઈકાલથી અત્યાર સુધી' },
+  projects: { en: 'Your projects', hi: 'आपके प्रोजेक्ट', gu: 'તમારા પ્રોજેક્ટ' },
+  logSent: { en: 'Today’s log sent', hi: 'आज की लॉग भेजी गई', gu: 'આજનો લૉગ મોકલાયો' },
+  logOpen: { en: 'Today’s log started, not sent', hi: 'आज की लॉग शुरू, भेजी नहीं', gu: 'આજનો લૉગ શરૂ, મોકલ્યો નથી' },
+  logMissing: { en: 'No site log yet today', hi: 'आज अभी साइट लॉग नहीं', gu: 'આજે હજી સાઇટ લૉગ નથી' },
+  openDecisions: { en: 'Decisions', hi: 'फ़ैसले', gu: 'નિર્ણયો' },
+  openReviews: { en: 'Review', hi: 'जाँचें', gu: 'તપાસો' },
+  openSite: { en: 'Site', hi: 'साइट', gu: 'સાઇટ' },
+} as const;
+
+/** "Ambli: 2 decisions waiting on the client, oldest 5 days" — client-held decisions not yet answered. */
+export function pmcBriefClientWaiting(n: number, days: number, lang: Lang): string {
+  const age = days > 0 ? days : 0;
+  if (lang === 'hi') return `${n} फ़ैसले क्लाइंट के इंतज़ार में${age ? `, सबसे पुराना ${age} दिन` : ''}`;
+  if (lang === 'gu') return `${n} નિર્ણય ક્લાયન્ટની રાહમાં${age ? `, સૌથી જૂનો ${age} દિવસ` : ''}`;
+  return `${n} decision${n === 1 ? '' : 's'} waiting on the client${age ? `, oldest ${age} day${age === 1 ? '' : 's'}` : ''}`;
+}
+
+/** "3 inspections to review". */
+export function pmcBriefReviews(n: number, lang: Lang): string {
+  if (lang === 'hi') return `${n} निरीक्षण जाँचने हैं`;
+  if (lang === 'gu') return `${n} નિરીક્ષણ તપાસવાના છે`;
+  return `${n} inspection${n === 1 ? '' : 's'} to review`;
+}
+
+/** "4 projects · 3 of 4 logs sent today". */
+export function pmcBriefSummary(projects: number, logsSent: number, lang: Lang): string {
+  if (lang === 'hi') return `${projects} प्रोजेक्ट · आज ${projects} में से ${logsSent} लॉग भेजी गईं`;
+  if (lang === 'gu') return `${projects} પ્રોજેક્ટ · આજે ${projects} માંથી ${logsSent} લૉગ મોકલાયા`;
+  return `${projects} project${projects === 1 ? '' : 's'} · ${logsSent} of ${projects} logs sent today`;
+}
+
+/** "and 2 more", under "Do these first" when more tasks wait than it names. */
+export function pmcBriefMore(n: number, lang: Lang): string {
+  if (lang === 'hi') return `और ${n} काम`;
+  if (lang === 'gu') return `અને ${n} કામ`;
+  return `and ${n} more`;
+}
+
+/** The "Since yesterday" figures: client approvals, progress photos, inspections rejected. */
+export function pmcBriefSince(kind: 'approvals' | 'photos' | 'rejected', n: number, lang: Lang): string {
+  if (kind === 'approvals') {
+    if (lang === 'hi') return `क्लाइंट मंज़ूरियाँ`;
+    if (lang === 'gu') return `ક્લાયન્ટ મંજૂરીઓ`;
+    return `client approval${n === 1 ? '' : 's'}`;
+  }
+  if (kind === 'photos') {
+    if (lang === 'hi') return `प्रगति फ़ोटो`;
+    if (lang === 'gu') return `પ્રગતિ ફોટો`;
+    return `progress photo${n === 1 ? '' : 's'}`;
+  }
+  if (lang === 'hi') return `निरीक्षण अस्वीकृत`;
+  if (lang === 'gu') return `નિરીક્ષણ નામંજૂર`;
+  return `inspection${n === 1 ? '' : 's'} rejected`;
+}
+
+/** "Also in Ambli" — what else waits on the PMC in the project on screen. */
+export function pmcBriefAlsoIn(project: string, lang: Lang): string {
+  if (lang === 'hi') return `${project} में और`;
+  if (lang === 'gu') return `${project} માં વધુ`;
+  return `Also in ${project}`;
+}
+
 /** Shell chrome shared by every role: the More tab and the language control. */
 export const shellLabels: Record<'more' | 'language' | 'close' | 'screens', Record<Lang, string>> = {
   more: { en: 'More', hi: 'और', gu: 'વધુ' },

@@ -46,7 +46,7 @@ test('with the doors standing, the PMC’s register offers Withdraw on the seede
   await signIn(page, PMC);
   await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
   // switch to ambli, where the seeded reopened decision lives (the project-scope spec's pattern)
-  const optionA = page.getByRole('button', { name: /Residence at Ambli/ });
+  const optionA = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Residence at Ambli/ });
   await expect(async () => {
     if (!(await optionA.isVisible())) await page.getByTestId('project-switcher').click();
     await optionA.click({ timeout: 2000 });

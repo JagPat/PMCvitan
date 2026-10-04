@@ -1,5 +1,5 @@
 import { useStore } from '@/store/store';
-import { selectActionItems, selectCountersignObligations, selectDeciderPending, selectDeciderReapproval, selectDraftDecisions, selectDraftDrawings, selectReviewPending } from '@/store/selectors';
+import { countActionItems, selectActionItems, selectCountersignObligations, selectDeciderPending, selectDeciderReapproval, selectDraftDecisions, selectDraftDrawings, selectReviewPending } from '@/store/selectors';
 import { enabledScreensFor, SCREEN_META, type ScreenMeta } from '@/lib/screens';
 
 export interface NavItem extends ScreenMeta {
@@ -23,7 +23,7 @@ export function useNavItems(): NavItem[] {
   // `counts.pendingDecisions` is a point-in-time read. Those rows are read and acted on (B5b) on the
   // Decision Log, never on the approval route, so the approval badge below stays F5's combined count.
   const countersignObligations = useStore((s) => selectCountersignObligations(s).length);
-  const actionCount = useStore((s) => selectActionItems(s).length);
+  const actionCount = useStore((s) => countActionItems(selectActionItems(s)));
   const draftCount = useStore((s) => selectDraftDecisions(s).length + selectDraftDrawings(s).length);
   // Task 9 — manifest-driven: filter the role's screens by the shell's enabled modules (a no-op until
   // the shell lands / in the local demo, so nav never flashes).

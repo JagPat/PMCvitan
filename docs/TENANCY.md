@@ -44,10 +44,12 @@ So: *methods can be global; an inspection, a drawing, a schedule, a decision log
 | Drawings | the active project's register |
 | Site Map | the active project's location tree |
 | Dashboard | the active project's KPIs — **single project** |
-| **Portfolio** | the **only** cross-project screen — one rollup card per accessible project |
+| **Portfolio** | a cross-project screen — one rollup card per accessible project |
+| **PMC brief** (U3a read, `GET /me/brief`) | cross-project, PMC only — one row per project the caller runs as PMC |
 
 The Dashboard is a single-project summary; the **Portfolio** is "all my sites at a glance," and
-opening a card switches you into that project.
+opening a card switches you into that project. The **PMC brief** is the PMC's daily read across the
+same reach, narrowed to the projects they run as PMC.
 
 ---
 
@@ -60,7 +62,12 @@ opening a card switches you into that project.
 2. **API routes** — every read/mutation is under `POST|GET|… /projects/:projectId/…`, and the
    snapshot is built per project: `snapshot.build(projectId, role, userId)` with every query
    `where: { projectId }`. There is **no** "all decisions / all activities across projects"
-   endpoint (the Portfolio uses a dedicated `GET /me/portfolio` rollup).
+   endpoint. The two cross-project reads are dedicated, identity-scoped rollups — `GET /me/portfolio`
+   and the PMC brief's `GET /me/brief` (U3a) — that share ONE reach definition
+   (`apps/api/src/orgs/project-reach.ts`: active memberships + org owner/admin reach, archived
+   projects dropped, no legacy home-field fallback), so the reach is their access check. The brief
+   reads each project's figures through the owning modules' query contracts; its tenant isolation
+   is proven live in `apps/api/test/integration/u3a-pmc-brief.test.ts`.
 
 3. **Token + tenancy guard** — a session token is scoped to **one** project. `JwtGuard`
    (`apps/api/src/common/auth.ts`) rejects any request whose route `:projectId` doesn't match the

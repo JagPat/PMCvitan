@@ -1,13 +1,14 @@
-import { useState, type CSSProperties } from 'react';
+import { createContext, useContext, useEffect, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions, type GateVM } from '@/store/selectors';
-import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext, EditState } from '@/components';
+import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext, EditState, ConfirmDialog } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
-import { dayLabel, gateColor, can, diffCivilDays, formatCivilDate, type Activity, type Phase, type Gate } from '@vitan/shared';
+import { gateColor, can, diffCivilDays, type Activity, type Phase, type Gate } from '@vitan/shared';
 import type { AppState } from '@/store/store';
 import { activitiesReadMode, type NewActivityInput } from '@/data/apiGateway';
+import { labelOf, plannedWindow } from '@/lib/activityDates';
 import styles from './responsive.module.css';
 
 function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
@@ -71,10 +72,8 @@ function offsetOf(anchor: string | null, iso: string | null | undefined, legacy:
   if (anchor && iso) return diffCivilDays(anchor, iso);
   return legacy;
 }
-function labelOf(iso: string | null | undefined, legacy: number | null): string {
-  if (iso) return formatCivilDate(iso);
-  return legacy == null ? '' : dayLabel(legacy);
-}
+/** Audit F-02 — the activity opened from a place, outlined for a moment once it scrolls into view. */
+const HighlightContext = createContext<string | null>(null);
 
 function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPct: number; onEdit?: (a: Activity) => void; onOverride?: (a: Activity) => void }) {
   const state = useStore((s) => s) as AppState;
@@ -90,12 +89,19 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
   const pe = offsetOf(anchor, a.plannedEndDate, a.pe) ?? a.pe;
   const as_ = offsetOf(anchor, a.actualStartDate, a.as);
   const ae_ = offsetOf(anchor, a.actualEndDate, a.ae);
-  const plannedLine = `Plan ${labelOf(a.plannedStartDate, a.ps)} → ${labelOf(a.plannedEndDate, a.pe)}`;
+  const plannedLine = `Plan ${plannedWindow(a)}`;
   const actualLine = as_ == null ? 'Not started' : `Actual ${labelOf(a.actualStartDate, a.as)} → ${ae_ == null ? 'ongoing' : labelOf(a.actualEndDate, a.ae)}`;
   const actualColor = a.status === 'blocked' ? 'var(--red-solid)' : a.status === 'done' ? 'var(--green-solid)' : 'var(--accent)';
+  const highlighted = useContext(HighlightContext) === a.id;
 
   return (
-    <div style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 12, padding: '14px 18px', animation: 'vpop .3s' }} data-testid={`sched-${a.id}`}>
+    <div
+      id={`sched-${a.id}`}
+      tabIndex={-1}
+      data-highlighted={highlighted || undefined}
+      style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 12, padding: '14px 18px', animation: 'vpop .3s', outline: highlighted ? '3px solid var(--accent)' : undefined, outlineOffset: 2 }}
+      data-testid={`sched-${a.id}`}
+    >
       <div className={styles.schedRow}>
         <div style={{ width: 210, flex: 'none' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -330,7 +336,32 @@ export function ScheduleScreen() {
   const [addingPhase, setAddingPhase] = useState(false);
   const [overrideFor, setOverrideFor] = useState<Activity | null>(null);
   const onEdit = canPlan ? (a: Activity) => setPlan(a) : undefined;
-  const onDeletePhase = canPlan ? (id: string) => deletePhase(id) : undefined;
+  const [phaseToDelete, setPhaseToDelete] = useState<Phase | null>(null);
+  const onDeletePhase = canPlan ? (id: string) => setPhaseToDelete(phases.find((p) => p.id === id) ?? null) : undefined;
+  // Audit F-02 — opened from a place's Work list: bring that activity into view, outline it for a
+  // moment and move focus to it, then let go so a later visit opens at the top.
+  const activityFocus = useStore((s) => s.activityFocus);
+  const clearActivityFocus = useStore((s) => s.clearActivityFocus);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  useEffect(() => {
+    if (activityFocus === null) return;
+    const row = document.getElementById(`sched-${activityFocus}`);
+    // #699 Codex 4175492267 — a module-owned read still in flight has not rendered the row yet: keep
+    // the intent until it lands. Once the read has settled (or failed, which shows its own boundary)
+    // an absent row is not coming, so the intent is dropped.
+    if (!row && reading) return;
+    if (row) {
+      row.scrollIntoView?.({ block: 'center' });
+      row.focus({ preventScroll: true });
+      setHighlight(activityFocus);
+    }
+    clearActivityFocus();
+  }, [activityFocus, clearActivityFocus, activities, reading]);
+  useEffect(() => {
+    if (highlight === null) return;
+    const t = setTimeout(() => setHighlight(null), 2500);
+    return () => clearTimeout(t);
+  }, [highlight]);
   // Task 6: only the PMC records readiness exceptions
   const onOverride = canPlan ? (a: Activity) => setOverrideFor(a) : undefined;
 
@@ -419,6 +450,19 @@ export function ScheduleScreen() {
       {plan && <PlanActivityModal activity={plan === 'new' ? null : plan} onClose={() => setPlan(null)} />}
       {addingPhase && <AddPhaseModal onClose={() => setAddingPhase(false)} />}
       {overrideFor && <OverrideModal activity={overrideFor} onClose={() => setOverrideFor(null)} />}
+      {phaseToDelete && (
+        <ConfirmDialog
+          title={`Remove the ${phaseToDelete.name} phase?`}
+          confirmLabel="Remove phase"
+          onConfirm={() => deletePhase(phaseToDelete.id)}
+          onCancel={() => setPhaseToDelete(null)}
+          testId="confirm-phase-delete"
+        >
+          {PHASE_DELETE_NOTE}
+        </ConfirmDialog>
+      )}
+
+      <HighlightContext.Provider value={highlight}>
 
       {phases.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
@@ -445,6 +489,8 @@ export function ScheduleScreen() {
         </div>
       )}
 
+      </HighlightContext.Provider>
+
       <div style={{ marginTop: 16, fontSize: 11.5, color: 'var(--faint)', lineHeight: 1.5, maxWidth: 760 }}>
         Each activity can only <strong>Start</strong> when its four gates align — the <strong>Decision</strong> is locked, the approved{' '}
         <strong>Material</strong> is on site, the <strong>Team</strong> is present, and the pre-work <strong>Inspection</strong> has passed.
@@ -453,6 +499,11 @@ export function ScheduleScreen() {
     </div>
   );
 }
+
+/** What removing a phase does (`PhasesService.remove`): its activities stay, unphased. Stated as the
+ *  server's rule, never as a count of the activities this browser holds, which a failed or stale
+ *  read can leave short (#699 Codex 4174270527). */
+const PHASE_DELETE_NOTE = 'Its activities stay in the schedule, under Unphased.';
 
 const GATE_VALUES: Gate[] = ['na', 'wait', 'ok', 'fail'];
 
@@ -476,6 +527,7 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
   const [nodeId, setNodeId] = useState<string | null>(activity?.nodeId ?? null);
   const [gm, setGm] = useState<Gate>(activity?.gm ?? 'na');
   const [gt, setGt] = useState<Gate>(activity?.gt ?? 'na');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const psN = parseInt(ps, 10);
   const peN = parseInt(pe, 10);
@@ -500,6 +552,20 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
     else createActivity(input);
     onClose();
   };
+
+  if (activity && confirmingDelete) {
+    return (
+      <ConfirmDialog
+        title={`Delete ${activity.id} · ${activity.name}?`}
+        confirmLabel="Delete activity"
+        onConfirm={() => { deleteActivity(activity.id); onClose(); }}
+        onCancel={() => setConfirmingDelete(false)}
+        testId="confirm-activity-delete"
+      >
+        It is removed from the schedule for everyone. A drawing that governs it is kept and no longer linked to it. Once other records refer to it (an inspection, a material record, a gate override, a schedule link, recorded work or anything else), it can&apos;t be deleted: the server refuses and nothing changes.
+      </ConfirmDialog>
+    );
+  }
 
   return (
     <Modal onClose={onClose} maxWidth={480} labelledBy="plan-act-title">
@@ -544,7 +610,7 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           {activity && (
-            <Button variant="dangerOutline" onClick={() => { deleteActivity(activity.id); onClose(); }} style={{ padding: 12 }}>Delete</Button>
+            <Button variant="dangerOutline" onClick={() => setConfirmingDelete(true)} data-testid="activity-delete" style={{ padding: 12 }}>Delete</Button>
           )}
           <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
           <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-activity" style={{ flex: 1, padding: 12 }}>{activity ? 'Save' : 'Add to plan'}</Button>
