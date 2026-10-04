@@ -205,6 +205,28 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
     expect(childRetry.createdNodeId).toBe(child.createdNodeId);
   });
 
+  it('PUBLISHING a draft beside a published place of the same name is a 409 and leaves it a draft', async () => {
+    const zone = await svc.create(p(), { name: 'Idem Publish Wing', kind: 'zone', parentId: null, publish: true }, pmc());
+    const draft = await svc.create(p(), { name: 'Idem Scullery', kind: 'room', parentId: zone.createdNodeId, publish: false }, owner());
+    // the PMC cannot see the owner's draft, so their own Scullery is created and published
+    await svc.create(p(), { name: 'idem scullery', kind: 'room', parentId: zone.createdNodeId, publish: true }, pmc());
+    await expect(svc.publish(p(), draft.createdNodeId, owner())).rejects.toBeInstanceOf(ConflictException);
+    expect((await t.prisma.projectNode.findUniqueOrThrow({ where: { id: draft.createdNodeId } })).publishedAt).toBeNull();
+    // renamed, it publishes
+    await svc.rename(p(), draft.createdNodeId, { name: 'Idem Scullery 2' }, owner());
+    await svc.publish(p(), draft.createdNodeId, owner());
+    expect((await t.prisma.projectNode.findUniqueOrThrow({ where: { id: draft.createdNodeId } })).publishedAt).not.toBeNull();
+  });
+
+  it('PUBLISHING a branch whose drafts share a name under one parent is a 409', async () => {
+    const zone = await svc.create(p(), { name: 'Idem Draft Branch', kind: 'zone', parentId: null, publish: false }, pmc());
+    await svc.create(p(), { name: 'Idem Bay', kind: 'room', parentId: zone.createdNodeId, publish: false }, pmc());
+    // another author's draft of the same name under the same draft parent (invisible to the PMC)
+    await t.prisma.projectNode.create({ data: { projectId: p(), parentId: zone.createdNodeId, name: 'idem bay', kind: 'room', order: 5, authorId: f.ownerUser.id, publishedAt: null } });
+    await expect(svc.publish(p(), zone.createdNodeId, pmc())).rejects.toBeInstanceOf(ConflictException);
+    expect((await t.prisma.projectNode.findUniqueOrThrow({ where: { id: zone.createdNodeId } })).publishedAt).toBeNull();
+  });
+
   it('a RENAME to a name another place under the parent holds is a 409; a respacing of its own name is not', async () => {
     const zone = await svc.create(p(), { name: 'Idem Rename Wing', kind: 'zone', parentId: null, publish: true }, pmc());
     const kitchen = await svc.create(p(), { name: 'Idem Kitchen', kind: 'room', parentId: zone.createdNodeId, publish: true }, pmc());

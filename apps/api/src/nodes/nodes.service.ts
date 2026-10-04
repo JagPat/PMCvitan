@@ -139,6 +139,7 @@ export class NodesService {
       await this.requireNode(projectId, nodeId, tx);
       const tree = await this.loadTree(tx, projectId);
       const branch = [...new Set([...ancestorIdsOf(tree, nodeId), ...subtreeIdsOf(tree, nodeId)])];
+      await this.refusePublishedNameClash(tx, projectId, branch);
       await tx.projectNode.updateMany({
         where: { id: { in: branch }, projectId, publishedAt: null },
         data: { publishedAt: new Date() },
@@ -310,6 +311,36 @@ export class NodesService {
     });
     const wanted = normalizeNodeName(name);
     return siblings.filter((row) => normalizeNodeName(row.name) === wanted);
+  }
+
+  /** #705 — publishing is the write that makes a draft visible to everyone, so it is the last writer
+   *  of the sibling-name rule: two authors' drafts (or a draft and a place another author added while
+   *  it was private) may hold one name under a parent, and publishing must not land them side by side.
+   *  A draft of `branch` that would become published beside a published sibling of the same name, or
+   *  beside another draft of `branch` publishing with it under that name, is a 409. Published places
+   *  that already share a name are left as they are. */
+  private async refusePublishedNameClash(db: Db, projectId: string, branch: string[]): Promise<void> {
+    // one read of the project's places (the tree is already loaded under the lock), split here
+    const rows = await db.projectNode.findMany({
+      where: { projectId },
+      select: { id: true, name: true, parentId: true, publishedAt: true },
+    });
+    const inBranch = new Set(branch);
+    const publishing = rows.filter((row) => inBranch.has(row.id) && row.publishedAt === null);
+    if (publishing.length === 0) return;
+    const parents = new Set(publishing.map((row) => row.parentId));
+    const taken = new Set(
+      rows
+        .filter((row) => row.publishedAt !== null && parents.has(row.parentId))
+        .map((row) => `${row.parentId ?? ''}\u0000${normalizeNodeName(row.name)}`),
+    );
+    for (const row of publishing) {
+      const key = `${row.parentId ?? ''}\u0000${normalizeNodeName(row.name)}`;
+      if (taken.has(key)) {
+        throw new ConflictException(`${await this.alreadyHas(db, row.parentId, row.name)} — rename the draft before publishing it`);
+      }
+      taken.add(key);
+    }
   }
 
   private async alreadyHas(db: Db, parentId: string | null, name: string): Promise<string> {
