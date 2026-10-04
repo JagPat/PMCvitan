@@ -20,14 +20,56 @@ import {
 
 const REQUIRED_ENV = ['DATABASE_URL', 'COOLIFY_TOKEN', 'COOLIFY_API_URL', 'COOLIFY_APP_UUID'];
 
-/** The CLI's JSON with this run's identity added under `provenance`. Pure; throws on a malformed record. */
-export function stampProvenance(stdout, env) {
-  let evidence;
+/**
+ * The first JSON value in the CLI's stdout. `pnpm --filter api exec` appends its failure banner to
+ * stdout after the record when the command exits non-zero, and `JSON.parse` then rejects the whole
+ * buffer — which is how a judged `unclassified` or `not-drained` record was discarded. The record is
+ * the first value and it starts the output; anything after it is the banner, not a second record.
+ * Leading non-whitespace is refused: a banner before the record would mean this is not the CLI's output.
+ */
+export function drainRecordFromStdout(stdout) {
+  const text = String(stdout ?? '');
+  const start = text.search(/\S/u);
+  if (start < 0 || text[start] !== '{') {
+    throw new Error('rollout:drain-evidence printed no JSON record (stdout did not start with the record)');
+  }
+  const end = endOfFirstJsonValue(text, start);
+  if (end === null) throw new Error('rollout:drain-evidence printed no JSON record (truncated JSON)');
   try {
-    evidence = JSON.parse(stdout);
+    return JSON.parse(text.slice(start, end));
   } catch (error) {
     throw new Error(`rollout:drain-evidence printed no JSON record (${error.message})`);
   }
+}
+
+function endOfFirstJsonValue(text, start) {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (escape) escape = false;
+      else if (char === '\\') escape = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{' || char === '[') depth += 1;
+    else if (char === '}' || char === ']') {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return null;
+}
+
+/** The CLI's JSON with this run's identity added under `provenance`. Pure; throws on a malformed record. */
+export function stampProvenance(stdout, env) {
+  const evidence = drainRecordFromStdout(stdout);
   if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)
     || evidence.marker !== DRAIN_EVIDENCE_MARKER || evidence.directive !== DRAIN_DIRECTIVE) {
     throw new Error('rollout:drain-evidence printed something other than a DRAIN-EVIDENCE record for this directive');
