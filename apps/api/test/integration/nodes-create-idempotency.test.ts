@@ -180,6 +180,31 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
     expect(again.createdNodeId).toBe(draft.createdNodeId);
   });
 
+  it('where places made before the rule share a name across kinds, a create names the one of ITS kind', async () => {
+    const zone = await svc.create(p(), { name: 'Idem Mixed Wing', kind: 'zone', parentId: null, publish: true }, pmc());
+    // a room first in order, then an object of the same name (legacy rows, made before the rule)
+    await t.prisma.projectNode.create({ data: { projectId: p(), parentId: zone.createdNodeId, name: 'Idem Store', kind: 'room', order: 0, authorId: f.memberUser.id, publishedAt: new Date() } });
+    const object = await t.prisma.projectNode.create({ data: { projectId: p(), parentId: zone.createdNodeId, name: 'Idem Store', kind: 'element', order: 1, authorId: f.memberUser.id, publishedAt: new Date() } });
+    const again = await svc.create(p(), { name: 'Idem Store', kind: 'element', parentId: zone.createdNodeId, publish: true }, pmc());
+    expect(again.createdNodeId).toBe(object.id);
+  });
+
+  it('asked to PUBLISH, a name held by the caller\'s own draft is a 409, never a success that left it hidden', async () => {
+    const zone = await svc.create(p(), { name: 'Idem Draft Wing', kind: 'zone', parentId: null, publish: true }, pmc());
+    const draft = await svc.create(p(), { name: 'Idem Larder', kind: 'room', parentId: zone.createdNodeId, publish: false }, pmc());
+    await expect(svc.create(p(), { name: 'Idem Larder', kind: 'room', parentId: zone.createdNodeId, publish: true }, pmc(), 'k-publish'))
+      .rejects.toBeInstanceOf(ConflictException);
+    expect((await t.prisma.projectNode.findUniqueOrThrow({ where: { id: draft.createdNodeId } })).publishedAt).toBeNull();
+    // the same draft intent still names it (a retry of the draft create)
+    const retry = await svc.create(p(), { name: 'Idem Larder', kind: 'room', parentId: zone.createdNodeId, publish: false }, pmc());
+    expect(retry.createdNodeId).toBe(draft.createdNodeId);
+    // under a DRAFT parent nothing can publish, so a publish:true retry there still names the draft
+    const draftZone = await svc.create(p(), { name: 'Idem Draft Floor', kind: 'zone', parentId: null, publish: false }, pmc());
+    const child = await svc.create(p(), { name: 'Idem Nook', kind: 'room', parentId: draftZone.createdNodeId, publish: true }, pmc());
+    const childRetry = await svc.create(p(), { name: 'Idem Nook', kind: 'room', parentId: draftZone.createdNodeId, publish: true }, pmc());
+    expect(childRetry.createdNodeId).toBe(child.createdNodeId);
+  });
+
   it('a RENAME to a name another place under the parent holds is a 409; a respacing of its own name is not', async () => {
     const zone = await svc.create(p(), { name: 'Idem Rename Wing', kind: 'zone', parentId: null, publish: true }, pmc());
     const kitchen = await svc.create(p(), { name: 'Idem Kitchen', kind: 'room', parentId: zone.createdNodeId, publish: true }, pmc());

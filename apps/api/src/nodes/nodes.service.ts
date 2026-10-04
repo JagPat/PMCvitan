@@ -76,7 +76,7 @@ export class NodesService {
    *  or after a reload, can never add a second one. A different kind under that name is a 409.
    *  Checked under the tree lock, so concurrent creates of one name serialize to one place. Places
    *  that already share a name are left as they are. Only places the caller can see count (see
-   *  `nameHolder`), so another author's private draft is never named or returned. */
+   *  `nameHolders`), so another author's private draft is never named or returned. */
   async create(projectId: string, input: CreateNodeInput, user: AuthUser, idempotencyKey?: string): Promise<NodeCreatedDto> {
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
@@ -89,12 +89,24 @@ export class NodesService {
       run: async (tx) => {
         await lockProjectTree(tx, projectId);
         const parent = await this.requireParentForKind(projectId, input.kind, input.parentId ?? null, tx);
-        const holder = await this.nameHolder(tx, projectId, parent?.id ?? null, input.name, user);
-        if (holder) {
-          if (holder.kind !== input.kind) {
-            throw new ConflictException(`${parent ? `"${parent.name}"` : 'This project'} already has "${holder.name}"`);
+        // Draft → Publish: a node under a DRAFT parent must itself be a draft (a published child of a
+        // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
+        const parentIsDraft = parent ? parent.publishedAt === null : false;
+        const publishes = input.publish && !parentIsDraft;
+        const holders = await this.nameHolders(tx, projectId, parent?.id ?? null, input.name, user);
+        if (holders.length > 0) {
+          // the same kind is this place, even where places made before the rule share the name across
+          // kinds; only a name held by another kind alone is a conflict
+          const same = holders.find((row) => row.kind === input.kind);
+          if (!same) {
+            throw new ConflictException(`${parent ? `"${parent.name}"` : 'This project'} already has "${holders[0]!.name}"`);
           }
-          return { resultRef: holder.id, events: [] };
+          // the reply never reports a publish it did not make: asked to publish, a place that is still
+          // the caller's draft is refused (publishing is its own command), not silently returned hidden
+          if (publishes && same.publishedAt === null) {
+            throw new ConflictException(`"${same.name}" is already a draft here — publish it instead of adding it again`);
+          }
+          return { resultRef: same.id, events: [] };
         }
         const tree = await this.loadTree(tx, projectId);
         const depth = parent ? depthOf(tree, parent.id) + 1 : 1;
@@ -102,10 +114,7 @@ export class NodesService {
           throw new BadRequestException(`Cannot add "${input.name}" at level ${depth} — locations nest to ${MAX_TREE_DEPTH} levels`);
         }
         const order = this.nextOrderIn(tree, parent?.id ?? null);
-        // Draft → Publish: a node under a DRAFT parent must itself be a draft (a published child of a
-        // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
-        const parentIsDraft = parent ? parent.publishedAt === null : false;
-        const publishedAt = input.publish && !parentIsDraft ? new Date() : null;
+        const publishedAt = publishes ? new Date() : null;
         const created = await tx.projectNode.create({
           data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order, authorId: user.sub, publishedAt },
         });
@@ -146,7 +155,7 @@ export class NodesService {
     const ev = await this.prisma.$transaction(async (tx) => {
       await lockProjectTree(tx, projectId);
       const node = await this.requireNode(projectId, nodeId, tx);
-      const holder = await this.nameHolder(tx, projectId, node.parentId, input.name, user, nodeId);
+      const [holder] = await this.nameHolders(tx, projectId, node.parentId, input.name, user, nodeId);
       if (holder) throw new ConflictException(await this.alreadyHas(tx, node.parentId, holder.name));
       await tx.projectNode.update({ where: { id: nodeId }, data: { name: input.name } });
       return emitEvent(tx, { projectId, actor, eventType: 'node.renamed', entityType: 'ProjectNode', entityId: nodeId, payload: { name: input.name }, effectKey: 'node.renamed', dispatch: {} });
@@ -186,7 +195,7 @@ export class NodesService {
       // #705 — a move into another parent that already holds this name is a 409 (a reorder within
       // the same parent is not a name change, so places that already share a name can still reorder)
       if ((parent?.id ?? null) !== node.parentId) {
-        const holder = await this.nameHolder(tx, projectId, parent?.id ?? null, node.name, user, nodeId);
+        const [holder] = await this.nameHolders(tx, projectId, parent?.id ?? null, node.name, user, nodeId);
         if (holder) throw new ConflictException(await this.alreadyHas(tx, parent?.id ?? null, holder.name));
       }
       const order = input.order ?? this.nextOrderIn(tree, parent?.id ?? null);
@@ -281,12 +290,12 @@ export class NodesService {
     });
   }
 
-  /** The place under `parentId` already holding `name` (ignoring case and spacing), among the places
+  /** The places under `parentId` already holding `name` (ignoring case and spacing), among the places
    *  the caller can see: published ones and the caller's own drafts, the same set the caller's
    *  snapshot carries. Another author's private draft never counts, so it is never named in a 409
-   *  or returned as a `createdNodeId` the caller's tree does not hold. Earliest by order first when
-   *  places made before this rule already share the name. */
-  private async nameHolder(db: Db, projectId: string, parentId: string | null, name: string, user: AuthUser, exceptId?: string) {
+   *  or returned as a `createdNodeId` the caller's tree does not hold. Earliest by order first; more
+   *  than one only where places made before this rule already share the name. */
+  private async nameHolders(db: Db, projectId: string, parentId: string | null, name: string, user: AuthUser, exceptId?: string) {
     const siblings = await db.projectNode.findMany({
       where: {
         projectId,
@@ -296,11 +305,11 @@ export class NodesService {
         // undefined `sub` must never reach Prisma, where it would drop the author filter
         OR: user.sub ? [{ publishedAt: { not: null } }, { authorId: user.sub }] : [{ publishedAt: { not: null } }],
       },
-      select: { id: true, name: true, kind: true },
+      select: { id: true, name: true, kind: true, publishedAt: true },
       orderBy: [{ order: 'asc' }, { id: 'asc' }],
     });
     const wanted = normalizeNodeName(name);
-    return siblings.find((row) => normalizeNodeName(row.name) === wanted) ?? null;
+    return siblings.filter((row) => normalizeNodeName(row.name) === wanted);
   }
 
   private async alreadyHas(db: Db, parentId: string | null, name: string): Promise<string> {
