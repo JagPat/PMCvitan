@@ -44,10 +44,14 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
 
   it('the SAME key creates the place once and replays (no second node, no second event)', async () => {
     const input = { name: 'Idem Ground', kind: 'zone' as const, parentId: null, publish: true };
-    await svc.create(p(), input, pmc(), 'k-node');
-    await svc.create(p(), input, pmc(), 'k-node'); // retry after a lost reply
+    const first = await svc.create(p(), input, pmc(), 'k-node');
+    const replay = await svc.create(p(), input, pmc(), 'k-node'); // retry after a lost reply
     expect(await zones('Idem Ground')).toBe(1);
     const node = await t.prisma.projectNode.findFirstOrThrow({ where: { projectId: p(), name: 'Idem Ground' } });
+    // the reply names the place it made, and the replay names the same one (names may repeat, so a
+    // client must never have to find it by name)
+    expect(first.createdNodeId).toBe(node.id);
+    expect(replay.createdNodeId).toBe(node.id);
     expect(await t.prisma.domainEvent.count({ where: { projectId: p(), eventType: 'node.created', entityId: node.id } })).toBe(1);
     expect(await t.prisma.commandExecution.count({ where: { projectId: p(), commandType: 'nodes.create', idempotencyKey: 'k-node' } })).toBe(1);
   });
@@ -97,7 +101,8 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
 
       release();
       await holder;
-      await Promise.all([first, second]);
+      const [a, b] = await Promise.all([first, second]);
+      expect(b.createdNodeId).toBe(a.createdNodeId); // the replayed loser names the winner's place
     } finally {
       await other.$disconnect();
     }
@@ -116,8 +121,9 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
 
   it('unkeyed creates keep today\'s behavior (each one creates)', async () => {
     const input = { name: 'Idem Unkeyed', kind: 'zone' as const, parentId: null, publish: true };
-    await svc.create(p(), input, pmc());
-    await svc.create(p(), input, pmc());
+    const a = await svc.create(p(), input, pmc());
+    const b = await svc.create(p(), input, pmc());
     expect(await zones('Idem Unkeyed')).toBe(2);
+    expect(a.createdNodeId).not.toBe(b.createdNodeId); // each unkeyed create names its own place
   });
 });
