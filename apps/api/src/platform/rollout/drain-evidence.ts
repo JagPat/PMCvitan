@@ -67,6 +67,19 @@ export interface ReleaseClassifier {
   classify(minimumRelease: string, release: string): Classification;
 }
 
+/**
+ * An optional note that `gitCommitSha` was copied from a finished deployment. The Coolify reader
+ * does not set this. That row's commit is the running image only when the deployment's
+ * configuration or image is identified, and the read response includes neither. Judgement uses
+ * `gitCommitSha` alone.
+ */
+export interface RunningCommitSource {
+  source: 'finished-deployment';
+  deploymentUuid: string;
+  /** the application's `git_commit_sha` as Coolify returned it, before any copy */
+  configuredGitCommitSha: string;
+}
+
 export interface PlatformApplication {
   id: number;
   uuid: string;
@@ -75,6 +88,13 @@ export interface PlatformApplication {
   status: string;
   /** the commit the running image was built from */
   gitCommitSha: string;
+  /** unset by the reader; judgement does not consult it */
+  runningCommit?: RunningCommitSource;
+  /**
+   * Set when `git_commit_sha` is not a commit and no verifiable running commit could be read.
+   * `judgeDrain` fails closed with this text. Absent when the commit did not need resolving.
+   */
+  runningCommitUnresolved?: string;
 }
 
 export interface PlatformDeployment {
@@ -162,7 +182,8 @@ export function judgeDrain(input: DrainEvidenceInput): DrainEvidence {
     if (classification === 'before') {
       refuse(`application ${application.uuid} (${application.name}) serves image commit ${application.gitCommitSha}, BEFORE the minimum release ${input.minimumRelease}`);
     } else if (classification === 'unclassifiable') {
-      cannot(`application ${application.uuid} (${application.name}) serves image commit "${application.gitCommitSha}", which cannot be placed against the minimum release ${input.minimumRelease}`);
+      const why = application.runningCommitUnresolved ? ` (${application.runningCommitUnresolved})` : '';
+      cannot(`application ${application.uuid} (${application.name}) serves image commit "${application.gitCommitSha}", which cannot be placed against the minimum release ${input.minimumRelease}${why}`);
     }
     platform = { available: true, source, application: { ...application, classification }, deploymentsInProgress: inProgress };
   }
@@ -211,7 +232,10 @@ export function renderDrainEvidence(ev: DrainEvidence): string {
   ];
   if (ev.platform.available) {
     const a = ev.platform.application;
-    lines.push(`- Platform inventory (${ev.platform.source}): application \`${a.uuid}\` ${a.name}${a.fqdn ? ` (${a.fqdn})` : ''} — status \`${a.status}\`, image commit \`${a.gitCommitSha}\` → ${a.classification}; deployments in progress for it: ${ev.platform.deploymentsInProgress.length}`);
+    const resolved = a.runningCommit
+      ? ` (finished deployment \`${a.runningCommit.deploymentUuid}\`; Coolify git_commit_sha was \`${a.runningCommit.configuredGitCommitSha}\`)`
+      : '';
+    lines.push(`- Platform inventory (${ev.platform.source}): application \`${a.uuid}\` ${a.name}${a.fqdn ? ` (${a.fqdn})` : ''} — status \`${a.status}\`, image commit \`${a.gitCommitSha}\`${resolved} → ${a.classification}; deployments in progress for it: ${ev.platform.deploymentsInProgress.length}`);
   } else {
     lines.push(`- Platform inventory: UNAVAILABLE — ${ev.platform.reason}`);
   }
@@ -251,12 +275,212 @@ export async function readDrainInputsFromDatabase(db: LeaseDb): Promise<{ leases
 
 export type FetchLike = (url: string, init: { headers: Record<string, string> }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
+/** The same shape `gitAncestryClassifier` will try to resolve. `HEAD` is not a commit. */
+export function isGitCommitSha(value: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(value.trim());
+}
+
+/**
+ * Build packs whose one production image is tagged `{uuid}:{commit}` when the dockerfile column
+ * is empty, from Coolify's `ApplicationDeploymentJob::generate_image_names`. `railpack` takes
+ * that branch. `dockerimage` tags a registry image instead. `dockercompose` is not here: a compose
+ * file can keep a service on an image that is not that commit, and the read-only API does not
+ * return every running service image. A non-empty dockerfile column is deployed first, as
+ * `{uuid}:latest`, and the column is hidden unless the token can read sensitive fields.
+ *
+ * Membership names the unclassified finding. It is not a reason to copy a commit out of deployment
+ * history: the application response is the saved settings, and history does not include the
+ * configuration that produced the running image.
+ */
+const COMMIT_TAGGED_BUILD_PACKS: ReadonlySet<string> = new Set(['dockerfile', 'nixpacks', 'static', 'railpack']);
+
+export type RunningCommitDecision =
+  | { decision: 'resolved'; commit: string; deploymentUuid: string; inProgress: PlatformDeployment[] }
+  | { decision: 'unresolved'; reason: string; inProgress: PlatformDeployment[] }
+  | { decision: 'continue'; oldestCreatedAt: string; inProgress: PlatformDeployment[] };
+
+function sameApplication(value: unknown, applicationId: number): boolean {
+  if (typeof value === 'number' && Number.isFinite(value)) return value === applicationId;
+  if (typeof value === 'string' && value.trim() === String(applicationId)) return true;
+  return false;
+}
+
+function isExplicitTrue(value: unknown): boolean {
+  return value === true || value === 1;
+}
+
+function isExplicitFalse(value: unknown): boolean {
+  return value === false || value === 0;
+}
+
+/**
+ * Whether a deployment's image tag, when Coolify sent one, is the same commit. An empty tag is the
+ * git-build case (the tag is the commit and is not stored separately). Any other tag is a different
+ * image and is not evidence of this commit.
+ */
+function imageTagAgrees(tag: unknown, commit: string): boolean {
+  if (tag === undefined || tag === null) return true;
+  if (typeof tag !== 'string') return false;
+  const trimmed = tag.trim();
+  if (trimmed === '') return true;
+  if (trimmed.toLowerCase() === commit.toLowerCase()) return true;
+  return isGitCommitSha(trimmed) && commit.toLowerCase().startsWith(trimmed.toLowerCase());
+}
+
+/**
+ * Finished additional-destination rows already passed, keyed by the primary deployment they belong
+ * to. Coolify writes those rows after it marks the primary `finished`, so they are newer than it.
+ */
+export interface DeploymentHistoryState {
+  /** `additional_networks_count`: how many extra destinations a finished primary fans out to. */
+  additionalNetworksCount: number;
+  finishedChildren: Map<string, string[]>;
+}
+
+/**
+ * `null` when this deployment is not an additional-server child. A string is the primary it belongs
+ * to. `undefined` means the row does not say, so a child cannot be told from a primary.
+ */
+function parentDeploymentUuid(row: Record<string, unknown>): string | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(row, 'parent_deployment_uuid')) return undefined;
+  const value = row.parent_deployment_uuid;
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * Walk one page of an application's deployment history, newest first, toward the commit of the image
+ * that is actually running. A preview and a deploy still in progress did not replace that image. A
+ * failed or cancelled deploy did not either, except when it is an additional server of a primary
+ * Coolify already marked finished: that server may still be serving the older image, so the walk
+ * stops. The newest finished primary did replace its own server. It is the whole fleet only when
+ * every additional destination has a newer finished child of that same commit. Anything the record
+ * does not prove — an unknown status, a commit that is still `HEAD`, a one-server deploy, an image
+ * tag that is not that commit — stops the walk. An older finished deploy is not a substitute.
+ */
+export function judgeDeploymentHistoryPage(
+  deployments: unknown,
+  applicationId: number,
+  previousCreatedAt: string | null,
+  state: DeploymentHistoryState = { additionalNetworksCount: 0, finishedChildren: new Map() },
+): RunningCommitDecision {
+  if (!Array.isArray(deployments)) return { decision: 'unresolved', reason: 'deployment history is not an array', inProgress: [] };
+  const inProgress: PlatformDeployment[] = [];
+  let previous = previousCreatedAt;
+  for (let i = 0; i < deployments.length; i++) {
+    const raw = deployments[i];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { decision: 'unresolved', reason: `deployment history[${i}] is not an object`, inProgress };
+    }
+    const row = raw as Record<string, unknown>;
+    const createdAt = row.created_at;
+    if (typeof createdAt !== 'string' || !Number.isFinite(Date.parse(createdAt))) {
+      return { decision: 'unresolved', reason: `deployment history[${i}] has no created_at, so newest-first order cannot be verified`, inProgress };
+    }
+    if (previous !== null && Date.parse(createdAt) > Date.parse(previous)) {
+      return { decision: 'unresolved', reason: `deployment history is not ordered newest-first at ${createdAt}`, inProgress };
+    }
+    previous = createdAt;
+    const where = `deployment history[${i}]`;
+    if (typeof row.pull_request_id !== 'number' || !Number.isInteger(row.pull_request_id)) {
+      return { decision: 'unresolved', reason: `${where} has no pull_request_id, so a preview cannot be told from production`, inProgress };
+    }
+    if (row.pull_request_id !== 0) continue;
+    if (!sameApplication(row.application_id, applicationId)) {
+      return { decision: 'unresolved', reason: `${where} application_id does not match this application`, inProgress };
+    }
+    if (typeof row.status !== 'string' || row.status.trim() === '') {
+      return { decision: 'unresolved', reason: `${where} has no status`, inProgress };
+    }
+    const status = row.status.trim().toLowerCase();
+    const progress = deploymentInProgress(status);
+    if (!progress.known) {
+      return { decision: 'unresolved', reason: `${where} has status "${row.status.trim()}", which this command does not know and which may be the running image`, inProgress };
+    }
+    const deploymentUuid = typeof row.deployment_uuid === 'string' ? row.deployment_uuid.trim() : '';
+    if (deploymentUuid === '') return { decision: 'unresolved', reason: `${where} has no deployment_uuid`, inProgress };
+    const commit = typeof row.commit === 'string' ? row.commit : null;
+    if (progress.inProgress) {
+      inProgress.push({ deploymentUuid, applicationId, status, commit });
+      continue;
+    }
+    const parent = parentDeploymentUuid(row);
+    if (parent === undefined) {
+      return { decision: 'unresolved', reason: `${where} has no readable parent_deployment_uuid, so an additional server cannot be told from the primary`, inProgress };
+    }
+    if (status !== 'finished') {
+      if (parent !== null) {
+        return {
+          decision: 'unresolved',
+          reason: `deployment ${deploymentUuid} is an additional server of ${parent} and ended ${status}, so that server may still be serving an older image`,
+          inProgress,
+        };
+      }
+      continue;
+    }
+    if (!isExplicitFalse(row.restart_only) && !isExplicitTrue(row.restart_only)) {
+      return { decision: 'unresolved', reason: `finished deployment ${deploymentUuid} restart_only is ${JSON.stringify(row.restart_only ?? null)}, so it is not clear whether it replaced the image`, inProgress };
+    }
+    if (row.only_this_server !== undefined && row.only_this_server !== null && !isExplicitFalse(row.only_this_server)) {
+      return {
+        decision: 'unresolved',
+        reason: isExplicitTrue(row.only_this_server)
+          ? `finished deployment ${deploymentUuid} is limited to one server (only_this_server), so it is not the whole fleet`
+          : `finished deployment ${deploymentUuid} has an unreadable only_this_server flag`,
+        inProgress,
+      };
+    }
+    const resolved = commit?.trim() ?? '';
+    if (!isGitCommitSha(resolved)) {
+      return { decision: 'unresolved', reason: `the newest finished production deployment ${deploymentUuid} recorded commit "${resolved}", which is not a commit SHA`, inProgress };
+    }
+    if (!imageTagAgrees(row.docker_registry_image_tag, resolved)) {
+      const tag = typeof row.docker_registry_image_tag === 'string' ? JSON.stringify(row.docker_registry_image_tag.trim()) : JSON.stringify(row.docker_registry_image_tag);
+      return { decision: 'unresolved', reason: `finished deployment ${deploymentUuid} names image tag ${tag}, which is not its commit ${resolved}`, inProgress };
+    }
+    if (parent !== null) {
+      const seen = state.finishedChildren.get(parent) ?? [];
+      seen.push(resolved);
+      state.finishedChildren.set(parent, seen);
+      continue;
+    }
+    const otherParent = [...state.finishedChildren.keys()].find((id) => id !== deploymentUuid);
+    if (otherParent !== undefined) {
+      return { decision: 'unresolved', reason: `a finished additional server of ${otherParent} is newer than ${deploymentUuid}, so this deployment is not the newest fleet`, inProgress };
+    }
+    const children = state.finishedChildren.get(deploymentUuid) ?? [];
+    if (children.some((child) => child.toLowerCase() !== resolved.toLowerCase())) {
+      return { decision: 'unresolved', reason: `an additional server of finished deployment ${deploymentUuid} recorded a different commit than ${resolved}`, inProgress };
+    }
+    if (children.length !== state.additionalNetworksCount) {
+      return {
+        decision: 'unresolved',
+        reason: `finished deployment ${deploymentUuid} has ${children.length} finished additional-server deployment(s) but the application has ${state.additionalNetworksCount} additional destination(s)`,
+        inProgress,
+      };
+    }
+    return { decision: 'resolved', commit: resolved, deploymentUuid, inProgress };
+  }
+  return { decision: 'continue', oldestCreatedAt: previous ?? '', inProgress };
+}
+
 /**
  * The Coolify reader: `GET /applications/{uuid}` (the resource, its `status` and `git_commit_sha`)
- * and `GET /deployments` (the platform's deployment queue, documented as the running ones; every
- * record is returned with its `status` and the judgement decides by state). The token is sent and
- * never returned, logged or embedded in the evidence. Any read that fails or lacks a field the
- * judgement needs throws, which the command records as an unavailable inventory — fail closed.
+ * and `GET /deployments` (the platform's deployment queue; every record is returned with its
+ * `status` and the judgement decides by state). `git_commit_sha` is the image commit only when it
+ * is a commit. Coolify stores the literal `HEAD` to mean "track the branch tip". The saved
+ * `build_pack` and `dockerfile` are the current application settings. Deployment history does not
+ * include `configuration_snapshot` (hidden even from a sensitive token) or the image tag, so it
+ * cannot bind those settings to the running image. `config_hash` is written only when a deployment
+ * is marked applied and is not recomputed when settings change, so equal hashes are not that
+ * binding either. A non-commit `git_commit_sha` stays on the application as
+ * `runningCommitUnresolved` and the judgement fails closed. An inline Dockerfile, a hidden or
+ * unreadable `dockerfile`, and a build pack that does not tag its one image with a commit are
+ * named specifically. The token is sent and never returned, logged or embedded in the evidence. A
+ * failure of either read, or an application that lacks a field the judgement needs, throws, which
+ * the command records as an unavailable inventory.
  */
 export function coolifyInventoryReader(opts: { baseUrl: string; token: string; fetch: FetchLike }): { read(appUuid: string): Promise<PlatformInventory> } {
   const base = opts.baseUrl.replace(/\/+$/, '');
@@ -301,6 +525,31 @@ export function coolifyInventoryReader(opts: { baseUrl: string; token: string; f
           commit: typeof o.commit === 'string' ? o.commit : null,
         };
       });
+      if (!isGitCommitSha(application.gitCommitSha)) {
+        const configured = application.gitCommitSha;
+        const pack = typeof a.build_pack === 'string' ? a.build_pack.trim().toLowerCase() : '';
+        const dockerfilePresent = Object.prototype.hasOwnProperty.call(a, 'dockerfile');
+        const dockerfile = a.dockerfile;
+        const inlineDockerfile = typeof dockerfile === 'string' && dockerfile.trim() !== '';
+        const dockerfileEmpty = dockerfile === null || (typeof dockerfile === 'string' && dockerfile.trim() === '');
+        let reason: string;
+        if (inlineDockerfile) {
+          reason = 'an inline Dockerfile is set, so the running image is tagged latest rather than with a commit';
+        } else if (!COMMIT_TAGGED_BUILD_PACKS.has(pack)) {
+          reason = pack === 'dockercompose'
+            ? 'build_pack "dockercompose" can serve a service from an image that is not the deployment commit, and this command cannot see every running service image'
+            : `build_pack ${JSON.stringify(pack || null)} does not tag the running image with the deployment commit`;
+        } else if (!dockerfilePresent || !dockerfileEmpty) {
+          reason = dockerfilePresent
+            ? `the dockerfile column is ${JSON.stringify(dockerfile)}, so an inline Dockerfile (image tagged latest) cannot be distinguished from a commit-tagged build`
+            : 'the dockerfile column is hidden from this token, so an inline Dockerfile (image tagged latest) cannot be distinguished from a commit-tagged build';
+        } else {
+          // Empty dockerfile plus a commit-tagged pack is today's saved application. Coolify can
+          // still be serving an older :latest or Compose image after that edit, with no redeploy.
+          reason = 'the saved build_pack and dockerfile are not the configuration that produced the running image, and this response does not identify that image';
+        }
+        application.runningCommitUnresolved = `Coolify git_commit_sha is ${JSON.stringify(configured)}, not a commit SHA; ${reason}`;
+      }
       return { source: `Coolify ${base}`, application, runningDeployments };
     },
   };
@@ -317,7 +566,7 @@ export function gitAncestryClassifier(repoDir: string, run: (args: string[]) => 
   return { status: r.status, stdout: r.stdout ?? '' };
 }): ReleaseClassifier {
   const resolve = (name: string): string | null => {
-    if (!/^[0-9a-f]{7,40}$/i.test(name.trim())) return null;
+    if (!isGitCommitSha(name)) return null;
     const r = run(['rev-parse', '--verify', '--quiet', `${name.trim()}^{commit}`]);
     return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
   };

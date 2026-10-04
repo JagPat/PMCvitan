@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import {
-  DRAIN_DIRECTIVE, DRAIN_EVIDENCE_MARKER, coolifyInventoryReader, deploymentInProgress, gitAncestryClassifier, judgeDrain, renderDrainEvidence,
+  DRAIN_DIRECTIVE, DRAIN_EVIDENCE_MARKER, coolifyInventoryReader, deploymentInProgress, gitAncestryClassifier, judgeDeploymentHistoryPage, judgeDrain, renderDrainEvidence,
   type Classification, type DrainEvidenceInput, type LiveLease, type PlatformInventory, type ReleaseClassifier,
 } from './drain-evidence';
 
@@ -117,6 +117,173 @@ describe('rollout:drain-evidence (4d-ii-a / A6e)', () => {
     await expect(noSha.read('app-1')).rejects.toThrow(/"git_commit_sha" is absent/);
   });
 
+  const IMAGE = 'ab8600c782bc686cfc64d538279c6e79f10ccf9c';
+  const historyRow = (over: Record<string, unknown> = {}) => ({
+    deployment_uuid: 'dep-finished', application_id: 7, pull_request_id: 0, status: 'finished', commit: IMAGE,
+    restart_only: false, only_this_server: false, parent_deployment_uuid: null, created_at: '2026-10-04T12:00:00.000000Z', ...over,
+  });
+  const resolvableApplication = (over: Record<string, unknown> = {}) => ({
+    id: 7, uuid: 'app-1', name: 'pms-api', status: 'running:unknown', git_commit_sha: 'HEAD',
+    build_pack: 'dockerfile', dockerfile: null, additional_networks_count: 0, ...over,
+  });
+
+  it('classifies one page of deployment history, and fails closed when that page is not one fleet image', () => {
+    // The reader does not adopt a resolved page. History has no configuration snapshot and no image
+    // tag, so a page commit is not the running image. These cases keep the page rules honest.
+    const resolved = judgeDeploymentHistoryPage([
+      historyRow({ deployment_uuid: 'dep-preview', pull_request_id: 4, status: 'finished', commit: 'HEAD', created_at: '2026-10-04T13:00:00.000000Z' }),
+      historyRow({ deployment_uuid: 'dep-failed', status: 'failed', commit: 'HEAD', created_at: '2026-10-04T12:30:00.000000Z' }),
+      historyRow(),
+    ], 7, null);
+    expect(resolved).toMatchObject({ decision: 'resolved', commit: IMAGE, deploymentUuid: 'dep-finished' });
+    // a restart records the commit of the image it restarted; that commit is the running image
+    expect(judgeDeploymentHistoryPage([historyRow({ restart_only: true })], 7, null).decision).toBe('resolved');
+    // the newest finished deploy that did not record a SHA is not replaced by an older image
+    const stuck = judgeDeploymentHistoryPage([
+      historyRow({ deployment_uuid: 'dep-head', commit: 'HEAD', created_at: '2026-10-04T13:00:00.000000Z' }),
+      historyRow({ deployment_uuid: 'dep-older', created_at: '2026-10-04T11:00:00.000000Z' }),
+    ], 7, null);
+    expect(stuck.decision).toBe('unresolved');
+    expect(stuck).toMatchObject({ reason: expect.stringMatching(/dep-head recorded commit "HEAD", which is not a commit SHA/) });
+    expect(judgeDeploymentHistoryPage([historyRow({ status: 'rolling', deployment_uuid: 'dep-weird' })], 7, null)).toMatchObject({ decision: 'unresolved', reason: expect.stringMatching(/"rolling"/) });
+    expect(judgeDeploymentHistoryPage([historyRow({ only_this_server: true })], 7, null)).toMatchObject({ decision: 'unresolved', reason: expect.stringMatching(/only_this_server/) });
+    expect(judgeDeploymentHistoryPage([historyRow({ docker_registry_image_tag: 'latest' })], 7, null)).toMatchObject({ decision: 'unresolved', reason: expect.stringMatching(/image tag "latest"/) });
+    expect(judgeDeploymentHistoryPage([historyRow({ restart_only: null })], 7, null)).toMatchObject({ decision: 'unresolved', reason: expect.stringMatching(/restart_only/) });
+    // an in-progress deploy has not replaced the image, but it is reported so the verdict cannot be drained
+    const busy = judgeDeploymentHistoryPage([
+      historyRow({ deployment_uuid: 'dep-busy', status: 'in_progress', commit: 'HEAD', created_at: '2026-10-04T13:00:00.000000Z' }),
+      historyRow(),
+    ], 7, null);
+    expect(busy).toMatchObject({ decision: 'resolved', commit: IMAGE, inProgress: [{ deploymentUuid: 'dep-busy', status: 'in_progress' }] });
+    // a string application id from the deployment model still matches, and a different id does not
+    expect(judgeDeploymentHistoryPage([historyRow({ application_id: '7' })], 7, null).decision).toBe('resolved');
+    expect(judgeDeploymentHistoryPage([historyRow({ application_id: 8 })], 7, null)).toMatchObject({ decision: 'unresolved', reason: expect.stringMatching(/application_id/) });
+    // a failed additional server is newer than the primary Coolify already marked finished, and that
+    // server may still be on the previous image. Skipping it would drain on the primary's commit.
+    const failedChild = judgeDeploymentHistoryPage([
+      historyRow({ deployment_uuid: 'child-failed', status: 'failed', parent_deployment_uuid: 'dep-finished', created_at: '2026-10-04T13:00:00.000000Z' }),
+      historyRow(),
+    ], 7, null, { additionalNetworksCount: 1, finishedChildren: new Map() });
+    expect(failedChild).toMatchObject({ decision: 'unresolved', reason: expect.stringMatching(/additional server of dep-finished and ended failed/) });
+    const noParent = historyRow({ deployment_uuid: 'dep-opaque', status: 'failed', created_at: '2026-10-04T13:00:00.000000Z' });
+    delete noParent.parent_deployment_uuid;
+    expect(judgeDeploymentHistoryPage([noParent, historyRow()], 7, null)).toMatchObject({ decision: 'unresolved', reason: expect.stringMatching(/parent_deployment_uuid/) });
+    // one additional destination, and its deployment finished the same commit: that is the fleet
+    const fleet = judgeDeploymentHistoryPage([
+      historyRow({ deployment_uuid: 'child-ok', parent_deployment_uuid: 'dep-finished', created_at: '2026-10-04T13:00:00.000000Z' }),
+      historyRow(),
+    ], 7, null, { additionalNetworksCount: 1, finishedChildren: new Map() });
+    expect(fleet).toMatchObject({ decision: 'resolved', commit: IMAGE, deploymentUuid: 'dep-finished' });
+    expect(judgeDeploymentHistoryPage([historyRow()], 7, null, { additionalNetworksCount: 1, finishedChildren: new Map() })).toMatchObject({
+      decision: 'unresolved', reason: expect.stringMatching(/1 additional destination/),
+    });
+    const other = 'b'.repeat(40);
+    expect(judgeDeploymentHistoryPage([
+      historyRow({ deployment_uuid: 'child-other', parent_deployment_uuid: 'dep-finished', commit: other, created_at: '2026-10-04T13:00:00.000000Z' }),
+      historyRow(),
+    ], 7, null, { additionalNetworksCount: 1, finishedChildren: new Map() })).toMatchObject({
+      decision: 'unresolved', reason: expect.stringMatching(/different commit/),
+    });
+  });
+
+  it('leaves a non-commit git_commit_sha unclassified, even when dockerfile is empty and history names a commit', async () => {
+    const savedSettings = /saved build_pack and dockerfile are not the configuration that produced the running image/;
+    for (const buildPack of ['dockerfile', 'nixpacks', 'static', 'railpack']) {
+      const urls: string[] = [];
+      const inv = await coolifyInventoryReader({
+        baseUrl: 'https://coolify.example/api/v1', token: 'read-only-token',
+        fetch: vi.fn(async (url: string) => {
+          urls.push(url);
+          if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => resolvableApplication({ build_pack: buildPack }) };
+          if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [] };
+          if (url.includes('/deployments/applications/')) return { ok: true, status: 200, json: async () => ({ count: 1, deployments: [historyRow()] }) };
+          return { ok: false, status: 404, json: async () => ({}) };
+        }),
+      }).read('app-1');
+      expect(urls.some((url) => url.includes('/deployments/applications/')), buildPack).toBe(false);
+      expect(urls, buildPack).toEqual([
+        'https://coolify.example/api/v1/applications/app-1',
+        'https://coolify.example/api/v1/deployments',
+      ]);
+      expect(inv.application.gitCommitSha, buildPack).toBe('HEAD');
+      expect(inv.application.runningCommit, buildPack).toBeUndefined();
+      expect(JSON.stringify(inv), buildPack).not.toContain('read-only-token');
+      const judged = judgeDrain(base({
+        platform: { inventory: inv },
+        classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [IMAGE]: 'at-or-after' }),
+      }));
+      expect(judged.verdict, buildPack).toBe('unclassified');
+      expect(judged.findings.join('\n'), buildPack).toMatch(/git_commit_sha is "HEAD", not a commit SHA/);
+      expect(judged.findings.join('\n'), buildPack).toMatch(savedSettings);
+      expect(renderDrainEvidence(judged), buildPack).not.toContain('finished deployment');
+    }
+
+    // a deploy still in progress is the queue from GET /deployments; history is not a second queue
+    const busyUrls: string[] = [];
+    const busy = await coolifyInventoryReader({
+      baseUrl: 'https://coolify.example/api/v1', token: 't',
+      fetch: vi.fn(async (url: string) => {
+        busyUrls.push(url);
+        if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => resolvableApplication({ status: 'running:healthy', build_pack: 'nixpacks' }) };
+        if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [{ deployment_uuid: 'dep-busy', application_id: 7, status: 'queued', commit: null }] };
+        if (url.includes('/deployments/applications/')) return { ok: true, status: 200, json: async () => ({ count: 1, deployments: [historyRow()] }) };
+        return { ok: false, status: 404, json: async () => ({}) };
+      }),
+    }).read('app-1');
+    expect(busyUrls.some((url) => url.includes('/deployments/applications/'))).toBe(false);
+    expect(busy.application.gitCommitSha).toBe('HEAD');
+    expect(busy.runningDeployments).toEqual([{ deploymentUuid: 'dep-busy', applicationId: 7, status: 'queued', commit: null }]);
+    expect(judgeDrain(base({ platform: { inventory: busy }, classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [IMAGE]: 'at-or-after' }) })).verdict).toBe('unclassified');
+
+    // a registry image is not a git commit, a pasted Dockerfile tags :latest, and a compose file can
+    // keep a service on some other image; none of them is the deployment commit, even when history has one
+    for (const application of [
+      { build_pack: 'dockerimage', dockerfile: '', finding: /does not tag the running image with the deployment commit/ },
+      { build_pack: 'dockerfile', dockerfile: 'FROM node:22', finding: /inline Dockerfile/ },
+      { build_pack: 'dockercompose', dockerfile: '', finding: /cannot see every running service image/ },
+    ]) {
+      const urls: string[] = [];
+      const refused = await coolifyInventoryReader({
+        baseUrl: 'https://coolify.example/api/v1', token: 't',
+        fetch: vi.fn(async (url: string) => {
+          urls.push(url);
+          if (url.endsWith('/applications/app-1')) return { ok: true, status: 200, json: async () => ({ id: 7, uuid: 'app-1', name: 'n', status: 'running:healthy', git_commit_sha: 'HEAD', build_pack: application.build_pack, dockerfile: application.dockerfile }) };
+          if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [] };
+          if (url.includes('/deployments/applications/')) return { ok: true, status: 200, json: async () => ({ count: 1, deployments: [historyRow()] }) };
+          return { ok: false, status: 404, json: async () => ({}) };
+        }),
+      }).read('app-1');
+      expect(urls.some((url) => url.includes('/deployments/applications/')), application.build_pack).toBe(false);
+      expect(refused.application.gitCommitSha).toBe('HEAD');
+      expect(refused.application.runningCommit).toBeUndefined();
+      const judged = judgeDrain(base({ platform: { inventory: refused }, classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [IMAGE]: 'at-or-after' }) }));
+      expect(judged.verdict, application.build_pack).toBe('unclassified');
+      expect(judged.findings.join('\n'), application.build_pack).toMatch(application.finding);
+    }
+
+    // a read-only token omits dockerfile even when the column is a pasted Dockerfile. Absence is not empty.
+    const hiddenUrls: string[] = [];
+    const hidden = await coolifyInventoryReader({
+      baseUrl: 'https://coolify.example/api/v1', token: 't',
+      fetch: vi.fn(async (url: string) => {
+        hiddenUrls.push(url);
+        if (url.endsWith('/applications/app-1')) {
+          const application = resolvableApplication();
+          delete application.dockerfile;
+          return { ok: true, status: 200, json: async () => application };
+        }
+        if (url.endsWith('/deployments')) return { ok: true, status: 200, json: async () => [] };
+        if (url.includes('/deployments/applications/')) return { ok: true, status: 200, json: async () => ({ count: 1, deployments: [historyRow()] }) };
+        return { ok: false, status: 404, json: async () => ({}) };
+      }),
+    }).read('app-1');
+    expect(hiddenUrls.some((url) => url.includes('/deployments/applications/'))).toBe(false);
+    expect(hidden.application.gitCommitSha).toBe('HEAD');
+    const hiddenJudged = judgeDrain(base({ platform: { inventory: hidden }, classifier: table({ aaaaaaaa: 'at-or-after', bbbbbbbb: 'at-or-after', [IMAGE]: 'at-or-after' }) }));
+    expect(hiddenJudged.verdict).toBe('unclassified');
+    expect(hiddenJudged.findings.join('\n')).toMatch(/dockerfile column is hidden from this token/);
+  });
+
   it('the git-ancestry classifier places a commit against the minimum through this checkout, and never guesses', () => {
     const repo = join(__dirname, '..', '..', '..', '..');
     const git = (args: string[]) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
@@ -163,6 +330,8 @@ describe('the drain-clearance gate re-derives exactly what judgeDrain judges', a
     ['unclassified: stopped application', { platform: { inventory: inventory({ status: 'exited' }) } }],
     ['unclassified: deployment in progress', { platform: { inventory: inventory({}, [{ deploymentUuid: 'd1', applicationId: 7, status: 'in_progress', commit: null }]) } }],
     ['unclassified: unplaceable image', { platform: { inventory: inventory({ gitCommitSha: 'cccccccc' }) } }],
+    ['unclassified: HEAD left unresolved', { platform: { inventory: inventory({ gitCommitSha: 'HEAD', runningCommitUnresolved: 'Coolify git_commit_sha is "HEAD", not a commit SHA; no finished production deployment recorded a commit SHA' }) } }],
+    ['drained, an extra runningCommit note does not replace the image commit', { platform: { inventory: inventory({ runningCommit: { source: 'finished-deployment', deploymentUuid: 'dep-finished', configuredGitCommitSha: 'HEAD' } }) } }],
     ['unclassified: unplaceable lease', { leases: [lease('i-x', 3, 'cccccccc')] }],
     ['unclassified: no persisted minimum', { persistedMinimum: null }],
     ['unclassified: stale command build', { compiledGeneration: 0 }],
