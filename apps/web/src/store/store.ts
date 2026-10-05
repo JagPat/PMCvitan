@@ -1413,15 +1413,22 @@ export const useStore = create<Store>()(
      *  could both read "no hold", each mint a key and each create a project. Reading the mirror, minting
      *  the key and persisting the in-flight record therefore run under ONE exclusive Web Lock per user,
      *  shared by every tab of this origin; the next tab's turn reads the record this one wrote. The send
-     *  itself runs after the lock is released (the record, not the lock, holds other tabs off). Without
-     *  Web Locks (an old browser) the reservation is this tab's alone, as it was before. */
+     *  itself runs after the lock is released (the record, not the lock, holds other tabs off). */
     const webLocks = (): LockManager | undefined =>
       (globalThis.navigator as (Navigator & { locks?: LockManager }) | undefined)?.locks;
-    const withCreateReservation = async <T,>(sub: string, fn: () => T | Promise<T>): Promise<T> => {
+    /** `null` when there is no cross-tab lock to reserve under (Codex 4187821139): without Web Locks
+     *  two tabs could each read an empty mirror and mint a key, so NOTHING is sent — never a tab-local
+     *  reservation. A lock the browser refuses to grant is the same refusal. */
+    const withCreateReservation = async <T,>(sub: string, fn: () => T | Promise<T>): Promise<T | null> => {
       const locks = webLocks();
-      if (!locks?.request) return fn();
-      return locks.request(`vitan.projectCreate.${sub}`, { mode: 'exclusive' }, async () => fn()) as Promise<T>;
+      if (typeof locks?.request !== 'function') return null;
+      try {
+        return (await locks.request(`vitan.projectCreate.${sub}`, { mode: 'exclusive' }, async () => fn())) as T;
+      } catch {
+        return null;
+      }
     };
+    const NO_CROSS_TAB_LOCK = 'This browser cannot keep a project create safe across tabs (it lacks Web Locks). Nothing was sent — update the browser, then try again.';
     // Durable or nothing (Codex 4187372392, 4187663033): the mirror is the ONLY thing that carries an
     // attempt and its key past this document — to another tab, a reload, or this user's next sign-in. A
     // live lock dies with the page while its request may still commit, so when site storage refuses the
@@ -1458,8 +1465,7 @@ export const useStore = create<Store>()(
       identity: `${sessionSub()}|${get().sessionUserId ?? ''}`,
       scope: { project: get().activeProjectId, generation: get().projectScopeGeneration },
     });
-    const sendProjectCreate = async (orgId: string, input: NewProjectInput, attempt: string, ctx: CreateSendContext): Promise<CreateProjectOutcome> => {
-      const gw = gateway!;
+    const sendProjectCreate = async (gw: ApiGateway, orgId: string, input: NewProjectInput, attempt: string, ctx: CreateSendContext): Promise<CreateProjectOutcome> => {
       const { sub } = ctx;
       const settle = (next: ProjectCreateHold | null) => {
         // ONLY this attempt's own hold is settled: a sign-out cleared it, and another session's create
@@ -4442,9 +4448,10 @@ export const useStore = create<Store>()(
       // instance, tab or page asks. The check, the key and the record are one cross-tab reservation.
       const ctx = captureCreateContext(); // the user (and mirror) and scope, fixed at the click
       const sub = ctx.sub;
+      const gw = gateway; // …and the server it goes to
       // nothing is sent to a server that would ignore the key (a bundle served ahead of its API) — asked
       // before the reservation, so no tab's turn waits on this request
-      if (!(await serverKeepsCreateReceipts(gateway))) return { kind: 'refused', message: SERVER_NOT_READY };
+      if (!(await serverKeepsCreateReceipts(gw))) return { kind: 'refused', message: SERVER_NOT_READY };
       const reserved = await withCreateReservation(sub, async (): Promise<CreateProjectOutcome | { attempt: string }> => {
         // a sign-out or persona change while this waited for its turn: the click belongs to nobody now
         if (captureCreateContext().identity !== ctx.identity) return { kind: 'stale' };
@@ -4460,15 +4467,17 @@ export const useStore = create<Store>()(
         if (!holdProjectCreate(sub, orgId, input, attempt)) return { kind: 'refused', message: NO_DURABLE_HOLD };
         return { attempt };
       });
+      if (reserved === null) return { kind: 'refused', message: NO_CROSS_TAB_LOCK };
       if (!('attempt' in reserved)) return reserved;
-      return sendProjectCreate(orgId, input, reserved.attempt, ctx);
+      return sendProjectCreate(gw, orgId, input, reserved.attempt, ctx);
     },
     retryProjectCreate: async () => {
       if (!gateway) return { kind: 'refused', message: 'Creating projects needs the server.' };
       const ctx = captureCreateContext();
       const sub = ctx.sub;
+      const gw = gateway;
       // a server that ignores the key would make the project a second time: the hold stays, nothing sent
-      if (!(await serverKeepsCreateReceipts(gateway))) {
+      if (!(await serverKeepsCreateReceipts(gw))) {
         get().syncProjectCreateHold();
         return get().projectCreateHold?.phase === 'unknown'
           ? { kind: 'unknown', message: SERVER_NOT_READY_RETRY }
@@ -4483,8 +4492,9 @@ export const useStore = create<Store>()(
         if (!holdProjectCreate(sub, hold.orgId, hold.input, hold.attempt)) return { kind: 'unknown', message: NO_DURABLE_HOLD };
         return hold;
       });
+      if (reserved === null) return { kind: 'unknown', message: NO_CROSS_TAB_LOCK };
       if (!('attempt' in reserved)) return reserved;
-      return sendProjectCreate(reserved.orgId, reserved.input, reserved.attempt, ctx);
+      return sendProjectCreate(gw, reserved.orgId, reserved.input, reserved.attempt, ctx);
     },
     syncProjectCreateHold: () => {
       if (get().projectCreateHold !== null) return; // this tab's own hold is already authoritative

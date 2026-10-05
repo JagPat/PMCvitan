@@ -539,19 +539,52 @@ describe('cross-tab project create — one reservation at a time', () => {
     tabB.getState()._setGateway(null);
   });
 
-  it('storage BLOCKED: nothing durable could carry the attempt past this page, so nothing is sent — Web Locks or not (Codex 4187372392, 4187663033)', async () => {
-    for (const withLocks of [true, false]) {
-      if (withLocks) fakeLocks(); else noLocks();
-      blockStorage();
-      useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
-      const { gw, calls } = fakeGateway();
-      s()._setGateway(gw);
-      await expect(s().createProject('org-1', { name: 'X', short: 'X', stage: 'Planning' }))
-        .resolves.toEqual({ kind: 'refused', message: expect.stringMatching(/blocking site storage.*Nothing was sent/) });
-      expect(calls.createProject).not.toHaveBeenCalled();
-      expect(s().projectCreateHold).toBeNull();
-      vi.restoreAllMocks();
-    }
+  it('storage BLOCKED: nothing durable could carry the attempt past this page, so nothing is sent (Codex 4187372392, 4187663033)', async () => {
+    fakeLocks();
+    blockStorage();
+    useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
+    const { gw, calls } = fakeGateway();
+    s()._setGateway(gw);
+    await expect(s().createProject('org-1', { name: 'X', short: 'X', stage: 'Planning' }))
+      .resolves.toEqual({ kind: 'refused', message: expect.stringMatching(/blocking site storage.*Nothing was sent/) });
+    expect(calls.createProject).not.toHaveBeenCalled();
+    expect(s().projectCreateHold).toBeNull();
+  });
+
+  it('NO Web Locks: two tabs submitting together send NOTHING — there is no cross-tab reservation to make (Codex 4187821139)', async () => {
+    noLocks();
+    const tabA = useStore;
+    const tabB = await secondTab({ userId: 'u-me', token: tokenFor('u-a') });
+    tabA.setState((st) => { st.sessionUserId = 'u-me'; st.sessionToken = tokenFor('u-a'); });
+    const a = fakeGateway();
+    const b = fakeGateway();
+    tabA.getState()._setGateway(a.gw);
+    tabB.getState()._setGateway(b.gw);
+    // both read an empty mirror in the same turn — the interleaving a tab-local reservation would lose
+    const [outA, outB] = await Promise.all([
+      tabA.getState().createProject('org-1', { name: 'Tab A', short: 'A', stage: 'Planning' }),
+      tabB.getState().createProject('org-1', { name: 'Tab B', short: 'B', stage: 'Planning' }),
+    ]);
+    for (const out of [outA, outB]) expect(out).toEqual({ kind: 'refused', message: expect.stringMatching(/lacks Web Locks.*Nothing was sent/) });
+    expect(a.calls.createProject).not.toHaveBeenCalled();
+    expect(b.calls.createProject).not.toHaveBeenCalled();
+    expect(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a')).toBeNull();
+    expect(tabA.getState().projectCreateHold).toBeNull();
+    tabB.getState()._setGateway(null);
+  });
+
+  it('NO Web Locks: an unknown attempt keeps its hold, and "Try again" sends nothing', async () => {
+    const { gw, create, calls } = fakeGateway();
+    s()._setGateway(gw);
+    useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
+    void s().createProject('org-1', { name: 'X', short: 'X', stage: 'Planning' });
+    await settle();
+    create.reject(httpError(502));
+    await settle();
+    noLocks();
+    await expect(s().retryProjectCreate()).resolves.toEqual({ kind: 'unknown', message: expect.stringMatching(/lacks Web Locks/) });
+    expect(calls.createProject).toHaveBeenCalledTimes(1);
+    expect(s().projectCreateHold?.phase).toBe('unknown');
   });
 
   it('an AMBIGUOUS reply landing after sign-out keeps that user\'s attempt: their next sign-in finishes it under the same key (Codex 4187663041)', async () => {
