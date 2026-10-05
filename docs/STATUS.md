@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: none
+work_item: 4d-iii-r0a-1
 reviewed_merge: cffb251
-open_pr: none
+open_pr: 715
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-05
 ```
 
-### Now — 4d-iii unit R0a-1: the decision writers state every pin (`claude/phase-6-task-4d-iii-r0a`)
+### Now — 4d-iii unit R0a-1: the decision writers state every pin (#715, `claude/phase-6-task-4d-iii-r0a`)
 
 The staging record merged as #714 (`f65890d`). R0a is the first unit, and it ships as TWO PRs. A probe on
 `main` ran the full integration suite with `emitEvent` refusing an unresolved human envelope. It broke
