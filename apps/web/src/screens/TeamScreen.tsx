@@ -269,7 +269,8 @@ function OrgRoster({ orgId, canManageRoles, canCorrectEmails }: { orgId: string;
             {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
           </select>
           <Button variant="ink" onClick={submit} disabled={!ready} data-testid="add-org-member" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '11px 15px', fontSize: 13 }}>
-            <Plus size={15} /> Add admin
+            {/* B9 (F-21): the button names the role actually chosen — it can add a plain member too */}
+            <Plus size={15} /> Add {ORG_ROLE_LABEL[role].toLowerCase()}
           </Button>
         </div>
       )}

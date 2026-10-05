@@ -281,7 +281,7 @@ export function DraftsScreen() {
                           ? 'Saving the draft — publishing is held until the edit lands'
                           : d.deciderKind === 'member' && !d.deciderMembershipId
                             ? 'Choose the named decider before publishing'
-                            : `Add at least ${2 - d.options.length} more option before publishing`
+                            : `Add at least ${2 - d.options.length} more option${2 - d.options.length === 1 ? '' : 's'} before publishing`
                       }
                       cta={record ? 'Publish record' : d.deciderKind === 'client' ? 'Publish to client' : 'Publish to decider'}
                       testid={`publish-${d.id}`}

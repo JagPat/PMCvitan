@@ -81,20 +81,22 @@ export const labourLabels: Record<string, Record<Lang, string>> = {
 };
 
 /** UX foundations — the mobile tab bar and More sheet in the viewer's language. English keeps the
- *  existing short labels (`SCREEN_META.short`); hi/gu are plain words a site engineer uses. */
+ *  existing short labels (`SCREEN_META.short`); hi/gu are plain words a site engineer uses.
+ *  B9 (F-11): English names one screen one way everywhere — "Site Map" (not "Places") and
+ *  "Decision Log" (not "Log"); hi/gu wording awaits a native speaker's review. */
 export const navLabels: Record<ScreenKey, Record<Lang, string>> = {
   inbox: { en: 'For You', hi: 'आपके लिए', gu: 'તમારા માટે' },
   dashboard: { en: 'Dashboard', hi: 'डैशबोर्ड', gu: 'ડેશબોર્ડ' },
   drafts: { en: 'Drafts', hi: 'ड्राफ़्ट', gu: 'ડ્રાફ્ટ' },
   'site-schedule': { en: 'Schedule', hi: 'समय-सारणी', gu: 'સમયપત્રક' },
-  'decision-log': { en: 'Log', hi: 'निर्णय', gu: 'નિર્ણયો' },
+  'decision-log': { en: 'Decision Log', hi: 'निर्णय', gu: 'નિર્ણયો' },
   'inspect-review': { en: 'Review', hi: 'जाँच', gu: 'ચકાસણી' },
   'client-decisions': { en: 'Decisions', hi: 'मंज़ूरी', gu: 'મંજૂરી' },
   'client-health': { en: 'Health', hi: 'प्रगति', gu: 'પ્રગતિ' },
   'daily-log': { en: 'Daily', hi: 'रोज़ का लॉग', gu: 'રોજનો લોગ' },
   'engineer-check': { en: 'Checklist', hi: 'चेकलिस्ट', gu: 'ચેકલિસ્ટ' },
   drawings: { en: 'Drawings', hi: 'ड्रॉइंग', gu: 'ડ્રોઇંગ' },
-  places: { en: 'Places', hi: 'जगहें', gu: 'સ્થળો' },
+  places: { en: 'Site Map', hi: 'जगहें', gu: 'સ્થળો' },
   team: { en: 'Team', hi: 'टीम', gu: 'ટીમ' },
   portfolio: { en: 'Portfolio', hi: 'पोर्टफ़ोलियो', gu: 'પોર્ટફોલિયો' },
   'team-access': { en: 'Access', hi: 'लॉगिन', gu: 'લૉગિન' },
