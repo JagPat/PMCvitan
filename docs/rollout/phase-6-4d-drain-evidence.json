@@ -1,0 +1,59 @@
+{
+  "marker": "DRAIN-EVIDENCE",
+  "directive": "phase-6-4d-previous-release-drained",
+  "minimumRelease": "f8274f411191dbbd626cab9bc74468325951674a",
+  "minimumCatalogVersion": {
+    "value": 3,
+    "source": "the persisted catalog maximum"
+  },
+  "generation": {
+    "compiled": 2,
+    "persistedMinimum": {
+      "minimumGeneration": 2,
+      "raisedBy": "20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence",
+      "raisedAt": "2026-10-01T09:40:48.444Z"
+    }
+  },
+  "platform": {
+    "available": true,
+    "source": "Coolify https://coolify.vitan.in/api/v1",
+    "application": {
+      "uuid": "kesk2npohs3vnoroi6tya7x6",
+      "name": "p-m-cvitan:main-kesk2npohs3vnoroi6tya7x6",
+      "fqdn": "https://pms-api.vitan.in",
+      "status": "running:unknown",
+      "gitCommitSha": "3dc195ff871095b8049b979b6e66415da0424136",
+      "classification": "at-or-after"
+    },
+    "deploymentsInProgress": []
+  },
+  "leases": [
+    {
+      "instanceId": "d8feed3fd2d1-227-6cd6b67d-7384-4c49-9853-72b5b1eca29d",
+      "catalogVersion": 3,
+      "release": "3b823b68ce1b5b8e4e9047b4e1ed079d2284b2ea",
+      "startedAt": "2026-10-04T23:09:17.050Z",
+      "leaseUntil": "2026-10-05T00:13:17.137Z",
+      "classification": "at-or-after"
+    },
+    {
+      "instanceId": "c3cbc6609c97-226-579c4fe2-585e-4055-bd34-b427f6717812",
+      "catalogVersion": 3,
+      "release": "e15ebaf671937055c75ede29eee749d777a980f8",
+      "startedAt": "2026-10-05T00:04:53.702Z",
+      "leaseUntil": "2026-10-05T00:17:53.708Z",
+      "classification": "at-or-after"
+    }
+  ],
+  "findings": [],
+  "verdict": "drained",
+  "recordedAt": "2026-10-05T00:09:36.559Z",
+  "provenance": {
+    "workflow": ".github/workflows/drain-evidence.yml",
+    "repository": "JagPat/PMCvitan",
+    "runId": 37246357960,
+    "runAttempt": 1,
+    "workflowSha": "e15ebaf671937055c75ede29eee749d777a980f8",
+    "clearingParent": "cdb7464620782c94bf1f5a19e8ae57afa0e790cc"
+  }
+}
