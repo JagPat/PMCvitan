@@ -14,22 +14,22 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: none
+work_item: ux-queue-716-project-create-idempotency
 reviewed_merge: cffb251
-open_pr: none
+open_pr: 716
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-05
 ```
 
-### Now — the UX queue, one owner, one PR at a time (#710's replacement → #711 → #712 → #713), then 4d-iii R0a-2
+### Now — the UX queue, one owner, one PR at a time (#716, replacing #710 → #711 → #712 → #713), then 4d-iii R0a-2
 
 #715 (4d-iii R0a-1) trusted-merged at `67644e5`. The 10:53 UTC hold on #482 kept #710–#713 paused until
 #715 completed and a sequential handoff was recorded. The repository owner then directed this sequence,
 and it is recorded on #482 (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5994077091). One
 Claude session owns every unit, and each is driven to completion before the next is touched:
 
-1. **#710's replacement** `claude/project-create-idempotency` (current work item). #710 reached its
+1. **#716**, #710's replacement, `claude/project-create-idempotency` (current work item). #710 reached its
    finding-bearing review limit (5/5) and was closed. Every one of its findings traced to project
    creation having no idempotency key, so the replacement adds an optional `Idempotency-Key` backed by an
    org-scoped receipt. A retry replays the first create instead of making a second. It carries all of
