@@ -78,6 +78,7 @@ export function LeftRail() {
           <button
             key={n.key}
             onClick={() => setScreen(n.key)}
+            aria-current={n.active ? 'page' : undefined}
             className={n.active ? `${styles.navItem} ${styles.navItemActive}` : styles.navItem}
           >
             <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

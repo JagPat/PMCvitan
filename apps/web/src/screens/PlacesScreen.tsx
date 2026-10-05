@@ -295,8 +295,8 @@ export function PlacesScreen() {
             ) : (
               <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
                 {contents.photos.map((p, i) => (
-                  <button key={p.id ?? i} onClick={() => setZoom(p.url)} data-testid="place-photo" style={{ flex: 'none', width: 82, height: 82, borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
-                    <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <button key={p.id ?? i} onClick={() => setZoom(p.url)} data-testid="place-photo" aria-label={`Open site photo ${i + 1} of ${contents.photos.length}`} style={{ flex: 'none', width: 82, height: 82, borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+                    <img src={p.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </button>
                 ))}
               </div>
@@ -456,13 +456,13 @@ function IntentReality({
         {/* Reality — the photos */}
         <div style={{ ...irCard }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.14em', color: 'var(--faint)', marginBottom: 6 }}>REALITY · BUILT</div>
-          <button onClick={() => hero && onZoom(hero.url)} data-testid="ir-photo" style={{ width: '100%', aspectRatio: '3 / 4', maxHeight: 210, borderRadius: 8, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
-            {hero && <img src={hero.url} alt="Latest site photo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+          <button onClick={() => hero && onZoom(hero.url)} disabled={!hero} aria-label={hero ? 'Open the latest site photo' : 'No site photo yet'} data-testid="ir-photo" style={{ width: '100%', aspectRatio: '3 / 4', maxHeight: 210, borderRadius: 8, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+            {hero && <img src={hero.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-            {photos.slice(1, 4).map((p) => (
-              <button key={p.id} onClick={() => onZoom(p.url)} style={{ width: 44, height: 44, borderRadius: 6, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
-                <img src={p.url} alt="Site photo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            {photos.slice(1, 4).map((p, i) => (
+              <button key={p.id} onClick={() => onZoom(p.url)} aria-label={`Open earlier site photo ${i + 1}`} style={{ width: 44, height: 44, borderRadius: 6, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+                <img src={p.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </button>
             ))}
             {photos.length > 4 && <span style={{ fontSize: 11, color: 'var(--faint)' }}>+{photos.length - 4}</span>}

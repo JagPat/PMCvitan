@@ -20,7 +20,7 @@ export function RolePicker({ compact = false }: { compact?: boolean }) {
           fontFamily: 'var(--font-mono)',
           fontSize: 8.5,
           letterSpacing: '.22em',
-          color: 'rgba(237,231,218,.4)',
+          color: 'rgba(237,231,218,.62)',
           marginBottom: 9,
         }}
       >
@@ -52,7 +52,7 @@ export function RolePicker({ compact = false }: { compact?: boolean }) {
         })}
       </div>
       {!compact && (
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'rgba(237,231,218,.55)', marginTop: 8 }}>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'rgba(237,231,218,.62)', marginTop: 8 }}>
           {ROLE_SUBTITLE[role]}
         </div>
       )}

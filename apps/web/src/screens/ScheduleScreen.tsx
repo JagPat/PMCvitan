@@ -76,11 +76,19 @@ function offsetOf(anchor: string | null, iso: string | null | undefined, legacy:
 /** Audit F-02 — the activity opened from a place, outlined for a moment once it scrolls into view. */
 const HighlightContext = createContext<string | null>(null);
 
+function gateText(g: GateVM): string {
+  return `${g.label} — ${g.reason}${g.source === 'override' ? ' (OVERRIDE)' : g.source === 'stored' ? ' (stored flag)' : ''}`;
+}
+
 function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPct: number; onEdit?: (a: Activity) => void; onOverride?: (a: Activity) => void }) {
   const state = useStore((s) => s) as AppState;
   const setScreen = useStore((s) => s.setScreen);
   const revokeOverride = useStore((s) => s.revokeOverride);
   const gates = gatesFor(state, a);
+  // B5 (F-18): the gate reasons in words — `title` alone is unreachable by keyboard and touch. ONE
+  // disclosure over the whole dot group (it fits the 136px column; five 44px buttons did not) lists
+  // every gate's reason below the row.
+  const [gatesOpen, setGatesOpen] = useState(false);
   const ready = activityReady(state, a);
   const restriction = restrictionOf(a, gates, ready);
   // the controlled drawing this activity builds from (Drawings Slice 2 linkage)
@@ -153,14 +161,24 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
         </div>
 
         <div style={{ display: 'flex', gap: 9, width: 136, flex: 'none', alignItems: 'flex-start' }}>
-          {gates.map((g) => (
-            // Task 6: the tooltip carries the derived CONCLUSION and its source —
-            // a dot is never an unexplained flag any more
-            <div key={g.k} title={`${g.label} — ${g.reason}${g.source === 'override' ? ' (OVERRIDE)' : g.source === 'stored' ? ' (stored flag)' : ''}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-              <GateDot v={g.v} />
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: g.source === 'override' ? '#31567F' : 'var(--muted)', fontWeight: g.source === 'override' ? 700 : 400 }}>{g.k}</span>
-            </div>
-          ))}
+          <button
+            type="button"
+            onClick={() => setGatesOpen((o) => !o)}
+            aria-expanded={gatesOpen}
+            aria-controls={`gate-reasons-${a.id}`}
+            aria-label={`Readiness gates for ${a.name} — ${gatesOpen ? 'hide' : 'show'} reasons`}
+            data-testid={`gates-${a.id}`}
+            // Task 6: the tooltip still carries every derived CONCLUSION and its source for a mouse
+            title={gates.map(gateText).join('\n')}
+            style={{ display: 'flex', gap: 9, alignItems: 'flex-start', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', minWidth: 0 }}
+          >
+            {gates.map((g) => (
+              <span key={g.k} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                <GateDot v={g.v} />
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: g.source === 'override' ? '#31567F' : 'var(--muted)', fontWeight: g.source === 'override' ? 700 : 400 }}>{g.k}</span>
+              </span>
+            ))}
+          </button>
           {/* An override sets a GATE reading, and `start` refuses every status but not_started —
               so on a blocked activity it records an audited decision that cannot change the
               outcome. The affordance is withdrawn rather than left as a dead end; the banner
@@ -179,6 +197,11 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
           hover tooltip — the gate dots carry the same conclusions, but `title` is unreachable
           on touch. Rendered ONLY when something actually restricts the activity: a ready or
           running or finished row gets no banner. */}
+      {gatesOpen && (
+        <ul id={`gate-reasons-${a.id}`} data-testid={`gate-reasons-${a.id}`} style={{ margin: '8px 0 0', padding: '0 0 0 18px', fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>
+          {gates.map((g) => <li key={g.k}>{gateText(g)}</li>)}
+        </ul>
+      )}
       {restriction && (
         <div style={{ marginTop: 10 }}>
           <EditState state="workflow" reason={restriction} testId={`sched-restriction-${a.id}`} />
