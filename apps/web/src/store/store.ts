@@ -113,7 +113,8 @@ function initialScreen(): ScreenKey {
 /** What a new-project create came to (legacy-copy recovery). `created` is final even when `opened`
  *  is false — the project exists, so the dialog closes and must not invite a duplicate retry.
  *  `refused`: the server rolled everything back and said why; a retry is safe once that is fixed.
- *  `unknown`: no confirmation either way; the project list is refreshed before any retry.
+ *  `unknown`: no confirmation, and the reconciled project list does not show it — a retry is NOT
+ *  safe (it may still commit), so the dialog stays locked.
  *  `stale`: the signed-in user changed while it was in flight; the reply is dropped. */
 export type CreateProjectOutcome =
   | { kind: 'created'; projectId: string; opened: boolean }
@@ -4239,14 +4240,38 @@ export const useStore = create<Store>()(
     },
     createProject: async (orgId, input) => {
       if (!gateway) return { kind: 'refused', message: 'Creating projects needs the server.' };
+      const gw = gateway;
       // The reply is bound to the user who sent it, as `addLocationNode`'s is: one landing after a
       // sign-out or persona change belongs to nobody on screen, so it is dropped — no toast, no switch.
       const identity = `${sessionSub()}|${get().sessionUserId ?? ''}`;
       const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === identity;
-      const projectAtSend = get().activeProjectId;
+      // …and to the whole project SCOPE it was sent from, not just the active id: a switch begun
+      // while the create was out bumps the generation at once (the active id moves only when its
+      // auth lands), and opening the new project then would race that switch (Codex 4180481920).
+      const scopeAtSend = { project: get().activeProjectId, generation: get().projectScopeGeneration };
+      const sameScope = () => get().pendingProjectId === null
+        && get().activeProjectId === scopeAtSend.project
+        && get().projectScopeGeneration === scopeAtSend.generation;
+      const knownBefore = new Set(get().memberships.map((m) => m.projectId));
+
+      const finishCreated = async (created: { id: string; short: string }): Promise<CreateProjectOutcome> => {
+        get().loadOrgData();
+        // Created. Opening it is a separate step that can fail on its own; the outcome says so, so the
+        // dialog still closes and nothing invites a second create of the same project.
+        if (!sameScope()) {
+          // the user moved (or began moving) to another project meanwhile — announce, don't yank them
+          get().flash('Project created: ' + created.short + ' — open it from the project switcher.');
+          return { kind: 'created', projectId: created.id, opened: false };
+        }
+        get().flash('Project created: ' + created.short + '.');
+        const opened = await get().switchProject(created.id);
+        if (!opened && sentBySameUser()) get().flash('Project created: ' + created.short + ', but it could not be opened — pick it from the project switcher.');
+        return { kind: 'created', projectId: created.id, opened };
+      };
+
       let created: { id: string; short: string };
       try {
-        created = await gateway.createProject(orgId, input);
+        created = await gw.createProject(orgId, input);
       } catch (err) {
         if (!sentBySameUser()) return { kind: 'stale' };
         const status = (err as { status?: number } | null)?.status;
@@ -4256,23 +4281,20 @@ export const useStore = create<Store>()(
           return { kind: 'refused', message: refusalMessage(err) ?? 'Could not create the project — check your access.' };
         }
         // No answer, or a 5xx a proxy may have sent after the server committed: the outcome is
-        // UNKNOWN. Refresh the project list so a create that did land shows up before any retry.
-        get().loadOrgData();
-        return { kind: 'unknown', message: 'The server did not confirm the project was created. Check the project list before trying again.' };
+        // UNKNOWN, and project creation carries no idempotency key, so a retry could make a second
+        // project (Codex 4180481917). Reconcile BEFORE answering: read the memberships now; a project
+        // of this org and name that was not ours before the send is this create, landed. Otherwise
+        // the dialog is told retry is NOT safe — the create may still commit — and stays locked.
+        const tok = get().sessionToken;
+        const ms = await gw.listMemberships().catch(() => null);
+        if (!sentBySameUser()) return { kind: 'stale' };
+        if (ms && get().sessionToken === tok) set((st) => { st.memberships = ms; });
+        const landed = ms?.find((m) => m.orgId === orgId && !knownBefore.has(m.projectId) && m.name === input.name);
+        if (landed) return finishCreated({ id: landed.projectId, short: landed.short });
+        return { kind: 'unknown', message: 'The server did not confirm the project was created, and it may still appear. Close this and check the project list before creating it again.' };
       }
       if (!sentBySameUser()) return { kind: 'stale' };
-      get().loadOrgData();
-      // Created. Opening it is a separate step that can fail on its own; the outcome says so, so the
-      // dialog still closes and nothing invites a second create of the same project.
-      if (get().activeProjectId !== projectAtSend) {
-        // the user moved to another project while this was in flight — announce, don't yank them
-        get().flash('Project created: ' + created.short + ' — open it from the project switcher.');
-        return { kind: 'created', projectId: created.id, opened: false };
-      }
-      get().flash('Project created: ' + created.short + '.');
-      const opened = await get().switchProject(created.id);
-      if (!opened && sentBySameUser()) get().flash('Project created: ' + created.short + ', but it could not be opened — pick it from the project switcher.');
-      return { kind: 'created', projectId: created.id, opened };
+      return finishCreated(created);
     },
     updateProjectDetails: (orgId, projectId, input) => {
       if (!gateway) {

@@ -128,6 +128,9 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
   // as a toast instead (a create still opens its project, as before).
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // an UNKNOWN outcome locks Create for this dialog: the project may still be committing and has no
+  // idempotency key, so a second press could make it twice (Codex 4180481917)
+  const [locked, setLocked] = useState(false);
   const inFlight = useRef(false);
   const mounted = useRef(true);
   useEffect(() => {
@@ -154,7 +157,7 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
   });
 
   const submit = async () => {
-    if (inFlight.current || !name.trim() || !short.trim() || targetsIncomplete) return;
+    if (inFlight.current || locked || !name.trim() || !short.trim() || targetsIncomplete) return;
     const modules: ModuleSelection[] = Object.entries(picked).map(([moduleId, p]) => {
       if (orgModules.find((m) => m.id === moduleId)?.anchorKind === 'room') {
         return {
@@ -192,7 +195,10 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
     setSubmitting(false);
     // `stale`: another user is now signed in — this dialog belongs to nobody on screen
     if (outcome.kind === 'created' || outcome.kind === 'stale') onClose();
-    else setError(outcome.message);
+    else {
+      setError(outcome.message);
+      if (outcome.kind === 'unknown') setLocked(true);
+    }
   };
   return (
     <Modal onClose={onClose} maxWidth={420} labelledBy="np-title">
@@ -294,7 +300,7 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
         )}
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <button onClick={onClose} style={{ ...btn, background: '#fff', color: 'var(--ink)', border: '1px solid rgba(35,33,28,.2)' }}>Cancel</button>
-          <button onClick={() => void submit()} disabled={submitting || !name.trim() || !short.trim() || targetsIncomplete} aria-busy={submitting} data-testid="np-create" style={{ ...btn, background: 'var(--ink)', color: '#fff', border: 'none', opacity: !submitting && name.trim() && short.trim() && !targetsIncomplete ? 1 : 0.5 }}>{submitting ? 'Creating…' : 'Create'}</button>
+          <button onClick={() => void submit()} disabled={submitting || locked || !name.trim() || !short.trim() || targetsIncomplete} aria-busy={submitting} data-testid="np-create" style={{ ...btn, background: 'var(--ink)', color: '#fff', border: 'none', opacity: !submitting && !locked && name.trim() && short.trim() && !targetsIncomplete ? 1 : 0.5 }}>{submitting ? 'Creating…' : 'Create'}</button>
         </div>
       </div>
     </Modal>

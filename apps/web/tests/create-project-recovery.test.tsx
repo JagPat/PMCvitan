@@ -30,7 +30,7 @@ type Created = { id: string; name: string; short: string };
 
 /** A gateway whose create (and optionally switch) replies only when the test says so; every other
  *  read the dialog or store makes resolves empty. */
-function fakeGateway(opts: { switchFails?: boolean } = {}) {
+function fakeGateway(opts: { switchFails?: boolean; membershipsAfter?: unknown[] } = {}) {
   const create = deferred<Created>();
   const base: Record<string, unknown> = {
     createProject: vi.fn(() => create.promise),
@@ -38,6 +38,7 @@ function fakeGateway(opts: { switchFails?: boolean } = {}) {
       opts.switchFails
         ? Promise.reject(httpError(500))
         : Promise.resolve({ token: 'JWT-new', role: 'pmc', projectId: 'p-new', name: 'Me' })),
+    listMemberships: vi.fn(() => Promise.resolve(opts.membershipsAfter ?? [])),
   };
   const gw = new Proxy(base, {
     get: (t, k) => {
@@ -140,7 +141,7 @@ describe('create project from a source the server refuses to copy', () => {
     expect(calls.createProject).toHaveBeenCalledTimes(1);
   });
 
-  it('an unconfirmed outcome keeps the inputs, says so, and refreshes the project list before any retry', async () => {
+  it('an unconfirmed outcome that the project list does not show keeps the inputs and LOCKS Create — a retry could make it twice', async () => {
     const { gw, create, calls } = fakeGateway();
     s()._setGateway(gw);
     useStore.setState((st) => { st.sessionToken = 'header.eyJzdWIiOiJ1LW1lIn0.sig'; });
@@ -148,10 +149,27 @@ describe('create project from a source the server refuses to copy', () => {
     fireEvent.click(createButton(r));
     create.reject(new TypeError('Failed to fetch')); // no status: the request may or may not have landed
     await settle();
+    expect(calls.listMemberships).toHaveBeenCalled(); // reconciled BEFORE answering
     expect(r.queryByTestId('host-closed')).toBeNull();
     expect(r.getByRole('alert').textContent).toMatch(/did not confirm/);
     expect((r.getByPlaceholderText(/Short name/) as HTMLInputElement).value).toBe('Thaltej');
-    expect(calls.listMemberships).toHaveBeenCalled();
+    // the create may still commit and carries no idempotency key: no second press from this dialog
+    expect(createButton(r).disabled).toBe(true);
+    fireEvent.click(createButton(r));
+    expect(calls.createProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unconfirmed outcome the project list DOES show is the create, landed — closes and opens it', async () => {
+    const landed = { projectId: 'p-landed', name: 'Residence at Thaltej', short: 'Thaltej', role: 'pmc', orgId: 'org-1', orgName: 'Vitan' };
+    const { gw, create, calls } = fakeGateway({ membershipsAfter: [...s().memberships, landed] });
+    s()._setGateway(gw);
+    const r = mount();
+    fireEvent.click(createButton(r));
+    create.reject(httpError(502)); // a proxy answered after the server committed
+    await settle();
+    expect(r.getByTestId('host-closed')).toBeTruthy();
+    expect(calls.switchProject).toHaveBeenCalledWith('p-landed');
+    expect(calls.createProject).toHaveBeenCalledTimes(1);
   });
 
   it('Cancel while the create is out: the dialog goes, and a late refusal is told as a toast', async () => {
@@ -192,6 +210,21 @@ describe('create project from a source the server refuses to copy', () => {
     expect(s().toast).toBeNull();
     expect(r.getByTestId('host-closed')).toBeTruthy(); // the dialog belonged to the previous user
     expect(calls.switchProject).not.toHaveBeenCalled();
+  });
+
+  it('a create confirmed while a switch to another project is still pending is announced, not switched to', async () => {
+    const { gw, create, calls } = fakeGateway();
+    s()._setGateway(gw);
+    const r = mount();
+    fireEvent.click(createButton(r));
+    // switchProject's synchronous entry: generation bumped, target pending, active id not yet moved
+    act(() => { useStore.setState((st) => { st.projectScopeGeneration += 1; st.pendingProjectId = 'p-b'; st.projectLoadState = 'switching'; }); });
+
+    create.resolve({ id: 'p-new', name: 'Residence at Thaltej', short: 'Thaltej' });
+    await settle();
+    expect(r.getByTestId('host-closed')).toBeTruthy();
+    expect(calls.switchProject).not.toHaveBeenCalled(); // never races the user's own switch
+    expect(s().toast).toMatch(/open it from the project switcher/);
   });
 
   it('a create confirmed after the user moved to another project is announced, not switched to', async () => {
