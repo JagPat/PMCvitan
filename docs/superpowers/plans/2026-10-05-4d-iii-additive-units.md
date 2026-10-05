@@ -13,8 +13,9 @@ opens.
 
 This document changes **how 4d-iii is staged, not what it contains**. Every item of §D's 4d-iii
 inventory (`2026-09-07-decision-workflow-4d.md` lines 7390–7692) maps to exactly one of R1–R4 below, and
-§A remains the specification for each item. R0 adds no inventory item: it is the writer work those
-items presuppose, which the audit found missing on `main`. Where the plan's text and the code on `main` disagree,
+§A remains the specification for each item. R0 (R0a, R0b, R0c) adds no inventory item: it is the
+writer work those items presuppose, which the audit found missing on `main`. R0b's admission of the
+system pair is the one seal change that work needs before it can be written. Where the plan's text and the code on `main` disagree,
 the section "Plan-versus-main reconciliation" states the disagreement and which side the unit follows.
 
 ## Why additive
@@ -30,15 +31,27 @@ family does not hold the others.
 
 ## The order, and why the retirement is LAST
 
-R0 completes the writers; R1, R2 and R3 install seals; R4 retires the doors. Installing every trailing
+R0 (as R0a, R0b, R0c) completes the writers; R1, R2 and R3 install seals; R4 retires the doors. Installing every trailing
 seal BEFORE the doors drop means that at no deployed state is the architect chain live while a seal
 the plan pairs with the retirement is missing. Each R-unit is safe on its own:
 
-- **R0 is service-only and changes no schema.** It makes every delivered writer state the pins the
-  seals will require (the audit below found that several do not). It is the migration/service seam §D
-  requires, run in the direction the trailing seals need: writers first, seals after.
-- **R1–R3 change nothing a delivered writer does once R0 is on `main`.** Each opens only after R0 has
-  merged and DEPLOYED: the release carrying R0 is the oldest one that may serve when a seal lands, and
+- **R0 makes every delivered writer state the pins the seals will require** (the audit below found
+  that several do not). It is the migration/service seam §D requires, run in the direction the trailing
+  seals need: writers first, seals after. It is THREE units, because one of its writers is refused by a
+  live seal today:
+  - **R0a (service-only)** completes the human and org owner/admin writers. The 4d-i event seal already
+    admits everything R0a writes: `phase6_t4d_actor_pair_true` (`20271220000000…/migration.sql:505`)
+    judges the pair through `platform_user_holds_role_windowed`, which admits `pmc` for an org
+    owner/admin with no membership on the project.
+  - **R0b (migration-only)** ADMITS the system pair. Today the 4d-i event seal REFUSES any pair on a
+    non-`human` actor (`20271220000000…/migration.sql:3576`), so a system event carrying Q1's attribution
+    would abort at commit. R0b re-states that arm (`CREATE OR REPLACE`, marker-aware like every 4d replace)
+    to admit, on a `system` actor only, the system role together with a name drawn from a registered set
+    of automation identities, and nothing else. It admits; it requires nothing, so every delivered writer
+    still commits.
+  - **R0c (service-only)** makes the system emitters write that pair. It opens only after R0b is deployed.
+- **R1–R3 change nothing a delivered writer does once R0 is on `main`.** Each opens only after R0c has
+  merged and DEPLOYED: the release carrying R0c is the oldest one that may serve when a seal lands, and
   each R1–R3 migration refuses to run while a live `ReleaseLease` predates it (the same preflight R4
   carries, at the R0 release's catalog version or, if R0 does not bump the catalog, a release-identity
   check against the R0 merge, stated in R1's packet). Legacy and drain-window rows are untouched: every
@@ -52,7 +65,7 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
 
 ## The units
 
-### R0 — the writers state every pin (service-only)
+### R0 — the writers state every pin (R0a service, R0b migration, R0c service)
 
 The audit of `main` at `4b40830` against R1–R3's requirements found these writers non-compliant. R0
 fixes each, under the Board's two answers of 2026-10-05 (relayed by PMCvitan Promote; first given in the
@@ -77,15 +90,19 @@ The non-compliant writers:
 | `DecisionApprovalRevision` pair | `decisions.service.ts:610` (no-chain approve) | `envelope?.x ?? null` | Decision 2 |
 | consultation request / response pairs | `decisions.service.ts:964`, `:1110` | `pair?.x ?? null` | Decision 2 |
 | `DomainEvent` pair, human emitters | every `emitEvent` caller that passes a possibly-NULL pair, or none (decisions, members, and every other service and participant; the commercial human paths) | resolved inside `emitEvent`, NULL when the role does not stand | `emitEvent` refuses a human event whose pair does not resolve (Decision 2) |
-| `DomainEvent` pair, org owner/admin | `orgs.service.ts` 518, 1164, 1182, 1198 and the participants it drives during project initialization | the actor carries the ORG role (`owner`/`admin`), which `ProjectUserStanding` never holds, so the pair is always NULL | record the `pmc` role, the project role the org authority grants and the windowed owner/admin arm the readiness functions already read (Decision 1) |
-| `DomainEvent` pair, system actors | `decisions.effects.ts:145`, `commercial-activation.service.ts:85→199`, `commercial-reevaluate.cli.ts:144` | `emitEvent` throws on any envelope for a system actor; the pair is always NULL | a system role plus a named automation identity, and `emitEvent` accepts that pair for system actors (Decision 1) |
+| `DomainEvent` pair, org owner/admin | `orgs.service.ts` 518, 1164, 1182, 1198 and the participants it drives during project initialization | the actor carries the ORG role (`owner`/`admin`), which `ProjectUserStanding` never holds, so the pair is always NULL | **R0a:** record the `pmc` role, the project role the org authority grants and the windowed owner/admin arm already admits (Decision 1). An owner/admin who also holds a membership on the project records that membership's role, which is the role the windowed arm admits for them |
+| `DomainEvent` pair, system actors | `decisions.effects.ts:145`, `commercial-activation.service.ts:85→199`, `commercial-reevaluate.cli.ts:144` | `emitEvent` throws on any envelope for a system actor, and the 4d-i seal refuses a pair on a non-`human` actor (`migration.sql:3576`); the pair is always NULL | **R0b** admits a system role plus a registered automation identity on `system` actors; **R0c** makes `emitEvent` accept that pair and each system emitter write it (Decision 1) |
 
-The writers already compliant and left alone: `rejectProvisionalApproval` (`:1325`), every
+Every row of the table not marked R0b or R0c is R0a's. The writers already compliant and left alone: `rejectProvisionalApproval` (`:1325`), every
 `Notification` row carrying a `decisionId`, both `revisionId` payload emitters (`:691`, `:1233`), and the
 pair-throwing chain paths (approve under an active chain, forward, countersign, disagree, the stranded
-resolution, `members.factPair`). R0's proofs: each changed writer driven through the service, writing
-the complete pin; each stale-role command refused with the decision's state unchanged; the system and
-org owner/admin events carrying their pair.
+resolution, `members.factPair`). R0's proofs:
+- **R0a:** each changed writer driven through the service, writing the complete pin; each stale-role
+  command refused with the decision's state unchanged; the org owner/admin events carrying `pmc`.
+- **R0b:** the system pair admitted on a `system` actor; refused on a `human` actor; refused with an
+  unregistered or blank name; a human pair still judged by `phase6_t4d_actor_pair_true` exactly as before;
+  a P3005 replay leaving the re-stated arm in place.
+- **R0c:** each system emitter committing its event with the pair.
 
 ### R1 — `ChangeRequest_t4d_provenance_required` and the seed's named bypass
 
@@ -107,9 +124,6 @@ Plan §D lines 7434–7614 (rounds 8, 10–13, 16, 24 of #572).
       `platform_user_holds_role(projectId, resolvedById, 'pmc')` under `phase6_try_readiness`.
   - **RE-OPEN:** any return to `'open'` is refused.
   - **DELETE:** refused. The SANCTIONED RESET is the only exception.
-- **The 4d-i event seal's system arm.** The 4d-i seal admits the envelope pair only on a human actor.
-  Decision 1 needs the pair on system events too, so R2 (not R1) re-states that arm to admit the system
-  pair R0 writes; see R2.
 - **The seed.** `prisma/seed.ts`'s DL-003 plant (lines 396–434) today disables `ChangeRequest_t4d_paired`
   alone; it is rewritten to disable the CLOSED set of two names (`ChangeRequest_t4d_provenance_required`
   and `ChangeRequest_t4d_paired`) in the existing `DO $$ … IF EXISTS (SELECT 1 FROM pg_trigger …)`
@@ -139,9 +153,8 @@ Every new row of each kind must carry its pin; legacy and drain-window NULL rows
 - `DecisionConsultation.requestedByRole`/`requestedByName`, on every new request;
 - `respondedByRole`/`respondedByName`, on every new response.
 
-The `DomainEvent` arm needs one more change: today's 4d-i event seal admits the pair only on a
-`human` actor, so R2 re-states that arm (`CREATE OR REPLACE`, marker-aware like every 4d replace) to
-require the pair on BOTH actor kinds, the system pair being the one R0 writes.
+The `DomainEvent` arm requires the pair on BOTH actor kinds: the human pair R0a writes and the system
+pair R0b admits and R0c writes. It adds a requirement only; the admission is R0b's.
 
 The fixture plants that write these rows directly gain the new seal names in their existing bypass
 lists, as named bypasses: `plantLegacyApprovalRevision` (`test/integration/fixtures.ts:327`),
@@ -259,7 +272,10 @@ are limited to the declarative mirrors the tripwire suites pin to the Prisma DMM
    remain" and that the delivered `ChangeRequest` writers "already comply". The audit above found that
    neither closure writes the resolver's command, role or name; that the requester, revision,
    consultation and most event pairs are written conditionally; that org owner/admin events always carry
-   a NULL pair; and that system events cannot carry one. R0 closes all of it before any seal lands.
+   a NULL pair; and that system events cannot carry one, because the 4d-i event seal refuses a pair on any
+   non-`human` actor (`migration.sql:3576`; its own comment scopes 4d-iii's rule to "every new HUMAN
+   event"). The Board's Q1 extends attribution to system events, so R0b admits the system pair before R0c
+   writes it. R0 closes all of it before any seal lands.
 5. **The service line numbers.** §D cites the two closures at `decisions.service.ts:492` and `:919`;
    on `main` they are at `:583` and `:1826`. The units cite `main`.
 

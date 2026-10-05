@@ -12,8 +12,8 @@
 > fold that sets the drain directive rides the last B-unit's post-merge record. The text below is left as reviewed.
 >
 > **Staging record (owner disposition, 2026-10-05).** 4d-iii is delivered as the additive units R0–R4
-> recorded in `2026-10-05-4d-iii-additive-units.md`, not as the single migration-only unit §D stages. R0 is a
-> service-only writer-completion unit the audit of `main` found missing: §D's "the delivered writers already
+> recorded in `2026-10-05-4d-iii-additive-units.md`, not as the single migration-only unit §D stages. R0 is the
+> writer-completion work the audit of `main` found missing (R0a service, R0b the one admitting migration, R0c service): §D's "the delivered writers already
 > comply" does not hold for the `ChangeRequest` closures, the conditional actor pairs, org owner/admin events
 > or system events. R1–R3 install the trailing seals; R4, last, is the fenced retirement as §D specifies it,
 > including the `ReleaseLease` preflight that `main` does not yet carry. That record maps every §D 4d-iii

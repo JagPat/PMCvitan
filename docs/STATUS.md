@@ -32,10 +32,11 @@ owner chose additive staging for it in the authoring session. 4d-iii opens with 
 note sits at the top of the 4d plan.
 
 The record maps §D's 4d-iii inventory onto R1–R4, with the fenced retirement R4 LAST, so every trailing
-seal is on `main` before the doors drop. It adds R0, a service-only unit, because an audit of `main` found
+seal is on `main` before the doors drop. It adds R0 (R0a service, R0b one admitting migration, R0c service) because an audit of `main` found
 that the writers §D says "already comply" do not: neither `ChangeRequest` closure writes the resolver's
 command, role or name; most actor pairs are written conditionally; org owner/admin events always carry a
-NULL pair; and system events cannot carry one. The Board answered both open questions on 2026-10-05
+NULL pair; and system events cannot carry one (the 4d-i event seal refuses a pair on a non-human actor,
+so R0b admits the system pair before R0c writes it). The Board answered both open questions on 2026-10-05
 (relayed by PMCvitan Promote). Q1, every event is attributed: system events get a system role plus a named
 automation identity, and org owner/admin actions get the `pmc` role, so every event carries the role and
 name pair. Q2, refuse and re-sign-in: a stale-session action is refused with a clear "your role on this
