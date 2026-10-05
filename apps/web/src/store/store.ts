@@ -1381,21 +1381,13 @@ export const useStore = create<Store>()(
     type StoredCreateHold = { attempt: string; phase: 'in_flight' | 'unknown'; orgId: string; input: NewProjectInput; message?: string };
     const createHoldKey = (sub: string): string => `vitan.projectCreateHold.${sub}`;
     const FOREIGN_CREATE_HOLD = 'A project create from another tab, or from before this page reloaded, was not confirmed. Try again to finish it — it is safe: the server answers a retry of that same request without making a second project.';
-    /** The mirror's record, `null` when there is none, or `'unavailable'` when site storage cannot be
-     *  read at all — then the cross-tab HELD lock below is what tells another tab's create apart. */
-    const readCreateMirror = (sub: string): StoredCreateHold | null | 'unavailable' => {
+    const readStoredCreateHold = (sub: string): StoredCreateHold | null => {
       try {
-        const storage = globalThis.localStorage;
-        if (!storage) return 'unavailable';
-        const raw = storage.getItem(createHoldKey(sub));
+        const raw = globalThis.localStorage?.getItem(createHoldKey(sub));
         return raw ? (JSON.parse(raw) as StoredCreateHold) : null;
       } catch {
-        return 'unavailable';
+        return null; // unreadable — and then unwritable too, so no create is sent (`holdProjectCreate`)
       }
-    };
-    const readStoredCreateHold = (sub: string): StoredCreateHold | null => {
-      const r = readCreateMirror(sub);
-      return r === 'unavailable' ? null : r;
     };
     /** Write (or clear) the mirror; `false` when site storage refused it. */
     const writeStoredCreateHold = (sub: string, hold: StoredCreateHold | null): boolean => {
@@ -1430,40 +1422,15 @@ export const useStore = create<Store>()(
       if (!locks?.request) return fn();
       return locks.request(`vitan.projectCreate.${sub}`, { mode: 'exclusive' }, async () => fn()) as Promise<T>;
     };
-    // The HELD lock (Codex 4187372392): when site storage refuses the mirror, the record cannot hand the
-    // hold to another tab, so the tab that owns the hold keeps a SHARED Web Lock named for it until the
-    // hold ends, and a tab that cannot read storage refuses a new create while any tab holds it.
-    const createHeldLockName = (sub: string): string => `vitan.projectCreateHeld.${sub}`;
-    let releaseHeldLock: (() => void) | null = null;
-    const endCreateHeldLock = (): void => {
-      releaseHeldLock?.();
-      releaseHeldLock = null;
-    };
-    const keepCreateHeldLock = (sub: string): boolean => {
-      const locks = webLocks();
-      if (!locks?.request) return false;
-      endCreateHeldLock();
-      const released = new Promise<void>((resolve) => { releaseHeldLock = resolve; });
-      void locks.request(createHeldLockName(sub), { mode: 'shared' }, () => released).catch(() => undefined);
-      return true;
-    };
-    const anotherTabHoldsCreate = async (sub: string): Promise<boolean> => {
-      const locks = webLocks();
-      if (!locks?.query) return false;
-      try {
-        const { held = [] } = await locks.query();
-        return held.some((l) => l.name === createHeldLockName(sub));
-      } catch {
-        return false;
-      }
-    };
-    const UNSHARED_CREATE = 'A project create in another tab was not confirmed, and this browser is not letting the site keep it in storage. Finish it in that tab, or allow site storage, then try again.';
-    const NO_CROSS_TAB = 'This browser is blocking site storage, so a project create cannot be kept safe across tabs. Allow site storage for this site, then try again.';
-    /** Take the hold for an attempt — in memory and in the mirror, or, when storage refuses the mirror,
-     *  in the held lock. `false` (nothing taken) when neither can carry it across tabs. Called only
-     *  inside the reservation. */
+    // Durable or nothing (Codex 4187372392, 4187663033): the mirror is the ONLY thing that carries an
+    // attempt and its key past this document — to another tab, a reload, or this user's next sign-in. A
+    // live lock dies with the page while its request may still commit, so when site storage refuses the
+    // mirror, no create is sent at all.
+    const NO_DURABLE_HOLD = 'This browser is blocking site storage, so a project create could not be recovered if this page closed. Nothing was sent — allow site storage for this site, then try again.';
+    /** Take the hold for an attempt — in the mirror first, then in memory. `false` (nothing taken,
+     *  nothing to send) when site storage refuses the mirror. Called only inside the reservation. */
     const holdProjectCreate = (sub: string, orgId: string, input: NewProjectInput, attempt: string): boolean => {
-      if (!writeStoredCreateHold(sub, { attempt, phase: 'in_flight', orgId, input }) && !keepCreateHeldLock(sub)) return false;
+      if (!writeStoredCreateHold(sub, { attempt, phase: 'in_flight', orgId, input })) return false;
       set((s) => { s.projectCreateHold = { phase: 'in_flight', attempt, orgId, input }; });
       return true;
     };
@@ -1500,7 +1467,6 @@ export const useStore = create<Store>()(
         const cur = get().projectCreateHold;
         if (cur?.phase === 'in_flight' && cur.attempt === attempt) {
           set((s) => { s.projectCreateHold = next; });
-          if (next === null) endCreateHeldLock();
         }
         if (readStoredCreateHold(sub)?.attempt === attempt) {
           writeStoredCreateHold(sub, next?.phase === 'unknown' ? { attempt, phase: 'unknown', orgId, input, message: next.message } : null);
@@ -1521,7 +1487,14 @@ export const useStore = create<Store>()(
       try {
         created = await gw.createProject(orgId, input, attempt);
       } catch (err) {
-        if (!sentBySameUser()) { settle(null); return { kind: 'stale' }; }
+        if (!sentBySameUser()) {
+          // The reply belongs to nobody on screen, but its USER keeps it (Codex 4187663041): a definite
+          // refusal made nothing and is cleared; an ambiguous one may have committed, so their mirror
+          // keeps the attempt as unknown, and their next sign-in finishes it under the same key
+          if (isTerminalOutboxError(err)) settle(null);
+          else settle({ phase: 'unknown', attempt, orgId, input, message: 'Your last project create was not confirmed by the server. Try again — it is safe: the server answers a retry of that same request without making a second project.' });
+          return { kind: 'stale' };
+        }
         // A DEFINITE refusal rolled the whole initialization back (and its receipt with it): nothing was
         // created, so the reason is the server's own (e.g. the copied structure's rename advice). Definite
         // is the outbox's own rule, `isTerminalOutboxError`: a 4xx other than 401/408/429 (Codex
@@ -2560,9 +2533,8 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
-        s.projectCreateHold = null; // the hold belongs to the session that sent the create (and its held lock, below)
+        s.projectCreateHold = null; // the hold belongs to the session that sent the create
       });
-      endCreateHeldLock();
       // round-11 Codex F3 — on a push-capable browser a persona switch is a DEPARTURE exactly
       // like sign-out: the departing identity's subscription link is severed BEFORE the switch
       // completes (the same bounded handoff signOut runs, the same session-identity condition —
@@ -2622,7 +2594,7 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
-        s.projectCreateHold = null; // the hold belongs to the session that sent the create (and its held lock, below)
+        s.projectCreateHold = null; // the hold belongs to the session that sent the create
         s.brief = null; // the departing PMC's cross-project brief leaves with them
         s.briefAt = null;
         s.access = freshAccess(s.access.generation + 1);
@@ -2646,7 +2618,6 @@ export const useStore = create<Store>()(
         s.projectLoadError = null;
         s.pendingProjectId = null;
       });
-      endCreateHeldLock();
     },
     setScreen: (k) =>
       set((s) => {
@@ -4483,14 +4454,10 @@ export const useStore = create<Store>()(
         if (hold?.phase === 'in_flight') {
           return { kind: 'unknown', message: 'A project is already being created — wait for it to finish.' };
         }
-        // storage unreadable: another tab's create can only be seen through its held lock
-        if (readCreateMirror(sub) === 'unavailable' && await anotherTabHoldsCreate(sub)) {
-          return { kind: 'unknown', message: UNSHARED_CREATE };
-        }
         // ONE idempotency key per create attempt (replaces #710): every send of this attempt carries
         // it, so the server replays the first create instead of making a second project
         const attempt = newIdempotencyKey();
-        if (!holdProjectCreate(sub, orgId, input, attempt)) return { kind: 'refused', message: NO_CROSS_TAB };
+        if (!holdProjectCreate(sub, orgId, input, attempt)) return { kind: 'refused', message: NO_DURABLE_HOLD };
         return { attempt };
       });
       if (!('attempt' in reserved)) return reserved;
@@ -4513,7 +4480,7 @@ export const useStore = create<Store>()(
         const hold = get().projectCreateHold;
         // only an UNKNOWN attempt is retried, and only as itself — the same org, request and key
         if (hold?.phase !== 'unknown') return { kind: 'unknown', message: 'There is no unconfirmed project create to try again.' };
-        if (!holdProjectCreate(sub, hold.orgId, hold.input, hold.attempt)) return { kind: 'unknown', message: NO_CROSS_TAB };
+        if (!holdProjectCreate(sub, hold.orgId, hold.input, hold.attempt)) return { kind: 'unknown', message: NO_DURABLE_HOLD };
         return hold;
       });
       if (!('attempt' in reserved)) return reserved;

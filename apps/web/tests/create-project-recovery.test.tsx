@@ -539,46 +539,54 @@ describe('cross-tab project create — one reservation at a time', () => {
     tabB.getState()._setGateway(null);
   });
 
-  it('storage BLOCKED: the owning tab keeps a held lock, and another tab refuses a new create until it ends (Codex 4187372392)', async () => {
-    const locks = fakeLocks();
-    blockStorage();
-    const tabA = useStore;
-    const tabB = await secondTab({ userId: 'u-me', token: tokenFor('u-a') });
-    tabA.setState((st) => { st.sessionUserId = 'u-me'; st.sessionToken = tokenFor('u-a'); });
-    const a = fakeGateway();
-    const b = fakeGateway();
-    tabA.getState()._setGateway(a.gw);
-    tabB.getState()._setGateway(b.gw);
-
-    const outA = tabA.getState().createProject('org-1', { name: 'Tab A', short: 'A', stage: 'Planning' });
-    await settle();
-    expect(a.calls.createProject).toHaveBeenCalledTimes(1);
-    expect(locks.held.map((h) => h.name)).toContain('vitan.projectCreateHeld.u-a');
-    // tab B cannot read A's record — the held lock is what it sees
-    await expect(tabB.getState().createProject('org-1', { name: 'Tab B', short: 'B', stage: 'Planning' }))
-      .resolves.toEqual({ kind: 'unknown', message: expect.stringMatching(/another tab was not confirmed/) });
-    expect(b.calls.createProject).not.toHaveBeenCalled();
-    // A's create lands: its hold ends, and with it the held lock — a later create in B may go
-    a.create.resolve({ id: 'p-new', name: 'Tab A', short: 'A' });
-    await expect(outA).resolves.toMatchObject({ kind: 'created' });
-    await settle();
-    expect(locks.held.map((h) => h.name)).not.toContain('vitan.projectCreateHeld.u-a');
-    void tabB.getState().createProject('org-1', { name: 'Tab B', short: 'B', stage: 'Planning' });
-    await settle();
-    expect(b.calls.createProject).toHaveBeenCalledTimes(1);
-    tabB.getState()._setGateway(null);
+  it('storage BLOCKED: nothing durable could carry the attempt past this page, so nothing is sent — Web Locks or not (Codex 4187372392, 4187663033)', async () => {
+    for (const withLocks of [true, false]) {
+      if (withLocks) fakeLocks(); else noLocks();
+      blockStorage();
+      useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
+      const { gw, calls } = fakeGateway();
+      s()._setGateway(gw);
+      await expect(s().createProject('org-1', { name: 'X', short: 'X', stage: 'Planning' }))
+        .resolves.toEqual({ kind: 'refused', message: expect.stringMatching(/blocking site storage.*Nothing was sent/) });
+      expect(calls.createProject).not.toHaveBeenCalled();
+      expect(s().projectCreateHold).toBeNull();
+      vi.restoreAllMocks();
+    }
   });
 
-  it('storage blocked AND no Web Locks: nothing could carry the hold across tabs, so nothing is sent', async () => {
-    noLocks();
-    blockStorage();
-    useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
-    const { gw, calls } = fakeGateway();
+  it('an AMBIGUOUS reply landing after sign-out keeps that user\'s attempt: their next sign-in finishes it under the same key (Codex 4187663041)', async () => {
+    fakeLocks();
+    const { gw, create, calls } = fakeGateway();
     s()._setGateway(gw);
-    await expect(s().createProject('org-1', { name: 'X', short: 'X', stage: 'Planning' }))
-      .resolves.toEqual({ kind: 'refused', message: expect.stringMatching(/blocking site storage/) });
-    expect(calls.createProject).not.toHaveBeenCalled();
-    expect(s().projectCreateHold).toBeNull();
+    useStore.setState((st) => { st.sessionUserId = 'u-a'; st.sessionToken = tokenFor('u-a'); });
+    const out = s().createProject('org-1', { name: 'A project', short: 'A', stage: 'Planning' });
+    await settle();
+    act(() => s().completeSignOut());
+    create.reject(httpError(502)); // may have committed
+    expect((await out).kind).toBe('stale');
+    expect(s().projectCreateHold).toBeNull(); // nobody on screen holds it…
+    expect(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a')).toContain('"phase":"unknown"'); // …but its user does
+    // the same user signs back in: no NEW create, and "Try again" replays the first attempt's key
+    useStore.setState((st) => { st.sessionUserId = 'u-a'; st.sessionToken = tokenFor('u-a'); });
+    expect((await s().createProject('org-1', { name: 'A again', short: 'A2', stage: 'Planning' })).kind).toBe('unknown');
+    expect(calls.createProject).toHaveBeenCalledTimes(1);
+    calls.createProject.mockImplementationOnce(() => Promise.resolve({ id: 'p-a', name: 'A project', short: 'A' }));
+    await expect(s().retryProjectCreate()).resolves.toMatchObject({ kind: 'created', projectId: 'p-a' });
+    expect(calls.createProject.mock.calls[1]?.[2]).toBe(calls.createProject.mock.calls[0]?.[2]);
+    expect(calls.createProject.mock.calls[1]?.[1]).toEqual({ name: 'A project', short: 'A', stage: 'Planning' });
+  });
+
+  it('a DEFINITE refusal landing after sign-out clears that user\'s attempt — nothing was made', async () => {
+    fakeLocks();
+    const { gw, create } = fakeGateway();
+    s()._setGateway(gw);
+    useStore.setState((st) => { st.sessionUserId = 'u-a'; st.sessionToken = tokenFor('u-a'); });
+    const out = s().createProject('org-1', { name: 'A project', short: 'A', stage: 'Planning' });
+    await settle();
+    act(() => s().completeSignOut());
+    create.reject(httpError(400, RENAME));
+    expect((await out).kind).toBe('stale');
+    expect(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a')).toBeNull();
   });
 
   it('two passwordless dev identities never share a hold or a key (Codex 4187372380)', async () => {
