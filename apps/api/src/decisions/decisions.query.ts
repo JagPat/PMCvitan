@@ -625,8 +625,8 @@ export class DecisionsQueryService {
 
   /** How many decisions are filed under any of `nodeIds` — the guard a node delete runs before
    *  removing a location subtree. */
-  countByNodeIds(nodeIds: string[]): Promise<number> {
-    return this.prisma.decision.count({ where: { nodeId: { in: nodeIds } } });
+  countByNodeIds(nodeIds: string[], db: Pick<Prisma.TransactionClient, 'decision'> = this.prisma): Promise<number> {
+    return db.decision.count({ where: { nodeId: { in: nodeIds } } });
   }
 
   /** How many of a project's PUBLISHED pending decisions await THIS VIEWER — the portfolio tile

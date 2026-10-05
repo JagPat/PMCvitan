@@ -1,9 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { lockProjectTree } from '../common/tree-lock';
-import { MAX_TREE_DEPTH, ancestorIdsOf, depthOf, heightOf, subtreeIdsOf, type TreeRow } from './tree-rules';
+import { MAX_TREE_DEPTH, ancestorIdsOf, depthOf, heightOf, normalizeNodeName, subtreeIdsOf, type TreeRow } from './tree-rules';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
@@ -15,8 +15,8 @@ import type { CreateNodeInput, MoveNodeInput, RenameNodeInput } from '../contrac
 import type { SnapshotDto } from '../snapshot/types';
 
 /** The `POST /nodes` reply: the caller's snapshot plus the id of the place this create made, the same
- *  id on a replay, so a client never has to pick its new place out of the tree by name (names may
- *  repeat). The snapshot's own key set is unchanged. */
+ *  id on a replay, so a client never has to pick its new place out of the tree by name (places made
+ *  before the sibling-name rule may share one). The snapshot's own key set is unchanged. */
 export type NodeCreatedDto = SnapshotDto & { createdNodeId: string };
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
@@ -27,6 +27,8 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
  *  only; a room sits under a zone OR another room; an element (the object, e.g.
  *  "Main Door") is a LEAF and sits under a room OR directly under a zone. The kind
  *  fixes the SET of legal parents — depth is bounded separately (5 levels). */
+export { normalizeNodeName } from './tree-rules';
+
 const ALLOWED_PARENT_KINDS: Record<string, ReadonlyArray<'zone' | 'room'> | null> = {
   zone: null, // top level
   room: ['zone', 'room'],
@@ -65,8 +67,14 @@ export class NodesService {
    *  of its ancestry otherwise passes both checks on stale snapshots and lands at level 6.
    *  #699 — runs under the command ledger: the same `Idempotency-Key` + body creates the place
    *  exactly once, so a double submit or a retry after a lost reply replays instead of adding a
-   *  second same-named sibling (a create has no natural key — names may repeat). An absent key
-   *  keeps today's unkeyed path. */
+   *  second same-named sibling. An absent key keeps today's unkeyed path.
+   *  #704 redesign — a place's name is also its natural key among its siblings: a create whose
+   *  name (ignoring case and spacing) is already held under the same parent makes nothing and names
+   *  the place that holds it, so a retry that lost its reply, or minted a fresh key in another tab
+   *  or after a reload, can never add a second one. A different kind under that name is a 409.
+   *  Checked under the tree lock, so concurrent creates of one name serialize to one place. Places
+   *  that already share a name are left as they are. Only places the caller can see count (see
+   *  `nameHolders`), so another author's private draft is never named or returned. */
   async create(projectId: string, input: CreateNodeInput, user: AuthUser, idempotencyKey?: string): Promise<NodeCreatedDto> {
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
@@ -79,16 +87,32 @@ export class NodesService {
       run: async (tx) => {
         await lockProjectTree(tx, projectId);
         const parent = await this.requireParentForKind(projectId, input.kind, input.parentId ?? null, tx);
+        // Draft → Publish: a node under a DRAFT parent must itself be a draft (a published child of a
+        // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
+        const parentIsDraft = parent ? parent.publishedAt === null : false;
+        const publishes = input.publish && !parentIsDraft;
+        const holders = await this.nameHolders(tx, projectId, parent?.id ?? null, input.name, user);
+        if (holders.length > 0) {
+          // the same kind is this place, even where places made before the rule share the name across
+          // kinds; only a name held by another kind alone is a conflict
+          const same = holders.find((row) => row.kind === input.kind);
+          if (!same) {
+            throw new ConflictException(`${parent ? `"${parent.name}"` : 'This project'} already has "${holders[0]!.name}"`);
+          }
+          // the reply never reports a publish it did not make: asked to publish, a place that is still
+          // the caller's draft is refused (publishing is its own command), not silently returned hidden
+          if (publishes && same.publishedAt === null) {
+            throw new ConflictException(`"${same.name}" is already a draft here — publish it instead of adding it again`);
+          }
+          return { resultRef: same.id, events: [] };
+        }
         const tree = await this.loadTree(tx, projectId);
         const depth = parent ? depthOf(tree, parent.id) + 1 : 1;
         if (depth > MAX_TREE_DEPTH) {
           throw new BadRequestException(`Cannot add "${input.name}" at level ${depth} — locations nest to ${MAX_TREE_DEPTH} levels`);
         }
         const order = this.nextOrderIn(tree, parent?.id ?? null);
-        // Draft → Publish: a node under a DRAFT parent must itself be a draft (a published child of a
-        // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
-        const parentIsDraft = parent ? parent.publishedAt === null : false;
-        const publishedAt = input.publish && !parentIsDraft ? new Date() : null;
+        const publishedAt = publishes ? new Date() : null;
         const created = await tx.projectNode.create({
           data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order, authorId: user.sub, publishedAt },
         });
@@ -113,6 +137,7 @@ export class NodesService {
       await this.requireNode(projectId, nodeId, tx);
       const tree = await this.loadTree(tx, projectId);
       const branch = [...new Set([...ancestorIdsOf(tree, nodeId), ...subtreeIdsOf(tree, nodeId)])];
+      await this.refusePublishedNameClash(tx, projectId, branch);
       await tx.projectNode.updateMany({
         where: { id: { in: branch }, projectId, publishedAt: null },
         data: { publishedAt: new Date() },
@@ -122,11 +147,15 @@ export class NodesService {
     return this.done(projectId, user, [ev]);
   }
 
-  /** Rename a node (its decisions/children are untouched). */
+  /** Rename a node (its decisions/children are untouched). #705 — a name another place under the
+   *  same parent already holds is a 409, checked under the tree lock like `create` and `move`. */
   async rename(projectId: string, nodeId: string, input: RenameNodeInput, user: AuthUser): Promise<SnapshotDto> {
-    await this.requireNode(projectId, nodeId);
     const actor = await resolveActor(this.prisma, user);
     const ev = await this.prisma.$transaction(async (tx) => {
+      await lockProjectTree(tx, projectId);
+      const node = await this.requireNode(projectId, nodeId, tx);
+      const [holder] = await this.nameHolders(tx, projectId, node.parentId, input.name, user, nodeId);
+      if (holder) throw new ConflictException(await this.alreadyHas(tx, node.parentId, holder.name));
       await tx.projectNode.update({ where: { id: nodeId }, data: { name: input.name } });
       return emitEvent(tx, { projectId, actor, eventType: 'node.renamed', entityType: 'ProjectNode', entityId: nodeId, payload: { name: input.name }, effectKey: 'node.renamed', dispatch: {} });
     });
@@ -162,6 +191,12 @@ export class NodesService {
           throw new BadRequestException(`Cannot move a published location under the draft "${parent.name}" — a published child of a hidden parent would be an orphan on the team's Site Map. Publish "${parent.name}" first.`);
         }
       }
+      // #705 — a move into another parent that already holds this name is a 409 (a reorder within
+      // the same parent is not a name change, so places that already share a name can still reorder)
+      if ((parent?.id ?? null) !== node.parentId) {
+        const [holder] = await this.nameHolders(tx, projectId, parent?.id ?? null, node.name, user, nodeId);
+        if (holder) throw new ConflictException(await this.alreadyHas(tx, parent?.id ?? null, holder.name));
+      }
       const order = input.order ?? this.nextOrderIn(tree, parent?.id ?? null);
       await tx.projectNode.update({ where: { id: nodeId }, data: { parentId: parent?.id ?? null, order } });
       return emitEvent(tx, { projectId, actor, eventType: 'node.moved', entityType: 'ProjectNode', entityId: nodeId, payload: { parentId: parent?.id ?? null }, effectKey: 'node.moved', dispatch: {} });
@@ -177,8 +212,7 @@ export class NodesService {
   async remove(projectId: string, nodeId: string, user: AuthUser): Promise<SnapshotDto> {
     await this.requireNode(projectId, nodeId);
     const actor = await resolveActor(this.prisma, user);
-    const subtree = subtreeIdsOf(await this.loadTree(this.prisma, projectId), nodeId);
-    const attached = await this.decisions.countByNodeIds(subtree);
+    const attached = await this.decisions.countByNodeIds(subtreeIdsOf(await this.loadTree(this.prisma, projectId), nodeId));
     if (attached > 0) {
       throw new BadRequestException(`Move or remove the ${attached} decision(s) under this location before deleting it.`);
     }
@@ -190,6 +224,19 @@ export class NodesService {
     // their FK stays NO ACTION and the count guard above refuses the delete instead of
     // silently unfiling them.
     const events = await this.prisma.$transaction(async (tx) => {
+      // #705 — the delete takes the tree lock like every other tree write, so it serializes with a
+      // create that names an existing place by its name: that create either sees this place gone
+      // (and makes its own) or names it before the delete starts. The node and its subtree are
+      // re-read under the lock (a child added since the guard above has no decisions yet).
+      await lockProjectTree(tx, projectId);
+      await this.requireNode(projectId, nodeId, tx);
+      const subtree = subtreeIdsOf(await this.loadTree(tx, projectId), nodeId);
+      // the decisions guard again, on the locked subtree in this transaction (the read above is the
+      // fast refusal; the decisions FK stays NO ACTION as the backstop for a decision filed after it)
+      const attachedNow = await this.decisions.countByNodeIds(subtree, tx);
+      if (attachedNow > 0) {
+        throw new BadRequestException(`Move or remove the ${attachedNow} decision(s) under this location before deleting it.`);
+      }
       // Task 10 (Modules 3+4 + correction) — unfile EVERY placed record whose location is serialized
       // into a module projection FIRST, through each owning module's participant, which appends its
       // owner-aligned signal (`inspection.unfiled` / `activity.unfiled` / `drawing.unfiled` /
@@ -246,6 +293,63 @@ export class NodesService {
       where: { projectId },
       select: { id: true, parentId: true, publishedAt: true, order: true },
     });
+  }
+
+  /** The places under `parentId` already holding `name` (ignoring case and spacing), among the places
+   *  the caller can see: published ones and the caller's own drafts, the same set the caller's
+   *  snapshot carries. Another author's private draft never counts, so it is never named in a 409
+   *  or returned as a `createdNodeId` the caller's tree does not hold. Earliest by order first; more
+   *  than one only where places made before this rule already share the name. */
+  private async nameHolders(db: Db, projectId: string, parentId: string | null, name: string, user: AuthUser, exceptId?: string) {
+    const siblings = await db.projectNode.findMany({
+      where: {
+        projectId,
+        parentId,
+        ...(exceptId ? { id: { not: exceptId } } : {}),
+        // the snapshot's own rule (snapshot.service): a draft is visible only to its author; an
+        // undefined `sub` must never reach Prisma, where it would drop the author filter
+        OR: user.sub ? [{ publishedAt: { not: null } }, { authorId: user.sub }] : [{ publishedAt: { not: null } }],
+      },
+      select: { id: true, name: true, kind: true, publishedAt: true },
+      orderBy: [{ order: 'asc' }, { id: 'asc' }],
+    });
+    const wanted = normalizeNodeName(name);
+    return siblings.filter((row) => normalizeNodeName(row.name) === wanted);
+  }
+
+  /** #705 — publishing is the write that makes a draft visible to everyone, so it is the last writer
+   *  of the sibling-name rule: two authors' drafts (or a draft and a place another author added while
+   *  it was private) may hold one name under a parent, and publishing must not land them side by side.
+   *  A draft of `branch` that would become published beside a published sibling of the same name, or
+   *  beside another draft of `branch` publishing with it under that name, is a 409. Published places
+   *  that already share a name are left as they are. */
+  private async refusePublishedNameClash(db: Db, projectId: string, branch: string[]): Promise<void> {
+    // one read of the project's places (the tree is already loaded under the lock), split here
+    const rows = await db.projectNode.findMany({
+      where: { projectId },
+      select: { id: true, name: true, parentId: true, publishedAt: true },
+    });
+    const inBranch = new Set(branch);
+    const publishing = rows.filter((row) => inBranch.has(row.id) && row.publishedAt === null);
+    if (publishing.length === 0) return;
+    const parents = new Set(publishing.map((row) => row.parentId));
+    const taken = new Set(
+      rows
+        .filter((row) => row.publishedAt !== null && parents.has(row.parentId))
+        .map((row) => `${row.parentId ?? ''}\u0000${normalizeNodeName(row.name)}`),
+    );
+    for (const row of publishing) {
+      const key = `${row.parentId ?? ''}\u0000${normalizeNodeName(row.name)}`;
+      if (taken.has(key)) {
+        throw new ConflictException(`${await this.alreadyHas(db, row.parentId, row.name)} — rename the draft before publishing it`);
+      }
+      taken.add(key);
+    }
+  }
+
+  private async alreadyHas(db: Db, parentId: string | null, name: string): Promise<string> {
+    const parent = parentId ? await db.projectNode.findUnique({ where: { id: parentId }, select: { name: true } }) : null;
+    return `${parent ? `"${parent.name}"` : 'This project'} already has "${name}"`;
   }
 
   private nextOrderIn(tree: LoadedTreeRow[], parentId: string | null): number {
