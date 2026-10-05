@@ -47,9 +47,25 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
     non-`human` actor (`20271220000000…/migration.sql:3576`), so a system event carrying Q1's attribution
     would abort at commit. R0b re-states that arm (`CREATE OR REPLACE`, marker-aware like every 4d replace)
     to admit, on a `system` actor only, the system role together with a name drawn from a registered set
-    of automation identities, and nothing else. It also adds the nullable `ReleaseLease.serverGeneration`
-    column (with its `schema.prisma` field; the lease writer is raw SQL naming its columns). It admits; it
-    requires nothing, so every delivered writer still commits.
+    of automation identities, and nothing else. Two branches of today's envelope validation refuse a
+    system pair, and R0b re-states BOTH (#714 review, Codex 4181420109):
+    - the non-`human` refusal (`migration.sql:3576`);
+    - the later `actorId IS NULL` refusal (`migration.sql:3602`), which every system event would hit
+      because `emitEvent` writes a system actor as `actorId = NULL` with its identity in `systemActor`
+      (`src/platform/events.ts:165–167`).
+
+    In the re-stated validation:
+    - a `system` envelope is judged against `systemActor` and the registered automation identity, never
+      against `actorId`;
+    - the `actorId` requirement and `phase6_t4d_actor_pair_true` apply to `human` envelopes exactly as
+      before.
+
+    It also adds the nullable `ReleaseLease.serverGeneration` column, with its `schema.prisma` field (the
+    lease writer is raw SQL naming its columns). In the same migration it re-states
+    `platform_t4d_release_lease_frozen` (`migration.sql:4457`) to FREEZE `serverGeneration` with the rest
+    of the lease's identity (#714 review, Codex 4181420100). Otherwise a live pre-R0c lease could be
+    re-stamped from NULL to 3 and pass the R1–R3 preflight. It admits; it requires nothing, so every
+    delivered writer still commits.
   - **R0c (service-only)** makes the system emitters write that pair and the lease record its generation.
     It opens only after R0b is deployed.
 - **R1–R3 change nothing a delivered writer does once R0 is on `main`.** Each opens only after R0c has
@@ -123,7 +139,9 @@ resolution, `members.factPair`). R0's proofs:
 - **R0b:** the system pair admitted on a `system` actor; refused on a `human` actor; refused with an
   unregistered or blank name; a human pair still judged by `phase6_t4d_actor_pair_true` exactly as before;
   a P3005 replay leaving the re-stated arm in place; the `ReleaseLease.serverGeneration` column present and
-  the delivered `writeLease` still committing with it NULL.
+  the delivered `writeLease` still committing with it NULL; a `system` envelope with `actorId` NULL and a
+  registered identity matching `systemActor` committing; a `human` envelope with `actorId` NULL still
+  refused; an UPDATE moving a lease's `serverGeneration` (NULL → 3, 2 → 3) refused.
 - **R0c:** each system emitter committing its event with the pair; a registered lease recording
   `serverGeneration = 3`.
 
@@ -178,6 +196,8 @@ Plan §D lines 7434–7614 (rounds 8, 10–13, 16, 24 of #572).
   - P42's old-shape `ChangeRequest` insert (`UP4D-CR1`, `upgrade-proof.sh` near line 5209) is REFUSED,
     beside the delivered `requestChange` committing.
   - The serialized preflight refuses R1 while a live pre-R0c lease (NULL or generation 2) stands.
+  - A process booting concurrently with R1 (holding `ServerGeneration` `FOR SHARE`) completes or waits.
+    Neither side deadlocks, and the booting process's lease is judged or its restart refused.
   - P28b's seed arm runs the FULL seed on a fresh and on a mature database with every seal enabled
     afterwards. The same plant with ONLY the provenance seal disabled is refused at commit by
     `ChangeRequest_t4d_paired`.
@@ -251,8 +271,15 @@ Plan §D lines 7390–7434 and 7632–7692.
 One transaction, in this order:
 
 1. **Preflight on `ReleaseLease`, SERIALIZED with process registration** (#714 review, Codex 4181088588).
-   The FIRST statement after the gates is `LOCK TABLE "ReleaseLease" IN SHARE ROW EXCLUSIVE MODE`, held to
-   commit. That mode conflicts with the writer's `INSERT` and `UPDATE` (`release-lease.service.ts:89`,
+   The FIRST statement after the gates locks the generation singleton:
+   `SELECT … FROM "ServerGeneration" WHERE "key" = 'singleton' FOR UPDATE`. Only then does it run
+   `LOCK TABLE "ReleaseLease" IN SHARE ROW EXCLUSIVE MODE`, and both are held to commit. The order is
+   load-bearing (#714 review, Codex 4181420115). A booting process holds that row `FOR SHARE` from its
+   admission (`server-generation.ts:102–110`) through its lease registration, so taking the lease lock
+   first would deadlock against it. With the generation row taken first, a booting process either
+   finishes its admission and registration before the preflight reads the register (its lease is then
+   judged), or waits on its `FOR SHARE` until the migration commits. R1–R3's preflights take the same
+   two locks in the same order. That mode conflicts with the writer's `INSERT` and `UPDATE` (`release-lease.service.ts:89`,
    `:102`), so no process can register a lease, and no lease can be renewed, between the read and the
    commit. Without the lock, an old process could commit its lease after the check saw none and before the
    doors dropped. A serving process's renewal waits for the migration's commit, which is well inside the
