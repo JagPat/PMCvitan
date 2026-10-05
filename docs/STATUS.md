@@ -19,8 +19,32 @@ reviewed_merge: cffb251
 open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-03
+updated: 2026-10-05
 ```
+
+### Now — 4d-iii opens with its STAGING RECORD (`claude/phase-6-task-4d-iii`): additive units R0 … R4
+
+The drain directive cleared with #693 (`f301d44`): its committed `docs/rollout/phase-6-4d-drain-evidence.json`
+is a `drained` verdict at minimum release `f8274f4` and minimum catalog version 3, and `main` carries
+`blocking_directive: none`. On 2026-10-05 the Board instructed 4d-iii to start from this record, and the
+owner chose additive staging for it in the authoring session. 4d-iii opens with a docs-only staging record,
+`docs/superpowers/plans/2026-10-05-4d-iii-additive-units.md`, as 4d-ii-a and 4d-ii-b did. A dated pointer
+note sits at the top of the 4d plan.
+
+The record maps §D's 4d-iii inventory onto R1–R4, with the fenced retirement R4 LAST, so every trailing
+seal is on `main` before the doors drop. It adds R0, a service-only unit, because an audit of `main` found
+that the writers §D says "already comply" do not: neither `ChangeRequest` closure writes the resolver's
+command, role or name; most actor pairs are written conditionally; org owner/admin events always carry a
+NULL pair; and system events cannot carry one. The owner decided both open questions on 2026-10-05: every
+event is attributed (system actors and org owner/admin actions included), and a command whose token role
+no longer stands is refused with a re-sign-in message rather than recorded with an empty pair. The record
+also states where §D and `main` disagree: the correspondence body 4d-i never installs, the `ReleaseLease`
+preflight that does not exist yet, and six doors rather than "five".
+
+`work_item` and `open_pr` name the staging record on the pointer commit, per the §D
+self-naming convention. `reviewed_merge` is unchanged.
+Task 4 stays `in_progress` until R4 merges. The parked off-phase UX drafts (#709–#713) are left as they
+are, per the Board.
 
 ### Now — the drain directive's CLEARING PR (waits on the owner's drain-evidence run)
 
