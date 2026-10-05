@@ -113,8 +113,8 @@ function initialScreen(): ScreenKey {
 /** What a new-project create came to (legacy-copy recovery). `created` is final even when `opened`
  *  is false — the project exists, so the dialog closes and must not invite a duplicate retry.
  *  `refused`: the server rolled everything back and said why; a retry is safe once that is fixed.
- *  `unknown`: no confirmation, and the reconciled project list does not show it — a retry is NOT
- *  safe (it may still commit), so the dialog stays locked.
+ *  `unknown`: no confirmation, and none is possible on the client (no idempotency key; names are not
+ *  unique) — a retry is NOT safe (it may still commit), so the dialog stays locked.
  *  `stale`: the signed-in user changed while it was in flight; the reply is dropped. */
 export type CreateProjectOutcome =
   | { kind: 'created'; projectId: string; opened: boolean }
@@ -4252,7 +4252,6 @@ export const useStore = create<Store>()(
       const sameScope = () => get().pendingProjectId === null
         && get().activeProjectId === scopeAtSend.project
         && get().projectScopeGeneration === scopeAtSend.generation;
-      const knownBefore = new Set(get().memberships.map((m) => m.projectId));
 
       const finishCreated = async (created: { id: string; short: string }): Promise<CreateProjectOutcome> => {
         get().loadOrgData();
@@ -4281,16 +4280,13 @@ export const useStore = create<Store>()(
           return { kind: 'refused', message: refusalMessage(err) ?? 'Could not create the project — check your access.' };
         }
         // No answer, or a 5xx a proxy may have sent after the server committed: the outcome is
-        // UNKNOWN, and project creation carries no idempotency key, so a retry could make a second
-        // project (Codex 4180481917). Reconcile BEFORE answering: read the memberships now; a project
-        // of this org and name that was not ours before the send is this create, landed. Otherwise
-        // the dialog is told retry is NOT safe — the create may still commit — and stays locked.
-        const tok = get().sessionToken;
-        const ms = await gw.listMemberships().catch(() => null);
-        if (!sentBySameUser()) return { kind: 'stale' };
-        if (ms && get().sessionToken === tok) set((st) => { st.memberships = ms; });
-        const landed = ms?.find((m) => m.orgId === orgId && !knownBefore.has(m.projectId) && m.name === input.name);
-        if (landed) return finishCreated({ id: landed.projectId, short: landed.short });
+        // UNKNOWN. Project creation carries no idempotency key and project names are not unique, so
+        // nothing on the client can tie a project that appears now to THIS request — a same-named
+        // project made in another tab or by another admin would be indistinguishable (Codex
+        // 4180668018). So the outcome is never confirmed here: the project list is refreshed so the
+        // user can see what exists, and the dialog stays LOCKED, because a retry could make a second
+        // project while this one may still commit (Codex 4180481917).
+        get().loadOrgData();
         return { kind: 'unknown', message: 'The server did not confirm the project was created, and it may still appear. Close this and check the project list before creating it again.' };
       }
       if (!sentBySameUser()) return { kind: 'stale' };

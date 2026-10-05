@@ -141,7 +141,7 @@ describe('create project from a source the server refuses to copy', () => {
     expect(calls.createProject).toHaveBeenCalledTimes(1);
   });
 
-  it('an unconfirmed outcome that the project list does not show keeps the inputs and LOCKS Create — a retry could make it twice', async () => {
+  it('an unconfirmed outcome keeps the inputs, refreshes the project list and LOCKS Create — a retry could make it twice', async () => {
     const { gw, create, calls } = fakeGateway();
     s()._setGateway(gw);
     useStore.setState((st) => { st.sessionToken = 'header.eyJzdWIiOiJ1LW1lIn0.sig'; });
@@ -149,7 +149,7 @@ describe('create project from a source the server refuses to copy', () => {
     fireEvent.click(createButton(r));
     create.reject(new TypeError('Failed to fetch')); // no status: the request may or may not have landed
     await settle();
-    expect(calls.listMemberships).toHaveBeenCalled(); // reconciled BEFORE answering
+    expect(calls.listMemberships).toHaveBeenCalled(); // the list is refreshed so the user can check it
     expect(r.queryByTestId('host-closed')).toBeNull();
     expect(r.getByRole('alert').textContent).toMatch(/did not confirm/);
     expect((r.getByPlaceholderText(/Short name/) as HTMLInputElement).value).toBe('Thaltej');
@@ -159,17 +159,18 @@ describe('create project from a source the server refuses to copy', () => {
     expect(calls.createProject).toHaveBeenCalledTimes(1);
   });
 
-  it('an unconfirmed outcome the project list DOES show is the create, landed — closes and opens it', async () => {
-    const landed = { projectId: 'p-landed', name: 'Residence at Thaltej', short: 'Thaltej', role: 'pmc', orgId: 'org-1', orgName: 'Vitan' };
-    const { gw, create, calls } = fakeGateway({ membershipsAfter: [...s().memberships, landed] });
+  it('a same-named project appearing meanwhile is NOT taken as this create — it may be another tab’s or admin’s', async () => {
+    const other = { projectId: 'p-other', name: 'Residence at Thaltej', short: 'Thaltej', role: 'pmc', orgId: 'org-1', orgName: 'Vitan' };
+    const { gw, create, calls } = fakeGateway({ membershipsAfter: [...s().memberships, other] });
     s()._setGateway(gw);
     const r = mount();
     fireEvent.click(createButton(r));
-    create.reject(httpError(502)); // a proxy answered after the server committed
+    create.reject(httpError(502));
     await settle();
-    expect(r.getByTestId('host-closed')).toBeTruthy();
-    expect(calls.switchProject).toHaveBeenCalledWith('p-landed');
-    expect(calls.createProject).toHaveBeenCalledTimes(1);
+    expect(calls.switchProject).not.toHaveBeenCalled(); // never switched into someone else's project
+    expect(r.queryByTestId('host-closed')).toBeNull();
+    expect(r.getByRole('alert').textContent).toMatch(/did not confirm/);
+    expect(createButton(r).disabled).toBe(true);
   });
 
   it('Cancel while the create is out: the dialog goes, and a late refusal is told as a toast', async () => {
