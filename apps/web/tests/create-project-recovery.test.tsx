@@ -80,7 +80,18 @@ function mount(): RenderResult {
 const createButton = (r: RenderResult) => r.getByRole('button', { name: /^Creat/ }) as HTMLButtonElement;
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
+const tokenFor = (sub: string) => `header.${btoa(JSON.stringify({ sub }))}.sig`;
+/** A fresh page: the in-memory store reset as a reload would, localStorage untouched. */
+function freshPage() {
+  useStore.setState(getInitialState());
+  useStore.setState((st) => {
+    st.memberships = [{ projectId: 'legacy', name: 'Legacy Villa', short: 'Legacy', role: 'pmc', orgId: 'org-1', orgName: 'Vitan' }];
+    st.sessionUserId = 'u-me';
+  });
+}
+
 beforeEach(() => {
+  globalThis.localStorage?.clear(); // the create hold is mirrored there per user
   useStore.setState(getInitialState());
   useStore.setState((st) => {
     st.memberships = [{ projectId: 'legacy', name: 'Legacy Villa', short: 'Legacy', role: 'pmc', orgId: 'org-1', orgName: 'Vitan' }];
@@ -228,6 +239,82 @@ describe('create project from a source the server refuses to copy', () => {
     await settle();
     expect(s().projectCreateHold).toBeNull();
     expect(createButton(r).disabled).toBe(false);
+  });
+
+  it('a 408 is NOT a refusal: the request may still commit, so the outcome is unknown and Create stays locked (Codex 4185009892)', async () => {
+    const { gw, create, calls } = fakeGateway();
+    s()._setGateway(gw);
+    const r = mount();
+    fireEvent.click(createButton(r));
+    create.reject(httpError(408));
+    await settle();
+    expect(s().projectCreateHold?.phase).toBe('unknown');
+    expect(r.getByRole('alert').textContent).toMatch(/did not confirm/);
+    expect(createButton(r).disabled).toBe(true);
+    fireEvent.click(createButton(r));
+    expect(calls.createProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('a late reply from an EARLIER session never lifts a later session\'s hold (Codex 4185009904)', async () => {
+    const first = deferred<Created>();
+    const second = deferred<Created>();
+    const { gw, calls } = fakeGateway();
+    calls.createProject.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
+    s()._setGateway(gw);
+    // admin A starts a create, then signs out while it is out
+    useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
+    const a = s().createProject('org-1', { name: 'A project', short: 'A', stage: 'Planning' });
+    act(() => s().completeSignOut());
+    // admin B signs in and starts their own create
+    useStore.setState((st) => { st.sessionUserId = 'u-b'; st.sessionToken = tokenFor('u-b'); });
+    const b = s().createProject('org-1', { name: 'B project', short: 'B', stage: 'Planning' });
+    expect(s().projectCreateHold?.phase).toBe('in_flight');
+    // A's create settles late (a refusal): B's create is still out, so B's hold must stand
+    first.reject(httpError(400, 'refused'));
+    expect((await a).kind).toBe('stale');
+    expect(s().projectCreateHold?.phase).toBe('in_flight');
+    expect((await s().createProject('org-1', { name: 'B again', short: 'B2', stage: 'Planning' })).kind).toBe('unknown');
+    expect(calls.createProject).toHaveBeenCalledTimes(2); // no third POST while B's is out
+    second.reject(httpError(400, 'refused'));
+    expect((await b).kind).toBe('refused');
+    expect(s().projectCreateHold).toBeNull();
+  });
+
+  it('a RELOAD (or another tab) still sees an unconfirmed create: the mirrored hold locks a fresh store\'s dialog', async () => {
+    const { gw, create, calls } = fakeGateway();
+    s()._setGateway(gw);
+    const r = mount();
+    fireEvent.click(createButton(r));
+    create.reject(httpError(502));
+    await settle();
+    cleanup();
+    // a reload: the in-memory store starts empty, localStorage survives
+    freshPage();
+    s()._setGateway(gw);
+    const r2 = mount();
+    expect(createButton(r2).disabled).toBe(true);
+    expect(r2.getByRole('alert').textContent).toMatch(/did not confirm/);
+    fireEvent.click(createButton(r2));
+    expect(calls.createProject).toHaveBeenCalledTimes(1);
+    // the user's check releases it everywhere, including the mirror
+    fireEvent.click(r2.getByTestId('np-release'));
+    expect(createButton(r2).disabled).toBe(false);
+    cleanup();
+    freshPage();
+    const r3 = mount();
+    expect(createButton(r3).disabled).toBe(false);
+  });
+
+  it('a create still OUT when the page reloaded is unknown afterwards, never settled by the new page', async () => {
+    const { gw, calls } = fakeGateway();
+    s()._setGateway(gw);
+    void s().createProject('org-1', { name: 'Out', short: 'Out', stage: 'Planning' }); // never answers
+    freshPage();
+    s()._setGateway(gw);
+    const r = mount();
+    expect(createButton(r).disabled).toBe(true);
+    expect(r.getByRole('alert').textContent).toMatch(/another tab, or from before this page reloaded/);
+    expect(calls.createProject).toHaveBeenCalledTimes(1);
   });
 
   it('signing out ends the hold with the session', async () => {

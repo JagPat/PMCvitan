@@ -134,6 +134,9 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
   // could make the project twice. An unknown hold lifts only when the user confirms they checked.
   const hold = useStore((s) => s.projectCreateHold);
   const releaseHold = useStore((s) => s.releaseProjectCreateHold);
+  const syncHold = useStore((s) => s.syncProjectCreateHold);
+  // a create left unconfirmed in another tab or before a reload holds this dialog too
+  useEffect(() => { syncHold(); }, [syncHold]);
   const locked = hold !== null;
   const inFlight = useRef(false);
   const mounted = useRef(true);

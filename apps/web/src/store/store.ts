@@ -110,16 +110,20 @@ function initialScreen(): ScreenKey {
   return fromUrl ?? 'inbox';
 }
 
-/** What a new-project create came to (legacy-copy recovery). `created` is final even when `opened`
- *  is false — the project exists, so the dialog closes and must not invite a duplicate retry.
- *  `refused`: the server rolled everything back and said why; a retry is safe once that is fixed.
- *  `unknown`: no confirmation, and none is possible on the client (no idempotency key; names are not
- *  unique) — a retry is NOT safe (it may still commit), so the dialog stays locked.
- *  `stale`: the signed-in user changed while it was in flight; the reply is dropped. */
 export type ProjectCreateHold =
-  | { phase: 'in_flight' }
+  // `attempt` names the ONE create that set the hold, so only that request's reply can settle it — a
+  // late reply from an earlier session's create never lifts a later one's hold (Codex 4185009904)
+  | { phase: 'in_flight'; attempt: string }
   | { phase: 'unknown'; message: string };
 
+/** What a new-project create came to (legacy-copy recovery). `created` is final even when `opened`
+ *  is false — the project exists, so the dialog closes and must not invite a duplicate retry.
+ *  `refused`: a DEFINITE refusal (`isTerminalOutboxError`): the server rolled everything back and said
+ *  why; a retry is safe once that is fixed.
+ *  `unknown`: no answer, a 5xx, or a 401/408/429 — no confirmation, and none is possible on the
+ *  client (no idempotency key; names are not unique) — a retry is NOT safe (it may still commit), so
+ *  the dialog stays locked.
+ *  `stale`: the signed-in user changed while it was in flight; the reply is dropped. */
 export type CreateProjectOutcome =
   | { kind: 'created'; projectId: string; opened: boolean }
   | { kind: 'refused'; message: string }
@@ -668,6 +672,9 @@ export interface AppActions {
    *  project twice. Only {@link releaseProjectCreateHold} (the user confirming they checked the
    *  project list) or the end of the session lifts an `unknown` hold. */
   releaseProjectCreateHold: () => void;
+  /** Adopt a create hold recorded for this user by ANOTHER tab or before a reload (it is mirrored per
+   *  signed-in user in localStorage). The new-project dialog calls it on open. */
+  syncProjectCreateHold: () => void;
   updateProjectDetails: (orgId: string, projectId: string, input: Partial<NewProjectInput>) => void;
   deleteProject: (orgId: string, projectId: string) => void;
   restoreProject: (orgId: string, projectId: string) => void;
@@ -1367,6 +1374,31 @@ export const useStore = create<Store>()(
         return (JSON.parse(atob(token.split('.')[1])) as { sub?: string }).sub ?? 'anon';
       } catch {
         return 'anon'; // malformed token — the anonymous scope
+      }
+    };
+    // Legacy-copy recovery — the project-create hold, MIRRORED per signed-in user in localStorage, so a
+    // reload or a second tab still sees a create that is out or whose outcome is unknown (the endpoint has
+    // no idempotency key, so neither may start a second POST). Only the attempt that wrote a record settles
+    // it; a record no live request in THIS tab owns can never settle here, so it reads as unknown.
+    type StoredCreateHold = { attempt: string; phase: 'in_flight' | 'unknown'; message?: string };
+    const createHoldKey = (sub: string): string => `vitan.projectCreateHold.${sub}`;
+    const FOREIGN_CREATE_HOLD = 'A project create from another tab, or from before this page reloaded, was not confirmed, and it may still appear. Check the project list before creating it again.';
+    const readStoredCreateHold = (sub: string): StoredCreateHold | null => {
+      try {
+        const raw = globalThis.localStorage?.getItem(createHoldKey(sub));
+        return raw ? (JSON.parse(raw) as StoredCreateHold) : null;
+      } catch {
+        return null; // storage unavailable or unreadable — the in-memory hold still guards this tab
+      }
+    };
+    const writeStoredCreateHold = (sub: string, hold: StoredCreateHold | null): void => {
+      try {
+        const storage = globalThis.localStorage;
+        if (!storage) return;
+        if (hold) storage.setItem(createHoldKey(sub), JSON.stringify(hold));
+        else storage.removeItem(createHoldKey(sub));
+      } catch {
+        /* storage unavailable — the in-memory hold still guards this tab */
       }
     };
     // Persisted beside the outbox under the SAME user + project scope (WEB-02), so work recorded in
@@ -4282,15 +4314,24 @@ export const useStore = create<Store>()(
       const gw = gateway;
       // The session-scoped hold (Codex 4184306919): one create at a time per session, and none after an
       // unknown outcome until the user has checked the list — whichever dialog instance asks.
+      get().syncProjectCreateHold();
       const hold = get().projectCreateHold;
       if (hold?.phase === 'unknown') return { kind: 'unknown', message: hold.message };
       if (hold?.phase === 'in_flight') {
         return { kind: 'unknown', message: 'A project is already being created — wait for it to finish, then check the project list.' };
       }
-      set((s) => { s.projectCreateHold = { phase: 'in_flight' }; });
+      const attempt = newIdempotencyKey();
+      const sub = sessionSub(); // the user the mirror is kept for, fixed at send
+      set((s) => { s.projectCreateHold = { phase: 'in_flight', attempt }; });
+      writeStoredCreateHold(sub, { attempt, phase: 'in_flight' });
       const settle = (next: ProjectCreateHold | null) => {
-        // only this create's own hold is settled; a sign-out already cleared it
-        if (get().projectCreateHold?.phase === 'in_flight') set((s) => { s.projectCreateHold = next; });
+        // ONLY this create's own hold is settled: a sign-out cleared it, and another session's create may
+        // hold it now (Codex 4185009904) — in memory and in the mirror alike
+        const cur = get().projectCreateHold;
+        if (cur?.phase === 'in_flight' && cur.attempt === attempt) set((s) => { s.projectCreateHold = next; });
+        if (readStoredCreateHold(sub)?.attempt === attempt) {
+          writeStoredCreateHold(sub, next?.phase === 'unknown' ? { attempt, phase: 'unknown', message: next.message } : null);
+        }
       };
       // The reply is bound to the user who sent it, as `addLocationNode`'s is: one landing after a
       // sign-out or persona change belongs to nobody on screen, so it is dropped — no toast, no switch.
@@ -4324,14 +4365,16 @@ export const useStore = create<Store>()(
         created = await gw.createProject(orgId, input);
       } catch (err) {
         if (!sentBySameUser()) { settle(null); return { kind: 'stale' }; }
-        const status = (err as { status?: number } | null)?.status;
-        // A refusal (4xx) rolled the whole initialization back: nothing was created, so the reason
-        // is the server's own (e.g. the copied structure's rename advice) and a retry is safe.
-        if (typeof status === 'number' && status >= 400 && status < 500) {
+        // A DEFINITE refusal rolled the whole initialization back: nothing was created, so the reason is
+        // the server's own (e.g. the copied structure's rename advice) and a retry is safe. Definite is
+        // the outbox's own rule, `isTerminalOutboxError`: a 4xx other than 401/408/429. A 408 (Codex
+        // 4185009892), 401, 429, 5xx or no answer at all may follow a request the server still commits,
+        // so those are UNKNOWN below and keep the hold.
+        if (isTerminalOutboxError(err)) {
           settle(null);
           return { kind: 'refused', message: refusalMessage(err) ?? 'Could not create the project — check your access.' };
         }
-        // No answer, or a 5xx a proxy may have sent after the server committed: the outcome is
+        // No answer, a 5xx a proxy may have sent after the server committed, or a 401/408/429: the outcome is
         // UNKNOWN. Project creation carries no idempotency key and project names are not unique, so
         // nothing on the client can tie a project that appears now to THIS request — a same-named
         // project made in another tab or by another admin would be indistinguishable (Codex
@@ -4350,8 +4393,18 @@ export const useStore = create<Store>()(
     },
     releaseProjectCreateHold: () => {
       // the user has checked the project list after an unknown outcome; an in-flight create is never
-      // released by hand
-      if (get().projectCreateHold?.phase === 'unknown') set((s) => { s.projectCreateHold = null; });
+      // released by hand. The release covers this user's mirrored record too.
+      if (get().projectCreateHold?.phase === 'unknown') {
+        set((s) => { s.projectCreateHold = null; });
+        writeStoredCreateHold(sessionSub(), null);
+      }
+    },
+    syncProjectCreateHold: () => {
+      if (get().projectCreateHold !== null) return; // this tab's own hold is already authoritative
+      const stored = readStoredCreateHold(sessionSub());
+      if (!stored) return;
+      // no live request in this tab owns the record, so its outcome can never be confirmed here
+      set((s) => { s.projectCreateHold = { phase: 'unknown', message: stored.phase === 'unknown' && stored.message ? stored.message : FOREIGN_CREATE_HOLD }; });
     },
     updateProjectDetails: (orgId, projectId, input) => {
       if (!gateway) {
