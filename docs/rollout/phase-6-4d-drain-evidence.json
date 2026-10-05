@@ -29,31 +29,31 @@
   },
   "leases": [
     {
-      "instanceId": "227d3d28af2e-226-5126f2b2-1b3c-4c04-9e13-45382f7927b7",
+      "instanceId": "d8feed3fd2d1-227-6cd6b67d-7384-4c49-9853-72b5b1eca29d",
       "catalogVersion": 3,
-      "release": "3dc195ff871095b8049b979b6e66415da0424136",
-      "startedAt": "2026-10-04T20:30:57.183Z",
-      "leaseUntil": "2026-10-04T21:43:57.268Z",
+      "release": "3b823b68ce1b5b8e4e9047b4e1ed079d2284b2ea",
+      "startedAt": "2026-10-04T23:09:17.050Z",
+      "leaseUntil": "2026-10-05T00:13:17.137Z",
       "classification": "at-or-after"
     },
     {
-      "instanceId": "bec69a0eaa4e-225-18b592ca-daff-4d92-b418-178be73383c2",
+      "instanceId": "c3cbc6609c97-226-579c4fe2-585e-4055-bd34-b427f6717812",
       "catalogVersion": 3,
-      "release": "0c83a8d26b3adc057bb1fbe4de43ec023eb8a3b9",
-      "startedAt": "2026-10-04T21:34:29.547Z",
-      "leaseUntil": "2026-10-04T21:44:29.547Z",
+      "release": "e15ebaf671937055c75ede29eee749d777a980f8",
+      "startedAt": "2026-10-05T00:04:53.702Z",
+      "leaseUntil": "2026-10-05T00:17:53.708Z",
       "classification": "at-or-after"
     }
   ],
   "findings": [],
   "verdict": "drained",
-  "recordedAt": "2026-10-04T21:36:07.377Z",
+  "recordedAt": "2026-10-05T00:09:36.559Z",
   "provenance": {
     "workflow": ".github/workflows/drain-evidence.yml",
     "repository": "JagPat/PMCvitan",
-    "runId": 37236724416,
+    "runId": 37246357960,
     "runAttempt": 1,
-    "workflowSha": "0c83a8d26b3adc057bb1fbe4de43ec023eb8a3b9",
-    "clearingParent": "541317d799e5ddd511ee5a857916f98457944361"
+    "workflowSha": "e15ebaf671937055c75ede29eee749d777a980f8",
+    "clearingParent": "cdb7464620782c94bf1f5a19e8ae57afa0e790cc"
   }
 }
