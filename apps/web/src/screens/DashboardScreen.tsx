@@ -44,7 +44,7 @@ export function DashboardScreen() {
     // live: COMPUTED from the snapshot's placed photos; demo keeps the prototype's fixed claim
     API_BASE
       ? { key: 'photos', label: 'PROGRESS PHOTOS ON RECORD', value: photoStats.count, accent: 'var(--green-solid)', sub: photoStats.zones > 0 ? `Across ${photoStats.zones} zone${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet', onClick: () => setScreen('places') }
-      : { key: 'photos', label: 'PROGRESS PHOTOS THIS WEEK', value: 24, accent: 'var(--green-solid)', sub: 'Across 6 zones', onClick: () => {} },
+      : { key: 'photos', label: 'PROGRESS PHOTOS THIS WEEK', value: 24, accent: 'var(--green-solid)', sub: 'Across 6 zones', onClick: undefined },
   ];
 
   // demo-only prototype highlights; API mode renders the project's own photos (or an honest absence)
@@ -112,7 +112,7 @@ export function DashboardScreen() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, paddingRight: 22, borderRight: '1px solid rgba(237,231,218,.14)' }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: siteDot }} />
           <div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.18em', color: 'rgba(237,231,218,.45)' }}>LIVE FROM SITE</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.18em', color: 'rgba(237,231,218,.62)' }}>LIVE FROM SITE</div>
             <div style={{ fontWeight: 600, fontSize: 14, marginTop: 2 }}>{siteStatus}</div>
           </div>
         </div>
@@ -124,7 +124,7 @@ export function DashboardScreen() {
           ].map((s) => (
             <div key={s.l} style={{ textAlign: 'center' }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 22 }}>{s.v}</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'rgba(237,231,218,.5)', marginTop: 2 }}>{s.l}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'rgba(237,231,218,.62)', marginTop: 2 }}>{s.l}</div>
             </div>
           ))}
         </div>
@@ -135,21 +135,35 @@ export function DashboardScreen() {
 
       {/* KPI tiles */}
       <div className={styles.tiles}>
-        {tiles.map((t) => (
-          <div
-            key={t.key}
-            onClick={t.onClick}
-            data-testid={`tile-${t.key}`}
-            style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderTop: `3px solid ${t.accent}`, borderRadius: 12, padding: '20px 22px', cursor: 'pointer' }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--muted)', maxWidth: 150, lineHeight: 1.5 }}>{t.label}</div>
-              <ArrowRight size={15} style={{ opacity: 0.5 }} />
-            </div>
-            <div data-testid={`tile-${t.key}-value`} style={{ fontSize: 44, fontWeight: 700, lineHeight: 1, margin: '14px 0 8px', color: t.accent }}>{t.value}</div>
-            <div style={{ fontSize: 12, color: 'var(--muted)' }}>{t.sub}</div>
-          </div>
-        ))}
+        {tiles.map((t) => {
+          // B5 (F-5): a tile that opens a screen is a real button — reachable by Tab, activated by
+          // Enter or Space, named by its label and value. A tile with nowhere to go stays a plain box
+          // with no arrow and no pointer, so it never looks clickable.
+          const body = (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--muted)', maxWidth: 150, lineHeight: 1.5 }}>{t.label}</div>
+                {t.onClick && <ArrowRight size={15} style={{ opacity: 0.5 }} aria-hidden />}
+              </div>
+              <div data-testid={`tile-${t.key}-value`} style={{ fontSize: 44, fontWeight: 700, lineHeight: 1, margin: '14px 0 8px', color: t.accent }}>{t.value}</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>{t.sub}</div>
+            </>
+          );
+          const box = { background: 'var(--panel)', border: '1px solid var(--hairline)', borderTop: `3px solid ${t.accent}`, borderRadius: 12, padding: '20px 22px' } as const;
+          return t.onClick ? (
+            <button
+              key={t.key}
+              type="button"
+              onClick={t.onClick}
+              data-testid={`tile-${t.key}`}
+              style={{ ...box, cursor: 'pointer', textAlign: 'left', width: '100%', font: 'inherit', color: 'inherit', display: 'block' }}
+            >
+              {body}
+            </button>
+          ) : (
+            <div key={t.key} data-testid={`tile-${t.key}`} style={box}>{body}</div>
+          );
+        })}
       </div>
 
       {/* photo highlights — live projects show their own recorded photos, honestly empty otherwise */}

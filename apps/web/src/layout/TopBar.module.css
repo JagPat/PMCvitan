@@ -89,7 +89,7 @@
 .viewingAs {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: rgba(237, 231, 218, 0.5);
+  color: rgba(237, 231, 218, 0.62);
 }
 .select {
   min-width: 44px;

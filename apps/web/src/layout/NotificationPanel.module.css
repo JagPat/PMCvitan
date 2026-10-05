@@ -32,7 +32,7 @@
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.2em;
-  color: rgba(237, 231, 218, 0.5);
+  color: rgba(237, 231, 218, 0.62);
   margin-bottom: 10px;
   padding: 0 4px;
 }
@@ -66,6 +66,6 @@
 .time {
   font-family: var(--font-mono);
   font-size: 9px;
-  color: rgba(237, 231, 218, 0.4);
+  color: rgba(237, 231, 218, 0.62);
   margin-top: 3px;
 }
