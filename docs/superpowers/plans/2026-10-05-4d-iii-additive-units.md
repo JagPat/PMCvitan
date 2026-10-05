@@ -54,8 +54,14 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
   merged and DEPLOYED: the release carrying R0c is the oldest one that may serve when a seal lands, and
   each R1–R3 migration refuses to run while a live `ReleaseLease` predates it (the same SERIALIZED
   preflight R4 carries, step 1 below: the register locked against new leases and renewals before it is
-  read, and held to commit; judged at the R0c release's catalog version or, if R0c does not bump the
-  catalog, by a release-identity check against the R0c merge, stated in R1's packet). Legacy and
+  read, and held to commit). A one-time check cannot stop an older image from STARTING after the
+  migration commits (#714 review, Codex 4181162627), so the fence is also PERSISTENT:
+  - R0c raises the compiled `SERVER_GENERATION` (`src/platform/server-generation.ts:46`) from 2 to 3;
+  - R1, the first seal, raises the persisted `ServerGeneration` minimum to 3 in its own transaction, under
+    the serialized lease preflight, before installing its seal;
+  - from then on, any R0a- or R0b-era build is REFUSED AT STARTUP by `judgeServerGeneration`
+    (`server-generation.ts:87`), the existing mechanism migrations alone may raise;
+  - R2, R3 and R4 each fail closed unless the persisted minimum is at least 3. Legacy and
   drain-window rows are untouched: every
   seal is INSERT- or transition-time, never a backfill. The doors still stand, so `rollout.phase6_4d`
   keeps reading `'reserved'`.
@@ -122,8 +128,13 @@ Plan §D lines 7434–7614 (rounds 8, 10–13, 16, 24 of #572).
       `('withdrawn','withdrawn')` are admitted, so both crossed pairs are refused.
     - `open → withdrawn` on a `countersign_rejection` request is refused by ORIGIN, before any
       authority check.
-    - A `standard` withdrawal requires the resolver to be the requester, or to hold `pmc` per
-      `platform_user_holds_role(projectId, resolvedById, 'pmc')` under `phase6_try_readiness`.
+    - A `standard` withdrawal requires the resolver to be the requester, or to hold `pmc` per the
+      WINDOWED predicate `platform_user_holds_role_windowed(projectId, resolvedById, 'pmc')` under
+      `phase6_try_readiness` (#714 review, Codex 4181162631). The unwindowed `platform_user_holds_role`
+      reads `ProjectUserStanding` alone. A membership-less org owner/admin is issued a `pmc` token and
+      passes `withdrawChange`'s service authorization, but holds no `ProjectUserStanding` row until R4's
+      re-projection, so the unwindowed predicate would roll back an authorized withdrawal. The windowed
+      predicate is the one `phase6_t4d_actor_pair_true` already uses.
   - **RE-OPEN:** any return to `'open'` is refused.
   - **DELETE:** refused. The SANCTIONED RESET is the only exception.
 - **The seed.** `prisma/seed.ts`'s DL-003 plant (lines 396–434) today disables `ChangeRequest_t4d_paired`
@@ -146,6 +157,8 @@ Plan §D lines 7434–7614 (rounds 8, 10–13, 16, 24 of #572).
     status-only closure; the crossed pairs; a stranger's `standard` withdrawal; a `countersign_rejection`
     withdrawal by a PMC with every column correct; the re-open; and the DELETE. Each is refused, with
     the decision's state unchanged.
+  - A membership-less org owner/admin withdrawing ANOTHER user's `standard` request COMMITS, before
+    any re-projection. This is RED against the unwindowed predicate.
   - The two delivered closures, as R0 completes them, still commit (`decisions.service.ts:583`, `:1826`).
   - P28b's seed arm runs the FULL seed on a fresh and on a mature database with every seal enabled
     afterwards. The same plant with ONLY the provenance seal disabled is refused at commit by
@@ -172,6 +185,16 @@ The fixture plants that write these rows directly gain the new seal names in the
 lists, as named bypasses: `plantLegacyApprovalRevision` (`test/integration/fixtures.ts:327`),
 `insertRawEvent`/`insertRawEventVia` (`:519`; its `system:seed` default must then carry the system
 pair), `plantLegacyEvent` (`:575`) and `plantUnpairedDecisionState` (`:377`).
+
+Two integration suites also write a LEGACY-shaped `Notification` directly: a row with a `decisionId` and
+neither `kind` nor `eventId`, deliberately, to exercise the legacy feed (#714 review, Codex 4181162635):
+- `phase6-t4d-ii-a7a-kinded-notice-writers.test.ts:186`;
+- `phase6-t4a-withdraw.test.ts:2015`.
+
+R2 routes both through one named legacy-notice fixture plant that disables the `Notification` presence
+seal by name inside its transaction. A statement tripwire pins the closed set of admitted direct
+`Notification` writers of that shape. Direct inserts that already carry both `kind` and `eventId` (the
+a7a, a4c and seal-stripped hostile probes) are unaffected and keep testing the seals they target.
 
 Proofs: P42's old-write-shape inserts become REFUSED (the arms `scripts/upgrade-proof.sh` marks "admits
 until 4d-iii", near line 5235), each beside the delivered writer committing.
