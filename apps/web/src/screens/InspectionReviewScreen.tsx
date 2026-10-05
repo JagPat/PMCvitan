@@ -78,14 +78,15 @@ export function InspectionReviewScreen() {
       </div>
 
       {reviews.length > 1 && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0 2px' }} role="tablist" aria-label="Review queue">
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0 2px' }} role="group" aria-label="Review queue">
           {reviews.map((r) => {
             const on = r.id === review.id;
             return (
               <button
                 key={r.id}
-                role="tab"
-                aria-selected={on}
+                // a plain pressed-button group: the queue switches the review in place, with no
+                // tab panel or arrow-key model, so tab roles would promise navigation it lacks
+                aria-pressed={on}
                 onClick={() => setActiveReview(r.id)}
                 data-testid={`review-tab-${r.id}`}
                 style={{

@@ -59,3 +59,27 @@ for (const vp of VIEWPORTS) {
     });
   }
 }
+
+test('schedule gate reasons: one disclosure that fits its column and lists every gate in words', async ({ page }) => {
+  await page.setViewportSize(DESKTOP);
+  await page.goto('/projects/ambli/schedule');
+  const gates = page.getByTestId('gates-ACT-31');
+  const box = (await gates.boundingBox())!;
+  const row = (await page.getByTestId('sched-ACT-31').boundingBox())!;
+  // five 44px buttons once overflowed the 136px column over the row's action; the group stays inside it
+  expect(box.width).toBeLessThanOrEqual(136);
+  expect(box.x + box.width).toBeLessThanOrEqual(row.x + row.width);
+  await expect(gates).toHaveAttribute('aria-expanded', 'false');
+  await gates.click();
+  await expect(gates).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByTestId('gate-reasons-ACT-31').locator('li')).toHaveCount(5);
+});
+
+test('the review queue is a pressed-button group, not a half-built tab set', async ({ page }) => {
+  await page.goto('/projects/ambli/review');
+  await expect(page.getByRole('tab')).toHaveCount(0);
+  const queue = page.getByRole('group', { name: 'Review queue' });
+  if (await queue.count()) {
+    await expect(queue.locator('button[aria-pressed="true"]')).toHaveCount(1);
+  }
+});
