@@ -47,9 +47,11 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
     non-`human` actor (`20271220000000…/migration.sql:3576`), so a system event carrying Q1's attribution
     would abort at commit. R0b re-states that arm (`CREATE OR REPLACE`, marker-aware like every 4d replace)
     to admit, on a `system` actor only, the system role together with a name drawn from a registered set
-    of automation identities, and nothing else. It admits; it requires nothing, so every delivered writer
-    still commits.
-  - **R0c (service-only)** makes the system emitters write that pair. It opens only after R0b is deployed.
+    of automation identities, and nothing else. It also adds the nullable `ReleaseLease.serverGeneration`
+    column (with its `schema.prisma` field; the lease writer is raw SQL naming its columns). It admits; it
+    requires nothing, so every delivered writer still commits.
+  - **R0c (service-only)** makes the system emitters write that pair and the lease record its generation.
+    It opens only after R0b is deployed.
 - **R1–R3 change nothing a delivered writer does once R0 is on `main`.** Each opens only after R0c has
   merged and DEPLOYED: the release carrying R0c is the oldest one that may serve when a seal lands, and
   each R1–R3 migration refuses to run while a live `ReleaseLease` predates it (the same SERIALIZED
@@ -61,6 +63,17 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
     the serialized lease preflight, before installing its seal;
   - from then on, any R0a- or R0b-era build is REFUSED AT STARTUP by `judgeServerGeneration`
     (`server-generation.ts:87`), the existing mechanism migrations alone may raise;
+  - neither of those stops an R0a- or R0b-era process that is ALREADY SERVING when R1 runs: every
+    R0-era release compiles catalog version 3, so a catalog-only preflight cannot tell them from R0c
+    (#714 review, Codex 4181245450). The lease therefore records its build's generation. R0b adds a
+    nullable `ReleaseLease.serverGeneration` column (additive; the INSERT names its columns, so the
+    delivered writer keeps committing and writes NULL), and R0c's `writeLease` records the compiled
+    `SERVER_GENERATION`. Each R1–R3 preflight then refuses, under the same lock, while any LIVE lease has
+    `serverGeneration IS NULL OR serverGeneration < 3`: that is, it requires every pre-R0c process to
+    DRAIN first. A drained process cannot come back. `renewLease` never revives a lapsed lease, the
+    lease fence terminates a process whose lease has lapsed, and the raised minimum refuses its restart.
+    Proofs: a live NULL-generation lease and a live generation-2 lease each refuse R1. An expired one is
+    admitted, and so is a live generation-3 lease;
   - R2, R3 and R4 each fail closed unless the persisted minimum is at least 3. Legacy and
   drain-window rows are untouched: every
   seal is INSERT- or transition-time, never a backfill. The doors still stand, so `rollout.phase6_4d`
@@ -109,8 +122,10 @@ resolution, `members.factPair`). R0's proofs:
   command refused with the decision's state unchanged; the org owner/admin events carrying `pmc`.
 - **R0b:** the system pair admitted on a `system` actor; refused on a `human` actor; refused with an
   unregistered or blank name; a human pair still judged by `phase6_t4d_actor_pair_true` exactly as before;
-  a P3005 replay leaving the re-stated arm in place.
-- **R0c:** each system emitter committing its event with the pair.
+  a P3005 replay leaving the re-stated arm in place; the `ReleaseLease.serverGeneration` column present and
+  the delivered `writeLease` still committing with it NULL.
+- **R0c:** each system emitter committing its event with the pair; a registered lease recording
+  `serverGeneration = 3`.
 
 ### R1 — `ChangeRequest_t4d_provenance_required` and the seed's named bypass
 
@@ -160,6 +175,9 @@ Plan §D lines 7434–7614 (rounds 8, 10–13, 16, 24 of #572).
   - A membership-less org owner/admin withdrawing ANOTHER user's `standard` request COMMITS, before
     any re-projection. This is RED against the unwindowed predicate.
   - The two delivered closures, as R0 completes them, still commit (`decisions.service.ts:583`, `:1826`).
+  - P42's old-shape `ChangeRequest` insert (`UP4D-CR1`, `upgrade-proof.sh` near line 5209) is REFUSED,
+    beside the delivered `requestChange` committing.
+  - The serialized preflight refuses R1 while a live pre-R0c lease (NULL or generation 2) stands.
   - P28b's seed arm runs the FULL seed on a fresh and on a mature database with every seal enabled
     afterwards. The same plant with ONLY the provenance seal disabled is refused at commit by
     `ChangeRequest_t4d_paired`.
@@ -196,8 +214,23 @@ seal by name inside its transaction. A statement tripwire pins the closed set of
 `Notification` writers of that shape. Direct inserts that already carry both `kind` and `eventId` (the
 a7a, a4c and seal-stripped hostile probes) are unaffected and keep testing the seals they target.
 
-Proofs: P42's old-write-shape inserts become REFUSED (the arms `scripts/upgrade-proof.sh` marks "admits
-until 4d-iii", near line 5235), each beside the delivered writer committing.
+The pairing-matrix suite's raw writers (#714 review, Codex 4181245446). `phase6-t4d-i-b-pairing-matrix.test.ts`
+simulates the CURRENT writers with raw inserts that omit the pins R2 requires: the APPROVAL revision
+(lines 286, 299; no `approvedByName`/`approvedByRole`), the CONSULT request (line 311; no requester
+pair) and the RESPOND response (line 324; no responder pair), plus the system `DomainEvent` (line 380;
+no pair). R2 includes this suite and updates each simulated current writer to carry its pins, so the
+matrix keeps testing the pairing seals it targets and is not refused by the presence seals first. A
+row that is deliberately legacy-shaped keeps a named bypass instead, and only such a row.
+
+Proofs (`apps/api/scripts/upgrade-proof.sh`, P42):
+- P42's existing old-shape `Notification` insert (`UP4D-N1`, near line 5231) names no `decisionId`.
+  The R2 seal applies only to decision-bound rows, so that insert stays COMMITTED and its assertion is
+  unchanged (#714 review, Codex 4181245454).
+- R2 ADDS a decision-bound old-write case: a `Notification` with a `decisionId` and neither `kind` nor
+  `eventId`, now REFUSED, beside the delivered writer committing.
+- P42's old-shape `ChangeRequest` insert (`UP4D-CR1`, no `sourceCommandId`, no requester pair) becomes
+  REFUSED under R1's INSERT arm. It moves to R1's proofs, beside the delivered `requestChange`
+  committing.
 
 ### R3 — the three orgs-owned standing-writer seals
 
