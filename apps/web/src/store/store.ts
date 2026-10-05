@@ -1390,6 +1390,16 @@ export const useStore = create<Store>()(
       set((s) => { s.projectCreateHold = { phase: 'in_flight', attempt, orgId, input }; });
       return true;
     };
+    /** Put back an attempt the reservation took but that was never SENT (the server cannot keep receipts,
+     *  or the click's user left): a new create's hold is released; a retried attempt returns to the
+     *  unknown hold it was — in memory and in the mirror, and only if it is still this attempt's. */
+    const unreserveProjectCreate = (sub: string, attempt: string, was: Extract<ProjectCreateHold, { phase: 'unknown' }> | null): void => {
+      const cur = get().projectCreateHold;
+      if (cur?.attempt === attempt) set((s) => { s.projectCreateHold = was; });
+      if (readStoredCreateHold(sub)?.attempt === attempt) {
+        writeStoredCreateHold(sub, was ? { attempt, phase: 'unknown', orgId: was.orgId, input: was.input, message: was.message } : null);
+      }
+    };
     /** What a create is bound to, captured at the CLICK — before any wait for the reservation — so a
      *  sign-out or project switch begun while it waits or while it is out is seen as one. */
     type CreateSendContext = { sub: string; identity: string; scope: { project: string | null; generation: number } };
@@ -1406,8 +1416,10 @@ export const useStore = create<Store>()(
       const settle = (next: ProjectCreateHold | null) => {
         // ONLY this attempt's own hold is settled: a sign-out cleared it, and another session's create
         // may hold it now (Codex 4185009904) — in memory and in the mirror alike
+        // — whatever its phase: the same user signing back in restores it as unknown, and its own reply
+        // still finishes it (Codex 4189880211)
         const cur = get().projectCreateHold;
-        if (cur?.phase === 'in_flight' && cur.attempt === attempt) {
+        if (cur?.attempt === attempt) {
           set((s) => { s.projectCreateHold = next; });
         }
         if (readStoredCreateHold(sub)?.attempt === attempt) {
@@ -4385,9 +4397,6 @@ export const useStore = create<Store>()(
       const ctx = captureCreateContext(); // the user (and mirror) and scope, fixed at the click
       const sub = ctx.sub;
       const gw = gateway; // …and the server it goes to
-      // nothing is sent to a server that would ignore the key (a bundle served ahead of its API) — asked
-      // before the reservation, so no tab's turn waits on this request
-      if (!(await serverKeepsCreateReceipts(gw))) return { kind: 'refused', message: SERVER_NOT_READY };
       const reserved = await withCreateReservation(sub, async (): Promise<CreateProjectOutcome | { attempt: string }> => {
         // a sign-out or persona change while this waited for its turn: the click belongs to nobody now
         if (captureCreateContext().identity !== ctx.identity) return { kind: 'stale' };
@@ -4405,6 +4414,18 @@ export const useStore = create<Store>()(
       });
       if (reserved === null) return { kind: 'refused', message: NO_CROSS_TAB_LOCK };
       if (!('attempt' in reserved)) return reserved;
+      // Nothing is sent to a server that would ignore the key (a bundle served ahead of its API). Asked
+      // AFTER the reservation (Codex 4189880202): the in-flight record already holds every other tab off,
+      // so no create can complete and clear it while this check is out — and the lock is not held across
+      // the request. A server without receipts gets nothing, and the attempt is released.
+      if (!(await serverKeepsCreateReceipts(gw))) {
+        unreserveProjectCreate(sub, reserved.attempt, null);
+        return { kind: 'refused', message: SERVER_NOT_READY };
+      }
+      if (captureCreateContext().identity !== ctx.identity) {
+        unreserveProjectCreate(sub, reserved.attempt, null);
+        return { kind: 'stale' };
+      }
       return sendProjectCreate(gw, orgId, input, reserved.attempt, ctx);
     },
     retryProjectCreate: async () => {
@@ -4412,13 +4433,6 @@ export const useStore = create<Store>()(
       const ctx = captureCreateContext();
       const sub = ctx.sub;
       const gw = gateway;
-      // a server that ignores the key would make the project a second time: the hold stays, nothing sent
-      if (!(await serverKeepsCreateReceipts(gw))) {
-        get().syncProjectCreateHold();
-        return get().projectCreateHold?.phase === 'unknown'
-          ? { kind: 'unknown', message: SERVER_NOT_READY_RETRY }
-          : { kind: 'unknown', message: 'There is no unconfirmed project create to try again.' };
-      }
       const reserved = await withCreateReservation(sub, (): CreateProjectOutcome | Extract<ProjectCreateHold, { phase: 'unknown' }> => {
         if (captureCreateContext().identity !== ctx.identity) return { kind: 'stale' };
         get().syncProjectCreateHold();
@@ -4430,6 +4444,16 @@ export const useStore = create<Store>()(
       });
       if (reserved === null) return { kind: 'unknown', message: NO_CROSS_TAB_LOCK };
       if (!('attempt' in reserved)) return reserved;
+      // as for a new create, the server is asked after the reservation: a server that ignores the key
+      // would make the project a second time, so the attempt goes back to the unknown hold it was
+      if (!(await serverKeepsCreateReceipts(gw))) {
+        unreserveProjectCreate(sub, reserved.attempt, reserved);
+        return { kind: 'unknown', message: SERVER_NOT_READY_RETRY };
+      }
+      if (captureCreateContext().identity !== ctx.identity) {
+        unreserveProjectCreate(sub, reserved.attempt, reserved);
+        return { kind: 'stale' };
+      }
       return sendProjectCreate(gw, reserved.orgId, reserved.input, reserved.attempt, ctx);
     },
     syncProjectCreateHold: () => {

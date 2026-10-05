@@ -539,6 +539,77 @@ describe('cross-tab project create — one reservation at a time', () => {
     tabB.getState()._setGateway(null);
   });
 
+  it('a STALLED capability check cannot let another tab create meanwhile: the attempt is reserved first (Codex 4189880202)', async () => {
+    fakeLocks();
+    const tabA = useStore;
+    const tabB = await secondTab({ userId: 'u-me', token: tokenFor('u-a') });
+    tabA.setState((st) => { st.sessionUserId = 'u-me'; st.sessionToken = tokenFor('u-a'); });
+    const a = fakeGateway();
+    const b = fakeGateway();
+    const probeA = deferred<string[]>();
+    a.calls.serverFeatures.mockImplementationOnce(() => probeA.promise); // tab A's /health stalls
+    tabA.getState()._setGateway(a.gw);
+    tabB.getState()._setGateway(b.gw);
+
+    const outA = tabA.getState().createProject('org-1', { name: 'Tab A', short: 'A', stage: 'Planning' });
+    await settle(); // A has reserved and is waiting on /health
+    // tab B submits while A's check is out: A's in-flight record holds it, so B mints no key and sends nothing
+    await expect(tabB.getState().createProject('org-1', { name: 'Tab B', short: 'B', stage: 'Planning' }))
+      .resolves.toEqual({ kind: 'unknown', message: expect.stringMatching(/another tab/) });
+    expect(b.calls.createProject).not.toHaveBeenCalled();
+    // A's check answers: A sends its ONE create
+    probeA.resolve(['orgs.createProject.receipt']);
+    await settle();
+    expect(a.calls.createProject).toHaveBeenCalledTimes(1);
+    a.create.resolve({ id: 'p-a', name: 'Tab A', short: 'A' });
+    await expect(outA).resolves.toMatchObject({ kind: 'created', projectId: 'p-a' });
+    tabB.getState()._setGateway(null);
+  });
+
+  it('a server without receipts RELEASES a reserved new create, and puts a retried attempt back as unknown', async () => {
+    fakeLocks();
+    useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
+    const old = fakeGateway({ oldApi: true });
+    s()._setGateway(old.gw);
+    await expect(s().createProject('org-1', { name: 'X', short: 'X', stage: 'Planning' }))
+      .resolves.toEqual({ kind: 'refused', message: expect.stringMatching(/being updated/) });
+    expect(s().projectCreateHold).toBeNull();
+    expect(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a')).toBeNull();
+    // an unknown attempt, then a retry against a server without receipts: it stays the same unknown attempt
+    const fresh = fakeGateway();
+    s()._setGateway(fresh.gw);
+    void s().createProject('org-1', { name: 'Y', short: 'Y', stage: 'Planning' });
+    await settle();
+    fresh.create.reject(httpError(502));
+    await settle();
+    const key = s().projectCreateHold?.attempt;
+    s()._setGateway(old.gw);
+    await expect(s().retryProjectCreate()).resolves.toEqual({ kind: 'unknown', message: expect.stringMatching(/cannot safely finish/) });
+    expect(s().projectCreateHold).toMatchObject({ phase: 'unknown', attempt: key });
+    expect(JSON.parse(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a') ?? '{}')).toMatchObject({ phase: 'unknown', attempt: key });
+    expect(old.calls.createProject).not.toHaveBeenCalled();
+  });
+
+  it('the same user signing back in mid-create sees it as unknown, and its own late SUCCESS still lifts the hold (Codex 4189880211)', async () => {
+    fakeLocks();
+    const { gw, create } = fakeGateway();
+    s()._setGateway(gw);
+    useStore.setState((st) => { st.sessionUserId = 'u-a'; st.sessionToken = tokenFor('u-a'); });
+    const out = s().createProject('org-1', { name: 'A project', short: 'A', stage: 'Planning' });
+    await settle();
+    act(() => s().completeSignOut());
+    // the same user signs back in and opens the dialog before the reply: the mirror reads as unknown
+    useStore.setState((st) => { st.sessionUserId = 'u-a'; st.sessionToken = tokenFor('u-a'); });
+    s().syncProjectCreateHold();
+    expect(s().projectCreateHold?.phase).toBe('unknown');
+    // the original reply lands: it is THIS user's attempt, so it settles the hold whatever its phase
+    create.resolve({ id: 'p-a', name: 'A project', short: 'A' });
+    await out;
+    await settle();
+    expect(s().projectCreateHold).toBeNull();
+    expect(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a')).toBeNull();
+  });
+
   it('storage BLOCKED: nothing durable could carry the attempt past this page, so nothing is sent (Codex 4187372392, 4187663033)', async () => {
     fakeLocks();
     blockStorage();
