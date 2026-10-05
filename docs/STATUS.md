@@ -35,9 +35,11 @@ The record maps §D's 4d-iii inventory onto R1–R4, with the fenced retirement 
 seal is on `main` before the doors drop. It adds R0, a service-only unit, because an audit of `main` found
 that the writers §D says "already comply" do not: neither `ChangeRequest` closure writes the resolver's
 command, role or name; most actor pairs are written conditionally; org owner/admin events always carry a
-NULL pair; and system events cannot carry one. The owner decided both open questions on 2026-10-05: every
-event is attributed (system actors and org owner/admin actions included), and a command whose token role
-no longer stands is refused with a re-sign-in message rather than recorded with an empty pair. The record
+NULL pair; and system events cannot carry one. The Board answered both open questions on 2026-10-05
+(relayed by PMCvitan Promote). Q1, every event is attributed: system events get a system role plus a named
+automation identity, and org owner/admin actions get the `pmc` role, so every event carries the role and
+name pair. Q2, refuse and re-sign-in: a stale-session action is refused with a clear "your role on this
+project changed — sign in again" message, never recorded with an empty or false attribution. The record
 also states where §D and `main` disagree: the correspondence body 4d-i never installs, the `ReleaseLease`
 preflight that does not exist yet, and six doors rather than "five".
 

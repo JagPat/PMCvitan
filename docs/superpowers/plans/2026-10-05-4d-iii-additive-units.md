@@ -4,7 +4,8 @@ Staging record of 2026-10-05, opened by the autonomous runner when 4d-iii became
 directive `phase-6-4d-previous-release-drained` cleared with #693 (`f301d44`), whose committed
 `docs/rollout/phase-6-4d-drain-evidence.json` is a `drained` verdict at minimum release `f8274f4`
 (A8b) and minimum catalog version 3. The owner chose additive staging for 4d-iii in the authoring
-session (2026-10-05, after the Board's instruction to start 4d-iii from STATUS); this record is that
+session (2026-10-05, after the Board's instruction to start 4d-iii from STATUS), and the Board's answers to
+the two attribution questions R0 raises are recorded under R0; this record is that
 disposition's vehicle, as `2026-09-21-4d-i-b-additive-units.md`, `2026-09-26-4d-ii-a-additive-units.md`
 and `2026-09-30-4d-ii-b-additive-units.md` were for their units. Merging it records the staging;
 closing it, or a coordination note on #482 choosing §D's single unit, reverses it before any R-unit
@@ -54,14 +55,17 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
 ### R0 — the writers state every pin (service-only)
 
 The audit of `main` at `4b40830` against R1–R3's requirements found these writers non-compliant. R0
-fixes each, with the owner's two decisions of 2026-10-05 (recorded in the authoring session):
+fixes each, under the Board's two answers of 2026-10-05 (relayed by PMCvitan Promote; first given in the
+authoring session):
 
-- **Decision 1 — every event is attributed.** System actors and org owner/admin actions record a
-  truthful role and name rather than none.
-- **Decision 2 — a stale role is refused, not recorded empty.** When the signed-in user's token role no
-  longer stands on the project, the command is refused with a re-sign-in message ("your role on this
-  project changed — sign in again"), as the chain-active approve and the forward already do. Nothing is
-  recorded with a NULL or false pair.
+- **Decision 1 (Q1) — every event is attributed; every event carries the role and name pair.**
+  - System events record a SYSTEM ROLE plus a NAMED AUTOMATION IDENTITY.
+  - Org owner/admin actions record the `pmc` role.
+  - No event is written without the pair.
+- **Decision 2 (Q2) — a stale-session action is refused, with re-sign-in.** When the signed-in user's
+  token role no longer stands on the project, the action is refused with a clear message, "your role on
+  this project changed — sign in again", as the chain-active approve and the forward already refuse. It
+  is never recorded with an empty or false attribution.
 
 The non-compliant writers:
 
@@ -73,8 +77,8 @@ The non-compliant writers:
 | `DecisionApprovalRevision` pair | `decisions.service.ts:610` (no-chain approve) | `envelope?.x ?? null` | Decision 2 |
 | consultation request / response pairs | `decisions.service.ts:964`, `:1110` | `pair?.x ?? null` | Decision 2 |
 | `DomainEvent` pair, human emitters | every `emitEvent` caller that passes a possibly-NULL pair, or none (decisions, members, and every other service and participant; the commercial human paths) | resolved inside `emitEvent`, NULL when the role does not stand | `emitEvent` refuses a human event whose pair does not resolve (Decision 2) |
-| `DomainEvent` pair, org owner/admin | `orgs.service.ts` 518, 1164, 1182, 1198 and the participants it drives during project initialization | the actor carries the ORG role (`owner`/`admin`), which `ProjectUserStanding` never holds, so the pair is always NULL | record the project role the org authority grants (`pmc`), the windowed owner/admin arm the readiness functions already read (Decision 1) |
-| `DomainEvent` pair, system actors | `decisions.effects.ts:145`, `commercial-activation.service.ts:85→199`, `commercial-reevaluate.cli.ts:144` | `emitEvent` throws on any envelope for a system actor; the pair is always NULL | an explicit system role and a named automation identity, and `emitEvent` accepts that pair for system actors (Decision 1) |
+| `DomainEvent` pair, org owner/admin | `orgs.service.ts` 518, 1164, 1182, 1198 and the participants it drives during project initialization | the actor carries the ORG role (`owner`/`admin`), which `ProjectUserStanding` never holds, so the pair is always NULL | record the `pmc` role, the project role the org authority grants and the windowed owner/admin arm the readiness functions already read (Decision 1) |
+| `DomainEvent` pair, system actors | `decisions.effects.ts:145`, `commercial-activation.service.ts:85→199`, `commercial-reevaluate.cli.ts:144` | `emitEvent` throws on any envelope for a system actor; the pair is always NULL | a system role plus a named automation identity, and `emitEvent` accepts that pair for system actors (Decision 1) |
 
 The writers already compliant and left alone: `rejectProvisionalApproval` (`:1325`), every
 `Notification` row carrying a `decisionId`, both `revisionId` payload emitters (`:691`, `:1233`), and the
