@@ -9,6 +9,7 @@ import type { OrgsParticipant } from '../orgs/orgs.participant';
 import type { AuthUser } from '../common/auth';
 import type { CreateDecisionInput } from '../contracts';
 import { pendingDecisionNotice } from '../domain/notifications';
+import { answerActorEnvelope } from '../../test/unit-support/actor-envelope-stub';
 
 /**
  * PR C Task 2 — services no longer call `notifyChanged`; they hand their committed events to the
@@ -74,12 +75,12 @@ function make() {
     $executeRaw: vi.fn(async () => 1),
     // Phase 6 task 4b round 16 — publish() row-locks the draft head (FOR UPDATE) before reading
     // its snapshot; the stand-in answers from the in-memory register (values[0] = decisionId).
-    $queryRaw: vi.fn(async (q: { values?: unknown[] }) => {
+    $queryRaw: vi.fn(answerActorEnvelope(async (q: { values?: unknown[] }) => {
       const d = decisions.find((x) => x.id === q?.values?.[0]) ?? decisions[0];
       return d
         ? [{ id: d.id, title: (d as { title?: string }).title ?? '', deciderKind: (d as { deciderKind?: string }).deciderKind ?? 'client', deciderMembershipId: null, publishedAt: d.publishedAt }]
         : [];
-    }),
+    })),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) => {
       if (typeof arg !== 'function') return Promise.all(arg);
       const tx = { ...prisma, notification: { create: txNotificationCreate } } as unknown as PrismaService;

@@ -456,6 +456,21 @@ export class OrgsService {
    * then acquire it (#557's review round 2, finding 3). The creator's membership is written under
    * the new project's own key, after the org key — the one lock order.
    */
+  /**
+   * Phase 6 task 4d-iii / R0a-2 — the Board's Decision 1 (2026-10-05): an org owner/admin acting on a
+   * project is attributed in a PROJECT role, never in the org role `owner`/`admin` (which
+   * `ProjectUserStanding` never holds, so its event pair could never resolve). It is the role of their
+   * own active membership on the project when they hold one, which is the role the windowed standing
+   * arm admits for them, and otherwise `pmc`, the role the org authority grants, which the windowed
+   * arm admits for a membership-less owner/admin.
+   */
+  private async projectRoleForOrgActor(projectId: string, userId: string): Promise<string> {
+    const m = await this.prisma.membership.findUnique({
+      where: { projectId_userId: { projectId, userId } }, select: { role: true, status: true },
+    });
+    return m?.status === 'active' ? m.role : 'pmc';
+  }
+
   async createProject(orgId: string, userId: string, input: CreateProjectInput): Promise<{ id: string; name: string; short: string }> {
     const role = await this.orgRole(orgId, userId);
     if (role !== 'owner' && role !== 'admin') {
@@ -464,7 +479,9 @@ export class OrgsService {
     const id = `${slugify(input.short)}-${randomUUID().slice(0, 4)}`;
     const timeZone = input.timeZone ?? 'Asia/Kolkata';
     const scheduleStartDate = input.scheduleStartDate ?? this.clock.today(timeZone);
-    const actor = await resolveActor(this.prisma, { sub: userId, role, projectId: id } as unknown as AuthUser);
+    // 4d-iii / R0a-2 — Decision 1: the creator acts on the new project in its PROJECT role, `pmc` (the
+    // membership written below), never the org role `owner`/`admin`, which no project standing holds.
+    const actor = await resolveActor(this.prisma, { sub: userId, role: 'pmc', projectId: id } as unknown as AuthUser);
     const explicitSelections = [...(input.modules ?? [])] as InitSelection[];
     const targetAnchor = scheduleStartDate;
     const today = ddMmmYyyy(new Date());
@@ -1158,7 +1175,7 @@ export class OrgsService {
     if (!allowed) throw new ForbiddenException('Only the project PMC or an org admin can edit a project');
     const project = await this.prisma.project.findUnique({ where: { id: pid }, select: { orgId: true } });
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
-    const actor = await resolveActor(this.prisma, { sub: userId, role: orgRole ?? 'pmc', projectId: pid } as unknown as AuthUser);
+    const actor = await resolveActor(this.prisma, { sub: userId, role: await this.projectRoleForOrgActor(pid, userId), projectId: pid } as unknown as AuthUser);
     const updated = await this.prisma.$transaction(async (tx) => {
       const u = await tx.project.update({ where: { id: pid }, data: input });
       await emitEvent(tx, { projectId: pid, actor, eventType: 'project.updated', entityType: 'Project', entityId: pid, effectKey: 'project.updated', dispatch: {} });
@@ -1176,7 +1193,7 @@ export class OrgsService {
     }
     const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
-    const actor = await resolveActor(this.prisma, { sub: userId, role, projectId } as unknown as AuthUser);
+    const actor = await resolveActor(this.prisma, { sub: userId, role: await this.projectRoleForOrgActor(projectId, userId), projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
       await emitEvent(tx, { projectId, actor, eventType: 'project.archived', entityType: 'Project', entityId: projectId, effectKey: 'project.archived', dispatch: {} });
@@ -1192,7 +1209,7 @@ export class OrgsService {
     }
     const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
-    const actor = await resolveActor(this.prisma, { sub: userId, role, projectId } as unknown as AuthUser);
+    const actor = await resolveActor(this.prisma, { sub: userId, role: await this.projectRoleForOrgActor(projectId, userId), projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: null } });
       await emitEvent(tx, { projectId, actor, eventType: 'project.restored', entityType: 'Project', entityId: projectId, effectKey: 'project.restored', dispatch: {} });

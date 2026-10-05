@@ -6,6 +6,7 @@ import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { ActivityParticipant } from '../activities/activity.participant';
+import { answerActorEnvelope } from '../../test/unit-support/actor-envelope-stub';
 
 type Item = { id: string; name: string; state: string | null; photos: number; result: string | null; rejected: boolean };
 type Insp = {
@@ -78,11 +79,11 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
     // (4d-ii-a / A6d: the emit transaction's catalog read arrives as a TAGGED TEMPLATE — an array of
     // strings, whose `.values` is the array iterator, not bind values; it resolves to no rows, so no
     // delivery is materialized in-memory)
-    $queryRaw: vi.fn(async (q: { values?: unknown[] } | readonly string[]) => {
+    $queryRaw: vi.fn(answerActorEnvelope(async (q: { values?: unknown[] } | readonly string[]) => {
       const [projectId, userId] = (Array.isArray(q) ? [] : ((q as { values?: unknown[] }).values ?? [])) as [string, string];
       const m = members.find((x) => x.projectId === projectId && x.userId === userId);
       return m ? [{ status: m.status, role: m.role }] : [];
-    }),
+    })),
     project: { findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', orgId: 'org-test' })) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
@@ -150,7 +151,7 @@ describe('InspectionsService.create — location spine (nodeId)', () => {
       domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
       // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
       // here means no standing is proven, so the event is written with a NULL pair.
-      $queryRaw: vi.fn(async () => []),
+      $queryRaw: vi.fn(answerActorEnvelope(async () => [])),
       // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
       $executeRaw: vi.fn(async () => 1),
       $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
