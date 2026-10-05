@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: none
+work_item: 4d-iii-staging-record
 reviewed_merge: cffb251
-open_pr: none
+open_pr: 714
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-05
 ```
 
-### Now — 4d-iii opens with its STAGING RECORD (`claude/phase-6-task-4d-iii`): additive units R0 … R4
+### Now — 4d-iii opens with its STAGING RECORD (#714, `claude/phase-6-task-4d-iii`): additive units R0 … R4
 
 The drain directive cleared with #693 (`f301d44`): its committed `docs/rollout/phase-6-4d-drain-evidence.json`
 is a `drained` verdict at minimum release `f8274f4` and minimum catalog version 3, and `main` carries
