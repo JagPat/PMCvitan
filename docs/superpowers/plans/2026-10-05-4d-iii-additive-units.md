@@ -120,7 +120,7 @@ Plan §D lines 7434–7614 (rounds 8, 10–13, 16, 24 of #572).
     status-only closure; the crossed pairs; a stranger's `standard` withdrawal; a `countersign_rejection`
     withdrawal by a PMC with every column correct; the re-open; and the DELETE. Each is refused, with
     the decision's state unchanged.
-  - The two delivered closures still commit (`decisions.service.ts:492`, `:919`).
+  - The two delivered closures, as R0 completes them, still commit (`decisions.service.ts:583`, `:1826`).
   - P28b's seed arm runs the FULL seed on a fresh and on a mature database with every seal enabled
     afterwards. The same plant with ONLY the provenance seal disabled is refused at commit by
     `ChangeRequest_t4d_paired`.
