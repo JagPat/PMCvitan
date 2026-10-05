@@ -77,8 +77,8 @@ const HighlightContext = createContext<string | null>(null);
 
 function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPct: number; onEdit?: (a: Activity) => void; onOverride?: (a: Activity) => void }) {
   const state = useStore((s) => s) as AppState;
-  const setScreen = useStore((s) => s.setScreen);
   const revokeOverride = useStore((s) => s.revokeOverride);
+  const openDrawing = useStore((s) => s.openDrawing);
   const gates = gatesFor(state, a);
   const ready = activityReady(state, a);
   const restriction = restrictionOf(a, gates, ready);
@@ -121,9 +121,9 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
           </div>
           {linkedDrawing?.current && (
             <button
-              onClick={() => setScreen('drawings')}
+              onClick={() => openDrawing(linkedDrawing.id)}
               data-testid={`sched-dwg-${a.id}`}
-              title={`Governed by ${linkedDrawing.number} — open the Drawings register`}
+              title={`Governed by ${linkedDrawing.number} — open this drawing`}
               // minHeight 44 (#584 review round 5): this opens the Drawings register, so it is a
               // thumb target and owes the floor. The label stays 9.5px mono — the FLOOR is about
               // the hit area, not the type size, and shrinking a governing drawing number would
