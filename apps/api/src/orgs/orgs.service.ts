@@ -24,6 +24,7 @@ import type { AuthUser, Role } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
+import { executeCommand, hashRequest } from '../platform/commands';
 import { projectsInReach } from './project-reach';
 import {
   lockInitializationDisplayIds,
@@ -145,6 +146,9 @@ const phaseDefinitionKey = (phase: { name: string; order: number; plannedStart: 
  * Org owners/admins create projects and are auto-enrolled as their PMC; project
  * memberships are the access grants tokens scope to (see AuthService).
  */
+/** The command-ledger type of an idempotent project create (an org-scoped receipt). */
+export const CREATE_PROJECT_COMMAND = 'orgs.createProject';
+
 @Injectable()
 export class OrgsService {
   constructor(
@@ -456,11 +460,23 @@ export class OrgsService {
    * then acquire it (#557's review round 2, finding 3). The creator's membership is written under
    * the new project's own key, after the org key — the one lock order.
    */
-  async createProject(orgId: string, userId: string, input: CreateProjectInput): Promise<{ id: string; name: string; short: string }> {
+  async createProject(
+    orgId: string,
+    userId: string,
+    input: CreateProjectInput,
+    idempotencyKey?: string,
+  ): Promise<{ id: string; name: string; short: string }> {
     const role = await this.orgRole(orgId, userId);
     if (role !== 'owner' && role !== 'admin') {
       throw new ForbiddenException('Only an org owner or admin can create projects');
     }
+    // Legacy-copy recovery (replaces #710) — creation is IDEMPOTENT when the client sends a key. A lost
+    // or ambiguous reply (no answer, a 5xx, a 408) gave the client no way to tell whether the project
+    // committed, and project names are not unique, so a retry could make it twice. With a key, the
+    // create records an org-scoped receipt INSIDE its own serializable transaction, and a retry under
+    // the same key replays that receipt's project instead of creating another (Codex 4185707835 and
+    // every finding before it on #710). Without a key the behaviour is exactly as before.
+    const key = idempotencyKey?.trim() || null;
     const id = `${slugify(input.short)}-${randomUUID().slice(0, 4)}`;
     const timeZone = input.timeZone ?? 'Asia/Kolkata';
     const scheduleStartDate = input.scheduleStartDate ?? this.clock.today(timeZone);
@@ -469,7 +485,7 @@ export class OrgsService {
     const targetAnchor = scheduleStartDate;
     const today = ddMmmYyyy(new Date());
 
-    const project = await runSerializableProjectInit(this.prisma, async (tx) => {
+    const initialize = async (tx: Prisma.TransactionClient) => {
       await lockOrgStanding(tx, orgId);
       // A snapshot taken while the key was contended predates the org write it waited for; this
       // turns that into a serialization failure, which the runner retries with a fresh snapshot.
@@ -535,8 +551,31 @@ export class OrgsService {
       if (source) await this.copyStructure(tx, source, state);
       if (modules.length) await this.instantiateModules(tx, modules, state);
       return p;
+    };
+    if (!key) {
+      // no key: exactly the create as before (and never subject to the ledger's key enforcement)
+      const project = await runSerializableProjectInit(this.prisma, initialize);
+      return { id: project.id, name: project.name, short: project.short };
+    }
+    // a key: the command ledger reserves the org-scoped receipt, runs the create and completes the
+    // receipt in ONE serializable transaction (the ledger stays the only `CommandExecution` writer). A
+    // retry under the same key replays the first create's project; a different request under it is a
+    // 409; a concurrent same-key create replays the winner; a refusal rolls the receipt back with
+    // everything else, so the corrected retry goes through.
+    const outcome = await executeCommand(this.prisma, {
+      scope: { scopeKind: 'org', organizationId: orgId },
+      actor,
+      commandType: CREATE_PROJECT_COMMAND,
+      idempotencyKey: key,
+      requestHash: hashRequest({ orgId, input }),
+      transact: (fn) => runSerializableProjectInit(this.prisma, fn),
+      run: async (tx) => {
+        const p = await initialize(tx);
+        return { resultRef: p.id, value: p };
+      },
     });
-    return { id: project.id, name: project.name, short: project.short };
+    const made = outcome.value ?? await this.prisma.project.findUniqueOrThrow({ where: { id: outcome.resultRef } });
+    return { id: made.id, name: made.name, short: made.short };
   }
 
   /** The Slice-1 source guard: a structure source must be an unarchived project in this org. */

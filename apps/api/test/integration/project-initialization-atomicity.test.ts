@@ -1,9 +1,9 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CreateProjectInput } from '../../src/contracts';
-import { OrgsService } from '../../src/orgs/orgs.service';
+import { CREATE_PROJECT_COMMAND, OrgsService } from '../../src/orgs/orgs.service';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { createTestApp, type TestApp } from './test-app';
 
@@ -140,6 +140,8 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
       await dropFaultProbe();
       if (f) {
         await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
+        // the idempotent creates' org-scoped receipts (replaces #710)
+        await t.prisma.commandExecution.deleteMany({ where: { scopeKind: 'org', organizationId: f.orgA.id, commandType: CREATE_PROJECT_COMMAND } });
         const projects = await t.prisma.project.findMany({ where: { orgId: f.orgA.id }, select: { id: true } });
         const projectIds = projects.map((project) => project.id);
         const inspections = await t.prisma.inspection.findMany({ where: { projectId: { in: projectIds } }, select: { id: true } });
@@ -227,6 +229,101 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
     expect(rejection).toBeInstanceOf(BadRequestException);
     expect((rejection as BadRequestException).getStatus()).toBe(400);
     expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor(label) } })).toBe(0);
+  });
+
+  it('refuses a legacy source holding one name as two kinds under a parent, rolls everything back and leaves the source untouched', async () => {
+    // Legacy data from before #705's sibling-name rule: a "Ground Floor" zone holding a "Lobby" room
+    // AND a normalized-equal " lobby " element. Written directly, as the old server allowed; the
+    // service would refuse to create it today. Copying it is refused (the cross-kind rule is
+    // intentional), with the server's rename advice, and nothing of the new project survives.
+    const source = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('legacy-source'));
+    const ground = await t.prisma.projectNode.create({
+      data: { projectId: source.id, name: 'Ground Floor', kind: 'zone', order: 0, authorId: f.ownerUser.id },
+    });
+    const lobbyRoom = await t.prisma.projectNode.create({
+      data: { projectId: source.id, parentId: ground.id, name: 'Lobby', kind: 'room', order: 0, authorId: f.ownerUser.id },
+    });
+    const lobbyElement = await t.prisma.projectNode.create({
+      data: { projectId: source.id, parentId: ground.id, name: ' lobby ', kind: 'element', order: 1, authorId: f.ownerUser.id },
+    });
+    const sourceNodesBefore = await t.prisma.projectNode.findMany({ where: { projectId: source.id }, orderBy: { id: 'asc' } });
+
+    const before = await countInitializationRows();
+    let rejection: unknown;
+    try {
+      await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('legacy-copy', { structureFrom: source.id }));
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toBeInstanceOf(BadRequestException);
+    expect((rejection as BadRequestException).getStatus()).toBe(400);
+    // the advice the client now shows verbatim: which name, and what to do about it
+    expect((rejection as BadRequestException).message).toMatch(/holds "Lobby" twice under one parent as different kinds — rename one before copying it/);
+    // the whole initialization rolled back: no project, membership, event, node, phase, activity or checklist
+    expect(await countInitializationRows()).toEqual(before);
+    expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor('legacy-copy') } })).toBe(0);
+    // and the source is exactly as it was — never renamed or migrated to make the copy pass
+    expect(await t.prisma.projectNode.findMany({ where: { projectId: source.id }, orderBy: { id: 'asc' } })).toEqual(sourceNodesBefore);
+    expect(sourceNodesBefore.map((n) => n.id)).toEqual(expect.arrayContaining([ground.id, lobbyRoom.id, lobbyElement.id]));
+
+    // once the owner renames one of them in the source, the same create succeeds — a retry is safe
+    await t.prisma.projectNode.update({ where: { id: lobbyElement.id }, data: { name: 'Lobby Console' } });
+    const copied = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('legacy-copy', { structureFrom: source.id }));
+    const copiedNames = (await t.prisma.projectNode.findMany({ where: { projectId: copied.id }, select: { name: true } })).map((n) => n.name);
+    expect(copiedNames.sort()).toEqual(['Ground Floor', 'Lobby', 'Lobby Console']);
+    expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor('legacy-copy') } })).toBe(1);
+  });
+
+  it('a create under an Idempotency-Key happens ONCE: a retry with the same key replays the first project (replaces #710)', async () => {
+    const key = `it-create-${Date.now()}`;
+    const before = await countInitializationRows();
+    const first = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed'), key);
+    const afterFirst = await countInitializationRows();
+    // the reply was "lost": the client retries the SAME request under the SAME key
+    const again = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed'), key);
+    expect(again).toEqual(first);
+    expect(await countInitializationRows()).toEqual(afterFirst); // nothing more was written
+    expect(afterFirst.project).toBe(before.project + 1);
+    expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor('keyed') } })).toBe(1);
+    const receipt = await t.prisma.commandExecution.findFirstOrThrow({
+      where: { scopeKind: 'org', organizationId: f.orgA.id, actorId: f.ownerUser.id, commandType: CREATE_PROJECT_COMMAND, idempotencyKey: key },
+    });
+    expect(receipt).toMatchObject({ status: 'succeeded', resultRef: first.id, projectId: null });
+  });
+
+  it('the same key for a DIFFERENT request is a 409, and creates nothing', async () => {
+    const key = `it-create-diff-${Date.now()}`;
+    await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed-a'), key);
+    const before = await countInitializationRows();
+    await expect(service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed-b'), key)).rejects.toBeInstanceOf(ConflictException);
+    expect(await countInitializationRows()).toEqual(before);
+  });
+
+  it('two CONCURRENT creates under one key make one project, and both answer with it', async () => {
+    const key = `it-create-race-${Date.now()}`;
+    const before = await countInitializationRows();
+    const [a, b] = await Promise.all([
+      service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed-race'), key),
+      service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed-race'), key),
+    ]);
+    expect(a.id).toBe(b.id);
+    expect((await countInitializationRows()).project).toBe(before.project + 1);
+  });
+
+  it('a REFUSED keyed create leaves no receipt, so the corrected retry under the same key goes through', async () => {
+    const key = `it-create-refused-${Date.now()}`;
+    const source = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed-legacy-source'));
+    const ground = await t.prisma.projectNode.create({ data: { projectId: source.id, name: 'Ground Floor', kind: 'zone', order: 0, authorId: f.ownerUser.id } });
+    await t.prisma.projectNode.create({ data: { projectId: source.id, parentId: ground.id, name: 'Lobby', kind: 'room', order: 0, authorId: f.ownerUser.id } });
+    const element = await t.prisma.projectNode.create({ data: { projectId: source.id, parentId: ground.id, name: ' lobby ', kind: 'element', order: 1, authorId: f.ownerUser.id } });
+    const input = inputFor('keyed-legacy-copy', { structureFrom: source.id });
+    await expect(service.createProject(f.orgA.id, f.ownerUser.id, input, key)).rejects.toBeInstanceOf(BadRequestException);
+    expect(await t.prisma.commandExecution.count({ where: { scopeKind: 'org', organizationId: f.orgA.id, idempotencyKey: key } })).toBe(0);
+    await t.prisma.projectNode.update({ where: { id: element.id }, data: { name: 'Lobby Console' } });
+    const made = await service.createProject(f.orgA.id, f.ownerUser.id, input, key);
+    expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor('keyed-legacy-copy') } })).toBe(1);
+    expect((await t.prisma.commandExecution.findFirstOrThrow({ where: { scopeKind: 'org', organizationId: f.orgA.id, idempotencyKey: key } })).resultRef).toBe(made.id);
   });
 
   it('commits the complete source, template, and explicit-module union exactly once', async () => {

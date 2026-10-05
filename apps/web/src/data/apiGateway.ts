@@ -624,8 +624,13 @@ export class ApiGateway {
     return this.req('/auth/switch', { method: 'POST', body: JSON.stringify({ projectId }) });
   }
   /** Create a project under an org (owner/admin); the creator becomes its PMC. */
-  createProject(orgId: string, input: NewProjectInput): Promise<{ id: string; name: string; short: string }> {
-    return this.req(`/orgs/${orgId}/projects`, { method: 'POST', body: JSON.stringify(input) });
+  /** `idempotencyKey`: one per create ATTEMPT — a retry under the same key replays the first create
+   *  instead of making a second project (legacy-copy recovery; replaces #710). */
+  createProject(orgId: string, input: NewProjectInput, idempotencyKey?: string): Promise<{ id: string; name: string; short: string }> {
+    return this.req(`/orgs/${orgId}/projects`, {
+      method: 'POST', body: JSON.stringify(input),
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    });
   }
   /** Edit a project's details (project PMC or org owner/admin); only provided fields change. */
   updateProject(orgId: string, projectId: string, input: Partial<NewProjectInput>): Promise<{ id: string; name: string; short: string }> {
