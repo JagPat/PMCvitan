@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: none
+work_item: ux-queue-718-project-create-recovery-client
 reviewed_merge: cffb251
-open_pr: none
+open_pr: 718
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-05
@@ -37,7 +37,7 @@ redesign in smaller units. So #716 was closed and its work is split in two:
 1. **#717, the server unit** — merged at `f60a549`. Project creation accepts an optional
    `Idempotency-Key`, backed by an org-scoped receipt through the command ledger, and `/health` advertises
    `orgs.createProject.receipt`.
-2. **The client unit**, `claude/project-create-recovery-client` (current work item), built from `main`
+2. **#718, the client unit**, `claude/project-create-recovery-client` (current work item), built from `main`
    after #717: the legacy-copy recovery dialog, the per-user create hold and its cross-tab reservation, and
    the capability gate, carrying every #710 and #716 finding. The hold's pure rules (the durable mirror,
    the Web Lock reservation, the capability check) are their own module, `store/projectCreateHold.ts`.
