@@ -116,6 +116,10 @@ function initialScreen(): ScreenKey {
  *  `unknown`: no confirmation, and none is possible on the client (no idempotency key; names are not
  *  unique) — a retry is NOT safe (it may still commit), so the dialog stays locked.
  *  `stale`: the signed-in user changed while it was in flight; the reply is dropped. */
+export type ProjectCreateHold =
+  | { phase: 'in_flight' }
+  | { phase: 'unknown'; message: string };
+
 export type CreateProjectOutcome =
   | { kind: 'created'; projectId: string; opened: boolean }
   | { kind: 'refused'; message: string }
@@ -398,6 +402,8 @@ export interface AppState {
   legacyDailyLogDraft: DailyLogDraft | null;
   notifications: AppNotification[];
   // real session (set by a phone-OTP sign-in; null = passwordless dev auth)
+  /** Legacy-copy recovery (Codex 4184306919) — see `releaseProjectCreateHold` and `ProjectCreateHold`. */
+  projectCreateHold: ProjectCreateHold | null;
   sessionToken: string | null;
   userName: string | null;
   /** Phase 6 task 4b (§A.3) — the signed-in USER id (the JWT's `sub`), the viewer half of the
@@ -656,6 +662,12 @@ export interface AppActions {
   /** Resolves to what happened, so the new-project dialog closes only on a confirmed create and
    *  keeps its inputs with the reason otherwise (see `CreateProjectOutcome`). */
   createProject: (orgId: string, input: NewProjectInput) => Promise<CreateProjectOutcome>;
+  /** Legacy-copy recovery (Codex 4184306919) — the SESSION-scoped hold on project creation. While a
+   *  create is out (`in_flight`), or after one whose outcome is `unknown`, no new create may start
+   *  from ANY dialog instance: the endpoint has no idempotency key, so a second POST could make the
+   *  project twice. Only {@link releaseProjectCreateHold} (the user confirming they checked the
+   *  project list) or the end of the session lifts an `unknown` hold. */
+  releaseProjectCreateHold: () => void;
   updateProjectDetails: (orgId: string, projectId: string, input: Partial<NewProjectInput>) => void;
   deleteProject: (orgId: string, projectId: string) => void;
   restoreProject: (orgId: string, projectId: string) => void;
@@ -1200,6 +1212,7 @@ export function getInitialState(): AppState {
     dailyLogDraft: null,
     legacyDailyLogDraft: null,
     notifications: structuredClone(SEED_NOTIFICATIONS),
+    projectCreateHold: null,
     sessionToken: null,
     userName: null,
     sessionUserId: null,
@@ -2362,6 +2375,7 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
+        s.projectCreateHold = null; // the hold belongs to the session that sent the create
       });
       // round-11 Codex F3 — on a push-capable browser a persona switch is a DEPARTURE exactly
       // like sign-out: the departing identity's subscription link is severed BEFORE the switch
@@ -2422,6 +2436,7 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
+        s.projectCreateHold = null; // the hold belongs to the session that sent the create
         s.brief = null; // the departing PMC's cross-project brief leaves with them
         s.briefAt = null;
         s.access = freshAccess(s.access.generation + 1);
@@ -4265,6 +4280,18 @@ export const useStore = create<Store>()(
     createProject: async (orgId, input) => {
       if (!gateway) return { kind: 'refused', message: 'Creating projects needs the server.' };
       const gw = gateway;
+      // The session-scoped hold (Codex 4184306919): one create at a time per session, and none after an
+      // unknown outcome until the user has checked the list — whichever dialog instance asks.
+      const hold = get().projectCreateHold;
+      if (hold?.phase === 'unknown') return { kind: 'unknown', message: hold.message };
+      if (hold?.phase === 'in_flight') {
+        return { kind: 'unknown', message: 'A project is already being created — wait for it to finish, then check the project list.' };
+      }
+      set((s) => { s.projectCreateHold = { phase: 'in_flight' }; });
+      const settle = (next: ProjectCreateHold | null) => {
+        // only this create's own hold is settled; a sign-out already cleared it
+        if (get().projectCreateHold?.phase === 'in_flight') set((s) => { s.projectCreateHold = next; });
+      };
       // The reply is bound to the user who sent it, as `addLocationNode`'s is: one landing after a
       // sign-out or persona change belongs to nobody on screen, so it is dropped — no toast, no switch.
       const identity = `${sessionSub()}|${get().sessionUserId ?? ''}`;
@@ -4296,11 +4323,12 @@ export const useStore = create<Store>()(
       try {
         created = await gw.createProject(orgId, input);
       } catch (err) {
-        if (!sentBySameUser()) return { kind: 'stale' };
+        if (!sentBySameUser()) { settle(null); return { kind: 'stale' }; }
         const status = (err as { status?: number } | null)?.status;
         // A refusal (4xx) rolled the whole initialization back: nothing was created, so the reason
         // is the server's own (e.g. the copied structure's rename advice) and a retry is safe.
         if (typeof status === 'number' && status >= 400 && status < 500) {
+          settle(null);
           return { kind: 'refused', message: refusalMessage(err) ?? 'Could not create the project — check your access.' };
         }
         // No answer, or a 5xx a proxy may have sent after the server committed: the outcome is
@@ -4311,10 +4339,19 @@ export const useStore = create<Store>()(
         // user can see what exists, and the dialog stays LOCKED, because a retry could make a second
         // project while this one may still commit (Codex 4180481917).
         get().loadOrgData();
-        return { kind: 'unknown', message: 'The server did not confirm the project was created, and it may still appear. Close this and check the project list before creating it again.' };
+        const message = 'The server did not confirm the project was created, and it may still appear. Check the project list before creating it again.';
+        // the hold OUTLIVES this dialog: closing and reopening New Project does not unlock it
+        settle({ phase: 'unknown', message });
+        return { kind: 'unknown', message };
       }
+      settle(null);
       if (!sentBySameUser()) return { kind: 'stale' };
       return finishCreated(created);
+    },
+    releaseProjectCreateHold: () => {
+      // the user has checked the project list after an unknown outcome; an in-flight create is never
+      // released by hand
+      if (get().projectCreateHold?.phase === 'unknown') set((s) => { s.projectCreateHold = null; });
     },
     updateProjectDetails: (orgId, projectId, input) => {
       if (!gateway) {

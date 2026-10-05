@@ -55,6 +55,19 @@ function Host() {
   return open ? <CreateProjectModal orgId="org-1" onClose={() => setOpen(false)} /> : <div data-testid="host-closed" />;
 }
 
+/** A parent that can REOPEN the dialog as a fresh instance, as the project switcher does. */
+function Reopenable() {
+  const [open, setOpen] = useState(true);
+  return open
+    ? <CreateProjectModal orgId="org-1" onClose={() => setOpen(false)} />
+    : <button data-testid="reopen" onClick={() => setOpen(true)}>New project</button>;
+}
+
+function fill(r: RenderResult) {
+  fireEvent.change(r.getByPlaceholderText(/Full name/), { target: { value: 'Residence at Thaltej' } });
+  fireEvent.change(r.getByPlaceholderText(/Short name/), { target: { value: 'Thaltej' } });
+}
+
 function mount(): RenderResult {
   const r = render(<Host />);
   fireEvent.change(r.getByPlaceholderText(/Full name/), { target: { value: 'Residence at Thaltej' } });
@@ -171,6 +184,62 @@ describe('create project from a source the server refuses to copy', () => {
     expect(r.queryByTestId('host-closed')).toBeNull();
     expect(r.getByRole('alert').textContent).toMatch(/did not confirm/);
     expect(createButton(r).disabled).toBe(true);
+  });
+
+  it('the unknown-outcome lock OUTLIVES the dialog: Cancel, reopen New Project, and Create stays locked until the user confirms they checked (Codex 4184306919)', async () => {
+    const { gw, create, calls } = fakeGateway();
+    s()._setGateway(gw);
+    const r = render(<Reopenable />);
+    fill(r);
+    fireEvent.click(createButton(r));
+    create.reject(httpError(502));
+    await settle();
+    fireEvent.click(r.getByRole('button', { name: 'Cancel' }));
+    // a FRESH dialog instance: its own component state starts empty, the session hold does not
+    fireEvent.click(r.getByTestId('reopen'));
+    fill(r);
+    expect(createButton(r).disabled).toBe(true);
+    expect(r.getByTestId('np-error').textContent).toMatch(/did not confirm/);
+    fireEvent.click(createButton(r));
+    await settle();
+    expect(calls.createProject).toHaveBeenCalledTimes(1); // no second POST from the reopened dialog
+    // the store refuses too, whichever caller asks
+    expect((await s().createProject('org-1', { name: 'Again', short: 'Again', stage: 'Planning' })).kind).toBe('unknown');
+    expect(calls.createProject).toHaveBeenCalledTimes(1);
+    // only the user's explicit check lifts it
+    fireEvent.click(r.getByTestId('np-release'));
+    expect(createButton(r).disabled).toBe(false);
+  });
+
+  it('a create dismissed while still OUT locks a reopened dialog until it settles', async () => {
+    const { gw, create, calls } = fakeGateway();
+    s()._setGateway(gw);
+    const r = render(<Reopenable />);
+    fill(r);
+    fireEvent.click(createButton(r));
+    fireEvent.click(r.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(r.getByTestId('reopen'));
+    fill(r);
+    expect(createButton(r).disabled).toBe(true);
+    expect(r.queryByTestId('np-release')).toBeNull(); // an in-flight create is never released by hand
+    fireEvent.click(createButton(r));
+    expect(calls.createProject).toHaveBeenCalledTimes(1);
+    create.reject(httpError(400, RENAME)); // the first create is refused: nothing was made
+    await settle();
+    expect(s().projectCreateHold).toBeNull();
+    expect(createButton(r).disabled).toBe(false);
+  });
+
+  it('signing out ends the hold with the session', async () => {
+    const { gw, create } = fakeGateway();
+    s()._setGateway(gw);
+    const r = mount();
+    fireEvent.click(createButton(r));
+    create.reject(httpError(502));
+    await settle();
+    expect(s().projectCreateHold?.phase).toBe('unknown');
+    act(() => s().completeSignOut());
+    expect(s().projectCreateHold).toBeNull();
   });
 
   it('Cancel while the create is out: the dialog goes, and a late refusal is told as a toast', async () => {

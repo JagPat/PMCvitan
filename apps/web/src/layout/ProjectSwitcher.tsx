@@ -128,9 +128,13 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
   // as a toast instead (a create still opens its project, as before).
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // an UNKNOWN outcome locks Create for this dialog: the project may still be committing and has no
-  // idempotency key, so a second press could make it twice (Codex 4180481917)
-  const [locked, setLocked] = useState(false);
+  // The SESSION-scoped create hold (Codex 4180481917, 4184306919): while a create is out, or after
+  // one whose outcome is unknown, Create stays locked in EVERY instance of this dialog — closing and
+  // reopening it does not unlock it, because the endpoint has no idempotency key and a second press
+  // could make the project twice. An unknown hold lifts only when the user confirms they checked.
+  const hold = useStore((s) => s.projectCreateHold);
+  const releaseHold = useStore((s) => s.releaseProjectCreateHold);
+  const locked = hold !== null;
   const inFlight = useRef(false);
   const mounted = useRef(true);
   useEffect(() => {
@@ -197,7 +201,6 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
     if (outcome.kind === 'created' || outcome.kind === 'stale') onClose();
     else {
       setError(outcome.message);
-      if (outcome.kind === 'unknown') setLocked(true);
     }
   };
   return (
@@ -293,9 +296,21 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
           </>
         )}
         </fieldset>
-        {error && (
+        {(error ?? (hold?.phase === 'unknown' ? hold.message : hold?.phase === 'in_flight' && !submitting ? 'A project is already being created — wait for it to finish, then check the project list.' : null)) && (
           <div role="alert" data-testid="np-error" style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(180,70,46,.08)', border: '1px solid rgba(180,70,46,.3)', color: '#8a3320', fontSize: 12.5, lineHeight: 1.5 }}>
-            {error}
+            {error ?? (hold?.phase === 'unknown' ? hold.message : 'A project is already being created — wait for it to finish, then check the project list.')}
+            {hold?.phase === 'unknown' && (
+              <div style={{ marginTop: 8 }}>
+                <button
+                  type="button"
+                  data-testid="np-release"
+                  onClick={() => { releaseHold(); setError(null); }}
+                  style={{ background: 'none', border: 'none', padding: 0, color: '#8a3320', textDecoration: 'underline', fontSize: 12.5, cursor: 'pointer', minHeight: 44 }}
+                >
+                  I've checked the project list — it isn't there
+                </button>
+              </div>
+            )}
           </div>
         )}
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
