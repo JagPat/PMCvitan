@@ -84,6 +84,10 @@ export interface ProjectDataState {
   /** Audit F-02 — the activity the schedule should bring into view when it is opened from a place
    *  (an activity id is project-contained, so it tears down with the scope like `placeFocus`) */
   activityFocus: string | null;
+  /** B6 — the one item the current screen's URL names: the Site Map's place, the open drawing, or
+   *  the Decision Log's highlighted decision (`client-decisions` keeps `decisionFocus`). Every
+   *  such id is project-contained, so it tears down with the scope like `placeFocus`. */
+  routeItem: string | null;
   checklist: Checklist | null;
   /** EVERY issued, unsubmitted checklist for THIS project. Project data like `checklist` itself:
    *  an inspection id is project-contained, so carrying the list across a switch would show one
@@ -187,6 +191,7 @@ export function emptyProjectData(): ProjectDataState {
     placeFocus: null,
     decisionFocus: null,
     activityFocus: null,
+    routeItem: null,
     checklist: null,
     openChecklists: [],
     selectedChecklistId: null,

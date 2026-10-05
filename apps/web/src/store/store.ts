@@ -311,6 +311,8 @@ export interface AppState {
   decisionFocus: string | null;
   /** Audit F-02 — the activity the schedule brings into view when opened from a place (project-owned) */
   activityFocus: string | null;
+  /** B6 — the one item the current screen's URL names (place, open drawing, highlighted decision; project-owned) */
+  routeItem: string | null;
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   /** EVERY open (issued, unsubmitted) checklist. `checklist` is the one the field view opens;
    *  this is the whole outstanding set, so a second issued checklist no longer hides the first
@@ -445,6 +447,10 @@ export interface AppActions {
   openDecision: (decisionId: string) => void;
   /** …and back to the list of decisions */
   closeDecision: () => void;
+  /** B6 — open the Drawings register with one drawing in the viewer */
+  openDrawing: (drawingId: string) => void;
+  /** B6 — name (or clear) the current screen's item; the URL follows it (RouteBridge) */
+  setRouteItem: (item: string | null) => void;
   setLang: (l: Lang) => void;
   toggleNotif: () => void;
   openCreate: () => void;
@@ -1145,6 +1151,7 @@ export function getInitialState(): AppState {
     placeFocus: null,
     decisionFocus: null,
     activityFocus: null,
+    routeItem: null,
     checklist: structuredClone(SEED_CHECKLIST),
     openChecklists: [structuredClone(SEED_CHECKLIST)],
     selectedChecklistId: null,
@@ -2431,10 +2438,12 @@ export const useStore = create<Store>()(
         s.notifOpen = false;
         // a screen opened from the nav starts at its list, never at a decision left open earlier
         s.decisionFocus = null;
+        s.routeItem = null;
       }),
     openDecision: (decisionId) =>
       set((s) => {
         s.decisionFocus = decisionId;
+        s.routeItem = null;
         s.screen = 'client-decisions';
         s.notifOpen = false;
       }),
@@ -2442,9 +2451,23 @@ export const useStore = create<Store>()(
       set((s) => {
         s.decisionFocus = null;
       }),
+    openDrawing: (drawingId) =>
+      set((s) => {
+        s.routeItem = drawingId;
+        s.decisionFocus = null;
+        s.screen = 'drawings';
+        s.notifOpen = false;
+      }),
+    setRouteItem: (item) =>
+      set((s) => {
+        if (s.screen === 'client-decisions') s.decisionFocus = item;
+        else s.routeItem = item;
+      }),
     openPlace: (nodeId) =>
       set((s) => {
         s.placeFocus = nodeId;
+        s.routeItem = nodeId;
+        s.decisionFocus = null;
         s.screen = 'places';
         s.notifOpen = false;
       }),
@@ -2455,6 +2478,7 @@ export const useStore = create<Store>()(
     openActivity: (activityId) =>
       set((s) => {
         s.activityFocus = activityId;
+        s.routeItem = null;
         s.screen = 'site-schedule';
         s.notifOpen = false;
       }),
