@@ -47,7 +47,7 @@
   font-family: var(--font-mono);
   font-size: 8.5px;
   letter-spacing: 0.28em;
-  color: var(--accent);
+  color: #e8775c; /* B5 (F-9): the accent at ≥4.5:1 on the dark rail */
   margin-top: 1px;
 }
 
@@ -58,7 +58,7 @@
   font-family: var(--font-mono);
   font-size: 8.5px;
   letter-spacing: 0.22em;
-  color: rgba(237, 231, 218, 0.4);
+  color: rgba(237, 231, 218, 0.62);
   margin-bottom: 6px;
 }
 .signedInName {
@@ -100,7 +100,7 @@
   font-family: var(--font-mono);
   font-size: 8.5px;
   letter-spacing: 0.22em;
-  color: rgba(237, 231, 218, 0.4);
+  color: rgba(237, 231, 218, 0.62);
   margin: 6px 6px 9px;
 }
 .navItem {
@@ -161,7 +161,7 @@
 .projMeta {
   font-family: var(--font-mono);
   font-size: 8.5px;
-  color: rgba(237, 231, 218, 0.45);
+  color: rgba(237, 231, 218, 0.62);
   margin-top: 2px;
 }
 /* #584 review round 11 — THE SAME BELL, THE OTHER SHELL. On `main` this rule and `TopBar`'s were

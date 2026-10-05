@@ -45,14 +45,15 @@ export function ClientHealthScreen() {
         </div>
       </div>
 
-      {/* photo carousel — live projects show their own recorded photos, honestly empty otherwise */}
+      {/* photo carousel — live projects show their own recorded photos, honestly empty otherwise.
+          B5: focusable and named, so the horizontal scroller is reachable from the keyboard */}
       {API_BASE ? (
         sitePhotos.length === 0 ? (
           <div style={{ margin: '6px 0 14px', fontSize: 13, color: 'var(--muted)', border: '1px dashed rgba(35,33,28,.2)', borderRadius: 16, padding: '26px 16px', textAlign: 'center' }}>
             No progress photos recorded
           </div>
         ) : (
-          <div className={`${styles.carousel} vscroll`} style={{ margin: '6px 0 14px' }}>
+          <div className={`${styles.carousel} vscroll`} tabIndex={0} role="region" aria-label="Progress photos" style={{ margin: '6px 0 14px' }}>
             {sitePhotos.slice(-6).reverse().map((p, i) => (
               <div key={p.id} style={{ width: 250, borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(35,33,28,.12)' }}>
                 <div style={{ height: 170, position: 'relative', background: '#000' }}>
@@ -64,7 +65,7 @@ export function ClientHealthScreen() {
           </div>
         )
       ) : (
-        <div className={`${styles.carousel} vscroll`} style={{ margin: '6px 0 14px' }}>
+        <div className={`${styles.carousel} vscroll`} tabIndex={0} role="region" aria-label="Progress photos" style={{ margin: '6px 0 14px' }}>
           {photos.map((p) => (
             <div key={p.label} style={{ width: 250, borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(35,33,28,.12)' }}>
               <div style={{ height: 170, background: swatchGradient(p.swatch), position: 'relative' }}>
@@ -94,7 +95,7 @@ export function ClientHealthScreen() {
           style={{ width: '100%', marginTop: 16, background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', borderRadius: 16, padding: 18, textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
         >
           <div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.15em', color: 'var(--accent)' }}>ACTION NEEDED</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.15em', color: '#e8775c' }}>ACTION NEEDED</div>
             <div style={{ fontWeight: 700, fontSize: 16, marginTop: 4 }}>{countLabel}</div>
           </div>
           <ArrowRight size={22} />

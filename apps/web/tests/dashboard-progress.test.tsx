@@ -54,9 +54,23 @@ describe('Dashboard progress', () => {
     expect(r.getByTestId('milestone-PH-services').getAttribute('data-state')).toBe('done');
   });
 
+  it('a phase whose only started work is now blocked still reads as started, not not-started', () => {
+    // PH-services: ACT-22 done + ACT-28 blocked WITH an actual start. Un-done ACT-22 so the blocked,
+    // already-begun ACT-28 is the only evidence of work in the phase.
+    act(() => {
+      useStore.setState((st) => {
+        for (const a of st.activities) if (a.id === 'ACT-22') { a.status = 'not-started'; a.as = null; a.ae = null; }
+      });
+    });
+    const r = render(<DashboardScreen />);
+    expect(s().activities.find((a) => a.id === 'ACT-28')).toMatchObject({ status: 'blocked', as: 24 });
+    expect(r.getByTestId('milestone-PH-services').getAttribute('data-state')).toBe('started');
+  });
+
   it('names the two photo figures apart and computes the on-record total in demo mode too', () => {
     const r = render(<DashboardScreen />);
-    expect(r.getByText("PHOTOS IN TODAY'S LOG")).toBeTruthy();
+    expect(r.getByText('PROGRESS PHOTOS · DAILY LOG')).toBeTruthy();
+    expect(r.queryByText("PHOTOS IN TODAY'S LOG")).toBeNull(); // the log's count is not a daily media count
     expect(r.getByText('SITE PHOTOS ON RECORD')).toBeTruthy();
     expect(r.queryByText('PROGRESS PHOTOS THIS WEEK')).toBeNull();
     expect(r.getByTestId('tile-photos-value').textContent).toBe(String(s().photos.length));
