@@ -1399,13 +1399,36 @@ export const useStore = create<Store>()(
         /* storage unavailable — the in-memory hold still guards this tab */
       }
     };
-    /** Send ONE project-create attempt under its idempotency key and settle the session hold from the
-     *  reply. A new create and "Try again" both come here, the retry with the attempt's own key. */
-    const sendProjectCreate = async (orgId: string, input: NewProjectInput, attempt: string): Promise<CreateProjectOutcome> => {
-      const gw = gateway!;
-      const sub = sessionSub(); // the user the mirror is kept for, fixed at send
+    /** The cross-tab RESERVATION (Codex 4187151998): localStorage has no compare-and-set, so two tabs
+     *  could both read "no hold", each mint a key and each create a project. Reading the mirror, minting
+     *  the key and persisting the in-flight record therefore run under ONE exclusive Web Lock per user,
+     *  shared by every tab of this origin; the next tab's turn reads the record this one wrote. The send
+     *  itself runs after the lock is released (the record, not the lock, holds other tabs off). Without
+     *  Web Locks (an old browser) the reservation is this tab's alone, as it was before. */
+    const withCreateReservation = async <T,>(sub: string, fn: () => T): Promise<T> => {
+      const locks = (globalThis.navigator as (Navigator & { locks?: LockManager }) | undefined)?.locks;
+      if (!locks?.request) return fn();
+      return locks.request(`vitan.projectCreate.${sub}`, { mode: 'exclusive' }, async () => fn()) as Promise<T>;
+    };
+    /** Take the hold for an attempt — in memory and in the mirror. Called only inside the reservation. */
+    const holdProjectCreate = (sub: string, orgId: string, input: NewProjectInput, attempt: string): void => {
       set((s) => { s.projectCreateHold = { phase: 'in_flight', attempt, orgId, input }; });
       writeStoredCreateHold(sub, { attempt, phase: 'in_flight', orgId, input });
+    };
+    /** Send ONE project-create attempt under its idempotency key and settle the session hold from the
+     *  reply. A new create and "Try again" both come here, the retry with the attempt's own key, after
+     *  the reservation took the hold for it. */
+    /** What a create is bound to, captured at the CLICK — before any wait for the reservation — so a
+     *  sign-out or project switch begun while it waits or while it is out is seen as one. */
+    type CreateSendContext = { sub: string; identity: string; scope: { project: string | null; generation: number } };
+    const captureCreateContext = (): CreateSendContext => ({
+      sub: sessionSub(),
+      identity: `${sessionSub()}|${get().sessionUserId ?? ''}`,
+      scope: { project: get().activeProjectId, generation: get().projectScopeGeneration },
+    });
+    const sendProjectCreate = async (orgId: string, input: NewProjectInput, attempt: string, ctx: CreateSendContext): Promise<CreateProjectOutcome> => {
+      const gw = gateway!;
+      const { sub } = ctx;
       const settle = (next: ProjectCreateHold | null) => {
         // ONLY this attempt's own hold is settled: a sign-out cleared it, and another session's create
         // may hold it now (Codex 4185009904) — in memory and in the mirror alike
@@ -1417,12 +1440,11 @@ export const useStore = create<Store>()(
       };
       // The reply is bound to the user who sent it, as `addLocationNode`'s is: one landing after a
       // sign-out or persona change belongs to nobody on screen, so it is dropped — no toast, no switch.
-      const identity = `${sessionSub()}|${get().sessionUserId ?? ''}`;
-      const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === identity;
+      const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === ctx.identity;
       // …and to the whole project SCOPE it was sent from, not just the active id: a switch begun
       // while the create was out bumps the generation at once (the active id moves only when its
       // auth lands), and opening the new project then would race that switch (Codex 4180481920).
-      const scopeAtSend = { project: get().activeProjectId, generation: get().projectScopeGeneration };
+      const scopeAtSend = ctx.scope;
       const sameScope = () => get().pendingProjectId === null
         && get().activeProjectId === scopeAtSend.project
         && get().projectScopeGeneration === scopeAtSend.generation;
@@ -4376,24 +4398,42 @@ export const useStore = create<Store>()(
       if (!gateway) return { kind: 'refused', message: 'Creating projects needs the server.' };
       // The session-scoped hold: one create at a time per session (Codex 4184306919), and after an
       // UNKNOWN outcome no NEW create until that attempt is finished with "Try again" — whichever dialog
-      // instance, tab or page asks.
-      get().syncProjectCreateHold();
-      const hold = get().projectCreateHold;
-      if (hold?.phase === 'unknown') return { kind: 'unknown', message: hold.message };
-      if (hold?.phase === 'in_flight') {
-        return { kind: 'unknown', message: 'A project is already being created — wait for it to finish.' };
-      }
-      // ONE idempotency key per create attempt (replaces #710): every send of this attempt carries it,
-      // so the server replays the first create instead of making a second project
-      return sendProjectCreate(orgId, input, newIdempotencyKey());
+      // instance, tab or page asks. The check, the key and the record are one cross-tab reservation.
+      const ctx = captureCreateContext(); // the user (and mirror) and scope, fixed at the click
+      const sub = ctx.sub;
+      const reserved = await withCreateReservation(sub, (): CreateProjectOutcome | { attempt: string } => {
+        // a sign-out or persona change while this waited for its turn: the click belongs to nobody now
+        if (captureCreateContext().identity !== ctx.identity) return { kind: 'stale' };
+        get().syncProjectCreateHold();
+        const hold = get().projectCreateHold;
+        if (hold?.phase === 'unknown') return { kind: 'unknown', message: hold.message };
+        if (hold?.phase === 'in_flight') {
+          return { kind: 'unknown', message: 'A project is already being created — wait for it to finish.' };
+        }
+        // ONE idempotency key per create attempt (replaces #710): every send of this attempt carries
+        // it, so the server replays the first create instead of making a second project
+        const attempt = newIdempotencyKey();
+        holdProjectCreate(sub, orgId, input, attempt);
+        return { attempt };
+      });
+      if (!('attempt' in reserved)) return reserved;
+      return sendProjectCreate(orgId, input, reserved.attempt, ctx);
     },
     retryProjectCreate: async () => {
       if (!gateway) return { kind: 'refused', message: 'Creating projects needs the server.' };
-      get().syncProjectCreateHold();
-      const hold = get().projectCreateHold;
-      // only an UNKNOWN attempt is retried, and only as itself — the same org, request and key
-      if (hold?.phase !== 'unknown') return { kind: 'unknown', message: 'There is no unconfirmed project create to try again.' };
-      return sendProjectCreate(hold.orgId, hold.input, hold.attempt);
+      const ctx = captureCreateContext();
+      const sub = ctx.sub;
+      const reserved = await withCreateReservation(sub, (): CreateProjectOutcome | Extract<ProjectCreateHold, { phase: 'unknown' }> => {
+        if (captureCreateContext().identity !== ctx.identity) return { kind: 'stale' };
+        get().syncProjectCreateHold();
+        const hold = get().projectCreateHold;
+        // only an UNKNOWN attempt is retried, and only as itself — the same org, request and key
+        if (hold?.phase !== 'unknown') return { kind: 'unknown', message: 'There is no unconfirmed project create to try again.' };
+        holdProjectCreate(sub, hold.orgId, hold.input, hold.attempt);
+        return hold;
+      });
+      if (!('attempt' in reserved)) return reserved;
+      return sendProjectCreate(reserved.orgId, reserved.input, reserved.attempt, ctx);
     },
     syncProjectCreateHold: () => {
       if (get().projectCreateHold !== null) return; // this tab's own hold is already authoritative

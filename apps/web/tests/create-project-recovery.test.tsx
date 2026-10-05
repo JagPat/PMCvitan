@@ -133,6 +133,7 @@ describe('create project from a source the server refuses to copy', () => {
     fireEvent.click(createButton(r));
     fireEvent.click(createButton(r));
     fireEvent.click(createButton(r));
+    await settle(); // the send follows the cross-tab reservation, a turn later
     expect(calls.createProject).toHaveBeenCalledTimes(1);
     create.reject(httpError(400, RENAME));
     await settle();
@@ -243,6 +244,7 @@ describe('create project from a source the server refuses to copy', () => {
     expect(createButton(r).disabled).toBe(true);
     expect(r.queryByTestId('np-retry')).toBeNull(); // nothing to retry while the create is still out
     fireEvent.click(createButton(r));
+    await settle();
     expect(calls.createProject).toHaveBeenCalledTimes(1);
     create.reject(httpError(400, RENAME)); // the first create is refused: nothing was made
     await settle();
@@ -328,6 +330,7 @@ describe('create project from a source the server refuses to copy', () => {
     const r = mount();
     expect(createButton(r).disabled).toBe(true);
     expect(r.getByRole('alert').textContent).toMatch(/another tab, or from before this page reloaded/);
+    await settle();
     expect(calls.createProject).toHaveBeenCalledTimes(1);
   });
 
@@ -431,5 +434,72 @@ describe('create project from a source the server refuses to copy', () => {
     expect(r.getByTestId('host-closed')).toBeTruthy();
     expect(calls.switchProject).not.toHaveBeenCalled();
     expect(s().toast).toMatch(/open it from the project switcher/);
+  });
+});
+
+/**
+ * Codex 4187151998 — two TABS (two store instances over one localStorage) whose open dialogs submit
+ * at nearly the same moment. localStorage has no compare-and-set, so the check, the key and the
+ * in-flight record are one reservation under an exclusive Web Lock per user; this LockManager is the
+ * browser's, shared by both tabs, with a barrier that holds both requests until both are queued.
+ */
+describe('cross-tab project create — one reservation at a time', () => {
+  const realLocks = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+  afterEach(() => {
+    if (realLocks) Object.defineProperty(globalThis.navigator, 'locks', realLocks);
+    else delete (globalThis.navigator as { locks?: unknown }).locks;
+  });
+
+  /** An exclusive, FIFO LockManager whose first grant waits for the test's barrier. */
+  function barrierLocks() {
+    const gate = deferred<void>();
+    const names: string[] = [];
+    let tail: Promise<unknown> = gate.promise;
+    const locks = {
+      request: (name: string, _opts: unknown, cb: () => Promise<unknown>) => {
+        names.push(name);
+        const run = tail.then(() => cb());
+        tail = run.catch(() => undefined);
+        return run;
+      },
+    };
+    Object.defineProperty(globalThis.navigator, 'locks', { value: locks, configurable: true });
+    return { open: () => gate.resolve(), names };
+  }
+
+  it('two tabs submitting together send ONE create; the second tab reads the first tab\'s record and is held', async () => {
+    const barrier = barrierLocks();
+    const tabA = useStore;
+    vi.resetModules();
+    const { useStore: tabB, getInitialState: initialB } = await import('@/store/store');
+    tabB.setState(initialB());
+    for (const tab of [tabA, tabB]) tab.setState((st) => { st.sessionUserId = 'u-me'; st.sessionToken = tokenFor('u-a'); });
+    const a = fakeGateway();
+    const b = fakeGateway();
+    tabA.getState()._setGateway(a.gw);
+    tabB.getState()._setGateway(b.gw);
+
+    // both submit before either reservation runs — the interleaving where both would read "no hold"
+    const outA = tabA.getState().createProject('org-1', { name: 'Tab A', short: 'A', stage: 'Planning' });
+    const outB = tabB.getState().createProject('org-1', { name: 'Tab B', short: 'B', stage: 'Planning' });
+    expect(barrier.names).toEqual(['vitan.projectCreate.u-a', 'vitan.projectCreate.u-a']);
+    expect(a.calls.createProject).not.toHaveBeenCalled();
+    expect(b.calls.createProject).not.toHaveBeenCalled();
+
+    barrier.open();
+    await expect(outB).resolves.toEqual({ kind: 'unknown', message: expect.stringMatching(/another tab/) });
+    expect(a.calls.createProject).toHaveBeenCalledTimes(1);
+    expect(b.calls.createProject).not.toHaveBeenCalled(); // no second key was ever minted
+    expect(tabB.getState().projectCreateHold).toMatchObject({
+      phase: 'unknown', attempt: a.calls.createProject.mock.calls[0]?.[2],
+    });
+
+    // tab A's create lands; tab B's "Try again" then finishes that SAME attempt, never a new one
+    a.create.resolve({ id: 'p-new', name: 'Tab A', short: 'A' });
+    await expect(outA).resolves.toMatchObject({ kind: 'created', projectId: 'p-new' });
+    b.calls.createProject.mockImplementationOnce(() => Promise.resolve({ id: 'p-new', name: 'Tab A', short: 'A' }));
+    await expect(tabB.getState().retryProjectCreate()).resolves.toMatchObject({ kind: 'created', projectId: 'p-new' });
+    expect(b.calls.createProject.mock.calls[0]?.[2]).toBe(a.calls.createProject.mock.calls[0]?.[2]);
+    tabB.getState()._setGateway(null);
   });
 });
