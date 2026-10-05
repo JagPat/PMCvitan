@@ -15,7 +15,7 @@ import { EXTERNAL_EFFECTS, type PushRole } from '../platform/external-effects';
 import type { ApproveInput, ChangeInput, CreateDecisionInput, DisagreeDecisionInput, ForwardDecisionInput, RequestConsultationInput, ResolveStrandedCountersignInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
-import { resolveActorEnvelope } from '../platform/actor-envelope';
+import { requireActorEnvelope, resolveActorEnvelope, STALE_ROLE_MESSAGE } from '../platform/actor-envelope';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -530,11 +530,15 @@ export class DecisionsService {
         // the actor's FROZEN pair (A2's seam), resolved BEFORE the delivery rows and the decision row are
         // locked (its reads lock standing rows, which come before both in the one order): the revision's
         // `approvedByRole`/`approvedByName`, the event's envelope and the notice's text are one reading.
-        // A provisional approval REQUIRES the pair (the birth seal's arm); a no-chain approval records it
-        // when it resolves and keeps the legacy NULLs otherwise (4d-iii's trailing seal requires it).
+        // A provisional approval REQUIRES the pair (the birth seal's arm). 4d-iii / R0a — so does a no-chain
+        // approval (the Board's Decision 2): a stale role is refused with a re-sign-in, never recorded
+        // with NULLs, and the re-approval closure below writes the same pair as its resolver.
         const envelope = await resolveActorEnvelope(tx, projectId, actor);
-        if (chainActive && !envelope) {
-          throw new ConflictException('Your project standing could not be frozen for a provisional approval — reload and retry');
+        if (!envelope) {
+          if (chainActive) {
+            throw new ConflictException('Your project standing could not be frozen for a provisional approval — reload and retry');
+          }
+          throw new ForbiddenException(STALE_ROLE_MESSAGE);
         }
         // THE ONE LOCK ORDER (§A.4 (i)): the subject's queued push deliveries FOR UPDATE ascending, THEN the
         // decision row — the decider and forward demands this act outdates and, when the approval leaves
@@ -580,9 +584,14 @@ export class DecisionsService {
           // resolve, or 'reapproved' would lie about what happened (gate finding 1):
           // zero means inconsistent legacy state, more than one is impossible under the
           // partial unique index. Anything but 1 rolls the whole transition back.
+          // 4d-iii / R0a — the COMPLETE closure set: this approval's receipt and the approver's frozen
+          // pair beside the resolver and the time (R1's CLOSURE arm requires all six).
           const resolved = await tx.changeRequest.updateMany({
             where: { decisionId, status: 'open' },
-            data: { status: 'resolved', resolution: 'reapproved', resolvedById: actor.actorId, resolvedAt: new Date() },
+            data: {
+              status: 'resolved', resolution: 'reapproved', resolvedById: actor.actorId, resolvedAt: new Date(),
+              resolvedByCommandId: ctx.commandId!, resolvedByRole: envelope.actorRole, resolvedByName: envelope.actorName,
+            },
           });
           if (resolved.count !== 1) {
             throw new ConflictException('This decision has no open change request to resolve — its state is inconsistent; ask the PMC to re-raise or withdraw the change');
@@ -622,8 +631,8 @@ export class DecisionsService {
             // is the frozen envelope (judged against the registers by the same seal).
             finalized: !chainActive,
             approvedFrom: prior,
-            approvedByName: envelope?.actorName ?? null,
-            approvedByRole: envelope?.actorRole ?? null,
+            approvedByName: envelope.actorName,
+            approvedByRole: envelope.actorRole,
             // 4c-ii — the receipt of the approval command this revision IS the product of. The
             // deferred trigger installed in this unit's migration requires it to have SUCCEEDED
             // at commit with its `resultRef` naming THIS decision, which is precisely when
@@ -655,8 +664,8 @@ export class DecisionsService {
         // event and the notice), the payload carries what the text needs beside the revision id,
         // and the cached text is built from the same facts the renderer reads.
         const announce = approvedDecisionNotice({
-          actorName: envelope?.actorName ?? actor.actorName,
-          actorRole: envelope?.actorRole ?? actor.actorRole,
+          actorName: envelope.actorName,
+          actorRole: envelope.actorRole,
           title: d.title, material: o.material, deciderKind: d.deciderKind, onBehalfOf,
         });
         // 4d-ii-a / A8a (§A.4 (i)) — the demands this act outdates, cancelled by subject under the locks
@@ -958,14 +967,15 @@ export class DecisionsService {
         // 4d-ii-a / A7b — the requester's FROZEN attribution pair (the role the seal judged, `pmc` or
         // `architect`, and the account's registered name), resolved in this transaction through A2's
         // seam and written on the fact AND handed to the event, so the row and its event are one
-        // reading; NULL when the resolver finds no standing (the drain shape 4d-i admits).
-        const pair = await resolveActorEnvelope(tx, projectId, actor);
+        // reading. 4d-iii / R0a — a requester whose role no longer stands is refused with a re-sign-in
+        // (the Board's Decision 2), never recorded with a NULL pair.
+        const pair = await requireActorEnvelope(tx, projectId, actor);
         const id = `dc-${ctx.commandId}`;
         await tx.decisionConsultation.create({
           data: {
             id, projectId, decisionId,
             requestedById: actor.actorId,
-            requestedByRole: pair?.actorRole ?? null, requestedByName: pair?.actorName ?? null,
+            requestedByRole: pair.actorRole, requestedByName: pair.actorName,
             consulteeMembershipId: input.consulteeMembershipId,
             // the DECISIONS-OWNED canonical audience, resolved by the owner in this transaction —
             // never folded from `Membership` at read time (a cross-module read) and never carried
@@ -1105,13 +1115,13 @@ export class DecisionsService {
         }
 
         // 4d-ii-a / A7b — the responder's frozen pair, exactly as the request writes the requester's
-        const pair = await resolveActorEnvelope(tx, projectId, actor);
+        const pair = await requireActorEnvelope(tx, projectId, actor);
         const id = `dcr-${ctx.commandId}`;
         await tx.decisionConsultationResponse.create({
           data: {
             id, projectId, consultationId: consultation.id, decisionId,
             respondedById: actor.actorId,
-            respondedByRole: pair?.actorRole ?? null, respondedByName: pair?.actorName ?? null,
+            respondedByRole: pair.actorRole, respondedByName: pair.actorName,
             response: input.response,
             recommendedOptionId,
             respondedAt: new Date(),
@@ -1723,9 +1733,9 @@ export class DecisionsService {
           // 4d-ii-a / A2 — the frozen requester pair, resolved HERE, inside the transaction (§A.3
           // obligation 3), by the same predicate and identity read `ChangeRequest_t4d_birth_pair`
           // judges it with. ONE resolution feeds the request, its audit row and its event, so the
-          // three records of the act name the same role and name (obligation 7). NULL when the
-          // requester's token role does not stand: the drain shape, which the seals admit.
-          const pair = await resolveActorEnvelope(tx, projectId, actor);
+          // three records of the act name the same role and name (obligation 7). 4d-iii / R0a — a
+          // requester whose token role no longer stands is refused with a re-sign-in (Decision 2).
+          const pair = await requireActorEnvelope(tx, projectId, actor);
           const request = await tx.changeRequest.create({
             // Phase 6 unit 4d-i — `projectId` became NOT NULL when the row joined the uniform
             // seal contract (§A.3 obligation 5: every reference project-bound through the
@@ -1736,7 +1746,7 @@ export class DecisionsService {
             // command already holds.
             data: {
               projectId, decisionId, reason: input.reason, costImpact: input.costImpact, timeImpactDays: input.timeImpactDays, status: 'open', requestedById: actor.actorId,
-              requestedByRole: pair?.actorRole ?? null, requestedByName: pair?.actorName ?? null,
+              requestedByRole: pair.actorRole, requestedByName: pair.actorName,
               sourceCommandId: commandId,
             },
             select: { id: true },
@@ -1747,8 +1757,8 @@ export class DecisionsService {
           // role would claim a standing this transaction did not observe. `actor` is the legacy
           // display label (NOT NULL), not attribution; it keeps the account name.
           await tx.decisionEvent.create({ data: {
-            decisionId, type: 'change_requested', actor: pair?.actorName ?? actor.actorName, actorId: actor.actorId,
-            actorName: pair?.actorName ?? null, actorRole: pair?.actorRole ?? null, payload: input,
+            decisionId, type: 'change_requested', actor: pair.actorName, actorId: actor.actorId,
+            actorName: pair.actorName, actorRole: pair.actorRole, payload: input,
           } });
           await recordAudit(tx, { projectId, actor, action: 'decision.change', entity: 'Decision', entityId: decisionId });
           events.push(await emitEvent(tx, { projectId, actor, eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId, payload: { reason: input.reason, ...(input.costImpact !== undefined ? { costImpact: input.costImpact } : {}), ...(input.timeImpactDays !== undefined ? { timeImpactDays: input.timeImpactDays } : {}) }, effectKey: 'decision.change_requested', dispatch: {}, actorEnvelope: pair }));
@@ -1806,9 +1816,17 @@ export class DecisionsService {
       commandType: 'decisions.withdrawChange',
       idempotencyKey,
       requestHash,
-      run: async (tx) => {
+      // 4d-iii / R0a — the closure cites THIS command's receipt (`resolvedByCommandId`, which the 4d-i
+      // closure binding requires to be completed in this transaction), so an unkeyed withdrawal still
+      // gets one. The synthesized key is unique per call: never a replay, legacy behaviour unchanged.
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
         // restoring the lock flips the decision gate back (gate finding 1)
         await lockProjectReadiness(tx, projectId);
+        // 4d-iii / R0a — the resolver's frozen pair, resolved before the request and decision rows are
+        // touched (the envelope's locks come first in the one order); a stale role is refused with a
+        // re-sign-in (the Board's Decision 2). The closure, its audit and its event are one reading.
+        const envelope = await requireActorEnvelope(tx, projectId, actor);
         // A7b — the origin re-judged on the row as it stands (the pre-read was a plain read; the
         // seal freezes `origin`, so a row that was `standard` stays so, but the request the
         // pre-read saw may have closed and another opened)
@@ -1825,10 +1843,13 @@ export class DecisionsService {
         // nothing — roll the whole transition back instead of restoring a false lock.
         const closed = await tx.changeRequest.updateMany({
           where: { id: open.id, status: 'open' },
-          data: { status: 'withdrawn', resolution: 'withdrawn', resolvedById: actor.actorId, resolvedAt: new Date() },
+          data: {
+            status: 'withdrawn', resolution: 'withdrawn', resolvedById: actor.actorId, resolvedAt: new Date(),
+            resolvedByCommandId: ctx.commandId!, resolvedByRole: envelope.actorRole, resolvedByName: envelope.actorName,
+          },
         });
         if (closed.count !== 1) throw new ConflictException('The change request changed while withdrawing — reload and retry');
-        await tx.decisionEvent.create({ data: { decisionId, type: 'change_withdrawn', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole } });
+        await tx.decisionEvent.create({ data: { decisionId, type: 'change_withdrawn', actor: envelope.actorName, actorId: actor.actorId, actorName: envelope.actorName, actorRole: envelope.actorRole } });
         // 4d-ii-a / A7b (plan §A.4 (i)) — this transition LEAVES the consultation-open set, so the
         // decision's not-yet-sent `consultation_requested` deliveries are cancelled by subject under
         // the decision lock the CAS above took: an invitation `consultation.respond` now refuses.
@@ -1836,7 +1857,7 @@ export class DecisionsService {
         const cancelled = await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.consultation_requested' });
         await recordAudit(tx, { projectId, actor, action: 'decision.change_withdraw', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, {
-          projectId, actor, eventType: 'decision.change_withdrawn', entityType: 'Decision', entityId: decisionId, effectKey: 'decision.change_withdrawn', dispatch: {},
+          projectId, actor, actorEnvelope: envelope, eventType: 'decision.change_withdrawn', entityType: 'Decision', entityId: decisionId, effectKey: 'decision.change_withdrawn', dispatch: {},
           payload: { pushIntentsCancelled: cancelled.neutralized + cancelled.marked + cancelled.entombed },
         });
         return { resultRef: decisionId, events: [ev] };
