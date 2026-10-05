@@ -209,7 +209,14 @@ The non-compliant writers:
 | `DomainEvent` pair, org owner/admin | `orgs.service.ts` 518, 1164, 1182, 1198 and the participants it drives during project initialization | the actor carries the ORG role (`owner`/`admin`), which `ProjectUserStanding` never holds, so the pair is always NULL | **R0a:** record the `pmc` role, the project role the org authority grants and the windowed owner/admin arm already admits (Decision 1). An owner/admin who also holds a membership on the project records that membership's role, which is the role the windowed arm admits for them |
 | `DomainEvent` pair, system actors | `decisions.effects.ts:145`, `commercial-activation.service.ts:85→199`, `commercial-reevaluate.cli.ts:144` | `emitEvent` throws on any envelope for a system actor, and the 4d-i seal refuses a pair on a non-`human` actor (`migration.sql:3576`); the pair is always NULL | **R0b** admits a system role plus a registered automation identity on `system` actors; **R0c** makes `emitEvent` accept that pair and each system emitter write it (Decision 1) |
 
-Every row of the table not marked R0b or R0c is R0a's. The writers already compliant and left alone: `rejectProvisionalApproval` (`:1325`), every
+Every row of the table not marked R0b or R0c is R0a's. R0a ships as TWO PRs (2026-10-05). The writer inventory rule's
+first step was a full-suite probe: `emitEvent` refusing an unresolved human envelope broke 87 tests in 22
+files, beyond one standard unit.
+- **R0a-1** covers the decision rows: both closures, the no-chain approve, `requestChange` and the
+  consultation pair.
+- **R0a-2** covers `emitEvent`'s refusal, the org owner/admin `pmc` row and the test-writer inventory.
+
+ The writers already compliant and left alone: `rejectProvisionalApproval` (`:1325`), every
 `Notification` row carrying a `decisionId`, both `revisionId` payload emitters (`:691`, `:1233`), and the
 pair-throwing chain paths (approve under an active chain, forward, countersign, disagree, the stranded
 resolution, `members.factPair`). R0's proofs:

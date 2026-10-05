@@ -14,15 +14,35 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-iii-staging-record
+work_item: none
 reviewed_merge: cffb251
-open_pr: 714
+open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-05
 ```
 
-### Now — 4d-iii opens with its STAGING RECORD (#714, `claude/phase-6-task-4d-iii`): additive units R0 … R4
+### Now — 4d-iii unit R0a-1: the decision writers state every pin (`claude/phase-6-task-4d-iii-r0a`)
+
+The staging record merged as #714 (`f65890d`). R0a is the first unit, and it ships as TWO PRs. A probe on
+`main` ran the full integration suite with `emitEvent` refusing an unresolved human envelope. It broke
+87 tests across 22 files. About 25 trace to production writers: org owner `project.created` and
+`node.created`, daily-log start/submit, commercial `money_moved`, and `requestChange`. The other ~60 are
+test-only direct emitters. That is beyond one standard unit, so:
+
+- **R0a-1 (this PR)**, the decision writers only:
+  - both `ChangeRequest` closures write all six fields: the re-approval in `decisions.approve`, and
+    `decisions.withdrawChange`, which now synthesizes its key when absent;
+  - the no-chain approve, `requestChange` and the consultation request and response require the frozen
+    pair, refusing a stale role with "Your role on this project changed — sign in again" (Decision 2,
+    `requireActorEnvelope` / `STALE_ROLE_MESSAGE` in `src/platform/actor-envelope.ts`).
+- **R0a-2 (next)**: `emitEvent`'s central refusal, the org owner/admin `pmc` attribution (Decision 1)
+  and the mechanically derived test-writer inventory the probe produced.
+
+The 4d-i seals already judge every value R0a-1 writes, so no migration is involved. `reviewed_merge`
+is unchanged.
+
+### History — 4d-iii opened with its STAGING RECORD (#714, `claude/phase-6-task-4d-iii`): additive units R0 … R4
 
 The drain directive cleared with #693 (`f301d44`): its committed `docs/rollout/phase-6-4d-drain-evidence.json`
 is a `drained` verdict at minimum release `f8274f4` and minimum catalog version 3, and `main` carries
