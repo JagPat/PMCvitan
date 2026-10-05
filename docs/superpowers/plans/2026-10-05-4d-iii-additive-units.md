@@ -139,6 +139,48 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
 
 ## The units
 
+### The writer inventory rule (applies to R0a, R1, R2 and R3)
+
+Review rounds 2–6 on #714 each found test writers that a hand-written list had missed (Codex
+4181088591, 4181162635, 4181245446, 4181468561, 4181885624, 4181885629). Earlier lists, and the ones
+below, name the sites known so far. They are EXAMPLES, not the inventory. The root cause is that the
+inventory was compiled by reading. So each unit that tightens a writer or installs a seal derives its
+inventory MECHANICALLY, as the first step of its PR:
+
+1. **Enumerate every direct writer of each table or kernel the unit tightens.** Search
+   `apps/api/test/`, `apps/api/prisma/seed.ts` and `apps/api/scripts/` for:
+   - raw `INSERT INTO "<Table>"` and `UPDATE "<Table>"` statements;
+   - Prisma `<model>.create` / `createMany` / `update` / `upsert` / `delete` calls;
+   - for R0a, every direct `emitEvent(` caller.
+
+   At `c43c52d` that search finds raw `DomainEvent` inserts in 10 integration files:
+   - `phase6-t4d-ii-a6d-delivery-seals` (the pairless `system:a6d` bundle at lines 256–298);
+   - `phase6-t4d-i-catalog-generations` (lines 312–330);
+   - `outbox`, `event-envelope`, `phase6-t4d-i-b-pairing-matrix`, `phase6-t4d-ii-a7a-kinded-notice-writers`;
+   - `phase6-t4a-withdraw`, `phase6-t4d-i-seal-stripped`, `phase6-t4c-i-consultation`;
+   - `fixtures.ts` itself.
+
+   It finds direct `emitEvent` callers in 17 files:
+   - `outbox-scanner` (lines 81–84 emit as `f.memberUser` on a fresh project where that user has no
+     standing);
+   - the projection suites: `activities`, `daily-log`, `decisions`, `drawings`, `inspections`, and
+     `projection`;
+   - `outbox`, `outbox-reliability`, `outbox-operations`;
+   - `daily-log-isolation`, `drawings-isolation`;
+   - `event-envelope`, `phase5-t7bia-money-invalidation`, `phase6-t4a-withdraw`,
+     `phase6-t4d-ii-a1-actor-envelope`, `phase6-t4d-ii-a6d-delivery-seals`.
+2. **Classify every hit** in the PR's review packet, as one of two kinds:
+   - **CURRENT shape:** the writer simulates what the delivered code writes, so it is updated to carry
+     every pin the unit requires. For R0a, a human actor is given standing on the target project, or
+     the event is modelled as a valid `system` actor with a registered automation name.
+   - **Deliberately LEGACY:** it takes a NAMED bypass through a fixture plant.
+
+   An expectation changes only when the test's subject is the newly refused shape.
+3. **Pin the classification with a tripwire test** that re-runs the same search and compares the
+   result with the classified set. A new unclassified writer turns it RED.
+4. **The acceptance gate is the FULL integration suite with the unit's change in place**, not the suites
+   the unit names. No unit opens for review until that run is green locally.
+
 ### R0 — the writers state every pin (R0a service, R0b migration, R0c service)
 
 The audit of `main` at `4b40830` against R1–R3's requirements found these writers non-compliant. R0
