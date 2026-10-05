@@ -14,13 +14,60 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: none
+work_item: 4d-iii-r0a-1
 reviewed_merge: cffb251
-open_pr: none
+open_pr: 715
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-03
+updated: 2026-10-05
 ```
+
+### Now — 4d-iii unit R0a-1: the decision writers state every pin (#715, `claude/phase-6-task-4d-iii-r0a`)
+
+The staging record merged as #714 (`f65890d`). R0a is the first unit, and it ships as TWO PRs. A probe on
+`main` ran the full integration suite with `emitEvent` refusing an unresolved human envelope. It broke
+87 tests across 22 files. About 25 trace to production writers: org owner `project.created` and
+`node.created`, daily-log start/submit, commercial `money_moved`, and `requestChange`. The other ~60 are
+test-only direct emitters. That is beyond one standard unit, so:
+
+- **R0a-1 (this PR)**, the decision writers only:
+  - both `ChangeRequest` closures write all six fields: the re-approval in `decisions.approve`, and
+    `decisions.withdrawChange`, which now synthesizes its key when absent;
+  - the no-chain approve, `requestChange` and the consultation request and response require the frozen
+    pair, refusing a stale role with "Your role on this project changed — sign in again" (Decision 2,
+    `requireActorEnvelope` / `STALE_ROLE_MESSAGE` in `src/platform/actor-envelope.ts`).
+- **R0a-2 (next)**: `emitEvent`'s central refusal, the org owner/admin `pmc` attribution (Decision 1)
+  and the mechanically derived test-writer inventory the probe produced.
+
+The 4d-i seals already judge every value R0a-1 writes, so no migration is involved. `reviewed_merge`
+is unchanged.
+
+### History — 4d-iii opened with its STAGING RECORD (#714, `claude/phase-6-task-4d-iii`): additive units R0 … R4
+
+The drain directive cleared with #693 (`f301d44`): its committed `docs/rollout/phase-6-4d-drain-evidence.json`
+is a `drained` verdict at minimum release `f8274f4` and minimum catalog version 3, and `main` carries
+`blocking_directive: none`. On 2026-10-05 the Board instructed 4d-iii to start from this record, and the
+owner chose additive staging for it in the authoring session. 4d-iii opens with a docs-only staging record,
+`docs/superpowers/plans/2026-10-05-4d-iii-additive-units.md`, as 4d-ii-a and 4d-ii-b did. A dated pointer
+note sits at the top of the 4d plan.
+
+The record maps §D's 4d-iii inventory onto R1–R4, with the fenced retirement R4 LAST, so every trailing
+seal is on `main` before the doors drop. It adds R0 (R0a service, R0b one admitting migration, R0c service) because an audit of `main` found
+that the writers §D says "already comply" do not: neither `ChangeRequest` closure writes the resolver's
+command, role or name; most actor pairs are written conditionally; org owner/admin events always carry a
+NULL pair; and system events cannot carry one (the 4d-i event seal refuses a pair on a non-human actor,
+so R0b admits the system pair before R0c writes it). The Board answered both open questions on 2026-10-05
+(relayed by PMCvitan Promote). Q1, every event is attributed: system events get a system role plus a named
+automation identity, and org owner/admin actions get the `pmc` role, so every event carries the role and
+name pair. Q2, refuse and re-sign-in: a stale-session action is refused with a clear "your role on this
+project changed — sign in again" message, never recorded with an empty or false attribution. The record
+also states where §D and `main` disagree: the correspondence body 4d-i never installs, the `ReleaseLease`
+preflight that does not exist yet, and six doors rather than "five".
+
+`work_item` and `open_pr` name the staging record on the pointer commit, per the §D
+self-naming convention. `reviewed_merge` is unchanged.
+Task 4 stays `in_progress` until R4 merges. The parked off-phase UX drafts (#709–#713) are left as they
+are, per the Board.
 
 ### Now — the drain directive's CLEARING PR (waits on the owner's drain-evidence run)
 

@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { ForbiddenException } from '@nestjs/common';
 import type { EventActor } from '../common/actor';
 
 /**
@@ -90,4 +91,23 @@ export async function resolveActorEnvelope(
   if (typeof name !== 'string' || ASCII_BLANK.test(name)) return null;
 
   return { actorRole: role, actorName: name };
+}
+
+/**
+ * Phase 6 task 4d-iii / R0a — the Board's Decision 2 (2026-10-05): a human act whose token role no
+ * longer stands on the project is REFUSED with a re-sign-in, never recorded with an empty or false
+ * attribution. One message for every writer that owes the pair, so the client can treat it as one
+ * condition.
+ */
+export const STALE_ROLE_MESSAGE = 'Your role on this project changed — sign in again';
+
+/** {@link resolveActorEnvelope}, refusing (403) when the pair does not resolve. */
+export async function requireActorEnvelope(
+  tx: Prisma.TransactionClient,
+  projectId: string,
+  actor: EventActor,
+): Promise<ActorEnvelope> {
+  const envelope = await resolveActorEnvelope(tx, projectId, actor);
+  if (!envelope) throw new ForbiddenException(STALE_ROLE_MESSAGE);
+  return envelope;
 }
