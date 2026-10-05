@@ -322,6 +322,29 @@ export function activitiesInPhase(activities: Activity[], phases: Phase[], phase
   return activities.filter((a) => a.phaseId === phaseId);
 }
 
+// ---- project progress ----
+
+export interface ProjectProgress {
+  pct: number;
+  done: number;
+  total: number;
+  /** true: computed from the activities; false: no activities yet, so the project's recorded figure */
+  derived: boolean;
+}
+
+/**
+ * B7 (F-12) — overall progress DERIVED from the activities, by the same rule as `phaseRollup`: only
+ * an accepted (`done`) activity counts, so an activity awaiting sign-off does not. The stored
+ * `milestonePct` is not maintained by the server (a new project records 0 and nothing moves it), so
+ * it is used only while a project has no activities planned — and the screen says so.
+ */
+export function selectProjectProgress(s: AppState): ProjectProgress {
+  const total = s.activities.length;
+  if (total === 0) return { pct: Math.max(0, Math.min(100, Math.round(s.milestonePct))), done: 0, total: 0, derived: false };
+  const done = s.activities.filter((a) => a.status === 'done').length;
+  return { pct: Math.round((done / total) * 100), done, total, derived: true };
+}
+
 // ---- daily log ----
 
 export function selectTotalWorkers(s: AppState): number {

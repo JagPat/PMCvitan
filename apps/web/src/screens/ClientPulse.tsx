@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectDeciderPending, selectDeciderReapproval } from '@/store/selectors';
+import { selectDeciderPending, selectDeciderReapproval, selectProjectProgress } from '@/store/selectors';
 import { clientPulse } from '@/lib/clientPulse';
 import { todayCivil } from '@/lib/civilDate';
 import { ArrowRight, CircleCheck } from '@/lib/icons';
@@ -30,7 +30,8 @@ export function ClientPulse({ also }: { also?: ReactNode }) {
   const lang = useStore((s) => s.lang);
   const short = useStore((s) => s.short);
   const timeZone = useStore((s) => s.timeZone);
-  const milestonePct = useStore((s) => s.milestonePct);
+  // B7 (F-12): the same derived progress the Dashboard shows
+  const milestonePct = useStore((s) => selectProjectProgress(s).pct);
   const scheduleStartDate = useStore((s) => s.scheduleStartDate);
   const scheduleEndDate = useStore((s) => s.scheduleEndDate);
   const activities = useStore((s) => s.activities);

@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectPending, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats } from '@/store/selectors';
+import { selectPending, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
@@ -25,12 +25,21 @@ export function DashboardScreen() {
   const descriptor = useStore((s) => s.descriptor);
   const stage = useStore((s) => s.stage);
   const siteCode = useStore((s) => s.siteCode);
-  const milestonePct = useStore((s) => s.milestonePct);
+  // B7 (F-12): derived from the activities, so it moves as work is accepted (see selectProjectProgress)
+  const progressNow = useStore(useShallow(selectProjectProgress));
   const phases = useStore(useShallow((s) => s.phases));
+  const activities = useStore(useShallow((s) => s.activities));
   const photoStats = useStore(useShallow(selectPhotoStats));
   const sitePhotos = useStore(useShallow((s) => s.photos));
-  // the milestone strip is the project's own phases (done = fully complete); empty projects show none
-  const milestones = phases.map((p) => ({ label: p.name, done: p.donePct === 100 }));
+  // the milestone strip is the project's own phases, read LIVE from their activities (the stored
+  // `donePct` is only the snapshot's initial count): done = every activity accepted, started = any
+  // accepted or under way. Empty projects show none.
+  const milestones = phases.map((p) => {
+    const r = phaseRollup(activities, p.id);
+    const done = r.activityTotal > 0 && r.done === r.activityTotal;
+    const started = !done && (r.done > 0 || r.inProgress > 0 || r.awaitingSignoff > 0);
+    return { id: p.id, label: p.name, done, started, summary: `${p.name}: ${r.done} of ${r.activityTotal} activities done` };
+  });
 
   const siteStatus = submitted ? 'Daily log submitted' : checkedIn ? 'Engineer on site · logging' : 'Awaiting check-in';
   const siteDot = checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)';
@@ -41,10 +50,9 @@ export function DashboardScreen() {
     // API mode never claims WHICH items failed beyond the recorded count — the seeded
     // "Drain slope · Terrace" copy is demo-only prototype fidelity
     { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `${failedCount} to re-inspect` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') },
-    // live: COMPUTED from the snapshot's placed photos; demo keeps the prototype's fixed claim
-    API_BASE
-      ? { key: 'photos', label: 'PROGRESS PHOTOS ON RECORD', value: photoStats.count, accent: 'var(--green-solid)', sub: photoStats.zones > 0 ? `Across ${photoStats.zones} zone${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet', onClick: () => setScreen('places') }
-      : { key: 'photos', label: 'PROGRESS PHOTOS THIS WEEK', value: 24, accent: 'var(--green-solid)', sub: 'Across 6 zones', onClick: () => {} },
+    // B7 (F-13): COMPUTED from the placed photos in every mode — the demo's fixed "24 this week ·
+    // 6 zones" contradicted the strip above. The strip counts TODAY's log photos; this, all on record.
+    { key: 'photos', label: 'SITE PHOTOS ON RECORD', value: photoStats.count, accent: 'var(--green-solid)', sub: photoStats.zones > 0 ? `Across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet', onClick: () => setScreen('places') },
   ];
 
   // demo-only prototype highlights; API mode renders the project's own photos (or an honest absence)
@@ -85,20 +93,29 @@ export function DashboardScreen() {
       <div style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 12, padding: '20px 24px', marginBottom: 22 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
           <span style={{ fontWeight: 600, fontSize: 14 }}>Milestone Progress</span>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{milestonePct}% complete</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }} data-testid="dash-progress-pct">{progressNow.pct}% complete</span>
         </div>
-        <ProgressBar pct={milestonePct} />
+        <ProgressBar pct={progressNow.pct} />
+        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 8 }} data-testid="dash-progress-basis">
+          {progressNow.derived
+            ? `${progressNow.done} of ${progressNow.total} activities accepted as done`
+            : 'No activities planned yet — this is the figure recorded on the project'}
+        </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
           {milestones.map((m) => (
-            <div key={m.label} style={{ textAlign: 'center', flex: 1 }}>
+            <div key={m.id} style={{ textAlign: 'center', flex: 1 }} title={m.summary}>
               <div
+                role="img"
+                aria-label={m.summary}
+                data-testid={`milestone-${m.id}`}
+                data-state={m.done ? 'done' : m.started ? 'started' : 'not-started'}
                 style={{
                   width: 11,
                   height: 11,
                   borderRadius: '50%',
                   margin: '0 auto 6px',
                   background: m.done ? 'var(--green-solid)' : 'transparent',
-                  border: m.done ? 'none' : '1.5px solid rgba(35,33,28,.3)',
+                  border: m.done ? 'none' : m.started ? '2px solid var(--green-solid)' : '1.5px solid rgba(35,33,28,.3)',
                 }}
               />
               <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>{m.label}</div>
@@ -120,7 +137,8 @@ export function DashboardScreen() {
           {[
             { v: workers, l: 'WORKERS ON SITE' },
             { v: materialsCount, l: 'MATERIALS LOGGED' },
-            { v: progress, l: 'PROGRESS PHOTOS' },
+            // today's daily-log photos — named apart from the photos-on-record tile below (F-13)
+            { v: progress, l: "PHOTOS IN TODAY'S LOG" },
           ].map((s) => (
             <div key={s.l} style={{ textAlign: 'center' }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 22 }}>{s.v}</div>
