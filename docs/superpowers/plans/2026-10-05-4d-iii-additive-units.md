@@ -55,10 +55,23 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
       (`src/platform/events.ts:165–167`).
 
     In the re-stated validation:
-    - a `system` envelope is judged against `systemActor` and the registered automation identity, never
-      against `actorId`;
+    - a `system` envelope is judged by its pair alone: `actorRole` must be the system role, `actorName`
+      must be in the registered automation-identity set, and `systemActor` must be nonblank. It is never
+      judged against `actorId`;
     - the `actorId` requirement and `phase6_t4d_actor_pair_true` apply to `human` envelopes exactly as
       before.
+
+    The pair NAMES THE AUTOMATION. `systemActor` keeps recording WHO OR WHAT triggered it, and the two are
+    not required to match (#714 review, Codex 4181468551). The operator-backed emitters write the
+    resolved operator's user id as `systemActor`:
+    - commercial activation (`commercial-activation.service.ts:85`);
+    - commercial re-evaluation (`commercial-reevaluate.cli.ts:144`).
+
+    Those ids are never registered as automation identities. Each emitter writes a FIXED registered name,
+    and `systemActor` keeps the operator provenance. The registered set is closed and named in R0b; a new
+    automation means a new migration:
+    - `decisions-effects` for the effects processor;
+    - `commercial-activation` and `commercial-reevaluate` for the two operator paths.
 
     It also adds the nullable `ReleaseLease.serverGeneration` column, with its `schema.prisma` field (the
     lease writer is raw SQL naming its columns). In the same migration it re-states
@@ -67,7 +80,20 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
     re-stamped from NULL to 3 and pass the R1–R3 preflight. It admits; it requires nothing, so every
     delivered writer still commits.
   - **R0c (service-only)** makes the system emitters write that pair and the lease record its generation.
-    It opens only after R0b is deployed.
+    It opens only after R0b is deployed. It also FENCES THE EVENT-WRITING CLI ENTRYPOINTS (#714 review,
+    Codex 4181468570). `commercial-reevaluate.cli.ts` and `capability.cli.ts`, which drives
+    `CommercialActivationService`, create their own Prisma client and today never take a server-generation
+    admission. R0c makes each one:
+    - read the persisted minimum `FOR SHARE` through `assertServerGenerationAdmitted`
+      (`server-generation.ts:105`), inside the same transaction as its writes and held to its commit;
+    - refuse to run when its compiled generation is below that minimum, before writing anything.
+
+    A CLI image from BEFORE R0c cannot carry that check. Launched after R2, it fails CLOSED: both
+    operator paths emit inside the one `$transaction` that holds their writes
+    (`commercial-activation.service.ts:107`; the re-evaluation sweep's own transaction). R2's presence
+    seal therefore rolls the whole operation back with the seal's named error, and no half-written state
+    is left. The runbook entry R0c adds states that operator CLIs run only from the currently deployed
+    image.
 - **R1–R3 change nothing a delivered writer does once R0 is on `main`.** Each opens only after R0c has
   merged and DEPLOYED: the release carrying R0c is the oldest one that may serve when a seal lands, and
   each R1–R3 migration refuses to run while a live `ReleaseLease` predates it (the same SERIALIZED
@@ -76,7 +102,18 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
   migration commits (#714 review, Codex 4181162627), so the fence is also PERSISTENT:
   - R0c raises the compiled `SERVER_GENERATION` (`src/platform/server-generation.ts:46`) from 2 to 3;
   - R1, the first seal, raises the persisted `ServerGeneration` minimum to 3 in its own transaction, under
-    the serialized lease preflight, before installing its seal;
+    the serialized lease preflight, before installing its seal. The register is sealed
+    (`ServerGeneration_t4d_raised`), so the raise follows the GUARDED TRANSITION its own migration
+    defines (`20280101000000_phase6_t4d_ii_a6e_generation_fence`, lines 158–170; #714 review, Codex
+    4181468556):
+    1. in ONE `DO` block, create `platform_t4d_server_generation_migration_open()`;
+    2. upsert the singleton with `GREATEST(existing, 3)`, a NEW `raisedBy` (R1's migration name) and a
+       later `raisedAt`;
+    3. drop the marker.
+
+    A replay that finds the minimum already at least 3 changes nothing, and the `raisedBy`/`raisedAt`
+    rule admits that unchanged row. R1's proofs cover the raise committing, a P3005 replay leaving
+    `raisedBy` unchanged, and an ordinary `UPDATE` outside the transition still refused;
   - from then on, any R0a- or R0b-era build is REFUSED AT STARTUP by `judgeServerGeneration`
     (`server-generation.ts:87`), the existing mechanism migrations alone may raise;
   - neither of those stops an R0a- or R0b-era process that is ALREADY SERVING when R1 runs: every
@@ -139,8 +176,9 @@ resolution, `members.factPair`). R0's proofs:
 - **R0b:** the system pair admitted on a `system` actor; refused on a `human` actor; refused with an
   unregistered or blank name; a human pair still judged by `phase6_t4d_actor_pair_true` exactly as before;
   a P3005 replay leaving the re-stated arm in place; the `ReleaseLease.serverGeneration` column present and
-  the delivered `writeLease` still committing with it NULL; a `system` envelope with `actorId` NULL and a
-  registered identity matching `systemActor` committing; a `human` envelope with `actorId` NULL still
+  the delivered `writeLease` still committing with it NULL; a `system` envelope with `actorId` NULL, the
+  system role and a registered name committing, including one whose `systemActor` is an operator's user
+  id; the same envelope with an unregistered name (an operator's id or display name) refused; a `human` envelope with `actorId` NULL still
   refused; an UPDATE moving a lease's `serverGeneration` (NULL → 3, 2 → 3) refused.
 - **R0c:** each system emitter committing its event with the pair; a registered lease recording
   `serverGeneration = 3`.
@@ -175,6 +213,22 @@ Plan §D lines 7434–7614 (rounds 8, 10–13, 16, 24 of #572).
   and `ChangeRequest_t4d_paired`) in the existing `DO $$ … IF EXISTS (SELECT 1 FROM pg_trigger …)`
   shape. The `changeRequest.deleteMany()` reset (line 143) becomes the second site of the provenance
   seal's name under the same protocol. No opening bundle is fabricated.
+- **The intentional legacy INSERTs** (#714 review, Codex 4181468561). The INSERT arm refuses an open
+  row with no `sourceCommandId` and no requester pair, which is exactly what the suites plant on purpose.
+  Every such insert in an integration suite goes through `plantUnpairedDecisionState`
+  (`test/integration/fixtures.ts:377`), whose bypass list today names `ChangeRequest_t4d_paired` alone
+  (`:383`). The six sites:
+  - `change-control.test.ts:328`;
+  - `decisions-projection.test.ts:113`;
+  - `phase1-baseline.test.ts:170`, `:173`;
+  - `phase3-requirements.test.ts:487`, `:518`.
+
+  R1 adds `ChangeRequest_t4d_provenance_required` to that plant's named bypass list. The suites that
+  target the seals themselves are classified by R1 row by row:
+  - `phase6-t4d-i-seal-stripped.test.ts`;
+  - `phase6-t4d-i-b-pairing-matrix.test.ts` (its open-row fact at line 220 omits provenance).
+
+  A simulated current writer carries the provenance; a deliberately legacy row takes the named bypass.
 - **Every other direct teardown** (#714 review, Codex 4181088591). The DELETE arm refuses an ordinary
   delete, and fifteen integration suites delete `ChangeRequest` rows directly in their teardown:
   `change-control`, `command-ledger`, `decisions-projection`, `derived-readiness`, `phase1-baseline`,
