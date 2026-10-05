@@ -43,7 +43,7 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
     admits everything R0a writes: `phase6_t4d_actor_pair_true` (`20271220000000…/migration.sql:505`)
     judges the pair through `platform_user_holds_role_windowed`, which admits `pmc` for an org
     owner/admin with no membership on the project.
-  - **R0b (migration-only)** ADMITS the system pair. Today the 4d-i event seal REFUSES any pair on a
+  - **R0b (migration-only)** ADMITS the system pair (#714 review, Codex 4181088585). Today the 4d-i event seal REFUSES any pair on a
     non-`human` actor (`20271220000000…/migration.sql:3576`), so a system event carrying Q1's attribution
     would abort at commit. R0b re-states that arm (`CREATE OR REPLACE`, marker-aware like every 4d replace)
     to admit, on a `system` actor only, the system role together with a name drawn from a registered set
@@ -52,9 +52,11 @@ the plan pairs with the retirement is missing. Each R-unit is safe on its own:
   - **R0c (service-only)** makes the system emitters write that pair. It opens only after R0b is deployed.
 - **R1–R3 change nothing a delivered writer does once R0 is on `main`.** Each opens only after R0c has
   merged and DEPLOYED: the release carrying R0c is the oldest one that may serve when a seal lands, and
-  each R1–R3 migration refuses to run while a live `ReleaseLease` predates it (the same preflight R4
-  carries, at the R0 release's catalog version or, if R0 does not bump the catalog, a release-identity
-  check against the R0 merge, stated in R1's packet). Legacy and drain-window rows are untouched: every
+  each R1–R3 migration refuses to run while a live `ReleaseLease` predates it (the same SERIALIZED
+  preflight R4 carries, step 1 below: the register locked against new leases and renewals before it is
+  read, and held to commit; judged at the R0c release's catalog version or, if R0c does not bump the
+  catalog, by a release-identity check against the R0c merge, stated in R1's packet). Legacy and
+  drain-window rows are untouched: every
   seal is INSERT- or transition-time, never a backfill. The doors still stand, so `rollout.phase6_4d`
   keeps reading `'reserved'`.
 - **R4 is the retirement.** It is the only unit that makes the chain reachable, and it runs only after
@@ -127,8 +129,18 @@ Plan §D lines 7434–7614 (rounds 8, 10–13, 16, 24 of #572).
 - **The seed.** `prisma/seed.ts`'s DL-003 plant (lines 396–434) today disables `ChangeRequest_t4d_paired`
   alone; it is rewritten to disable the CLOSED set of two names (`ChangeRequest_t4d_provenance_required`
   and `ChangeRequest_t4d_paired`) in the existing `DO $$ … IF EXISTS (SELECT 1 FROM pg_trigger …)`
-  shape. The `changeRequest.deleteMany()` reset (line 143) and the fixtures' equivalent become the second
-  site of the provenance seal's name under the same protocol. No opening bundle is fabricated.
+  shape. The `changeRequest.deleteMany()` reset (line 143) becomes the second site of the provenance
+  seal's name under the same protocol. No opening bundle is fabricated.
+- **Every other direct teardown** (#714 review, Codex 4181088591). The DELETE arm refuses an ordinary
+  delete, and fifteen integration suites delete `ChangeRequest` rows directly in their teardown:
+  `change-control`, `command-ledger`, `decisions-projection`, `derived-readiness`, `phase1-baseline`,
+  `phase2-consequences`, `phase6-t4a-withdraw`, `phase6-t4b-decider`, `phase6-t4c-ii-consultation`,
+  `phase6-t4d-i-seal-stripped`, `phase6-t4d-ii-a2-request-change`, `phase6-t4d-ii-a5e-countersign-boundary`,
+  `phase6-t4d-ii-a7a-kinded-notice-writers`, `platform-command-receipt` and `start-readiness-race` (all
+  under `apps/api/test/integration/`). R1 converts every one to ONE sanctioned fixture reset in
+  `test/integration/fixtures.ts`, which disables the provenance seal by name inside its transaction under
+  the same `pg_trigger` protocol. A statement tripwire then pins the closed set of admitted
+  `ChangeRequest` delete sites: the seed reset and that fixture. A new direct delete in any suite is RED.
 - **Proofs:**
   - P33 gains the hostile arms: the fabricated row born closed; the pre-filled open row; the
     status-only closure; the crossed pairs; a stranger's `standard` withdrawal; a `countersign_rejection`
@@ -182,12 +194,21 @@ Plan §D lines 7390–7434 and 7632–7692.
 
 One transaction, in this order:
 
-1. **Preflight on `ReleaseLease`.** Abort, with every door intact, if any lease has
+1. **Preflight on `ReleaseLease`, SERIALIZED with process registration** (#714 review, Codex 4181088588).
+   The FIRST statement after the gates is `LOCK TABLE "ReleaseLease" IN SHARE ROW EXCLUSIVE MODE`, held to
+   commit. That mode conflicts with the writer's `INSERT` and `UPDATE` (`release-lease.service.ts:89`,
+   `:102`), so no process can register a lease, and no lease can be renewed, between the read and the
+   commit. Without the lock, an old process could commit its lease after the check saw none and before the
+   doors dropped. A serving process's renewal waits for the migration's commit, which is well inside the
+   writer's 60-second fence margin. Under that lock, abort, with every door intact, if any lease has
    `catalogVersion` below the persisted catalog maximum (`max(OutboxConsumerCatalog.catalogVersion)`)
    AND `leaseUntil > clock_timestamp()`. This is the same minimum the drain record judged
    (`minimumCatalogVersion.source: "the persisted catalog maximum"`, value 3). The register is frozen and
    undeletable (`ReleaseLease_t4d_frozen`, the no-truncate seal), so a live old lease cannot be
-   re-versioned or removed to pass this check.
+   re-versioned or removed to pass this check. A process that STARTS after the commit is fenced by the
+   bumped consumer contracts (`syncConsumerCatalog` refuses an older catalog; the `ServerGeneration`
+   minimum), as §D's drain paragraph states. The lock is taken before step 3's fence, and step 3 does not
+   include this table.
 2. **The `SET LOCAL` gates**, `vitan.phase6_4d_retire` among them.
 3. **The fence.** `LOCK TABLE "Project", "OrgMembership", "Membership" IN SHARE ROW EXCLUSIVE MODE`, in
    that order, held to commit. No org key is taken.
@@ -217,11 +238,20 @@ One transaction, in this order:
       migration activation fact EXISTS.
 11. **The marker.** `INSERT … ON CONFLICT (unit) DO NOTHING` under the gate.
 12. **The closing verification**, exactly as 4c-v's: count the six triggers, the function and the
-    defaults; raise if any remains; require the marker row.
+    defaults; raise if any remains; require the marker row. AND fail closed unless every R0b–R3 seal is
+    present by name (#714 review, Codex 4181088593): the re-stated event-envelope arm, every
+    `ChangeRequest_t4d_provenance_required` arm, every R2 presence seal, and the three R3 readiness
+    triggers. So the doors cannot drop on a database where any of them is missing, whatever path brought
+    it there.
 
 **Registration and pinned suites:**
-- R4's file is registered in `scripts/migrate.sh`'s `ALWAYS_EXECUTE`, together with the three tests
-  that pin that list (`phase6-t4b-decider.test.ts`, `phase6-4c-iiir-inbox-repair.test.ts`,
+- EVERY migration of this staging is registered in `scripts/migrate.sh`'s `ALWAYS_EXECUTE`: R0b, R1, R2,
+  R3 and R4, each in the unit that adds it (#714 review, Codex 4181088593). On the supported P3005 /
+  `db push` baseline path, a migration outside that list is resolved as applied without running. Every
+  column these seals judge already exists, so nothing else would force them to run, and a baseline
+  replay would otherwise reach R4 with none of the seals installed. Each file is idempotent
+  (`CREATE OR REPLACE`, `DROP … IF EXISTS`, marker-aware), as the list requires. Each unit also updates the
+  three tests that pin that list (`phase6-t4b-decider.test.ts`, `phase6-4c-iiir-inbox-repair.test.ts`,
   `phase6-t4c-v-seal-retirement.test.ts`).
 - The suites that pin the six doors move to the retired state:
   - the inventories, `phase6-t4d-i-seal-inventory.test.ts` and `phase6-t4d-i-seal-contract.test.ts`;
