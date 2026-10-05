@@ -18,4 +18,11 @@ describe('HealthController — fail-soft outbox diagnostics', () => {
     expect(r.outboxAvailable).toBe(false);
     expect(r.outboxDead).toBeUndefined();
   });
+
+  it('advertises the keyed project-create receipt in both branches, for the separately deployed web bundle', async () => {
+    const up = { metrics: vi.fn().mockResolvedValue({ pending: 0, leased: 0, dead: 0, blocked: 0, oldestPendingSeconds: null }) } as unknown as OutboxOperationsService;
+    const down = { metrics: vi.fn().mockRejectedValue(new Error('db unreachable')) } as unknown as OutboxOperationsService;
+    expect((await new HealthController(up).health()).features).toContain('orgs.createProject.receipt');
+    expect((await new HealthController(down).health()).features).toContain('orgs.createProject.receipt');
+  });
 });

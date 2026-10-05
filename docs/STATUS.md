@@ -14,15 +14,45 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-iii-r0a-1
+work_item: ux-queue-717-project-create-receipt-server
 reviewed_merge: cffb251
-open_pr: 715
+open_pr: 717
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-05
 ```
 
-### Now — 4d-iii unit R0a-1: the decision writers state every pin (#715, `claude/phase-6-task-4d-iii-r0a`)
+### Now — the UX queue, one owner, one PR at a time, then 4d-iii R0a-2
+
+#715 (4d-iii R0a-1) trusted-merged at `67644e5`. The 10:53 UTC hold on #482 kept #710–#713 paused until
+#715 completed and a sequential handoff was recorded. The repository owner then directed this sequence,
+and it is recorded on #482 (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5994077091). One
+Claude session owns every unit, and each is driven to completion before the next is touched.
+
+The legacy-copy recovery (#710) needs project creation to carry an idempotency key. #710 was closed at its
+five-head limit, and its replacement #716 reached the same five-head restructure signal. Three of #716's
+reviewed heads also drew a P1 in `apps/web/src/store/store.ts`, which is the policy's stop for an additive
+redesign in smaller units. So #716 was closed and its work is split in two:
+
+1. **#717, the server unit**, `claude/project-create-receipt-server` (current work item). Project
+   creation accepts an optional `Idempotency-Key`, backed by an org-scoped receipt through the command
+   ledger, and `/health` advertises `orgs.createProject.receipt`. No client sends the key yet, so behaviour
+   is unchanged for every current caller.
+2. **The client unit**, `claude/project-create-idempotency` rebuilt from `main` after the server unit
+   merges: the legacy-copy recovery dialog, the per-user create hold and its cross-tab reservation, and the
+   capability gate, carrying every #710 and #716 finding.
+3. **#711** `claude/ux-b7-progress` — distinguish failed activity loading from an empty list.
+4. **#712** `claude/ux-b8-space-status` — align the place-filter summaries with the filtered rows.
+5. **#713** `claude/ux-b9-naming` — prevent the small-screen Decision Log label truncation.
+6. **4d-iii R0a-2** — `emitEvent`'s central refusal, the org owner/admin `pmc` attribution and the
+   test-writer inventory. It is local work only, and gets no branch or PR until #713 completes.
+
+The post-#715 native handoff named `pr:713`, picked from the live open PRs. `open_pr` records the current
+PR of the owner's order instead. `next_task` stays `phase-6-task-4d-iii`, which resumes with R0a-2. Each
+unit is updated from `main` by a merge commit and passes fresh exact-head CI and independent Codex review.
+Nothing here authorises rollout activation, a manual merge or a deployment.
+
+### History — 4d-iii unit R0a-1: the decision writers state every pin (#715, `claude/phase-6-task-4d-iii-r0a`)
 
 The staging record merged as #714 (`f65890d`). R0a is the first unit, and it ships as TWO PRs. A probe on
 `main` ran the full integration suite with `emitEvent` refusing an unresolved human envelope. It broke
