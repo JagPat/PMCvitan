@@ -67,8 +67,9 @@ test('a modified click on a Decision Log link keeps the browser’s new-tab beha
     context.waitForEvent('page'),
     page.getByTestId('log-link-DL-014').click({ modifiers: ['ControlOrMeta'] }),
   ]);
-  await popup.waitForLoadState();
-  expect(popup.url()).toMatch(/\/projects\/ambli\/decisions\/DL-014$/);
+  // a new tab opens at about:blank before it navigates, so wait on the URL itself (retrying), not on
+  // a load state that about:blank already satisfies (the race CI hit on 6e8082b)
+  await expect(popup).toHaveURL(/\/projects\/ambli\/decisions\/DL-014$/);
   // the original tab did not navigate in-app
   await expect(page).toHaveURL(/\/projects\/ambli\/decisions$/);
 });
