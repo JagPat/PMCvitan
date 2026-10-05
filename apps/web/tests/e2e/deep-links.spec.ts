@@ -61,6 +61,18 @@ test('a Decision Log link marks that entry, and its id is a copyable link', asyn
   await expect(page.getByTestId('log-link-DL-014')).toHaveAttribute('href', '/projects/ambli/decisions/DL-014');
 });
 
+test('a modified click on a Decision Log link keeps the browser’s new-tab behaviour', async ({ page, context }) => {
+  await page.goto('/projects/ambli/decisions');
+  const [popup] = await Promise.all([
+    context.waitForEvent('page'),
+    page.getByTestId('log-link-DL-014').click({ modifiers: ['ControlOrMeta'] }),
+  ]);
+  await popup.waitForLoadState();
+  expect(popup.url()).toMatch(/\/projects\/ambli\/decisions\/DL-014$/);
+  // the original tab did not navigate in-app
+  await expect(page).toHaveURL(/\/projects\/ambli\/decisions$/);
+});
+
 test('an unknown item opens the screen at its list', async ({ page }) => {
   await page.goto('/projects/ambli/drawings/NOPE');
   await expect(page.getByText('DRAWINGS · REGISTER')).toBeVisible();

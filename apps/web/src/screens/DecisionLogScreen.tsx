@@ -254,7 +254,13 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
               <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                 <a
                   href={pathForScreen('decision-log', activeProjectId, d.id)}
-                  onClick={(e) => { e.preventDefault(); setRouteItem(d.id); }}
+                  onClick={(e) => {
+                    // only a plain primary click stays in-app; Ctrl/Cmd/Shift/Alt or a middle click
+                    // keeps the browser's own behaviour (open the shared link in a new tab/window)
+                    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                    e.preventDefault();
+                    setRouteItem(d.id);
+                  }}
                   data-testid={`log-link-${d.id}`}
                   aria-label={`Link to decision ${d.id}`}
                   // 44px hit area (WAVE_0 floor) without growing the title line: the negative
