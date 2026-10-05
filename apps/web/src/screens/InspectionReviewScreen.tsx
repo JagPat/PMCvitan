@@ -84,6 +84,8 @@ export function InspectionReviewScreen() {
             return (
               <button
                 key={r.id}
+                role="tab"
+                aria-selected={on}
                 onClick={() => setActiveReview(r.id)}
                 data-testid={`review-tab-${r.id}`}
                 style={{

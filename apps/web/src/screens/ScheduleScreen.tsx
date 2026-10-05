@@ -75,11 +75,18 @@ function offsetOf(anchor: string | null, iso: string | null | undefined, legacy:
 /** Audit F-02 — the activity opened from a place, outlined for a moment once it scrolls into view. */
 const HighlightContext = createContext<string | null>(null);
 
+function gateText(g: GateVM): string {
+  return `${g.label} — ${g.reason}${g.source === 'override' ? ' (OVERRIDE)' : g.source === 'stored' ? ' (stored flag)' : ''}`;
+}
+
 function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPct: number; onEdit?: (a: Activity) => void; onOverride?: (a: Activity) => void }) {
   const state = useStore((s) => s) as AppState;
   const setScreen = useStore((s) => s.setScreen);
   const revokeOverride = useStore((s) => s.revokeOverride);
   const gates = gatesFor(state, a);
+  // B5 (F-18): the gate whose reason is shown in words — `title` alone is unreachable by
+  // keyboard and touch, so each dot is a button that reveals its reason below the row
+  const [gateOpen, setGateOpen] = useState<string | null>(null);
   const ready = activityReady(state, a);
   const restriction = restrictionOf(a, gates, ready);
   // the controlled drawing this activity builds from (Drawings Slice 2 linkage)
@@ -155,10 +162,10 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
           {gates.map((g) => (
             // Task 6: the tooltip carries the derived CONCLUSION and its source —
             // a dot is never an unexplained flag any more
-            <div key={g.k} title={`${g.label} — ${g.reason}${g.source === 'override' ? ' (OVERRIDE)' : g.source === 'stored' ? ' (stored flag)' : ''}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+            <button key={g.k} type="button" onClick={() => setGateOpen((o) => (o === g.k ? null : g.k))} aria-expanded={gateOpen === g.k} aria-label={`${gateText(g)} — show reason`} data-testid={`gate-${a.id}-${g.k}`} title={gateText(g)} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit' }}>
               <GateDot v={g.v} />
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: g.source === 'override' ? '#31567F' : 'var(--muted)', fontWeight: g.source === 'override' ? 700 : 400 }}>{g.k}</span>
-            </div>
+            </button>
           ))}
           {/* An override sets a GATE reading, and `start` refuses every status but not_started —
               so on a blocked activity it records an audited decision that cannot change the
@@ -178,6 +185,12 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
           hover tooltip — the gate dots carry the same conclusions, but `title` is unreachable
           on touch. Rendered ONLY when something actually restricts the activity: a ready or
           running or finished row gets no banner. */}
+      {(() => {
+        const g = gates.find((x) => x.k === gateOpen);
+        return g ? (
+          <div role="status" data-testid={`gate-reason-${a.id}`} style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>{gateText(g)}</div>
+        ) : null;
+      })()}
       {restriction && (
         <div style={{ marginTop: 10 }}>
           <EditState state="workflow" reason={restriction} testId={`sched-restriction-${a.id}`} />
