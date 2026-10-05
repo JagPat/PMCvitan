@@ -229,6 +229,50 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
     expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor(label) } })).toBe(0);
   });
 
+  it('refuses a legacy source holding one name as two kinds under a parent, rolls everything back and leaves the source untouched', async () => {
+    // Legacy data from before #705's sibling-name rule: a "Ground Floor" zone holding a "Lobby" room
+    // AND a normalized-equal " lobby " element. Written directly, as the old server allowed; the
+    // service would refuse to create it today. Copying it is refused (the cross-kind rule is
+    // intentional), with the server's rename advice, and nothing of the new project survives.
+    const source = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('legacy-source'));
+    const ground = await t.prisma.projectNode.create({
+      data: { projectId: source.id, name: 'Ground Floor', kind: 'zone', order: 0, authorId: f.ownerUser.id },
+    });
+    const lobbyRoom = await t.prisma.projectNode.create({
+      data: { projectId: source.id, parentId: ground.id, name: 'Lobby', kind: 'room', order: 0, authorId: f.ownerUser.id },
+    });
+    const lobbyElement = await t.prisma.projectNode.create({
+      data: { projectId: source.id, parentId: ground.id, name: ' lobby ', kind: 'element', order: 1, authorId: f.ownerUser.id },
+    });
+    const sourceNodesBefore = await t.prisma.projectNode.findMany({ where: { projectId: source.id }, orderBy: { id: 'asc' } });
+
+    const before = await countInitializationRows();
+    let rejection: unknown;
+    try {
+      await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('legacy-copy', { structureFrom: source.id }));
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toBeInstanceOf(BadRequestException);
+    expect((rejection as BadRequestException).getStatus()).toBe(400);
+    // the advice the client now shows verbatim: which name, and what to do about it
+    expect((rejection as BadRequestException).message).toMatch(/holds "Lobby" twice under one parent as different kinds — rename one before copying it/);
+    // the whole initialization rolled back: no project, membership, event, node, phase, activity or checklist
+    expect(await countInitializationRows()).toEqual(before);
+    expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor('legacy-copy') } })).toBe(0);
+    // and the source is exactly as it was — never renamed or migrated to make the copy pass
+    expect(await t.prisma.projectNode.findMany({ where: { projectId: source.id }, orderBy: { id: 'asc' } })).toEqual(sourceNodesBefore);
+    expect(sourceNodesBefore.map((n) => n.id)).toEqual(expect.arrayContaining([ground.id, lobbyRoom.id, lobbyElement.id]));
+
+    // once the owner renames one of them in the source, the same create succeeds — a retry is safe
+    await t.prisma.projectNode.update({ where: { id: lobbyElement.id }, data: { name: 'Lobby Console' } });
+    const copied = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('legacy-copy', { structureFrom: source.id }));
+    const copiedNames = (await t.prisma.projectNode.findMany({ where: { projectId: copied.id }, select: { name: true } })).map((n) => n.name);
+    expect(copiedNames.sort()).toEqual(['Ground Floor', 'Lobby', 'Lobby Console']);
+    expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor('legacy-copy') } })).toBe(1);
+  });
+
   it('commits the complete source, template, and explicit-module union exactly once', async () => {
     const sharedPhase = `Shared Phase ${run}`;
     const explicitPhase = `Explicit Phase ${run}`;

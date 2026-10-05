@@ -121,6 +121,19 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
   // KIND plus the name for whichever kind is chosen (the server enforces exactly one).
   type Pick_ = { count: number; underZone: string; underRoom: string; roomTargetKind: 'room' | 'zone' };
   const [picked, setPicked] = useState<Record<string, Pick_>>({});
+  // Legacy-copy recovery: the dialog closes only on a CONFIRMED create. While a create is out the
+  // inputs and Create are held (a ref, so a double-click in one tick cannot send twice); a refusal or
+  // an unconfirmed outcome leaves every input as typed with the reason inline. Cancel/Escape stay
+  // available and do not cancel the request: a reply that lands after the dialog is gone is told
+  // as a toast instead (a create still opens its project, as before).
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true; // StrictMode re-runs effects: a remount must count as mounted again
+    return () => { mounted.current = false; };
+  }, []);
   useEffect(() => { loadOrgModules(orgId); loadOrgTemplates(orgId); }, [orgId, loadOrgModules, loadOrgTemplates]);
 
   const togglePick = (id: string) =>
@@ -140,8 +153,8 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
     return p.roomTargetKind === 'room' ? !p.underRoom.trim() : !p.underZone.trim();
   });
 
-  const submit = () => {
-    if (!name.trim() || !short.trim() || targetsIncomplete) return;
+  const submit = async () => {
+    if (inFlight.current || !name.trim() || !short.trim() || targetsIncomplete) return;
     const modules: ModuleSelection[] = Object.entries(picked).map(([moduleId, p]) => {
       if (orgModules.find((m) => m.id === moduleId)?.anchorKind === 'room') {
         return {
@@ -166,16 +179,29 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
       ...(startFrom.startsWith('proj:') ? { structureFrom: startFrom.slice(5) } : {}),
       ...(modules.length ? { modules } : {}),
     };
-    createProject(orgId, input);
-    onClose();
+    inFlight.current = true;
+    setSubmitting(true);
+    setError(null);
+    const outcome = await createProject(orgId, input);
+    inFlight.current = false;
+    if (!mounted.current) {
+      // the dialog was dismissed while this was out: the store has already announced a create
+      if (outcome.kind === 'refused' || outcome.kind === 'unknown') useStore.getState().flash(outcome.message);
+      return;
+    }
+    setSubmitting(false);
+    // `stale`: another user is now signed in — this dialog belongs to nobody on screen
+    if (outcome.kind === 'created' || outcome.kind === 'stale') onClose();
+    else setError(outcome.message);
   };
   return (
     <Modal onClose={onClose} maxWidth={420} labelledBy="np-title">
       <div style={{ padding: '18px 20px' }}>
         <div id="np-title" style={{ fontWeight: 700, fontSize: 17 }}>New project</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>You'll be added as its PMC.</div>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name (Residence at Bodakdev)" style={fld} />
-        <input value={short} onChange={(e) => setShort(e.target.value)} placeholder="Short name (Bodakdev Residence)" style={{ ...fld, marginTop: 10 }} />
+        <fieldset disabled={submitting} style={{ border: 'none', margin: 0, padding: 0, minWidth: 0 }}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name (Residence at Bodakdev)" aria-label="Full name" style={fld} />
+        <input value={short} onChange={(e) => setShort(e.target.value)} placeholder="Short name (Bodakdev Residence)" aria-label="Short name" style={{ ...fld, marginTop: 10 }} />
         {(memberships.length > 0 || orgTemplates.length > 0) && (
           <>
             <label htmlFor="np-structure" style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--muted)', margin: '14px 2px 0' }}>START FROM</label>
@@ -260,9 +286,15 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
             </div>
           </>
         )}
+        </fieldset>
+        {error && (
+          <div role="alert" data-testid="np-error" style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(180,70,46,.08)', border: '1px solid rgba(180,70,46,.3)', color: '#8a3320', fontSize: 12.5, lineHeight: 1.5 }}>
+            {error}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <button onClick={onClose} style={{ ...btn, background: '#fff', color: 'var(--ink)', border: '1px solid rgba(35,33,28,.2)' }}>Cancel</button>
-          <button onClick={submit} disabled={!name.trim() || !short.trim() || targetsIncomplete} style={{ ...btn, background: 'var(--ink)', color: '#fff', border: 'none', opacity: name.trim() && short.trim() && !targetsIncomplete ? 1 : 0.5 }}>Create</button>
+          <button onClick={() => void submit()} disabled={submitting || !name.trim() || !short.trim() || targetsIncomplete} aria-busy={submitting} data-testid="np-create" style={{ ...btn, background: 'var(--ink)', color: '#fff', border: 'none', opacity: !submitting && name.trim() && short.trim() && !targetsIncomplete ? 1 : 0.5 }}>{submitting ? 'Creating…' : 'Create'}</button>
         </div>
       </div>
     </Modal>

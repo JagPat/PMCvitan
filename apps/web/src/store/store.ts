@@ -110,6 +110,17 @@ function initialScreen(): ScreenKey {
   return fromUrl ?? 'inbox';
 }
 
+/** What a new-project create came to (legacy-copy recovery). `created` is final even when `opened`
+ *  is false — the project exists, so the dialog closes and must not invite a duplicate retry.
+ *  `refused`: the server rolled everything back and said why; a retry is safe once that is fixed.
+ *  `unknown`: no confirmation either way; the project list is refreshed before any retry.
+ *  `stale`: the signed-in user changed while it was in flight; the reply is dropped. */
+export type CreateProjectOutcome =
+  | { kind: 'created'; projectId: string; opened: boolean }
+  | { kind: 'refused'; message: string }
+  | { kind: 'unknown'; message: string }
+  | { kind: 'stale' };
+
 /** Issue-decision payload from the UI: an option may carry a captured photo (base64),
  *  uploaded first so it becomes the created option's photoUrl. */
 export interface IssueDecisionPayload extends Omit<NewDecisionInput, 'options'> {
@@ -635,7 +646,9 @@ export interface AppActions {
    *  the switch was authenticated. `targetScreen` survives the switch when the new
    *  role is allowed to see it (deep links). */
   switchProject: (projectId: string, targetScreen?: ScreenKey) => Promise<boolean>;
-  createProject: (orgId: string, input: NewProjectInput) => void;
+  /** Resolves to what happened, so the new-project dialog closes only on a confirmed create and
+   *  keeps its inputs with the reason otherwise (see `CreateProjectOutcome`). */
+  createProject: (orgId: string, input: NewProjectInput) => Promise<CreateProjectOutcome>;
   updateProjectDetails: (orgId: string, projectId: string, input: Partial<NewProjectInput>) => void;
   deleteProject: (orgId: string, projectId: string) => void;
   restoreProject: (orgId: string, projectId: string) => void;
@@ -4224,19 +4237,42 @@ export const useStore = create<Store>()(
           return false;
         });
     },
-    createProject: (orgId, input) => {
-      if (!gateway) {
-        get().flash('Creating projects needs the server.');
-        return;
+    createProject: async (orgId, input) => {
+      if (!gateway) return { kind: 'refused', message: 'Creating projects needs the server.' };
+      // The reply is bound to the user who sent it, as `addLocationNode`'s is: one landing after a
+      // sign-out or persona change belongs to nobody on screen, so it is dropped — no toast, no switch.
+      const identity = `${sessionSub()}|${get().sessionUserId ?? ''}`;
+      const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === identity;
+      const projectAtSend = get().activeProjectId;
+      let created: { id: string; short: string };
+      try {
+        created = await gateway.createProject(orgId, input);
+      } catch (err) {
+        if (!sentBySameUser()) return { kind: 'stale' };
+        const status = (err as { status?: number } | null)?.status;
+        // A refusal (4xx) rolled the whole initialization back: nothing was created, so the reason
+        // is the server's own (e.g. the copied structure's rename advice) and a retry is safe.
+        if (typeof status === 'number' && status >= 400 && status < 500) {
+          return { kind: 'refused', message: refusalMessage(err) ?? 'Could not create the project — check your access.' };
+        }
+        // No answer, or a 5xx a proxy may have sent after the server committed: the outcome is
+        // UNKNOWN. Refresh the project list so a create that did land shows up before any retry.
+        get().loadOrgData();
+        return { kind: 'unknown', message: 'The server did not confirm the project was created. Check the project list before trying again.' };
       }
-      gateway
-        .createProject(orgId, input)
-        .then((p) => {
-          get().flash('Project created: ' + p.short + '.');
-          get().loadOrgData();
-          void get().switchProject(p.id);
-        })
-        .catch(() => get().flash('Could not create the project — check your access.'));
+      if (!sentBySameUser()) return { kind: 'stale' };
+      get().loadOrgData();
+      // Created. Opening it is a separate step that can fail on its own; the outcome says so, so the
+      // dialog still closes and nothing invites a second create of the same project.
+      if (get().activeProjectId !== projectAtSend) {
+        // the user moved to another project while this was in flight — announce, don't yank them
+        get().flash('Project created: ' + created.short + ' — open it from the project switcher.');
+        return { kind: 'created', projectId: created.id, opened: false };
+      }
+      get().flash('Project created: ' + created.short + '.');
+      const opened = await get().switchProject(created.id);
+      if (!opened && sentBySameUser()) get().flash('Project created: ' + created.short + ', but it could not be opened — pick it from the project switcher.');
+      return { kind: 'created', projectId: created.id, opened };
     },
     updateProjectDetails: (orgId, projectId, input) => {
       if (!gateway) {
