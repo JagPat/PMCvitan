@@ -559,3 +559,148 @@ describe('Phase 0 Task 3 — every project-scoped response is generation-guarded
     expect(s().decisions).toEqual([]);
   });
 });
+
+describe('#704 — a location create uses the place the server names, bound to the user who sent it', () => {
+  const PANTRY = { name: 'Pantry', kind: 'room' as const, parentId: null, publish: true };
+  const pantry = (id: string) => ({ id, parentId: null, name: 'Pantry', kind: 'room' as const, order: 0 });
+  const jwt = (sub: string) => `h.${btoa(JSON.stringify({ sub }))}.s`;
+  beforeEach(() => { globalThis.localStorage.clear(); });
+
+  it('a create of a name the parent already holds returns THAT place (#705 Codex 4177895010)', async () => {
+    // the server made nothing and named the place already in the tree — nothing is "new" in the reply
+    useStore.setState({ nodes: [pantry('n-held')] });
+    s()._setGateway({ createNode: vi.fn(() => Promise.resolve({ ...makeSnapshot({ nodes: [pantry('n-held')] }), createdNodeId: 'n-held' })) } as unknown as ApiGateway);
+    expect(await s().addLocationNode(PANTRY)).toBe('n-held');
+  });
+
+  it('returns the node the server names, never a same-named sibling (Codex 4175901888)', async () => {
+    useStore.setState({ nodes: [pantry('n-old')] });
+    s()._setGateway({ createNode: vi.fn(() => Promise.resolve({ ...makeSnapshot({ nodes: [pantry('n-old'), pantry('n-new')] }), createdNodeId: 'n-new' })) } as unknown as ApiGateway);
+    expect(await s().addLocationNode(PANTRY)).toBe('n-new');
+  });
+
+  it('sends the trimmed body once with a key, and keeps nothing in storage', async () => {
+    const createNode = vi.fn((..._args: unknown[]) => Promise.reject(new Error('lost')));
+    s()._setGateway({ createNode } as unknown as ApiGateway);
+    await s().addLocationNode({ ...PANTRY, name: '  Larder ' });
+    expect(createNode).toHaveBeenCalledTimes(1);
+    expect(createNode.mock.calls[0]).toEqual([{ name: 'Larder', kind: 'room', parentId: null, publish: true }, expect.any(String)]);
+    expect(Object.keys(globalThis.localStorage).filter((k) => k.includes('nodeCreateKeys'))).toEqual([]);
+  });
+
+  it('a retry after a lost reply carries the SAME key, so the server replays it (#704 Codex 4178149929)', async () => {
+    const keys: unknown[] = [];
+    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
+    await s().addLocationNode({ ...PANTRY, name: 'Scullery' });
+    await s().addLocationNode({ ...PANTRY, name: ' Scullery ' }); // the same intent, retried
+    expect(keys[0]).toEqual(expect.any(String));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('an applied create settles its key; another user never reuses one', async () => {
+    const keys: unknown[] = [];
+    const ok = (id: string) => Promise.resolve({ ...makeSnapshot({ nodes: [{ ...pantry(id), name: 'Pantry Two' }] }), createdNodeId: id });
+    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return keys.length < 3 ? ok(`n-${keys.length}`) : Promise.reject(new Error('lost')); }) } as unknown as ApiGateway);
+    const TWO = { ...PANTRY, name: 'Pantry Two' };
+    useStore.setState({ sessionToken: jwt('u-a') });
+    await s().addLocationNode(TWO);
+    await s().addLocationNode(TWO); // settled: a new create of the same name is a new intent
+    useStore.setState({ sessionToken: jwt('u-b') });
+    await s().addLocationNode(TWO);
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it('a SUPERSEDED reply keeps its key until the tree shows the place, then a new create is a new one (Codex 4178318908, shadow on 441bb0c)', async () => {
+    const keys: unknown[] = [];
+    let finish!: (snap: ApiSnapshot) => void;
+    const gw = {
+      createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return keys.length === 1 ? new Promise<ApiSnapshot>((r) => { finish = r; }) : Promise.reject(new Error('lost')); }),
+      renameNode: vi.fn(() => Promise.resolve(makeSnapshot())),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    const first = s().addLocationNode({ ...PANTRY, name: 'Still Room' });
+    s().renameNode('other', 'Lobby'); // a newer command's snapshot leases and applies first
+    await flush();
+    finish({ ...makeSnapshot({ nodes: [{ ...pantry('n-1'), name: 'Still Room' }] }), createdNodeId: 'n-1' } as ApiSnapshot);
+    expect(await first).toBeNull(); // superseded: not claimed here, reconciled by the newer read
+    // the tree does not show it yet: a retry replays under the same key (the server would otherwise add one)
+    await s().addLocationNode({ ...PANTRY, name: 'Still Room' });
+    expect(keys[1]).toBe(keys[0]);
+    // the reconcile lands the place: the next identical create is a deliberate new one
+    useStore.setState({ nodes: [{ ...pantry('n-1'), name: 'Still Room' }] });
+    await s().addLocationNode({ ...PANTRY, name: 'Still Room' });
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it('against a server that names no place, a superseded create is confirmed once the tree shows one more (#704 Codex 4178633896)', async () => {
+    const keys: unknown[] = [];
+    let finish!: (snap: ApiSnapshot) => void;
+    const gw = {
+      createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return keys.length === 1 ? new Promise<ApiSnapshot>((r) => { finish = r; }) : Promise.reject(new Error('lost')); }),
+      renameNode: vi.fn(() => Promise.resolve(makeSnapshot())),
+      snapshot: vi.fn(() => new Promise(() => {})),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState({ nodes: [{ ...pantry('n-old'), name: 'Coat Room' }] }); // a legacy same-named place
+    const first = s().addLocationNode({ ...PANTRY, name: 'Coat Room' });
+    s().renameNode('other', 'Lobby');
+    await flush();
+    finish(makeSnapshot({ nodes: [{ ...pantry('n-old'), name: 'Coat Room' }, { ...pantry('n-new'), name: 'Coat Room' }] })); // no createdNodeId
+    expect(await first).toBeNull();
+    await s().addLocationNode({ ...PANTRY, name: 'Coat Room' }); // the tree still shows one: replays
+    expect(keys[1]).toBe(keys[0]);
+    useStore.setState({ nodes: [{ ...pantry('n-old'), name: 'Coat Room' }, { ...pantry('n-new'), name: 'Coat Room' }] });
+    await s().addLocationNode({ ...PANTRY, name: 'Coat Room' }); // the reconcile shows the new one: a new create
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it('overlapping sends share the key until the LAST settles; a lost one keeps it for the retry (#704 Codex 4178462360)', async () => {
+    const keys: unknown[] = [];
+    const replies: Array<{ ok: (s: ApiSnapshot) => void; fail: (e: Error) => void }> = [];
+    s()._setGateway({ createNode: vi.fn((_b: unknown, key: unknown) => { keys.push(key); return new Promise<ApiSnapshot>((ok, fail) => { replies.push({ ok, fail }); }); }) } as unknown as ApiGateway);
+    const BAY = { ...PANTRY, name: 'Bay' };
+    const a = s().addLocationNode(BAY);
+    const b = s().addLocationNode(BAY); // the same create, sent again before the first answered
+    replies[0]!.ok({ ...makeSnapshot({ nodes: [{ ...pantry('n-bay'), name: 'Bay' }] }), createdNodeId: 'n-bay' } as ApiSnapshot);
+    await a;
+    expect(s().nodeCreatePending).not.toEqual({}); // the second send is still out: the key stays
+    replies[1]!.fail(new Error('lost'));
+    await b;
+    s().addLocationNode(BAY); // the retry
+    expect(keys).toHaveLength(3);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).toBe(keys[0]); // replays, never a new command
+  });
+
+  it('a pending create key is project data: sign-out tears it down (#704 shadow P2 on 1aba8fa)', async () => {
+    s()._setGateway({ createNode: vi.fn(() => Promise.reject(new Error('lost'))) } as unknown as ApiGateway);
+    await s().addLocationNode({ ...PANTRY, name: 'Boot Room' });
+    expect(Object.keys(s().nodeCreatePending)).toHaveLength(1); // kept for the retry
+    s().completeSignOut();
+    expect(s().nodeCreatePending).toEqual({});
+  });
+
+  it('a reply landing after the signed-in user changed is dropped: no place, no toast (Codex 4176831760)', async () => {
+    let finish!: (snap: ApiSnapshot) => void;
+    s()._setGateway({ createNode: vi.fn(() => new Promise<ApiSnapshot>((r) => { finish = r; })) } as unknown as ApiGateway);
+    useStore.setState({ sessionToken: jwt('u-a'), toast: null });
+    const pending = s().addLocationNode(PANTRY);
+    useStore.setState({ sessionToken: jwt('u-b') }); // the persona switch while the request is out
+    finish({ ...makeSnapshot({ nodes: [pantry('n-1')] }), createdNodeId: 'n-1' } as ApiSnapshot);
+    expect(await pending).toBeNull();
+    expect(s().nodes.some((n) => n.id === 'n-1')).toBe(false);
+    expect(s().toast).toBeNull();
+  });
+
+  it('the same holds for dev-auth personas, which have no store token', async () => {
+    let fail!: (e: Error) => void;
+    s()._setGateway({ createNode: vi.fn(() => new Promise<ApiSnapshot>((_r, j) => { fail = j; })) } as unknown as ApiGateway);
+    useStore.setState({ sessionToken: null, sessionUserId: 'u-a', toast: null });
+    const pending = s().addLocationNode(PANTRY);
+    useStore.setState({ sessionUserId: 'u-b' });
+    fail(new Error('lost'));
+    expect(await pending).toBeNull();
+    expect(s().toast).toBeNull(); // B is never told A's create failed
+  });
+});

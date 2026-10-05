@@ -70,7 +70,7 @@ import { screensFor } from '@/lib/screens';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
 import { type DailyLogDraft, adoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
-import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type ProjectLoadState, type ProjectScope } from './projectScope';
+import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type NodeCreatePending, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
@@ -79,7 +79,7 @@ import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
 import { unlinkPushOnSignOut } from '@/data/push';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -303,6 +303,7 @@ export interface AppState {
   labourPendingInputs: Record<string, AllocateLabourInput>;
   labourOnboardPending: Record<string, string>;
   labourBindPending: Record<string, string>;
+  nodeCreatePending: Record<string, NodeCreatePending>;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
   placeFocus: string | null;
@@ -1138,6 +1139,7 @@ export function getInitialState(): AppState {
     labourPending: [],
     labourPendingInputs: {},
     labourOnboardPending: {},
+    nodeCreatePending: {},
     labourBindPending: {},
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     placeFocus: null,
@@ -4434,10 +4436,63 @@ export const useStore = create<Store>()(
       }
       const before = new Set(get().nodes.map((n) => n.id));
       const scope = currentScope();
+      // #704 redesign — exactly-once across tabs and reloads is the server's (#705: a name already held
+      // under the parent names that place, whatever the key); this tab only keeps its unsettled creates'
+      // keys in memory (`nodeCreatePending`). The create is sent through the gateway live when the
+      // action started, and the reply is bound to the user and project that sent it: a reply landing
+      // after either changed is dropped, never toasted or returned.
+      const body = { name: input.name.trim(), kind: input.kind, parentId: input.parentId ?? null, publish: input.publish ?? true };
+      const identity = `${sessionSub()}|${get().sessionUserId ?? ''}`;
+      const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === identity;
+      const gw = gateway;
+      // one key per user and exact body, kept in this project's data (`nodeCreatePending`, torn down on
+      // a switch or sign-out): a retry after a lost reply replays on the server (#700's ledger) instead
+      // of adding a sibling. In memory only.
+      const intent = JSON.stringify([identity, body.parentId, body.kind, body.name, body.publish]);
+      // #704 Codex 4178462360 — overlapping sends of one intent share the key, which is kept until the
+      // LAST of them settles. It is retired only when the create is CONFIRMED in this tab's tree: an
+      // applied reply, or (for a reply that was superseded or dropped) a later read that shows the place
+      // the server named (shadow on 441bb0c; the labour-onboarding rule). A failed send keeps it, as
+      // its outcome is unknown: the retry replays under it (Codex 4178318908 for the rest).
+      const sameNamed = () => get().nodes.filter((n) => n.parentId === body.parentId && n.kind === body.kind && n.name === body.name).length;
+      const held = get().nodeCreatePending[intent];
+      const confirmed = held && held.inflight === 0 && held.awaiting !== null && (
+        held.awaiting
+          ? get().nodes.some((n) => n.id === held.awaiting)
+          // #704 Codex 4178633896 — no place was named (a server before #703): a read showing more places
+          // of this name and kind under the parent than before the send confirms it
+          : sameNamed() > held.sameNamedBefore
+      );
+      if (confirmed) set((s) => { delete s.nodeCreatePending[intent]; }); // the earlier create is confirmed: a new one
+      const key = get().nodeCreatePending[intent]?.key ?? newIdempotencyKey();
+      set((s) => {
+        const p = s.nodeCreatePending[intent];
+        if (p && p.key === key) p.inflight += 1;
+        else s.nodeCreatePending[intent] = { key, inflight: 1, failed: false, awaiting: null, sameNamedBefore: sameNamed() };
+      });
+      const settle = (outcome: 'confirmed' | 'unconfirmed' | 'failed', placeId?: string) => set((s) => {
+        const p = s.nodeCreatePending[intent];
+        if (!p || p.key !== key) return; // torn down with the scope, or a newer intent's
+        p.inflight -= 1;
+        if (outcome === 'failed') p.failed = true;
+        if (outcome === 'unconfirmed') p.awaiting = placeId ?? p.awaiting ?? '';
+        if (outcome === 'confirmed') p.awaiting = null;
+        if (p.inflight > 0) return;
+        if (p.failed || p.awaiting !== null) p.failed = false; // kept: the retry replays under it
+        else delete s.nodeCreatePending[intent];
+      });
       try {
         const lease = beginSnapshotLease(scope); // gate round 11: before the create request
-        const snap = await gateway.createNode(input);
+        let snap: NodeCreatedSnapshot;
+        try {
+          snap = await gw.createNode(body, key);
+        } catch (e) {
+          settle('failed');
+          throw e;
+        }
+        if (!sentBySameUser()) { settle('unconfirmed', snap.createdNodeId); return null; }
         const result = acceptSnapshot(snap, lease);
+        settle(result === 'applied' ? 'confirmed' : 'unconfirmed', snap.createdNodeId);
         if (result !== 'applied') {
           // a newer refresh owns the tree (superseded) or the payload was wrong-project;
           // don't claim success or return a node id the current tree may not reflect.
@@ -4448,13 +4503,16 @@ export const useStore = create<Store>()(
           else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
-        get().flash(`Added ${input.kind}: ${input.name}.`);
-        // the newly-created node is the one whose id wasn't present before
-        const created = get().nodes.find((n) => !before.has(n.id) && n.name === input.name && n.kind === input.kind);
-        return created?.id ?? null;
+        get().flash(`Added ${body.kind}: ${body.name}.`);
+        // the server names the place (#703) — the one it made, or (#705) the one already holding the
+        // name, which was in the tree before: never pick it by name or by what is new. A server without
+        // the field: the node that was not in the tree before.
+        const nodes = get().nodes;
+        if (snap.createdNodeId) return nodes.some((n) => n.id === snap.createdNodeId) ? snap.createdNodeId : null;
+        return nodes.find((n) => !before.has(n.id) && n.name === body.name && n.kind === body.kind)?.id ?? null;
       } catch {
-        // gate round 12: a failure landing after a switch must not toast into project B.
-        if (scopeStillCurrent(scope)) get().flash('Could not add the location — check your access and try again.');
+        // gate round 12: a failure landing after a switch (of project or of user) must not toast.
+        if (scopeStillCurrent(scope) && sentBySameUser()) get().flash('Could not add the location — check your access and try again.');
         return null;
       }
     },

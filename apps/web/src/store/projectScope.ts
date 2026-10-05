@@ -23,6 +23,14 @@ import type { LabourView } from './labour';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import type { AllocateLabourInput, Phase6_4dRollout } from '../data/apiGateway';
 
+/** #704 — one unsettled location create: the `Idempotency-Key` every send of it carries, how many of
+ *  those sends are still out, whether any of them failed (an unknown outcome, so a retry must replay
+ *  under the same key), and the place an answered but unconfirmed send named (`''` when the server
+ *  named none), which retires the key once this tab's tree shows it. `sameNamedBefore` counts the
+ *  places of this name and kind under the parent when the intent was first sent: with no named place
+ *  (a server before #703), a later read showing more of them confirms the create. */
+export type NodeCreatePending = { key: string; inflight: number; failed: boolean; awaiting: string | null; sameNamedBefore: number };
+
 /**
  * The frontend project-scope lifecycle (Phase 0 Task 2).
  *
@@ -160,6 +168,9 @@ export interface ProjectDataState {
    *  Each entry is reused verbatim on a retry of the SAME form and cleared only by that form's
    *  CONFIRMED success or a scope teardown. */
   labourOnboardPending: Record<string, string>;
+  /** #704 — the unsettled location creates (user + exact body → their key and in-flight sends).
+   *  Project-owned like every other pending set, so a switch or sign-out tears them down. */
+  nodeCreatePending: Record<string, NodeCreatePending>;
   /** Codex rounds 6+8 — the same signature-keyed held-key discipline for the device-bind
    *  command: a committed-but-lost bind retried with a FRESH key is the server's "already bound
    *  to this worker" 409 (the CAS is on the still-unbound row), reported as failure for a
@@ -213,6 +224,7 @@ export function emptyProjectData(): ProjectDataState {
     commercialLineRegisters: {},
     labourPendingInputs: {},
     labourOnboardPending: {},
+    nodeCreatePending: {},
     labourBindPending: {},
   };
 }
