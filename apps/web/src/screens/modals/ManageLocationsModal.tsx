@@ -135,7 +135,7 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
         </>
       ) : (
         <>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'var(--faint)', width: 44, flex: 'none' }}>{kind.toUpperCase()}</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'var(--faint)', width: 44, flex: 'none' }}>{/* B5 (F-7): the stored kind `element` reads as OBJECT, matching "+ Object" */}{(kind === 'element' ? 'object' : kind).toUpperCase()}</span>
           <span style={{ flex: '1 1 110px', minWidth: 0, overflowWrap: 'anywhere', fontSize: 13.5, fontWeight: kind === 'zone' ? 600 : 400, color: draft ? 'var(--muted)' : 'var(--ink)' }}>{name}</span>
           {draft && <span style={draftChip} data-testid={`loc-draft-${id}`}>DRAFT</span>}
           {draft && <Button variant="success" onClick={onPublish} data-testid={`loc-publish-${id}`} style={{ padding: '4px 9px', fontSize: 11 }}>Publish</Button>}

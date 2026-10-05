@@ -10,7 +10,7 @@
   --ink: #23211c;
   --sidebar-text: #ede7da;
   --muted: #6b665c;
-  --faint: #8a857a;
+  --faint: #68645c; /* B5 (F-9): ≥4.5:1 on paper, panel and canvas for small text */
   --hairline: rgba(35, 33, 28, 0.12);
   --hairline-strong: rgba(35, 33, 28, 0.16);
   --grid: rgba(35, 33, 28, 0.035);
