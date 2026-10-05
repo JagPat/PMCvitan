@@ -15,7 +15,7 @@ import { PlaceStructure } from '@/screens/PlaceStructure';
 import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
-import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
+import { childrenOf, subtreeIds, trailOf, placeContents, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
 import { can, type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -185,6 +185,7 @@ export function PlacesScreen() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, marginBottom: 22 }}>
               {children.map((n) => {
                 const c = countsFor(n.id);
+                const st = spaceStatus(nodes, activities, phases, n.id);
                 return (
                   <button key={n.id} onClick={() => setSel(n.id)} data-testid={`place-node-${n.id}`} style={nodeCard}>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.12em', color: 'var(--faint)' }}>{KIND_LABEL[n.kind] ?? n.kind.toUpperCase()}</div>
@@ -199,6 +200,13 @@ export function PlacesScreen() {
                       <span title="activities">⚒ {c.activities}</span>
                       <span title="materials">▧ {c.materials}</span>
                     </div>
+                    {/* B8 — where this space stands, derived from its work (never a stored flag) */}
+                    {st.state !== 'none' && (
+                      <div data-testid={`place-status-${n.id}`} data-state={st.state} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11, color: 'var(--muted)', flexWrap: 'wrap' }}>
+                        <span style={{ ...statusChip, ...STATUS_TONE[st.state] }}>{STATUS_LABEL[st.state]}</span>
+                        <span>{[st.phase, `${st.done}/${st.total} done`, st.blocked ? `${st.blocked} blocked` : null].filter(Boolean).join(' · ')}</span>
+                      </div>
+                    )}
                   </button>
                 );
               })}
@@ -489,6 +497,20 @@ function inspectionStatus(i: PlacedInspection): { label: string; color: string }
   if (!i.decided) return { label: 'In review', color: 'var(--amber-solid)' };
   return i.failedItems > 0 ? { label: 'Failed', color: 'var(--red-solid)' } : { label: 'Passed', color: 'var(--green-solid)' };
 }
+
+const STATUS_LABEL: Record<Exclude<SpaceStatus['state'], 'none'>, string> = {
+  'not-started': 'Not started',
+  'in-progress': 'Under way',
+  blocked: 'Blocked',
+  done: 'Done',
+};
+const STATUS_TONE: Record<Exclude<SpaceStatus['state'], 'none'>, CSSProperties> = {
+  'not-started': { background: 'rgba(35,33,28,.06)', color: 'var(--muted)' },
+  'in-progress': { background: '#f6ead2', color: 'var(--amber-text)' },
+  blocked: { background: '#f6dcd5', color: '#8a3320' },
+  done: { background: '#dcebdf', color: 'var(--green-text)' },
+};
+const statusChip: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.06em', textTransform: 'uppercase', padding: '2px 6px', borderRadius: 5, fontWeight: 600 };
 
 const nodeCard: CSSProperties = {
   textAlign: 'left',

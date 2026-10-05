@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type CSSProperties } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions, type GateVM } from '@/store/selectors';
@@ -9,6 +9,7 @@ import { gateColor, can, diffCivilDays, type Activity, type Phase, type Gate } f
 import type { AppState } from '@/store/store';
 import { activitiesReadMode, type NewActivityInput } from '@/data/apiGateway';
 import { labelOf, plannedWindow } from '@/lib/activityDates';
+import { childrenOf, subtreeIds } from '@/lib/locationTree';
 import styles from './responsive.module.css';
 
 function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
@@ -343,6 +344,28 @@ export function ScheduleScreen() {
   const activityFocus = useStore((s) => s.activityFocus);
   const clearActivityFocus = useStore((s) => s.clearActivityFocus);
   const [highlight, setHighlight] = useState<string | null>(null);
+  // B8 — narrow the schedule to one place (and everything inside it). Local to this visit.
+  const nodes = useStore(useShallow((s) => s.nodes));
+  const [placeFilter, setPlaceFilter] = useState('');
+  const placeOptions = useMemo(() => {
+    const out: { id: string; label: string }[] = [];
+    const walk = (parentId: string | null, depth: number) => {
+      for (const n of childrenOf(nodes, parentId)) {
+        if (n.kind === 'element' || n.draft) continue;
+        out.push({ id: n.id, label: `${'\u2003'.repeat(depth)}${n.name}` });
+        walk(n.id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    return out;
+  }, [nodes]);
+  const shown = useMemo(() => {
+    if (!placeFilter || !nodes.some((n) => n.id === placeFilter)) return activities;
+    const sub = subtreeIds(nodes, placeFilter);
+    return activities.filter((a) => a.nodeId && sub.has(a.nodeId));
+  }, [activities, nodes, placeFilter]);
+  const filtering = shown !== activities;
+  const filterName = nodes.find((n) => n.id === placeFilter)?.name ?? '';
   useEffect(() => {
     if (activityFocus === null) return;
     const row = document.getElementById(`sched-${activityFocus}`);
@@ -462,19 +485,41 @@ export function ScheduleScreen() {
         </ConfirmDialog>
       )}
 
+      {placeOptions.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+          <label htmlFor="sched-place-filter" style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', color: 'var(--muted)' }}>PLACE</label>
+          <select id="sched-place-filter" value={placeFilter} onChange={(e) => setPlaceFilter(e.target.value)} data-testid="sched-place-filter" style={{ minHeight: 44, padding: '0 10px', borderRadius: 9, border: '1px solid var(--hairline)', background: 'var(--panel)', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)' }}>
+            <option value="">All places</option>
+            {placeOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+          </select>
+          {filtering && (
+            <span style={{ fontSize: 12, color: 'var(--muted)' }} data-testid="sched-place-count">
+              {shown.length} {shown.length === 1 ? 'activity' : 'activities'} at {filterName} and inside it
+            </span>
+          )}
+        </div>
+      )}
+
       <HighlightContext.Provider value={highlight}>
 
-      {phases.length > 0 ? (
+      {filtering && shown.length === 0 ? (
+        <div data-testid="sched-place-empty" style={{ padding: '22px 16px', border: '1px dashed rgba(35,33,28,.2)', borderRadius: 12, fontSize: 13, color: 'var(--muted)', textAlign: 'center' }}>
+          No activities are placed at {filterName} yet.
+        </div>
+      ) : phases.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-          {phases.map((ph) => (
-            <PhaseGroup key={ph.id} phase={ph} activities={activities} todayPct={todayPct} onEdit={onEdit} onDeletePhase={onDeletePhase} onOverride={onOverride} />
-          ))}
+          {phases
+            // filtered to a place, a phase with no work there is noise; unfiltered, every phase shows
+            .filter((ph) => !filtering || activitiesInPhase(shown, phases, ph.id).length > 0)
+            .map((ph) => (
+              <PhaseGroup key={ph.id} phase={ph} activities={shown} todayPct={todayPct} onEdit={onEdit} onDeletePhase={onDeletePhase} onOverride={onOverride} />
+            ))}
           {/* unphased activities (if any) render under their own group */}
-          {activitiesInPhase(activities, phases, null).length > 0 && (
+          {activitiesInPhase(shown, phases, null).length > 0 && (
             <div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.1em', color: 'var(--faint)', marginBottom: 10 }}>UNPHASED</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {activitiesInPhase(activities, phases, null).map((a) => (
+                {activitiesInPhase(shown, phases, null).map((a) => (
                   <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} onOverride={onOverride} />
                 ))}
               </div>
@@ -483,7 +528,7 @@ export function ScheduleScreen() {
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {activities.map((a) => (
+          {shown.map((a) => (
             <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} onOverride={onOverride} />
           ))}
         </div>

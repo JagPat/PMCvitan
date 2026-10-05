@@ -1,4 +1,4 @@
-import type { Activity, Decision, Drawing, Material, Photo, PlacedInspection, ProjectNode } from '@vitan/shared';
+import type { Activity, Decision, Drawing, Material, Phase, Photo, PlacedInspection, ProjectNode } from '@vitan/shared';
 
 /** Direct children of a node (parentId=null → top-level zones), in display order. */
 export function childrenOf(nodes: ProjectNode[], parentId: string | null): ProjectNode[] {
@@ -283,4 +283,36 @@ export function placeContents(
     inspections: inspectionsHere,
     counts: { decisions: decisionsHere.length, drawings: placedDrawings.length, photos: photosHere.length, activities: activitiesHere.length, materials: materialsHere.length, inspections: inspectionsHere.length },
   };
+}
+
+/** B8 — where a space stands, DERIVED from the activities placed in its subtree (no stored field). */
+export interface SpaceStatus {
+  total: number;
+  done: number;
+  blocked: number;
+  /** none = no work placed here yet */
+  state: 'none' | 'not-started' | 'in-progress' | 'blocked' | 'done';
+  /** the phase the space is in: the earliest phase (by order) with unfinished work here, else the
+   *  last phase its work belongs to; null when no placed activity has a phase */
+  phase: string | null;
+}
+
+export function spaceStatus(nodes: ProjectNode[], activities: Activity[], phases: Phase[], nodeId: string): SpaceStatus {
+  const sub = subtreeIds(nodes, nodeId);
+  const here = activities.filter((a) => a.nodeId && sub.has(a.nodeId));
+  const total = here.length;
+  const done = here.filter((a) => a.status === 'done').length;
+  const blocked = here.filter((a) => a.status === 'blocked').length;
+  const started = here.some((a) => a.status !== 'not-started');
+  const state: SpaceStatus['state'] = total === 0 ? 'none'
+    : blocked > 0 ? 'blocked'
+    : done === total ? 'done'
+    : started ? 'in-progress'
+    : 'not-started';
+  const orderOf = new Map(phases.map((p) => [p.id, p.order]));
+  const phased = here.filter((a) => a.phaseId && orderOf.has(a.phaseId))
+    .sort((x, y) => orderOf.get(x.phaseId!)! - orderOf.get(y.phaseId!)!);
+  const current = phased.find((a) => a.status !== 'done') ?? phased[phased.length - 1];
+  const phase = current ? phases.find((p) => p.id === current.phaseId)?.name ?? null : null;
+  return { total, done, blocked, state, phase };
 }
