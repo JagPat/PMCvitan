@@ -30,7 +30,7 @@ type Created = { id: string; name: string; short: string };
 
 /** A gateway whose create (and optionally switch) replies only when the test says so; every other
  *  read the dialog or store makes resolves empty. */
-function fakeGateway(opts: { switchFails?: boolean; membershipsAfter?: unknown[] } = {}) {
+function fakeGateway(opts: { switchFails?: boolean; membershipsAfter?: unknown[]; oldApi?: boolean } = {}) {
   const create = deferred<Created>();
   const base: Record<string, unknown> = {
     createProject: vi.fn(() => create.promise),
@@ -39,6 +39,8 @@ function fakeGateway(opts: { switchFails?: boolean; membershipsAfter?: unknown[]
         ? Promise.reject(httpError(500))
         : Promise.resolve({ token: 'JWT-new', role: 'pmc', projectId: 'p-new', name: 'Me' })),
     listMemberships: vi.fn(() => Promise.resolve(opts.membershipsAfter ?? [])),
+    // the server advertises create receipts unless a case says it is the previous API
+    serverFeatures: vi.fn(() => Promise.resolve(opts.oldApi ? [] : ['orgs.createProject.receipt'])),
   };
   const gw = new Proxy(base, {
     get: (t, k) => {
@@ -110,6 +112,7 @@ describe('create project from a source the server refuses to copy', () => {
     const r = mount();
 
     fireEvent.click(createButton(r));
+    await settle(); // the create is out
     expect(createButton(r).textContent).toBe('Creating…');
     expect(createButton(r).disabled).toBe(true);
 
@@ -238,6 +241,7 @@ describe('create project from a source the server refuses to copy', () => {
     const r = render(<Reopenable />);
     fill(r);
     fireEvent.click(createButton(r));
+    await settle(); // the create is out (after the capability check and the reservation)
     fireEvent.click(r.getByRole('button', { name: 'Cancel' }));
     fireEvent.click(r.getByTestId('reopen'));
     fill(r);
@@ -275,10 +279,12 @@ describe('create project from a source the server refuses to copy', () => {
     // admin A starts a create, then signs out while it is out
     useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
     const a = s().createProject('org-1', { name: 'A project', short: 'A', stage: 'Planning' });
+    await settle(); // A's create is out
     act(() => s().completeSignOut());
     // admin B signs in and starts their own create
     useStore.setState((st) => { st.sessionUserId = 'u-b'; st.sessionToken = tokenFor('u-b'); });
     const b = s().createProject('org-1', { name: 'B project', short: 'B', stage: 'Planning' });
+    await settle();
     expect(s().projectCreateHold?.phase).toBe('in_flight');
     // A's create settles late (a refusal): B's create is still out, so B's hold must stand
     first.reject(httpError(400, 'refused'));
@@ -325,6 +331,7 @@ describe('create project from a source the server refuses to copy', () => {
     const { gw, calls } = fakeGateway();
     s()._setGateway(gw);
     void s().createProject('org-1', { name: 'Out', short: 'Out', stage: 'Planning' }); // never answers
+    await settle(); // it is out when the page reloads
     freshPage();
     s()._setGateway(gw);
     const r = mount();
@@ -372,6 +379,7 @@ describe('create project from a source the server refuses to copy', () => {
     s()._setGateway(gw);
     const r = mount();
     fireEvent.click(createButton(r));
+    await settle(); // the create is out
     fireEvent.click(r.getByRole('button', { name: 'Cancel' }));
     expect(r.getByTestId('host-closed')).toBeTruthy();
 
@@ -398,6 +406,7 @@ describe('create project from a source the server refuses to copy', () => {
     s()._setGateway(gw);
     const r = mount();
     fireEvent.click(createButton(r));
+    await settle(); // the create is out
     act(() => { useStore.setState((st) => { st.sessionUserId = 'u-other'; st.toast = null; }); });
 
     create.reject(httpError(400, RENAME));
@@ -450,30 +459,56 @@ describe('cross-tab project create — one reservation at a time', () => {
     else delete (globalThis.navigator as { locks?: unknown }).locks;
   });
 
-  /** An exclusive, FIFO LockManager whose first grant waits for the test's barrier. */
-  function barrierLocks() {
+  /** The browser's LockManager for this origin, shared by every tab: exclusive requests per name are
+   *  granted FIFO (the first only once the test's barrier opens), shared ones at once, and `query`
+   *  reports what is held. */
+  function fakeLocks(opts: { barrier?: boolean } = {}) {
     const gate = deferred<void>();
+    if (!opts.barrier) gate.resolve();
     const names: string[] = [];
-    let tail: Promise<unknown> = gate.promise;
+    const held: Array<{ name: string; mode: string }> = [];
+    const tails = new Map<string, Promise<unknown>>();
+    const hold = async (name: string, mode: string, cb: () => unknown) => {
+      const entry = { name, mode };
+      held.push(entry);
+      try { return await cb(); } finally { held.splice(held.indexOf(entry), 1); }
+    };
     const locks = {
-      request: (name: string, _opts: unknown, cb: () => Promise<unknown>) => {
+      request: (name: string, o: { mode?: string } | undefined, cb: () => unknown) => {
         names.push(name);
-        const run = tail.then(() => cb());
-        tail = run.catch(() => undefined);
+        const mode = o?.mode ?? 'exclusive';
+        if (mode === 'shared') return hold(name, mode, cb);
+        const run = (tails.get(name) ?? gate.promise).then(() => hold(name, mode, cb));
+        tails.set(name, run.catch(() => undefined));
         return run;
       },
+      query: async () => ({ held: held.map((h) => ({ ...h })), pending: [] }),
     };
     Object.defineProperty(globalThis.navigator, 'locks', { value: locks, configurable: true });
-    return { open: () => gate.resolve(), names };
+    return { open: () => gate.resolve(), names, held };
+  }
+  const noLocks = () => Object.defineProperty(globalThis.navigator, 'locks', { value: undefined, configurable: true });
+  /** Site storage refused, as a browser blocking it does: every read and write throws. */
+  const blockStorage = () => {
+    for (const m of ['getItem', 'setItem', 'removeItem'] as const) {
+      vi.spyOn(Storage.prototype, m).mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
+    }
+  };
+  afterEach(() => vi.restoreAllMocks());
+  /** A second tab: its own store over the same localStorage and LockManager. */
+  async function secondTab(session: { token?: string | null; userId: string }) {
+    vi.resetModules();
+    const { useStore: tab, getInitialState: initial } = await import('@/store/store');
+    tab.setState(initial());
+    tab.setState((st) => { st.sessionUserId = session.userId; st.sessionToken = session.token ?? null; });
+    return tab;
   }
 
   it('two tabs submitting together send ONE create; the second tab reads the first tab\'s record and is held', async () => {
-    const barrier = barrierLocks();
+    const barrier = fakeLocks({ barrier: true });
     const tabA = useStore;
-    vi.resetModules();
-    const { useStore: tabB, getInitialState: initialB } = await import('@/store/store');
-    tabB.setState(initialB());
-    for (const tab of [tabA, tabB]) tab.setState((st) => { st.sessionUserId = 'u-me'; st.sessionToken = tokenFor('u-a'); });
+    const tabB = await secondTab({ userId: 'u-me', token: tokenFor('u-a') });
+    tabA.setState((st) => { st.sessionUserId = 'u-me'; st.sessionToken = tokenFor('u-a'); });
     const a = fakeGateway();
     const b = fakeGateway();
     tabA.getState()._setGateway(a.gw);
@@ -482,6 +517,7 @@ describe('cross-tab project create — one reservation at a time', () => {
     // both submit before either reservation runs — the interleaving where both would read "no hold"
     const outA = tabA.getState().createProject('org-1', { name: 'Tab A', short: 'A', stage: 'Planning' });
     const outB = tabB.getState().createProject('org-1', { name: 'Tab B', short: 'B', stage: 'Planning' });
+    await settle(); // both asked the server's features and queued for the reservation; neither is granted
     expect(barrier.names).toEqual(['vitan.projectCreate.u-a', 'vitan.projectCreate.u-a']);
     expect(a.calls.createProject).not.toHaveBeenCalled();
     expect(b.calls.createProject).not.toHaveBeenCalled();
@@ -501,5 +537,95 @@ describe('cross-tab project create — one reservation at a time', () => {
     await expect(tabB.getState().retryProjectCreate()).resolves.toMatchObject({ kind: 'created', projectId: 'p-new' });
     expect(b.calls.createProject.mock.calls[0]?.[2]).toBe(a.calls.createProject.mock.calls[0]?.[2]);
     tabB.getState()._setGateway(null);
+  });
+
+  it('storage BLOCKED: the owning tab keeps a held lock, and another tab refuses a new create until it ends (Codex 4187372392)', async () => {
+    const locks = fakeLocks();
+    blockStorage();
+    const tabA = useStore;
+    const tabB = await secondTab({ userId: 'u-me', token: tokenFor('u-a') });
+    tabA.setState((st) => { st.sessionUserId = 'u-me'; st.sessionToken = tokenFor('u-a'); });
+    const a = fakeGateway();
+    const b = fakeGateway();
+    tabA.getState()._setGateway(a.gw);
+    tabB.getState()._setGateway(b.gw);
+
+    const outA = tabA.getState().createProject('org-1', { name: 'Tab A', short: 'A', stage: 'Planning' });
+    await settle();
+    expect(a.calls.createProject).toHaveBeenCalledTimes(1);
+    expect(locks.held.map((h) => h.name)).toContain('vitan.projectCreateHeld.u-a');
+    // tab B cannot read A's record — the held lock is what it sees
+    await expect(tabB.getState().createProject('org-1', { name: 'Tab B', short: 'B', stage: 'Planning' }))
+      .resolves.toEqual({ kind: 'unknown', message: expect.stringMatching(/another tab was not confirmed/) });
+    expect(b.calls.createProject).not.toHaveBeenCalled();
+    // A's create lands: its hold ends, and with it the held lock — a later create in B may go
+    a.create.resolve({ id: 'p-new', name: 'Tab A', short: 'A' });
+    await expect(outA).resolves.toMatchObject({ kind: 'created' });
+    await settle();
+    expect(locks.held.map((h) => h.name)).not.toContain('vitan.projectCreateHeld.u-a');
+    void tabB.getState().createProject('org-1', { name: 'Tab B', short: 'B', stage: 'Planning' });
+    await settle();
+    expect(b.calls.createProject).toHaveBeenCalledTimes(1);
+    tabB.getState()._setGateway(null);
+  });
+
+  it('storage blocked AND no Web Locks: nothing could carry the hold across tabs, so nothing is sent', async () => {
+    noLocks();
+    blockStorage();
+    useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
+    const { gw, calls } = fakeGateway();
+    s()._setGateway(gw);
+    await expect(s().createProject('org-1', { name: 'X', short: 'X', stage: 'Planning' }))
+      .resolves.toEqual({ kind: 'refused', message: expect.stringMatching(/blocking site storage/) });
+    expect(calls.createProject).not.toHaveBeenCalled();
+    expect(s().projectCreateHold).toBeNull();
+  });
+
+  it('two passwordless dev identities never share a hold or a key (Codex 4187372380)', async () => {
+    fakeLocks();
+    // dev auth keeps no token: the session user scopes the hold
+    useStore.setState((st) => { st.sessionToken = null; st.sessionUserId = 'u-owner'; });
+    const first = fakeGateway();
+    s()._setGateway(first.gw);
+    void s().createProject('org-1', { name: 'Owner project', short: 'O', stage: 'Planning' });
+    await settle();
+    first.create.reject(httpError(502));
+    await settle();
+    expect(s().projectCreateHold?.phase).toBe('unknown');
+    expect(globalThis.localStorage.getItem('vitan.projectCreateHold.dev:u-owner')).toContain('"phase":"unknown"');
+    // another dev identity, in another tab: it does not see the owner's hold, and its create mints its own key
+    const tab = await secondTab({ userId: 'u-other-pmc', token: null });
+    const other = fakeGateway();
+    tab.getState()._setGateway(other.gw);
+    tab.getState().syncProjectCreateHold();
+    expect(tab.getState().projectCreateHold).toBeNull();
+    await expect(tab.getState().retryProjectCreate()).resolves.toMatchObject({ kind: 'unknown', message: expect.stringMatching(/no unconfirmed/) });
+    void tab.getState().createProject('org-1', { name: 'Other project', short: 'P', stage: 'Planning' });
+    await settle();
+    expect(other.calls.createProject).toHaveBeenCalledTimes(1);
+    expect(other.calls.createProject.mock.calls[0]?.[2]).not.toBe(first.calls.createProject.mock.calls[0]?.[2]);
+    tab.getState()._setGateway(null);
+  });
+
+  it('a server that does not advertise create receipts (a bundle ahead of its API) gets NO create and no keyed retry (Codex 4187372404)', async () => {
+    fakeLocks();
+    useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
+    const old = fakeGateway({ oldApi: true });
+    s()._setGateway(old.gw);
+    await expect(s().createProject('org-1', { name: 'X', short: 'X', stage: 'Planning' }))
+      .resolves.toEqual({ kind: 'refused', message: expect.stringMatching(/being updated/) });
+    expect(old.calls.createProject).not.toHaveBeenCalled();
+    expect(s().projectCreateHold).toBeNull();
+    // an unknown create from the new API, then the API rolls back: "Try again" holds, sending nothing
+    const fresh = fakeGateway();
+    s()._setGateway(fresh.gw);
+    void s().createProject('org-1', { name: 'Y', short: 'Y', stage: 'Planning' });
+    await settle();
+    fresh.create.reject(httpError(502));
+    await settle();
+    s()._setGateway(old.gw);
+    await expect(s().retryProjectCreate()).resolves.toEqual({ kind: 'unknown', message: expect.stringMatching(/cannot safely finish/) });
+    expect(old.calls.createProject).not.toHaveBeenCalled();
+    expect(s().projectCreateHold?.phase).toBe('unknown');
   });
 });
