@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
 import { BriefService } from './brief.service';
 import { AuthService } from '../auth/auth.service';
@@ -129,8 +129,10 @@ export class OrgsController {
     @Param('orgId') orgId: string,
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(createProjectSchema)) body: CreateProjectInput,
+    // optional: with a key, a retry replays the first create instead of making a second project
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.orgs.createProject(orgId, user.sub, body);
+    return this.orgs.createProject(orgId, user.sub, body, idempotencyKey);
   }
 
   // NOTE: these org-scoped admin routes deliberately name the project param `:pid`,
