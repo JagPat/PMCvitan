@@ -79,6 +79,10 @@ import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
 import { unlinkPushOnSignOut } from '@/data/push';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
+import {
+  createHoldScope, FOREIGN_CREATE_HOLD, NO_CROSS_TAB_LOCK, NO_DURABLE_HOLD, readStoredCreateHold, SERVER_NOT_READY,
+  SERVER_NOT_READY_RETRY, serverKeepsCreateReceipts, withCreateReservation, writeStoredCreateHold,
+} from './projectCreateHold';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
@@ -109,6 +113,26 @@ function initialScreen(): ScreenKey {
   const fromUrl = typeof window !== 'undefined' ? parseLocation(window.location.pathname).screen : null;
   return fromUrl ?? 'inbox';
 }
+
+export type ProjectCreateHold =
+  // `attempt` is the create's IDEMPOTENCY KEY: it names the one attempt that set the hold, so only that
+  // request's reply settles it (Codex 4185009904), and "Try again" resends the attempt under it, so the
+  // server replays the first create instead of making a second (replaces #710; Codex 4185707835)
+  | { phase: 'in_flight'; attempt: string; orgId: string; input: NewProjectInput }
+  | { phase: 'unknown'; attempt: string; orgId: string; input: NewProjectInput; message: string };
+
+/** What a new-project create came to (legacy-copy recovery). `created` is final even when `opened`
+ *  is false — the project exists, so the dialog closes and must not invite a duplicate retry.
+ *  `refused`: a DEFINITE refusal (`isTerminalOutboxError`): the server rolled everything back and said
+ *  why; a retry is safe once that is fixed.
+ *  `unknown`: no answer, a 5xx, or a 401/408/429 — no confirmation. A NEW create stays blocked; the
+ *  attempt is finished only by `retryProjectCreate`, which resends it under its own idempotency key.
+ *  `stale`: the signed-in user changed while it was in flight; the reply is dropped. */
+export type CreateProjectOutcome =
+  | { kind: 'created'; projectId: string; opened: boolean }
+  | { kind: 'refused'; message: string }
+  | { kind: 'unknown'; message: string }
+  | { kind: 'stale' };
 
 /** Issue-decision payload from the UI: an option may carry a captured photo (base64),
  *  uploaded first so it becomes the created option's photoUrl. */
@@ -386,6 +410,8 @@ export interface AppState {
   legacyDailyLogDraft: DailyLogDraft | null;
   notifications: AppNotification[];
   // real session (set by a phone-OTP sign-in; null = passwordless dev auth)
+  /** Legacy-copy recovery (Codex 4184306919) — see `retryProjectCreate` and `ProjectCreateHold`. */
+  projectCreateHold: ProjectCreateHold | null;
   sessionToken: string | null;
   userName: string | null;
   /** Phase 6 task 4b (§A.3) — the signed-in USER id (the JWT's `sub`), the viewer half of the
@@ -641,7 +667,16 @@ export interface AppActions {
    *  the switch was authenticated. `targetScreen` survives the switch when the new
    *  role is allowed to see it (deep links). */
   switchProject: (projectId: string, targetScreen?: ScreenKey) => Promise<boolean>;
-  createProject: (orgId: string, input: NewProjectInput) => void;
+  /** Resolves to what happened, so the new-project dialog closes only on a confirmed create and
+   *  keeps its inputs with the reason otherwise (see `CreateProjectOutcome`). */
+  createProject: (orgId: string, input: NewProjectInput) => Promise<CreateProjectOutcome>;
+  /** Legacy-copy recovery (Codex 4184306919, 4185707835) — finish an UNKNOWN create by sending the same
+   *  attempt again under its own idempotency key: the server replays the first create if it committed,
+   *  and makes the project once if it did not. No new create starts while an attempt is unconfirmed. */
+  retryProjectCreate: () => Promise<CreateProjectOutcome>;
+  /** Adopt a create hold recorded for this user by ANOTHER tab or before a reload (it is mirrored per
+   *  signed-in user in localStorage). The new-project dialog calls it on open. */
+  syncProjectCreateHold: () => void;
   updateProjectDetails: (orgId: string, projectId: string, input: Partial<NewProjectInput>) => void;
   deleteProject: (orgId: string, projectId: string) => void;
   restoreProject: (orgId: string, projectId: string) => void;
@@ -1186,6 +1221,7 @@ export function getInitialState(): AppState {
     dailyLogDraft: null,
     legacyDailyLogDraft: null,
     notifications: structuredClone(SEED_NOTIFICATIONS),
+    projectCreateHold: null,
     sessionToken: null,
     userName: null,
     sessionUserId: null,
@@ -1341,6 +1377,97 @@ export const useStore = create<Store>()(
       } catch {
         return 'anon'; // malformed token — the anonymous scope
       }
+    };
+    // Legacy-copy recovery — the project-create hold. Its durable mirror, its cross-tab reservation and
+    // the server-capability check are the pure helpers in `./projectCreateHold`; what follows binds them
+    // to this store's session, scope and state.
+    const currentCreateHoldScope = (): string =>
+      createHoldScope(get().sessionToken ? sessionSub() : null, get().sessionUserId);
+    /** Take the hold for an attempt — in the mirror first, then in memory. `false` (nothing taken,
+     *  nothing to send) when site storage refuses the mirror. Called only inside the reservation. */
+    const holdProjectCreate = (sub: string, orgId: string, input: NewProjectInput, attempt: string): boolean => {
+      if (!writeStoredCreateHold(sub, { attempt, phase: 'in_flight', orgId, input })) return false;
+      set((s) => { s.projectCreateHold = { phase: 'in_flight', attempt, orgId, input }; });
+      return true;
+    };
+    /** What a create is bound to, captured at the CLICK — before any wait for the reservation — so a
+     *  sign-out or project switch begun while it waits or while it is out is seen as one. */
+    type CreateSendContext = { sub: string; identity: string; scope: { project: string | null; generation: number } };
+    const captureCreateContext = (): CreateSendContext => ({
+      sub: currentCreateHoldScope(),
+      identity: `${sessionSub()}|${get().sessionUserId ?? ''}`,
+      scope: { project: get().activeProjectId, generation: get().projectScopeGeneration },
+    });
+    /** Send ONE project-create attempt under its idempotency key and settle the session hold from the
+     *  reply. A new create and "Try again" both come here, the retry with the attempt's own key, after
+     *  the reservation took the hold for it. */
+    const sendProjectCreate = async (gw: ApiGateway, orgId: string, input: NewProjectInput, attempt: string, ctx: CreateSendContext): Promise<CreateProjectOutcome> => {
+      const { sub } = ctx;
+      const settle = (next: ProjectCreateHold | null) => {
+        // ONLY this attempt's own hold is settled: a sign-out cleared it, and another session's create
+        // may hold it now (Codex 4185009904) — in memory and in the mirror alike
+        const cur = get().projectCreateHold;
+        if (cur?.phase === 'in_flight' && cur.attempt === attempt) {
+          set((s) => { s.projectCreateHold = next; });
+        }
+        if (readStoredCreateHold(sub)?.attempt === attempt) {
+          writeStoredCreateHold(sub, next?.phase === 'unknown' ? { attempt, phase: 'unknown', orgId, input, message: next.message } : null);
+        }
+      };
+      // The reply is bound to the user who sent it, as `addLocationNode`'s is: one landing after a
+      // sign-out or persona change belongs to nobody on screen, so it is dropped — no toast, no switch.
+      const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === ctx.identity;
+      // …and to the whole project SCOPE it was sent from, not just the active id: a switch begun
+      // while the create was out bumps the generation at once (the active id moves only when its
+      // auth lands), and opening the new project then would race that switch (Codex 4180481920).
+      const scopeAtSend = ctx.scope;
+      const sameScope = () => get().pendingProjectId === null
+        && get().activeProjectId === scopeAtSend.project
+        && get().projectScopeGeneration === scopeAtSend.generation;
+
+      let created: { id: string; short: string };
+      try {
+        created = await gw.createProject(orgId, input, attempt);
+      } catch (err) {
+        if (!sentBySameUser()) {
+          // The reply belongs to nobody on screen, but its USER keeps it (Codex 4187663041): a definite
+          // refusal made nothing and is cleared; an ambiguous one may have committed, so their mirror
+          // keeps the attempt as unknown, and their next sign-in finishes it under the same key
+          if (isTerminalOutboxError(err)) settle(null);
+          else settle({ phase: 'unknown', attempt, orgId, input, message: 'Your last project create was not confirmed by the server. Try again — it is safe: the server answers a retry of that same request without making a second project.' });
+          return { kind: 'stale' };
+        }
+        // A DEFINITE refusal rolled the whole initialization back (and its receipt with it): nothing was
+        // created, so the reason is the server's own (e.g. the copied structure's rename advice). Definite
+        // is the outbox's own rule, `isTerminalOutboxError`: a 4xx other than 401/408/429 (Codex
+        // 4185009892). Anything else may follow a request the server still commits.
+        if (isTerminalOutboxError(err)) {
+          settle(null);
+          return { kind: 'refused', message: refusalMessage(err) ?? 'Could not create the project — check your access.' };
+        }
+        // UNKNOWN: no answer, a 5xx, or a 401/408/429. The client never guesses — not by name (Codex
+        // 4180668018) and not by a list check (Codex 4185707835) — and never sends a NEW create. The
+        // attempt is retried as ITSELF, under the same key, which the server answers with the first
+        // create's project if it committed and with one new project if it did not.
+        get().loadOrgData();
+        const message = 'The server did not confirm the project was created. Try again — it is safe: the server answers a retry of this same request without making a second project.';
+        settle({ phase: 'unknown', attempt, orgId, input, message });
+        return { kind: 'unknown', message };
+      }
+      settle(null);
+      if (!sentBySameUser()) return { kind: 'stale' };
+      get().loadOrgData();
+      // Created (or replayed). Opening it is a separate step that can fail on its own; the outcome says
+      // so, so the dialog still closes and nothing invites a second create.
+      if (!sameScope()) {
+        // the user moved (or began moving) to another project meanwhile — announce, don't yank them
+        get().flash('Project created: ' + created.short + ' — open it from the project switcher.');
+        return { kind: 'created', projectId: created.id, opened: false };
+      }
+      get().flash('Project created: ' + created.short + '.');
+      const opened = await get().switchProject(created.id);
+      if (!opened && sentBySameUser()) get().flash('Project created: ' + created.short + ', but it could not be opened — pick it from the project switcher.');
+      return { kind: 'created', projectId: created.id, opened };
     };
     // Persisted beside the outbox under the SAME user + project scope (WEB-02), so work recorded in
     // one project (or by one user on a shared device) is never laid over another's log.
@@ -2348,6 +2475,7 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
+        s.projectCreateHold = null; // the hold belongs to the session that sent the create
       });
       // round-11 Codex F3 — on a push-capable browser a persona switch is a DEPARTURE exactly
       // like sign-out: the departing identity's subscription link is severed BEFORE the switch
@@ -2408,6 +2536,7 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
+        s.projectCreateHold = null; // the hold belongs to the session that sent the create
         s.brief = null; // the departing PMC's cross-project brief leaves with them
         s.briefAt = null;
         s.access = freshAccess(s.access.generation + 1);
@@ -4248,19 +4377,73 @@ export const useStore = create<Store>()(
           return false;
         });
     },
-    createProject: (orgId, input) => {
-      if (!gateway) {
-        get().flash('Creating projects needs the server.');
-        return;
+    createProject: async (orgId, input) => {
+      if (!gateway) return { kind: 'refused', message: 'Creating projects needs the server.' };
+      // The session-scoped hold: one create at a time per session (Codex 4184306919), and after an
+      // UNKNOWN outcome no NEW create until that attempt is finished with "Try again" — whichever dialog
+      // instance, tab or page asks. The check, the key and the record are one cross-tab reservation.
+      const ctx = captureCreateContext(); // the user (and mirror) and scope, fixed at the click
+      const sub = ctx.sub;
+      const gw = gateway; // …and the server it goes to
+      // nothing is sent to a server that would ignore the key (a bundle served ahead of its API) — asked
+      // before the reservation, so no tab's turn waits on this request
+      if (!(await serverKeepsCreateReceipts(gw))) return { kind: 'refused', message: SERVER_NOT_READY };
+      const reserved = await withCreateReservation(sub, async (): Promise<CreateProjectOutcome | { attempt: string }> => {
+        // a sign-out or persona change while this waited for its turn: the click belongs to nobody now
+        if (captureCreateContext().identity !== ctx.identity) return { kind: 'stale' };
+        get().syncProjectCreateHold();
+        const hold = get().projectCreateHold;
+        if (hold?.phase === 'unknown') return { kind: 'unknown', message: hold.message };
+        if (hold?.phase === 'in_flight') {
+          return { kind: 'unknown', message: 'A project is already being created — wait for it to finish.' };
+        }
+        // ONE idempotency key per create attempt (replaces #710): every send of this attempt carries
+        // it, so the server replays the first create instead of making a second project
+        const attempt = newIdempotencyKey();
+        if (!holdProjectCreate(sub, orgId, input, attempt)) return { kind: 'refused', message: NO_DURABLE_HOLD };
+        return { attempt };
+      });
+      if (reserved === null) return { kind: 'refused', message: NO_CROSS_TAB_LOCK };
+      if (!('attempt' in reserved)) return reserved;
+      return sendProjectCreate(gw, orgId, input, reserved.attempt, ctx);
+    },
+    retryProjectCreate: async () => {
+      if (!gateway) return { kind: 'refused', message: 'Creating projects needs the server.' };
+      const ctx = captureCreateContext();
+      const sub = ctx.sub;
+      const gw = gateway;
+      // a server that ignores the key would make the project a second time: the hold stays, nothing sent
+      if (!(await serverKeepsCreateReceipts(gw))) {
+        get().syncProjectCreateHold();
+        return get().projectCreateHold?.phase === 'unknown'
+          ? { kind: 'unknown', message: SERVER_NOT_READY_RETRY }
+          : { kind: 'unknown', message: 'There is no unconfirmed project create to try again.' };
       }
-      gateway
-        .createProject(orgId, input)
-        .then((p) => {
-          get().flash('Project created: ' + p.short + '.');
-          get().loadOrgData();
-          void get().switchProject(p.id);
-        })
-        .catch(() => get().flash('Could not create the project — check your access.'));
+      const reserved = await withCreateReservation(sub, (): CreateProjectOutcome | Extract<ProjectCreateHold, { phase: 'unknown' }> => {
+        if (captureCreateContext().identity !== ctx.identity) return { kind: 'stale' };
+        get().syncProjectCreateHold();
+        const hold = get().projectCreateHold;
+        // only an UNKNOWN attempt is retried, and only as itself — the same org, request and key
+        if (hold?.phase !== 'unknown') return { kind: 'unknown', message: 'There is no unconfirmed project create to try again.' };
+        if (!holdProjectCreate(sub, hold.orgId, hold.input, hold.attempt)) return { kind: 'unknown', message: NO_DURABLE_HOLD };
+        return hold;
+      });
+      if (reserved === null) return { kind: 'unknown', message: NO_CROSS_TAB_LOCK };
+      if (!('attempt' in reserved)) return reserved;
+      return sendProjectCreate(gw, reserved.orgId, reserved.input, reserved.attempt, ctx);
+    },
+    syncProjectCreateHold: () => {
+      if (get().projectCreateHold !== null) return; // this tab's own hold is already authoritative
+      const stored = readStoredCreateHold(currentCreateHoldScope());
+      if (!stored) return;
+      // no live request in THIS tab owns the record, so its outcome is unknown here — and since the
+      // attempt carries its key, "Try again" from here is safe too
+      set((s) => {
+        s.projectCreateHold = {
+          phase: 'unknown', attempt: stored.attempt, orgId: stored.orgId, input: stored.input,
+          message: stored.phase === 'unknown' && stored.message ? stored.message : FOREIGN_CREATE_HOLD,
+        };
+      });
     },
     updateProjectDetails: (orgId, projectId, input) => {
       if (!gateway) {

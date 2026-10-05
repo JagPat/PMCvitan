@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: ux-queue-717-project-create-receipt-server
+work_item: none
 reviewed_merge: cffb251
-open_pr: 717
+open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-05
@@ -34,13 +34,13 @@ five-head limit, and its replacement #716 reached the same five-head restructure
 reviewed heads also drew a P1 in `apps/web/src/store/store.ts`, which is the policy's stop for an additive
 redesign in smaller units. So #716 was closed and its work is split in two:
 
-1. **#717, the server unit**, `claude/project-create-receipt-server` (current work item). Project
-   creation accepts an optional `Idempotency-Key`, backed by an org-scoped receipt through the command
-   ledger, and `/health` advertises `orgs.createProject.receipt`. No client sends the key yet, so behaviour
-   is unchanged for every current caller.
-2. **The client unit**, `claude/project-create-idempotency` rebuilt from `main` after the server unit
-   merges: the legacy-copy recovery dialog, the per-user create hold and its cross-tab reservation, and the
-   capability gate, carrying every #710 and #716 finding.
+1. **#717, the server unit** — merged at `f60a549`. Project creation accepts an optional
+   `Idempotency-Key`, backed by an org-scoped receipt through the command ledger, and `/health` advertises
+   `orgs.createProject.receipt`.
+2. **The client unit**, `claude/project-create-recovery-client` (current work item), built from `main`
+   after #717: the legacy-copy recovery dialog, the per-user create hold and its cross-tab reservation, and
+   the capability gate, carrying every #710 and #716 finding. The hold's pure rules (the durable mirror,
+   the Web Lock reservation, the capability check) are their own module, `store/projectCreateHold.ts`.
 3. **#711** `claude/ux-b7-progress` — distinguish failed activity loading from an empty list.
 4. **#712** `claude/ux-b8-space-status` — align the place-filter summaries with the filtered rows.
 5. **#713** `claude/ux-b9-naming` — prevent the small-screen Decision Log label truncation.
