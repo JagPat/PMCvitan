@@ -10,6 +10,15 @@ import type { ExternalEffectDispatcher } from '../platform/outbox/external-effec
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { IssueDrawingInput } from '../contracts';
 
+// R0a-2: `emitEvent` refuses a human event whose pair does not resolve. These suites run on an in-memory
+// prisma double, so the live standing read is stubbed at its one boundary; the integration suite proves
+// the real resolver.
+vi.mock('../platform/actor-envelope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platform/actor-envelope')>()),
+  resolveActorEnvelope: vi.fn(async (_tx: unknown, _projectId: string, actor: { actorKind: string; actorRole: string }) =>
+    actor.actorKind === 'human' ? { actorRole: actor.actorRole, actorName: 'Test actor' } : null),
+}));
+
 /**
  * PR C Task 2 — the service hands committed events to the single {@link ExternalEffectDispatcher}
  * instead of calling `notifyChanged`. The push body + roles are in each event's PERSISTED dispatch

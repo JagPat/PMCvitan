@@ -11,6 +11,15 @@ import type { ActivityParticipant } from '../activities/activity.participant';
 import type { DrawingParticipant } from '../drawings/drawing.participant';
 import type { DailyLogParticipant } from '../daily-log/daily-log.participant';
 
+// R0a-2: `emitEvent` refuses a human event whose pair does not resolve. These suites run on an in-memory
+// prisma double, so the live standing read is stubbed at its one boundary; the integration suite proves
+// the real resolver.
+vi.mock('../platform/actor-envelope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platform/actor-envelope')>()),
+  resolveActorEnvelope: vi.fn(async (_tx: unknown, _projectId: string, actor: { actorKind: string; actorRole: string }) =>
+    actor.actorKind === 'human' ? { actorRole: actor.actorRole, actorName: 'Test actor' } : null),
+}));
+
 interface Node { id: string; projectId: string; parentId: string | null; name: string; kind: string; order: number; publishedAt?: Date | null; authorId?: string | null }
 
 function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {

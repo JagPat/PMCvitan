@@ -15,6 +15,15 @@ import type { SignedUrlService } from '../media/signed-url.service';
 import { Prisma } from '@prisma/client';
 import { registerConsumer, unregisterConsumer } from '../platform/outbox/registry';
 
+// R0a-2: `emitEvent` refuses a human event whose pair does not resolve. These suites run on an in-memory
+// prisma double, so the live standing read is stubbed at its one boundary; the integration suite proves
+// the real resolver.
+vi.mock('../platform/actor-envelope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platform/actor-envelope')>()),
+  resolveActorEnvelope: vi.fn(async (_tx: unknown, _projectId: string, actor: { actorKind: string; actorRole: string }) =>
+    actor.actorKind === 'human' ? { actorRole: actor.actorRole, actorName: 'Test actor' } : null),
+}));
+
 const PROJECT_INIT_TEST_CONSUMER = 'project-init.unit-test';
 
 afterEach(() => unregisterConsumer(PROJECT_INIT_TEST_CONSUMER));

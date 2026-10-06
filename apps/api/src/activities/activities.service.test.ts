@@ -13,6 +13,15 @@ import type { DrawingParticipant } from '../drawings/drawing.participant';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import type { AuthUser } from '../common/auth';
 
+// R0a-2: `emitEvent` refuses a human event whose pair does not resolve. These suites run on an in-memory
+// prisma double, so the live standing read is stubbed at its one boundary; the integration suite proves
+// the real resolver.
+vi.mock('../platform/actor-envelope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platform/actor-envelope')>()),
+  resolveActorEnvelope: vi.fn(async (_tx: unknown, _projectId: string, actor: { actorKind: string; actorRole: string }) =>
+    actor.actorKind === 'human' ? { actorRole: actor.actorRole, actorName: 'Test actor' } : null),
+}));
+
 /**
  * Phase 1 — start/complete contract. The `complete` tests are the Task 5
  * CONTRACT. The `start` tests are the Task 6 CONTRACT (updated in the same PR

@@ -10,6 +10,15 @@ import type { AuthUser } from '../common/auth';
 import type { CreateDecisionInput } from '../contracts';
 import { pendingDecisionNotice } from '../domain/notifications';
 
+// R0a-2: `emitEvent` refuses a human event whose pair does not resolve. These suites run on an in-memory
+// prisma double, so the live standing read is stubbed at its one boundary; the integration suite proves
+// the real resolver.
+vi.mock('../platform/actor-envelope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platform/actor-envelope')>()),
+  resolveActorEnvelope: vi.fn(async (_tx: unknown, _projectId: string, actor: { actorKind: string; actorRole: string }) =>
+    actor.actorKind === 'human' ? { actorRole: actor.actorRole, actorName: 'Registered Name' } : null),
+}));
+
 /**
  * PR C Task 2 — services no longer call `notifyChanged`; they hand their committed events to the
  * single {@link ExternalEffectDispatcher}. The push body + target roles now live in each event's
