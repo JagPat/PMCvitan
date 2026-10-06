@@ -68,3 +68,21 @@ describe('the capability check', () => {
     await expect(serverKeepsCreateReceipts(gw(async () => { throw new Error('/health 502'); }))).resolves.toBe(false);
   });
 });
+
+/**
+ * The writer inventory (root cause of Codex 4189880211 and 4190271480): every finding on these heads was
+ * a path that changed the hold on behalf of an attempt it no longer owned. So the hold has exactly these
+ * writers, and only `settleProjectCreate` releases or settles it — under the current lease, or for a
+ * confirmed create. A new writer must come through here, or this tripwire fails.
+ */
+describe('the hold\'s writers', () => {
+  it('are exactly: take (holdProjectCreate), settle (settleProjectCreate), sign-out/persona (memory only), sync (from the mirror)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const src = readFileSync(resolve(__dirname, '../src/store/store.ts'), 'utf8');
+    expect(src.match(/writeStoredCreateHold\(/g)).toHaveLength(2); // holdProjectCreate + settleProjectCreate
+    expect(src.match(/s\.projectCreateHold = /g)).toHaveLength(5); // take, settle, sign-out, persona switch, sync
+    const settle = src.slice(src.indexOf('const settleProjectCreate'), src.indexOf('const unreserveProjectCreate'));
+    expect(settle).toMatch(/next === 'confirmed' \? h\?\.attempt === attempt : h\?\.lease === lease/);
+  });
+});

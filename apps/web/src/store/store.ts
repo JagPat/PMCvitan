@@ -118,8 +118,12 @@ export type ProjectCreateHold =
   // `attempt` is the create's IDEMPOTENCY KEY: it names the one attempt that set the hold, so only that
   // request's reply settles it (Codex 4185009904), and "Try again" resends the attempt under it, so the
   // server replays the first create instead of making a second (replaces #710; Codex 4185707835)
-  | { phase: 'in_flight'; attempt: string; orgId: string; input: NewProjectInput }
-  | { phase: 'unknown'; attempt: string; orgId: string; input: NewProjectInput; message: string };
+  // `lease` names the ONE reservation that holds the attempt now (Codex 4190271480): the same attempt can be
+  // reserved again — a retry from a later session or another tab — so releasing it, or settling it as
+  // refused or unknown, is done only by the reservation whose lease is current. A CONFIRMED create is the
+  // one exception: the server committed that key, so it finishes the attempt whoever holds it.
+  | { phase: 'in_flight'; attempt: string; lease: string; orgId: string; input: NewProjectInput }
+  | { phase: 'unknown'; attempt: string; lease: string; orgId: string; input: NewProjectInput; message: string };
 
 /** What a new-project create came to (legacy-copy recovery). `created` is final even when `opened`
  *  is false — the project exists, so the dialog closes and must not invite a duplicate retry.
@@ -1385,21 +1389,32 @@ export const useStore = create<Store>()(
       createHoldScope(get().sessionToken ? sessionSub() : null, get().sessionUserId);
     /** Take the hold for an attempt — in the mirror first, then in memory. `false` (nothing taken,
      *  nothing to send) when site storage refuses the mirror. Called only inside the reservation. */
-    const holdProjectCreate = (sub: string, orgId: string, input: NewProjectInput, attempt: string): boolean => {
-      if (!writeStoredCreateHold(sub, { attempt, phase: 'in_flight', orgId, input })) return false;
-      set((s) => { s.projectCreateHold = { phase: 'in_flight', attempt, orgId, input }; });
-      return true;
+    const holdProjectCreate = (sub: string, orgId: string, input: NewProjectInput, attempt: string): string | null => {
+      const lease = newIdempotencyKey(); // this reservation's own name, distinct from the attempt's key
+      if (!writeStoredCreateHold(sub, { attempt, lease, phase: 'in_flight', orgId, input })) return null;
+      set((s) => { s.projectCreateHold = { phase: 'in_flight', attempt, lease, orgId, input }; });
+      return lease;
     };
-    /** Put back an attempt the reservation took but that was never SENT (the server cannot keep receipts,
-     *  or the click's user left): a new create's hold is released; a retried attempt returns to the
-     *  unknown hold it was — in memory and in the mirror, and only if it is still this attempt's. */
-    const unreserveProjectCreate = (sub: string, attempt: string, was: Extract<ProjectCreateHold, { phase: 'unknown' }> | null): void => {
-      const cur = get().projectCreateHold;
-      if (cur?.attempt === attempt) set((s) => { s.projectCreateHold = was; });
-      if (readStoredCreateHold(sub)?.attempt === attempt) {
-        writeStoredCreateHold(sub, was ? { attempt, phase: 'unknown', orgId: was.orgId, input: was.input, message: was.message } : null);
+    /** Settle the hold a reservation took. Only the CURRENT lease may (Codex 4190271480) — in memory and in
+     *  the mirror alike — except a confirmed create (`next === 'confirmed'`), which finishes its attempt
+     *  under any lease: the server committed that key, so no later reservation of it has anything left to do. */
+    const settleProjectCreate = (sub: string, attempt: string, lease: string, next: ProjectCreateHold | null | 'confirmed'): void => {
+      const owns = (h: { attempt: string; lease?: string } | null | undefined) =>
+        next === 'confirmed' ? h?.attempt === attempt : h?.lease === lease;
+      const value = next === 'confirmed' ? null : next;
+      if (owns(get().projectCreateHold)) set((s) => { s.projectCreateHold = value; });
+      if (owns(readStoredCreateHold(sub))) {
+        writeStoredCreateHold(sub, value ? {
+          attempt: value.attempt, lease: value.lease, phase: value.phase, orgId: value.orgId, input: value.input,
+          ...(value.phase === 'unknown' ? { message: value.message } : {}),
+        } : null);
       }
     };
+    /** Put back an attempt the reservation took but that was never SENT (the server cannot keep receipts,
+     *  or the click's user left): a new create's hold is released; a retried attempt returns to the unknown
+     *  hold it was. Only while this reservation's lease is current. */
+    const unreserveProjectCreate = (sub: string, lease: string, attempt: string, was: Extract<ProjectCreateHold, { phase: 'unknown' }> | null): void =>
+      settleProjectCreate(sub, attempt, lease, was);
     /** What a create is bound to, captured at the CLICK — before any wait for the reservation — so a
      *  sign-out or project switch begun while it waits or while it is out is seen as one. */
     type CreateSendContext = { sub: string; identity: string; scope: { project: string | null; generation: number } };
@@ -1411,21 +1426,13 @@ export const useStore = create<Store>()(
     /** Send ONE project-create attempt under its idempotency key and settle the session hold from the
      *  reply. A new create and "Try again" both come here, the retry with the attempt's own key, after
      *  the reservation took the hold for it. */
-    const sendProjectCreate = async (gw: ApiGateway, orgId: string, input: NewProjectInput, attempt: string, ctx: CreateSendContext): Promise<CreateProjectOutcome> => {
+    const sendProjectCreate = async (gw: ApiGateway, orgId: string, input: NewProjectInput, attempt: string, lease: string, ctx: CreateSendContext): Promise<CreateProjectOutcome> => {
       const { sub } = ctx;
-      const settle = (next: ProjectCreateHold | null) => {
-        // ONLY this attempt's own hold is settled: a sign-out cleared it, and another session's create
-        // may hold it now (Codex 4185009904) — in memory and in the mirror alike
-        // — whatever its phase: the same user signing back in restores it as unknown, and its own reply
-        // still finishes it (Codex 4189880211)
-        const cur = get().projectCreateHold;
-        if (cur?.attempt === attempt) {
-          set((s) => { s.projectCreateHold = next; });
-        }
-        if (readStoredCreateHold(sub)?.attempt === attempt) {
-          writeStoredCreateHold(sub, next?.phase === 'unknown' ? { attempt, phase: 'unknown', orgId, input, message: next.message } : null);
-        }
-      };
+      // ONLY this reservation's own hold is settled (Codex 4185009904, 4190271480), whatever its phase: the
+      // same user signing back in restores it as unknown under this lease, and its reply still finishes it
+      // (Codex 4189880211); a confirmed create finishes the attempt under any lease.
+      const settle = (next: ProjectCreateHold | null | 'confirmed') => settleProjectCreate(sub, attempt, lease, next);
+      const unknownHold = (message: string): ProjectCreateHold => ({ phase: 'unknown', attempt, lease, orgId, input, message });
       // The reply is bound to the user who sent it, as `addLocationNode`'s is: one landing after a
       // sign-out or persona change belongs to nobody on screen, so it is dropped — no toast, no switch.
       const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === ctx.identity;
@@ -1446,7 +1453,7 @@ export const useStore = create<Store>()(
           // refusal made nothing and is cleared; an ambiguous one may have committed, so their mirror
           // keeps the attempt as unknown, and their next sign-in finishes it under the same key
           if (isTerminalOutboxError(err)) settle(null);
-          else settle({ phase: 'unknown', attempt, orgId, input, message: 'Your last project create was not confirmed by the server. Try again — it is safe: the server answers a retry of that same request without making a second project.' });
+          else settle(unknownHold('Your last project create was not confirmed by the server. Try again — it is safe: the server answers a retry of that same request without making a second project.'));
           return { kind: 'stale' };
         }
         // A DEFINITE refusal rolled the whole initialization back (and its receipt with it): nothing was
@@ -1463,10 +1470,10 @@ export const useStore = create<Store>()(
         // create's project if it committed and with one new project if it did not.
         get().loadOrgData();
         const message = 'The server did not confirm the project was created. Try again — it is safe: the server answers a retry of this same request without making a second project.';
-        settle({ phase: 'unknown', attempt, orgId, input, message });
+        settle(unknownHold(message));
         return { kind: 'unknown', message };
       }
-      settle(null);
+      settle('confirmed');
       if (!sentBySameUser()) return { kind: 'stale' };
       get().loadOrgData();
       // Created (or replayed). Opening it is a separate step that can fail on its own; the outcome says
@@ -4397,7 +4404,7 @@ export const useStore = create<Store>()(
       const ctx = captureCreateContext(); // the user (and mirror) and scope, fixed at the click
       const sub = ctx.sub;
       const gw = gateway; // …and the server it goes to
-      const reserved = await withCreateReservation(sub, async (): Promise<CreateProjectOutcome | { attempt: string }> => {
+      const reserved = await withCreateReservation(sub, async (): Promise<CreateProjectOutcome | { attempt: string; lease: string }> => {
         // a sign-out or persona change while this waited for its turn: the click belongs to nobody now
         if (captureCreateContext().identity !== ctx.identity) return { kind: 'stale' };
         get().syncProjectCreateHold();
@@ -4409,8 +4416,9 @@ export const useStore = create<Store>()(
         // ONE idempotency key per create attempt (replaces #710): every send of this attempt carries
         // it, so the server replays the first create instead of making a second project
         const attempt = newIdempotencyKey();
-        if (!holdProjectCreate(sub, orgId, input, attempt)) return { kind: 'refused', message: NO_DURABLE_HOLD };
-        return { attempt };
+        const lease = holdProjectCreate(sub, orgId, input, attempt);
+        if (!lease) return { kind: 'refused', message: NO_DURABLE_HOLD };
+        return { attempt, lease };
       });
       if (reserved === null) return { kind: 'refused', message: NO_CROSS_TAB_LOCK };
       if (!('attempt' in reserved)) return reserved;
@@ -4419,42 +4427,46 @@ export const useStore = create<Store>()(
       // so no create can complete and clear it while this check is out — and the lock is not held across
       // the request. A server without receipts gets nothing, and the attempt is released.
       if (!(await serverKeepsCreateReceipts(gw))) {
-        unreserveProjectCreate(sub, reserved.attempt, null);
+        unreserveProjectCreate(sub, reserved.lease, reserved.attempt, null);
         return { kind: 'refused', message: SERVER_NOT_READY };
       }
       if (captureCreateContext().identity !== ctx.identity) {
-        unreserveProjectCreate(sub, reserved.attempt, null);
+        unreserveProjectCreate(sub, reserved.lease, reserved.attempt, null);
         return { kind: 'stale' };
       }
-      return sendProjectCreate(gw, orgId, input, reserved.attempt, ctx);
+      return sendProjectCreate(gw, orgId, input, reserved.attempt, reserved.lease, ctx);
     },
     retryProjectCreate: async () => {
       if (!gateway) return { kind: 'refused', message: 'Creating projects needs the server.' };
       const ctx = captureCreateContext();
       const sub = ctx.sub;
       const gw = gateway;
-      const reserved = await withCreateReservation(sub, (): CreateProjectOutcome | Extract<ProjectCreateHold, { phase: 'unknown' }> => {
+      type Retried = { was: Extract<ProjectCreateHold, { phase: 'unknown' }>; lease: string };
+      const reserved = await withCreateReservation(sub, (): CreateProjectOutcome | Retried => {
         if (captureCreateContext().identity !== ctx.identity) return { kind: 'stale' };
         get().syncProjectCreateHold();
         const hold = get().projectCreateHold;
-        // only an UNKNOWN attempt is retried, and only as itself — the same org, request and key
+        // only an UNKNOWN attempt is retried, and only as itself — the same org, request and key — under a
+        // NEW lease, so an earlier reservation of it can no longer release or settle it
         if (hold?.phase !== 'unknown') return { kind: 'unknown', message: 'There is no unconfirmed project create to try again.' };
-        if (!holdProjectCreate(sub, hold.orgId, hold.input, hold.attempt)) return { kind: 'unknown', message: NO_DURABLE_HOLD };
-        return hold;
+        const lease = holdProjectCreate(sub, hold.orgId, hold.input, hold.attempt);
+        if (!lease) return { kind: 'unknown', message: NO_DURABLE_HOLD };
+        return { was: hold, lease };
       });
       if (reserved === null) return { kind: 'unknown', message: NO_CROSS_TAB_LOCK };
-      if (!('attempt' in reserved)) return reserved;
+      if (!('lease' in reserved)) return reserved;
+      const { was, lease } = reserved;
       // as for a new create, the server is asked after the reservation: a server that ignores the key
       // would make the project a second time, so the attempt goes back to the unknown hold it was
       if (!(await serverKeepsCreateReceipts(gw))) {
-        unreserveProjectCreate(sub, reserved.attempt, reserved);
+        unreserveProjectCreate(sub, lease, was.attempt, { ...was, lease });
         return { kind: 'unknown', message: SERVER_NOT_READY_RETRY };
       }
       if (captureCreateContext().identity !== ctx.identity) {
-        unreserveProjectCreate(sub, reserved.attempt, reserved);
+        unreserveProjectCreate(sub, lease, was.attempt, { ...was, lease });
         return { kind: 'stale' };
       }
-      return sendProjectCreate(gw, reserved.orgId, reserved.input, reserved.attempt, ctx);
+      return sendProjectCreate(gw, was.orgId, was.input, was.attempt, lease, ctx);
     },
     syncProjectCreateHold: () => {
       if (get().projectCreateHold !== null) return; // this tab's own hold is already authoritative
@@ -4464,7 +4476,7 @@ export const useStore = create<Store>()(
       // attempt carries its key, "Try again" from here is safe too
       set((s) => {
         s.projectCreateHold = {
-          phase: 'unknown', attempt: stored.attempt, orgId: stored.orgId, input: stored.input,
+          phase: 'unknown', attempt: stored.attempt, lease: stored.lease ?? '', orgId: stored.orgId, input: stored.input,
           message: stored.phase === 'unknown' && stored.message ? stored.message : FOREIGN_CREATE_HOLD,
         };
       });

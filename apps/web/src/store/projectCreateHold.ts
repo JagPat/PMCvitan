@@ -19,6 +19,8 @@ import type { ApiGateway, NewProjectInput } from '@/data/apiGateway';
 /** The mirrored record of one create attempt. */
 export type StoredCreateHold = {
   attempt: string;
+  /** The reservation that holds the attempt now; only it may release or settle it (see the store). */
+  lease?: string;
   phase: 'in_flight' | 'unknown';
   orgId: string;
   input: NewProjectInput;

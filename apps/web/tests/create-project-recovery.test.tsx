@@ -610,6 +610,66 @@ describe('cross-tab project create — one reservation at a time', () => {
     expect(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a')).toBeNull();
   });
 
+  it('an EARLIER session\'s failed check never releases a retry that reserved the attempt since (Codex 4190271480)', async () => {
+    fakeLocks();
+    const { gw, calls } = fakeGateway();
+    const firstProbe = deferred<string[]>();
+    calls.serverFeatures.mockImplementationOnce(() => firstProbe.promise); // session 1's /health stalls
+    s()._setGateway(gw);
+    useStore.setState((st) => { st.sessionUserId = 'u-a'; st.sessionToken = tokenFor('u-a'); });
+    const first = s().createProject('org-1', { name: 'A project', short: 'A', stage: 'Planning' });
+    await settle(); // reserved under lease 1, waiting on /health
+    const lease1 = s().projectCreateHold?.lease;
+    act(() => s().completeSignOut());
+    // the same user signs back in: the attempt reads as unknown, and "Try again" reserves it under a NEW lease
+    useStore.setState((st) => { st.sessionUserId = 'u-a'; st.sessionToken = tokenFor('u-a'); });
+    s().syncProjectCreateHold();
+    const retry = s().retryProjectCreate();
+    await settle();
+    expect(calls.createProject).toHaveBeenCalledTimes(1); // the retry's POST is out
+    const held = s().projectCreateHold;
+    expect(held).toMatchObject({ phase: 'in_flight' });
+    expect(held?.lease).not.toBe(lease1);
+    // session 1's check now fails: it may release only its OWN lease, which is no longer current
+    firstProbe.resolve([]);
+    await expect(first).resolves.toMatchObject({ kind: 'refused' });
+    expect(s().projectCreateHold).toEqual(held);
+    expect(JSON.parse(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a') ?? '{}')).toMatchObject({ phase: 'in_flight', lease: held?.lease });
+    // so a new create is still held while the retry is out — no second key
+    await expect(s().createProject('org-1', { name: 'B', short: 'B', stage: 'Planning' })).resolves.toMatchObject({ kind: 'unknown' });
+    expect(calls.createProject).toHaveBeenCalledTimes(1);
+    void retry;
+  });
+
+  it('an OLDER lease\'s ambiguous reply never downgrades the current reservation; a CONFIRMED create finishes the attempt under any lease', async () => {
+    fakeLocks();
+    const first = deferred<Created>();
+    const second = deferred<Created>();
+    const { gw, calls } = fakeGateway();
+    calls.createProject.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
+    s()._setGateway(gw);
+    useStore.setState((st) => { st.sessionUserId = 'u-a'; st.sessionToken = tokenFor('u-a'); });
+    const out1 = s().createProject('org-1', { name: 'A project', short: 'A', stage: 'Planning' });
+    await settle();
+    act(() => s().completeSignOut());
+    useStore.setState((st) => { st.sessionUserId = 'u-a'; st.sessionToken = tokenFor('u-a'); });
+    s().syncProjectCreateHold();
+    const out2 = s().retryProjectCreate();
+    await settle();
+    const retryHold = s().projectCreateHold;
+    expect(retryHold?.phase).toBe('in_flight');
+    // the FIRST request's reply is ambiguous: it is not the current lease, so the retry's hold stands
+    first.reject(httpError(502));
+    await out1;
+    expect(s().projectCreateHold).toEqual(retryHold);
+    // the retry is confirmed: the attempt is finished
+    second.resolve({ id: 'p-a', name: 'A project', short: 'A' });
+    await expect(out2).resolves.toMatchObject({ kind: 'created', projectId: 'p-a' });
+    expect(s().projectCreateHold).toBeNull();
+    expect(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a')).toBeNull();
+    expect(calls.createProject.mock.calls[1]?.[2]).toBe(calls.createProject.mock.calls[0]?.[2]); // one key throughout
+  });
+
   it('storage BLOCKED: nothing durable could carry the attempt past this page, so nothing is sent (Codex 4187372392, 4187663033)', async () => {
     fakeLocks();
     blockStorage();
