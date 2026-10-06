@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: ux-queue-712-b8-space-status
+work_item: ux-queue-713-b9-naming
 reviewed_merge: cffb251
-open_pr: 712
+open_pr: 713
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-06
@@ -55,8 +55,9 @@ redesign in smaller units. So #716 was closed and its work is split into server 
      signs in, and a send re-checks the identity inside the lock. The legacy-copy recovery is complete.
 4. **#711** — merged at `7512baf`. Progress is derived from the work, an unread or failed activity read is never
    "no plan", and the photo figures name the snapshot's capped window.
-5. **#712** `claude/ux-b8-space-status` (current work item) — align the place-filter summaries with the filtered rows.
-6. **#713** `claude/ux-b9-naming` — prevent the small-screen Decision Log label truncation.
+5. **#712** — merged at `01b1840`. Each Site Map space shows its derived status, the Schedule filters by place
+   with summary cards that count the listed rows, and an unread activity list is never shown as "no work".
+6. **#713** `claude/ux-b9-naming` (current work item) — prevent the small-screen Decision Log label truncation.
 7. **4d-iii R0a-2** — `emitEvent`'s central refusal, the org owner/admin `pmc` attribution and the
    test-writer inventory. It is local work only, and gets no branch or PR until #713 completes.
 
