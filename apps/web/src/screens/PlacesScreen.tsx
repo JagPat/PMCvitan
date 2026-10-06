@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectVisibleDecisions } from '@/store/selectors';
-import { resolveDrawingUrl } from '@/data/apiGateway';
+import { activitiesReadMode, resolveDrawingUrl } from '@/data/apiGateway';
 import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer, Button, CreateMenu } from '@/components';
 import { createOptionsFor, type CreateKind } from '@/lib/createOptions';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
@@ -15,7 +15,7 @@ import { PlaceStructure } from '@/screens/PlaceStructure';
 import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
-import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
+import { childrenOf, subtreeIds, trailOf, placeContents, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
 import { can, SNAPSHOT_SITE_PHOTO_LIMIT, type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -47,6 +47,14 @@ export function PlacesScreen() {
   // place's photos are those among the latest, never its whole record (Codex 4194155412, shadow review)
   const photosCapped = photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT;
   const activities = useStore(useShallow((s) => s.activities));
+  // Module-owned activities (`moduleQuery`) are known only once their read answers: until then, or after it
+  // fails, an empty list says nothing about where work is — the same boundary the Schedule draws (Codex
+  // 4195514775). A failed read with last-good activities still shows them.
+  const activitiesLoad = useStore((s) => s.activitiesLoad);
+  const activityRead: 'known' | 'loading' | 'unavailable' =
+    activitiesReadMode() === 'moduleQuery' && activitiesLoad !== 'ready' && activities.length === 0
+      ? (activitiesLoad === 'error' ? 'unavailable' : 'loading')
+      : 'known';
   const phases = useStore(useShallow((s) => s.phases));
   const openActivity = useStore((s) => s.openActivity);
   // Audit F-02 — a place's work leads to its schedule row, for a role that has the schedule
@@ -190,6 +198,7 @@ export function PlacesScreen() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, marginBottom: 22 }}>
               {children.map((n) => {
                 const c = countsFor(n.id);
+                const st = spaceStatus(nodes, activities, phases, n.id);
                 return (
                   <button key={n.id} onClick={() => setSel(n.id)} data-testid={`place-node-${n.id}`} style={nodeCard}>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.12em', color: 'var(--faint)' }}>{KIND_LABEL[n.kind] ?? n.kind.toUpperCase()}</div>
@@ -204,6 +213,17 @@ export function PlacesScreen() {
                       <span title="activities">⚒ {c.activities}</span>
                       <span title="materials">▧ {c.materials}</span>
                     </div>
+                    {/* B8 — where this space stands, derived from its work (never a stored flag) */}
+                    {activityRead !== 'known' ? (
+                      <div data-testid={`place-status-${n.id}`} data-state={activityRead} style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+                        {activityRead === 'unavailable' ? 'Status unavailable — the activities could not be loaded' : 'Loading status…'}
+                      </div>
+                    ) : st.state !== 'none' && (
+                      <div data-testid={`place-status-${n.id}`} data-state={st.state} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11, color: 'var(--muted)', flexWrap: 'wrap' }}>
+                        <span style={{ ...statusChip, ...STATUS_TONE[st.state] }}>{STATUS_LABEL[st.state]}</span>
+                        <span>{[st.phase, `${st.done}/${st.total} done`, st.blocked ? `${st.blocked} blocked` : null].filter(Boolean).join(' · ')}</span>
+                      </div>
+                    )}
                   </button>
                 );
               })}
@@ -228,7 +248,11 @@ export function PlacesScreen() {
           {/* Work — activities happening here */}
           <Section icon={<Hammer size={13} />} title="Work" count={contents.activities.length} sub="site activities here">
             {contents.activities.length === 0 ? (
-              <Empty>No activities planned here yet.</Empty>
+              <Empty>
+                {activityRead === 'unavailable'
+                  ? 'The activities could not be loaded — open Schedule to retry.'
+                  : activityRead === 'loading' ? 'Loading the activities…' : 'No activities planned here yet.'}
+              </Empty>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                 {contents.activities.map((a) => {
@@ -494,6 +518,20 @@ function inspectionStatus(i: PlacedInspection): { label: string; color: string }
   if (!i.decided) return { label: 'In review', color: 'var(--amber-solid)' };
   return i.failedItems > 0 ? { label: 'Failed', color: 'var(--red-solid)' } : { label: 'Passed', color: 'var(--green-solid)' };
 }
+
+const STATUS_LABEL: Record<Exclude<SpaceStatus['state'], 'none'>, string> = {
+  'not-started': 'Not started',
+  'in-progress': 'Under way',
+  blocked: 'Blocked',
+  done: 'Done',
+};
+const STATUS_TONE: Record<Exclude<SpaceStatus['state'], 'none'>, CSSProperties> = {
+  'not-started': { background: 'rgba(35,33,28,.06)', color: 'var(--muted)' },
+  'in-progress': { background: '#f6ead2', color: 'var(--amber-text)' },
+  blocked: { background: '#f6dcd5', color: '#8a3320' },
+  done: { background: '#dcebdf', color: 'var(--green-text)' },
+};
+const statusChip: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.06em', textTransform: 'uppercase', padding: '2px 6px', borderRadius: 5, fontWeight: 600 };
 
 const nodeCard: CSSProperties = {
   textAlign: 'left',
