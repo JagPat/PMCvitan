@@ -80,7 +80,7 @@ import { jwtSub } from '@/lib/jwt';
 import { unlinkPushOnSignOut } from '@/data/push';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
 import {
-  createHoldScope, FOREIGN_CREATE_HOLD, NO_CROSS_TAB_LOCK, NO_DURABLE_HOLD, readStoredCreateHold, SERVER_NOT_READY,
+  createHoldScope, FOREIGN_CREATE_HOLD, NO_CROSS_TAB_LOCK, NO_DURABLE_HOLD, peekStoredCreateHold, readStoredCreateHold, SERVER_NOT_READY,
   SERVER_NOT_READY_RETRY, serverKeepsCreateReceipts, withCreateReservation, writeStoredCreateHold,
 } from './projectCreateHold';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
@@ -4474,11 +4474,15 @@ export const useStore = create<Store>()(
     syncProjectCreateHold: () => {
       const scope = currentCreateHoldScope();
       const held = get().projectCreateHold;
-      // this tab's own hold is authoritative — but only for the identity that took it: after a sign-in as
-      // ANOTHER user without a sign-out (auth adoption), the previous user's hold is set aside here (their
-      // record stays in their own mirror, recoverable for them) and this identity's own record is read
-      if (held !== null && held.scope === scope) return;
-      const stored = readStoredCreateHold(scope);
+      // Only a LIVE request in this tab outranks the mirror — and only for the identity that took it: after a
+      // sign-in as ANOTHER user without a sign-out (auth adoption), the previous user's hold is set aside
+      // here (their record stays in their own mirror, recoverable for them) and this identity's own record
+      // is read. An UNKNOWN hold is the mirror's record, so it follows the mirror (Codex 4192001251): when
+      // another tab finished or released that attempt and cleared the record, this tab's copy goes too.
+      if (held !== null && held.scope === scope && held.phase === 'in_flight') return;
+      const stored = peekStoredCreateHold(scope);
+      // storage that cannot be read at all says nothing: keep the hold this identity already has
+      if (stored === undefined && held !== null && held.scope === scope) return;
       if (!stored) {
         if (held !== null) set((s) => { s.projectCreateHold = null; });
         return;

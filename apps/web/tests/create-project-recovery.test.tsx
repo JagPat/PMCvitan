@@ -530,13 +530,85 @@ describe('cross-tab project create — one reservation at a time', () => {
       phase: 'unknown', attempt: a.calls.createProject.mock.calls[0]?.[2],
     });
 
-    // tab A's create lands; tab B's "Try again" then finishes that SAME attempt, never a new one
-    a.create.resolve({ id: 'p-new', name: 'Tab A', short: 'A' });
-    await expect(outA).resolves.toMatchObject({ kind: 'created', projectId: 'p-new' });
+    // while tab A's create is still out, tab B's "Try again" finishes that SAME attempt, never a new one
     b.calls.createProject.mockImplementationOnce(() => Promise.resolve({ id: 'p-new', name: 'Tab A', short: 'A' }));
     await expect(tabB.getState().retryProjectCreate()).resolves.toMatchObject({ kind: 'created', projectId: 'p-new' });
     expect(b.calls.createProject.mock.calls[0]?.[2]).toBe(a.calls.createProject.mock.calls[0]?.[2]);
+    // tab A's own reply then lands on an attempt already finished — nothing is held anywhere
+    a.create.resolve({ id: 'p-new', name: 'Tab A', short: 'A' });
+    await expect(outA).resolves.toMatchObject({ kind: 'created', projectId: 'p-new' });
+    expect(tabA.getState().projectCreateHold).toBeNull();
     tabB.getState()._setGateway(null);
+  });
+
+  it('a hold another tab FINISHED is lifted here too: the open dialog re-reads the cleared record (Codex 4192001251)', async () => {
+    fakeLocks();
+    useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
+    const tabA = await secondTab({ userId: 'u-me', token: tokenFor('u-a') });
+    const a = fakeGateway();
+    tabA.getState()._setGateway(a.gw);
+    const outA = tabA.getState().createProject('org-1', { name: 'Tab A', short: 'A', stage: 'Planning' });
+    await settle(); // tab A's create is out
+    const b = fakeGateway();
+    s()._setGateway(b.gw);
+    const r = render(<Reopenable />);
+    fill(r);
+    expect(createButton(r).disabled).toBe(true); // this tab adopted tab A's record as unknown
+    expect(r.getByRole('alert').textContent).toMatch(/another tab/);
+
+    // tab A's create is DEFINITELY refused: nothing was made, and tab A clears the record
+    a.create.reject(httpError(422, 'A project with that short name already exists'));
+    await expect(outA).resolves.toMatchObject({ kind: 'refused' });
+    // the browser tells this tab its storage changed: Create is free again without a reload
+    await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: 'vitan.projectCreateHold.u-a' })); });
+    expect(s().projectCreateHold).toBeNull();
+    expect(createButton(r).disabled).toBe(false);
+    // and a NEW create goes out under a NEW key — tab A's attempt is never resent
+    fireEvent.click(createButton(r));
+    await settle();
+    expect(b.calls.createProject).toHaveBeenCalledTimes(1);
+    expect(b.calls.createProject.mock.calls[0]?.[2]).not.toBe(a.calls.createProject.mock.calls[0]?.[2]);
+    tabA.getState()._setGateway(null);
+  });
+
+  it('a cleared record is seen at the next sync even without a storage event: a reopened dialog and "Try again" both read it', async () => {
+    fakeLocks();
+    useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
+    const tabA = await secondTab({ userId: 'u-me', token: tokenFor('u-a') });
+    const a = fakeGateway();
+    tabA.getState()._setGateway(a.gw);
+    const outA = tabA.getState().createProject('org-1', { name: 'Tab A', short: 'A', stage: 'Planning' });
+    await settle();
+    const b = fakeGateway();
+    s()._setGateway(b.gw);
+    s().syncProjectCreateHold();
+    expect(s().projectCreateHold?.phase).toBe('unknown');
+    a.create.reject(httpError(422));
+    await outA;
+    // "Try again" re-reads the record first: the attempt is gone, so nothing is resent
+    await expect(s().retryProjectCreate()).resolves.toEqual({ kind: 'unknown', message: expect.stringMatching(/no unconfirmed/) });
+    expect(b.calls.createProject).not.toHaveBeenCalled();
+    expect(s().projectCreateHold).toBeNull();
+    const r = render(<Reopenable />);
+    fill(r);
+    expect(createButton(r).disabled).toBe(false);
+    tabA.getState()._setGateway(null);
+  });
+
+  it('storage that cannot be READ keeps this identity\'s unknown hold: an unreadable record is not a cleared one', async () => {
+    fakeLocks();
+    useStore.setState((st) => { st.sessionToken = tokenFor('u-a'); });
+    const { gw, create } = fakeGateway();
+    s()._setGateway(gw);
+    void s().createProject('org-1', { name: 'Y', short: 'Y', stage: 'Planning' });
+    await settle();
+    create.reject(httpError(502));
+    await settle();
+    const before = s().projectCreateHold;
+    expect(before?.phase).toBe('unknown');
+    blockStorage();
+    s().syncProjectCreateHold();
+    expect(s().projectCreateHold).toEqual(before);
   });
 
   it('a STALLED capability check cannot let another tab create meanwhile: the attempt is reserved first (Codex 4189880202)', async () => {

@@ -27,18 +27,31 @@ export type StoredCreateHold = {
   message?: string;
 };
 
-const createHoldKey = (scope: string): string => `vitan.projectCreateHold.${scope}`;
+const CREATE_HOLD_KEY_PREFIX = 'vitan.projectCreateHold.';
+const createHoldKey = (scope: string): string => `${CREATE_HOLD_KEY_PREFIX}${scope}`;
+
+/** Whether a `storage` event key names a create-hold mirror (any scope), so a tab can re-read its hold
+ *  when another tab takes, settles or clears one (Codex 4192001251). `null` is a whole-storage clear. */
+export const isCreateHoldStorageKey = (key: string | null): boolean => key === null || key.startsWith(CREATE_HOLD_KEY_PREFIX);
 
 export const FOREIGN_CREATE_HOLD = 'A project create from another tab, or from before this page reloaded, was not confirmed. Try again to finish it — it is safe: the server answers a retry of that same request without making a second project.';
 
 /** The mirror's record for this scope, or `null` when there is none or storage cannot be read (and then
  *  it cannot be written either, so {@link writeStoredCreateHold} refuses and nothing is sent). */
 export function readStoredCreateHold(scope: string): StoredCreateHold | null {
+  return peekStoredCreateHold(scope) ?? null;
+}
+
+/** As {@link readStoredCreateHold}, but `undefined` when storage cannot be read at all — so a caller can
+ *  tell "no record" (another tab cleared it) from "cannot see" (keep what it holds). */
+export function peekStoredCreateHold(scope: string): StoredCreateHold | null | undefined {
   try {
-    const raw = globalThis.localStorage?.getItem(createHoldKey(scope));
+    const storage = globalThis.localStorage;
+    if (!storage) return undefined;
+    const raw = storage.getItem(createHoldKey(scope));
     return raw ? (JSON.parse(raw) as StoredCreateHold) : null;
   } catch {
-    return null;
+    return undefined;
   }
 }
 

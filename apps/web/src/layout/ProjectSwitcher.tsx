@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, type CreateProjectOutcome } from '@/store/store';
+import { isCreateHoldStorageKey } from '@/store/projectCreateHold';
 import { useProjectSwitch } from './useProjectSwitch';
 import { Modal } from '@/components';
 import { ChevronRight, Plus, Check } from '@/lib/icons';
@@ -136,8 +137,14 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
   const hold = useStore((s) => s.projectCreateHold);
   const retryProjectCreate = useStore((s) => s.retryProjectCreate);
   const syncHold = useStore((s) => s.syncProjectCreateHold);
-  // a create left unconfirmed in another tab or before a reload holds this dialog too
-  useEffect(() => { syncHold(); }, [syncHold]);
+  // a create left unconfirmed in another tab or before a reload holds this dialog too — and one another
+  // tab takes, finishes or releases while this dialog is open is re-read here (Codex 4192001251)
+  useEffect(() => {
+    syncHold();
+    const onStorage = (e: StorageEvent) => { if (isCreateHoldStorageKey(e.key)) syncHold(); };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [syncHold]);
   const locked = hold !== null;
   const inFlight = useRef(false);
   const mounted = useRef(true);
