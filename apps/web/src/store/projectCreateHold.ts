@@ -105,6 +105,8 @@ const dropLive = (lease: string): void => {
 };
 /** This document's reservations (a copy). */
 export const liveCreateSends = (): LiveSend[] => live.map((l) => ({ ...l }));
+/** Tests only: a fresh document (a reload) starts with no reservations of its own. */
+export const resetLiveCreateSendsForTests = (): void => { live.length = 0; };
 
 /**
  * What the dialog shows for `scope`, from the record and this document's live sends. Pure.
