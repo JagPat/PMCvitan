@@ -24,7 +24,7 @@ import type { AuthUser, Role } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
-import { executeCommand, hashRequest } from '../platform/commands';
+import { executeCommand, hashRequest, peekReplayRef } from '../platform/commands';
 import { projectsInReach } from './project-reach';
 import {
   lockInitializationDisplayIds,
@@ -466,6 +466,20 @@ export class OrgsService {
     input: CreateProjectInput,
     idempotencyKey?: string,
   ): Promise<{ id: string; name: string; short: string }> {
+    // A keyed create that already COMMITTED replays first — before the role check (Codex 4190663677).
+    // The receipt is the only authority on whether the create happened: an owner/admin who lost the role
+    // after a lost successful reply must get back the project they made, not a 403 that tells their
+    // client nothing was created (it would then mint a new key, and a later create could duplicate it).
+    // The receipt is the CALLER's own (org + actor + command + key), so this discloses nothing they did
+    // not create; a different request under the key is still a 409, and a new create is still refused.
+    const replayed = await peekReplayRef(
+      this.prisma, { scopeKind: 'org', organizationId: orgId }, userId, CREATE_PROJECT_COMMAND,
+      idempotencyKey, hashRequest({ orgId, input }),
+    );
+    if (replayed !== null) {
+      const made = await this.prisma.project.findUniqueOrThrow({ where: { id: replayed }, select: { id: true, name: true, short: true } });
+      return { id: made.id, name: made.name, short: made.short };
+    }
     const role = await this.orgRole(orgId, userId);
     if (role !== 'owner' && role !== 'admin') {
       throw new ForbiddenException('Only an org owner or admin can create projects');

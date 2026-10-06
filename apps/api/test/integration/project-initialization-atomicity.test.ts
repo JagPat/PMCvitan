@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CreateProjectInput } from '../../src/contracts';
 import { CREATE_PROJECT_COMMAND, OrgsService } from '../../src/orgs/orgs.service';
@@ -290,6 +290,27 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
       where: { scopeKind: 'org', organizationId: f.orgA.id, actorId: f.ownerUser.id, commandType: CREATE_PROJECT_COMMAND, idempotencyKey: key },
     });
     expect(receipt).toMatchObject({ status: 'succeeded', resultRef: first.id, projectId: null });
+  });
+
+  it('a committed keyed create REPLAYS for its creator even after they lose the org role — never a 403 that hides it (Codex 4190663677)', async () => {
+    const key = `it-create-demoted-${Date.now()}`;
+    const admin = f.ownerUser; // the fixture's org owner, demoted below and restored after
+    try {
+      const first = await service.createProject(f.orgA.id, admin.id, inputFor('keyed-demoted'), key);
+      // the reply is lost; the creator then loses the role before retrying under the same key
+      await t.prisma.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: admin.id } }, data: { role: 'member' } });
+      const before = await countInitializationRows();
+      await expect(service.createProject(f.orgA.id, admin.id, inputFor('keyed-demoted'), key)).resolves.toEqual(first);
+      expect(await countInitializationRows()).toEqual(before); // a replay writes nothing
+      // the replay is only of the creator's own receipt: a different request under it is a 409, and a NEW
+      // key is still refused for the demoted member
+      await expect(service.createProject(f.orgA.id, admin.id, inputFor('keyed-demoted-other'), key)).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.createProject(f.orgA.id, admin.id, inputFor('keyed-demoted-new'), `${key}-new`)).rejects.toBeInstanceOf(ForbiddenException);
+      // and another user's create under the same key replays nothing of the admin's
+      await expect(service.createProject(f.orgA.id, f.memberUser.id, inputFor('keyed-demoted'), key)).rejects.toBeInstanceOf(ForbiddenException);
+    } finally {
+      await t.prisma.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: admin.id } }, data: { role: 'owner' } });
+    }
   });
 
   it('the same key for a DIFFERENT request is a 409, and creates nothing', async () => {

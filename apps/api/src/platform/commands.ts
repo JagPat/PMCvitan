@@ -144,14 +144,29 @@ export async function peekReplay(
   idempotencyKey: string | null | undefined,
   requestHash: string,
 ): Promise<boolean> {
+  return (await peekReplayRef(prisma, scope, actorId, commandType, idempotencyKey, requestHash)) !== null;
+}
+
+/** {@link peekReplay}, answering WHICH result the committed receipt names (its `resultRef`), or `null`
+ *  when there is nothing to replay. For a command whose caller rebuilds its reply from that result —
+ *  a keyed project create replays the project it made, even when a check that runs before the ledger
+ *  (the caller's org role) would refuse a new create today. */
+export async function peekReplayRef(
+  prisma: PrismaService,
+  scope: CommandScope,
+  actorId: string,
+  commandType: string,
+  idempotencyKey: string | null | undefined,
+  requestHash: string,
+): Promise<string | null> {
   const key = idempotencyKey?.trim() || null;
-  if (!key) return false;
+  if (!key) return null;
   const prior = await prisma.commandExecution.findFirst({ where: receiptWhere(scope, actorId, commandType, key) });
   if (prior?.status === 'succeeded') {
     if (prior.requestHash !== requestHash) throw sameKeyDifferentRequest();
-    return true;
+    return prior.resultRef ?? '';
   }
-  return false;
+  return null;
 }
 
 /** The receipt-lookup WHERE — keyed on scopeKind + the matching scope id(s) + actor + command +

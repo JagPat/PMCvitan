@@ -14,12 +14,12 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: ux-queue-717-project-create-receipt-server
+work_item: none
 reviewed_merge: cffb251
-open_pr: 717
+open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-05
+updated: 2026-10-06
 ```
 
 ### Now — the UX queue, one owner, one PR at a time, then 4d-iii R0a-2
@@ -34,17 +34,24 @@ five-head limit, and its replacement #716 reached the same five-head restructure
 reviewed heads also drew a P1 in `apps/web/src/store/store.ts`, which is the policy's stop for an additive
 redesign in smaller units. So #716 was closed and its work is split in two:
 
-1. **#717, the server unit**, `claude/project-create-receipt-server` (current work item). Project
-   creation accepts an optional `Idempotency-Key`, backed by an org-scoped receipt through the command
-   ledger, and `/health` advertises `orgs.createProject.receipt`. No client sends the key yet, so behaviour
-   is unchanged for every current caller.
-2. **The client unit**, `claude/project-create-idempotency` rebuilt from `main` after the server unit
-   merges: the legacy-copy recovery dialog, the per-user create hold and its cross-tab reservation, and the
-   capability gate, carrying every #710 and #716 finding.
-3. **#711** `claude/ux-b7-progress` — distinguish failed activity loading from an empty list.
-4. **#712** `claude/ux-b8-space-status` — align the place-filter summaries with the filtered rows.
-5. **#713** `claude/ux-b9-naming` — prevent the small-screen Decision Log label truncation.
-6. **4d-iii R0a-2** — `emitEvent`'s central refusal, the org owner/admin `pmc` attribution and the
+1. **#717, the server unit** — merged at `f60a549`. Project creation accepts an optional
+   `Idempotency-Key`, backed by an org-scoped receipt through the command ledger, and `/health` advertises
+   `orgs.createProject.receipt`.
+2. **The receipt-replay unit**, `claude/project-create-receipt-replay` (current work item). #718 drew a P1
+   in `store.ts` on its third reviewed head (Codex 4190663677), which is POLICY's stop: ordinary patching of
+   #718 stopped, recorded at https://github.com/JagPat/PMCvitan/pull/718#issuecomment-6007509383. The finding's
+   root cause is server-side: a keyed create checked the caller's org role before its receipt, so a creator
+   who lost the role got a 403 for a project that exists. This unit replays the caller's own committed
+   receipt before the role check.
+3. **#718, the client unit**, `claude/project-create-recovery-client`, open and paused at the stop. After
+   the replay unit merges it takes `main` by a merge commit and receives one owner-approved structural
+   correction: each create hold is bound to the identity that took it, so a direct sign-in as another user
+   (auth adoption without sign-out) never retries the previous user's attempt as the new one, while that
+   user's attempt stays recoverable for them.
+4. **#711** `claude/ux-b7-progress` — distinguish failed activity loading from an empty list.
+5. **#712** `claude/ux-b8-space-status` — align the place-filter summaries with the filtered rows.
+6. **#713** `claude/ux-b9-naming` — prevent the small-screen Decision Log label truncation.
+7. **4d-iii R0a-2** — `emitEvent`'s central refusal, the org owner/admin `pmc` attribution and the
    test-writer inventory. It is local work only, and gets no branch or PR until #713 completes.
 
 The post-#715 native handoff named `pr:713`, picked from the live open PRs. `open_pr` records the current
