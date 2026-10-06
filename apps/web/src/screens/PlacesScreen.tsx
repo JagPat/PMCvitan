@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectVisibleDecisions } from '@/store/selectors';
-import { resolveDrawingUrl } from '@/data/apiGateway';
+import { activitiesReadMode, resolveDrawingUrl } from '@/data/apiGateway';
 import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer, Button, CreateMenu } from '@/components';
 import { createOptionsFor, type CreateKind } from '@/lib/createOptions';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
@@ -47,6 +47,14 @@ export function PlacesScreen() {
   // place's photos are those among the latest, never its whole record (Codex 4194155412, shadow review)
   const photosCapped = photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT;
   const activities = useStore(useShallow((s) => s.activities));
+  // Module-owned activities (`moduleQuery`) are known only once their read answers: until then, or after it
+  // fails, an empty list says nothing about where work is — the same boundary the Schedule draws (Codex
+  // 4195514775). A failed read with last-good activities still shows them.
+  const activitiesLoad = useStore((s) => s.activitiesLoad);
+  const activityRead: 'known' | 'loading' | 'unavailable' =
+    activitiesReadMode() === 'moduleQuery' && activitiesLoad !== 'ready' && activities.length === 0
+      ? (activitiesLoad === 'error' ? 'unavailable' : 'loading')
+      : 'known';
   const phases = useStore(useShallow((s) => s.phases));
   const openActivity = useStore((s) => s.openActivity);
   // Audit F-02 — a place's work leads to its schedule row, for a role that has the schedule
@@ -206,7 +214,11 @@ export function PlacesScreen() {
                       <span title="materials">▧ {c.materials}</span>
                     </div>
                     {/* B8 — where this space stands, derived from its work (never a stored flag) */}
-                    {st.state !== 'none' && (
+                    {activityRead !== 'known' ? (
+                      <div data-testid={`place-status-${n.id}`} data-state={activityRead} style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+                        {activityRead === 'unavailable' ? 'Status unavailable — the activities could not be loaded' : 'Loading status…'}
+                      </div>
+                    ) : st.state !== 'none' && (
                       <div data-testid={`place-status-${n.id}`} data-state={st.state} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11, color: 'var(--muted)', flexWrap: 'wrap' }}>
                         <span style={{ ...statusChip, ...STATUS_TONE[st.state] }}>{STATUS_LABEL[st.state]}</span>
                         <span>{[st.phase, `${st.done}/${st.total} done`, st.blocked ? `${st.blocked} blocked` : null].filter(Boolean).join(' · ')}</span>
@@ -236,7 +248,11 @@ export function PlacesScreen() {
           {/* Work — activities happening here */}
           <Section icon={<Hammer size={13} />} title="Work" count={contents.activities.length} sub="site activities here">
             {contents.activities.length === 0 ? (
-              <Empty>No activities planned here yet.</Empty>
+              <Empty>
+                {activityRead === 'unavailable'
+                  ? 'The activities could not be loaded — open Schedule to retry.'
+                  : activityRead === 'loading' ? 'Loading the activities…' : 'No activities planned here yet.'}
+              </Empty>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                 {contents.activities.map((a) => {
