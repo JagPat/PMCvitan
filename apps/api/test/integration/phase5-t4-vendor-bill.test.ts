@@ -127,7 +127,6 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
   ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
-  const engineer = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'engineer', projectId }) as AuthUser;
   const contractor = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'contractor', projectId }) as AuthUser;
   const orgAdmin = (): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc', projectId: '' }) as AuthUser;
 
@@ -897,7 +896,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     await t.prisma.$transaction(async (tx) => {
       await bills.disputeClaimsBeyondEvidence(
         tx, projectId, 'labour', line.poLineId, new Prisma.Decimal(0), 'order-not-live: supplier reneged',
-        { actorId: f.memberUser.id, actorKind: 'human' },
+        { actorId: f.memberUser.id, actorRole: 'pmc', actorKind: 'human' },
       );
       await tx.$executeRawUnsafe(
         `UPDATE "LabourPurchaseOrderVersion" SET "status"='cancelled', "cancelledAt"=now(), "cancelReason"='supplier reneged' WHERE "id"=$1`,
@@ -1170,16 +1169,20 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     const projectId = await freshProject();
     const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
     await acceptOnLine(projectId, line, '100', '100');
+    // 4d-iii / R0a-2 — an act that commits is attributed, so the engineer here is a real one: the
+    // fixture's client user, enrolled as this project's engineer (an event's pair must resolve).
+    await t.prisma.membership.create({ data: { projectId, userId: f.clientUser.id, role: 'engineer', status: 'active' } });
+    const realEngineer = { sub: f.clientUser.id, role: 'engineer', projectId } as AuthUser;
 
     // an ENGINEER may record and submit a claim; a CONTRACTOR may not
     const recorded = await bills.record(projectId, {
       vendorId: line.vendorId, vendorBillNumber: 'AUTH-1', documentDate: '2026-08-20',
       lines: [{ poLineId: line.poLineId, quantity: '10', rate: '1' }],
-    }, engineer(projectId));
+    }, realEngineer);
     await expect(bills.submit(projectId, { billId: recorded.id }, contractor(projectId))).rejects.toMatchObject({ status: 403 });
-    await bills.submit(projectId, { billId: recorded.id }, engineer(projectId));
+    await bills.submit(projectId, { billId: recorded.id }, realEngineer);
     // …but opening VERIFICATION is pmc-only
-    await expect(bills.beginVerification(projectId, { billId: recorded.id }, engineer(projectId))).rejects.toMatchObject({ status: 403 });
+    await expect(bills.beginVerification(projectId, { billId: recorded.id }, realEngineer)).rejects.toMatchObject({ status: 403 });
     const verifying = await bills.beginVerification(projectId, { billId: recorded.id }, pmc(projectId));
     expect(verifying.status).toBe('under-verification');
 

@@ -10,6 +10,7 @@ import type { InspectionParticipant } from '../inspections/inspection.participan
 import type { ActivityParticipant } from '../activities/activity.participant';
 import type { DrawingParticipant } from '../drawings/drawing.participant';
 import type { DailyLogParticipant } from '../daily-log/daily-log.participant';
+import { answerActorEnvelope } from '../../test/unit-support/actor-envelope-stub';
 
 interface Node { id: string; projectId: string; parentId: string | null; name: string; kind: string; order: number; publishedAt?: Date | null; authorId?: string | null }
 
@@ -64,7 +65,7 @@ function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
     // phase-6-task-2 — create/move/publish take the per-project tree advisory lock as
     // their first in-transaction statement; the stub only needs to accept the call.
     $executeRaw: vi.fn(async () => 0),
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(answerActorEnvelope(async () => [])),
     $transaction: vi.fn(async (arg: unknown) =>
       typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
   } as unknown as PrismaService;

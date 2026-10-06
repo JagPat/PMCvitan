@@ -14,6 +14,7 @@ import type { InvitationsService } from './invitations.service';
 import type { SignedUrlService } from '../media/signed-url.service';
 import { Prisma } from '@prisma/client';
 import { registerConsumer, unregisterConsumer } from '../platform/outbox/registry';
+import { answerActorEnvelope } from '../../test/unit-support/actor-envelope-stub';
 
 const PROJECT_INIT_TEST_CONSUMER = 'project-init.unit-test';
 
@@ -101,12 +102,12 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     // here means no standing is proven, so the event is written with a NULL pair. 4d-ii-a / A6d —
     // materializeDeliveries reads the PERSISTED catalog (`FOR SHARE`) inside the emit tx and derives
     // the rows from its rules; the stand-in answers that read with one active `all` row.
-    $queryRaw: vi.fn(async (q: { strings?: readonly string[] } | readonly string[]) => {
+    $queryRaw: vi.fn(answerActorEnvelope(async (q: { strings?: readonly string[] } | readonly string[]) => {
       const text = Array.isArray(q) ? q.join('?') : ((q as { strings?: readonly string[] }).strings?.join('?') ?? '');
       return text.includes('"OutboxConsumerCatalog"')
         ? [{ consumer: PROJECT_INIT_TEST_CONSUMER, consumerKind: 'unordered', active: true, dispatchRule: 'all', subscribedEventTypes: [] }]
         : [];
-    }),
+    })),
     outboxDelivery: {
       createMany: vi.fn(async ({ data }: { data: Record<string, unknown>[] }) => {
         created.deliveries.push(...data);
@@ -237,7 +238,7 @@ function make(orgRole: string | null) {
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
     // here means no standing is proven, so the event is written with a NULL pair.
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(answerActorEnvelope(async () => [])),
     activity: { findMany: vi.fn(async () => []) },
     inspection: { findMany: vi.fn(async () => []) },
     $executeRaw: vi.fn(async () => 0),
@@ -410,7 +411,8 @@ describe('OrgsService.updateProject', () => {
 
   it('lets the project PMC edit even if not an org admin', async () => {
     const { svc, prisma } = make(null); // not an org member
-    prisma.membership.findUnique.mockResolvedValueOnce({ role: 'pmc', status: 'active' });
+    // the membership is read twice: the fast check, then the re-judge inside the write (4d-iii / R0a-2)
+    prisma.membership.findUnique.mockResolvedValue({ role: 'pmc', status: 'active' });
     const res = await svc.updateProject('org1', 'pmcUser', 'villa', { stage: 'Finishing' });
     expect(res).toBeDefined();
     expect(prisma.project.update).toHaveBeenCalled();
@@ -859,7 +861,7 @@ function makeCopy(source: {
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
     // here means no standing is proven, so the event is written with a NULL pair.
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(answerActorEnvelope(async () => [])),
   };
   const prisma = {
     orgMembership: { findUnique: vi.fn(async () => ({ role: 'owner' })) },
@@ -1006,7 +1008,7 @@ function makeModules(opts: {
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
     // here means no standing is proven, so the event is written with a NULL pair.
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(answerActorEnvelope(async () => [])),
     templateModule: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (opts.modules ?? []).find((m) => m.id === where.id) ?? null),
       findMany: vi.fn(async () => opts.modules ?? []),

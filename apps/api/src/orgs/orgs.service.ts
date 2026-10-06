@@ -451,6 +451,39 @@ export class OrgsService {
   }
 
   /**
+   * Phase 6 task 4d-iii / R0a-2 — a project lifecycle write's AUTHORITY and ATTRIBUTION, judged once,
+   * INSIDE the write's transaction, under the org key every owner/admin roster write takes first.
+   *
+   * - Authority (Codex 4199574223): the read before the transaction is the fast refusal only. An
+   *   owner/admin demoted between that read and the write must be refused, as project creation
+   *   re-judges its creator under the key (A3c). The emit's own refusal cannot stand in for this: an
+   *   owner/admin who also holds a `client` membership is attributed as `client`, a pair that still
+   *   resolves after the demotion.
+   * - Attribution (the Board's Decision 1, 2026-10-05): a project role, never the org role
+   *   `owner`/`admin`, which `ProjectUserStanding` never holds. It is the actor's active membership
+   *   role on the project, the role the windowed standing arm admits for them, and otherwise `pmc`,
+   *   the role the org authority grants a membership-less owner/admin.
+   */
+  private async lifecycleActor(
+    tx: Prisma.TransactionClient,
+    orgId: string,
+    projectId: string,
+    base: Actor,
+    rule: { projectPmcMay: boolean; refusal: string },
+  ): Promise<Actor> {
+    await lockOrgStanding(tx, orgId);
+    const om = await tx.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId: base.actorId } }, select: { role: true } });
+    const m = await tx.membership.findUnique({
+      where: { projectId_userId: { projectId, userId: base.actorId } }, select: { role: true, status: true },
+    });
+    const membershipRole = m?.status === 'active' ? m.role : null;
+    if (!holdsOrgStanding(om?.role) && !(rule.projectPmcMay && membershipRole === 'pmc')) {
+      throw new ForbiddenException(rule.refusal);
+    }
+    return { ...base, actorRole: membershipRole ?? 'pmc' };
+  }
+
+  /**
    * Create a project under an org (owner/admin only); enrol the creator as PMC.
    *
    * 4d-ii-a / A3c — the creation holds the ORG key while it inserts, so no owner/admin org write
@@ -488,7 +521,9 @@ export class OrgsService {
     const id = `${slugify(input.short)}-${randomUUID().slice(0, 4)}`;
     const timeZone = input.timeZone ?? 'Asia/Kolkata';
     const scheduleStartDate = input.scheduleStartDate ?? this.clock.today(timeZone);
-    const actor = await resolveActor(this.prisma, { sub: userId, role, projectId: id } as unknown as AuthUser);
+    // 4d-iii / R0a-2 — Decision 1: the creator acts on the new project in its PROJECT role, `pmc` (the
+    // membership written below), never the org role `owner`/`admin`, which no project standing holds.
+    const actor = await resolveActor(this.prisma, { sub: userId, role: 'pmc', projectId: id } as unknown as AuthUser);
     const explicitSelections = [...(input.modules ?? [])] as InitSelection[];
     const targetAnchor = scheduleStartDate;
     const today = ddMmmYyyy(new Date());
@@ -1208,8 +1243,9 @@ export class OrgsService {
     if (!allowed) throw new ForbiddenException('Only the project PMC or an org admin can edit a project');
     const project = await this.prisma.project.findUnique({ where: { id: pid }, select: { orgId: true } });
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
-    const actor = await resolveActor(this.prisma, { sub: userId, role: orgRole ?? 'pmc', projectId: pid } as unknown as AuthUser);
+    const base = await resolveActor(this.prisma, { sub: userId, role: 'pmc', projectId: pid } as unknown as AuthUser);
     const updated = await this.prisma.$transaction(async (tx) => {
+      const actor = await this.lifecycleActor(tx, orgId, pid, base, { projectPmcMay: true, refusal: 'Only the project PMC or an org admin can edit a project' });
       const u = await tx.project.update({ where: { id: pid }, data: input });
       await emitEvent(tx, { projectId: pid, actor, eventType: 'project.updated', entityType: 'Project', entityId: pid, effectKey: 'project.updated', dispatch: {} });
       return u;
@@ -1226,8 +1262,9 @@ export class OrgsService {
     }
     const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
-    const actor = await resolveActor(this.prisma, { sub: userId, role, projectId } as unknown as AuthUser);
+    const base = await resolveActor(this.prisma, { sub: userId, role: 'pmc', projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
+      const actor = await this.lifecycleActor(tx, orgId, projectId, base, { projectPmcMay: false, refusal: 'Only an org owner or admin can delete projects' });
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
       await emitEvent(tx, { projectId, actor, eventType: 'project.archived', entityType: 'Project', entityId: projectId, effectKey: 'project.archived', dispatch: {} });
     });
@@ -1242,8 +1279,9 @@ export class OrgsService {
     }
     const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
-    const actor = await resolveActor(this.prisma, { sub: userId, role, projectId } as unknown as AuthUser);
+    const base = await resolveActor(this.prisma, { sub: userId, role: 'pmc', projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
+      const actor = await this.lifecycleActor(tx, orgId, projectId, base, { projectPmcMay: false, refusal: 'Only an org owner or admin can restore projects' });
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: null } });
       await emitEvent(tx, { projectId, actor, eventType: 'project.restored', entityType: 'Project', entityId: projectId, effectKey: 'project.restored', dispatch: {} });
     });

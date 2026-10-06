@@ -41,7 +41,9 @@ describe('Phase 2 Task 10 (correction, finding 5) — module read isolation + li
     relay = t.app.get(OutboxRelay);
     rebuilder = t.app.get(ProjectionRebuilder);
     query = t.app.get(DailyLogQueryService);
-    human.actorId = f.memberUser.id;
+    // 4d-iii / R0a-2 — a human event's pair must resolve on the project it lands on: the submitting
+    // engineer is the fixture's stranger, enrolled as engineer on each fresh project (`freshProject`).
+    human.actorId = f.strangerUser.id;
   });
   afterAll(async () => {
     await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
@@ -64,6 +66,7 @@ describe('Phase 2 Task 10 (correction, finding 5) — module read isolation + li
     await t.prisma.project.create({
       data: { id, orgId, name: id, short: 'O', descriptor: '', stage: 'x', siteCode: 'O', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     });
+    await t.prisma.membership.create({ data: { projectId: id, userId: f.strangerUser.id, role: 'engineer', status: 'active' } });
     return id;
   };
 

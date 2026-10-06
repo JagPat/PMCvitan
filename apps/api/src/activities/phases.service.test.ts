@@ -4,6 +4,7 @@ import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { AuthUser } from '../common/auth';
+import { answerActorEnvelope } from '../../test/unit-support/actor-envelope-stub';
 
 const user: AuthUser = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as AuthUser;
 
@@ -19,7 +20,7 @@ function make(anchor: string | null) {
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     // 4d-ii-a / A1 — emitEvent resolves the actor envelope from the platform registers; no rows
     // here means no standing is proven, so the event is written with a NULL pair.
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(answerActorEnvelope(async () => [])),
     // 4d-ii-a / A6d — materializeDeliveries takes the registration key SHARED before it reads the catalog
     $executeRaw: vi.fn(async () => 0),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>

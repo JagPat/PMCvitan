@@ -415,6 +415,41 @@ describe('4d-ii-a / A7d — the catalog change: the widened generation, the froz
     expect(await query.countersignPushTarget(f.projectA.id, architectHeld)).toEqual({ actionable: false });
   });
 
+  it('4d-iii / R0a-2 (Codex 4198541073): an actor flipping THEIR OWN architect standing announces it as they stood — a PMC re-roling themselves, an owner adding themselves', async () => {
+    // The flip is emitted with the transition fact's pre-state pair, BEFORE the membership write, as the
+    // fact is: the envelope seal judges the pair at INSERT, and after the write the actor no longer holds
+    // the role they acted in. Its `activeCount` is the register's head at commit, which the deferred
+    // claimant still checks.
+    const before = await RoleStandingQuery.activeCount(t.prisma, f.projectA.id, 'architect');
+    const self = await addMember({ name: `A7d Self PMC ${run}`, role: 'pmc', email: `a7d-selfpmc-${run}@test.local` });
+    expect(self.status, self.text).toBe(201);
+    createdUserIds.push(self.body.userId);
+    const selfToken = t.issueProjectToken(self.body.userId, f.projectA.id);
+    const reRole = await http().patch(`${members()}/${self.body.userId}`).set('Authorization', `Bearer ${selfToken}`)
+      .set('Idempotency-Key', randomUUID()).send({ role: 'architect' });
+    expect(reRole.status, reRole.text).toBe(200);
+    const flip = (await standingEvents()).at(-1)!;
+    expect(flip).toMatchObject({
+      actorId: self.body.userId, actorRole: 'pmc',
+      payload: { from: { role: 'pmc', status: 'active' }, to: { role: 'architect', status: 'active' }, activeCount: before + 1 },
+    });
+    expect((await removeMember(self.body.userId)).status).toBe(200);
+
+    // the membership-less org owner adds THEMSELVES as the architect: they act as `pmc`, which the
+    // windowed arm stops admitting the moment their architect membership exists
+    const ownerToken = t.issueOrgOwnerToken(f.ownerUser.id, f.projectA.id, f.orgA.id);
+    const { email } = await t.prisma.user.findUniqueOrThrow({ where: { id: f.ownerUser.id }, select: { email: true } });
+    const ownerAdd = await http().post(members()).set('Authorization', `Bearer ${ownerToken}`).set('Idempotency-Key', randomUUID())
+      .send({ name: 'owner', role: 'architect', email });
+    expect(ownerAdd.status, ownerAdd.text).toBe(201);
+    expect((await standingEvents()).at(-1)!).toMatchObject({
+      actorId: f.ownerUser.id, actorRole: 'pmc',
+      payload: { from: { role: null, status: null }, to: { role: 'architect', status: 'active' }, activeCount: before + 1 },
+    });
+    expect((await removeMember(f.ownerUser.id)).status).toBe(200);
+    expect(await RoleStandingQuery.activeCount(t.prisma, f.projectA.id, 'architect')).toBe(before);
+  });
+
   it('the doors are re-created after the suite (asserted here on the definitions captured; the rollback of 4d-iii\'s rehearsal)', () => {
     expect(doorDefs).toHaveLength(PHASE6_4D_RESERVATION_DOORS.length);
     for (const d of doorDefs) expect(d.def).toMatch(/^CREATE TRIGGER /);

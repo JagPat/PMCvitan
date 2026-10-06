@@ -12,6 +12,7 @@ import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { DrawingParticipant } from '../drawings/drawing.participant';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import type { AuthUser } from '../common/auth';
+import { answerActorEnvelope } from '../../test/unit-support/actor-envelope-stub';
 
 /**
  * Phase 1 — start/complete contract. The `complete` tests are the Task 5
@@ -86,11 +87,11 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
     // (4d-ii-a / A6d: the emit transaction's catalog read arrives as a TAGGED TEMPLATE — an array of
     // strings, whose `.values` is the array iterator, not bind values; it resolves to no rows, so no
     // delivery is materialized in-memory)
-    $queryRaw: vi.fn(async (q: { values?: unknown[] } | readonly string[]) => {
+    $queryRaw: vi.fn(answerActorEnvelope(async (q: { values?: unknown[] } | readonly string[]) => {
       const [projectId, userId] = (Array.isArray(q) ? [] : ((q as { values?: unknown[] }).values ?? [])) as [string, string];
       const m = members.find((x) => x.projectId === projectId && x.userId === userId);
       return m ? [{ status: m.status, role: m.role }] : [];
-    }),
+    })),
     project: {
       findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test', timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
     },

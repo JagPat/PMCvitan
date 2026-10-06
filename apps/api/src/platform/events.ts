@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
+import { ForbiddenException } from '@nestjs/common';
 import type { EventActor } from '../common/actor';
-import { resolveActorEnvelope, type ActorEnvelope } from './actor-envelope';
+import { resolveActorEnvelope, STALE_ROLE_MESSAGE, type ActorEnvelope } from './actor-envelope';
 import type { DomainEventType } from '@vitan/shared';
 import { materializeDeliveries, type DispatchIntent as PersistedDispatchIntent, type EmittedEventMeta } from './outbox/registry';
 import { buildDispatchIntent, type ExternalEffectKey, type DispatchInput } from './external-effects';
@@ -139,6 +140,14 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
   const envelope = input.actorEnvelope !== undefined
     ? input.actorEnvelope
     : await resolveActorEnvelope(tx, input.projectId, input.actor);
+  // 4d-iii / R0a-2 — the Board's Decisions 1 and 2 (2026-10-05): EVERY human event carries the pair. A
+  // human actor whose token role no longer stands on the project (a re-role or removal after the token
+  // was issued) is refused with a re-sign-in, before the stream counter moves, and the whole command
+  // rolls back; the act is never recorded with an empty attribution. (A `system` actor carries no pair
+  // until R0b admits one and R0c writes it.)
+  if (input.actor.actorKind === 'human' && envelope === null) {
+    throw new ForbiddenException(STALE_ROLE_MESSAGE);
+  }
   // Lock + increment the per-project counter INSIDE this transaction: two concurrent commits on
   // one project serialize here, so positions are distinct, ordered and never skipped.
   const stream = await tx.projectEventStream.update({

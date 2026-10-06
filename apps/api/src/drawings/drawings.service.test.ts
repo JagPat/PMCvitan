@@ -9,6 +9,7 @@ import type { StorageService } from './../media/storage.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { IssueDrawingInput } from '../contracts';
+import { answerActorEnvelope } from '../../test/unit-support/actor-envelope-stub';
 
 /**
  * PR C Task 2 — the service hands committed events to the single {@link ExternalEffectDispatcher}
@@ -166,7 +167,7 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
     $executeRaw: vi.fn(async () => 1),
     // lock on (projectId, number); 1 bind value = the publish() lock on id. Locking
     // semantics don't exist in-memory — tests assert the CAS/unique outcomes instead.
-    $queryRaw: vi.fn(async (q: { values?: unknown[] }) => {
+    $queryRaw: vi.fn(answerActorEnvelope(async (q: { values?: unknown[] }) => {
       const vals = q?.values ?? [];
       if (vals.length === 2) {
         const d = draws.find((x) => x.projectId === vals[0] && x.number === vals[1]);
@@ -174,7 +175,7 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
       }
       const d = draws.find((x) => x.id === vals[0]);
       return d ? [{ id: d.id }] : [];
-    }),
+    })),
     $transaction: (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg),
   };

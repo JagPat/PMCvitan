@@ -42,7 +42,9 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
     relay = t.app.get(OutboxRelay);
     rebuilder = t.app.get(ProjectionRebuilder);
     query = t.app.get(DailyLogQueryService);
-    human.actorId = f.memberUser.id;
+    // 4d-iii / R0a-2 — a human event's pair must resolve on the project it lands on: the submitting
+    // engineer is the fixture's stranger, enrolled as engineer on each fresh project (`freshProject`).
+    human.actorId = f.strangerUser.id;
   });
   afterAll(async () => {
     await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
@@ -54,6 +56,7 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
     await t.prisma.siteMaterial.deleteMany({ where: { projectId: { startsWith: 'it-dlpj-' } } });
     await t.prisma.crewRow.deleteMany({ where: { dailyLog: { projectId: { startsWith: 'it-dlpj-' } } } });
     await t.prisma.dailyLog.deleteMany({ where: { projectId: { startsWith: 'it-dlpj-' } } });
+    await t.prisma.membership.deleteMany({ where: { projectId: { startsWith: 'it-dlpj-' } } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-dlpj-' } } });
   });
 
@@ -62,6 +65,7 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
     await t.prisma.project.create({
       data: { id, orgId: f.orgA.id, name: id, short: 'O', descriptor: '', stage: 'x', siteCode: 'O', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     });
+    await t.prisma.membership.create({ data: { projectId: id, userId: f.strangerUser.id, role: 'engineer', status: 'active' } });
     return id;
   };
 

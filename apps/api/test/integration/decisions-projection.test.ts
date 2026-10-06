@@ -38,7 +38,9 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     relay = t.app.get(OutboxRelay);
     rebuilder = t.app.get(ProjectionRebuilder);
     query = t.app.get(DecisionsQueryService);
-    human.actorId = f.memberUser.id;
+    // 4d-iii / R0a-2 — a human event's pair must resolve on the project it lands on. The org owner
+    // stands as `pmc` on every orgA project (the windowed owner/admin arm), fresh ones included.
+    human.actorId = f.ownerUser.id;
     authorId = f.memberUser.id;
     // Phase 6 task 4b — projectA publishes client-held decisions in the HTTP probe below, and
     // publication re-validates client standing at the DB: give the project an active client.

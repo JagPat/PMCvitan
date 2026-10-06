@@ -8,7 +8,7 @@ import type { AddMemberInput, UpdateMemberInput } from '../contracts';
 import { resolveActor, type Actor, type EventActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
-import { resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
+import { lockStandingForWrite, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant } from './orgs.participant';
@@ -279,11 +279,15 @@ export class MembersService {
   /**
    * Phase 6 task 4d (4d-ii-a / A7d, §A.2) — the ARCHITECT-STANDING FLIP's event. A membership write
    * that activates the chain (the first active architect arriving) or deactivates it (the last
-   * leaving) is announced ONCE, after the write, as `membership.standing_changed` about the
-   * MEMBERSHIP: `{ role: 'architect', membershipId, transitionId, from, to, activeCount }`, with the
-   * `activeCount` read through the kernel register under the readiness lock the command holds (the
-   * register's head at commit — `Membership_t4d_architect_provenance` admits one flipping write per
-   * project per transaction). The frozen pair the fact carries is the event's envelope, so the
+   * leaving) is announced ONCE as `membership.standing_changed` about the MEMBERSHIP:
+   * `{ role: 'architect', membershipId, transitionId, from, to, activeCount }`. 4d-iii / R0a-2 (Codex
+   * 4198541073): it is emitted BEFORE the membership write, as the fact is, because the envelope seal
+   * judges the fact's pre-state pair at INSERT, and an actor flipping their OWN standing (a PMC
+   * re-roling themselves into `architect`, an owner adding themselves) no longer holds that role after
+   * it. So `activeCount` is the register's count under the readiness lock the command holds, moved by
+   * this flip's one step: the register's head at commit, which the deferred claimant checks
+   * (`Membership_t4d_architect_provenance` admits one flipping write per project per transaction, so no
+   * other write moves it). The frozen pair the fact carries is the event's envelope, so the
    * `MembershipTransition` claimant binds the two as ONE reading (§A.3 obligation 7). A write that
    * flips nothing announces nothing: the claimant refuses a standing announced for a move that made
    * none. `invalidate: true` — every open tab refetches the countersign overlay — and no push.
@@ -299,7 +303,7 @@ export class MembersService {
     const before = fact.fromRole === 'architect' && fact.fromStatus === 'active';
     const after = fact.toRole === 'architect' && fact.toStatus === 'active';
     if (before === after) return null;
-    const activeCount = await RoleStandingQuery.activeCount(tx, projectId, 'architect');
+    const activeCount = (await RoleStandingQuery.activeCount(tx, projectId, 'architect')) + (after ? 1 : -1);
     return emitEvent(tx, {
       projectId, actor, actorEnvelope: pair,
       eventType: 'membership.standing_changed', entityType: 'Membership', entityId: fact.membershipId,
@@ -432,12 +436,21 @@ export class MembersService {
         // the fact's membership FK is deferred to commit for exactly this order.
         const membershipId = prior?.id ?? randomUUID();
         const pair = await this.factPair(tx, projectId, actor);
+        // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
+        // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
+        // requester's org-authority row before their standing rows, the projection writers' order
+        await lockStandingForWrite(tx, projectId, user.id);
         const addFact: TransitionFact = {
           projectId, membershipId, userId: user.id,
           fromRole: prior?.role ?? null, fromStatus: prior?.status ?? null,
           toRole: input.role, toStatus: 'active',
         };
         const transitionId = await this.recordTransition(tx, addFact, actor, pair, commandId);
+        // 4d-iii / R0a-2 — the event carries the fact's own pair and is emitted BEFORE the membership
+        // write, as the fact is: the envelope seal judges the pair at INSERT, and an actor who acts on
+        // their OWN membership (an owner adding themselves) no longer holds the token role after it.
+        const ev = await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
+        const flip = await this.emitStandingFlip(tx, projectId, actor, pair, addFact, transitionId);
         const holderRefusal = (e: unknown) =>
           rethrowHolderSealViolation(
             e,
@@ -447,10 +460,6 @@ export class MembersService {
           ? await tx.membership.update({ where: { id: prior.id }, data: { role: input.role, discipline, status: 'active' } }).catch(holderRefusal)
           : await tx.membership.create({ data: { id: membershipId, projectId, userId: user.id, role: input.role, discipline, status: 'active' } }).catch(holderRefusal);
         await this.refuseHolderOrphan(tx, projectId, atRisk);
-        // The event's pair is resolved by `emitEvent` itself, AFTER the write: it records the
-        // actor as they stand when the event is emitted, which the envelope seal judges live.
-        const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
-        const flip = await this.emitStandingFlip(tx, projectId, actor, pair, addFact, transitionId);
         return { resultRef: m.id, value: { ...m, user }, events: flip ? [ev, flip] : [ev] };
       },
     });
@@ -533,11 +542,24 @@ export class MembersService {
         }
         if (cur.role === input.role) throw new ConflictException('This member\'s role changed while updating — reload and retry');
         const pair = await this.factPair(tx, projectId, actor);
+        // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
+        // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
+        // requester's org-authority row before their standing rows, the projection writers' order
+        await lockStandingForWrite(tx, projectId, userId);
         const roleFact: TransitionFact = {
           projectId, membershipId: cur.id, userId,
           fromRole: cur.role, fromStatus: cur.status, toRole: input.role, toStatus: 'active',
         };
         const transitionId = await this.recordTransition(tx, roleFact, actor, pair, commandId);
+        // 4d-iii / R0a-2 — emitted with the fact's pair, BEFORE the write (see `add`): a PMC re-roling
+        // THEMSELVES is announced as the PMC they were, as the fact records them.
+        const events = [await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: input.role }, effectKey: 'membership.role_changed', dispatch: {} })];
+        // a consultant's discipline moving is its own fact
+        if ((cur.discipline ?? null) !== discipline) {
+          events.push(await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: discipline ? { discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} }));
+        }
+        const flip = await this.emitStandingFlip(tx, projectId, actor, pair, roleFact, transitionId);
+        if (flip) events.push(flip);
         const m = await tx.membership.update({ where: { id: cur.id }, data: { role: input.role, discipline }, include: { user: true } })
           .catch((e: unknown) =>
             rethrowHolderSealViolation(
@@ -547,13 +569,6 @@ export class MembersService {
           );
         await this.refuseHolderOrphan(tx, projectId, new Set([cur.role]));
         await this.refuseAwaitingHolderOrphan(tx, projectId, cur.id, cur.role);
-        const events = [await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role }, effectKey: 'membership.role_changed', dispatch: {} })];
-        // a consultant's discipline moving is its own fact
-        if ((cur.discipline ?? null) !== (m.discipline ?? null)) {
-          events.push(await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: m.discipline ? { discipline: m.discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} }));
-        }
-        const flip = await this.emitStandingFlip(tx, projectId, actor, pair, roleFact, transitionId);
-        if (flip) events.push(flip);
         return { resultRef: m.id, value: m, events };
       },
     });
@@ -648,11 +663,19 @@ export class MembersService {
           );
         }
         const pair = await this.factPair(tx, projectId, actor);
+        // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
+        // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
+        // requester's org-authority row before their standing rows, the projection writers' order
+        await lockStandingForWrite(tx, projectId, userId);
         const removeFact: TransitionFact = {
           projectId, membershipId: cur.id, userId,
           fromRole: cur.role, fromStatus: cur.status, toRole: cur.role, toStatus: 'removed',
         };
         const transitionId = await this.recordTransition(tx, removeFact, actor, pair, commandId);
+        // 4d-iii / R0a-2 — emitted with the fact's pair, BEFORE the write, as `add` and `updateRole` do,
+        // so the flip's `activeCount` is computed one way on every command (see `emitStandingFlip`)
+        const ev = await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
+        const flip = await this.emitStandingFlip(tx, projectId, actor, pair, removeFact, transitionId);
         await tx.membership.update({ where: { id: cur.id }, data: { status: 'removed' } })
           .catch((e: unknown) =>
             rethrowHolderSealViolation(
@@ -680,8 +703,6 @@ export class MembersService {
           }
           await this.refuseAwaitingHolderOrphan(tx, projectId, cur.id, cur.role);
         }
-        const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
-        const flip = await this.emitStandingFlip(tx, projectId, actor, pair, removeFact, transitionId);
         return { resultRef: cur.id, events: flip ? [ev, flip] : [ev] };
       },
     });

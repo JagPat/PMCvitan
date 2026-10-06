@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: ux-queue-713-b9-naming
+work_item: 4d-iii-r0a-2
 reviewed_merge: cffb251
-open_pr: 713
+open_pr: 722
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-06
 ```
 
-### Now — the UX queue, one owner, one PR at a time, then 4d-iii R0a-2
+### Now — 4d-iii R0a-2, after the owner's UX queue (one owner, one PR at a time)
 
 #715 (4d-iii R0a-1) trusted-merged at `67644e5`. The 10:53 UTC hold on #482 kept #710–#713 paused until
 #715 completed and a sequential handoff was recorded. The repository owner then directed this sequence,
@@ -57,12 +57,13 @@ redesign in smaller units. So #716 was closed and its work is split into server 
    "no plan", and the photo figures name the snapshot's capped window.
 5. **#712** — merged at `01b1840`. Each Site Map space shows its derived status, the Schedule filters by place
    with summary cards that count the listed rows, and an unread activity list is never shown as "no work".
-6. **#713** `claude/ux-b9-naming` (current work item) — prevent the small-screen Decision Log label truncation.
-7. **4d-iii R0a-2** — `emitEvent`'s central refusal, the org owner/admin `pmc` attribution and the
-   test-writer inventory. It is local work only, and gets no branch or PR until #713 completes.
+6. **#713** — merged at `499077e`. Each screen has one name on every surface, the single-project rail shows no
+   dead switcher, and the counts read in the singular when they are one.
+7. **#722** `claude/phase-6-task-4d-iii-r0a-2` (current work item) — 4d-iii R0a-2: `emitEvent`'s central
+   refusal, the org owner/admin `pmc` attribution and the mechanically derived test-writer inventory.
 
-The post-#715 native handoff named `pr:713`, picked from the live open PRs. `open_pr` records the current
-PR of the owner's order instead. `next_task` stays `phase-6-task-4d-iii`, which resumes with R0a-2. Each
+The owner's UX queue is complete with #713, so `work_item` and `open_pr` name R0a-2, the next unit of the
+4d-iii staging record. `next_task` stays `phase-6-task-4d-iii`, which continues with R0b after R0a-2. Each
 unit is updated from `main` by a merge commit and passes fresh exact-head CI and independent Codex review.
 Nothing here authorises rollout activation, a manual merge or a deployment.
 
