@@ -8,6 +8,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { createTestApp, type TestApp } from './test-app';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { lockOrgStandingWriters } from '../../src/orgs/org-standing';
 type ModulePayloadJson = {
   nodes: Array<{ key: string; parentKey: string | null; name: string; kind: 'zone' | 'room' | 'element'; order: number }>;
   phases: Array<{ name: string; order: number; plannedStart: number; plannedEnd: number }>;
@@ -310,6 +311,65 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
       await expect(service.createProject(f.orgA.id, f.memberUser.id, inputFor('keyed-demoted'), key)).rejects.toBeInstanceOf(ForbiddenException);
     } finally {
       await t.prisma.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: admin.id } }, data: { role: 'owner' } });
+    }
+  });
+
+  it('a same-key retry whose role read lands AFTER the first create commits and a demotion follows still REPLAYS (Codex 4191121360)', async () => {
+    // Explicit barriers (POLICY: no sleep-only synchronization), each opened only once pg_locks shows the
+    // waiter it is holding:
+    //   gate A holds project inserts, so the FIRST create sits uncommitted after reserving its receipt;
+    //   gate B holds OrgMembership, so the RETRY's role read waits there;
+    //   A opens (the first create commits), then B demotes the creator and commits, and only then does
+    //   the retry read the role. A role check before the ledger would now answer 403 for a committed create.
+    const key = `it-create-race-demote-${Date.now()}`;
+    const owner = f.ownerUser;
+    const locks = async (rel: string, granted: boolean) => Number((await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT count(*) AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation WHERE c.relname = $1 AND l.granted = $2`, rel, granted,
+    ))[0]!.n);
+    const until = async (cond: () => Promise<boolean>, what: string) => {
+      const deadline = Date.now() + 20_000;
+      while (!(await cond())) {
+        if (Date.now() > deadline) throw new Error(`barrier: ${what}`);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    const gate = () => { let open!: () => void; const p = new Promise<void>((r) => { open = r; }); return { p, open }; };
+    const projectsHeld = gate();
+    const firstCommitted = gate();
+    const before = await countInitializationRows();
+    try {
+      const gateA = t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('LOCK TABLE "Project" IN SHARE MODE');
+        await projectsHeld.p;
+      }, { timeout: 60_000 });
+      await until(async () => (await locks('Project', true)) >= 1, 'gate A holds Project');
+      const first = service.createProject(f.orgA.id, owner.id, inputFor('keyed-race-demote'), key);
+      first.catch(() => undefined);
+      await until(async () => (await locks('Project', false)) >= 1, 'the first create waits on its project insert');
+      const gateB = t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('LOCK TABLE "OrgMembership" IN ACCESS EXCLUSIVE MODE');
+        await firstCommitted.p;
+        await lockOrgStandingWriters(tx, f.orgA.id);
+        await tx.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: owner.id } }, data: { role: 'member' } });
+      }, { timeout: 60_000 });
+      await until(async () => (await locks('OrgMembership', true)) >= 1, 'gate B holds OrgMembership');
+      const retry = service.createProject(f.orgA.id, owner.id, inputFor('keyed-race-demote'), key);
+      retry.catch(() => undefined);
+      await until(async () => (await locks('OrgMembership', false)) >= 1, 'the retry waits on its role read');
+      projectsHeld.open();
+      await gateA;
+      const made = await first; // committed, with its receipt
+      firstCommitted.open();
+      await gateB; // the creator is demoted before the retry's role read completes
+      await expect(retry).resolves.toEqual(made);
+      expect((await countInitializationRows()).project).toBe(before.project + 1);
+      expect(await t.prisma.commandExecution.count({
+        where: { scopeKind: 'org', organizationId: f.orgA.id, actorId: owner.id, commandType: CREATE_PROJECT_COMMAND, idempotencyKey: key },
+      })).toBe(1);
+    } finally {
+      projectsHeld.open();
+      firstCommitted.open();
+      await t.prisma.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: owner.id } }, data: { role: 'owner' } });
     }
   });
 

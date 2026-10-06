@@ -24,7 +24,7 @@ import type { AuthUser, Role } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
-import { executeCommand, hashRequest, peekReplayRef } from '../platform/commands';
+import { executeCommand, hashRequest } from '../platform/commands';
 import { projectsInReach } from './project-reach';
 import {
   lockInitializationDisplayIds,
@@ -466,22 +466,17 @@ export class OrgsService {
     input: CreateProjectInput,
     idempotencyKey?: string,
   ): Promise<{ id: string; name: string; short: string }> {
-    // A keyed create that already COMMITTED replays first — before the role check (Codex 4190663677).
-    // The receipt is the only authority on whether the create happened: an owner/admin who lost the role
-    // after a lost successful reply must get back the project they made, not a 403 that tells their
-    // client nothing was created (it would then mint a new key, and a later create could duplicate it).
-    // The receipt is the CALLER's own (org + actor + command + key), so this discloses nothing they did
-    // not create; a different request under the key is still a 409, and a new create is still refused.
-    const replayed = await peekReplayRef(
-      this.prisma, { scopeKind: 'org', organizationId: orgId }, userId, CREATE_PROJECT_COMMAND,
-      idempotencyKey, hashRequest({ orgId, input }),
-    );
-    if (replayed !== null) {
-      const made = await this.prisma.project.findUniqueOrThrow({ where: { id: replayed }, select: { id: true, name: true, short: true } });
-      return { id: made.id, name: made.name, short: made.short };
-    }
     const role = await this.orgRole(orgId, userId);
-    if (role !== 'owner' && role !== 'admin') {
+    const key = idempotencyKey?.trim() || null;
+    // A KEYED create is refused only INSIDE its ledger transaction (Codex 4190663677, 4191121360). The
+    // receipt is the only authority on whether a create committed, and a role check before the ledger can
+    // answer 403 for a create that has committed (a lost reply, then a demotion) or is about to (a
+    // same-key request still in flight). So a keyed create goes straight to the ledger: a committed
+    // receipt replays, a same-key request in flight is waited on at the receipt's unique index and then
+    // replayed, and only when no such create exists does the in-transaction standing check refuse a
+    // non-owner/admin — rolling its reservation back, so a 403 on a keyed create means nothing was made.
+    // The receipt is the CALLER's own (org + actor + command + key): another actor's key replays nothing.
+    if (!key && role !== 'owner' && role !== 'admin') {
       throw new ForbiddenException('Only an org owner or admin can create projects');
     }
     // Legacy-copy recovery (replaces #710) — creation is IDEMPOTENT when the client sends a key. A lost
@@ -490,7 +485,6 @@ export class OrgsService {
     // create records an org-scoped receipt INSIDE its own serializable transaction, and a retry under
     // the same key replays that receipt's project instead of creating another (Codex 4185707835 and
     // every finding before it on #710). Without a key the behaviour is exactly as before.
-    const key = idempotencyKey?.trim() || null;
     const id = `${slugify(input.short)}-${randomUUID().slice(0, 4)}`;
     const timeZone = input.timeZone ?? 'Asia/Kolkata';
     const scheduleStartDate = input.scheduleStartDate ?? this.clock.today(timeZone);
@@ -506,7 +500,10 @@ export class OrgsService {
       await assertOrgStandingSnapshotCurrent(tx, orgId);
       const standing = await tx.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } }, select: { role: true } });
       if (!holdsOrgStanding(standing?.role)) {
-        throw new ForbiddenException('Your org role changed while creating the project — only an org owner or admin can create projects');
+        // a keyed create reaches here without the pre-ledger check, so say which refusal this is
+        throw new ForbiddenException(holdsOrgStanding(role)
+          ? 'Your org role changed while creating the project — only an org owner or admin can create projects'
+          : 'Only an org owner or admin can create projects');
       }
       const templateSelections = input.templateId ? await this.templateSelections(tx, orgId, input.templateId) : [];
       const selections = [...templateSelections, ...explicitSelections];
