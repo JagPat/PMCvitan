@@ -122,9 +122,9 @@ export function TeamScreen() {
 
       {canManage && (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 22, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="member-name" />
-          <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="member-contact" />
-          <select value={role} onChange={(e) => setRole(e.target.value as Role)} style={{ ...fld, flex: '0 0 130px' }} data-testid="member-role">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" aria-label="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="member-name" />
+          <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" aria-label="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="member-contact" />
+          <select value={role} onChange={(e) => setRole(e.target.value as Role)} style={{ ...fld, flex: '0 0 130px' }} aria-label="Role" data-testid="member-role">
             {roleOptions.map((r) => <option key={r} value={r}>{MEMBER_ROLE_LABEL[r]}</option>)}
           </select>
           {role === 'consultant' && (
@@ -156,7 +156,7 @@ export function TeamScreen() {
                 {/* Wave 0 / F-1b round 8 — 38 -> 44 on every role/discipline select here. These
                     override the shared `fld` height downward, so raising the token alone would
                     have left them short: an override is a second spelling of the rule. */}
-                <select value={m.role} onChange={(e) => { const r = e.target.value as Role; updateMemberRole(m.userId, r, r === 'consultant' ? (m.discipline ?? 'architect') : undefined); }} style={{ ...fld, flex: '0 0 120px', height: 44 }} data-testid={`member-role-${m.userId}`}>
+                <select value={m.role} onChange={(e) => { const r = e.target.value as Role; updateMemberRole(m.userId, r, r === 'consultant' ? (m.discipline ?? 'architect') : undefined); }} style={{ ...fld, flex: '0 0 120px', height: 44 }} aria-label={`Role for ${m.name}`} data-testid={`member-role-${m.userId}`}>
                   {optionsFor(m.role).map((r) => <option key={r} value={r}>{MEMBER_ROLE_LABEL[r]}</option>)}
                 </select>
                 {m.role === 'consultant' && (
@@ -263,8 +263,8 @@ function OrgRoster({ orgId, canManageRoles, canCorrectEmails }: { orgId: string;
 
       {canManageRoles && (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 18, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="org-member-name" />
-          <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="org-member-contact" />
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" aria-label="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="org-member-name" />
+          <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" aria-label="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="org-member-contact" />
           <select value={role} onChange={(e) => setRole(e.target.value as OrgRole)} style={{ ...fld, flex: '0 0 130px' }} aria-label="Org role">
             {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
           </select>

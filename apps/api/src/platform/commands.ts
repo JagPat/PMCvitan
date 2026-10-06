@@ -86,6 +86,14 @@ export interface ExecuteInput<T> {
   synthesizeKeyWhenAbsent?: boolean;
   /** The canonical mutation, run INSIDE the reserve/receipt transaction. Returns the resultRef. */
   run: (tx: CommandTx, ctx: CommandRunContext) => Promise<CommandResult<T>>;
+  /**
+   * The transaction the reserve, the mutation and the receipt run in — `prisma.$transaction` unless the
+   * command needs its own isolation. Project creation (an org command) runs under
+   * `runSerializableProjectInit`, which retries a serialization failure by re-running the WHOLE
+   * callback, so a retried attempt re-reserves its receipt in the fresh transaction. Every
+   * `CommandExecution` write still happens here, in the ledger, and nowhere else.
+   */
+  transact?: <R>(fn: (tx: CommandTx) => Promise<R>) => Promise<R>;
 }
 
 export interface ExecuteOutcome<T> {
@@ -192,6 +200,11 @@ async function runCollectingEvents<T>(
   return { ...result, events: merged };
 }
 
+/** The transaction runner a command executes in: its own `transact`, or `prisma.$transaction`. */
+function transactWith<T>(prisma: PrismaService, input: ExecuteInput<T>): <R>(fn: (tx: CommandTx) => Promise<R>) => Promise<R> {
+  return input.transact ?? (<R>(fn: (tx: CommandTx) => Promise<R>) => prisma.$transaction(fn));
+}
+
 export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInput<T>): Promise<ExecuteOutcome<T>> {
   // 1. Normalize the client key (an all-whitespace header is no key).
   const clientKey = input.idempotencyKey?.trim() || null;
@@ -212,7 +225,7 @@ export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInp
   //    ledger-less mutation exactly as before (`run` receives a null `commandId`). Reached only
   //    when enforcement is OFF (step 2 already refused a missing key under enforcement).
   if (!clientKey && !input.synthesizeKeyWhenAbsent) {
-    const r = await prisma.$transaction((tx) => runCollectingEvents(tx, input, { commandId: null }));
+    const r = await transactWith(prisma, input)((tx) => runCollectingEvents(tx, input, { commandId: null }));
     return { replayed: false, resultRef: r.resultRef, value: r.value, events: r.events ?? [] };
   }
 
@@ -231,7 +244,7 @@ export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInp
 
   // ── Reserve + execute + receipt, all in ONE transaction ────────────────────────────────────
   try {
-    const r = await prisma.$transaction(async (tx) => {
+    const r = await transactWith(prisma, input)(async (tx) => {
       const { organizationId, projectId } = await resolveTenant(tx, input.scope);
       const reservation = await tx.commandExecution.create({
         data: {

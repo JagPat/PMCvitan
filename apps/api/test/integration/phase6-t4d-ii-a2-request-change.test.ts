@@ -6,6 +6,7 @@ import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wi
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import type { AuthUser } from '../../src/common/auth';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { STALE_ROLE_MESSAGE } from '../../src/platform/actor-envelope';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a / A2 — `decisions.requestChange` records its provenance and the frozen
@@ -141,19 +142,18 @@ describe('4d-ii-a / A2 — requestChange provenance and the frozen requester pai
     expect(event).toMatchObject({ actorRole: 'pmc', actorName: name });
   });
 
-  it('a token role the requester does not hold leaves the pair NULL on all three records, and the request still commits', async () => {
+  it('a token role the requester does not hold is REFUSED with a re-sign-in, and nothing is recorded (4d-iii / R0a, Decision 2)', async () => {
     // Driven at the service: the HTTP guard refuses a role the user does not hold, so this is the
-    // stale-token case (a re-role that committed after the token was issued). The pair must not be
-    // replaced by a role the actor does hold, and the NULL shape is the one the seals admit.
+    // stale-token case (a re-role that committed after the token was issued). The pair is never
+    // replaced by a role the actor does hold, and since the Board's Decision 2 it is never written
+    // NULL either: the act is refused and the decision stays where it was.
     const id = await approvedDecision();
     const stale = { sub: f.memberUser.id, role: 'engineer', projectId: f.projectA.id } as AuthUser;
-    await decisions.requestChange(f.projectA.id, id, change, stale, randomUUID());
-    const { req, audit, event, receipt } = await recordsOf(id);
-    expect([req.requestedByRole, req.requestedByName]).toEqual([null, null]);
-    expect([event.actorRole, event.actorName]).toEqual([null, null]);
-    // the audit row agrees: no role the transaction did not observe (#643 Codex 4114025986)
-    expect(audit).toMatchObject({ actorId: f.memberUser.id, actorRole: null, actorName: null });
-    expect(receipt?.resultRef).toBe(req.id);
+    await expect(decisions.requestChange(f.projectA.id, id, change, stale, randomUUID()))
+      .rejects.toMatchObject({ status: 403, message: STALE_ROLE_MESSAGE });
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('approved');
+    expect(await t.prisma.changeRequest.count({ where: { decisionId: id } })).toBe(0);
+    expect(await t.prisma.domainEvent.count({ where: { entityId: id, eventType: 'decision.change_requested' } })).toBe(0);
   });
 
   it('two simultaneous requests: one winner, one 409, one request (no deadlock between their receipts)', async () => {

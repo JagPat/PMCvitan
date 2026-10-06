@@ -170,9 +170,15 @@ export function withDeciderRoute(allowed: ScreenKey[], isOpenDecider: boolean): 
 /** The full, project-scoped URL for a screen: `/projects/:projectId/<screen>`.
  *  The project id is part of the URL so a refresh, bookmark or shared link restores
  *  which project you were in (the URL is the source of truth for the active project). */
-export function pathForScreen(screen: ScreenKey, projectId: string): string {
-  return `/projects/${encodeURIComponent(projectId)}${SCREEN_META[screen].path}`;
+export function pathForScreen(screen: ScreenKey, projectId: string, item?: string | null): string {
+  const base = `/projects/${encodeURIComponent(projectId)}${SCREEN_META[screen].path}`;
+  return item && ITEM_SCREENS.has(screen) ? `${base}/${encodeURIComponent(item)}` : base;
 }
+
+/** B6 — the screens whose URL may name ONE item after the screen path, so a place, a drawing or a
+ *  decision can be bookmarked, shared and reached with back/forward: `/places/<nodeId>`,
+ *  `/drawings/<drawingId>`, `/decisions/<decisionId>` and `/client/decisions/<decisionId>`. */
+export const ITEM_SCREENS: ReadonlySet<ScreenKey> = new Set<ScreenKey>(['places', 'drawings', 'decision-log', 'client-decisions']);
 
 /** Match a bare screen path (`/decisions`, `/client/decisions`) to its screen key. */
 export function screenForPath(path: string): ScreenKey | null {
@@ -183,13 +189,29 @@ export function screenForPath(path: string): ScreenKey | null {
 /** Parse a pathname into its project id (if present) and screen. Accepts the
  *  project-scoped form `/projects/:id/<screen>` and a legacy bare `/decisions` form
  *  (projectId null → the caller falls back to the active project). */
-export function parseLocation(pathname: string): { projectId: string | null; screen: ScreenKey | null } {
+export function parseLocation(pathname: string): { projectId: string | null; screen: ScreenKey | null; item: string | null } {
   const m = pathname.match(/^\/projects\/([^/]+)(\/.*)?$/);
   if (m) {
     const screenPath = m[2] && m[2] !== '/' ? m[2] : null;
-    return { projectId: decodeURIComponent(m[1]), screen: screenPath ? screenForPath(screenPath) : null };
+    return { projectId: decodeURIComponent(m[1]), ...(screenPath ? screenAndItemForPath(screenPath) : { screen: null, item: null }) };
   }
-  return { projectId: null, screen: screenForPath(pathname) };
+  return { projectId: null, ...screenAndItemForPath(pathname) };
+}
+
+/** A screen path, or an item screen's path followed by one item segment (B6). An exact screen
+ *  path wins, so `/client/decisions` is never read as the Decision Log's item `client`. */
+function screenAndItemForPath(path: string): { screen: ScreenKey | null; item: string | null } {
+  const exact = screenForPath(path);
+  if (exact) return { screen: exact, item: null };
+  const cut = path.lastIndexOf('/');
+  const segment = path.slice(cut + 1);
+  const screen = cut > 0 && segment ? screenForPath(path.slice(0, cut)) : null;
+  if (!screen || !ITEM_SCREENS.has(screen)) return { screen: null, item: null };
+  try {
+    return { screen, item: decodeURIComponent(segment) };
+  } catch {
+    return { screen, item: null }; // a malformed escape names no item; the screen still opens
+  }
 }
 
 /** Which persona owns each screen — for the temporary role switcher / route guard. */

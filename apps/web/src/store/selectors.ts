@@ -8,9 +8,10 @@
  * surface for the core loop.
  */
 
-import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
+import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
+import { activitiesReadMode } from '@/data/apiGateway';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
 export const WIN = 75;
@@ -322,6 +323,40 @@ export function activitiesInPhase(activities: Activity[], phases: Phase[], phase
   return activities.filter((a) => a.phaseId === phaseId);
 }
 
+// ---- project progress ----
+
+export interface ProjectProgress {
+  /** `null` while the activities are not known (still loading, or their read failed) — never a guess */
+  pct: number | null;
+  done: number;
+  total: number;
+  /** `derived`: computed from the activities. `recorded`: the activities are known and there are none, so
+   *  the project's recorded figure. `loading` / `unavailable`: the module-owned activity read has not
+   *  answered yet, or failed — an empty list then says nothing about the plan (Codex 4180841684). */
+  basis: 'derived' | 'recorded' | 'loading' | 'unavailable';
+}
+
+/**
+ * B7 (F-12) — overall progress DERIVED from the activities, by the same rule as `phaseRollup`: only
+ * an accepted (`done`) activity counts, so an activity awaiting sign-off does not. The stored
+ * `milestonePct` is not maintained by the server (a new project records 0 and nothing moves it), so
+ * it is used only while a project has no activities planned — and the screen says so.
+ */
+export function selectProjectProgress(s: AppState): ProjectProgress {
+  const total = s.activities.length;
+  if (total === 0) {
+    // Module-owned activities (`moduleQuery`) are known only once their read answers; until then, or when
+    // it fails, the empty list is not "no plan" — the same boundary the Schedule screen draws. In snapshot
+    // mode the snapshot owns them and `activitiesLoad` stays idle, so an empty list is the plan.
+    if (activitiesReadMode() === 'moduleQuery' && s.activitiesLoad !== 'ready') {
+      return { pct: null, done: 0, total: 0, basis: s.activitiesLoad === 'error' ? 'unavailable' : 'loading' };
+    }
+    return { pct: Math.max(0, Math.min(100, Math.round(s.milestonePct))), done: 0, total: 0, basis: 'recorded' };
+  }
+  const done = s.activities.filter((a) => a.status === 'done').length;
+  return { pct: Math.round((done / total) * 100), done, total, basis: 'derived' };
+}
+
 // ---- daily log ----
 
 export function selectTotalWorkers(s: AppState): number {
@@ -333,13 +368,17 @@ export function selectTotalWorkers(s: AppState): number {
 export interface PhotoStats {
   count: number;
   zones: number; // distinct location nodes the photos are placed on
+  /** true when the snapshot's window is full: `count` is then a floor (older photos exist unloaded) and
+   *  `zones` counts only the places among the loaded ones (Codex 4194155412) */
+  capped: boolean;
 }
 
 /** Photo totals COMPUTED from the snapshot's placed photos — never a fixed claim.
- *  (Phase 0 Task 7: API mode shows only recorded facts.) */
+ *  (Phase 0 Task 7: API mode shows only recorded facts.) The snapshot carries at most
+ *  `SNAPSHOT_SITE_PHOTO_LIMIT`, newest first, so a full window is reported as capped, never as the total. */
 export function selectPhotoStats(s: AppState): PhotoStats {
   const zones = new Set(s.photos.map((p) => p.nodeId).filter(Boolean));
-  return { count: s.photos.length, zones: zones.size };
+  return { count: s.photos.length, zones: zones.size, capped: s.photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT };
 }
 
 // ---- "Needs you" action queue ----

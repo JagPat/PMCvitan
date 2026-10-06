@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectPending, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats } from '@/store/selectors';
+import { selectPending, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
@@ -25,26 +25,47 @@ export function DashboardScreen() {
   const descriptor = useStore((s) => s.descriptor);
   const stage = useStore((s) => s.stage);
   const siteCode = useStore((s) => s.siteCode);
-  const milestonePct = useStore((s) => s.milestonePct);
+  // B7 (F-12): derived from the activities, so it moves as work is accepted (see selectProjectProgress)
+  const progressNow = useStore(useShallow(selectProjectProgress));
   const phases = useStore(useShallow((s) => s.phases));
+  const activities = useStore(useShallow((s) => s.activities));
   const photoStats = useStore(useShallow(selectPhotoStats));
   const sitePhotos = useStore(useShallow((s) => s.photos));
-  // the milestone strip is the project's own phases (done = fully complete); empty projects show none
-  const milestones = phases.map((p) => ({ label: p.name, done: p.donePct === 100 }));
+  // the milestone strip is the project's own phases, read LIVE from their activities (the stored
+  // `donePct` is only the snapshot's initial count): done = every activity accepted, started = any
+  // accepted or under way. Empty projects show none.
+  const milestones = phases.map((p) => {
+    const r = phaseRollup(activities, p.id);
+    const done = r.activityTotal > 0 && r.done === r.activityTotal;
+    // a blocked activity that has ACTUALLY started (labour mismatch keeps its actual start) is still
+    // work begun — a phase whose only started work is now blocked must not read as not started
+    const begunButBlocked = activities.some((a) => a.phaseId === p.id && a.status === 'blocked' && (a.as != null || !!a.actualStartDate));
+    const started = !done && (r.done > 0 || r.inProgress > 0 || r.awaitingSignoff > 0 || begunButBlocked);
+    return { id: p.id, label: p.name, done, started, summary: `${p.name}: ${r.done} of ${r.activityTotal} activities done` };
+  });
 
   const siteStatus = submitted ? 'Daily log submitted' : checkedIn ? 'Engineer on site · logging' : 'Awaiting check-in';
   const siteDot = checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)';
 
-  const tiles = [
+  // `onClick` stays optional: a tile with nowhere to go renders as a plain box (B5)
+  const tiles: Array<{ key: string; label: string; value: number | string; accent: string; sub: string; onClick?: () => void }> = [
     { key: 'pending', label: 'DECISIONS PENDING WITH CLIENT', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setScreen('decision-log') },
     { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => setScreen('inspect-review') },
     // API mode never claims WHICH items failed beyond the recorded count — the seeded
     // "Drain slope · Terrace" copy is demo-only prototype fidelity
     { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `${failedCount} to re-inspect` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') },
-    // live: COMPUTED from the snapshot's placed photos; demo keeps the prototype's fixed claim
-    API_BASE
-      ? { key: 'photos', label: 'PROGRESS PHOTOS ON RECORD', value: photoStats.count, accent: 'var(--green-solid)', sub: photoStats.zones > 0 ? `Across ${photoStats.zones} zone${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet', onClick: () => setScreen('places') }
-      : { key: 'photos', label: 'PROGRESS PHOTOS THIS WEEK', value: 24, accent: 'var(--green-solid)', sub: 'Across 6 zones', onClick: () => {} },
+    // B7 (F-13): COMPUTED from the placed photos in every mode — the demo's fixed "24 this week ·
+    // 6 zones" contradicted the strip above. The strip shows the daily log's reported count; this,
+    // every photo on record.
+    // The snapshot carries the newest SNAPSHOT_SITE_PHOTO_LIMIT only: a full window is "at least", and its
+    // places are the places among those (Codex 4194155412) — never presented as the total on record.
+    {
+      key: 'photos', label: 'SITE PHOTOS ON RECORD', value: photoStats.capped ? `${photoStats.count}+` : photoStats.count, accent: 'var(--green-solid)',
+      sub: photoStats.capped
+        ? `Latest ${photoStats.count} shown${photoStats.zones > 0 ? ` · across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : ''}`
+        : photoStats.zones > 0 ? `Across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet',
+      onClick: () => setScreen('places'),
+    },
   ];
 
   // demo-only prototype highlights; API mode renders the project's own photos (or an honest absence)
@@ -85,20 +106,33 @@ export function DashboardScreen() {
       <div style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 12, padding: '20px 24px', marginBottom: 22 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
           <span style={{ fontWeight: 600, fontSize: 14 }}>Milestone Progress</span>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{milestonePct}% complete</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }} data-testid="dash-progress-pct">{progressNow.pct === null ? '—' : `${progressNow.pct}% complete`}</span>
         </div>
-        <ProgressBar pct={milestonePct} />
+        <ProgressBar pct={progressNow.pct ?? 0} />
+        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 8 }} data-testid="dash-progress-basis">
+          {progressNow.basis === 'derived'
+            ? `${progressNow.done} of ${progressNow.total} activities accepted as done`
+            : progressNow.basis === 'recorded'
+              ? 'No activities planned yet — this is the figure recorded on the project'
+              : progressNow.basis === 'unavailable'
+                ? 'The activities could not be loaded, so progress is unavailable — open Schedule to retry'
+                : 'Loading the activities…'}
+        </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
           {milestones.map((m) => (
-            <div key={m.label} style={{ textAlign: 'center', flex: 1 }}>
+            <div key={m.id} style={{ textAlign: 'center', flex: 1 }} title={m.summary}>
               <div
+                role="img"
+                aria-label={m.summary}
+                data-testid={`milestone-${m.id}`}
+                data-state={m.done ? 'done' : m.started ? 'started' : 'not-started'}
                 style={{
                   width: 11,
                   height: 11,
                   borderRadius: '50%',
                   margin: '0 auto 6px',
                   background: m.done ? 'var(--green-solid)' : 'transparent',
-                  border: m.done ? 'none' : '1.5px solid rgba(35,33,28,.3)',
+                  border: m.done ? 'none' : m.started ? '2px solid var(--green-solid)' : '1.5px solid rgba(35,33,28,.3)',
                 }}
               />
               <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>{m.label}</div>
@@ -112,7 +146,7 @@ export function DashboardScreen() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, paddingRight: 22, borderRight: '1px solid rgba(237,231,218,.14)' }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: siteDot }} />
           <div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.18em', color: 'rgba(237,231,218,.45)' }}>LIVE FROM SITE</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.18em', color: 'rgba(237,231,218,.62)' }}>LIVE FROM SITE</div>
             <div style={{ fontWeight: 600, fontSize: 14, marginTop: 2 }}>{siteStatus}</div>
           </div>
         </div>
@@ -120,11 +154,13 @@ export function DashboardScreen() {
           {[
             { v: workers, l: 'WORKERS ON SITE' },
             { v: materialsCount, l: 'MATERIALS LOGGED' },
-            { v: progress, l: 'PROGRESS PHOTOS' },
+            // the daily log's own reported count (DailyLog.progress — not linked to media, so no
+            // "today" claim); named apart from the photos-on-record tile below (F-13)
+            { v: progress, l: 'PROGRESS PHOTOS · DAILY LOG' },
           ].map((s) => (
             <div key={s.l} style={{ textAlign: 'center' }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 22 }}>{s.v}</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'rgba(237,231,218,.5)', marginTop: 2 }}>{s.l}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'rgba(237,231,218,.62)', marginTop: 2 }}>{s.l}</div>
             </div>
           ))}
         </div>
@@ -135,21 +171,35 @@ export function DashboardScreen() {
 
       {/* KPI tiles */}
       <div className={styles.tiles}>
-        {tiles.map((t) => (
-          <div
-            key={t.key}
-            onClick={t.onClick}
-            data-testid={`tile-${t.key}`}
-            style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderTop: `3px solid ${t.accent}`, borderRadius: 12, padding: '20px 22px', cursor: 'pointer' }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--muted)', maxWidth: 150, lineHeight: 1.5 }}>{t.label}</div>
-              <ArrowRight size={15} style={{ opacity: 0.5 }} />
-            </div>
-            <div data-testid={`tile-${t.key}-value`} style={{ fontSize: 44, fontWeight: 700, lineHeight: 1, margin: '14px 0 8px', color: t.accent }}>{t.value}</div>
-            <div style={{ fontSize: 12, color: 'var(--muted)' }}>{t.sub}</div>
-          </div>
-        ))}
+        {tiles.map((t) => {
+          // B5 (F-5): a tile that opens a screen is a real button — reachable by Tab, activated by
+          // Enter or Space, named by its label and value. A tile with nowhere to go stays a plain box
+          // with no arrow and no pointer, so it never looks clickable.
+          const body = (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--muted)', maxWidth: 150, lineHeight: 1.5 }}>{t.label}</div>
+                {t.onClick && <ArrowRight size={15} style={{ opacity: 0.5 }} aria-hidden />}
+              </div>
+              <div data-testid={`tile-${t.key}-value`} style={{ fontSize: 44, fontWeight: 700, lineHeight: 1, margin: '14px 0 8px', color: t.accent }}>{t.value}</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>{t.sub}</div>
+            </>
+          );
+          const box = { background: 'var(--panel)', border: '1px solid var(--hairline)', borderTop: `3px solid ${t.accent}`, borderRadius: 12, padding: '20px 22px' } as const;
+          return t.onClick ? (
+            <button
+              key={t.key}
+              type="button"
+              onClick={t.onClick}
+              data-testid={`tile-${t.key}`}
+              style={{ ...box, cursor: 'pointer', textAlign: 'left', width: '100%', font: 'inherit', color: 'inherit', display: 'block' }}
+            >
+              {body}
+            </button>
+          ) : (
+            <div key={t.key} data-testid={`tile-${t.key}`} style={box}>{body}</div>
+          );
+        })}
       </div>
 
       {/* photo highlights — live projects show their own recorded photos, honestly empty otherwise */}

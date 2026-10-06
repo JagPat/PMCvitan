@@ -16,7 +16,7 @@ import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
 import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
-import { can, type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
+import { can, SNAPSHOT_SITE_PHOTO_LIMIT, type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 const KIND_LABEL: Record<string, string> = { zone: 'ZONE', room: 'ROOM', element: 'OBJECT' };
@@ -43,6 +43,9 @@ export function PlacesScreen() {
   // drafts are private WIP — the Site Map shows only published drawings
   const drawings = useStore(useShallow((s) => s.drawings.filter((d) => !d.draft)));
   const photos = useStore(useShallow((s) => s.photos));
+  // the snapshot carries only the newest SNAPSHOT_SITE_PHOTO_LIMIT site photos: once that window is full, a
+  // place's photos are those among the latest, never its whole record (Codex 4194155412, shadow review)
+  const photosCapped = photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT;
   const activities = useStore(useShallow((s) => s.activities));
   const phases = useStore(useShallow((s) => s.phases));
   const openActivity = useStore((s) => s.openActivity);
@@ -55,14 +58,16 @@ export function PlacesScreen() {
   const canSeeInspections = useStore((s) => s.role === 'pmc' || s.role === 'engineer');
   const inspections = useStore(useShallow((s) => (s.role === 'pmc' || s.role === 'engineer' ? s.placedInspections : [])));
 
-  const [sel, setSel] = useState<string | null>(null); // null = whole project
-  // Entering the Site Map from an entity's location breadcrumb: adopt the requested place ONCE,
-  // then clear the intent so a later manual walk isn't yanked back to it.
+  // B6 — the place on show is the URL's item (`/places/<nodeId>`), so it survives a refresh, can be
+  // shared, and back/forward walks the places visited. null = whole project.
+  const sel = useStore((s) => s.routeItem);
+  const setSel = useStore((s) => s.setRouteItem);
+  // Entering the Site Map from an entity's location breadcrumb: `openPlace` has already named the
+  // place; the request is consumed ONCE so a later manual walk isn't disturbed by it.
   const placeFocus = useStore((s) => s.placeFocus);
   const clearPlaceFocus = useStore((s) => s.clearPlaceFocus);
   useEffect(() => {
     if (placeFocus === null) return;
-    setSel(placeFocus);
     // A crumb tapped INSIDE the drawing viewer requests a place while this screen is already
     // on stage: without closing the overlay the destination changes behind it and the crumb
     // looks inert. The viewer is the only overlay carrying crumbs, so it is the only one closed.
@@ -281,14 +286,14 @@ export function PlacesScreen() {
           )}
 
           {/* Reality — photos */}
-          <Section icon={<Camera size={13} />} title="Reality" count={contents.photos.length} sub="photos of what's built">
+          <Section icon={<Camera size={13} />} title="Reality" count={contents.photos.length} sub={photosCapped ? `among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} photos on record` : "photos of what's built"}>
             {contents.photos.length === 0 ? (
-              <Empty>No photos filed here yet.</Empty>
+              <Empty>{photosCapped ? `No photos filed here among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} on record.` : 'No photos filed here yet.'}</Empty>
             ) : (
               <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
                 {contents.photos.map((p, i) => (
-                  <button key={p.id ?? i} onClick={() => setZoom(p.url)} data-testid="place-photo" style={{ flex: 'none', width: 82, height: 82, borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
-                    <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <button key={p.id ?? i} onClick={() => setZoom(p.url)} data-testid="place-photo" aria-label={`Open site photo ${i + 1} of ${contents.photos.length}`} style={{ flex: 'none', width: 82, height: 82, borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+                    <img src={p.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </button>
                 ))}
               </div>
@@ -448,13 +453,13 @@ function IntentReality({
         {/* Reality — the photos */}
         <div style={{ ...irCard }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.14em', color: 'var(--faint)', marginBottom: 6 }}>REALITY · BUILT</div>
-          <button onClick={() => hero && onZoom(hero.url)} data-testid="ir-photo" style={{ width: '100%', aspectRatio: '3 / 4', maxHeight: 210, borderRadius: 8, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
-            {hero && <img src={hero.url} alt="Latest site photo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+          <button onClick={() => hero && onZoom(hero.url)} disabled={!hero} aria-label={hero ? 'Open the latest site photo' : 'No site photo yet'} data-testid="ir-photo" style={{ width: '100%', aspectRatio: '3 / 4', maxHeight: 210, borderRadius: 8, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+            {hero && <img src={hero.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-            {photos.slice(1, 4).map((p) => (
-              <button key={p.id} onClick={() => onZoom(p.url)} style={{ width: 44, height: 44, borderRadius: 6, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
-                <img src={p.url} alt="Site photo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            {photos.slice(1, 4).map((p, i) => (
+              <button key={p.id} onClick={() => onZoom(p.url)} aria-label={`Open earlier site photo ${i + 1}`} style={{ width: 44, height: 44, borderRadius: 6, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+                <img src={p.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </button>
             ))}
             {photos.length > 4 && <span style={{ fontSize: 11, color: 'var(--faint)' }}>+{photos.length - 4}</span>}

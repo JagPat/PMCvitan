@@ -1,5 +1,6 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { pathForScreen } from '@/lib/screens';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, DecisionChip, Button, LocationContext, EditState, ConsultationThread, CountersignControls } from '@/components';
@@ -112,23 +113,23 @@ export function DecisionLogScreen() {
 
       {/* controls: group-by, search, status filter */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', margin: '12px 0 4px' }}>
-        <div role="tablist" aria-label="Group by" style={{ display: 'inline-flex', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 10, padding: 2 }}>
+        <div role="group" aria-label="Group by" style={{ display: 'inline-flex', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 10, padding: 2 }}>
           {GROUP_OPTIONS.map((g) => {
             const on = groupBy === g.key;
             return (
-              <button key={g.key} onClick={() => setGroupBy(g.key)} data-testid={`groupby-${g.key}`} style={{ padding: '6px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, background: on ? 'var(--ink)' : 'transparent', color: on ? '#fff' : 'var(--muted)' }}>
+              <button key={g.key} onClick={() => setGroupBy(g.key)} aria-pressed={on} data-testid={`groupby-${g.key}`} style={{ padding: '6px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, background: on ? 'var(--ink)' : 'transparent', color: on ? '#fff' : 'var(--muted)' }}>
                 {g.label}
               </button>
             );
           })}
         </div>
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search decisions…" data-testid="decision-search" style={{ ...fldD, flex: '1 1 160px', minWidth: 44 }} />
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search decisions…" aria-label="Search decisions" type="search" data-testid="decision-search" style={{ ...fldD, flex: '1 1 160px', minWidth: 44 }} />
       </div>
       <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', margin: '8px 0 20px' }}>
         {STATUS_FILTERS.map((s) => {
           const on = statuses.has(s.key);
           return (
-            <button key={s.key} onClick={() => toggleStatus(s.key)} data-testid={`filter-${s.key}`} style={{ padding: '5px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 20, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'var(--ink)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }}>
+            <button key={s.key} onClick={() => toggleStatus(s.key)} aria-pressed={on} data-testid={`filter-${s.key}`} style={{ padding: '5px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 20, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'var(--ink)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }}>
               {s.label}
             </button>
           );
@@ -197,6 +198,14 @@ function RollupChip({ n, color, label }: { n: number; color: string; label: stri
 
 /** One decision card — the register row, with its finer location shown as a caption. */
 function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision }: { d: Decision; subLabel: string; onChange: () => void; onWithdraw?: () => void; onWithdrawDecision?: () => void }) {
+  // B6 — `/decisions/<id>` names this decision: it is brought into view and marked, and its id is
+  // a real link, so the register entry can be bookmarked or shared.
+  const focused = useStore((st) => st.routeItem === d.id);
+  const setRouteItem = useStore((st) => st.setRouteItem);
+  const activeProjectId = useStore((st) => st.activeProjectId);
+  useEffect(() => {
+    if (focused) document.querySelector(`[data-testid="log-row-${CSS.escape(d.id)}"]`)?.scrollIntoView({ block: 'center' });
+  }, [focused, d.id]);
   const locked = d.status === 'approved';
   // Phase 6 task 4b (round-1 Codex F2) — a RECORD is a filed fact: no approver, no options, no
   // approval demand, no cost. It renders its own branch instead of borrowing the approved shape.
@@ -232,7 +241,8 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
   return (
     <div
       data-testid={`log-row-${d.id}`}
-      style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderLeft: `4px solid ${decisionRail[d.status]}`, borderRadius: 12, overflow: 'hidden', animation: 'vpop .3s' }}
+      aria-current={focused ? 'true' : undefined}
+      style={{ outline: focused ? '2px solid var(--accent)' : undefined, outlineOffset: 2, background: 'var(--panel)', border: '1px solid var(--hairline)', borderLeft: `4px solid ${decisionRail[d.status]}`, borderRadius: 12, overflow: 'hidden', animation: 'vpop .3s' }}
     >
       <div className={styles.logRow}>
         <div className={styles.logPhoto} style={{ background: swatchGradient(d.photoSwatch ?? ''), position: 'relative', flex: 'none' }}>
@@ -242,7 +252,21 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{d.id}</span>
+                <a
+                  href={pathForScreen('decision-log', activeProjectId, d.id)}
+                  onClick={(e) => {
+                    // only a plain primary click stays in-app; Ctrl/Cmd/Shift/Alt or a middle click
+                    // keeps the browser's own behaviour (open the shared link in a new tab/window)
+                    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                    e.preventDefault();
+                    setRouteItem(d.id);
+                  }}
+                  data-testid={`log-link-${d.id}`}
+                  aria-label={`Link to decision ${d.id}`}
+                  // 44px hit area (WAVE_0 floor) without growing the title line: the negative
+                  // margin gives the extra height back to the layout
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)', display: 'inline-flex', alignItems: 'center', minHeight: 44, minWidth: 44, margin: '-12px 0' }}
+                >{d.id}</a>
                 <span style={{ fontWeight: 600, fontSize: 16 }}>{d.title}</span>
                 {locked && <Lock size={13} data-testid={`lock-${d.id}`} />}
               </div>

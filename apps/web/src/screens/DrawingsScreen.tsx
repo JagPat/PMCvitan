@@ -51,7 +51,9 @@ export function DrawingsScreen() {
   const actionsLocked = useStore(drawingMutationsBlocked);
   // hold the open drawing by id so the viewer always reflects live store state
   // (e.g. an acknowledgement) rather than a stale snapshot captured on click.
-  const [openId, setOpenId] = useState<string | null>(null);
+  // B6 — the open drawing is the URL's item (`/drawings/<id>`): shareable, and Back closes it
+  const openId = useStore((st) => st.routeItem);
+  const setOpenId = useStore((st) => st.setRouteItem);
   const open = openId ? drawings.find((d) => d.id === openId) ?? null : null;
   const [issuing, setIssuing] = useState(false);
 

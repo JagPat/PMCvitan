@@ -10,7 +10,7 @@ import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice, isWithdrawnDecisionNotice } from '../domain/notifications';
 import { readFeedEvents, readNotificationFeed } from '../platform/notification-feed';
 import { Prisma } from '@prisma/client';
-import { viewerIsDecider } from '@vitan/shared';
+import { SNAPSHOT_SITE_PHOTO_LIMIT, viewerIsDecider } from '@vitan/shared';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
 import type { ProjectShellCounts, SnapshotDto } from './types';
@@ -116,7 +116,7 @@ export class SnapshotService {
       this.prisma.media.findMany({
         where: { projectId, kind: { in: ['progress', 'inspection', 'material'] } },
         orderBy: { createdAt: 'desc' },
-        take: 300,
+        take: SNAPSHOT_SITE_PHOTO_LIMIT,
         select: { id: true, kind: true, url: true, takenAt: true, nodeId: true },
       }),
       // Task 10 — the drawings register comes from the module's query (the baked per-viewer register:

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore } from '@/store/store';
+import { useStore, type CreateProjectOutcome } from '@/store/store';
+import { isCreateHoldStorageKey } from '@/store/projectCreateHold';
 import { useProjectSwitch } from './useProjectSwitch';
 import { Modal } from '@/components';
 import { ChevronRight, Plus, Check } from '@/lib/icons';
@@ -130,6 +131,45 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
   // KIND plus the name for whichever kind is chosen (the server enforces exactly one).
   type Pick_ = { count: number; underZone: string; underRoom: string; roomTargetKind: 'room' | 'zone' };
   const [picked, setPicked] = useState<Record<string, Pick_>>({});
+  // Legacy-copy recovery: the dialog closes only on a CONFIRMED create. While a create is out the
+  // inputs and Create are held (a ref, so a double-click in one tick cannot send twice); a refusal or
+  // an unconfirmed outcome leaves every input as typed with the reason inline. Cancel/Escape stay
+  // available and do not cancel the request: a reply that lands after the dialog is gone is told
+  // as a toast instead (a create still opens its project, as before).
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The identity's create hold (Codex 4180481917, 4184306919): while a create is out, or after one
+  // whose outcome is unknown, Create stays locked in EVERY instance of this dialog, tab and page. An
+  // unknown attempt is finished only by "Try again", which resends THAT attempt under its own
+  // idempotency key, so the server replays the first create rather than making a second (replaces
+  // #710; Codex 4185707835). No list check ever releases it.
+  const hold = useStore((s) => s.projectCreateHold);
+  const retryProjectCreate = useStore((s) => s.retryProjectCreate);
+  const syncHold = useStore((s) => s.syncProjectCreateHold);
+  // The hold is DERIVED for whoever is signed in now, so it is re-read on open, whenever another tab takes,
+  // finishes or releases an attempt (its storage event; Codex 4192001251), and whenever the signed-in
+  // identity changes while this dialog is open (Codex 4192524377).
+  // the identity a hold is scoped to (`createHoldScope`): the token's subject — which is the session user once
+  // signed in — or the dev session user; the same user re-authenticating is the same identity
+  const identity = useStore((s) => `${s.sessionToken ? 'token' : 'dev'}|${s.sessionUserId ?? ''}`);
+  useEffect(() => {
+    syncHold();
+    const onStorage = (e: StorageEvent) => { if (isCreateHoldStorageKey(e.key)) syncHold(); };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [syncHold, identity]);
+  const locked = hold !== null;
+  const inFlight = useRef(false);
+  // The dialog belongs to the identity it was opened for. Another identity signing in while it is open
+  // (auth adoption without a sign-out) closes it, so the new user never sees, waits on or retries the
+  // previous user's create here; reopened, it reads only their own hold (Codex 4192524377).
+  const openedFor = useRef(identity);
+  useEffect(() => { if (identity !== openedFor.current) onClose(); }, [identity, onClose]);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true; // StrictMode re-runs effects: a remount must count as mounted again
+    return () => { mounted.current = false; };
+  }, []);
   useEffect(() => { loadOrgModules(orgId); loadOrgTemplates(orgId); }, [orgId, loadOrgModules, loadOrgTemplates]);
 
   const togglePick = (id: string) =>
@@ -149,8 +189,8 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
     return p.roomTargetKind === 'room' ? !p.underRoom.trim() : !p.underZone.trim();
   });
 
-  const submit = () => {
-    if (!name.trim() || !short.trim() || targetsIncomplete) return;
+  const submit = async () => {
+    if (inFlight.current || locked || !name.trim() || !short.trim() || targetsIncomplete) return;
     const modules: ModuleSelection[] = Object.entries(picked).map(([moduleId, p]) => {
       if (orgModules.find((m) => m.id === moduleId)?.anchorKind === 'room') {
         return {
@@ -175,16 +215,39 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
       ...(startFrom.startsWith('proj:') ? { structureFrom: startFrom.slice(5) } : {}),
       ...(modules.length ? { modules } : {}),
     };
-    createProject(orgId, input);
-    onClose();
+    await run(() => createProject(orgId, input));
+  };
+  /** Finish the unconfirmed attempt as ITSELF — the same request under the same key. */
+  const retry = async () => {
+    if (inFlight.current || hold?.phase !== 'unknown') return;
+    await run(retryProjectCreate);
+  };
+  const run = async (send: () => Promise<CreateProjectOutcome>) => {
+    inFlight.current = true;
+    setSubmitting(true);
+    setError(null);
+    const outcome = await send();
+    inFlight.current = false;
+    if (!mounted.current) {
+      // the dialog was dismissed while this was out: the store has already announced a create
+      if (outcome.kind === 'refused' || outcome.kind === 'unknown') useStore.getState().flash(outcome.message);
+      return;
+    }
+    setSubmitting(false);
+    // `stale`: another user is now signed in — this dialog belongs to nobody on screen
+    if (outcome.kind === 'created' || outcome.kind === 'stale') onClose();
+    else {
+      setError(outcome.message);
+    }
   };
   return (
     <Modal onClose={onClose} maxWidth={420} labelledBy="np-title">
       <div style={{ padding: '18px 20px' }}>
         <div id="np-title" style={{ fontWeight: 700, fontSize: 17 }}>New project</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>You'll be added as its PMC.</div>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name (Residence at Bodakdev)" style={fld} />
-        <input value={short} onChange={(e) => setShort(e.target.value)} placeholder="Short name (Bodakdev Residence)" style={{ ...fld, marginTop: 10 }} />
+        <fieldset disabled={submitting} style={{ border: 'none', margin: 0, padding: 0, minWidth: 0 }}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name (Residence at Bodakdev)" aria-label="Full name" style={fld} />
+        <input value={short} onChange={(e) => setShort(e.target.value)} placeholder="Short name (Bodakdev Residence)" aria-label="Short name" style={{ ...fld, marginTop: 10 }} />
         {(memberships.length > 0 || orgTemplates.length > 0) && (
           <>
             <label htmlFor="np-structure" style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--muted)', margin: '14px 2px 0' }}>START FROM</label>
@@ -269,16 +332,34 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
             </div>
           </>
         )}
+        </fieldset>
+        {(error ?? (hold?.phase === 'unknown' ? hold.message : hold?.phase === 'in_flight' && !submitting ? 'A project is already being created — wait for it to finish.' : null)) && (
+          <div role="alert" data-testid="np-error" style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(180,70,46,.08)', border: '1px solid rgba(180,70,46,.3)', color: '#8a3320', fontSize: 12.5, lineHeight: 1.5 }}>
+            {error ?? (hold?.phase === 'unknown' ? hold.message : 'A project is already being created — wait for it to finish.')}
+            {hold?.phase === 'unknown' && !submitting && (
+              <div style={{ marginTop: 8 }}>
+                <button
+                  type="button"
+                  data-testid="np-retry"
+                  onClick={() => void retry()}
+                  style={{ background: 'none', border: 'none', padding: 0, color: '#8a3320', textDecoration: 'underline', fontSize: 12.5, cursor: 'pointer', minHeight: 44 }}
+                >
+                  Try again: create “{hold.input.name}”
+                </button>
+              </div>
+            )}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <button onClick={onClose} style={{ ...btn, background: '#fff', color: 'var(--ink)', border: '1px solid rgba(35,33,28,.2)' }}>Cancel</button>
-          <button onClick={submit} disabled={!name.trim() || !short.trim() || targetsIncomplete} style={{ ...btn, background: 'var(--ink)', color: '#fff', border: 'none', opacity: name.trim() && short.trim() && !targetsIncomplete ? 1 : 0.5 }}>Create</button>
+          <button onClick={() => void submit()} disabled={submitting || locked || !name.trim() || !short.trim() || targetsIncomplete} aria-busy={submitting} data-testid="np-create" style={{ ...btn, background: 'var(--ink)', color: '#fff', border: 'none', opacity: !submitting && !locked && name.trim() && short.trim() && !targetsIncomplete ? 1 : 0.5 }}>{submitting ? 'Creating…' : 'Create'}</button>
         </div>
       </div>
     </Modal>
   );
 }
 
-const label0: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.22em', color: 'rgba(237,231,218,.4)', marginBottom: 6 };
+const label0: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.22em', color: 'rgba(237,231,218,.62)', marginBottom: 6 };
 // #584 review round 11 — the rail's project trigger, at 217x34 the first time the target sweep
 // rendered the rail shell at all. The rail is what a phone shows in landscape.
 const pill: CSSProperties = { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 44, padding: '9px 11px', borderRadius: 9, border: '1px solid rgba(237,231,218,.16)', background: 'rgba(237,231,218,.04)', color: 'var(--sidebar-text)' };
@@ -286,6 +367,6 @@ const panel: CSSProperties = { position: 'absolute', left: 0, right: 0, top: '10
 function row(on: boolean): CSSProperties {
   return { width: '100%', display: 'flex', alignItems: 'center', gap: 8, minHeight: 44, padding: '9px 10px', borderRadius: 7, border: 'none', background: on ? 'rgba(180,70,46,.2)' : 'transparent', color: 'rgba(237,231,218,.85)', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', textAlign: 'left' };
 }
-const roleTag: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.06em', color: 'rgba(237,231,218,.5)', textTransform: 'uppercase' };
+const roleTag: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.06em', color: 'rgba(237,231,218,.62)', textTransform: 'uppercase' };
 const fld: CSSProperties = { width: '100%', height: 44, marginTop: 14, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)', outline: 'none' };
 const btn: CSSProperties = { flex: 1, padding: 12, borderRadius: 11, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 14, cursor: 'pointer' };

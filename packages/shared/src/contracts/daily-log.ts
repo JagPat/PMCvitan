@@ -9,6 +9,11 @@
  * command/query behavior; the boundary check proves no other module reads its persistence directly.
  */
 
+/** The snapshot carries at most this many site photos (progress, inspection and material media), newest first —
+ *  the daily-log gallery and the Place view read that window. A client counting them can therefore say only
+ *  "at least this many" once it holds this many (Codex 4194155412). */
+export const SNAPSHOT_SITE_PHOTO_LIMIT = 300;
+
 /** The daily-log module's state-changing commands (must equal the manifest `commands`). */
 export const DAILY_LOG_COMMANDS = [
   'daily-log.start',
