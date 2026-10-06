@@ -32,7 +32,9 @@ describe('PR B Task 4 — outbox operations (live PG)', () => {
     ops = t.app.get(OutboxOperationsService);
     relay = t.app.get(OutboxRelay);
     activation = t.app.get(OutboxConsumerActivationService);
-    human.actorId = f.memberUser.id;
+    // 4d-iii / R0a-2 — a human event's pair must resolve on the project it lands on. The org owner
+    // stands as `pmc` on every orgA project (the windowed owner/admin arm), fresh ones included.
+    human.actorId = f.ownerUser.id;
     registerConsumer(ordered);
     await syncConsumerCatalog(t.prisma);
   });

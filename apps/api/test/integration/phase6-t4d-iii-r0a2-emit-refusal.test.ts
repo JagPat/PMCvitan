@@ -2,11 +2,13 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { ForbiddenException } from '@nestjs/common';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, wipeMembershipTransitionsVia, type TwoProjectFixture } from './fixtures';
 import { emitEvent, type EmitInput } from '../../src/platform/events';
 import { STALE_ROLE_MESSAGE } from '../../src/platform/actor-envelope';
 import type { EventActor } from '../../src/common/actor';
 import { OrgsService } from '../../src/orgs/orgs.service';
+import { MembersService } from '../../src/orgs/members.service';
+import type { AuthUser } from '../../src/common/auth';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
@@ -55,7 +57,7 @@ describe('4d-iii / R0a-2 — emitEvent refuses an unresolved human pair (live PG
   });
 
   const position = async (projectId: string) =>
-    (await t.prisma.projectEventStream.findUnique({ where: { projectId } }))?.position ?? null;
+    (await t.prisma.projectEventStream.findUniqueOrThrow({ where: { projectId } })).nextPosition;
 
   const eventCount = (projectId: string) => t.prisma.domainEvent.count({ where: { projectId } });
 
@@ -158,5 +160,22 @@ describe('4d-iii / R0a-2 — emitEvent refuses an unresolved human pair (live PG
     await orgs.updateProject(f.orgA.id, f.ownerUser.id, p.id, { descriptor: 'edited as client' } as never);
     const [ev] = await pairsOf(p.id, 'project.updated');
     expect(ev).toMatchObject({ actorId: f.ownerUser.id, actorRole: 'client', actorName: await identityName(f.ownerUser.id) });
+  });
+
+  it('a member command on the actor’s OWN membership announces them as they stood: an owner adding themselves', async () => {
+    // The membership event is emitted with the transition fact's pair, BEFORE the membership write:
+    // the envelope seal judges the pair at INSERT, and once the membership-less owner holds an
+    // engineer membership the windowed arm no longer admits their `pmc` token role.
+    const members = t.app.get(MembersService);
+    const requester = { sub: f.ownerUser.id, role: 'pmc', projectId: f.projectA.id } as AuthUser;
+    const { email } = await t.prisma.user.findUniqueOrThrow({ where: { id: f.ownerUser.id }, select: { email: true } });
+    try {
+      await members.add(f.projectA.id, requester, { name: 'owner', role: 'engineer', email: email! }, `r0a2-self-${randomUUID()}`);
+      const [ev] = await pairsOf(f.projectA.id, 'membership.added');
+      expect(ev).toMatchObject({ actorId: f.ownerUser.id, actorRole: 'pmc', actorName: await identityName(f.ownerUser.id) });
+    } finally {
+      await wipeMembershipTransitionsVia(t.prisma, [f.ownerUser.id]);
+      await t.prisma.membership.deleteMany({ where: { projectId: f.projectA.id, userId: f.ownerUser.id } });
+    }
   });
 });

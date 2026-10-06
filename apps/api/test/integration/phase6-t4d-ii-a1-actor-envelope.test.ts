@@ -5,6 +5,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent, type EmitInput } from '../../src/platform/events';
 import type { EventActor } from '../../src/common/actor';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { STALE_ROLE_MESSAGE } from '../../src/platform/actor-envelope';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a / A1 — the actor ENVELOPE `emitEvent` writes, proven against live
@@ -15,8 +16,10 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * - the role is the token role, written only when the seal's own `platform_user_holds_role_windowed`
  *   admits it;
  * - the name is read from `UserIdentity` under `FOR UPDATE`, never taken from the `Actor`.
- * Anything the seal would not admit leaves the pair NULL, which the seal admits, so writing the
- * envelope introduces no refusal on a delivered path.
+ * Anything the seal would not admit left the pair NULL, which the seal admits. Since 4d-iii / R0a-2
+ * (the Board's Decision 2) a HUMAN event whose pair does not resolve is refused instead, with a
+ * re-sign-in: those cases below now assert the refusal (`phase6-t4d-iii-r0a2-emit-refusal.test.ts`
+ * proves it in full). A `system` actor still writes no pair until R0b admits one and R0c writes it.
  */
 describe('4d-ii-a / A1 — the actor envelope (live PG)', () => {
   let t: TestApp;
@@ -76,30 +79,23 @@ describe('4d-ii-a / A1 — the actor envelope (live PG)', () => {
     expect(ev).toMatchObject({ actorRole: 'pmc', actorName: await identityName(f.ownerUser.id) });
   });
 
-  it('writes NO pair for a token role the actor does not hold, and never substitutes the role they do hold', async () => {
+  it('REFUSES a token role the actor does not hold, and never substitutes the role they do hold (R0a-2)', async () => {
     // The client member claims `pmc` (a stale or wrong token role): the seal would refuse `pmc`,
     // and writing `client` instead would attribute the act to a standing it was not performed in.
-    const { eventId } = await emit(human(f.clientUser.id, 'pmc'));
-    const ev = await envelopeOf(eventId);
-    expect(ev.actorId).toBe(f.clientUser.id);
-    expect(ev.actorRole).toBeNull();
-    expect(ev.actorName).toBeNull();
+    // Since R0a-2 (Decision 2) the act is refused with a re-sign-in rather than recorded unattributed.
+    await expect(emit(human(f.clientUser.id, 'pmc'))).rejects.toThrow(STALE_ROLE_MESSAGE);
   });
 
-  it('writes NO pair for an actor with no standing on the project (another tenant, a stranger)', async () => {
+  it('REFUSES an actor with no standing on the project (another tenant, a stranger) (R0a-2)', async () => {
     for (const actorId of [f.otherUser.id, f.strangerUser.id]) {
-      const { eventId } = await emit(human(actorId, 'pmc'));
-      const ev = await envelopeOf(eventId);
-      expect(ev.actorId).toBe(actorId);
-      expect([ev.actorRole, ev.actorName]).toEqual([null, null]);
+      await expect(emit(human(actorId, 'pmc'))).rejects.toThrow(STALE_ROLE_MESSAGE);
     }
   });
 
-  it('writes NO pair for a system actor or a blank role', async () => {
+  it('writes NO pair for a system actor; a blank human role is REFUSED (R0a-2)', async () => {
     const system = await emit({ actorId: 'system:a1-probe', actorRole: 'system', actorKind: 'system' });
     expect(await envelopeOf(system.eventId)).toMatchObject({ actorKind: 'system', actorRole: null, actorName: null });
-    const blank = await emit(human(f.memberUser.id, '  '));
-    expect(await envelopeOf(blank.eventId)).toMatchObject({ actorRole: null, actorName: null });
+    await expect(emit(human(f.memberUser.id, '  '))).rejects.toThrow(STALE_ROLE_MESSAGE);
   });
 
   it('takes the name from UserIdentity inside the transaction, not from a pre-transaction read', async () => {
@@ -201,10 +197,11 @@ describe('4d-ii-a / A1 — the actor envelope (live PG)', () => {
 
       const [demoted, emitted] = await Promise.allSettled([demotion, emitting]);
       expect(demoted.status, demoted.status === 'rejected' ? String(demoted.reason) : '').toBe('fulfilled');
-      expect(emitted.status, emitted.status === 'rejected' ? String(emitted.reason) : '').toBe('fulfilled');
-      // The emit read the registers after the demotion committed: the owner no longer holds pmc.
-      const { eventId } = (emitted as PromiseFulfilledResult<{ eventId: string }>).value;
-      expect(await envelopeOf(eventId)).toMatchObject({ actorId: owner.id, actorRole: null, actorName: null });
+      // The emit read the registers after the demotion committed: the owner no longer holds pmc. It
+      // ends in the re-sign-in refusal (R0a-2, Decision 2) — never a deadlock abort, which is what
+      // this probe pins — and so writes nothing.
+      expect(emitted.status).toBe('rejected');
+      expect(String((emitted as PromiseRejectedResult).reason)).toContain(STALE_ROLE_MESSAGE);
     } finally {
       await t.prisma.orgMembership.deleteMany({ where: { userId: owner.id } });
       await t.prisma.user.delete({ where: { id: owner.id } });

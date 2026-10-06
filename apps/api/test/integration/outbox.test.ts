@@ -51,7 +51,9 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
     t = await createTestApp();
     f = await createTwoProjectFixture(t.prisma);
     relay = t.app.get(OutboxRelay);
-    human.actorId = f.memberUser.id;
+    // 4d-iii / R0a-2 — a human event's pair must resolve on the project it lands on. The org owner
+    // stands as `pmc` on every orgA project (the windowed owner/admin arm), fresh ones included.
+    human.actorId = f.ownerUser.id;
     registerConsumer(orderedConsumer);
     // The ad-hoc ordered projection consumer needs its catalog contract row before it can own
     // deliveries (the (consumer, consumerKind) FK) — bootstrap synced only socket/push.

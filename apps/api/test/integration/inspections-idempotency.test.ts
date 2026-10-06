@@ -793,6 +793,11 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     const holder = `it-inidem-u-r11h-${projSeq}`;
     await t.prisma.user.create({ data: { id: holder, projectId: p, role: 'engineer', name: 'Holder', email: `${holder}@t.local` } });
     await t.prisma.membership.create({ data: { projectId: p, userId: holder, role: 'engineer', status: 'active' } });
+    // 4d-iii / R0a-2 — the OTHER engineer who deletes is a real member: an act that commits is
+    // attributed, so its actor must stand on the project (an event's pair must resolve).
+    const other = `it-inidem-u-r11o-${projSeq}`;
+    await t.prisma.user.create({ data: { id: other, projectId: p, role: 'engineer', name: 'Other', email: `${other}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: other, role: 'engineer', status: 'active' } });
     await svc.create(p, createInput({ title: 'Raced assignment' }), asPmc(pmcA, p), 'k-r11-1');
     const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Raced assignment' }, include: { items: true } });
     const asUser = (sub: string) => ({ sub, role: 'engineer', projectId: p }) as AuthUser;
@@ -837,7 +842,7 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     try {
       // the delete proceeds — the inspection was genuinely unassigned for the WHOLE authorisation,
       // which is what the row lock makes true rather than merely observed
-      expect(await media.remove(shot.id, asUser(`it-inidem-u-r11o-${projSeq}`))).toBe(true);
+      expect(await media.remove(shot.id, asUser(other))).toBe(true);
     } finally {
       spy.mockRestore();
     }
@@ -850,7 +855,7 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
       kind: 'inspection', mime: 'image/png', data: Buffer.from('r11b').toString('base64'),
       inspectionId: insp.id, inspectionItemId: insp.items[0]!.id,
     });
-    await expect(media.remove(later.id, asUser(`it-inidem-u-r11o-${projSeq}`)))
+    await expect(media.remove(later.id, asUser(other)))
       .rejects.toBeInstanceOf(ForbiddenException);
     expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: later.id } })).toBe(1);
   });

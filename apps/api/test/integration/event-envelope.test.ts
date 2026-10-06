@@ -188,6 +188,9 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     expect(await streamOf(f.projectA.id)).not.toBeNull();
     // A project whose counter was removed cannot emit (the invariant that guards gap-safety).
     const tmpOrg = await t.prisma.org.create({ data: { id: `it-ev-org-${Date.now() % 1e6}`, name: 'Tmp', slug: `it-ev-org-${Date.now() % 1e6}` } });
+    // 4d-iii / R0a-2 — the emitter must STAND on the project, or the stale-role refusal answers before
+    // the missing counter is ever reached: the member owns the temporary org, so it holds `pmc` there.
+    await t.prisma.orgMembership.create({ data: { orgId: tmpOrg.id, userId: f.memberUser.id, role: 'owner' } });
     const tmp = await t.prisma.project.create({
       data: { id: `it-ev-nostream-${Date.now() % 1e6}`, orgId: tmpOrg.id, name: 'Tmp', short: 'T', descriptor: '', stage: 'x', siteCode: 'T', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     });
@@ -211,7 +214,8 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     }
     await expect(
       t.prisma.$transaction((tx) => emitEvent(tx, { projectId: tmp.id, actor: human, eventType: 'project.created', entityType: 'Project', entityId: tmp.id, effectKey: 'project.created', dispatch: {} })),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ code: 'P2025' }); // the counter update found no row — not any other refusal
+    await t.prisma.orgMembership.deleteMany({ where: { orgId: tmpOrg.id } });
     await t.prisma.project.delete({ where: { id: tmp.id } });
     await t.prisma.org.delete({ where: { id: tmpOrg.id } });
   });
