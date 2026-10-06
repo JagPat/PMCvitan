@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: 4d-iii-r0a-2
 reviewed_merge: cffb251
-open_pr: none
+open_pr: 723
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-06
