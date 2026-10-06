@@ -411,7 +411,8 @@ describe('OrgsService.updateProject', () => {
 
   it('lets the project PMC edit even if not an org admin', async () => {
     const { svc, prisma } = make(null); // not an org member
-    prisma.membership.findUnique.mockResolvedValueOnce({ role: 'pmc', status: 'active' });
+    // the membership is read twice: the fast check, then the re-judge inside the write (4d-iii / R0a-2)
+    prisma.membership.findUnique.mockResolvedValue({ role: 'pmc', status: 'active' });
     const res = await svc.updateProject('org1', 'pmcUser', 'villa', { stage: 'Finishing' });
     expect(res).toBeDefined();
     expect(prisma.project.update).toHaveBeenCalled();

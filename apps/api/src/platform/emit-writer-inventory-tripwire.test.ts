@@ -46,7 +46,7 @@ const CLASSIFIED: Record<string, { calls: number; verdict: string }> = {
   'test/integration/phase6-t4a-withdraw.test.ts': { calls: 8, verdict: 'current: the pmc member of projectA and of each wedge project, enrolled as it is made' },
   'test/integration/phase6-t4d-ii-a1-actor-envelope.test.ts': { calls: 2, verdict: 'subject: the actor envelope — its unresolved cases assert the R0a-2 refusal' },
   'test/integration/phase6-t4d-ii-a6d-delivery-seals.test.ts': { calls: 4, verdict: 'current: the projectA pmc member' },
-  'test/integration/phase6-t4d-iii-r0a2-emit-refusal.test.ts': { calls: 4, verdict: 'subject: the R0a-2 refusal and attribution proofs' },
+  'test/integration/phase6-t4d-iii-r0a2-emit-refusal.test.ts': { calls: 5, verdict: 'subject: the R0a-2 refusal and attribution proofs' },
   'test/integration/projection.test.ts': { calls: 1, verdict: OWNER },
 };
 

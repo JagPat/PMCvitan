@@ -94,6 +94,22 @@ export async function resolveActorEnvelope(
 }
 
 /**
+ * Phase 6 task 4d-iii / R0a-2 — a member command locks its TARGET's standing rows `FOR UPDATE` before
+ * it emits. Every emitter takes the actor's `ProjectUserStanding` rows (FOR SHARE, above) and THEN the
+ * project's event stream. The member commands emit before their membership write (the event carries
+ * the fact's pre-state pair), so without this they would take the stream first and the target's rows
+ * second: the opposite order to a concurrent command BY the target on the same project, which holds
+ * those rows and waits on the stream (a deadlock PostgreSQL aborts). Taking the target's rows first
+ * keeps one order — standing, then stream — on every path.
+ */
+export async function lockStandingForWrite(tx: Prisma.TransactionClient, projectId: string, userId: string): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`
+    SELECT 1 FROM "ProjectUserStanding"
+     WHERE "projectId" = ${projectId} AND "userId" = ${userId}
+       FOR UPDATE`);
+}
+
+/**
  * Phase 6 task 4d-iii / R0a — the Board's Decision 2 (2026-10-05): a human act whose token role no
  * longer stands on the project is REFUSED with a re-sign-in, never recorded with an empty or false
  * attribution. One message for every writer that owes the pair, so the client can treat it as one

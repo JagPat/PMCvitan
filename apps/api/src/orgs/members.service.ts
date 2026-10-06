@@ -8,7 +8,7 @@ import type { AddMemberInput, UpdateMemberInput } from '../contracts';
 import { resolveActor, type Actor, type EventActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
-import { resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
+import { lockStandingForWrite, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant } from './orgs.participant';
@@ -436,6 +436,10 @@ export class MembersService {
         // the fact's membership FK is deferred to commit for exactly this order.
         const membershipId = prior?.id ?? randomUUID();
         const pair = await this.factPair(tx, projectId, actor);
+        // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
+        // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
+        // requester's org-authority row before their standing rows, the projection writers' order
+        await lockStandingForWrite(tx, projectId, user.id);
         const addFact: TransitionFact = {
           projectId, membershipId, userId: user.id,
           fromRole: prior?.role ?? null, fromStatus: prior?.status ?? null,
@@ -538,6 +542,10 @@ export class MembersService {
         }
         if (cur.role === input.role) throw new ConflictException('This member\'s role changed while updating — reload and retry');
         const pair = await this.factPair(tx, projectId, actor);
+        // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
+        // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
+        // requester's org-authority row before their standing rows, the projection writers' order
+        await lockStandingForWrite(tx, projectId, userId);
         const roleFact: TransitionFact = {
           projectId, membershipId: cur.id, userId,
           fromRole: cur.role, fromStatus: cur.status, toRole: input.role, toStatus: 'active',
@@ -655,6 +663,10 @@ export class MembersService {
           );
         }
         const pair = await this.factPair(tx, projectId, actor);
+        // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
+        // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
+        // requester's org-authority row before their standing rows, the projection writers' order
+        await lockStandingForWrite(tx, projectId, userId);
         const removeFact: TransitionFact = {
           projectId, membershipId: cur.id, userId,
           fromRole: cur.role, fromStatus: cur.status, toRole: cur.role, toStatus: 'removed',

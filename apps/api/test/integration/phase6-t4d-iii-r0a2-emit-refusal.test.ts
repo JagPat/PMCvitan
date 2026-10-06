@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { ForbiddenException } from '@nestjs/common';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, wipeMembershipTransitionsVia, type TwoProjectFixture } from './fixtures';
 import { emitEvent, type EmitInput } from '../../src/platform/events';
-import { STALE_ROLE_MESSAGE } from '../../src/platform/actor-envelope';
+import { STALE_ROLE_MESSAGE, resolveActorEnvelope } from '../../src/platform/actor-envelope';
 import type { EventActor } from '../../src/common/actor';
 import { OrgsService } from '../../src/orgs/orgs.service';
 import { MembersService } from '../../src/orgs/members.service';
@@ -176,6 +176,79 @@ describe('4d-iii / R0a-2 — emitEvent refuses an unresolved human pair (live PG
     } finally {
       await wipeMembershipTransitionsVia(t.prisma, [f.ownerUser.id]);
       await t.prisma.membership.deleteMany({ where: { projectId: f.projectA.id, userId: f.ownerUser.id } });
+    }
+  });
+
+  it('Codex 4199574223: an owner/admin demoted after the pre-transaction check is refused INSIDE the lifecycle write, even when another membership role would still attribute it', async () => {
+    // An org ADMIN who also holds a `client` membership on the project. Attribution would record
+    // `client`, a pair the demotion does not disturb, so only an in-transaction authority check can
+    // refuse the stale act. The demotion lands between the service's read and its write: the read is
+    // made to answer as it did before the demotion committed.
+    const p = await orgs.createProject(f.orgA.id, f.ownerUser.id, projectInput());
+    const adm = await t.prisma.user.create({ data: { id: `r0a2-adm-${randomUUID().slice(0, 8)}`, name: 'Adm', email: `${randomUUID()}@test.local`, role: 'client', projectId: p.id } });
+    const stale = vi.spyOn(orgs as unknown as { orgRole: (o: string, u: string) => Promise<string | null> }, 'orgRole');
+    try {
+      await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: adm.id, role: 'admin' } });
+      await t.prisma.membership.create({ data: { projectId: p.id, userId: adm.id, role: 'client', status: 'active' } });
+      await t.prisma.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: adm.id } }, data: { role: 'member' } });
+      stale.mockResolvedValue('admin');
+      const before = { project: await t.prisma.project.findUniqueOrThrow({ where: { id: p.id } }), events: await eventCount(p.id) };
+      for (const act of [
+        () => orgs.updateProject(f.orgA.id, adm.id, p.id, { descriptor: 'by a demoted admin' } as never),
+        () => orgs.deleteProject(f.orgA.id, adm.id, p.id),
+        () => orgs.restoreProject(f.orgA.id, adm.id, p.id),
+      ]) {
+        await expect(act()).rejects.toBeInstanceOf(ForbiddenException);
+      }
+      const after = await t.prisma.project.findUniqueOrThrow({ where: { id: p.id } });
+      expect([after.descriptor, after.archivedAt]).toEqual([before.project.descriptor, before.project.archivedAt]);
+      expect(await eventCount(p.id)).toBe(before.events);
+    } finally {
+      stale.mockRestore();
+      await t.prisma.membership.deleteMany({ where: { userId: adm.id } });
+      await t.prisma.orgMembership.deleteMany({ where: { userId: adm.id } });
+      await t.prisma.user.delete({ where: { id: adm.id } });
+    }
+  });
+
+  it('a member command on user U and a concurrent command BY U take standing, then stream, in one order: neither deadlocks', async () => {
+    // U's own command holds U's standing rows (its envelope locks them FOR SHARE) and then needs the
+    // project's stream. The member command re-roling U emits BEFORE its membership write, so it must
+    // take U's rows before the stream too, or the two wait on each other and PostgreSQL aborts one.
+    const members = t.app.get(MembersService);
+    const u = await t.prisma.user.create({ data: { id: `r0a2-dl-${randomUUID().slice(0, 8)}`, name: 'Deadlock U', email: `${randomUUID()}@test.local`, role: 'engineer', projectId: f.projectA.id } });
+    try {
+      await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: u.id, role: 'engineer', status: 'active' } });
+      let resolve!: () => void;
+      const held = new Promise<void>((r) => { resolve = r; });
+      let release!: () => void;
+      const released = new Promise<void>((r) => { release = r; });
+      const byU = t.prisma.$transaction(async (tx) => {
+        expect(await resolveActorEnvelope(tx, f.projectA.id, human(u.id, 'engineer'))).not.toBeNull();
+        resolve();
+        await released;
+        return emitEvent(tx, input(human(u.id, 'engineer')));
+      }, { timeout: 30_000 });
+      await held;
+      const requester = { sub: f.memberUser.id, role: 'pmc', projectId: f.projectA.id } as AuthUser;
+      const reRole = members.updateRole(f.projectA.id, requester, u.id, { role: 'contractor' } as never, `r0a2-dl-${randomUUID()}`);
+      // the re-role must now be WAITING on a lock U's transaction holds — condition-based, not a sleep
+      const deadline = Date.now() + 10_000;
+      let waiting = 0;
+      while (Date.now() < deadline && waiting === 0) {
+        const [row] = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(`SELECT count(*) AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND state = 'active'`);
+        waiting = Number(row?.n ?? 0);
+      }
+      expect(waiting, 'the re-role is blocked on a lock U holds').toBeGreaterThan(0);
+      release();
+      const [mine, theirs] = await Promise.allSettled([byU, reRole]);
+      expect(mine.status, mine.status === 'rejected' ? String(mine.reason) : '').toBe('fulfilled');
+      expect(theirs.status, theirs.status === 'rejected' ? String(theirs.reason) : '').toBe('fulfilled');
+      expect((await t.prisma.membership.findUniqueOrThrow({ where: { projectId_userId: { projectId: f.projectA.id, userId: u.id } } })).role).toBe('contractor');
+    } finally {
+      await wipeMembershipTransitionsVia(t.prisma, [u.id]);
+      await t.prisma.membership.deleteMany({ where: { userId: u.id } });
+      await t.prisma.user.delete({ where: { id: u.id } });
     }
   });
 });
