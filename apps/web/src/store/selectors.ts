@@ -272,12 +272,18 @@ export function activityReady(s: AppState, a: Activity): boolean {
   return readinessReady(readinessFor(s, a));
 }
 
-export function selectSchToday(s: AppState): { inProgress: number; doneWeek: number; blocked: number } {
+/** The Schedule's RUNNING / DONE / BLOCKED counts over exactly the activities given — the whole project, or
+ *  the rows a place filter shows (B8, Codex 4180886620), so the cards always describe what is listed. */
+export function scheduleStatusCounts(activities: readonly Activity[]): { inProgress: number; doneWeek: number; blocked: number } {
   return {
-    inProgress: s.activities.filter((a) => a.status === 'in-progress').length,
-    doneWeek: s.activities.filter((a) => a.status === 'done').length,
-    blocked: s.activities.filter((a) => a.status === 'blocked').length,
+    inProgress: activities.filter((a) => a.status === 'in-progress').length,
+    doneWeek: activities.filter((a) => a.status === 'done').length,
+    blocked: activities.filter((a) => a.status === 'blocked').length,
   };
+}
+
+export function selectSchToday(s: AppState): { inProgress: number; doneWeek: number; blocked: number } {
+  return scheduleStatusCounts(s.activities);
 }
 
 export function selectTodayMarkerPct(s: AppState): number {

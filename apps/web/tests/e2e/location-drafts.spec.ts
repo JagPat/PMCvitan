@@ -22,7 +22,8 @@ test('location drafts: a PMC builds a location privately, then publishes it live
   await expect(page.getByTestId('loc-draft-r-cellar')).toHaveCount(0); // the room below came along
 
   // It is now on the shared Site Map for the whole team.
-  await page.getByRole('button', { name: 'Done' }).click();
+  // exact: a Site Map card's name now carries its derived status ("… Done 1/1 done", B8)
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
   await page.getByRole('button', { name: 'Site Map' }).click();
   await expect(page.getByRole('button', { name: 'Basement' })).toBeVisible();
 });

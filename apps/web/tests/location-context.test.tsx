@@ -227,3 +227,30 @@ describe('a place\'s photos are read from the snapshot\'s capped window, and say
     expect(r.queryByText('No photos filed here yet.')).toBeNull();
   });
 });
+
+describe('the Site Map never presents an unread activity list as "no work here" (Codex 4195514775)', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it('a FAILED module read: each space says its status is unavailable, and the Work section says why', async () => {
+    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
+    const { useStore } = await load({ activities: [], activitiesLoad: 'error' });
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    act(() => { useStore.getState().openPlace('site'); });
+    const r = render(<PlacesScreen />);
+    expect(r.getByTestId('place-status-zoneA')).toHaveAttribute('data-state', 'unavailable');
+    expect(r.getByTestId('place-status-zoneA').textContent).toMatch(/could not be loaded/);
+    expect(r.getByText(/The activities could not be loaded/)).toBeInTheDocument();
+    expect(r.queryByText('No activities planned here yet.')).toBeNull();
+  });
+
+  it('a read still OUT says it is loading; an answered empty read is a real "none"', async () => {
+    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
+    const { useStore } = await load({ activities: [], activitiesLoad: 'loading' });
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    act(() => { useStore.getState().openPlace('site'); });
+    const r = render(<PlacesScreen />);
+    expect(r.getByTestId('place-status-zoneA')).toHaveAttribute('data-state', 'loading');
+    act(() => { useStore.setState({ activitiesLoad: 'ready' }); });
+    expect(r.queryByTestId('place-status-zoneA')).toBeNull(); // no work placed: no status line
+    expect(r.getByText('No activities planned here yet.')).toBeInTheDocument();
+  });
+});
