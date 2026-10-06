@@ -646,6 +646,9 @@ const REGISTER: Record<string, SealContract> = {
       // envelope the thing every fact's own pair is compared against, so an unjudged one
       // is not merely a false byline: it is the standard a judged pair is measured by.
       'phase6_t4d_actor_pair_true',
+      // 4d-iii / R0b — the system pair is admitted on a `system` actor ONLY with a registered
+      // automation name, and the actorId / correspondence arm stays on HUMAN envelopes.
+      'platform_t4d_automation_identity', 'NEW."actorKind" = \'human\' THEN',
     ],
   },
   phase6_t4d_change_request_evidence_frozen: {
@@ -1011,7 +1014,9 @@ const REGISTER: Record<string, SealContract> = {
       + '`leaseUntil`, DELETE refused',
     plan: 'plan lines 401 and 6712; P38; #582 round 1, finding 10',
     on: { 'ReleaseLease.ReleaseLease_t4d_frozen': B('D U') },
-    must: ['instanceId', 'catalogVersion', 'startedAt', '"leaseUntil" < OLD."leaseUntil"'],
+    // 4d-iii / R0b — the build's server generation is identity too: a live pre-R0c lease re-stamped
+    // NULL → 3 would pass R1–R3's preflights while that build still serves.
+    must: ['instanceId', 'catalogVersion', 'startedAt', '"serverGeneration"', '"leaseUntil" < OLD."leaseUntil"'],
   },
   platform_t4d_release_lease_insert_reserved: {
     rule: 'the dark window admits NO lease INSERT — there is no sanctioned writer until 4d-ii '
