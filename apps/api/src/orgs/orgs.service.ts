@@ -7,6 +7,7 @@ import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
 import { lockUserCredential } from '../common/credential-lock';
 import { resolveActor, type Actor } from '../common/actor';
+import { orgAuthorityActor } from '../platform/actor-envelope';
 import { emitEvent } from '../platform/events';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
 import { rethrowHolderSealViolation } from './members.service';
@@ -542,12 +543,14 @@ export class OrgsService {
       // the creator runs the project as its PMC — a membership write, under the new project's key
       // (taken before the `Project` insert, just after the org key: the one lock order)
       await tx.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
-      await emitEvent(tx, { projectId: id, actor, eventType: 'project.created', entityType: 'Project', entityId: id, payload: { name: input.name }, effectKey: 'project.created', dispatch: {} });
+      // Decision 1 — the creator's own `pmc` membership was just written, so the event is attributed to it
+      const eventActor: Actor = { ...actor, actorRole: 'pmc' };
+      await emitEvent(tx, { projectId: id, actor: eventActor, eventType: 'project.created', entityType: 'Project', entityId: id, payload: { name: input.name }, effectKey: 'project.created', dispatch: {} });
 
       const state: InitWriteState = {
         targetId: id,
         userId,
-        actor,
+        actor: eventActor,
         targetAnchor,
         today,
         activityIds: allActivityIds,
@@ -1211,7 +1214,7 @@ export class OrgsService {
     const actor = await resolveActor(this.prisma, { sub: userId, role: orgRole ?? 'pmc', projectId: pid } as unknown as AuthUser);
     const updated = await this.prisma.$transaction(async (tx) => {
       const u = await tx.project.update({ where: { id: pid }, data: input });
-      await emitEvent(tx, { projectId: pid, actor, eventType: 'project.updated', entityType: 'Project', entityId: pid, effectKey: 'project.updated', dispatch: {} });
+      await emitEvent(tx, { projectId: pid, actor: await orgAuthorityActor(tx, pid, actor), eventType: 'project.updated', entityType: 'Project', entityId: pid, effectKey: 'project.updated', dispatch: {} });
       return u;
     });
     return { id: updated.id, name: updated.name, short: updated.short };
@@ -1229,7 +1232,7 @@ export class OrgsService {
     const actor = await resolveActor(this.prisma, { sub: userId, role, projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
-      await emitEvent(tx, { projectId, actor, eventType: 'project.archived', entityType: 'Project', entityId: projectId, effectKey: 'project.archived', dispatch: {} });
+      await emitEvent(tx, { projectId, actor: await orgAuthorityActor(tx, projectId, actor), eventType: 'project.archived', entityType: 'Project', entityId: projectId, effectKey: 'project.archived', dispatch: {} });
     });
     return { ok: true };
   }
@@ -1245,7 +1248,7 @@ export class OrgsService {
     const actor = await resolveActor(this.prisma, { sub: userId, role, projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: null } });
-      await emitEvent(tx, { projectId, actor, eventType: 'project.restored', entityType: 'Project', entityId: projectId, effectKey: 'project.restored', dispatch: {} });
+      await emitEvent(tx, { projectId, actor: await orgAuthorityActor(tx, projectId, actor), eventType: 'project.restored', entityType: 'Project', entityId: projectId, effectKey: 'project.restored', dispatch: {} });
     });
     return { ok: true };
   }

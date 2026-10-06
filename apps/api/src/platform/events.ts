@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import type { EventActor } from '../common/actor';
-import { resolveActorEnvelope, type ActorEnvelope } from './actor-envelope';
+import { ForbiddenException } from '@nestjs/common';
+import { resolveActorEnvelope, STALE_ROLE_MESSAGE, type ActorEnvelope } from './actor-envelope';
 import type { DomainEventType } from '@vitan/shared';
 import { materializeDeliveries, type DispatchIntent as PersistedDispatchIntent, type EmittedEventMeta } from './outbox/registry';
 import { buildDispatchIntent, type ExternalEffectKey, type DispatchInput } from './external-effects';
@@ -139,6 +140,10 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
   const envelope = input.actorEnvelope !== undefined
     ? input.actorEnvelope
     : await resolveActorEnvelope(tx, input.projectId, input.actor);
+  // 4d-iii / R0a-2 — Decision 2: a human event whose role does not stand on the project is REFUSED,
+  // never recorded with an empty or false attribution. Service code owes the pair; a test that
+  // plants a legacy event takes a named bypass instead of this writer.
+  if (input.actor.actorKind === 'human' && !envelope) throw new ForbiddenException(STALE_ROLE_MESSAGE);
   // Lock + increment the per-project counter INSIDE this transaction: two concurrent commits on
   // one project serialize here, so positions are distinct, ordered and never skipped.
   const stream = await tx.projectEventStream.update({
