@@ -38,3 +38,19 @@ describe('Schedule summary cards under a place filter', () => {
     expect(cards(r)).toEqual({ running: String(project.inProgress), done: String(project.doneWeek), blocked: String(project.blocked) });
   });
 });
+
+describe('the place filter\'s options', () => {
+  it('list each place once and terminate on malformed parent data (shadow review on 7f71670)', () => {
+    // a duplicated id filed under itself: a walk without a visited set would recurse forever
+    useStore.setState((st) => {
+      st.nodes = [
+        { id: 'z-x', parentId: null, name: 'Zone X', kind: 'zone', order: 0 },
+        { id: 'z-x', parentId: 'z-x', name: 'Zone X again', kind: 'room', order: 0 },
+        { id: 'r-y', parentId: 'z-x', name: 'Room Y', kind: 'room', order: 1 },
+      ];
+    });
+    const r = render(<ScheduleScreen />);
+    const options = Array.from((r.getByTestId('sched-place-filter') as HTMLSelectElement).options).map((o) => o.value).filter(Boolean);
+    expect(options).toEqual(['z-x', 'r-y']);
+  });
+});

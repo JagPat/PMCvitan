@@ -371,9 +371,13 @@ export function ScheduleScreen() {
   const [placeFilter, setPlaceFilter] = useState('');
   const placeOptions = useMemo(() => {
     const out: { id: string; label: string }[] = [];
+    // cycle-safe like every other walk over `nodes` (subtreeIds, trailOf): a node is listed and descended into
+    // once, so malformed parent data (a duplicated id under itself) cannot recurse forever
+    const seen = new Set<string>();
     const walk = (parentId: string | null, depth: number) => {
       for (const n of childrenOf(nodes, parentId)) {
-        if (n.kind === 'element' || n.draft) continue;
+        if (n.kind === 'element' || n.draft || seen.has(n.id)) continue;
+        seen.add(n.id);
         out.push({ id: n.id, label: `${'\u2003'.repeat(depth)}${n.name}` });
         walk(n.id, depth + 1);
       }
