@@ -27,8 +27,12 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  padding: 8px 4px;
+  gap: 2px;
+  /* B9 — a full screen name must fit a fifth of a 320px bar (64px): the side padding stays minimal
+     so a one-word name ("Schedule") is never cut, and a two-word one ("Decision Log") wraps. The
+     vertical padding leaves headroom for that second line inside the fixed-height bar: icon 20 + gap 2
+     + two 13px lines at 1.1 (28.6) + 8 = 58.6px of a 62px bar (shadow review on d5a978b) */
+  padding: 4px 1px;
   color: var(--muted);
   cursor: pointer;
 }
@@ -64,8 +68,10 @@
   /* the critical-label floor (owner GO): a destination name is never below 13px */
   font-size: 13px;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* B9 (Codex 4180823396) — never truncated: a name too wide for its tab wraps between words onto a
+     second line instead of losing its end to an ellipsis (tab-labels.spec measures every persona at 320px) */
+  white-space: normal;
+  text-align: center;
+  line-height: 1.1;
   max-width: 100%;
 }

@@ -101,7 +101,7 @@ export function DecisionLogScreen() {
       <div className={styles.headRule} style={{ margin: '6px 0 8px' }}>
         <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' }}>Decision Register</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)' }}>{filtered.length} DECISIONS</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)' }}>{filtered.length} {filtered.length === 1 ? 'DECISION' : 'DECISIONS'}</div>
           {can('decision.create', role) && (
             <Button variant="ink" onClick={() => setIssuing(true)} data-testid="issue-decision" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5 }}>
               <Plus size={15} /> Issue decision

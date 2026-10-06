@@ -60,16 +60,25 @@ export function ProjectSwitcher() {
       }}
     >
       <div style={label0}>PROJECT</div>
-      <button
-        ref={triggerRef}
-        onClick={() => canSwitch && setOpen((v) => !v)}
-        data-testid="project-switcher"
-        aria-expanded={canSwitch ? open : undefined}
-        style={{ ...pill, cursor: canSwitch ? 'pointer' : 'default' }}
-      >
-        <span style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
-        {canSwitch && <ChevronRight size={15} style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s', flex: 'none' }} />}
-      </button>
+      {canSwitch ? (
+        <button
+          ref={triggerRef}
+          onClick={() => setOpen((v) => !v)}
+          data-testid="project-switcher"
+          aria-expanded={open}
+          aria-label={`Project: ${label} — switch project`}
+          style={{ ...pill, cursor: 'pointer' }}
+        >
+          <span style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+          <ChevronRight size={15} style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s', flex: 'none' }} />
+        </button>
+      ) : (
+        // B9 (F-16): with one project and nothing to create, there is nothing to switch to — the
+        // name is plain text, not a button that does nothing (the phone's switcher already is)
+        <div data-testid="project-switcher" style={{ ...pill, cursor: 'default' }}>
+          <span style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+        </div>
+      )}
 
       {open && (
         <div
