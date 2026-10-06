@@ -449,7 +449,7 @@ export class MembersService {
         await this.refuseHolderOrphan(tx, projectId, atRisk);
         // The event's pair is resolved by `emitEvent` itself, AFTER the write: it records the
         // actor as they stand when the event is emitted, which the envelope seal judges live.
-        const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
+        const ev = await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
         const flip = await this.emitStandingFlip(tx, projectId, actor, pair, addFact, transitionId);
         return { resultRef: m.id, value: { ...m, user }, events: flip ? [ev, flip] : [ev] };
       },
@@ -538,6 +538,14 @@ export class MembersService {
           fromRole: cur.role, fromStatus: cur.status, toRole: input.role, toStatus: 'active',
         };
         const transitionId = await this.recordTransition(tx, roleFact, actor, pair, commandId);
+        // The events are emitted BEFORE the write: the envelope seal judges the pair live at the INSERT, and a
+        // PMC re-roling themselves no longer holds `pmc` once the membership moves (Decision 2 refuses a missing pair).
+        // A refusal below rolls the whole transaction back, events included.
+        const events = [await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: input.role }, effectKey: 'membership.role_changed', dispatch: {} })];
+        // a consultant's discipline moving is its own fact
+        if ((cur.discipline ?? null) !== (discipline ?? null)) {
+          events.push(await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: discipline ? { discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} }));
+        }
         const m = await tx.membership.update({ where: { id: cur.id }, data: { role: input.role, discipline }, include: { user: true } })
           .catch((e: unknown) =>
             rethrowHolderSealViolation(
@@ -547,11 +555,6 @@ export class MembersService {
           );
         await this.refuseHolderOrphan(tx, projectId, new Set([cur.role]));
         await this.refuseAwaitingHolderOrphan(tx, projectId, cur.id, cur.role);
-        const events = [await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role }, effectKey: 'membership.role_changed', dispatch: {} })];
-        // a consultant's discipline moving is its own fact
-        if ((cur.discipline ?? null) !== (m.discipline ?? null)) {
-          events.push(await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: m.discipline ? { discipline: m.discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} }));
-        }
         const flip = await this.emitStandingFlip(tx, projectId, actor, pair, roleFact, transitionId);
         if (flip) events.push(flip);
         return { resultRef: m.id, value: m, events };
@@ -680,7 +683,7 @@ export class MembersService {
           }
           await this.refuseAwaitingHolderOrphan(tx, projectId, cur.id, cur.role);
         }
-        const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
+        const ev = await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
         const flip = await this.emitStandingFlip(tx, projectId, actor, pair, removeFact, transitionId);
         return { resultRef: cur.id, events: flip ? [ev, flip] : [ev] };
       },

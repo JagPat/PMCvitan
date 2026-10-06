@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: ux-queue-713-b9-naming
+work_item: 4d-iii-r0a-2
 reviewed_merge: cffb251
-open_pr: 713
+open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-06
@@ -57,9 +57,9 @@ redesign in smaller units. So #716 was closed and its work is split into server 
    "no plan", and the photo figures name the snapshot's capped window.
 5. **#712** — merged at `01b1840`. Each Site Map space shows its derived status, the Schedule filters by place
    with summary cards that count the listed rows, and an unread activity list is never shown as "no work".
-6. **#713** `claude/ux-b9-naming` (current work item) — prevent the small-screen Decision Log label truncation.
-7. **4d-iii R0a-2** — `emitEvent`'s central refusal, the org owner/admin `pmc` attribution and the
-   test-writer inventory. It is local work only, and gets no branch or PR until #713 completes.
+6. **#713** — merged at `499077e`. Prevents the small-screen Decision Log label truncation.
+7. **4d-iii R0a-2** (current work item) — `emitEvent`'s central refusal, the org owner/admin `pmc`
+   attribution and the test-writer inventory. #713 is merged, so the unit is open.
 
 The post-#715 native handoff named `pr:713`, picked from the live open PRs. `open_pr` records the current
 PR of the owner's order instead. `next_task` stays `phase-6-task-4d-iii`, which resumes with R0a-2. Each
