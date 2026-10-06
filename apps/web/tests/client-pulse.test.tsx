@@ -43,6 +43,8 @@ describe('U2a — clientPulse, the derivation', () => {
     expect(clientPulse(base).progressPct).toBe(45);
     expect(clientPulse({ ...base, milestonePct: 130 }).progressPct).toBe(100);
     expect(clientPulse({ ...base, milestonePct: -4 }).progressPct).toBe(0);
+    // unknown activities (a module read still loading, or failed) stay unknown — never 0% (Codex 4180841684)
+    expect(clientPulse({ ...base, milestonePct: null }).progressPct).toBeNull();
   });
 
   it('the one thing waiting is a reopened decision before a new one, with how many wait', () => {

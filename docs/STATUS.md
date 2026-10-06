@@ -14,15 +14,59 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-iii-r0a-1
+work_item: ux-queue-713-b9-naming
 reviewed_merge: cffb251
-open_pr: 715
+open_pr: 713
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-05
+updated: 2026-10-06
 ```
 
-### Now — 4d-iii unit R0a-1: the decision writers state every pin (#715, `claude/phase-6-task-4d-iii-r0a`)
+### Now — the UX queue, one owner, one PR at a time, then 4d-iii R0a-2
+
+#715 (4d-iii R0a-1) trusted-merged at `67644e5`. The 10:53 UTC hold on #482 kept #710–#713 paused until
+#715 completed and a sequential handoff was recorded. The repository owner then directed this sequence,
+and it is recorded on #482 (https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5994077091). One
+Claude session owns every unit, and each is driven to completion before the next is touched.
+
+The legacy-copy recovery (#710) needs project creation to carry an idempotency key. #710 was closed at its
+five-head limit, and its replacement #716 reached the same five-head restructure signal. Three of #716's
+reviewed heads also drew a P1 in `apps/web/src/store/store.ts`, which is the policy's stop for an additive
+redesign in smaller units. So #716 was closed and its work is split into server and client units:
+
+1. **#717, the server unit** — merged at `f60a549`. Project creation accepts an optional
+   `Idempotency-Key`, backed by an org-scoped receipt through the command ledger, and `/health` advertises
+   `orgs.createProject.receipt`.
+2. **#719, the receipt-replay unit** — merged at `4a21521`. A keyed create is refused only inside its
+   ledger transaction, so a creator who lost the role gets the committed project's receipt, never a 403
+   for a project that exists (#718's Codex 4190663677).
+3. **The client, replacing #718.** #718 reached the five-finding-head limit, and its fourth reviewed head
+   with a P1 in `store.ts` (Codex 4192524390, alongside 4192524377 and 4192524383 — all three RED on
+   `ef84407`) confirmed the root cause: its hold kept the same state twice, per tab in memory and per user
+   in localStorage, and each finding was one more interleaving in which the two disagreed. #718 is closed and
+   its work is replaced in two smaller units, one at a time:
+   - **3a. the hold engine, #720** — merged at `a3c8234`. One record per identity is the only source of
+     truth; every transition (reserve, fenced send, settle, release) runs under one Web Lock per identity
+     and compares the record's lease before it writes; a settled record tells "finished elsewhere" from
+     "storage cleared"; what a dialog shows is derived from the record and the document's live
+     reservations.
+   - **3b. the store and dialog wiring, #721** — merged at `c9a378d`. `createProject` and `retryProjectCreate` run on
+     the engine; the dialog shows the hold derived for the signed-in identity, closes when another identity
+     signs in, and a send re-checks the identity inside the lock. The legacy-copy recovery is complete.
+4. **#711** — merged at `7512baf`. Progress is derived from the work, an unread or failed activity read is never
+   "no plan", and the photo figures name the snapshot's capped window.
+5. **#712** — merged at `01b1840`. Each Site Map space shows its derived status, the Schedule filters by place
+   with summary cards that count the listed rows, and an unread activity list is never shown as "no work".
+6. **#713** `claude/ux-b9-naming` (current work item) — prevent the small-screen Decision Log label truncation.
+7. **4d-iii R0a-2** — `emitEvent`'s central refusal, the org owner/admin `pmc` attribution and the
+   test-writer inventory. It is local work only, and gets no branch or PR until #713 completes.
+
+The post-#715 native handoff named `pr:713`, picked from the live open PRs. `open_pr` records the current
+PR of the owner's order instead. `next_task` stays `phase-6-task-4d-iii`, which resumes with R0a-2. Each
+unit is updated from `main` by a merge commit and passes fresh exact-head CI and independent Codex review.
+Nothing here authorises rollout activation, a manual merge or a deployment.
+
+### History — 4d-iii unit R0a-1: the decision writers state every pin (#715, `claude/phase-6-task-4d-iii-r0a`)
 
 The staging record merged as #714 (`f65890d`). R0a is the first unit, and it ships as TWO PRs. A probe on
 `main` ran the full integration suite with `emitEvent` refusing an unresolved human envelope. It broke

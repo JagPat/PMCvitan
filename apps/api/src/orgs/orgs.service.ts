@@ -24,6 +24,7 @@ import type { AuthUser, Role } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
+import { executeCommand, hashRequest } from '../platform/commands';
 import { projectsInReach } from './project-reach';
 import {
   lockInitializationDisplayIds,
@@ -145,6 +146,9 @@ const phaseDefinitionKey = (phase: { name: string; order: number; plannedStart: 
  * Org owners/admins create projects and are auto-enrolled as their PMC; project
  * memberships are the access grants tokens scope to (see AuthService).
  */
+/** The command-ledger type of an idempotent project create (an org-scoped receipt). */
+export const CREATE_PROJECT_COMMAND = 'orgs.createProject';
+
 @Injectable()
 export class OrgsService {
   constructor(
@@ -447,16 +451,6 @@ export class OrgsService {
   }
 
   /**
-   * Create a project under an org (owner/admin only); enrol the creator as PMC.
-   *
-   * 4d-ii-a / A3c — the creation holds the ORG key while it inserts, so no owner/admin org write
-   * can enumerate the org's projects around it (`org-standing.ts`). The authority read before the
-   * transaction is the fast refusal only: the creator's standing is RE-JUDGED inside, after the key,
-   * because an admin could pass the read, be demoted by an org write that took the key first, and
-   * then acquire it (#557's review round 2, finding 3). The creator's membership is written under
-   * the new project's own key, after the org key — the one lock order.
-   */
-  /**
    * Phase 6 task 4d-iii / R0a-2 — the Board's Decision 1 (2026-10-05): an org owner/admin acting on a
    * project is attributed in a PROJECT role, never in the org role `owner`/`admin` (which
    * `ProjectUserStanding` never holds, so its event pair could never resolve). It is the role of their
@@ -471,11 +465,41 @@ export class OrgsService {
     return m?.status === 'active' ? m.role : 'pmc';
   }
 
-  async createProject(orgId: string, userId: string, input: CreateProjectInput): Promise<{ id: string; name: string; short: string }> {
+  /**
+   * Create a project under an org (owner/admin only); enrol the creator as PMC.
+   *
+   * 4d-ii-a / A3c — the creation holds the ORG key while it inserts, so no owner/admin org write
+   * can enumerate the org's projects around it (`org-standing.ts`). The authority read before the
+   * transaction is the fast refusal only: the creator's standing is RE-JUDGED inside, after the key,
+   * because an admin could pass the read, be demoted by an org write that took the key first, and
+   * then acquire it (#557's review round 2, finding 3). The creator's membership is written under
+   * the new project's own key, after the org key — the one lock order.
+   */
+  async createProject(
+    orgId: string,
+    userId: string,
+    input: CreateProjectInput,
+    idempotencyKey?: string,
+  ): Promise<{ id: string; name: string; short: string }> {
     const role = await this.orgRole(orgId, userId);
-    if (role !== 'owner' && role !== 'admin') {
+    const key = idempotencyKey?.trim() || null;
+    // A KEYED create is refused only INSIDE its ledger transaction (Codex 4190663677, 4191121360). The
+    // receipt is the only authority on whether a create committed, and a role check before the ledger can
+    // answer 403 for a create that has committed (a lost reply, then a demotion) or is about to (a
+    // same-key request still in flight). So a keyed create goes straight to the ledger: a committed
+    // receipt replays, a same-key request in flight is waited on at the receipt's unique index and then
+    // replayed, and only when no such create exists does the in-transaction standing check refuse a
+    // non-owner/admin — rolling its reservation back, so a 403 on a keyed create means nothing was made.
+    // The receipt is the CALLER's own (org + actor + command + key): another actor's key replays nothing.
+    if (!key && role !== 'owner' && role !== 'admin') {
       throw new ForbiddenException('Only an org owner or admin can create projects');
     }
+    // Legacy-copy recovery (replaces #710) — creation is IDEMPOTENT when the client sends a key. A lost
+    // or ambiguous reply (no answer, a 5xx, a 408) gave the client no way to tell whether the project
+    // committed, and project names are not unique, so a retry could make it twice. With a key, the
+    // create records an org-scoped receipt INSIDE its own serializable transaction, and a retry under
+    // the same key replays that receipt's project instead of creating another (Codex 4185707835 and
+    // every finding before it on #710). Without a key the behaviour is exactly as before.
     const id = `${slugify(input.short)}-${randomUUID().slice(0, 4)}`;
     const timeZone = input.timeZone ?? 'Asia/Kolkata';
     const scheduleStartDate = input.scheduleStartDate ?? this.clock.today(timeZone);
@@ -486,14 +510,17 @@ export class OrgsService {
     const targetAnchor = scheduleStartDate;
     const today = ddMmmYyyy(new Date());
 
-    const project = await runSerializableProjectInit(this.prisma, async (tx) => {
+    const initialize = async (tx: Prisma.TransactionClient) => {
       await lockOrgStanding(tx, orgId);
       // A snapshot taken while the key was contended predates the org write it waited for; this
       // turns that into a serialization failure, which the runner retries with a fresh snapshot.
       await assertOrgStandingSnapshotCurrent(tx, orgId);
       const standing = await tx.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } }, select: { role: true } });
       if (!holdsOrgStanding(standing?.role)) {
-        throw new ForbiddenException('Your org role changed while creating the project — only an org owner or admin can create projects');
+        // a keyed create reaches here without the pre-ledger check, so say which refusal this is
+        throw new ForbiddenException(holdsOrgStanding(role)
+          ? 'Your org role changed while creating the project — only an org owner or admin can create projects'
+          : 'Only an org owner or admin can create projects');
       }
       const templateSelections = input.templateId ? await this.templateSelections(tx, orgId, input.templateId) : [];
       const selections = [...templateSelections, ...explicitSelections];
@@ -552,8 +579,31 @@ export class OrgsService {
       if (source) await this.copyStructure(tx, source, state);
       if (modules.length) await this.instantiateModules(tx, modules, state);
       return p;
+    };
+    if (!key) {
+      // no key: exactly the create as before (and never subject to the ledger's key enforcement)
+      const project = await runSerializableProjectInit(this.prisma, initialize);
+      return { id: project.id, name: project.name, short: project.short };
+    }
+    // a key: the command ledger reserves the org-scoped receipt, runs the create and completes the
+    // receipt in ONE serializable transaction (the ledger stays the only `CommandExecution` writer). A
+    // retry under the same key replays the first create's project; a different request under it is a
+    // 409; a concurrent same-key create replays the winner; a refusal rolls the receipt back with
+    // everything else, so the corrected retry goes through.
+    const outcome = await executeCommand(this.prisma, {
+      scope: { scopeKind: 'org', organizationId: orgId },
+      actor,
+      commandType: CREATE_PROJECT_COMMAND,
+      idempotencyKey: key,
+      requestHash: hashRequest({ orgId, input }),
+      transact: (fn) => runSerializableProjectInit(this.prisma, fn),
+      run: async (tx) => {
+        const p = await initialize(tx);
+        return { resultRef: p.id, value: p };
+      },
     });
-    return { id: project.id, name: project.name, short: project.short };
+    const made = outcome.value ?? await this.prisma.project.findUniqueOrThrow({ where: { id: outcome.resultRef } });
+    return { id: made.id, name: made.name, short: made.short };
   }
 
   /** The Slice-1 source guard: a structure source must be an unarchived project in this org. */

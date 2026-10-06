@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectApprovedDecisions, selectDecisionsNeedingViewer, selectTotalWorkers } from '@/store/selectors';
+import { selectApprovedDecisions, selectDecisionsNeedingViewer, selectTotalWorkers, selectProjectProgress } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, ProgressBar, Swatch } from '@/components';
 import { ArrowRight } from '@/lib/icons';
@@ -17,7 +17,8 @@ export function ClientHealthScreen() {
   const setScreen = useStore((s) => s.setScreen);
   const short = useStore((s) => s.short); // live project identity, not the seed
   const stage = useStore((s) => s.stage);
-  const milestonePct = useStore((s) => s.milestonePct);
+  // B7 (F-12): the same derived progress the Dashboard shows
+  const milestonePct = useStore((s) => selectProjectProgress(s).pct);
   const sitePhotos = useStore(useShallow((s) => s.photos));
 
   const healthLine = checkedIn ? `Site active today · ${workers} workers` : 'Site opens shortly today';
@@ -80,10 +81,10 @@ export function ClientHealthScreen() {
       <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.12)', borderRadius: 16, padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <span style={{ fontWeight: 600, fontSize: 14 }}>Overall progress</span>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{milestonePct}%</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{milestonePct === null ? '—' : `${milestonePct}%`}</span>
         </div>
         <div style={{ marginTop: 10 }}>
-          <ProgressBar pct={milestonePct} />
+          <ProgressBar pct={milestonePct ?? 0} />
         </div>
       </div>
 

@@ -1,13 +1,14 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CreateProjectInput } from '../../src/contracts';
-import { OrgsService } from '../../src/orgs/orgs.service';
+import { CREATE_PROJECT_COMMAND, OrgsService } from '../../src/orgs/orgs.service';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { createTestApp, type TestApp } from './test-app';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { lockOrgStandingWriters } from '../../src/orgs/org-standing';
 type ModulePayloadJson = {
   nodes: Array<{ key: string; parentKey: string | null; name: string; kind: 'zone' | 'room' | 'element'; order: number }>;
   phases: Array<{ name: string; order: number; plannedStart: number; plannedEnd: number }>;
@@ -140,6 +141,8 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
       await dropFaultProbe();
       if (f) {
         await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
+        // the idempotent creates' org-scoped receipts (replaces #710)
+        await t.prisma.commandExecution.deleteMany({ where: { scopeKind: 'org', organizationId: f.orgA.id, commandType: CREATE_PROJECT_COMMAND } });
         const projects = await t.prisma.project.findMany({ where: { orgId: f.orgA.id }, select: { id: true } });
         const projectIds = projects.map((project) => project.id);
         const inspections = await t.prisma.inspection.findMany({ where: { projectId: { in: projectIds } }, select: { id: true } });
@@ -227,6 +230,205 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
     expect(rejection).toBeInstanceOf(BadRequestException);
     expect((rejection as BadRequestException).getStatus()).toBe(400);
     expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor(label) } })).toBe(0);
+  });
+
+  it('refuses a legacy source holding one name as two kinds under a parent, rolls everything back and leaves the source untouched', async () => {
+    // Legacy data from before #705's sibling-name rule: a "Ground Floor" zone holding a "Lobby" room
+    // AND a normalized-equal " lobby " element. Written directly, as the old server allowed; the
+    // service would refuse to create it today. Copying it is refused (the cross-kind rule is
+    // intentional), with the server's rename advice, and nothing of the new project survives.
+    const source = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('legacy-source'));
+    const ground = await t.prisma.projectNode.create({
+      data: { projectId: source.id, name: 'Ground Floor', kind: 'zone', order: 0, authorId: f.ownerUser.id },
+    });
+    const lobbyRoom = await t.prisma.projectNode.create({
+      data: { projectId: source.id, parentId: ground.id, name: 'Lobby', kind: 'room', order: 0, authorId: f.ownerUser.id },
+    });
+    const lobbyElement = await t.prisma.projectNode.create({
+      data: { projectId: source.id, parentId: ground.id, name: ' lobby ', kind: 'element', order: 1, authorId: f.ownerUser.id },
+    });
+    const sourceNodesBefore = await t.prisma.projectNode.findMany({ where: { projectId: source.id }, orderBy: { id: 'asc' } });
+
+    const before = await countInitializationRows();
+    let rejection: unknown;
+    try {
+      await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('legacy-copy', { structureFrom: source.id }));
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toBeInstanceOf(BadRequestException);
+    expect((rejection as BadRequestException).getStatus()).toBe(400);
+    // the advice the client now shows verbatim: which name, and what to do about it
+    expect((rejection as BadRequestException).message).toMatch(/holds "Lobby" twice under one parent as different kinds — rename one before copying it/);
+    // the whole initialization rolled back: no project, membership, event, node, phase, activity or checklist
+    expect(await countInitializationRows()).toEqual(before);
+    expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor('legacy-copy') } })).toBe(0);
+    // and the source is exactly as it was — never renamed or migrated to make the copy pass
+    expect(await t.prisma.projectNode.findMany({ where: { projectId: source.id }, orderBy: { id: 'asc' } })).toEqual(sourceNodesBefore);
+    expect(sourceNodesBefore.map((n) => n.id)).toEqual(expect.arrayContaining([ground.id, lobbyRoom.id, lobbyElement.id]));
+
+    // once the owner renames one of them in the source, the same create succeeds — a retry is safe
+    await t.prisma.projectNode.update({ where: { id: lobbyElement.id }, data: { name: 'Lobby Console' } });
+    const copied = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('legacy-copy', { structureFrom: source.id }));
+    const copiedNames = (await t.prisma.projectNode.findMany({ where: { projectId: copied.id }, select: { name: true } })).map((n) => n.name);
+    expect(copiedNames.sort()).toEqual(['Ground Floor', 'Lobby', 'Lobby Console']);
+    expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor('legacy-copy') } })).toBe(1);
+  });
+
+  it('a create under an Idempotency-Key happens ONCE: a retry with the same key replays the first project (replaces #710)', async () => {
+    const key = `it-create-${Date.now()}`;
+    const before = await countInitializationRows();
+    const first = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed'), key);
+    const afterFirst = await countInitializationRows();
+    // the reply was "lost": the client retries the SAME request under the SAME key
+    const again = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed'), key);
+    expect(again).toEqual(first);
+    expect(await countInitializationRows()).toEqual(afterFirst); // nothing more was written
+    expect(afterFirst.project).toBe(before.project + 1);
+    expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor('keyed') } })).toBe(1);
+    const receipt = await t.prisma.commandExecution.findFirstOrThrow({
+      where: { scopeKind: 'org', organizationId: f.orgA.id, actorId: f.ownerUser.id, commandType: CREATE_PROJECT_COMMAND, idempotencyKey: key },
+    });
+    expect(receipt).toMatchObject({ status: 'succeeded', resultRef: first.id, projectId: null });
+  });
+
+  it('a committed keyed create REPLAYS for its creator even after they lose the org role — never a 403 that hides it (Codex 4190663677)', async () => {
+    const key = `it-create-demoted-${Date.now()}`;
+    const admin = f.ownerUser; // the fixture's org owner, demoted below and restored after
+    try {
+      const first = await service.createProject(f.orgA.id, admin.id, inputFor('keyed-demoted'), key);
+      // the reply is lost; the creator then loses the role before retrying under the same key
+      await t.prisma.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: admin.id } }, data: { role: 'member' } });
+      const before = await countInitializationRows();
+      await expect(service.createProject(f.orgA.id, admin.id, inputFor('keyed-demoted'), key)).resolves.toEqual(first);
+      expect(await countInitializationRows()).toEqual(before); // a replay writes nothing
+      // the replay is only of the creator's own receipt: a different request under it is a 409, and a NEW
+      // key is still refused for the demoted member
+      await expect(service.createProject(f.orgA.id, admin.id, inputFor('keyed-demoted-other'), key)).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.createProject(f.orgA.id, admin.id, inputFor('keyed-demoted-new'), `${key}-new`)).rejects.toBeInstanceOf(ForbiddenException);
+      // and another user's create under the same key replays nothing of the admin's
+      await expect(service.createProject(f.orgA.id, f.memberUser.id, inputFor('keyed-demoted'), key)).rejects.toBeInstanceOf(ForbiddenException);
+    } finally {
+      await t.prisma.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: admin.id } }, data: { role: 'owner' } });
+    }
+  });
+
+  it('a same-key retry whose role read lands AFTER the first create commits and a demotion follows still REPLAYS (Codex 4191121360)', async () => {
+    // Explicit barriers (POLICY: no sleep-only synchronization), each opened only once pg_locks shows the
+    // waiter it is holding:
+    //   gate A holds project inserts, so the FIRST create sits uncommitted after reserving its receipt;
+    //   gate B holds OrgMembership, so the RETRY's role read waits there;
+    //   A opens (the first create commits), then B demotes the creator and commits, and only then does
+    //   the retry read the role. A role check before the ledger would now answer 403 for a committed create.
+    const key = `it-create-race-demote-${Date.now()}`;
+    const owner = f.ownerUser;
+    const locks = async (rel: string, granted: boolean) => Number((await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT count(*) AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation WHERE c.relname = $1 AND l.granted = $2`, rel, granted,
+    ))[0]!.n);
+    const until = async (cond: () => Promise<boolean>, what: string) => {
+      const deadline = Date.now() + 20_000;
+      while (!(await cond())) {
+        if (Date.now() > deadline) throw new Error(`barrier: ${what}`);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    const gate = () => { let open!: () => void; const p = new Promise<void>((r) => { open = r; }); return { p, open }; };
+    const projectsHeld = gate();
+    const firstCommitted = gate();
+    const before = await countInitializationRows();
+    try {
+      const gateA = t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('LOCK TABLE "Project" IN SHARE MODE');
+        await projectsHeld.p;
+      }, { timeout: 60_000 });
+      await until(async () => (await locks('Project', true)) >= 1, 'gate A holds Project');
+      const first = service.createProject(f.orgA.id, owner.id, inputFor('keyed-race-demote'), key);
+      first.catch(() => undefined);
+      await until(async () => (await locks('Project', false)) >= 1, 'the first create waits on its project insert');
+      const gateB = t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('LOCK TABLE "OrgMembership" IN ACCESS EXCLUSIVE MODE');
+        await firstCommitted.p;
+        await lockOrgStandingWriters(tx, f.orgA.id);
+        await tx.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: owner.id } }, data: { role: 'member' } });
+      }, { timeout: 60_000 });
+      await until(async () => (await locks('OrgMembership', true)) >= 1, 'gate B holds OrgMembership');
+      const retry = service.createProject(f.orgA.id, owner.id, inputFor('keyed-race-demote'), key);
+      retry.catch(() => undefined);
+      await until(async () => (await locks('OrgMembership', false)) >= 1, 'the retry waits on its role read');
+      projectsHeld.open();
+      await gateA;
+      const made = await first; // committed, with its receipt
+      firstCommitted.open();
+      await gateB; // the creator is demoted before the retry's role read completes
+      await expect(retry).resolves.toEqual(made);
+      expect((await countInitializationRows()).project).toBe(before.project + 1);
+      expect(await t.prisma.commandExecution.count({
+        where: { scopeKind: 'org', organizationId: f.orgA.id, actorId: owner.id, commandType: CREATE_PROJECT_COMMAND, idempotencyKey: key },
+      })).toBe(1);
+    } finally {
+      projectsHeld.open();
+      firstCommitted.open();
+      await t.prisma.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: owner.id } }, data: { role: 'owner' } });
+    }
+  });
+
+  it('the same key for a DIFFERENT request is a 409, and creates nothing', async () => {
+    const key = `it-create-diff-${Date.now()}`;
+    await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed-a'), key);
+    const before = await countInitializationRows();
+    await expect(service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed-b'), key)).rejects.toBeInstanceOf(ConflictException);
+    expect(await countInitializationRows()).toEqual(before);
+  });
+
+  it('two CONCURRENT creates under one key CONTEND at the receipt reservation: one project, both answer with it', async () => {
+    const key = `it-create-race-${Date.now()}`;
+    const before = await countInitializationRows();
+    // An explicit barrier at the reservation (Codex 4188491728, POLICY: no sleep-only synchronization). A
+    // SHARE lock on the receipt table admits both callers' fast-path receipt read (it finds nothing) and
+    // blocks both reservation INSERTs. The barrier opens only once BOTH inserts are observed waiting in
+    // pg_locks, so neither can complete before the other reaches the reservation: they meet at the unique
+    // index, and the loser must take the P2002 replay (or a serialization retry that ends in it).
+    const waitingInserts = async () => (await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT count(*) AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+        WHERE c.relname = 'CommandExecution' AND l.mode = 'RowExclusiveLock' AND NOT l.granted`,
+    ))[0]!.n;
+    let a!: Promise<Awaited<ReturnType<typeof service.createProject>>>;
+    let b!: Promise<Awaited<ReturnType<typeof service.createProject>>>;
+    await t.prisma.$transaction(async (gate) => {
+      await gate.$executeRawUnsafe('LOCK TABLE "CommandExecution" IN SHARE MODE');
+      a = service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed-race'), key);
+      b = service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed-race'), key);
+      a.catch(() => undefined);
+      b.catch(() => undefined);
+      const deadline = Date.now() + 20_000;
+      while ((await waitingInserts()) < 2n) {
+        if (Date.now() > deadline) throw new Error('barrier: both reservations never reached the receipt insert');
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    }, { timeout: 30_000 }); // committing the gate releases both reservations at once
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(ra.id).toBe(rb.id);
+    expect(ra).toEqual(rb);
+    expect((await countInitializationRows()).project).toBe(before.project + 1);
+    expect(await t.prisma.commandExecution.count({
+      where: { scopeKind: 'org', organizationId: f.orgA.id, actorId: f.ownerUser.id, commandType: CREATE_PROJECT_COMMAND, idempotencyKey: key },
+    })).toBe(1);
+  });
+
+  it('a REFUSED keyed create leaves no receipt, so the corrected retry under the same key goes through', async () => {
+    const key = `it-create-refused-${Date.now()}`;
+    const source = await service.createProject(f.orgA.id, f.ownerUser.id, inputFor('keyed-legacy-source'));
+    const ground = await t.prisma.projectNode.create({ data: { projectId: source.id, name: 'Ground Floor', kind: 'zone', order: 0, authorId: f.ownerUser.id } });
+    await t.prisma.projectNode.create({ data: { projectId: source.id, parentId: ground.id, name: 'Lobby', kind: 'room', order: 0, authorId: f.ownerUser.id } });
+    const element = await t.prisma.projectNode.create({ data: { projectId: source.id, parentId: ground.id, name: ' lobby ', kind: 'element', order: 1, authorId: f.ownerUser.id } });
+    const input = inputFor('keyed-legacy-copy', { structureFrom: source.id });
+    await expect(service.createProject(f.orgA.id, f.ownerUser.id, input, key)).rejects.toBeInstanceOf(BadRequestException);
+    expect(await t.prisma.commandExecution.count({ where: { scopeKind: 'org', organizationId: f.orgA.id, idempotencyKey: key } })).toBe(0);
+    await t.prisma.projectNode.update({ where: { id: element.id }, data: { name: 'Lobby Console' } });
+    const made = await service.createProject(f.orgA.id, f.ownerUser.id, input, key);
+    expect(await t.prisma.project.count({ where: { orgId: f.orgA.id, name: nameFor('keyed-legacy-copy') } })).toBe(1);
+    expect((await t.prisma.commandExecution.findFirstOrThrow({ where: { scopeKind: 'org', organizationId: f.orgA.id, idempotencyKey: key } })).resultRef).toBe(made.id);
   });
 
   it('commits the complete source, template, and explicit-module union exactly once', async () => {

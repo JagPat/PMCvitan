@@ -623,9 +623,21 @@ export class ApiGateway {
   switchProject(projectId: string): Promise<AuthResult> {
     return this.req('/auth/switch', { method: 'POST', body: JSON.stringify({ projectId }) });
   }
+  /** The features THIS server advertises on its public health probe (Codex 4187372404): the web and
+   *  API deploy separately, so a client asks before relying on a server behaviour, such as a keyed
+   *  project create replaying its first answer. A server too old to list any answers `[]`. */
+  async serverFeatures(): Promise<string[]> {
+    const h = await this.req<{ features?: unknown }>('/health');
+    return Array.isArray(h.features) ? h.features.filter((f): f is string => typeof f === 'string') : [];
+  }
   /** Create a project under an org (owner/admin); the creator becomes its PMC. */
-  createProject(orgId: string, input: NewProjectInput): Promise<{ id: string; name: string; short: string }> {
-    return this.req(`/orgs/${orgId}/projects`, { method: 'POST', body: JSON.stringify(input) });
+  /** `idempotencyKey`: one per create ATTEMPT — a retry under the same key replays the first create
+   *  instead of making a second project (legacy-copy recovery; replaces #710). */
+  createProject(orgId: string, input: NewProjectInput, idempotencyKey?: string): Promise<{ id: string; name: string; short: string }> {
+    return this.req(`/orgs/${orgId}/projects`, {
+      method: 'POST', body: JSON.stringify(input),
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    });
   }
   /** Edit a project's details (project PMC or org owner/admin); only provided fields change. */
   updateProject(orgId: string, projectId: string, input: Partial<NewProjectInput>): Promise<{ id: string; name: string; short: string }> {
