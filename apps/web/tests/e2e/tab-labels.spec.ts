@@ -39,6 +39,11 @@ test('every persona: every bottom-tab label is shown in full at 320px', async ({
           clippedDown: el.scrollHeight - el.clientHeight,
           outsideTab: Math.max(tab.left - r.left, r.right - tab.right),
           belowBar: r.bottom - bar.bottom,
+          // the TAB itself, not just its label: a wrapped label must not push the tab's box past the bar
+          // (shadow review on d5a978b — the bar's height is fixed, so an over-tall tab spills into the page)
+          tabBelowBar: tab.bottom - bar.bottom,
+          // …and the tab's content (icon, gap, wrapped label, padding) fits the tab it is drawn in
+          tabOverflow: el.parentElement!.scrollHeight - el.parentElement!.clientHeight,
         };
       });
     });
@@ -49,6 +54,8 @@ test('every persona: every bottom-tab label is shown in full at 320px', async ({
       expect(l.clippedDown, `${where} is cut off below`).toBeLessThanOrEqual(EPS);
       expect(l.outsideTab, `${where} spills out of its tab`).toBeLessThanOrEqual(EPS);
       expect(l.belowBar, `${where} falls below the tab bar`).toBeLessThanOrEqual(EPS);
+      expect(l.tabBelowBar, `${where}: its tab is taller than the bar`).toBeLessThanOrEqual(0);
+      expect(l.tabOverflow, `${where}: its tab's content overflows the tab`).toBeLessThanOrEqual(0);
     }
   }
 });

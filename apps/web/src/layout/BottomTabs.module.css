@@ -29,8 +29,10 @@
   justify-content: center;
   gap: 2px;
   /* B9 — a full screen name must fit a fifth of a 320px bar (64px): the side padding stays minimal
-     so a one-word name ("Schedule") is never cut, and a two-word one ("Decision Log") wraps */
-  padding: 6px 1px;
+     so a one-word name ("Schedule") is never cut, and a two-word one ("Decision Log") wraps. The
+     vertical padding leaves headroom for that second line inside the fixed-height bar: icon 20 + gap 2
+     + two 13px lines at 1.1 (28.6) + 8 = 58.6px of a 62px bar (shadow review on d5a978b) */
+  padding: 4px 1px;
   color: var(--muted);
   cursor: pointer;
 }
