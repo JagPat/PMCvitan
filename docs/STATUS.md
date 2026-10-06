@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: none
+work_item: ux-queue-720-project-create-hold-engine
 reviewed_merge: cffb251
-open_pr: none
+open_pr: 720
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-06
@@ -45,7 +45,7 @@ redesign in smaller units. So #716 was closed and its work is split into server 
    `ef84407`) confirmed the root cause: its hold kept the same state twice, per tab in memory and per user
    in localStorage, and each finding was one more interleaving in which the two disagreed. #718 is closed and
    its work is replaced in two smaller units, one at a time:
-   - **3a. the hold engine** (current work item), `claude/project-create-hold-engine`:
+   - **3a. the hold engine, #720** (current work item), `claude/project-create-hold-engine`:
      `apps/web/src/store/projectCreateHold.ts` alone, with its tests. One record per identity is the only
      source of truth; every transition (reserve, fenced send, settle, release) runs under one Web Lock per
      identity and compares the record's lease before it writes; a settled record tells "finished elsewhere"
