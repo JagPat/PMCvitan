@@ -180,7 +180,7 @@ describe('the New Project modal expresses the room-anchor graft target', () => {
   };
 
   const renderModal = async () => {
-    const createProject = vi.fn();
+    const createProject = vi.fn().mockResolvedValue({ kind: 'created', projectId: 'p-new', opened: true });
     const useStore = await loadStore([], {
       createProject,
       orgModules: [DOOR_MODULE, ZONE_MODULE],
