@@ -116,8 +116,8 @@ export async function requireActorEnvelope(
  * Phase 6 task 4d-iii / R0a-2 — the Board's Decision 1 (2026-10-05): an org owner/admin acting on a
  * project records the `pmc` role, the project role the org authority grants and the windowed arm of
  * `platform_user_holds_role_windowed` already admits. `ProjectUserStanding` never holds `owner` or
- * `admin`, so the org role itself would resolve no pair. An owner/admin who also holds an active
- * membership on the project records that membership's role instead: with a membership-granted row the
+ * `admin`, so the org role itself would resolve no pair. An owner/admin who also holds a membership-granted
+ * standing row on the project records that membership's role instead: with a membership-granted row the
  * register is the answer, and the windowed `pmc` arm is withheld. Any other actor is returned as given.
  */
 export async function orgAuthorityActor<A extends EventActor>(
@@ -126,9 +126,11 @@ export async function orgAuthorityActor<A extends EventActor>(
   actor: A,
 ): Promise<A> {
   if (actor.actorKind !== 'human' || (actor.actorRole !== 'owner' && actor.actorRole !== 'admin')) return actor;
-  const m = await tx.membership.findUnique({
-    where: { projectId_userId: { projectId, userId: actor.actorId } },
-    select: { role: true, status: true },
+  // the platform's own register, never the orgs-owned `Membership` table: a membership-granted row is
+  // the answer the seal itself reads (`platform_user_holds_role_windowed`)
+  const granted = await tx.projectUserStanding.findFirst({
+    where: { projectId, userId: actor.actorId, membershipId: { not: null } },
+    select: { role: true },
   });
-  return { ...actor, actorRole: m && m.status === 'active' ? m.role : 'pmc' };
+  return { ...actor, actorRole: granted?.role ?? 'pmc' };
 }

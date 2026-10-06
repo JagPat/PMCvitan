@@ -20,6 +20,9 @@ import { registerConsumer, unregisterConsumer } from '../platform/outbox/registr
 // the real resolver.
 vi.mock('../platform/actor-envelope', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../platform/actor-envelope')>()),
+  // the register read behind the owner/admin -> `pmc` attribution is likewise stubbed: no membership-granted row
+  orgAuthorityActor: vi.fn(async (_tx: unknown, _projectId: string, actor: { actorKind: string; actorRole: string }) =>
+    actor.actorKind === 'human' && (actor.actorRole === 'owner' || actor.actorRole === 'admin') ? { ...actor, actorRole: 'pmc' } : actor),
   resolveActorEnvelope: vi.fn(async (_tx: unknown, _projectId: string, actor: { actorKind: string; actorRole: string }) =>
     actor.actorKind === 'human' ? { actorRole: actor.actorRole, actorName: 'Test actor' } : null),
 }));

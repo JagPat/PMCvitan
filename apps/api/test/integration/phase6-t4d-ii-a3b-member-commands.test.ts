@@ -153,6 +153,16 @@ describe('4d-ii-a / A3b — the member commands write their transition fact firs
     expect(await t.prisma.membership.findUniqueOrThrow({ where: { id: pmc2.membershipId } })).toMatchObject({ role: 'engineer' });
   });
 
+  it('a membership-less org OWNER adding THEMSELVES under another role commits (R0a-2: the event precedes the write that ends the windowed `pmc` arm)', async () => {
+    const owner = await t.prisma.user.findUniqueOrThrow({ where: { id: f.ownerUser.id }, select: { email: true, name: true } });
+    const r = await add(ownerToken, { name: owner.name, role: 'engineer', email: owner.email });
+    expect(r.status, r.text).toBe(201);
+    const ev = await t.prisma.domainEvent.findFirstOrThrow({ where: { projectId: f.projectA.id, eventType: 'membership.added', entityId: f.ownerUser.id } });
+    expect(ev).toMatchObject({ actorId: f.ownerUser.id, actorRole: 'pmc' });
+    // put the fixture back: the owner holds no standing on projectA for the rest of this suite
+    expect((await del(pmcToken, f.ownerUser.id)).status).toBe(200);
+  });
+
   it('a stale `pmc` token whose standing is gone has no pair to freeze — 403, and nothing is written', async () => {
     const ex = await addNew('stale-pmc', 'pmc');
     const stale = t.issueProjectToken(ex.userId, f.projectA.id);

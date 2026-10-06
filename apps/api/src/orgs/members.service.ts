@@ -438,6 +438,10 @@ export class MembersService {
           toRole: input.role, toStatus: 'active',
         };
         const transitionId = await this.recordTransition(tx, addFact, actor, pair, commandId);
+        // Emitted BEFORE the write, with the pre-write pair: the envelope seal judges the pair live at the
+        // INSERT, and a membership-less org owner adding themselves under another role loses the windowed
+        // `pmc` arm once the membership exists. A refusal below rolls the whole transaction back.
+        const ev = await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
         const holderRefusal = (e: unknown) =>
           rethrowHolderSealViolation(
             e,
@@ -447,9 +451,6 @@ export class MembersService {
           ? await tx.membership.update({ where: { id: prior.id }, data: { role: input.role, discipline, status: 'active' } }).catch(holderRefusal)
           : await tx.membership.create({ data: { id: membershipId, projectId, userId: user.id, role: input.role, discipline, status: 'active' } }).catch(holderRefusal);
         await this.refuseHolderOrphan(tx, projectId, atRisk);
-        // The event's pair is resolved by `emitEvent` itself, AFTER the write: it records the
-        // actor as they stand when the event is emitted, which the envelope seal judges live.
-        const ev = await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
         const flip = await this.emitStandingFlip(tx, projectId, actor, pair, addFact, transitionId);
         return { resultRef: m.id, value: { ...m, user }, events: flip ? [ev, flip] : [ev] };
       },
@@ -656,6 +657,8 @@ export class MembersService {
           fromRole: cur.role, fromStatus: cur.status, toRole: cur.role, toStatus: 'removed',
         };
         const transitionId = await this.recordTransition(tx, removeFact, actor, pair, commandId);
+        // Emitted BEFORE the write with the pre-write pair, in the same order as `add` and `updateRole`.
+        const ev = await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
         await tx.membership.update({ where: { id: cur.id }, data: { status: 'removed' } })
           .catch((e: unknown) =>
             rethrowHolderSealViolation(
@@ -683,7 +686,6 @@ export class MembersService {
           }
           await this.refuseAwaitingHolderOrphan(tx, projectId, cur.id, cur.role);
         }
-        const ev = await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
         const flip = await this.emitStandingFlip(tx, projectId, actor, pair, removeFact, transitionId);
         return { resultRef: cur.id, events: flip ? [ev, flip] : [ev] };
       },
