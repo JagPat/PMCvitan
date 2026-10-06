@@ -155,12 +155,15 @@ describe('4d-iii / R0b — the system pair and the lease generation (live PG)', 
   });
 
   it('a lease’s serverGeneration is FROZEN: NULL → 3 and 2 → 3 are refused, and the renewal still moves leaseUntil', async () => {
+    // the probe ends in ROLLBACK whatever happens, so on a database WITHOUT the freeze it fails rather
+    // than committing a lease: a committed lease is permanent and would poison every later lease probe
     const restamp = (from: number | null) => t.prisma.$transaction(async (tx) => {
       const instanceId = newInstanceId();
       await tx.$executeRawUnsafe(
         `INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil","serverGeneration")
          VALUES ($1, 3, 'r0b-probe', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + interval '60 seconds', $2)`, instanceId, from);
       await tx.$executeRawUnsafe(`UPDATE "ReleaseLease" SET "serverGeneration" = 3 WHERE "instanceId" = $1`, instanceId);
+      throw ROLLBACK;
     });
     await expect(restamp(null)).rejects.toThrow(/FROZEN/);
     await expect(restamp(2)).rejects.toThrow(/FROZEN/);
@@ -189,6 +192,7 @@ describe('4d-iii / R0b — the system pair and the lease generation (live PG)', 
       const instanceId = newInstanceId();
       await writeLease(tx, { instanceId, catalogVersion: 3, release: 'r0b-replay' });
       await tx.$executeRawUnsafe(`UPDATE "ReleaseLease" SET "serverGeneration" = 3 WHERE "instanceId" = $1`, instanceId);
+      throw ROLLBACK; // never commits a lease, whatever the database carries
     })).rejects.toThrow(/FROZEN/);
   });
 });
