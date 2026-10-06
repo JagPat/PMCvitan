@@ -59,7 +59,8 @@ redesign in smaller units. So #716 was closed and its work is split into server 
    with summary cards that count the listed rows, and an unread activity list is never shown as "no work".
 6. **#713** — merged at `499077e`. Prevents the small-screen Decision Log label truncation.
 7. **4d-iii R0a-2** (current work item) — `emitEvent`'s central refusal, the org owner/admin `pmc`
-   attribution and the test-writer inventory. #713 is merged, so the unit is open.
+   attribution and the test-writer inventory. #713 is merged, so the unit is open as #723
+   (`claude/4d-iii-r0a-2`).
 
 The post-#715 native handoff named `pr:713`, picked from the live open PRs. `open_pr` records the current
 PR of the owner's order instead. `next_task` stays `phase-6-task-4d-iii`, which resumes with R0a-2. Each
