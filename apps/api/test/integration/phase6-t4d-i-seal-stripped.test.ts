@@ -212,6 +212,9 @@ function buildBase(): void {
     // 4d-ii-a / A8b installs claimants on 4d-i's finalizer fact tables, re-issues 4d-i's provenance seal
     // and raises A6e's fence: built on both, excluded with the rest.
     '20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence',
+    // 4d-iii / R0b re-issues 4d-i's envelope and lease-freeze bodies with the system pair admitted and the
+    // lease's server generation frozen: built on 4d-i, excluded with the rest.
+    '20280107000000_phase6_t4d_iii_r0b_system_pair',
     // 4d-ii-a / A4a's consultation-cycle seals are 4d-i's bodies re-issued, guarded on 4d-i's
     // retirement marker, so they too apply only on top of 4d-i.
     '20271227000000_phase6_t4d_ii_consultation_finalized_cycle']);

@@ -5551,7 +5551,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280101000000_phase6_t4d_ii_a6e_generation_fence 20280102000000_phase6_t4d_ii_a7a_revision_named
 20280103000000_phase6_t4d_ii_a7c_inbox_v3 20280104000000_phase6_t4d_ii_a7d_catalog_change
 20280105000000_phase6_t4d_ii_a8a_awaiting_tuple
-20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence"
+20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence
+20280107000000_phase6_t4d_iii_r0b_system_pair"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
