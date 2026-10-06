@@ -16,7 +16,7 @@ import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
 import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
-import { can, type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
+import { can, SNAPSHOT_SITE_PHOTO_LIMIT, type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 const KIND_LABEL: Record<string, string> = { zone: 'ZONE', room: 'ROOM', element: 'OBJECT' };
@@ -43,6 +43,9 @@ export function PlacesScreen() {
   // drafts are private WIP — the Site Map shows only published drawings
   const drawings = useStore(useShallow((s) => s.drawings.filter((d) => !d.draft)));
   const photos = useStore(useShallow((s) => s.photos));
+  // the snapshot carries only the newest SNAPSHOT_SITE_PHOTO_LIMIT site photos: once that window is full, a
+  // place's photos are those among the latest, never its whole record (Codex 4194155412, shadow review)
+  const photosCapped = photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT;
   const activities = useStore(useShallow((s) => s.activities));
   const phases = useStore(useShallow((s) => s.phases));
   const openActivity = useStore((s) => s.openActivity);
@@ -283,9 +286,9 @@ export function PlacesScreen() {
           )}
 
           {/* Reality — photos */}
-          <Section icon={<Camera size={13} />} title="Reality" count={contents.photos.length} sub="photos of what's built">
+          <Section icon={<Camera size={13} />} title="Reality" count={contents.photos.length} sub={photosCapped ? `among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} photos on record` : "photos of what's built"}>
             {contents.photos.length === 0 ? (
-              <Empty>No photos filed here yet.</Empty>
+              <Empty>{photosCapped ? `No photos filed here among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} on record.` : 'No photos filed here yet.'}</Empty>
             ) : (
               <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
                 {contents.photos.map((p, i) => (
