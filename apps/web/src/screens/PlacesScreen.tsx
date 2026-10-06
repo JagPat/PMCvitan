@@ -55,14 +55,16 @@ export function PlacesScreen() {
   const canSeeInspections = useStore((s) => s.role === 'pmc' || s.role === 'engineer');
   const inspections = useStore(useShallow((s) => (s.role === 'pmc' || s.role === 'engineer' ? s.placedInspections : [])));
 
-  const [sel, setSel] = useState<string | null>(null); // null = whole project
-  // Entering the Site Map from an entity's location breadcrumb: adopt the requested place ONCE,
-  // then clear the intent so a later manual walk isn't yanked back to it.
+  // B6 — the place on show is the URL's item (`/places/<nodeId>`), so it survives a refresh, can be
+  // shared, and back/forward walks the places visited. null = whole project.
+  const sel = useStore((s) => s.routeItem);
+  const setSel = useStore((s) => s.setRouteItem);
+  // Entering the Site Map from an entity's location breadcrumb: `openPlace` has already named the
+  // place; the request is consumed ONCE so a later manual walk isn't disturbed by it.
   const placeFocus = useStore((s) => s.placeFocus);
   const clearPlaceFocus = useStore((s) => s.clearPlaceFocus);
   useEffect(() => {
     if (placeFocus === null) return;
-    setSel(placeFocus);
     // A crumb tapped INSIDE the drawing viewer requests a place while this screen is already
     // on stage: without closing the overlay the destination changes behind it and the crumb
     // looks inert. The viewer is the only overlay carrying crumbs, so it is the only one closed.

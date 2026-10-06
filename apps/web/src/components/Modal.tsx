@@ -53,7 +53,11 @@ export function Modal({
           borderRadius: 18,
           maxWidth,
           width: '100%',
-          overflow: 'hidden',
+          // B6: never taller than the viewport — a centred sheet taller than the screen pushed its
+          // header (and the drawing viewer's only Close) above the top edge, out of reach
+          maxHeight: '100%',
+          overflowX: 'hidden',
+          overflowY: 'auto',
           boxShadow: 'var(--sh-modal)',
           animation: 'vpop .22s',
         }}

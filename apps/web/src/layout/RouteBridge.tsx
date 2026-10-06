@@ -5,6 +5,13 @@ import { useStore } from '@/store/store';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { viewerIsDecider } from '@vitan/shared';
 import { parseLocation, pathForScreen, screensFor, withDeciderRoute, SCREEN_CAPABILITY } from '@/lib/screens';
+import type { ScreenKey } from '@vitan/shared';
+
+/** B6 — the item the current screen's URL names. The client's decisions screen keeps its own
+ *  `decisionFocus`; every other item screen reads `routeItem`. */
+function routeItemOf(s: { screen: ScreenKey; routeItem: string | null; decisionFocus: string | null }): string | null {
+  return s.screen === 'client-decisions' ? s.decisionFocus : s.routeItem;
+}
 
 /**
  * Keeps the URL, the active project, and the active screen in sync — the URL is
@@ -55,10 +62,16 @@ export function RouteBridge() {
   const decisionsLoad = useStore((s) => s.decisionsLoad);
   const setScreen = useStore((s) => s.setScreen);
   const switchProject = useStore((s) => s.switchProject);
+  const setRouteItem = useStore((s) => s.setRouteItem);
+  const routeItem = useStore((s) => routeItemOf(s));
   const navigate = useNavigate();
   const location = useLocation();
   const didInit = useRef(false);
   const lastPath = useRef<string | null>(null);
+  // B6 — the item a URL CHANGE asked for, held until its project is active and loaded (a deep link
+  // into another project, or a cold API load, empties the project scope that holds it), then
+  // adopted once. Only a URL change sets it, so a stale URL never overwrites an in-app selection.
+  const pendingItem = useRef<{ projectId: string; screen: ScreenKey; item: string | null } | null>(null);
 
   // URL -> store (project + screen reconciliation, role-guarded)
   useEffect(() => {
@@ -71,13 +84,14 @@ export function RouteBridge() {
     // path still names the OLD project until the store->URL effect rewrites it.
     const pathChanged = location.pathname !== lastPath.current;
     lastPath.current = location.pathname;
-    const { projectId, screen: fromPath } = parseLocation(location.pathname);
+    const { projectId, screen: fromPath, item } = parseLocation(location.pathname);
 
     if (projectId && projectId !== activeProjectId) {
       // a deep-link / back-forward to a DIFFERENT project you can access → switch to it,
       // carrying the deep link's screen through the transition (adopted if the new role
       // is allowed to see it). The store->URL effect then rewrites the canonical path.
       if (pathChanged && memberships.some((m) => m.projectId === projectId)) {
+        pendingItem.current = fromPath ? { projectId, screen: fromPath, item } : null;
         void switchProject(projectId, fromPath ?? undefined);
         return;
       }
@@ -132,10 +146,20 @@ export function RouteBridge() {
       isOpenDecider || !decisionsSettled,
     );
     if (!fromPath || !allowed.includes(fromPath)) {
+      pendingItem.current = null;
       if (screen !== allowed[0]) setScreen(allowed[0]);
       return;
     }
     if (fromPath !== screen) setScreen(fromPath);
+    if (pathChanged) pendingItem.current = { projectId: activeProjectId, screen: fromPath, item };
+    const want = pendingItem.current;
+    // a client decision is held until the decisions read lands: its screen closes a focus whose
+    // decision it cannot find, so adopting it into a still-empty slice would drop the link
+    const itemLoading = projectLoadState === 'loading' || (want?.screen === 'client-decisions' && decisionsLoad === 'loading');
+    if (want && want.projectId === activeProjectId && want.screen === fromPath && !itemLoading) {
+      pendingItem.current = null;
+      if (routeItemOf(useStore.getState()) !== want.item) setRouteItem(want.item);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown, isOpenDecider, authed, identityPending, hasDecisions, decisionsLoad]);
 
@@ -147,13 +171,13 @@ export function RouteBridge() {
   useEffect(() => {
     const live = useStore.getState();
     if (live.pendingProjectId !== null || live.projectLoadState === 'switching' || live.projectLoadState === 'loading') return;
-    const target = pathForScreen(live.screen, live.activeProjectId);
+    const target = pathForScreen(live.screen, live.activeProjectId, routeItemOf(live));
     if (location.pathname !== target) {
       navigate(target, { replace: !didInit.current });
     }
     didInit.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, activeProjectId, pendingProjectId, projectLoadState]);
+  }, [screen, routeItem, activeProjectId, pendingProjectId, projectLoadState]);
 
   return null;
 }

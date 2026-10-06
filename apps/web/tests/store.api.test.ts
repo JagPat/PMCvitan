@@ -93,6 +93,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
   it('createProject passes structureFrom through (Templates Slice 1) then switches to the new project', async () => {
     const gw = {
       createProject: vi.fn().mockResolvedValue({ id: 'samb-1', name: 'SamBunglow', short: 'SamBunglow' }),
+      serverFeatures: vi.fn().mockResolvedValue(['orgs.createProject.receipt']), // the server keeps create receipts
       listMemberships: vi.fn().mockResolvedValue([]),
       myOrgs: vi.fn().mockResolvedValue([]),
       switchProject: vi.fn().mockResolvedValue({ token: 'JWT-samb', role: 'pmc', projectId: 'samb-1' }),
@@ -103,7 +104,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     await flush();
     await flush();
 
-    expect(gw.createProject).toHaveBeenCalledWith('org1', expect.objectContaining({ structureFrom: 'ambli' }));
+    expect(gw.createProject).toHaveBeenCalledWith('org1', expect.objectContaining({ structureFrom: 'ambli' }), expect.any(String)); // + the attempt's idempotency key
     expect(gw.switchProject).toHaveBeenCalledWith('samb-1'); // lands in the new project
   });
 
@@ -113,6 +114,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
       listModules: vi.fn().mockResolvedValue([kitchen]),
       createModule: vi.fn().mockResolvedValue(kitchen),
       createProject: vi.fn().mockResolvedValue({ id: 'p9', name: 'X', short: 'X' }),
+      serverFeatures: vi.fn().mockResolvedValue(['orgs.createProject.receipt']), // the server keeps create receipts
       listMemberships: vi.fn().mockResolvedValue([]),
       myOrgs: vi.fn().mockResolvedValue([]),
       switchProject: vi.fn().mockResolvedValue({ token: 'J', role: 'pmc', projectId: 'p9' }),
@@ -132,7 +134,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     // composing at create passes the selections through untouched
     s().createProject('org1', { name: 'X', short: 'X', stage: 'Planning', modules: [{ moduleId: 'mod-k', count: 2, underZone: 'Second Floor' }] });
     await flush();
-    expect(gw.createProject).toHaveBeenCalledWith('org1', expect.objectContaining({ modules: [{ moduleId: 'mod-k', count: 2, underZone: 'Second Floor' }] }));
+    expect(gw.createProject).toHaveBeenCalledWith('org1', expect.objectContaining({ modules: [{ moduleId: 'mod-k', count: 2, underZone: 'Second Floor' }] }), expect.any(String));
   });
 
   it('named presets (Templates Slice 3): loads, saves the project as a template, and starts from one', async () => {
@@ -141,6 +143,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
       listTemplates: vi.fn().mockResolvedValue([g2]),
       createTemplate: vi.fn().mockResolvedValue(g2),
       createProject: vi.fn().mockResolvedValue({ id: 'p9', name: 'X', short: 'X' }),
+      serverFeatures: vi.fn().mockResolvedValue(['orgs.createProject.receipt']), // the server keeps create receipts
       listMemberships: vi.fn().mockResolvedValue([]),
       myOrgs: vi.fn().mockResolvedValue([]),
       switchProject: vi.fn().mockResolvedValue({ token: 'J', role: 'pmc', projectId: 'p9' }),
@@ -160,7 +163,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     // starting from a preset passes templateId through
     s().createProject('org1', { name: 'X', short: 'X', stage: 'Planning', templateId: 'tpl-g2' });
     await flush();
-    expect(gw.createProject).toHaveBeenCalledWith('org1', expect.objectContaining({ templateId: 'tpl-g2' }));
+    expect(gw.createProject).toHaveBeenCalledWith('org1', expect.objectContaining({ templateId: 'tpl-g2' }), expect.any(String));
   });
 
   it('addMember posts then reloads the team', async () => {
