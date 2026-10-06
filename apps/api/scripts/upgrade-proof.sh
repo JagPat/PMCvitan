@@ -4977,6 +4977,23 @@ assert "A8b: the persisted server-generation minimum is 2, raised by this file, 
   "SELECT \"minimumGeneration\"::text || '|' || \"raisedBy\" FROM \"ServerGeneration\" WHERE \"key\" = 'singleton';" \
   "2|20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence"
 
+# ── 4d-iii / R0b: the system pair admitted; the lease records and freezes its server generation ──
+# Over the ledger this database ran: the envelope seal admits, on a `system` actor only, the system role
+# with a registered automation name and runs the correspondence arm on HUMAN envelopes only; the lease
+# carries a nullable `serverGeneration` its freeze holds with the rest of its identity. The file is on
+# ALWAYS_EXECUTE, so it replays over a database that already carries it and moves nothing.
+if $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280107000000_phase6_t4d_iii_r0b_system_pair/migration.sql" >/dev/null 2>&1; then
+  echo "ok      R0b: the system-pair migration replays over a database that already carries it"
+else
+  echo "FAILED  R0b: the system-pair migration did not replay (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
+fi
+assert "R0b: the envelope seal admits the registered system pair and keeps the correspondence arm on human envelopes, behind 4d-i's trigger" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_event_envelope' AND prosrc LIKE '%platform_t4d_automation_identity(NEW.\"actorName\")%' AND prosrc LIKE '%NEW.\"actorRole\" IS NOT NULL AND NEW.\"actorKind\" = ''human'' THEN%' AND prosrc LIKE '%phase6_t4d_actor_pair_true%')::text || '|' || (SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND t.tgname = 'DomainEvent_t4d_envelope' AND p.proname = 'platform_t4d_event_envelope')::text || '|' || platform_t4d_automation_identity('decisions-effects')::text || '|' || platform_t4d_automation_identity('operator')::text;" \
+  "1|1|true|false"
+assert "R0b: ReleaseLease.serverGeneration is a nullable integer, and the lease freeze holds it" \
+  "SELECT (SELECT data_type || '/' || is_nullable FROM information_schema.columns WHERE table_name = 'ReleaseLease' AND column_name = 'serverGeneration') || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_release_lease_frozen' AND prosrc LIKE '%NEW.\"serverGeneration\" IS DISTINCT FROM OLD.\"serverGeneration\"%')::text;" \
+  "integer/YES|1"
+
 # ── and the marker table is CLOSED, not merely trigger-covered ──────────────────────────────────
 # A child created with INHERITS takes a marker row the PARENT lookup finds while none of the
 # parent's triggers fire for DML against it. Measured on this codebase; asserted here over the
@@ -5077,7 +5094,7 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*) continue ;; esac
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
