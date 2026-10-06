@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import { selectProjectProgress } from '@/store/selectors';
@@ -12,7 +12,7 @@ import { DashboardScreen } from '@/screens/DashboardScreen';
 const s = () => useStore.getState();
 
 beforeEach(() => useStore.setState(getInitialState()));
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllEnvs(); });
 
 describe('selectProjectProgress', () => {
   it('derives the percentage from accepted activities, never the stored milestonePct', () => {
@@ -21,12 +21,43 @@ describe('selectProjectProgress', () => {
       st.activities = st.activities.slice(0, 4).map((a, i) => ({ ...a, status: i === 0 ? 'done' : i === 1 ? 'awaiting-signoff' : 'in-progress' }));
     });
     // one of four accepted — awaiting sign-off is not done
-    expect(selectProjectProgress(s())).toEqual({ pct: 25, done: 1, total: 4, derived: true });
+    expect(selectProjectProgress(s())).toEqual({ pct: 25, done: 1, total: 4, basis: 'derived' });
   });
 
   it('with no activities planned, shows the recorded figure and says it is not derived', () => {
     useStore.setState((st) => { st.activities = []; st.milestonePct = 0; });
-    expect(selectProjectProgress(s())).toEqual({ pct: 0, done: 0, total: 0, derived: false });
+    expect(selectProjectProgress(s())).toEqual({ pct: 0, done: 0, total: 0, basis: 'recorded' });
+  });
+
+  it('module-owned activities that FAILED to load are not "no plan": progress is unavailable, never the recorded figure (Codex 4180841684)', () => {
+    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
+    useStore.setState((st) => { st.activities = []; st.milestonePct = 40; st.activitiesLoad = 'error'; });
+    expect(selectProjectProgress(s())).toEqual({ pct: null, done: 0, total: 0, basis: 'unavailable' });
+    useStore.setState((st) => { st.activitiesLoad = 'loading'; });
+    expect(selectProjectProgress(s())).toEqual({ pct: null, done: 0, total: 0, basis: 'loading' });
+    // a read that ANSWERED with no activities is a real empty plan
+    useStore.setState((st) => { st.activitiesLoad = 'ready'; });
+    expect(selectProjectProgress(s())).toEqual({ pct: 40, done: 0, total: 0, basis: 'recorded' });
+  });
+
+  it('a failed read with last-good activities still derives from them, as the Schedule shows them', () => {
+    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
+    useStore.setState((st) => {
+      st.activities = st.activities.slice(0, 2).map((a, i) => ({ ...a, status: i === 0 ? 'done' : 'in-progress' }));
+      st.activitiesLoad = 'error';
+    });
+    expect(selectProjectProgress(s())).toEqual({ pct: 50, done: 1, total: 2, basis: 'derived' });
+  });
+});
+
+describe('Dashboard progress — an unavailable activity read', () => {
+  it('says the activities could not be loaded, and shows no percentage and no "no activities planned" (Codex 4180841684)', () => {
+    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
+    useStore.setState((st) => { st.activities = []; st.milestonePct = 40; st.activitiesLoad = 'error'; });
+    const r = render(<DashboardScreen />);
+    expect(r.getByTestId('dash-progress-pct').textContent).toBe('—');
+    expect(r.getByTestId('dash-progress-basis').textContent).toMatch(/could not be loaded/);
+    expect(r.getByTestId('dash-progress-basis').textContent).not.toMatch(/No activities planned/);
   });
 });
 

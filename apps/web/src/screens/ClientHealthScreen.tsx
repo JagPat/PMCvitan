@@ -81,10 +81,10 @@ export function ClientHealthScreen() {
       <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.12)', borderRadius: 16, padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <span style={{ fontWeight: 600, fontSize: 14 }}>Overall progress</span>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{milestonePct}%</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{milestonePct === null ? '—' : `${milestonePct}%`}</span>
         </div>
         <div style={{ marginTop: 10 }}>
-          <ProgressBar pct={milestonePct} />
+          <ProgressBar pct={milestonePct ?? 0} />
         </div>
       </div>
 

@@ -11,6 +11,7 @@
 import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
+import { activitiesReadMode } from '@/data/apiGateway';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
 export const WIN = 75;
@@ -325,11 +326,14 @@ export function activitiesInPhase(activities: Activity[], phases: Phase[], phase
 // ---- project progress ----
 
 export interface ProjectProgress {
-  pct: number;
+  /** `null` while the activities are not known (still loading, or their read failed) — never a guess */
+  pct: number | null;
   done: number;
   total: number;
-  /** true: computed from the activities; false: no activities yet, so the project's recorded figure */
-  derived: boolean;
+  /** `derived`: computed from the activities. `recorded`: the activities are known and there are none, so
+   *  the project's recorded figure. `loading` / `unavailable`: the module-owned activity read has not
+   *  answered yet, or failed — an empty list then says nothing about the plan (Codex 4180841684). */
+  basis: 'derived' | 'recorded' | 'loading' | 'unavailable';
 }
 
 /**
@@ -340,9 +344,17 @@ export interface ProjectProgress {
  */
 export function selectProjectProgress(s: AppState): ProjectProgress {
   const total = s.activities.length;
-  if (total === 0) return { pct: Math.max(0, Math.min(100, Math.round(s.milestonePct))), done: 0, total: 0, derived: false };
+  if (total === 0) {
+    // Module-owned activities (`moduleQuery`) are known only once their read answers; until then, or when
+    // it fails, the empty list is not "no plan" — the same boundary the Schedule screen draws. In snapshot
+    // mode the snapshot owns them and `activitiesLoad` stays idle, so an empty list is the plan.
+    if (activitiesReadMode() === 'moduleQuery' && s.activitiesLoad !== 'ready') {
+      return { pct: null, done: 0, total: 0, basis: s.activitiesLoad === 'error' ? 'unavailable' : 'loading' };
+    }
+    return { pct: Math.max(0, Math.min(100, Math.round(s.milestonePct))), done: 0, total: 0, basis: 'recorded' };
+  }
   const done = s.activities.filter((a) => a.status === 'done').length;
-  return { pct: Math.round((done / total) * 100), done, total, derived: true };
+  return { pct: Math.round((done / total) * 100), done, total, basis: 'derived' };
 }
 
 // ---- daily log ----

@@ -59,16 +59,16 @@ export function ClientPulse({ also }: { also?: ReactNode }) {
       <h1 className={styles.heading}>{clientPulseHeading(short, lang)}</h1>
 
       <div className={styles.status}>
-        <div className={styles.ring} role="img" aria-label={`${pulse.progressPct}% ${L.done[lang]}`} data-testid="pulse-progress">
+        <div className={styles.ring} role="img" aria-label={pulse.progressPct === null ? '—' : `${pulse.progressPct}% ${L.done[lang]}`} data-testid="pulse-progress">
           <svg width="132" height="132" viewBox="0 0 160 160" aria-hidden>
             <circle cx="80" cy="80" r="68" fill="none" className={styles.track} strokeWidth="14" />
             <circle
               cx="80" cy="80" r="68" fill="none" className={styles.fill} strokeWidth="14" strokeLinecap="round"
-              strokeDasharray={`${(pulse.progressPct / 100) * RING} ${RING}`} transform="rotate(-90 80 80)"
+              strokeDasharray={`${((pulse.progressPct ?? 0) / 100) * RING} ${RING}`} transform="rotate(-90 80 80)"
             />
           </svg>
           <span className={styles.ringText} aria-hidden>
-            <span className={styles.pct}>{pulse.progressPct}%</span>
+            <span className={styles.pct}>{pulse.progressPct === null ? '—' : `${pulse.progressPct}%`}</span>
             <span className={styles.pctLabel}>{L.done[lang]}</span>
           </span>
         </div>

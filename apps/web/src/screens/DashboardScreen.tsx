@@ -98,13 +98,17 @@ export function DashboardScreen() {
       <div style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 12, padding: '20px 24px', marginBottom: 22 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
           <span style={{ fontWeight: 600, fontSize: 14 }}>Milestone Progress</span>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }} data-testid="dash-progress-pct">{progressNow.pct}% complete</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }} data-testid="dash-progress-pct">{progressNow.pct === null ? '—' : `${progressNow.pct}% complete`}</span>
         </div>
-        <ProgressBar pct={progressNow.pct} />
+        <ProgressBar pct={progressNow.pct ?? 0} />
         <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 8 }} data-testid="dash-progress-basis">
-          {progressNow.derived
+          {progressNow.basis === 'derived'
             ? `${progressNow.done} of ${progressNow.total} activities accepted as done`
-            : 'No activities planned yet — this is the figure recorded on the project'}
+            : progressNow.basis === 'recorded'
+              ? 'No activities planned yet — this is the figure recorded on the project'
+              : progressNow.basis === 'unavailable'
+                ? 'The activities could not be loaded, so progress is unavailable — open Schedule to retry'
+                : 'Loading the activities…'}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
           {milestones.map((m) => (
