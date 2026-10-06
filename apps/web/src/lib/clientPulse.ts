@@ -5,7 +5,8 @@ export const NEXT_COUNT = 3;
 
 export interface ClientPulse {
   /** the project's overall progress, as the project records it (the Health screen's figure) */
-  progressPct: number;
+  /** `null`: the activities are not known yet, or their read failed */
+  progressPct: number | null;
   /** "Week N of M" — only inside the schedule's own dates, and only when both are known */
   week: { at: number; of: number } | null;
   /** what is being built now: the names of the activities in progress */
@@ -24,7 +25,8 @@ export interface ClientPulse {
  * called the oldest. Civil dates are ISO `YYYY-MM-DD`; `today` is the site's.
  */
 export function clientPulse(input: {
-  milestonePct: number;
+  /** `null` when the activities are not known (see `selectProjectProgress`) */
+  milestonePct: number | null;
   scheduleStartDate: string | null;
   scheduleEndDate: string | null;
   today: string;
@@ -53,7 +55,7 @@ export function clientPulse(input: {
     });
 
   return {
-    progressPct: Math.max(0, Math.min(100, Math.round(input.milestonePct))),
+    progressPct: input.milestonePct === null ? null : Math.max(0, Math.min(100, Math.round(input.milestonePct))),
     week,
     underWay: input.activities.filter((a) => a.status === 'in-progress').map((a) => a.name),
     needs,

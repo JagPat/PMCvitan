@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { placeContents, trailOf } from '@/lib/locationTree';
-import type { Activity, ProjectNode } from '@vitan/shared';
+import { SNAPSHOT_SITE_PHOTO_LIMIT, type Activity, type ProjectNode } from '@vitan/shared';
 
 /**
  * Location context — "where does this belong?", answered wherever a located record is read.
@@ -201,5 +201,29 @@ describe('zone-level and site-level work is FILED and READ where it belongs (no 
     expect(atZone.activities.map((a) => a.id)).toEqual(['A-2']);
     // the only nodes between them are the ones the PMC actually created
     expect(trailOf(NODES, 'zoneA').map((n) => n.name)).toEqual(['Site', 'Zone A']);
+  });
+});
+
+describe('a place\'s photos are read from the snapshot\'s capped window, and say so when it is full', () => {
+  const photo = (i: number, nodeId: string) => ({ id: `ph-${i}`, url: `/m/${i}`, nodeId, kind: 'progress', takenAt: null });
+  it('below the window: the plain label and empty state', async () => {
+    const { useStore } = await load({ photos: [photo(1, 'zoneA')] });
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    act(() => { useStore.getState().openPlace('east'); });
+    const r = render(<PlacesScreen />);
+    expect(r.getByText("photos of what's built")).toBeInTheDocument();
+    expect(r.getByText('No photos filed here yet.')).toBeInTheDocument();
+  });
+
+  it('a FULL window never presents a place\'s photos as its whole record (shadow review on fb9af99)', async () => {
+    // every loaded photo is on Zone A; East Wing's older photos, if any, are outside the window
+    const photos = Array.from({ length: SNAPSHOT_SITE_PHOTO_LIMIT }, (_, i) => photo(i, 'zoneA'));
+    const { useStore } = await load({ photos });
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    act(() => { useStore.getState().openPlace('east'); });
+    const r = render(<PlacesScreen />);
+    expect(r.getByText(`among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} photos on record`)).toBeInTheDocument();
+    expect(r.getByText(`No photos filed here among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} on record.`)).toBeInTheDocument();
+    expect(r.queryByText('No photos filed here yet.')).toBeNull();
   });
 });

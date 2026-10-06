@@ -67,7 +67,7 @@ export function PortfolioScreen() {
         openReviews: reviews.filter((r) => !r.decided).length,
         pendingDecisions: canSeePending ? decisions.filter((d) => d.status === 'pending').length : 0,
         phaseCount: phases.length,
-        milestonePct: 72,
+        milestonePct: activities.length ? Math.round((done / activities.length) * 100) : 0, // B7: derived, never a fixed 72
       },
     ];
   }, [portfolio, activities, phases, decisions, reviews, role, activeProjectId]);
