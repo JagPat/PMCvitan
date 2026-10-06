@@ -123,4 +123,11 @@ describe('4d-iii / R0a-2 — emitEvent writers (live PG)', () => {
       expect(ev.actorName, eventType).toBeTruthy();
     }
   });
+
+  it('an ordinary org MEMBER who is the project PMC can update it, recorded as the pmc they hold (not the org role)', async () => {
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: f.memberUser.id, role: 'member' } });
+    await orgs.updateProject(f.orgA.id, f.memberUser.id, f.projectA.id, { stage: 'z' });
+    const ev = await t.prisma.domainEvent.findFirstOrThrow({ where: { projectId: f.projectA.id, eventType: 'project.updated', actorId: f.memberUser.id }, select: { actorRole: true } });
+    expect(ev).toEqual({ actorRole: 'pmc' });
+  });
 });

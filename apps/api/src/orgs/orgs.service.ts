@@ -1211,7 +1211,7 @@ export class OrgsService {
     if (!allowed) throw new ForbiddenException('Only the project PMC or an org admin can edit a project');
     const project = await this.prisma.project.findUnique({ where: { id: pid }, select: { orgId: true } });
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
-    const actor = await resolveActor(this.prisma, { sub: userId, role: orgRole ?? 'pmc', projectId: pid } as unknown as AuthUser);
+    const actor = await resolveActor(this.prisma, { sub: userId, role: orgRole === 'owner' || orgRole === 'admin' ? orgRole : 'pmc', projectId: pid } as unknown as AuthUser);
     const updated = await this.prisma.$transaction(async (tx) => {
       const u = await tx.project.update({ where: { id: pid }, data: input });
       await emitEvent(tx, { projectId: pid, actor: await orgAuthorityActor(tx, pid, actor), eventType: 'project.updated', entityType: 'Project', entityId: pid, effectKey: 'project.updated', dispatch: {} });
