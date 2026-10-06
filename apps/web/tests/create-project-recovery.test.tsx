@@ -670,6 +670,90 @@ describe('cross-tab project create — one reservation at a time', () => {
     expect(calls.createProject.mock.calls[1]?.[2]).toBe(calls.createProject.mock.calls[0]?.[2]); // one key throughout
   });
 
+  // Owner-approved correction (direct A→B auth adoption): `login` → `applyAuthResult` adopts another user's
+  // token WITHOUT `completeSignOut`. A hold belongs to the identity that took it, so B never sees, retries or
+  // overwrites A's attempt, while A's stays recoverable for A.
+  const signInAs = async (sub: string, gw: { calls: Record<string, ReturnType<typeof vi.fn>> }) => {
+    gw.calls.login = vi.fn(() => Promise.resolve({ role: 'pmc', token: tokenFor(sub), name: sub }));
+    s().login(`${sub}@vitan.test`, 'pw');
+    await settle();
+  };
+  const unknownAttempt = async (sub: string, gw: ReturnType<typeof fakeGateway>, name: string) => {
+    useStore.setState((st) => { st.sessionUserId = sub; st.sessionToken = tokenFor(sub); });
+    void s().createProject('org-1', { name, short: name, stage: 'Planning' });
+    await settle();
+    gw.create.reject(httpError(502));
+    await settle();
+    expect(s().projectCreateHold?.phase).toBe('unknown');
+    return s().projectCreateHold!.attempt;
+  };
+
+  it('A→B sign-in without sign-out: B never retries A\'s attempt as B, and A\'s stays recoverable for A', async () => {
+    fakeLocks();
+    const gw = fakeGateway();
+    s()._setGateway(gw.gw);
+    const keyA = await unknownAttempt('u-a', gw, 'A project');
+    await signInAs('u-b', gw);
+    expect(s().sessionUserId).toBe('u-b');
+    s().syncProjectCreateHold();
+    expect(s().projectCreateHold).toBeNull(); // B has no attempt of its own
+    await expect(s().retryProjectCreate()).resolves.toMatchObject({ kind: 'unknown', message: expect.stringMatching(/no unconfirmed/) });
+    expect(gw.calls.createProject).toHaveBeenCalledTimes(1); // nothing of A's was sent as B
+    // B's own create is a new attempt under a new key
+    gw.calls.createProject.mockImplementationOnce(() => Promise.resolve({ id: 'p-b', name: 'B project', short: 'B' }));
+    await expect(s().createProject('org-1', { name: 'B project', short: 'B', stage: 'Planning' })).resolves.toMatchObject({ kind: 'created' });
+    expect(gw.calls.createProject.mock.calls[1]?.[2]).not.toBe(keyA);
+    // A's attempt is still A's, intact, for A's next sign-in
+    expect(JSON.parse(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a') ?? '{}')).toMatchObject({ phase: 'unknown', attempt: keyA });
+  });
+
+  it('A→B sign-in where B already has an unconfirmed attempt: B sees and retries ITS OWN, and A\'s record is untouched', async () => {
+    fakeLocks();
+    const gwB = fakeGateway();
+    s()._setGateway(gwB.gw);
+    const keyB = await unknownAttempt('u-b', gwB, 'B project');
+    const recordB = globalThis.localStorage.getItem('vitan.projectCreateHold.u-b');
+    act(() => s().completeSignOut());
+    const gwA = fakeGateway();
+    s()._setGateway(gwA.gw);
+    const keyA = await unknownAttempt('u-a', gwA, 'A project');
+    await signInAs('u-b', gwA); // direct adoption, no sign-out
+    s().syncProjectCreateHold();
+    expect(s().projectCreateHold).toMatchObject({ phase: 'unknown', attempt: keyB });
+    expect(globalThis.localStorage.getItem('vitan.projectCreateHold.u-b')).toBe(recordB); // not overwritten by A's
+    gwA.calls.createProject.mockImplementationOnce(() => Promise.resolve({ id: 'p-b', name: 'B project', short: 'B' }));
+    await expect(s().retryProjectCreate()).resolves.toMatchObject({ kind: 'created', projectId: 'p-b' });
+    const retried = gwA.calls.createProject.mock.calls.at(-1);
+    expect(retried?.[2]).toBe(keyB);
+    expect(retried?.[1]).toMatchObject({ name: 'B project' });
+    expect(JSON.parse(globalThis.localStorage.getItem('vitan.projectCreateHold.u-a') ?? '{}')).toMatchObject({ attempt: keyA });
+  });
+
+  it('normal sign-out ends the in-memory hold, and the user\'s attempt is still theirs at their next sign-in', async () => {
+    fakeLocks();
+    const gw = fakeGateway();
+    s()._setGateway(gw.gw);
+    const keyA = await unknownAttempt('u-a', gw, 'A project');
+    act(() => s().completeSignOut());
+    expect(s().projectCreateHold).toBeNull();
+    await signInAs('u-a', gw);
+    s().syncProjectCreateHold();
+    expect(s().projectCreateHold).toMatchObject({ phase: 'unknown', attempt: keyA });
+  });
+
+  it('the SAME user re-authenticating keeps their hold, and "Try again" finishes it under the same key', async () => {
+    fakeLocks();
+    const gw = fakeGateway();
+    s()._setGateway(gw.gw);
+    const keyA = await unknownAttempt('u-a', gw, 'A project');
+    await signInAs('u-a', gw); // a fresh token for the same user
+    s().syncProjectCreateHold();
+    expect(s().projectCreateHold).toMatchObject({ phase: 'unknown', attempt: keyA });
+    gw.calls.createProject.mockImplementationOnce(() => Promise.resolve({ id: 'p-a', name: 'A project', short: 'A' }));
+    await expect(s().retryProjectCreate()).resolves.toMatchObject({ kind: 'created', projectId: 'p-a' });
+    expect(gw.calls.createProject.mock.calls.at(-1)?.[2]).toBe(keyA);
+  });
+
   it('storage BLOCKED: nothing durable could carry the attempt past this page, so nothing is sent (Codex 4187372392, 4187663033)', async () => {
     fakeLocks();
     blockStorage();

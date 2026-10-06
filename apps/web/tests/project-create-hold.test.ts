@@ -76,12 +76,16 @@ describe('the capability check', () => {
  * confirmed create. A new writer must come through here, or this tripwire fails.
  */
 describe('the hold\'s writers', () => {
-  it('are exactly: take (holdProjectCreate), settle (settleProjectCreate), sign-out/persona (memory only), sync (from the mirror)', async () => {
+  it('are exactly: take (holdProjectCreate), settle (settleProjectCreate), sign-out/persona (memory only), sync (from the mirror, or setting aside another identity\'s hold)', async () => {
     const { readFileSync } = await import('node:fs');
     const { resolve } = await import('node:path');
     const src = readFileSync(resolve(__dirname, '../src/store/store.ts'), 'utf8');
     expect(src.match(/writeStoredCreateHold\(/g)).toHaveLength(2); // holdProjectCreate + settleProjectCreate
-    expect(src.match(/s\.projectCreateHold = /g)).toHaveLength(5); // take, settle, sign-out, persona switch, sync
+    // take, settle, sign-out, persona switch, sync (adopt this identity's record), sync (set aside another identity's hold)
+    expect(src.match(/s\.projectCreateHold = /g)).toHaveLength(6);
+    // a hold is bound to the identity that took it: sync keeps a held hold ONLY for its own scope
+    const sync = src.slice(src.indexOf('    syncProjectCreateHold: () => {'), src.indexOf('    updateProjectDetails:'));
+    expect(sync).toMatch(/held !== null && held\.scope === scope\) return;/);
     const settle = src.slice(src.indexOf('const settleProjectCreate'), src.indexOf('const unreserveProjectCreate'));
     expect(settle).toMatch(/next === 'confirmed' \? h\?\.attempt === attempt : h\?\.lease === lease/);
   });

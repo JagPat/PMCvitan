@@ -122,8 +122,11 @@ export type ProjectCreateHold =
   // reserved again — a retry from a later session or another tab — so releasing it, or settling it as
   // refused or unknown, is done only by the reservation whose lease is current. A CONFIRMED create is the
   // one exception: the server committed that key, so it finishes the attempt whoever holds it.
-  | { phase: 'in_flight'; attempt: string; lease: string; orgId: string; input: NewProjectInput }
-  | { phase: 'unknown'; attempt: string; lease: string; orgId: string; input: NewProjectInput; message: string };
+  // `scope` is the IDENTITY the hold belongs to (the token's subject, or the dev session user): a hold is
+  // only ever read, retried or settled as that identity's, so a direct sign-in as another user (auth
+  // adoption without a sign-out) never retries the previous user's attempt as the new one.
+  | { phase: 'in_flight'; attempt: string; lease: string; scope: string; orgId: string; input: NewProjectInput }
+  | { phase: 'unknown'; attempt: string; lease: string; scope: string; orgId: string; input: NewProjectInput; message: string };
 
 /** What a new-project create came to (legacy-copy recovery). `created` is final even when `opened`
  *  is false — the project exists, so the dialog closes and must not invite a duplicate retry.
@@ -1392,7 +1395,7 @@ export const useStore = create<Store>()(
     const holdProjectCreate = (sub: string, orgId: string, input: NewProjectInput, attempt: string): string | null => {
       const lease = newIdempotencyKey(); // this reservation's own name, distinct from the attempt's key
       if (!writeStoredCreateHold(sub, { attempt, lease, phase: 'in_flight', orgId, input })) return null;
-      set((s) => { s.projectCreateHold = { phase: 'in_flight', attempt, lease, orgId, input }; });
+      set((s) => { s.projectCreateHold = { phase: 'in_flight', attempt, lease, scope: sub, orgId, input }; });
       return lease;
     };
     /** Settle the hold a reservation took. Only the CURRENT lease may (Codex 4190271480) — in memory and in
@@ -1432,7 +1435,7 @@ export const useStore = create<Store>()(
       // same user signing back in restores it as unknown under this lease, and its reply still finishes it
       // (Codex 4189880211); a confirmed create finishes the attempt under any lease.
       const settle = (next: ProjectCreateHold | null | 'confirmed') => settleProjectCreate(sub, attempt, lease, next);
-      const unknownHold = (message: string): ProjectCreateHold => ({ phase: 'unknown', attempt, lease, orgId, input, message });
+      const unknownHold = (message: string): ProjectCreateHold => ({ phase: 'unknown', attempt, lease, scope: sub, orgId, input, message });
       // The reply is bound to the user who sent it, as `addLocationNode`'s is: one landing after a
       // sign-out or persona change belongs to nobody on screen, so it is dropped — no toast, no switch.
       const sentBySameUser = () => `${sessionSub()}|${get().sessionUserId ?? ''}` === ctx.identity;
@@ -4469,14 +4472,22 @@ export const useStore = create<Store>()(
       return sendProjectCreate(gw, was.orgId, was.input, was.attempt, lease, ctx);
     },
     syncProjectCreateHold: () => {
-      if (get().projectCreateHold !== null) return; // this tab's own hold is already authoritative
-      const stored = readStoredCreateHold(currentCreateHoldScope());
-      if (!stored) return;
+      const scope = currentCreateHoldScope();
+      const held = get().projectCreateHold;
+      // this tab's own hold is authoritative — but only for the identity that took it: after a sign-in as
+      // ANOTHER user without a sign-out (auth adoption), the previous user's hold is set aside here (their
+      // record stays in their own mirror, recoverable for them) and this identity's own record is read
+      if (held !== null && held.scope === scope) return;
+      const stored = readStoredCreateHold(scope);
+      if (!stored) {
+        if (held !== null) set((s) => { s.projectCreateHold = null; });
+        return;
+      }
       // no live request in THIS tab owns the record, so its outcome is unknown here — and since the
       // attempt carries its key, "Try again" from here is safe too
       set((s) => {
         s.projectCreateHold = {
-          phase: 'unknown', attempt: stored.attempt, lease: stored.lease ?? '', orgId: stored.orgId, input: stored.input,
+          phase: 'unknown', attempt: stored.attempt, lease: stored.lease ?? '', scope, orgId: stored.orgId, input: stored.input,
           message: stored.phase === 'unknown' && stored.message ? stored.message : FOREIGN_CREATE_HOLD,
         };
       });
