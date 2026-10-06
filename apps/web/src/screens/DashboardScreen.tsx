@@ -48,7 +48,7 @@ export function DashboardScreen() {
   const siteDot = checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)';
 
   // `onClick` stays optional: a tile with nowhere to go renders as a plain box (B5)
-  const tiles: Array<{ key: string; label: string; value: number; accent: string; sub: string; onClick?: () => void }> = [
+  const tiles: Array<{ key: string; label: string; value: number | string; accent: string; sub: string; onClick?: () => void }> = [
     { key: 'pending', label: 'DECISIONS PENDING WITH CLIENT', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setScreen('decision-log') },
     { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => setScreen('inspect-review') },
     // API mode never claims WHICH items failed beyond the recorded count — the seeded
@@ -57,7 +57,15 @@ export function DashboardScreen() {
     // B7 (F-13): COMPUTED from the placed photos in every mode — the demo's fixed "24 this week ·
     // 6 zones" contradicted the strip above. The strip shows the daily log's reported count; this,
     // every photo on record.
-    { key: 'photos', label: 'SITE PHOTOS ON RECORD', value: photoStats.count, accent: 'var(--green-solid)', sub: photoStats.zones > 0 ? `Across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet', onClick: () => setScreen('places') },
+    // The snapshot carries the newest SNAPSHOT_SITE_PHOTO_LIMIT only: a full window is "at least", and its
+    // places are the places among those (Codex 4194155412) — never presented as the total on record.
+    {
+      key: 'photos', label: 'SITE PHOTOS ON RECORD', value: photoStats.capped ? `${photoStats.count}+` : photoStats.count, accent: 'var(--green-solid)',
+      sub: photoStats.capped
+        ? `Latest ${photoStats.count} shown${photoStats.zones > 0 ? ` · across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : ''}`
+        : photoStats.zones > 0 ? `Across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet',
+      onClick: () => setScreen('places'),
+    },
   ];
 
   // demo-only prototype highlights; API mode renders the project's own photos (or an honest absence)

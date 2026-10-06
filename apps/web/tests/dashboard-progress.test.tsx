@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
-import { selectProjectProgress } from '@/store/selectors';
+import { selectProjectProgress, selectPhotoStats } from '@/store/selectors';
+import { SNAPSHOT_SITE_PHOTO_LIMIT } from '@vitan/shared';
 import { DashboardScreen } from '@/screens/DashboardScreen';
 
 /**
@@ -106,5 +107,20 @@ describe('Dashboard progress', () => {
     expect(r.queryByText('PROGRESS PHOTOS THIS WEEK')).toBeNull();
     expect(r.getByTestId('tile-photos-value').textContent).toBe(String(s().photos.length));
     expect(r.queryByText('Across 6 zones')).toBeNull();
+  });
+
+  it('a FULL snapshot window is "at least", never the total on record (Codex 4194155412)', () => {
+    const one = s().photos[0]!;
+    // the snapshot carries the newest SNAPSHOT_SITE_PHOTO_LIMIT; older photos exist but are not loaded
+    useStore.setState((st) => {
+      st.photos = Array.from({ length: SNAPSHOT_SITE_PHOTO_LIMIT }, (_, i) => ({ ...one, id: `ph-${i}`, nodeId: i % 2 ? 'node-a' : 'node-b' }));
+    });
+    expect(selectPhotoStats(s())).toEqual({ count: SNAPSHOT_SITE_PHOTO_LIMIT, zones: 2, capped: true });
+    const r = render(<DashboardScreen />);
+    expect(r.getByTestId('tile-photos-value').textContent).toBe(`${SNAPSHOT_SITE_PHOTO_LIMIT}+`);
+    expect(r.getByText(`Latest ${SNAPSHOT_SITE_PHOTO_LIMIT} shown · across 2 places`)).toBeTruthy();
+    // one short of the window is the whole set
+    useStore.setState((st) => { st.photos = st.photos.slice(1); });
+    expect(selectPhotoStats(s()).capped).toBe(false);
   });
 });

@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
+import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
 import { activitiesReadMode } from '@/data/apiGateway';
@@ -368,13 +368,17 @@ export function selectTotalWorkers(s: AppState): number {
 export interface PhotoStats {
   count: number;
   zones: number; // distinct location nodes the photos are placed on
+  /** true when the snapshot's window is full: `count` is then a floor (older photos exist unloaded) and
+   *  `zones` counts only the places among the loaded ones (Codex 4194155412) */
+  capped: boolean;
 }
 
 /** Photo totals COMPUTED from the snapshot's placed photos — never a fixed claim.
- *  (Phase 0 Task 7: API mode shows only recorded facts.) */
+ *  (Phase 0 Task 7: API mode shows only recorded facts.) The snapshot carries at most
+ *  `SNAPSHOT_SITE_PHOTO_LIMIT`, newest first, so a full window is reported as capped, never as the total. */
 export function selectPhotoStats(s: AppState): PhotoStats {
   const zones = new Set(s.photos.map((p) => p.nodeId).filter(Boolean));
-  return { count: s.photos.length, zones: zones.size };
+  return { count: s.photos.length, zones: zones.size, capped: s.photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT };
 }
 
 // ---- "Needs you" action queue ----
