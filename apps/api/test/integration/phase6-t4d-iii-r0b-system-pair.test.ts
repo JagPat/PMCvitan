@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { Prisma } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, insertRawEvent, rawDeliveryRowsSql, type TwoProjectFixture } from './fixtures';
-import { emitEvent } from '../../src/platform/events';
 import { newInstanceId, writeLease } from '../../src/platform/release-lease.service';
 import { effectCoverageVersion } from '../../src/platform/external-effects';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -123,15 +122,9 @@ describe('4d-iii / R0b — the system pair and the lease generation (live PG)', 
     })).rejects.toThrow(/no `actorId`/);
   });
 
-  it('a pairless event still commits on either actor kind, and the delivered emitter still writes a system event with no pair (R0c writes it)', async () => {
+  it('a pairless system event still commits: the delivered emitter writes none until R0c (proven at the emitter by the A1 and R0a-2 suites)', async () => {
     const sys = await plant({ actorKind: 'system', systemActor: 'system:seed' }, null);
-    expect(await pairOf(sys)).toMatchObject({ actorRole: null, actorName: null });
-    const { eventId } = await t.prisma.$transaction((tx) => emitEvent(tx, {
-      projectId: f.projectA.id, actor: { actorId: 'system:r0b-probe', actorRole: 'system', actorKind: 'system' },
-      eventType: 'activity.completion_requested', entityType: 'Activity', entityId: `R0B-${randomUUID()}`,
-      effectKey: 'activity.completion_requested', dispatch: { push: { body: 'completion requested' } },
-    }));
-    expect(await pairOf(eventId)).toMatchObject({ actorKind: 'system', systemActor: 'system:r0b-probe', actorRole: null, actorName: null });
+    expect(await pairOf(sys)).toMatchObject({ actorKind: 'system', actorRole: null, actorName: null });
   });
 
   // ── the lease's server generation ────────────────────────────────────────────────────────────
