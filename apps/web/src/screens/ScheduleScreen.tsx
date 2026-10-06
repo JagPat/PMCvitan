@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions, type GateVM } from '@/store/selectors';
+import { gatesFor, activityReady, scheduleStatusCounts, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions, type GateVM } from '@/store/selectors';
 import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext, EditState, ConfirmDialog } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
@@ -337,7 +337,6 @@ function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase, onOver
 export function ScheduleScreen() {
   const activities = useStore(useShallow((s) => s.activities));
   const phases = useStore(useShallow((s) => s.phases));
-  const sch = useStore(useShallow(selectSchToday));
   const todayDay = useStore((s) => s.todayDay);
   const projStart = useStore((s) => s.projStart);
   const projEnd = useStore((s) => s.projEnd);
@@ -388,6 +387,8 @@ export function ScheduleScreen() {
     return activities.filter((a) => a.nodeId && sub.has(a.nodeId));
   }, [activities, nodes, placeFilter]);
   const filtering = shown !== activities;
+  // the cards count the rows shown: with a place filter on, that place and everything inside it (Codex 4180886620)
+  const sch = useMemo(() => scheduleStatusCounts(shown), [shown]);
   const filterName = nodes.find((n) => n.id === placeFilter)?.name ?? '';
   useEffect(() => {
     if (activityFocus === null) return;
