@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: ux-queue-720-project-create-hold-engine
+work_item: none
 reviewed_merge: cffb251
-open_pr: 720
+open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-06
@@ -45,13 +45,12 @@ redesign in smaller units. So #716 was closed and its work is split into server 
    `ef84407`) confirmed the root cause: its hold kept the same state twice, per tab in memory and per user
    in localStorage, and each finding was one more interleaving in which the two disagreed. #718 is closed and
    its work is replaced in two smaller units, one at a time:
-   - **3a. the hold engine, #720** (current work item), `claude/project-create-hold-engine`:
-     `apps/web/src/store/projectCreateHold.ts` alone, with its tests. One record per identity is the only
-     source of truth; every transition (reserve, fenced send, settle, release) runs under one Web Lock per
-     identity and compares the record's lease before it writes; a settled record tells "finished elsewhere"
-     from "storage cleared"; what a dialog shows is derived from the record and the document's live
-     reservations. Nothing calls it yet.
-   - **3b. the store and dialog wiring**: `createProject` and `retryProjectCreate` on the engine, the
+   - **3a. the hold engine, #720** — merged at `a3c8234`. One record per identity is the only source of
+     truth; every transition (reserve, fenced send, settle, release) runs under one Web Lock per identity
+     and compares the record's lease before it writes; a settled record tells "finished elsewhere" from
+     "storage cleared"; what a dialog shows is derived from the record and the document's live
+     reservations.
+   - **3b. the store and dialog wiring** (current work item), `claude/project-create-client-wiring`: `createProject` and `retryProjectCreate` on the engine, the
      `CreateProjectOutcome` dialog, the gateway's key and `/health` probe, a hold view re-derived on every
      identity change and storage event, and #718's dialog and identity regressions with the three `ef84407`
      reproductions.
