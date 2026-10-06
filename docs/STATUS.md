@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: ux-queue-719-project-create-receipt-replay
+work_item: none
 reviewed_merge: cffb251
-open_pr: 719
+open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-06
@@ -32,22 +32,29 @@ Claude session owns every unit, and each is driven to completion before the next
 The legacy-copy recovery (#710) needs project creation to carry an idempotency key. #710 was closed at its
 five-head limit, and its replacement #716 reached the same five-head restructure signal. Three of #716's
 reviewed heads also drew a P1 in `apps/web/src/store/store.ts`, which is the policy's stop for an additive
-redesign in smaller units. So #716 was closed and its work is split in two:
+redesign in smaller units. So #716 was closed and its work is split into server and client units:
 
 1. **#717, the server unit** — merged at `f60a549`. Project creation accepts an optional
    `Idempotency-Key`, backed by an org-scoped receipt through the command ledger, and `/health` advertises
    `orgs.createProject.receipt`.
-2. **#719, the receipt-replay unit**, `claude/project-create-receipt-replay` (current work item). #718 drew a P1
-   in `store.ts` on its third reviewed head (Codex 4190663677), which is POLICY's stop: ordinary patching of
-   #718 stopped, recorded at https://github.com/JagPat/PMCvitan/pull/718#issuecomment-6007509383. The finding's
-   root cause is server-side: a keyed create checked the caller's org role before its receipt, so a creator
-   who lost the role got a 403 for a project that exists. This unit replays the caller's own committed
-   receipt before the role check.
-3. **#718, the client unit**, `claude/project-create-recovery-client`, open and paused at the stop. After
-   the replay unit merges it takes `main` by a merge commit and receives one owner-approved structural
-   correction: each create hold is bound to the identity that took it, so a direct sign-in as another user
-   (auth adoption without sign-out) never retries the previous user's attempt as the new one, while that
-   user's attempt stays recoverable for them.
+2. **#719, the receipt-replay unit** — merged at `4a21521`. A keyed create is refused only inside its
+   ledger transaction, so a creator who lost the role gets the committed project's receipt, never a 403
+   for a project that exists (#718's Codex 4190663677).
+3. **The client, replacing #718.** #718 reached the five-finding-head limit, and its fourth reviewed head
+   with a P1 in `store.ts` (Codex 4192524390, alongside 4192524377 and 4192524383 — all three RED on
+   `ef84407`) confirmed the root cause: its hold kept the same state twice, per tab in memory and per user
+   in localStorage, and each finding was one more interleaving in which the two disagreed. #718 is closed and
+   its work is replaced in two smaller units, one at a time:
+   - **3a. the hold engine** (current work item), `claude/project-create-hold-engine`:
+     `apps/web/src/store/projectCreateHold.ts` alone, with its tests. One record per identity is the only
+     source of truth; every transition (reserve, fenced send, settle, release) runs under one Web Lock per
+     identity and compares the record's lease before it writes; a settled record tells "finished elsewhere"
+     from "storage cleared"; what a dialog shows is derived from the record and the document's live
+     reservations. Nothing calls it yet.
+   - **3b. the store and dialog wiring**: `createProject` and `retryProjectCreate` on the engine, the
+     `CreateProjectOutcome` dialog, the gateway's key and `/health` probe, a hold view re-derived on every
+     identity change and storage event, and #718's dialog and identity regressions with the three `ef84407`
+     reproductions.
 4. **#711** `claude/ux-b7-progress` — distinguish failed activity loading from an empty list.
 5. **#712** `claude/ux-b8-space-status` — align the place-filter summaries with the filtered rows.
 6. **#713** `claude/ux-b9-naming` — prevent the small-screen Decision Log label truncation.
