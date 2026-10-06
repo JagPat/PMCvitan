@@ -26,7 +26,7 @@ describe('Phase 2 Task 10 (correction) — daily-log commands are idempotent (li
     t = await createTestApp();
     f = await createTwoProjectFixture(t.prisma);
     svc = t.app.get(DailyLogService);
-    user = { sub: f.memberUser.id, role: 'engineer', projectId: f.projectA.id };
+    user = { sub: f.memberUser.id, role: 'pmc', projectId: f.projectA.id };
     // a SECOND active member on projectA — for cross-actor isolation of the receipt subject
     member2Id = `it-dlidem-m2-${Date.now() % 1e7}`;
     await t.prisma.user.create({ data: { id: member2Id, projectId: f.projectA.id, role: 'engineer', name: 'Member 2', email: `${member2Id}@test.local` } });

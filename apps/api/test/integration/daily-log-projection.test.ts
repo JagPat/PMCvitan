@@ -22,7 +22,7 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * `snapshotSlice`, before and after a full rebuild.
  */
 
-const human: Actor = { actorId: '', actorName: 'Ravi (Engineer)', actorRole: 'engineer', actorKind: 'human' };
+const human: Actor = { actorId: '', actorName: 'Ravi (Engineer)', actorRole: 'pmc', actorKind: 'human' };
 
 describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuild (live PG)', () => {
   let t: TestApp;
@@ -42,7 +42,7 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
     relay = t.app.get(OutboxRelay);
     rebuilder = t.app.get(ProjectionRebuilder);
     query = t.app.get(DailyLogQueryService);
-    human.actorId = f.memberUser.id;
+    human.actorId = f.ownerUser.id;
   });
   afterAll(async () => {
     await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });

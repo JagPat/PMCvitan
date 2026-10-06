@@ -163,7 +163,7 @@ describe('#699 — nodes.create is idempotent under its key (live PG)', () => {
     expect(await t.prisma.projectNode.count({ where: { projectId: p(), parentId: zone.createdNodeId } })).toBe(1);
   });
 
-  const owner = (): AuthUser => ({ sub: f.ownerUser.id, role: 'owner', projectId: f.projectA.id }) as AuthUser;
+  const owner = (): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc', projectId: f.projectA.id }) as AuthUser;
 
   it('another author\'s PRIVATE draft never counts: it is not named in a 409 nor returned as the created place', async () => {
     const zone = await svc.create(p(), { name: 'Idem Shared Wing', kind: 'zone', parentId: null, publish: true }, pmc());

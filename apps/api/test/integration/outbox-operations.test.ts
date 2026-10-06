@@ -32,7 +32,7 @@ describe('PR B Task 4 — outbox operations (live PG)', () => {
     ops = t.app.get(OutboxOperationsService);
     relay = t.app.get(OutboxRelay);
     activation = t.app.get(OutboxConsumerActivationService);
-    human.actorId = f.memberUser.id;
+    human.actorId = f.ownerUser.id;
     registerConsumer(ordered);
     await syncConsumerCatalog(t.prisma);
   });

@@ -79,7 +79,7 @@ describe('Phase 2 Task 9 — projection generations + activation barrier (live P
     f = await createTwoProjectFixture(t.prisma);
     relay = t.app.get(OutboxRelay);
     rebuilder = t.app.get(ProjectionRebuilder);
-    human.actorId = f.memberUser.id;
+    human.actorId = f.ownerUser.id;
     registerConsumer(projConsumer);
     registerConsumer(seededConsumer);
     await syncConsumerCatalog(t.prisma); // the ad-hoc projection consumers need their catalog contract rows

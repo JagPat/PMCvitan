@@ -26,7 +26,7 @@ describe('PR B Task 1 — durable outbox constraints (live PG)', () => {
   beforeAll(async () => {
     t = await createTestApp();
     f = await createTwoProjectFixture(t.prisma);
-    human.actorId = f.memberUser.id;
+    human.actorId = f.ownerUser.id;
   });
   afterAll(async () => {
     await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });

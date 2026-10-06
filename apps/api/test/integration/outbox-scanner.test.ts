@@ -48,7 +48,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     f = await createTwoProjectFixture(t.prisma);
     relay = t.app.get(OutboxRelay);
     activation = t.app.get(OutboxConsumerActivationService);
-    human.actorId = f.memberUser.id;
+    human.actorId = f.ownerUser.id;
     registerConsumer(filtered);
     await syncConsumerCatalog(t.prisma);
   });

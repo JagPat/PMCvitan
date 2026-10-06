@@ -51,7 +51,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
     t = await createTestApp();
     f = await createTwoProjectFixture(t.prisma);
     relay = t.app.get(OutboxRelay);
-    human.actorId = f.memberUser.id;
+    human.actorId = f.ownerUser.id;
     registerConsumer(orderedConsumer);
     // The ad-hoc ordered projection consumer needs its catalog contract row before it can own
     // deliveries (the (consumer, consumerKind) FK) — bootstrap synced only socket/push.

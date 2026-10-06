@@ -4,6 +4,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent, type EmitInput } from '../../src/platform/events';
 import type { EventActor } from '../../src/common/actor';
+import { STALE_ROLE_MESSAGE } from '../../src/platform/actor-envelope';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
@@ -76,30 +77,27 @@ describe('4d-ii-a / A1 — the actor envelope (live PG)', () => {
     expect(ev).toMatchObject({ actorRole: 'pmc', actorName: await identityName(f.ownerUser.id) });
   });
 
-  it('writes NO pair for a token role the actor does not hold, and never substitutes the role they do hold', async () => {
+  /** The refusal (4d-iii / R0a-2, Decision 2): a human whose role does not stand is 403, and no event is written. */
+  const expectRefused = async (actor: EventActor) => {
+    const entityId = `A1-${randomUUID()}`;
+    await expect(emit(actor, { entityId })).rejects.toMatchObject({ status: 403, message: STALE_ROLE_MESSAGE });
+    expect(await t.prisma.domainEvent.count({ where: { entityId } }), 'a refused emit writes no event').toBe(0);
+  };
+
+  it('REFUSES (403) a token role the actor does not hold, and never substitutes the role they do hold', async () => {
     // The client member claims `pmc` (a stale or wrong token role): the seal would refuse `pmc`,
     // and writing `client` instead would attribute the act to a standing it was not performed in.
-    const { eventId } = await emit(human(f.clientUser.id, 'pmc'));
-    const ev = await envelopeOf(eventId);
-    expect(ev.actorId).toBe(f.clientUser.id);
-    expect(ev.actorRole).toBeNull();
-    expect(ev.actorName).toBeNull();
+    await expectRefused(human(f.clientUser.id, 'pmc'));
   });
 
-  it('writes NO pair for an actor with no standing on the project (another tenant, a stranger)', async () => {
-    for (const actorId of [f.otherUser.id, f.strangerUser.id]) {
-      const { eventId } = await emit(human(actorId, 'pmc'));
-      const ev = await envelopeOf(eventId);
-      expect(ev.actorId).toBe(actorId);
-      expect([ev.actorRole, ev.actorName]).toEqual([null, null]);
-    }
+  it('REFUSES (403) an actor with no standing on the project (another tenant, a stranger)', async () => {
+    for (const actorId of [f.otherUser.id, f.strangerUser.id]) await expectRefused(human(actorId, 'pmc'));
   });
 
-  it('writes NO pair for a system actor or a blank role', async () => {
+  it('writes NO pair for a system actor; REFUSES a human with a blank role', async () => {
     const system = await emit({ actorId: 'system:a1-probe', actorRole: 'system', actorKind: 'system' });
     expect(await envelopeOf(system.eventId)).toMatchObject({ actorKind: 'system', actorRole: null, actorName: null });
-    const blank = await emit(human(f.memberUser.id, '  '));
-    expect(await envelopeOf(blank.eventId)).toMatchObject({ actorRole: null, actorName: null });
+    await expectRefused(human(f.memberUser.id, '  '));
   });
 
   it('takes the name from UserIdentity inside the transaction, not from a pre-transaction read', async () => {
@@ -201,10 +199,10 @@ describe('4d-ii-a / A1 — the actor envelope (live PG)', () => {
 
       const [demoted, emitted] = await Promise.allSettled([demotion, emitting]);
       expect(demoted.status, demoted.status === 'rejected' ? String(demoted.reason) : '').toBe('fulfilled');
-      expect(emitted.status, emitted.status === 'rejected' ? String(emitted.reason) : '').toBe('fulfilled');
-      // The emit read the registers after the demotion committed: the owner no longer holds pmc.
-      const { eventId } = (emitted as PromiseFulfilledResult<{ eventId: string }>).value;
-      expect(await envelopeOf(eventId)).toMatchObject({ actorId: owner.id, actorRole: null, actorName: null });
+      // The emit read the registers after the demotion committed: the owner no longer holds pmc, so
+      // it is REFUSED with the re-sign-in (403) — not aborted as a deadlock, which is what this pins.
+      expect(emitted.status).toBe('rejected');
+      expect((emitted as PromiseRejectedResult).reason).toMatchObject({ status: 403, message: STALE_ROLE_MESSAGE });
     } finally {
       await t.prisma.orgMembership.deleteMany({ where: { userId: owner.id } });
       await t.prisma.user.delete({ where: { id: owner.id } });

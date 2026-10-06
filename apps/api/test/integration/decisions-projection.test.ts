@@ -38,7 +38,7 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     relay = t.app.get(OutboxRelay);
     rebuilder = t.app.get(ProjectionRebuilder);
     query = t.app.get(DecisionsQueryService);
-    human.actorId = f.memberUser.id;
+    human.actorId = f.ownerUser.id;
     authorId = f.memberUser.id;
     // Phase 6 task 4b — projectA publishes client-held decisions in the HTTP probe below, and
     // publication re-validates client standing at the DB: give the project an active client.

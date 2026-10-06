@@ -793,6 +793,10 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     const holder = `it-inidem-u-r11h-${projSeq}`;
     await t.prisma.user.create({ data: { id: holder, projectId: p, role: 'engineer', name: 'Holder', email: `${holder}@t.local` } });
     await t.prisma.membership.create({ data: { projectId: p, userId: holder, role: 'engineer', status: 'active' } });
+    // the OTHER engineer who deletes holds a real membership: the delete's event records their role
+    const stranger = `it-inidem-u-r11o-${projSeq}`;
+    await t.prisma.user.create({ data: { id: stranger, projectId: p, role: 'engineer', name: 'Other Engineer', email: `${stranger}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: stranger, role: 'engineer', status: 'active' } });
     await svc.create(p, createInput({ title: 'Raced assignment' }), asPmc(pmcA, p), 'k-r11-1');
     const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Raced assignment' }, include: { items: true } });
     const asUser = (sub: string) => ({ sub, role: 'engineer', projectId: p }) as AuthUser;

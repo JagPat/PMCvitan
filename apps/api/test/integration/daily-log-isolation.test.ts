@@ -22,7 +22,7 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * The lagging/blocked-generation fallbacks (finding 1) are proven in daily-log-projection.test.ts.
  */
 
-const human: Actor = { actorId: '', actorName: 'Ravi (Engineer)', actorRole: 'engineer', actorKind: 'human' };
+const human: Actor = { actorId: '', actorName: 'Ravi (Engineer)', actorRole: 'pmc', actorKind: 'human' };
 const RESET_TABLES = ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
   'ProjectionGeneration', 'DailyLogProjection'
 ] as const;
@@ -41,7 +41,7 @@ describe('Phase 2 Task 10 (correction, finding 5) — module read isolation + li
     relay = t.app.get(OutboxRelay);
     rebuilder = t.app.get(ProjectionRebuilder);
     query = t.app.get(DailyLogQueryService);
-    human.actorId = f.memberUser.id;
+    human.actorId = f.ownerUser.id;
   });
   afterAll(async () => {
     await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });

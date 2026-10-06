@@ -127,7 +127,9 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
   ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
-  const engineer = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'engineer', projectId }) as AuthUser;
+  // a real engineer on the project: the claim's events record the role the actor truly holds
+  const engineerId = (projectId: string) => `${projectId}-eng`.slice(0, 60);
+  const engineer = (projectId: string): AuthUser => ({ sub: engineerId(projectId), role: 'engineer', projectId }) as AuthUser;
   const contractor = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'contractor', projectId }) as AuthUser;
   const orgAdmin = (): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc', projectId: '' }) as AuthUser;
 
@@ -164,6 +166,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
       ['media', { projectId: { startsWith: 'it-p5t4-' } }],
       ['activity', { projectId: { startsWith: 'it-p5t4-' } }],
       ['membership', { projectId: { startsWith: 'it-p5t4-' } }],
+      ['user', { projectId: { startsWith: 'it-p5t4-' } }],
       ['project', { id: { startsWith: 'it-p5t4-' } }],
     ] as const) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -897,7 +900,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     await t.prisma.$transaction(async (tx) => {
       await bills.disputeClaimsBeyondEvidence(
         tx, projectId, 'labour', line.poLineId, new Prisma.Decimal(0), 'order-not-live: supplier reneged',
-        { actorId: f.memberUser.id, actorKind: 'human' },
+        { actorId: f.memberUser.id, actorKind: 'human', actorRole: 'pmc' },
       );
       await tx.$executeRawUnsafe(
         `UPDATE "LabourPurchaseOrderVersion" SET "status"='cancelled', "cancelledAt"=now(), "cancelReason"='supplier reneged' WHERE "id"=$1`,
@@ -1170,6 +1173,8 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     const projectId = await freshProject();
     const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
     await acceptOnLine(projectId, line, '100', '100');
+    await t.prisma.user.create({ data: { id: engineerId(projectId), projectId, role: 'engineer', name: 'Claim Engineer', email: `${engineerId(projectId)}@test.local` } });
+    await t.prisma.membership.create({ data: { projectId, userId: engineerId(projectId), role: 'engineer', status: 'active' } });
 
     // an ENGINEER may record and submit a claim; a CONTRACTOR may not
     const recorded = await bills.record(projectId, {
@@ -1380,7 +1385,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
           });
         }),
         projectId, 'material', line.poLineId, new Prisma.Decimal('80'),
-        'qty-over-accepted: evidence withdrawn', { actorId: f.memberUser.id, actorKind: 'human' },
+        'qty-over-accepted: evidence withdrawn', { actorId: f.memberUser.id, actorKind: 'human', actorRole: 'pmc' },
       ));
 
       // the concurrent rejection already removed 40, so the fold is 60 and there is NOTHING left to
@@ -1514,7 +1519,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
         }, pmc(projectId));
       }),
       projectId, 'material', line.poLineId, new Prisma.Decimal('80'),
-      'qty-over-accepted: evidence withdrawn', { actorId: f.memberUser.id, actorKind: 'human' },
+      'qty-over-accepted: evidence withdrawn', { actorId: f.memberUser.id, actorKind: 'human', actorRole: 'pmc' },
     ));
 
     // 70 ≤ 80 — the corrected claim is valid and must be left alone
