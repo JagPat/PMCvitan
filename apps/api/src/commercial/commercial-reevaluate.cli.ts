@@ -12,6 +12,7 @@ import { InventoryQuery } from '../inventory/inventory.query';
 import { recordAudit } from '../platform/audit';
 import { systemActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { assertServerGenerationAdmitted, SERVER_GENERATION } from '../platform/server-generation';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { CommercialCommandRunner } from './commercial-command.runner';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -99,6 +100,8 @@ export interface ReevaluateReport {
  */
 export async function reevaluateAll(
   prisma: PrismaService, budget: CommercialBudgetService, operator: { userId: string; reason: string },
+  /** The generation this process compiles; a proof passes a lower one to exercise the fence. */
+  opts: { compiledGeneration?: number } = {},
 ): Promise<ReevaluateReport> {
   const enabled = await prisma.projectCapability.findMany({
     where: { capability: COMMERCIAL_CAPABILITY }, select: { projectId: true }, orderBy: { projectId: 'asc' },
@@ -127,6 +130,13 @@ export async function reevaluateAll(
       // that can corrupt the register it is repairing is worse than no repair.
       await lockProjectReadiness(tx, projectId);
 
+      // 4d-iii / R0c — THE SERVER-GENERATION FENCE, before anything is written. This CLI builds its
+      // own Prisma client and never passed the server's startup admission, so an image older than the
+      // persisted minimum is refused here; the minimum is read `FOR SHARE` and held to this
+      // transaction's commit, so no raise can commit under the sweep's writes. After the advisory
+      // lock, which must be the transaction's first statement.
+      await assertServerGenerationAdmitted(tx, undefined, opts.compiledGeneration ?? SERVER_GENERATION);
+
       // Codex round-2 (P2) — the OPEN ROW IDS, not a count. Net before/after totals report
       // `raised: 0, cleared: 0` when one project both reopens a stale cleared breach and clears a
       // stale open one: two durable rows changed and the operator is told nothing happened. The
@@ -139,9 +149,10 @@ export async function reevaluateAll(
 
       // `actorKind: 'system'` — this is an operator process, and the `commercial.money_moved`
       // envelope `evaluate` appends records the distinction. The id is the RESOLVED user, so the
-      // exception rows and the event point at the same real identity.
+      // exception rows and the event point at the same real identity. 4d-iii / R0c — the sweep names
+      // its AUTOMATION, so the event carries the system pair (`system`, `commercial-reevaluate`).
       await budget.evaluate(
-        tx, projectId, { actorId: operator.userId, actorKind: 'system', actorRole: 'system' },
+        tx, projectId, { actorId: operator.userId, actorKind: 'system', actorRole: 'system', automation: 'commercial-reevaluate' },
         heads.map((h) => h.code), 'fold_correction',
       );
 

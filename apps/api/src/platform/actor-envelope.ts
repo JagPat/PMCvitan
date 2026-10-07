@@ -48,13 +48,48 @@ import type { EventActor } from '../common/actor';
  * membership granted to them commit between this read and the INSERT. The seal then refuses the
  * pair, and that one command rolls back and may be retried. Nothing is recorded wrongly.
  *
- * Returns NULL, and so writes no pair, for a `system` actor (the seal refuses a pair on one), a
- * blank role, a role the actor does not hold, or a missing or blank account name. NULL is never a
- * refusal: the seal admits it on every event type through the drain.
+ * Returns NULL, and so writes no pair, for a blank role, a role the actor does not hold, or a missing
+ * or blank account name. NULL is never a refusal: the seal admits it on every event type through the
+ * drain (`emitEvent` refuses a HUMAN event with no pair itself, since 4d-iii / R0a-2).
+ *
+ * **A `system` actor** (4d-iii / R0c) reads no register. It carries the pair only when it names the
+ * AUTOMATION it is ({@link EventActor.automation}): the pair is then ({@link SYSTEM_ROLE}, that
+ * registered name), the arm R0b's re-issued seal admits. Without one it carries no pair, as before.
  */
 export interface ActorEnvelope {
   readonly actorRole: string;
   readonly actorName: string;
+}
+
+/**
+ * Phase 6 task 4d-iii / R0c — the CLOSED set of automations a `system` event may name as its pair: the
+ * TypeScript mirror of R0b's `platform_t4d_automation_identity(name)`
+ * (`20280107000000_phase6_t4d_iii_r0b_system_pair`), which the seal asks. A unit test pins the two
+ * equal, so a name added here without a migration adding it to the function is caught at the desk,
+ * not refused at the INSERT.
+ *
+ * - `decisions-effects` — the effects processor's renotified countersign event;
+ * - `commercial-activation` — the §L activation operator process (`capability:enable`);
+ * - `commercial-reevaluate` — the §J re-evaluation sweep (`commercial:reevaluate`).
+ *
+ * The pair NAMES THE AUTOMATION; the event's `systemActor` keeps recording who or what triggered it
+ * (the membership-standing constant, or the resolved operator's user id).
+ */
+export const AUTOMATION_IDENTITIES = ['decisions-effects', 'commercial-activation', 'commercial-reevaluate'] as const;
+export type AutomationIdentity = (typeof AUTOMATION_IDENTITIES)[number];
+
+/** The role a `system` pair records (R0b's seal: `actorRole = 'system'`). */
+export const SYSTEM_ROLE = 'system';
+
+/** The pair a `system` event naming `automation` carries. */
+export function systemEnvelope(automation: AutomationIdentity): ActorEnvelope {
+  return { actorRole: SYSTEM_ROLE, actorName: automation };
+}
+
+/** Whether `envelope` is a `system` pair the seal admits: the system role and a registered name. */
+export function isSystemEnvelope(envelope: ActorEnvelope): boolean {
+  return envelope.actorRole === SYSTEM_ROLE
+    && (AUTOMATION_IDENTITIES as readonly string[]).includes(envelope.actorName);
 }
 
 /** The seal's own blank test: `btrim(value, E' \t\n\x0B\f\r') = ''`. */
@@ -65,6 +100,16 @@ export async function resolveActorEnvelope(
   projectId: string,
   actor: EventActor,
 ): Promise<ActorEnvelope | null> {
+  if (actor.actorKind === 'system') {
+    // A runtime check as well as the type: an `automation` reaching here from an untyped caller
+    // must still be one the seal admits, or the event is refused at its INSERT.
+    if (actor.automation === undefined) return null;
+    const envelope = systemEnvelope(actor.automation);
+    if (!isSystemEnvelope(envelope)) {
+      throw new Error(`resolveActorEnvelope: "${String(actor.automation)}" is not a registered automation`);
+    }
+    return envelope;
+  }
   if (actor.actorKind !== 'human') return null;
   const role = actor.actorRole;
   if (typeof role !== 'string' || ASCII_BLANK.test(role)) return null;

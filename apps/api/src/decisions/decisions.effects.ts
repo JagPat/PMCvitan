@@ -144,7 +144,9 @@ export function makeDecisionsEffectsConsumer(deps: DecisionsEffectsDeps = {}): O
         const eventId = randomUUID();
         await emitEvent(tx, {
           projectId,
-          actor: systemActor(MEMBERSHIP_STANDING_ACTOR, 'Membership standing'),
+          // 4d-iii / R0c — the event names its automation (the system pair `system`/`decisions-effects`);
+          // `systemActor` stays the membership-standing constant the A7d claimant keys on.
+          actor: { ...systemActor(MEMBERSHIP_STANDING_ACTOR, 'Membership standing'), automation: 'decisions-effects' },
           eventId,
           eventType: 'decision.awaiting_countersign',
           entityType: 'Decision',

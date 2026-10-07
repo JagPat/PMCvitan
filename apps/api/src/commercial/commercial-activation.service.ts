@@ -10,6 +10,7 @@ import { LabourRequirementQuery } from '../labour/labour.query';
 import { ProcurementQuery } from '../procurement/procurement.query';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
+import { assertServerGenerationAdmitted, SERVER_GENERATION } from '../platform/server-generation';
 import { CommercialParticipant, type AttributionActor } from './commercial.participant';
 
 /**
@@ -82,7 +83,9 @@ export class CommercialActivationService {
         // Task 7A — `actorKind: 'system'`: §L activation is an operator process, not a signed-in
         // request, and the `commercial.money_moved` envelope this identity ends up on records the
         // distinction. The `actorId` is the RESOLVED user, so attribution stays a real identity.
-        return { actorId: user.id, actorKind: 'system', actorRole: candidate };
+        // 4d-iii / R0c — and it names its AUTOMATION, so the event carries the system pair
+        // (`system`, `commercial-activation`) while `systemActor` records the operator's id.
+        return { actorId: user.id, actorKind: 'system', actorRole: candidate, automation: 'commercial-activation' };
       }
     }
     throw new ForbiddenException(
@@ -96,7 +99,13 @@ export class CommercialActivationService {
    * existing attributions alone (the participant's replay rule), so a re-run after a partial
    * operator error is safe.
    */
-  async activate(projectId: string, operator: string, plan: CommercialActivationPlan): Promise<{
+  async activate(
+    projectId: string,
+    operator: string,
+    plan: CommercialActivationPlan,
+    /** The generation this process compiles; a proof passes a lower one to exercise the fence. */
+    opts: { compiledGeneration?: number } = {},
+  ): Promise<{
     costHeads: number;
     materialLines: number;
     labourLines: number;
@@ -114,6 +123,13 @@ export class CommercialActivationService {
       // equally real: a line read as live here can be cancelled before this transaction commits.
       // Taking the lock FIRST, before any status read, makes both orderings impossible.
       await lockProjectReadiness(tx, projectId);
+
+      // 4d-iii / R0c — THE SERVER-GENERATION FENCE, before anything is written. Activation runs from
+      // an operator CLI (`capability:enable`) with its own Prisma client, so it never passed the
+      // server's startup admission: an image older than the persisted minimum would otherwise write
+      // past the fence. The minimum is read `FOR SHARE` and held to this transaction's commit, so no
+      // raise can commit under the writes below. After the advisory lock, which must come first.
+      await assertServerGenerationAdmitted(tx, undefined, opts.compiledGeneration ?? SERVER_GENERATION);
 
       // Codex round 3 (P2) — the project must be OPERABLE, not merely present.
       // `ProjectAccessService.authorize` refuses an ARCHIVED project before it considers

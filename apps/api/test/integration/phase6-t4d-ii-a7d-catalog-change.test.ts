@@ -359,6 +359,8 @@ describe('4d-ii-a / A7d — the catalog change: the widened generation, the froz
     const fresh = demands[1]!;
     expect(fresh).toMatchObject({
       actorKind: 'system', systemActor: MEMBERSHIP_STANDING_ACTOR, causedByEventId: activation.eventId,
+      // 4d-iii / R0c — the re-notification names its automation: the system pair, beside the constant
+      actorId: null, actorRole: 'system', actorName: 'decisions-effects',
       payload: { renotified: true, crossingEventId: activation.eventId, transitionId: (activation.payload as { transitionId: string }).transitionId },
     });
     expect((fresh.dispatchIntent as { push: unknown }).push).toEqual({ body: EXTERNAL_EFFECTS['decision.awaiting_countersign'].pushBody, roles: ['architect'], targetUserIds: [architect.id] });

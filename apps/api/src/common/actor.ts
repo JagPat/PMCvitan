@@ -1,5 +1,6 @@
 import type { PrismaService } from '../prisma.service';
 import type { AuthUser } from './auth';
+import type { AutomationIdentity } from '../platform/actor-envelope';
 
 export const ROLE_LABEL: Record<string, string> = {
   pmc: 'PMC',
@@ -36,7 +37,12 @@ export interface Actor {
  * between would freeze a stale name. The role is the token role the window disposition names,
  * re-checked in the transaction before it is written. An `Actor` satisfies this structurally.
  */
-export type EventActor = Pick<Actor, 'actorId' | 'actorKind' | 'actorRole'>;
+export type EventActor = Pick<Actor, 'actorId' | 'actorKind' | 'actorRole'> & {
+  /** 4d-iii / R0c — on a `system` actor, the registered AUTOMATION it is. Its event then carries the
+   *  system pair (`system`, this name), while `actorId` stays what the event records as `systemActor`
+   *  (who or what triggered it). Absent, a system event carries no pair. Ignored on a human actor. */
+  readonly automation?: AutomationIdentity;
+};
 
 /** The caller's REAL identity for attribution (Phase 1): id + display name + role, plus the
  *  actor KIND (Phase 2 Task 3) — a human sign-in always resolves `actorKind: 'human'` with a
