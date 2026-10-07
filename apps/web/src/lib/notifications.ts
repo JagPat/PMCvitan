@@ -80,22 +80,34 @@ export interface NotificationRecords {
   decisionsSettled: boolean;
 }
 
-/** The store fields that decide whether the decision slice can be trusted. */
+type LoadState = 'idle' | 'loading' | 'ready' | 'error';
+
+/** The store fields that decide whether a slice can be trusted. */
 export interface SliceSettledState {
   projectLoadState: string;
-  commandReconcilePending: boolean;
-  decisionsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  /** the slices a committed command's reconcile is still owed for (the store's `commandReconcileOwed`) */
+  commandReconcileOwed: { decisions: boolean; inspections: boolean };
+  decisionsLoad: LoadState;
+  inspectionsLoad: LoadState;
 }
+
+const sliceSettled = (projectLoadState: string, owed: boolean, load: LoadState): boolean =>
+  !owed
+  && (projectLoadState === 'ready' || projectLoadState === 'idle')
+  && (load === 'ready' || load === 'idle');
 
 /**
  * ONE definition of "settled" for every judge (the bell and the Decision Log). Codex 4204448859 — a
- * committed command whose reconcile is still owed (`commandReconcilePending`) has retained the
- * pre-command slice, so it is not settled until that reconcile lands.
+ * committed command whose reconcile is still owed for this slice has retained the pre-command slice, so
+ * it is not settled until that reconcile lands. Live bug 1b (Codex 4209988801) — owed PER SLICE: a
+ * failed read of another module leaves this slice settled once its own refresh landed.
  */
-export const decisionsSliceSettled = (s: SliceSettledState): boolean =>
-  !s.commandReconcilePending
-  && (s.projectLoadState === 'ready' || s.projectLoadState === 'idle')
-  && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle');
+export const decisionsSliceSettled = (s: Pick<SliceSettledState, 'projectLoadState' | 'commandReconcileOwed' | 'decisionsLoad'>): boolean =>
+  sliceSettled(s.projectLoadState, s.commandReconcileOwed.decisions, s.decisionsLoad);
+
+/** The same judgement for the inspection slice (the inspection screens and the bell, live bug 1b). */
+export const inspectionsSliceSettled = (s: Pick<SliceSettledState, 'projectLoadState' | 'commandReconcileOwed' | 'inspectionsLoad'>): boolean =>
+  sliceSettled(s.projectLoadState, s.commandReconcileOwed.inspections, s.inspectionsLoad);
 
 /**
  * The decision-notice templates that quote a title (legacy rows, and the demo seed, carry no id).

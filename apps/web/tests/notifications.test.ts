@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  notificationKind, notificationLink, notificationTarget, decisionsSliceSettled, type NotificationRecords,
+  notificationKind, notificationLink, notificationTarget, decisionsSliceSettled, inspectionsSliceSettled, type NotificationRecords,
 } from '@/lib/notifications';
 
 describe('notificationKind — infer the subject from the templated text', () => {
@@ -158,10 +158,19 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
 });
 
 describe('one "settled" for every judge (Codex 4204448859)', () => {
-  const base = { projectLoadState: 'ready', commandReconcilePending: false, decisionsLoad: 'ready' } as const;
+  const none = { decisions: false, inspections: false };
+  const base = { projectLoadState: 'ready', commandReconcileOwed: none, decisionsLoad: 'ready', inspectionsLoad: 'ready' } as const;
 
   it('a reconcile still owed unsettles the decision slice, though its read says ready', () => {
-    expect(decisionsSliceSettled({ ...base, commandReconcilePending: true })).toBe(false);
+    expect(decisionsSliceSettled({ ...base, commandReconcileOwed: { ...none, decisions: true } })).toBe(false);
+  });
+
+  it('Codex 4209988801 — a reconcile owed for ANOTHER slice leaves this one settled', () => {
+    expect(decisionsSliceSettled({ ...base, commandReconcileOwed: { ...none, inspections: true } })).toBe(true);
+    expect(inspectionsSliceSettled({ ...base, commandReconcileOwed: { ...none, decisions: true } })).toBe(true);
+    expect(inspectionsSliceSettled({ ...base, commandReconcileOwed: { ...none, inspections: true } })).toBe(false);
+    expect(inspectionsSliceSettled({ ...base, inspectionsLoad: 'error' })).toBe(false);
+    expect(inspectionsSliceSettled({ ...base, inspectionsLoad: 'idle' })).toBe(true);
   });
 
   it('otherwise the slice is settled by its own read and the project read', () => {

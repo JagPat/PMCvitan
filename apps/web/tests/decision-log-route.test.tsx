@@ -36,7 +36,7 @@ describe('Decision Log — a named decision on an unsettled read (Codex 42044488
   });
 
   it('while a committed command still reconciles, a named decision absent from the slice is loading, not missing', async () => {
-    const view = await mountLog({ routeItem: 'DL-404', commandReconcilePending: true });
+    const view = await mountLog({ routeItem: 'DL-404', commandReconcilePending: true, commandReconcileOwed: { decisions: true, dailyLog: false, drawings: false, inspections: false, activities: false } });
     expect(view.getByTestId('decisions-loading')).toBeTruthy();
     expect(view.queryByTestId('item-not-found')).toBeNull();
   });
