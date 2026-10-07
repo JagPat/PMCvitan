@@ -1771,6 +1771,25 @@ export const useStore = create<Store>()(
       // a stale module response is dropped with its snapshot, never applied over a newer scope's data.
       const prevTimeZone = st.timeZone;
       applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
+      // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a pull that BEGAN AFTER
+      // an obligation's threshold can satisfy it (round 13, semantic 2) — a stale in-flight refresh can't
+      // disarm it. Codex 4210609574 — ANY applied snapshot satisfies the slices it refreshed (a command's
+      // own applied snapshot included), not only the reconcile pull.
+      const c = coordinatorFor(lease.scope);
+      if (c.commandAfterSequence !== null && lease.sequence > c.commandAfterSequence) {
+        // Round 2 finding 2: a command reconcile is CONFIRMED only once every slice it is owed for
+        // reflects it. A module read that failed came back `null` and one this snapshot did not carry is
+        // `undefined` — its committed change is NOT in that slice, so the slice stays owed (and its own
+        // error state offers Retry); a snapshot-owned slice was refreshed by this applied snapshot. Live
+        // bug 1b (Codex 4209988801) — each slice clears ON ITS OWN, so a failed read unsettles only itself.
+        const read: Record<ReconcileSlice, unknown> = {
+          decisions: decisionsResult, dailyLog: dailyLogResult, drawings: drawingsResult, inspections: inspectionsResult, activities: activitiesResult,
+        };
+        for (const slice of RECONCILE_SLICES) if (!sliceModuleOwned(slice) || read[slice] != null) c.commandOwed.delete(slice);
+        // the committed command's change is now in every slice it was owed for
+        if (c.commandOwed.size === 0) c.commandAfterSequence = null;
+        publishCommandOwed(c);
+      }
       // a committed daily-log command is reflected once a pull that BEGAN after it carries the
       // daily-log module read — success shows the new log, failure the read's own error state
       const after = get().dailyLogReconcileAfter;
@@ -1860,27 +1879,9 @@ export const useStore = create<Store>()(
         ]);
         const result = acceptSnapshot(snap, lease, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
         if (result === 'applied') {
-          // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a
-          // pull that BEGAN AFTER an obligation's threshold can satisfy it (round 13,
-          // semantic 2) — a stale in-flight refresh can't disarm it.
-          if (c.commandAfterSequence !== null && lease.sequence > c.commandAfterSequence) {
-            // Round 2 finding 2: a command reconcile is CONFIRMED only once every slice it is owed for
-            // reflects it. A module read that failed came back `null` — its committed change is NOT in
-            // that slice, so the slice stays owed (and its own error state offers Retry); in 'snapshot'
-            // mode the result is `undefined` and the applied snapshot refreshed the slice. Live bug 1b
-            // (Codex 4209988801) — each slice clears ON ITS OWN, so a failed read unsettles only itself.
-            const refreshed: Record<ReconcileSlice, boolean> = {
-              decisions: decisionsReadMode() !== 'moduleQuery' || decisionsResult != null,
-              dailyLog: dailyLogReadMode() !== 'moduleQuery' || dailyLogResult != null,
-              drawings: drawingsReadMode() !== 'moduleQuery' || drawingsResult != null,
-              inspections: inspectionsReadMode() !== 'moduleQuery' || inspectionsResult != null,
-              activities: activitiesReadMode() !== 'moduleQuery' || activitiesResult != null,
-            };
-            for (const slice of RECONCILE_SLICES) if (refreshed[slice]) c.commandOwed.delete(slice);
-            // the committed command's change is now in every slice it was owed for
-            if (c.commandOwed.size === 0) c.commandAfterSequence = null;
-          }
-          if (scopeStillCurrent(scope)) publishCommandOwed(c);
+          // The command obligation was judged slice by slice in `acceptSnapshot`; the submit
+          // obligation clears here, independently (gate round 14), and only by a pull that BEGAN
+          // AFTER its threshold (round 13, semantic 2).
           // If the snapshot applied but a required module read FAILED, the obligation is RETAINED (not
           // cleared): the module read's own error state (dailyLogLoad/decisionsLoad='error', last-good
           // kept) exposes a Retry that re-runs this pull. Bounded — no auto-loop re-queues it, and the
@@ -1888,6 +1889,7 @@ export const useStore = create<Store>()(
           if (c.submit && lease.sequence > c.submit.createdAfterSequence) {
             if (!submitStillPending(c.submit)) {
               c.submit = null; // the EXACT submit is confirmed; its freeze has retired
+              publishCommandOwed(c);
             } else if (scopeStillCurrent(scope)) {
               // applied, but the submit is STILL unconfirmed — keep the submit obligation +
               // freeze/marks and expose Retry EVEN THOUGH the same snapshot may have
@@ -1953,6 +1955,7 @@ export const useStore = create<Store>()(
       } else {
         // the newest submit attempt owns the freeze (round 10 retired any older one)
         c.submit = { inspectionId: obligation.inspectionId, attempt: obligation.attempt, createdAfterSequence: obligation.createdAfterSequence };
+        publishCommandOwed(c);
       }
       if (c.refreshInFlight) c.refreshQueued = true; // runs after the in-flight pull settles (even on failure)
       else void requestFreshSnapshot(scope);
@@ -1970,6 +1973,9 @@ export const useStore = create<Store>()(
       const pending = c.commandAfterSequence !== null;
       const owed = noReconcileOwed();
       if (pending) for (const slice of c.commandOwed) owed[slice] = true;
+      // Codex 4210609583 — a committed submit awaiting confirmation has retained the pre-submit
+      // inspection slice too, so that slice is owed until the submit obligation clears
+      if (c.submit !== null) owed.inspections = true;
       const s0 = get();
       if (s0.commandReconcilePending === pending && RECONCILE_SLICES.every((k) => s0.commandReconcileOwed[k] === owed[k])) return;
       set((s) => { s.commandReconcilePending = pending; s.commandReconcileOwed = owed; });
@@ -2423,6 +2429,9 @@ export const useStore = create<Store>()(
         // SAME project: a different user/role sees different records) can never
         // satisfy the current scope guard. Codex gate finding 6.
         s.projectScopeGeneration += 1;
+        // Codex 4210609591 — a new scope owes nothing of the old one's commands (its coordinator is abandoned)
+        s.commandReconcilePending = false;
+        s.commandReconcileOwed = noReconcileOwed();
         if (res.projectId && changedProject) {
           s.activeProjectId = res.projectId; // the SERVER-returned scope, verbatim
           // If a switch already emptied the data for THIS project, don't clear twice.
@@ -2437,8 +2446,6 @@ export const useStore = create<Store>()(
             s.timeZone = null; // the next project's zone is unknown until its snapshot lands
             Object.assign(s, emptyProjectData());
             Object.assign(s, emptyModuleReadState()); // finding 4: a new project's reads start fresh, not stale-'ready'
-            s.commandReconcilePending = false;
-            s.commandReconcileOwed = noReconcileOwed();
           }
         } else if (!wasPending) {
           // same-project re-authentication: the previous identity's records are not
@@ -2591,6 +2598,9 @@ export const useStore = create<Store>()(
         // user's records leave memory, and the generation bump refuses any of their
         // replies still in flight — nothing survives for the next identity to see.
         s.projectScopeGeneration += 1;
+        // Codex 4210609591 — a new scope owes nothing of the old one's commands (its coordinator is abandoned)
+        s.commandReconcilePending = false;
+        s.commandReconcileOwed = noReconcileOwed();
         s.timeZone = null; // the demo store has no project zone; the next sign-in's snapshot supplies one
         Object.assign(s, emptyProjectData());
         Object.assign(s, emptyModuleReadState()); // finding 4: sign-out tears down the module read state too
@@ -4388,6 +4398,9 @@ export const useStore = create<Store>()(
       // arrive while authorization is pending.
       set((s) => {
         s.projectScopeGeneration += 1;
+        // Codex 4210609591 — a new scope owes nothing of the old one's commands (its coordinator is abandoned)
+        s.commandReconcilePending = false;
+        s.commandReconcileOwed = noReconcileOwed();
         s.pendingProjectId = projectId;
         s.projectLoadState = 'switching';
         s.projectLoadError = null;
@@ -4400,8 +4413,6 @@ export const useStore = create<Store>()(
         s.timeZone = null; // the target project's zone is unknown until its snapshot lands
         Object.assign(s, emptyProjectData());
         Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
-        s.commandReconcilePending = false; // the target scope owes no command of the old one
-        s.commandReconcileOwed = noReconcileOwed();
       });
       return gateway
         .switchProject(projectId)

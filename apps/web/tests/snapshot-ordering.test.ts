@@ -1,8 +1,8 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useStore, getInitialState, checklistFrozen } from '@/store/store';
 import storeSource from '@/store/store.ts?raw'; // the store's own text, for the source-scan tripwire
-import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, ModuleInspections } from '@/data/apiGateway';
 import type { Checklist } from '@vitan/shared';
 
 /**
@@ -800,5 +800,97 @@ describe('snapshot coordinator — source invariant', () => {
     // says "applySnapshot " with a space are not calls; a direct call is `applySnapshot(`.)
     const directCalls = src.match(/applySnapshot\(/g) ?? [];
     expect(directCalls.length).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live bug 1b-1 — the reconcile a committed command owes, tracked per slice
+// ─────────────────────────────────────────────────────────────────────────────
+describe('per-slice reconcile debt (Codex 4210609574 / 4210609583 / 4210609591)', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const inspectionsRead = (): ModuleInspections =>
+    ({ checklist: null, openChecklists: [], reviews: [], review: null, reinspectionCreated: false, placedInspections: [], source: 'live', generation: null }) as ModuleInspections;
+  const approve = (decId: string) => {
+    useStore.setState({ modal: { type: 'approve', decId, optIdx: 0 } });
+    s().confirmApprove();
+  };
+
+  it('an applied command snapshot that began after an owed command clears the snapshot-owned slices it refreshed', async () => {
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    const holdA = deferred<ApiSnapshot>();
+    const holdRefresh = deferred<ApiSnapshot>();
+    const holdInspections = deferred<ModuleInspections>();
+    let approveCall = 0;
+    let snapCall = 0;
+    const gw = {
+      approveDecision: vi.fn().mockImplementation(() => { approveCall += 1; return approveCall === 1 ? holdA.promise : Promise.resolve(makeSnapshot()); }),
+      snapshot: vi.fn().mockImplementation(() => { snapCall += 1; return snapCall === 1 ? holdRefresh.promise : Promise.resolve(makeSnapshot()); }),
+      inspections: vi.fn().mockImplementation(() => holdInspections.promise),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; });
+
+    approve('DL-A');                                    // command A — lease 1 (held)
+    await settles(() => gw.approveDecision.mock.calls.length === 1);
+    s().requestFreshSnapshot();                         // lease 2 — a refresh (held), so A's reply is superseded
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+    holdA.release(makeSnapshot());
+    await drainMicrotasks();
+    // a superseded command owes EVERY slice
+    expect(s().commandReconcileOwed).toMatchObject({ decisions: true, inspections: true });
+
+    approve('DL-B');                                    // command B — lease 3, its own snapshot APPLIES
+    await settles(() => gw.approveDecision.mock.calls.length === 2);
+    await drainMicrotasks();
+    // B's applied snapshot began after A's obligation, so the snapshot-owned slice it refreshed is
+    // no longer owed; the module-owned inspection slice waits for its own read (held)
+    expect(s().commandReconcileOwed.decisions).toBe(false);
+    expect(s().commandReconcileOwed.inspections).toBe(true);
+    expect(s().commandReconcilePending).toBe(true);
+
+    // the inspection read lands: every slice is confirmed (and no pull is left in flight for later tests)
+    holdRefresh.release(makeSnapshot());
+    holdInspections.release(inspectionsRead());
+    gw.inspections.mockImplementation(() => Promise.resolve(inspectionsRead()));
+    await settles(() => !s().commandReconcilePending);
+    expect(s().commandReconcileOwed.inspections).toBe(false);
+  });
+
+  it('a superseded submit leaves the inspection slice owed until the submit is confirmed', async () => {
+    const holdSubmit = deferred<ApiSnapshot>();
+    const holdRefresh = deferred<ApiSnapshot>();
+    const holdReconcile = deferred<ApiSnapshot>();
+    let snapCall = 0;
+    const gw = {
+      submitInspection: vi.fn().mockImplementation(() => holdSubmit.promise),
+      snapshot: vi.fn().mockImplementation(() => { snapCall += 1; return snapCall === 1 ? holdRefresh.promise : holdReconcile.promise; }),
+      uploadMedia: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; });
+    seedTwoPass();
+
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    s().requestFreshSnapshot();
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+    holdSubmit.release(makeSnapshot({ checklist: submittedChecklist() })); // ack — superseded
+    await drainMicrotasks();
+    holdRefresh.reject(new Error('offline'));
+    await settles(() => gw.snapshot.mock.calls.length === 2);           // the submit's reconcile is in flight
+    // the retained checklist predates the submit: the inspection slice is owed, though its read says ready
+    expect(s().commandReconcileOwed.inspections).toBe(true);
+    expect(s().commandReconcileOwed.decisions).toBe(false);
+
+    holdReconcile.release(makeSnapshot({ checklist: submittedChecklist() }));
+    await settles(() => s().submission.status === 'idle');
+    expect(s().commandReconcileOwed.inspections).toBe(false);
+  });
+
+  it('sign-out ends the scope, and with it the previous identity\'s owed reconcile', async () => {
+    useStore.setState({ commandReconcilePending: true, commandReconcileOwed: { decisions: true, dailyLog: false, drawings: false, inspections: true, activities: false } });
+    s().signOut();
+    await settles(() => !s().commandReconcilePending);
+    expect(Object.values(s().commandReconcileOwed).some(Boolean)).toBe(false);
   });
 });
