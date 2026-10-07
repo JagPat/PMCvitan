@@ -7,6 +7,7 @@ import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { X, Plus } from '@/lib/icons';
 import { swatch as swatchGradient, can, type Checklist, type Review } from '@vitan/shared';
 import { resolveMediaUrl, inspectionsReadMode } from '@/data/apiGateway';
+import { inspectionsSliceSettled } from '@/lib/notifications';
 import styles from './responsive.module.css';
 
 export function InspectionReviewScreen() {
@@ -35,10 +36,9 @@ export function InspectionReviewScreen() {
   const setRouteItem = useStore((s) => s.setRouteItem);
   const activeReviewId = useStore((s) => s.activeReviewId);
   const projectLoadState = useStore((s) => s.projectLoadState);
-  const reconcilePending = useStore((s) => s.commandReconcilePending);
-  const projectSettled = projectLoadState === 'ready' || projectLoadState === 'idle';
   // Codex 4204448859 — a committed command's reconcile still owed means the retained slices predate it
-  const settled = !reconcilePending && (moduleOwned ? inspectionsLoad === 'ready' : projectSettled);
+  // (the predicate the bell judges by, so the two cannot disagree)
+  const settled = useStore((s) => inspectionsSliceSettled(s, moduleOwned));
   const routeReview = routeItem !== null && reviews.some((r) => r.id === routeItem) ? routeItem : null;
   const routeChecklist = routeItem !== null && openChecklists.some((c) => c.id === routeItem) ? routeItem : null;
   const missingItem = routeItem !== null && settled && !routeReview && !routeChecklist ? routeItem : null;

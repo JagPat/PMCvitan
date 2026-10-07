@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { notificationKind, notificationLink, notificationTarget, type NotificationRecords } from '@/lib/notifications';
+import {
+  notificationKind, notificationLink, notificationTarget, decisionsSliceSettled, inspectionsSliceSettled, type NotificationRecords,
+} from '@/lib/notifications';
 
 describe('notificationKind — infer the subject from the templated text', () => {
   it('classifies every fixed phrasing the backend/demo produce', () => {
@@ -133,5 +135,27 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
     expect(notificationLink(n('Re-inspection due: Waterproofing, Terrace'), 'engineer', records)).toEqual(at('engineer-check', null));
     expect(notificationLink(n('Drawing issued: A-201 Rev C'), 'contractor', records)).toEqual(at('drawings', null));
     expect(notificationLink(n('Signal lost'), 'pmc', records)).toBeNull();
+  });
+});
+
+describe('one "settled" for every judge (Codex 4204448859 / 4205058538)', () => {
+  const base = { projectLoadState: 'ready', commandReconcilePending: false, decisionsLoad: 'ready', inspectionsLoad: 'ready' } as const;
+
+  it('a reconcile still owed unsettles both slices in BOTH inspection read modes', () => {
+    const owed = { ...base, commandReconcilePending: true };
+    expect(decisionsSliceSettled(owed)).toBe(false);
+    expect(inspectionsSliceSettled(owed, true)).toBe(false);
+    expect(inspectionsSliceSettled(owed, false)).toBe(false);
+  });
+
+  it('otherwise each slice is settled by its own read', () => {
+    expect(decisionsSliceSettled(base)).toBe(true);
+    expect(decisionsSliceSettled({ ...base, decisionsLoad: 'loading' })).toBe(false);
+    expect(decisionsSliceSettled({ ...base, decisionsLoad: 'error' })).toBe(false);
+    expect(decisionsSliceSettled({ ...base, projectLoadState: 'loading' })).toBe(false);
+    expect(inspectionsSliceSettled(base, true)).toBe(true);
+    expect(inspectionsSliceSettled({ ...base, inspectionsLoad: 'idle' }, true)).toBe(false);
+    expect(inspectionsSliceSettled({ ...base, inspectionsLoad: 'idle' }, false)).toBe(true);
+    expect(inspectionsSliceSettled({ ...base, projectLoadState: 'error' }, false)).toBe(false);
   });
 });

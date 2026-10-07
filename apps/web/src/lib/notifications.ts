@@ -82,6 +82,27 @@ export interface NotificationRecords {
   inspectionsSettled: boolean;
 }
 
+/** The store fields that decide whether a slice can be trusted to say a record is absent. */
+export interface SliceSettledState {
+  projectLoadState: string;
+  commandReconcilePending: boolean;
+  decisionsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  inspectionsLoad: 'idle' | 'loading' | 'ready' | 'error';
+}
+
+// Codex 4204448859 / 4205058538 — ONE definition of "settled" for every judge (the bell, the Decision
+// Log, Inspection Review): a committed command whose reconcile is still owed has retained the
+// pre-command slices, whichever read mode owns them, so no arm may call them settled until it lands.
+const projectSettled = (s: SliceSettledState): boolean =>
+  !s.commandReconcilePending && (s.projectLoadState === 'ready' || s.projectLoadState === 'idle');
+
+export const decisionsSliceSettled = (s: SliceSettledState): boolean =>
+  projectSettled(s) && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle');
+
+/** `moduleOwned`: the inspections read mode is `moduleQuery`, so the slice has its own load state. */
+export const inspectionsSliceSettled = (s: SliceSettledState, moduleOwned: boolean): boolean =>
+  !s.commandReconcilePending && (moduleOwned ? s.inspectionsLoad === 'ready' : projectSettled(s));
+
 /** The decision-notice templates that quote a title (legacy rows, and the demo seed, carry no id). */
 const DECISION_TITLE_TEMPLATES: readonly RegExp[] = [
   /^Decision awaiting approval: (.+)$/,

@@ -2,16 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { viewerIsDecider } from '@vitan/shared';
-import { notificationLink, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
+import {
+  notificationLink, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords,
+} from '@/lib/notifications';
 import { SCREEN_META } from '@/lib/screens';
 import { inspectionsReadMode } from '@/data/apiGateway';
 import { ChevronRight } from '@/lib/icons';
 import styles from './NotificationPanel.module.css';
-
-// Codex 4204448859 — a command's own snapshot can deliver the notice while the module-owned slices are
-// still the pre-command ones (`commandReconcilePending`): those slices are not settled until it lands.
-const projectSettled = (s: { projectLoadState: string; commandReconcilePending: boolean }): boolean =>
-  (s.projectLoadState === 'ready' || s.projectLoadState === 'idle') && !s.commandReconcilePending;
 
 export function NotificationPanel() {
   const open = useStore((s) => s.notifOpen);
@@ -25,9 +22,10 @@ export function NotificationPanel() {
   const openChecklists = useStore(useShallow((s) => s.openChecklists));
   const sessionUserId = useStore((s) => s.sessionUserId);
   // a record is judged absent only against a SETTLED slice: never while its read is in flight or
-  // after it failed (a module read can fail while the snapshot that carried the notice succeeds)
-  const decisionsSettled = useStore((s) => projectSettled(s) && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle'));
-  const inspectionsSettled = useStore((s) => (inspectionsReadMode() === 'moduleQuery' ? s.inspectionsLoad === 'ready' : projectSettled(s)));
+  // after it failed (a module read can fail while the snapshot that carried the notice succeeds), nor
+  // while a committed command's reconcile is owed (the shared predicates say so for both read modes)
+  const decisionsSettled = useStore(decisionsSliceSettled);
+  const inspectionsSettled = useStore((s) => inspectionsSliceSettled(s, inspectionsReadMode() === 'moduleQuery'));
   // Live bug 1 — the notice whose record could not be found, explained in place (by row index).
   const [explained, setExplained] = useState<number | null>(null);
   // a row index means nothing once the panel closes, or once the list itself changes (Codex

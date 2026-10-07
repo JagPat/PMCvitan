@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { pathForScreen } from '@/lib/screens';
+import { decisionsSliceSettled } from '@/lib/notifications';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, DecisionChip, Button, LocationContext, EditState, ConsultationThread, CountersignControls, ItemNotFound } from '@/components';
@@ -69,9 +70,7 @@ export function DecisionLogScreen() {
   const setRouteItem = useStore((s) => s.setRouteItem);
   // Codex 4204448859 — and never while a committed command's reconcile is still owed: its own snapshot
   // can land while the decision slice is still the pre-command one
-  const settled = useStore((s) =>
-    !s.commandReconcilePending
-    && (s.projectLoadState === 'ready' || s.projectLoadState === 'idle') && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle'));
+  const settled = useStore(decisionsSliceSettled);
   const loadFailed = useStore((s) => s.decisionsLoad === 'error' || s.projectLoadState === 'error');
   const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
   const routedAbsent = routeItem !== null && !rows.some((d) => d.id === routeItem);
