@@ -206,6 +206,9 @@ export const RECONCILE_SLICES: readonly ReconcileSlice[] = ['decisions', 'dailyL
 export const noReconcileOwed = (): Record<ReconcileSlice, boolean> =>
   ({ decisions: false, dailyLog: false, drawings: false, inspections: false, activities: false });
 
+/** How long one module-owned read may take before the pull treats it as failed (Codex 4211133323). */
+export const MODULE_READ_TIMEOUT_MS = 30_000;
+
 export interface AppState {
   role: Role;
   screen: ScreenKey;
@@ -1788,8 +1791,11 @@ export const useStore = create<Store>()(
         for (const slice of RECONCILE_SLICES) if (!sliceModuleOwned(slice) || read[slice] != null) c.commandOwed.delete(slice);
         // the committed command's change is now in every slice it was owed for
         if (c.commandOwed.size === 0) c.commandAfterSequence = null;
-        publishCommandOwed(c);
       }
+      // Codex 4211133315 — likewise the submit obligation: any applied snapshot that began after it and
+      // retired its exact attempt (applySnapshotCore's reconcile) confirms it, a command's own included
+      if (c.submit && lease.sequence > c.submit.createdAfterSequence && !submitStillPending(c.submit)) c.submit = null;
+      publishCommandOwed(c);
       // a committed daily-log command is reflected once a pull that BEGAN after it carries the
       // daily-log module read — success shows the new log, failure the read's own error state
       const after = get().dailyLogReconcileAfter;
@@ -1805,6 +1811,13 @@ export const useStore = create<Store>()(
       return 'applied';
     };
 
+    /** Codex 4211133323 — a module read that never settles (the gateway's fetches carry no timeout) must
+     *  not hold every other slice of the pull: each read is bounded, and one that fails OR times out is a
+     *  failed read (`null` — its slice keeps its last-good data, its error state and Retry). */
+    const boundedModuleRead = <T,>(read: Promise<T>): Promise<T | null> => new Promise<T | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), MODULE_READ_TIMEOUT_MS);
+      read.then((v) => { clearTimeout(timer); resolve(v); }, () => { clearTimeout(timer); resolve(null); });
+    });
     const RECOVERABLE_LOAD_ERROR = 'Could not load this project — check your connection and access, then retry.';
     /** Coalesced fresh-snapshot pull for ONE scope — the ONE way to fetch current
      *  truth (socket refresh, initial load, retry, invalid-project recovery, and the
@@ -1862,40 +1875,33 @@ export const useStore = create<Store>()(
         const [snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult] = await Promise.all([
           g.snapshot(),
           decisionsReadMode() === 'moduleQuery'
-            ? g.decisions().then((d): ModuleDecisions | null => d).catch((): ModuleDecisions | null => null)
+            ? boundedModuleRead<ModuleDecisions>(g.decisions())
             : Promise.resolve(undefined as ModuleDecisions | undefined),
           dailyLogReadMode() === 'moduleQuery'
-            ? g.dailyLog().then((d): ModuleDailyLog | null => d).catch((): ModuleDailyLog | null => null)
+            ? boundedModuleRead<ModuleDailyLog>(g.dailyLog())
             : Promise.resolve(undefined as ModuleDailyLog | undefined),
           drawingsReadMode() === 'moduleQuery'
-            ? g.drawings().then((d): ModuleDrawings | null => d).catch((): ModuleDrawings | null => null)
+            ? boundedModuleRead<ModuleDrawings>(g.drawings())
             : Promise.resolve(undefined as ModuleDrawings | undefined),
           inspectionsReadMode() === 'moduleQuery'
-            ? g.inspections().then((d): ModuleInspections | null => d).catch((): ModuleInspections | null => null)
+            ? boundedModuleRead<ModuleInspections>(g.inspections())
             : Promise.resolve(undefined as ModuleInspections | undefined),
           activitiesReadMode() === 'moduleQuery'
-            ? g.activities().then((d): ModuleActivities | null => d).catch((): ModuleActivities | null => null)
+            ? boundedModuleRead<ModuleActivities>(g.activities())
             : Promise.resolve(undefined as ModuleActivities | undefined),
         ]);
         const result = acceptSnapshot(snap, lease, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
         if (result === 'applied') {
-          // The command obligation was judged slice by slice in `acceptSnapshot`; the submit
-          // obligation clears here, independently (gate round 14), and only by a pull that BEGAN
-          // AFTER its threshold (round 13, semantic 2).
-          // If the snapshot applied but a required module read FAILED, the obligation is RETAINED (not
-          // cleared): the module read's own error state (dailyLogLoad/decisionsLoad='error', last-good
-          // kept) exposes a Retry that re-runs this pull. Bounded — no auto-loop re-queues it, and the
-          // project itself is fresh, so no project-level error boundary is raised.
-          if (c.submit && lease.sequence > c.submit.createdAfterSequence) {
-            if (!submitStillPending(c.submit)) {
-              c.submit = null; // the EXACT submit is confirmed; its freeze has retired
-              publishCommandOwed(c);
-            } else if (scopeStillCurrent(scope)) {
-              // applied, but the submit is STILL unconfirmed — keep the submit obligation +
-              // freeze/marks and expose Retry EVEN THOUGH the same snapshot may have
-              // satisfied the command obligation (gate round 14: obligations compose).
-              set((s) => { s.projectLoadState = 'error'; s.projectLoadError = RECOVERABLE_LOAD_ERROR; });
-            }
+          // Both obligations were judged in `acceptSnapshot`, independently (gate round 14) and only by a
+          // pull that BEGAN AFTER their threshold (round 13, semantic 2). A command slice whose module read
+          // FAILED stays owed: its own error state (last-good kept) exposes a Retry that re-runs this pull.
+          // Bounded — no auto-loop re-queues it, and the project itself is fresh, so no project-level error
+          // boundary is raised for it.
+          if (c.submit && lease.sequence > c.submit.createdAfterSequence && scopeStillCurrent(scope)) {
+            // applied, but the submit is STILL unconfirmed (a confirmed one was retired by
+            // `acceptSnapshot`) — keep the submit obligation + freeze/marks and expose Retry EVEN THOUGH
+            // the same snapshot may have satisfied the command obligation (gate round 14: they compose).
+            set((s) => { s.projectLoadState = 'error'; s.projectLoadError = RECOVERABLE_LOAD_ERROR; });
           }
         } else if (result === 'invalid-project' && scopeStillCurrent(scope)) {
           set((s) => { s.projectLoadState = 'error'; s.projectLoadError = RECOVERABLE_LOAD_ERROR; });

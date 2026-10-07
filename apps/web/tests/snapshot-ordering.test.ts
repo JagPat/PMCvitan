@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { useStore, getInitialState, checklistFrozen } from '@/store/store';
+import { useStore, getInitialState, checklistFrozen, MODULE_READ_TIMEOUT_MS } from '@/store/store';
 import storeSource from '@/store/store.ts?raw'; // the store's own text, for the source-scan tripwire
 import type { ApiGateway, ApiSnapshot, ModuleInspections } from '@/data/apiGateway';
 import type { Checklist } from '@vitan/shared';
@@ -885,6 +885,74 @@ describe('per-slice reconcile debt (Codex 4210609574 / 4210609583 / 4210609591)'
     holdReconcile.release(makeSnapshot({ checklist: submittedChecklist() }));
     await settles(() => s().submission.status === 'idle');
     expect(s().commandReconcileOwed.inspections).toBe(false);
+  });
+
+  it('Codex 4211133315 — a command snapshot that confirms a superseded submit retires its obligation', async () => {
+    const holdSubmit = deferred<ApiSnapshot>();
+    const holdRefresh = deferred<ApiSnapshot>();
+    const holdReconcile = deferred<ApiSnapshot>();
+    let snapCall = 0;
+    const gw = {
+      submitInspection: vi.fn().mockImplementation(() => holdSubmit.promise),
+      snapshot: vi.fn().mockImplementation(() => { snapCall += 1; return snapCall === 1 ? holdRefresh.promise : holdReconcile.promise; }),
+      approveDecision: vi.fn().mockImplementation(() => Promise.resolve(makeSnapshot({ checklist: submittedChecklist() }))),
+      uploadMedia: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; });
+    seedTwoPass();
+
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    s().requestFreshSnapshot();
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+    holdSubmit.release(makeSnapshot({ checklist: submittedChecklist() })); // ack — superseded
+    await drainMicrotasks();
+    holdRefresh.reject(new Error('offline'));
+    await settles(() => gw.snapshot.mock.calls.length === 2);           // the submit's reconcile is in flight (held)
+    expect(s().commandReconcileOwed.inspections).toBe(true);
+
+    // an ordinary command takes a newer lease; its APPLIED snapshot carries the submitted checklist
+    approve('DL-C');
+    await settles(() => s().submission.status === 'idle');
+    expect(s().commandReconcileOwed.inspections).toBe(false);          // the submit is confirmed by it
+
+    holdReconcile.release(makeSnapshot({ checklist: submittedChecklist() })); // the older pull — superseded
+    await drainMicrotasks();
+    expect(s().commandReconcileOwed.inspections).toBe(false);
+  });
+
+  it('Codex 4211133323 — a module read that never settles cannot hold a successful slice', async () => {
+    vi.stubEnv('VITE_DECISIONS_READ', 'moduleQuery');
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const gw = {
+        snapshot: vi.fn().mockImplementation(() => Promise.resolve(makeSnapshot())),
+        decisions: vi.fn().mockImplementation(() => Promise.resolve({ decisions: [decisionRow('D-1')], source: 'live', generation: null })),
+        inspections: vi.fn().mockImplementation(() => new Promise<ModuleInspections>(() => {})), // never settles
+        approveDecision: vi.fn().mockImplementation(() => Promise.resolve(makeSnapshot())),
+      };
+      s()._setGateway(gw as unknown as ApiGateway);
+      useStore.setState((st) => { st.online = true; });
+
+      s().requestFreshSnapshot();
+      await vi.advanceTimersByTimeAsync(MODULE_READ_TIMEOUT_MS);
+      // the hung inspections read is a failed read; the decisions read and the snapshot still landed
+      expect(s().decisionsLoad).toBe('ready');
+      expect(s().inspectionsLoad).toBe('error');
+      expect(decisionIds()).toEqual(['D-1']);
+
+      approve('D-1');                                    // the reconcile owes both module reads
+      await vi.advanceTimersByTimeAsync(0);
+      expect(s().commandReconcileOwed).toMatchObject({ decisions: true, inspections: true });
+      await vi.advanceTimersByTimeAsync(MODULE_READ_TIMEOUT_MS);
+      // the decisions slice is confirmed by its own read; only the hung slice stays owed (with its Retry)
+      expect(s().commandReconcileOwed).toMatchObject({ decisions: false, inspections: true });
+      expect(s().inspectionsLoad).toBe('error');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('sign-out ends the scope, and with it the previous identity\'s owed reconcile', async () => {
