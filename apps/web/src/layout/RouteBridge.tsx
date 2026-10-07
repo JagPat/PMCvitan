@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { viewerIsDecider } from '@vitan/shared';
-import { parseLocation, pathForScreen, screensFor, withDeciderRoute, SCREEN_CAPABILITY } from '@/lib/screens';
+import { parseLocation, pathForScreen, screensFor, withDeciderRoute, SCREEN_CAPABILITY, ITEM_SCREENS } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 
 /** B6 — the item the current screen's URL names. The client's decisions screen keeps its own
@@ -72,6 +72,21 @@ export function RouteBridge() {
   // into another project, or a cold API load, empties the project scope that holds it), then
   // adopted once. Only a URL change sets it, so a stale URL never overwrites an in-app selection.
   const pendingItem = useRef<{ projectId: string; screen: ScreenKey; item: string | null } | null>(null);
+
+  // Live bug 1 (owner live check, #482 6039737806) — a record reached by a link that STARTS this tab's
+  // history (a shared link, a new tab, a typed URL) has nothing behind it, so Back would leave the app.
+  // Its parent list is put underneath it once, on the first render: Back then goes to the list the
+  // record belongs to. A record opened IN the app (a notification, a card, a row) is a pushed entry with
+  // the previous screen behind it, and a reload keeps its place in history — neither is touched.
+  useEffect(() => {
+    const first = (window.history.state as { idx?: number } | null)?.idx ?? 0;
+    const { screen: fromPath, item } = parseLocation(location.pathname);
+    if (first !== 0 || !fromPath || !item || !ITEM_SCREENS.has(fromPath)) return;
+    const record = location.pathname;
+    navigate(record.slice(0, record.lastIndexOf('/')), { replace: true });
+    navigate(record);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // URL -> store (project + screen reconciliation, role-guarded)
   useEffect(() => {

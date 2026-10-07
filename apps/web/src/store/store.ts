@@ -3186,6 +3186,10 @@ export const useStore = create<Store>()(
               const result = acceptSnapshot(snap, lease);
               if (result === 'applied') {
                 get().flash('Inspection submitted to the architect for review.');
+                // Live bug 1b — the same rule as `consumeSnapshotResult`: an APPLIED snapshot carries no
+                // module slice, so under module ownership the submit still owes the read that shows it
+                // (the submitted checklist leaving the outstanding set; the slice is owed until it lands)
+                if (anyModuleOwnedRead()) scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq, modulesOnly: true });
               } else if (result === 'superseded') {
                 // gate round 12/13: the submit committed, but a newer refresh owns the
                 // view. Keep the checklist FROZEN (don't unlock — the submit succeeded)
