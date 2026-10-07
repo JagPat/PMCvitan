@@ -100,7 +100,7 @@ describe('4d-iii / R0c — system emitters write the system pair; the lease reco
       .toMatchObject({ actorKind: 'system', actorRole: null, actorName: null });
   });
 
-  it('a system actor carrying a non-system pair, another automation\'s pair, or naming an unregistered automation, is refused before the stream moves', async () => {
+  it('a system actor carrying a non-system pair, another automation\'s pair, an explicit NULL beside its automation, or naming an unregistered automation, is refused before the stream moves', async () => {
     const before = await position(f.projectA.id);
     const system: EventActor = { actorId: 'system:r0c-probe', actorKind: 'system', actorRole: 'system' };
     await expect(inTx((tx) => emitEvent(tx, input(system, { actorEnvelope: { actorRole: 'pmc', actorName: 'Someone' } }))))
@@ -108,6 +108,9 @@ describe('4d-iii / R0c — system emitters write the system pair; the lease reco
     await expect(inTx((tx) => emitEvent(tx, input(system, { actorEnvelope: { actorRole: 'system', actorName: 'unregistered' } }))))
       .rejects.toThrow(/registered automation/);
     await expect(inTx((tx) => emitEvent(tx, input({ ...system, automation: 'decisions-effects' }, { actorEnvelope: { actorRole: 'system', actorName: 'commercial-activation' } }))))
+      .rejects.toThrow(/registered automation/);
+    // Codex 4202818435 — an explicit NULL on an actor naming its automation would drop the attribution
+    await expect(inTx((tx) => emitEvent(tx, input({ ...system, automation: 'decisions-effects' }, { actorEnvelope: null }))))
       .rejects.toThrow(/registered automation/);
     await expect(inTx((tx) => emitEvent(tx, input({ ...system, automation: 'unregistered' as never }))))
       .rejects.toThrow(/not a registered automation/);

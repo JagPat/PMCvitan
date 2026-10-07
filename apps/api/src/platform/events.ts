@@ -129,11 +129,19 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
     throw new Error(`emitEvent: eventId "${input.eventId}" is not a UUID`);
   }
   // 4d-iii / R0c — a non-human actor carries a pair only as a `system` actor naming a registered
-  // automation (R0b's seal arm); a caller-supplied pair must be exactly that automation's pair.
-  if (input.actorEnvelope && input.actor.actorKind !== 'human'
-      && !(input.actor.actorKind === 'system' && input.actor.automation !== undefined
-           && isSystemEnvelope(input.actorEnvelope) && input.actorEnvelope.actorName === input.actor.automation)) {
-    throw new Error(`emitEvent: a ${input.actor.actorKind} actor carries a pair only as a registered automation's system pair`);
+  // automation (R0b's seal arm). A caller-supplied envelope is held to that here, before any write: an
+  // actor naming no automation may supply only NULL, and one naming an automation only exactly that
+  // automation's pair. An explicit NULL on a named actor is refused too (Codex 4202818435), or its
+  // event would commit permanently without the attribution the actor names.
+  if (input.actorEnvelope !== undefined && input.actor.actorKind !== 'human') {
+    const automation = input.actor.actorKind === 'system' ? input.actor.automation : undefined;
+    const supplied = input.actorEnvelope;
+    const admitted = automation === undefined
+      ? supplied === null
+      : supplied !== null && isSystemEnvelope(supplied) && supplied.actorName === automation;
+    if (!admitted) {
+      throw new Error(`emitEvent: a ${input.actor.actorKind} actor carries a pair only as its own registered automation's system pair`);
+    }
   }
   // Derive the tenant from the project itself — a forged organizationId is impossible.
   const { orgId } = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { orgId: true } });
