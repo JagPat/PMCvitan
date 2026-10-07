@@ -266,3 +266,33 @@ describe('Codex 4212402110 — nothing of another record stands under a departin
     expect(view.queryByTestId('checklist-title')).toBeNull();
   });
 });
+
+describe('Codex 4212901994 — a URL item not yet adopted by the store shows nothing actionable', () => {
+  it('Inspection Review under /review/<id> with the store still on the default review shows "Opening <id>…", not the default review', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    useStore.setState({ role: 'pmc', screen: 'inspect-review', routeItem: null });
+    const { MemoryRouter } = await import('react-router-dom');
+    const { InspectionReviewScreen } = await import('@/screens/InspectionReviewScreen');
+    const view = render(<MemoryRouter initialEntries={['/projects/ambli/review/INSP-77']}><InspectionReviewScreen /></MemoryRouter>);
+    expect(view.getByTestId('inspections-opening').textContent).toContain('INSP-77');
+    expect(view.queryByRole('button', { name: /Approve Inspection/ })).toBeNull();
+    expect(view.queryByTestId('send-reinspection')).toBeNull();
+    // once adopted, the route is judged as usual
+    act(() => { useStore.getState().setRouteItem('INSP-77'); });
+    expect(view.queryByTestId('inspections-opening')).toBeNull();
+  });
+
+  it('the field checklist under /site/checklist/<id> with the store still on the slot\'s checklist shows "Opening…", not the slot\'s editable checklist', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const a = fieldChecklist('INSP-50', 'Slab Check');
+    const b = fieldChecklist('INSP-51', 'Drain Slope Check');
+    useStore.setState({ role: 'engineer', screen: 'engineer-check', openChecklists: [a, b], checklist: structuredClone(a), selectedChecklistId: 'INSP-50', routeItem: null });
+    const { MemoryRouter } = await import('react-router-dom');
+    const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
+    const view = render(<MemoryRouter initialEntries={['/projects/ambli/site/checklist/INSP-51']}><EngineerChecklistScreen /></MemoryRouter>);
+    expect(view.getByText('Opening Drain Slope Check…')).toBeTruthy();
+    expect(view.queryByTestId('checklist-title')).toBeNull();
+  });
+});

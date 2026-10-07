@@ -310,3 +310,31 @@ describe('RouteBridge — a record link that STARTS the tab gets its parent list
     expect(visited).not.toContain('/projects/ambli/review');
   });
 });
+
+describe('RouteBridge — Codex 4212901999: a cold record in a project the viewer cannot open gets no parent', () => {
+  const visited: string[] = [];
+  let goBack: () => void = () => {};
+  function Probe() {
+    const path = useLocation().pathname;
+    const navigate = useNavigate();
+    goBack = () => navigate(-1);
+    if (visited[visited.length - 1] !== path) visited.push(path);
+    return null;
+  }
+  it('the forged project\'s list is never entered, however far Back goes', async () => {
+    visited.length = 0;
+    useStore.setState({ role: 'pmc' });
+    render(
+      <MemoryRouter initialEntries={['/projects/not-mine/review/INSP-21']}>
+        <RouteBridge />
+        <Probe />
+      </MemoryRouter>,
+    );
+    await flush();
+    for (let i = 0; i < 3; i++) {
+      act(() => goBack());
+      await flush();
+    }
+    expect(visited).not.toContain('/projects/not-mine/review');
+  });
+});

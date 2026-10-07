@@ -6,6 +6,7 @@ import { Camera } from '@/lib/icons';
 import type { ItemState } from '@vitan/shared';
 import { inspectionsReadMode } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
+import { useUrlItem } from '@/lib/useUrlItem';
 import styles from './responsive.module.css';
 
 const toggleBase: CSSProperties = {
@@ -59,6 +60,9 @@ export function EngineerChecklistScreen() {
   // never leaves the engineer filling a different one. An id the screen cannot show says so once the
   // inspections have settled; until then the load boundary stands in, never another checklist.
   const routeItem = useStore((s) => s.routeItem);
+  // Codex 4212901994 — a checklist the URL names that the store has not yet adopted
+  const urlItem = useUrlItem('engineer-check');
+  const adopting = urlItem !== null && urlItem !== routeItem ? urlItem : null;
   const setRouteItem = useStore((s) => s.setRouteItem);
   // (a module read that has not yet landed — `idle` before its first pull — is not settled either)
   const settled = useStore(inspectionsSliceSettled) && !(moduleOwned && reading);
@@ -110,6 +114,7 @@ export function EngineerChecklistScreen() {
   // Codex 4212402110 — between the linked checklist leaving the outstanding set and the route being
   // cleared (an effect), the slot already holds another checklist: it is not shown, editable, under the
   // departing URL
+  if (adopting) return <EmptyState title={`Opening ${openChecklists.find((c) => c.id === adopting)?.title ?? adopting}…`} detail="Opening the checklist this link names." />;
   if (released) return <EmptyState title="Returning to your checklists…" detail="This checklist has been submitted." />;
   // Codex 4207530085 — the switch to the named checklist is guarded (an online submit in flight refuses
   // it): until it happens, the checklist in the slot is NOT the one the URL names, so it is not shown

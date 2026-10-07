@@ -183,7 +183,11 @@ export function RouteBridge() {
       // project has loaded (before sign-in the role is not yet the viewer's)
       const identitySettled = !API_BASE || (projectLoadState === 'ready' && !identityPending);
       if (location.pathname !== record) coldRecord.current = null; // the viewer has moved on: nothing to place
-      else if (identitySettled && (fromPath !== 'client-decisions' || decisionsSettled)) {
+      // Codex 4212901999 — only a record in the ACTIVE project gets a parent: a project the viewer
+      // cannot open is never placed in history (a member project is placed once its switch lands)
+      else if (projectId !== activeProjectId) {
+        if (!memberships.some((m) => m.projectId === projectId)) coldRecord.current = null;
+      } else if (identitySettled && (fromPath !== 'client-decisions' || decisionsSettled)) {
         coldRecord.current = null;
         navigate(record.slice(0, record.lastIndexOf('/')), { replace: true });
         navigate(record);

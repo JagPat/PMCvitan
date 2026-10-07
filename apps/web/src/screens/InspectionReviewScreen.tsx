@@ -8,6 +8,7 @@ import { X, Plus } from '@/lib/icons';
 import { swatch as swatchGradient, can, type Checklist, type Review } from '@vitan/shared';
 import { resolveMediaUrl, inspectionsReadMode } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
+import { useUrlItem } from '@/lib/useUrlItem';
 import styles from './responsive.module.css';
 
 export function InspectionReviewScreen() {
@@ -33,6 +34,9 @@ export function InspectionReviewScreen() {
   // outstanding checklist (a re-inspection task is one until it is submitted) is brought into view,
   // and an id this screen cannot show says so once the inspections have settled.
   const routeItem = useStore((s) => s.routeItem);
+  // Codex 4212901994 — an inspection the URL names that the store has not yet adopted
+  const urlItem = useUrlItem('inspect-review');
+  const adopting = urlItem !== null && urlItem !== routeItem ? urlItem : null;
   const setRouteItem = useStore((s) => s.setRouteItem);
   const activeReviewId = useStore((s) => s.activeReviewId);
   const projectLoadState = useStore((s) => s.projectLoadState);
@@ -72,6 +76,14 @@ export function InspectionReviewScreen() {
   // Codex 4212402110 — between the decided review leaving the queue and the route being cleared (an
   // effect), the selection has already fallen back to another review: nothing actionable is rendered
   // under the departing URL
+  if (adopting) {
+    return (
+      <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-opening">
+        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Opening {adopting}…</div>
+      </div>
+    );
+  }
   if (released) {
     return (
       <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-returning">
