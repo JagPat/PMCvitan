@@ -70,6 +70,20 @@ describe('Inspection Review — a routed review is shown only once it is the act
   });
 });
 
+describe('Inspection Review — a route naming an outstanding checklist (Codex 4208735406)', () => {
+  it('shows that checklist, and none of the active review\'s actions', async () => {
+    Element.prototype.scrollIntoView = vi.fn(); // jsdom has no layout; the focused checklist scrolls itself into view
+    const view = await mount({ routeItem: 'INSP-22' });
+    expect(view.getByTestId('routed-checklist')).toBeTruthy();
+    expect(view.getByTestId('outstanding-checklist-INSP-22').getAttribute('aria-current')).toBe('true');
+    // the active review (INSP-21) and its live actions are not under the checklist's URL
+    expect(view.queryByText('Waterproofing Ponding Test')).toBeNull();
+    expect(view.queryByRole('button', { name: /approve/i })).toBeNull();
+    fireEvent.click(view.getByTestId('routed-checklist-show-reviews'));
+    expect(view.getByText('Waterproofing Ponding Test')).toBeTruthy();
+  });
+});
+
 describe('Inspection Review — the module-owned read (Codex 4205058538)', () => {
   it('a reconcile still owed unsettles a READY module slice: loading, never not-found', async () => {
     vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
@@ -178,5 +192,19 @@ describe("the engineer's field checklist names ONE checklist (Codex 4205610125)"
     expect(view.getByTestId('checklist-title')).toBeTruthy();
     expect(view.getByTestId('inspections-stale')).toBeTruthy();
     expect(view.getByTestId('inspections-retry')).toBeTruthy();
+  });
+
+  it('Codex 4208735400 — Back to the list ends the episode: a later Forward to a submitted checklist reports it missing', async () => {
+    const { useStore, view } = await mountField({ routeItem: 'INSP-51' });
+    expect(useStore.getState().checklist?.id).toBe('INSP-51');
+    // Back to /site/checklist, before submitting
+    act(() => { useStore.getState().setRouteItem(null); });
+    // INSP-51 is submitted from the list; it leaves the outstanding set
+    const rest = useStore.getState().openChecklists.filter((c) => c.id !== 'INSP-51');
+    act(() => { useStore.setState({ openChecklists: rest, checklist: structuredClone(rest[0]), selectedChecklistId: rest[0].id }); });
+    // Forward to the saved /site/checklist/INSP-51 entry
+    act(() => { useStore.getState().setRouteItem('INSP-51'); });
+    expect(useStore.getState().routeItem).toBe('INSP-51');
+    expect(view.getByTestId('item-not-found').textContent).toContain('INSP-51');
   });
 });

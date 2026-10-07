@@ -66,6 +66,10 @@ export function EngineerChecklistScreen() {
   // the checklist the link named, once it has been in the slot: when it is then submitted and leaves the
   // outstanding set, the link has been honoured — the URL is released, not reported as a missing record
   const honoured = useRef<string | null>(null);
+  // Codex 4208735400 — the honour belongs to ONE navigation episode: it ends whenever the route stops
+  // naming that checklist (released, Back to the list, another link), so a later visit to the same id —
+  // Forward included — is judged afresh
+  if (honoured.current !== null && routeItem !== honoured.current) honoured.current = null;
   if (routeItem !== null && checklist?.id === routeItem) honoured.current = routeItem;
   const released = routeItem !== null && !routeOpen && honoured.current === routeItem;
   useEffect(() => {

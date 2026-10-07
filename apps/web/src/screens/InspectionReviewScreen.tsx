@@ -62,6 +62,19 @@ export function InspectionReviewScreen() {
       </div>
     );
   }
+  // Codex 4208735406 — a route naming an OUTSTANDING CHECKLIST shows that checklist, not the active
+  // review: the review's live Approve / Send Re-inspection would otherwise stand under the checklist's URL
+  if (routeChecklist && !routeReview) {
+    return (
+      <div className={`${styles.screen} ${styles.mid}`} data-testid="routed-checklist">
+        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        <OutstandingChecklists items={openChecklists} focused={routeChecklist} />
+        <div style={{ marginTop: 18 }}>
+          <Button data-testid="routed-checklist-show-reviews" onClick={() => setRouteItem(null)}>Show inspections awaiting review</Button>
+        </div>
+      </div>
+    );
+  }
   if (unsettledItem) {
     const failed = moduleOwned ? unavailable : projectLoadState === 'error';
     return (
