@@ -428,7 +428,9 @@ export interface SnapshotDto {
    *  the schedule then renders a flat list, unchanged). */
   phases: PhaseDto[];
   dailyLog: DailyLogDto | null;
-  notifications: { text: string; time: string; color: string }[];
+  /** `decisionId` (live bug 1) names the decision a notice is about, present only when that decision
+   *  is in the viewer's own decision slice, so the bell can open the record itself. */
+  notifications: { text: string; time: string; color: string; decisionId?: string }[];
   /** Firms & consultants attached to the project (client company, contractor, MEP/structural consultants, …). */
   companies: CompanyDto[];
   /** The project location tree (zones → rooms → elements) the decision register groups by. */

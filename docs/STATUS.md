@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-iii-r0c
+work_item: live-bug-1a-decision-deep-links
 reviewed_merge: cffb251
-open_pr: 725
+open_pr: 727
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-07
 ```
 
-### Now — 4d-iii R0c, after the owner's UX queue, R0a-2 and R0b (one owner, one PR at a time)
+### Now — the owner's live-bug queue, unit 1a (decision deep links), after 4d-iii R0c (one owner, one PR at a time)
 
 #715 (4d-iii R0a-1) trusted-merged at `67644e5`. The 10:53 UTC hold on #482 kept #710–#713 paused until
 #715 completed and a sequential handoff was recorded. The repository owner then directed this sequence,
@@ -65,14 +65,57 @@ redesign in smaller units. So #716 was closed and its work is split into server 
 8. **#724** — merged at `202a7ae` and deployed (owner-confirmed). 4d-iii R0b, migration-only: the event
    envelope admits the system pair on `system` actors (the system role and a registered automation name),
    and `ReleaseLease.serverGeneration` is added and frozen with the lease's identity.
-9. **#725** `claude/phase-6-task-4d-iii-r0c` (current work item) — 4d-iii R0c, service-only: the three system
-   emitters write the system pair naming their automation, `writeLease` records the compiled server
-   generation (now 3; the persisted minimum stays 2 until R1), and the event-writing operator CLIs take the
-   server-generation fence inside their write transaction.
+9. **#725** — merged at `c2ddd3d`. 4d-iii R0c, service-only: the three system emitters write the system pair
+   naming their automation, `writeLease` records the compiled server generation (now 3; the persisted
+   minimum stays 2 until R1), and the event-writing operator CLIs take the server-generation fence inside
+   their write transaction. Its deployment is not yet confirmed, and R1 opens only after it is.
+10. **The owner's live-bug queue** (live retest of 2026-10-07, recorded on #482:
+    https://github.com/JagPat/PMCvitan/issues/482#issuecomment-6030665418, and confirmed by the owner in this
+    session). 4d-iii is PAUSED after R0c; these six units run first, one focused PR at a time, each through
+    CI, exact-head Codex review, merge, deployment evidence and live validation:
+    1. Deep-link target fidelity: a notification opens the record it is about, at a reload-safe URL, and a
+       missing record says so instead of leaving the viewer on the parent list. #726 used its five
+       finding-bearing review heads and was closed unmerged; the unit is replaced from `main` in three
+       sequential parts:
+       - 1a. **#727** `claude/live-bug-1a-decision-deep-links` (current work item) — decision notices
+         (DL-014), including a decider of any role landing on the approval screen.
+       - 1b. Inspection notices: Inspection Review's item route, and the engineer's field checklist
+         selecting the named checklist (the Terrace waterproofing re-inspection).
+       - 1c. Drawing notices open the drawing they name.
+    Live-bug units 2–6 are folded into the Board's queue below (item 11), each into the item that covers it.
+11. **The Board's UI/UX fix queue** (the Top 10 of the 7 Oct 2026 UI/UX review of pms.vitan.in, every
+    role; relayed to this session by PMCvitan Promote on 2026-10-07). It starts once live-bug unit 1 (1a,
+    1b, 1c) is merged, in this order, one PR per item (split where review size needs it), under the normal
+    review rules:
+    1. Remove demo controls from production: Simulate offline, the fake QR and "Simulate a scan", the
+       hard-coded worker jobcard and mistri home, the dead Photo/Problem/Listen buttons. It also takes
+       live-bug 6 (hide the unavailable Generate Weekly Report action).
+    2. One source of truth for counts: the For You badge, the bell, Dashboard tiles, Site Map zone cards and
+       Portfolio. It takes live-bug 3 (Dashboard pending counts from the canonical actionable records).
+    3. Deep-link every card and notification to its record, not the parent list, beyond what live-bug unit 1
+       already covers.
+    4. Dedupe notification events at source, and add read/unread and an empty state. It takes live-bug 2
+       (one logical event yields one notification per recipient, with a deterministic regression proof).
+    5. Finish Hindi and Gujarati on the paths translated screens lead into: Daily Log, Checklist, the
+       Approve and Change modals, the bell, the "Also waiting" cards, and errors. Fix the Gujarati
+       letter-spacing/uppercase bug and the Hindi "aapak ke liye" typo.
+    6. One OTP sign-in flow (one code length), and a real Invite (a WhatsApp/SMS/email link and a pending
+       status).
+    7. Rename the PMC role in the UI to "Project manager (PMC)"; "Architect" stays for the countersigner.
+    8. Real calendar date pickers in the plan form, mapped to day offsets internally. It takes live-bug 5
+       (plan dates as calendar dates).
+    9. Trim the default nav per role; Materials, Labour, Money and Schedule move behind an opt-in "More
+       tools".
+    10. Notification-panel contrast, a 12px minimum text size (13px for status chips and schedule dates),
+        and legends for the gate dots and Site Map glyphs. It takes live-bug 4 (notification panel WCAG AA
+        contrast).
+12. **4d-iii, resuming with R1.** R0a-1 (#715), R0a-2 (#722), R0b (#724) and R0c (#725) are merged; R1–R4
+    remain. They follow the Board's queue, and R1 also needs R0c's deployment confirmed.
+13. **Site Visits**, queued after R1–R4 (the owner's direction).
 
-The owner's UX queue is complete with #713, R0a-2 merged as #722 and R0b as #724, so `work_item` and
-`open_pr` name R0c, the next unit of the 4d-iii staging record. `next_task` stays `phase-6-task-4d-iii`,
-which continues with R1 (it opens only after R0c is merged and deployed). Each
+R0c merged as #725, and the owner then paused 4d-iii for the live-bug queue, so `work_item` and `open_pr`
+name its current unit. `next_task` stays `phase-6-task-4d-iii`, which resumes with R1 once live-bug unit 1
+and the Board's queue are delivered (and R0c is deployed). Each
 unit is updated from `main` by a merge commit and passes fresh exact-head CI and independent Codex review.
 Nothing here authorises rollout activation, a manual merge or a deployment.
 

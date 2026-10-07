@@ -219,6 +219,12 @@ export interface AppState {
   // last-good decisions are kept and a Retry boundary is exposed). `decisionsSource` records whether
   // the projection or its live fallback served the current data.
   decisionsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  /** Live bug 1 (Codex 4204448859) — the CURRENT scope owes a committed command its confirmed truth:
+   *  the command's own snapshot landed (notifications included) but the reads it does not carry (every
+   *  module-owned slice) are still the pre-command ones until the reconcile lands. While true, no screen
+   *  or notice may judge a record's state or absence from those slices. Mirrors the scope coordinator's
+   *  command obligation; set when it is scheduled, cleared when a confirming snapshot clears it. */
+  commandReconcilePending: boolean;
   decisionsSource: 'projection' | 'live' | null;
   // Phase 2 Task 10 — the daily-log XOR read-ownership state, mirroring decisions. When
   // dailyLogReadMode() === 'moduleQuery', `dailyLog` + `materials` are owned by the module-owned read;
@@ -471,6 +477,9 @@ export interface AppActions {
   openDrawing: (drawingId: string) => void;
   /** B6 — name (or clear) the current screen's item; the URL follows it (RouteBridge) */
   setRouteItem: (item: string | null) => void;
+  /** Live bug 1 — open a screen AT one of its records (a notification tap): the screen, its item
+   *  (a client's decision focus on `client-decisions`), and the panel closed, in one step. */
+  openItem: (screen: ScreenKey, item: string | null) => void;
   setLang: (l: Lang) => void;
   toggleNotif: () => void;
   openCreate: () => void;
@@ -1135,6 +1144,7 @@ export function getInitialState(): AppState {
     modal: { type: null },
     decisions: structuredClone(SEED_DECISIONS),
     decisionsLoad: 'idle',
+    commandReconcilePending: false,
     decisionsSource: null,
     dailyLogLoad: 'idle',
     dailyLogSource: null,
@@ -1786,6 +1796,10 @@ export const useStore = create<Store>()(
       c.refreshInFlight = true;
       const g = gateway;
       const lease = beginSnapshotLease(scope);
+      // the flag is the CURRENT scope's: a scope switched to carries only its own obligation
+      if (scopeStillCurrent(scope) && get().commandReconcilePending !== (c.commandAfterSequence !== null)) {
+        set((s) => { s.commandReconcilePending = c.commandAfterSequence !== null; });
+      }
       // initial load / retry surfaces 'loading'; a background refresh (already
       // 'ready') stays ready — stale-while-revalidate, no flash on every socket ping.
       if (scopeStillCurrent(scope) && get().projectLoadState !== 'ready') set((s) => { s.projectLoadState = 'loading'; });
@@ -1853,6 +1867,7 @@ export const useStore = create<Store>()(
           if (c.commandAfterSequence !== null && lease.sequence > c.commandAfterSequence && moduleReadsOk) {
             c.commandAfterSequence = null; // the committed command's change is now in this applied snapshot AND its module reads
           }
+          if (scopeStillCurrent(scope)) set((s) => { s.commandReconcilePending = c.commandAfterSequence !== null; });
           // If the snapshot applied but a required module read FAILED, the obligation is RETAINED (not
           // cleared): the module read's own error state (dailyLogLoad/decisionsLoad='error', last-good
           // kept) exposes a Retry that re-runs this pull. Bounded — no auto-loop re-queues it, and the
@@ -1909,6 +1924,7 @@ export const useStore = create<Store>()(
     const scheduleReconcile = (scope: ProjectScope, obligation: ReconcileObligation): void => {
       if (!scopeStillCurrent(scope)) return;
       const c = coordinatorFor(scope);
+      if (obligation.kind === 'command') set((s) => { s.commandReconcilePending = true; });
       if (obligation.kind === 'command') {
         // keep the LATEST command threshold: a snapshot crossing it necessarily reflects
         // every earlier committed command too, so no command obligation is ever dropped.
@@ -2391,6 +2407,7 @@ export const useStore = create<Store>()(
             s.timeZone = null; // the next project's zone is unknown until its snapshot lands
             Object.assign(s, emptyProjectData());
             Object.assign(s, emptyModuleReadState()); // finding 4: a new project's reads start fresh, not stale-'ready'
+            s.commandReconcilePending = false;
           }
         } else if (!wasPending) {
           // same-project re-authentication: the previous identity's records are not
@@ -2583,6 +2600,13 @@ export const useStore = create<Store>()(
         if (s.screen === 'client-decisions') s.decisionFocus = item;
         else s.routeItem = item;
       }),
+    openItem: (screen, item) =>
+      set((s) => {
+        s.screen = screen;
+        s.notifOpen = false;
+        s.decisionFocus = screen === 'client-decisions' ? item : null;
+        s.routeItem = screen === 'client-decisions' ? null : item;
+      }),
     openPlace: (nodeId) =>
       set((s) => {
         s.placeFocus = nodeId;
@@ -2660,7 +2684,7 @@ export const useStore = create<Store>()(
           d.photoSwatch = o.swatch;
           delete d.changeRequest; // a re-approval RESOLVES the open change request
         }
-        s.notifications.unshift({ text: 'Client approved ' + title + ' — ' + material, time: 'just now', color: '#3F7A54' });
+        s.notifications.unshift({ text: 'Client approved ' + title + ' — ' + material, time: 'just now', color: '#3F7A54', decisionId: decId });
         s.modal = { type: null };
       });
       get().flash('Approved & locked — the Decision Log and PMC dashboard are updated.');
@@ -3440,8 +3464,12 @@ export const useStore = create<Store>()(
               for (const id of decIds) await gw.publishDecision(id, newIdempotencyKey());
               const lease = beginSnapshotLease(scope);
               const result = acceptSnapshot(await gw.snapshot(), lease);
-              if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
-              else if (result === 'invalid-project') void requestFreshSnapshot();
+              // Codex 4206188320 — the same rule as `consumeSnapshotResult`: an APPLIED snapshot carries
+              // no module slice, so under module ownership the publish still owes its reconcile (and
+              // the decision slice is not settled until it lands)
+              if (result === 'superseded' || (result === 'applied' && anyModuleOwnedRead())) {
+                scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+              } else if (result === 'invalid-project') void requestFreshSnapshot();
             } catch {
               decOk = false;
             }
@@ -3481,7 +3509,7 @@ export const useStore = create<Store>()(
         for (const row of s.decisions) {
           if (row.draft && decIds.includes(row.id)) {
             row.draft = false;
-            s.notifications.unshift({ text: `Decision awaiting approval: ${row.title}`, time: 'just now', color: '#C08A2D' });
+            s.notifications.unshift({ text: `Decision awaiting approval: ${row.title}`, time: 'just now', color: '#C08A2D', decisionId: row.id });
           }
         }
         for (const row of s.drawings) {
@@ -4341,6 +4369,7 @@ export const useStore = create<Store>()(
         s.timeZone = null; // the target project's zone is unknown until its snapshot lands
         Object.assign(s, emptyProjectData());
         Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
+        s.commandReconcilePending = false; // the target scope owes no command of the old one
       });
       return gateway
         .switchProject(projectId)
@@ -4581,7 +4610,7 @@ export const useStore = create<Store>()(
         const row = s.decisions.find((x) => x.id === decisionId);
         if (!row || !row.draft) return;
         row.draft = false;
-        s.notifications.unshift({ text: `Decision awaiting approval: ${row.title}`, time: 'just now', color: '#C08A2D' });
+        s.notifications.unshift({ text: `Decision awaiting approval: ${row.title}`, time: 'just now', color: '#C08A2D', decisionId: row.id });
       });
       get().flash(`Published: ${d.title} — the client has been asked to choose.`);
     },

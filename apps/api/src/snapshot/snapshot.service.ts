@@ -156,6 +156,12 @@ export class SnapshotService {
     // (decisionId null, pre-4a) keeps the pre-4b pmc/client audience — every pre-4b decision is
     // a `client`-held one.
     const visibleById = new Map(decisionDtos.map((d) => [d.id, d]));
+    // Live bug 1 (deep-link target fidelity) — a notice names the decision it is about, so a tap opens
+    // that decision rather than the register. Only a decision in THIS viewer's slice is named: an id
+    // the viewer cannot open is never handed out, and a notice about no decision carries no key at all
+    // (the delivered three-key shape).
+    const noticeSubject = (decisionId: string | null): { decisionId?: string } =>
+      decisionId !== null && visibleById.has(decisionId) ? { decisionId } : {};
     const hidePending = role !== 'pmc' && role !== 'client';
     const stripPendingNotice = (n: { text: string; decisionId: string | null }): boolean => {
       if (!isPendingDecisionNotice(n.text)) return false;
@@ -228,7 +234,7 @@ export class SnapshotService {
           const event = n.eventId ? noticeEvents.get(n.eventId) : undefined;
           if (!event || !n.decisionId) return [];
           const rendered = this.decisionsQuery.renderKindedNotice(n.kind, event, visibleById.get(n.decisionId), role, userId, noticeRevisions);
-          return rendered ? [{ text: rendered.text, time: n.time, color: rendered.color }] : [];
+          return rendered ? [{ text: rendered.text, time: n.time, color: rendered.color, ...noticeSubject(n.decisionId) }] : [];
         }
         // KIND-LESS rows (every notice written today): the delivered text-prefix filters, unchanged.
         if (stripPendingNotice(n)) return [];
@@ -236,7 +242,7 @@ export class SnapshotService {
         // decision is invisible to every other role INCLUDING the client (§A.3), so its
         // explanation must not leak through the bell either.
         if (role !== 'pmc' && isWithdrawnDecisionNotice(n.text)) return [];
-        return [{ text: n.text, time: n.time, color: n.color }];
+        return [{ text: n.text, time: n.time, color: n.color, ...noticeSubject(n.decisionId) }];
       }),
       companies: companies.map((c) => ({
         id: c.id,
