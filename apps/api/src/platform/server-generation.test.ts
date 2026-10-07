@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  SERVER_GENERATION, SERVER_GENERATION_MIGRATION, assertServerGenerationAdmitted, holdAdmission, judgeServerGeneration, readServerMinimum,
+  SERVER_GENERATION, SERVER_GENERATION_MIGRATION, SERVER_GENERATION_MINIMUM, assertServerGenerationAdmitted, holdAdmission, judgeServerGeneration, readServerMinimum,
 } from './server-generation';
 
 /**
@@ -17,7 +17,9 @@ describe('the server-generation fence (4d-ii-a / A6e)', () => {
     const sql = readFileSync(join(__dirname, '..', '..', 'prisma', 'migrations', SERVER_GENERATION_MIGRATION, 'migration.sql'), 'utf8');
     const literal = sql.match(/VALUES \('singleton', (\d+), '([^']+)', CURRENT_TIMESTAMP\)/);
     expect(literal, 'the raise statement names the generation and the migration').not.toBeNull();
-    expect(Number(literal![1])).toBe(SERVER_GENERATION);
+    expect(Number(literal![1])).toBe(SERVER_GENERATION_MINIMUM);
+    // 4d-iii / R0c — the compiled generation leads the persisted minimum until R1 raises it; it never trails it
+    expect(SERVER_GENERATION).toBeGreaterThanOrEqual(SERVER_GENERATION_MINIMUM);
     expect(literal![2]).toBe(SERVER_GENERATION_MIGRATION);
     // and the raise is GREATEST: a re-run after a later raise cannot lower it
     expect(sql).toMatch(/GREATEST\("ServerGeneration"\."minimumGeneration", EXCLUDED\."minimumGeneration"\)/);

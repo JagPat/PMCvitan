@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { Prisma } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import {
-  SERVER_GENERATION, SERVER_GENERATION_MIGRATION, assertServerGenerationAdmitted, holdAdmission, readServerMinimum,
+  SERVER_GENERATION, SERVER_GENERATION_MIGRATION, SERVER_GENERATION_MINIMUM, assertServerGenerationAdmitted, holdAdmission, readServerMinimum,
 } from '../../src/platform/server-generation';
 import { OutboxBootstrap } from '../../src/platform/outbox/outbox.bootstrap';
 import { judgeDrain, readDrainInputsFromDatabase, readLiveLeases, readPersistedCatalogMaximum } from '../../src/platform/rollout/drain-evidence';
@@ -90,11 +90,11 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
 
   it('the migration persisted THIS build\'s generation and the booted application was admitted through the fence; a build below the minimum, or no minimum, is refused', async () => {
     const persisted = await readServerMinimum(t.prisma);
-    expect(persisted).toMatchObject({ minimumGeneration: SERVER_GENERATION, raisedBy: SERVER_GENERATION_MIGRATION });
+    expect(persisted).toMatchObject({ minimumGeneration: SERVER_GENERATION_MINIMUM, raisedBy: SERVER_GENERATION_MIGRATION });
     // the application under test booted through `OutboxBootstrap`, whose first act is this assertion
     const log: string[] = [];
-    await expect(assertServerGenerationAdmitted(t.prisma, { log: (m) => log.push(m) })).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION });
-    expect(log[0]).toMatch(new RegExp(`server generation ${SERVER_GENERATION} admitted \\(persisted minimum ${SERVER_GENERATION}, raised by ${SERVER_GENERATION_MIGRATION}\\)`));
+    await expect(assertServerGenerationAdmitted(t.prisma, { log: (m) => log.push(m) })).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION_MINIMUM });
+    expect(log[0]).toMatch(new RegExp(`server generation ${SERVER_GENERATION} admitted \\(persisted minimum ${SERVER_GENERATION_MINIMUM}, raised by ${SERVER_GENERATION_MIGRATION}\\)`));
     // an OLDER build against a raised minimum: refused before it registers anything
     await rolledBack(async (tx) => {
       await tx.$executeRawUnsafe(inTransition(`UPDATE "ServerGeneration" SET "minimumGeneration" = ${SERVER_GENERATION + 1}, "raisedBy" = 'probe: a later fence-raising migration', "raisedAt" = CURRENT_TIMESTAMP WHERE "key" = 'singleton'`));
@@ -102,7 +102,7 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
       // and the NEXT build, compiled at the raised generation, is admitted
       await expect(assertServerGenerationAdmitted(tx, undefined, SERVER_GENERATION + 1)).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION + 1 });
     });
-    expect(await row(t.prisma)).toMatchObject({ minimumGeneration: SERVER_GENERATION });
+    expect(await row(t.prisma)).toMatchObject({ minimumGeneration: SERVER_GENERATION_MINIMUM });
   });
 
   it('the register is written only inside a migration\'s DDL transition: a direct write, and one under a marker another transaction committed, are refused', async () => {
@@ -123,7 +123,7 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
     } finally {
       await t.prisma.$executeRawUnsafe(`DROP FUNCTION platform_t4d_server_generation_migration_open()`);
     }
-    expect(await row(t.prisma)).toMatchObject({ minimumGeneration: SERVER_GENERATION, raisedBy: SERVER_GENERATION_MIGRATION });
+    expect(await row(t.prisma)).toMatchObject({ minimumGeneration: SERVER_GENERATION_MINIMUM, raisedBy: SERVER_GENERATION_MIGRATION });
   });
 
   it('the minimum is only ever RAISED, inside the transition too; an UPDATE that raises nothing may not rewrite the evidence; the migration\'s own raise after a later one changes nothing (GREATEST)', async () => {
@@ -155,7 +155,7 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
       const after = await row(tx);
       expect(after).toEqual(raised);
     });
-    expect(await row(t.prisma)).toMatchObject({ minimumGeneration: SERVER_GENERATION, raisedBy: SERVER_GENERATION_MIGRATION });
+    expect(await row(t.prisma)).toMatchObject({ minimumGeneration: SERVER_GENERATION_MINIMUM, raisedBy: SERVER_GENERATION_MIGRATION });
   });
 
   it('the row is never deleted or truncated — outside and inside the transition', async () => {
@@ -165,7 +165,7 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
       // the hostile TRUNCATE: a statement seal fires whatever the row triggers say
       expect(await attempt(tx, `TRUNCATE "ServerGeneration"`)).toMatch(/never truncated — the persisted server-generation minimum is the fence/);
       expect(await attempt(tx, inTransition(`TRUNCATE "ServerGeneration"`))).toMatch(/never truncated/);
-      expect(await row(tx)).toMatchObject({ minimumGeneration: SERVER_GENERATION });
+      expect(await row(tx)).toMatchObject({ minimumGeneration: SERVER_GENERATION_MINIMUM });
     });
   });
 
@@ -217,7 +217,7 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
         const releasedAt = Date.now();
         releaseRaise();
         await raising;
-        await expect(admission).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION });
+        await expect(admission).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION_MINIMUM });
         expect(admittedAt).toBeGreaterThanOrEqual(releasedAt);
       } finally {
         releaseRaise();
@@ -232,7 +232,7 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
       let served = false;
       const lost: string[] = [];
       const hold = holdAdmission(t.prisma, async () => { served = true; }, { onLost: (r) => lost.push(r) });
-      await expect(hold.admitted).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION });
+      await expect(hold.admitted).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION_MINIMUM });
       expect(served).toBe(true);
       let raising: Promise<void> | null = null;
       try {
@@ -258,7 +258,7 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
     {
       const lost: string[] = [];
       const hold = holdAdmission(t.prisma, async () => {}, { onLost: (r) => lost.push(r), holdMs: 1_500 });
-      await expect(hold.admitted).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION });
+      await expect(hold.admitted).resolves.toMatchObject({ minimumGeneration: SERVER_GENERATION_MINIMUM });
       expect(await tableLocks('RowShareLock')).toBeGreaterThanOrEqual(1);
       await hold.ended; // ends on its own: the hold lapsed
       expect(lost).toHaveLength(1);
@@ -271,7 +271,7 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
     // release after listen), so the register is free; a second release is a no-op
     t.app.get(OutboxBootstrap).releaseAdmission();
     expect(await tableLocks('RowShareLock')).toBe(0);
-    expect(await row(t.prisma)).toMatchObject({ minimumGeneration: SERVER_GENERATION, raisedBy: SERVER_GENERATION_MIGRATION });
+    expect(await row(t.prisma)).toMatchObject({ minimumGeneration: SERVER_GENERATION_MINIMUM, raisedBy: SERVER_GENERATION_MIGRATION });
   });
 
   it('the migration is on ALWAYS_EXECUTE and re-applied over the migrated database it moves nothing and its seals stand', async () => {
@@ -312,7 +312,7 @@ describe('4d-ii-a / A6e — the server-generation fence and the drain evidence (
       expect(live.find((l) => l.instanceId === old.instanceId)).toMatchObject({ catalogVersion: 1, release: 'r-old' });
 
       const inputs = await readDrainInputsFromDatabase(tx);
-      expect(inputs).toMatchObject({ compiledGeneration: SERVER_GENERATION, catalogMaximum: max, persistedMinimum: { minimumGeneration: SERVER_GENERATION, raisedBy: SERVER_GENERATION_MIGRATION } });
+      expect(inputs).toMatchObject({ compiledGeneration: SERVER_GENERATION, catalogMaximum: max, persistedMinimum: { minimumGeneration: SERVER_GENERATION_MINIMUM, raisedBy: SERVER_GENERATION_MIGRATION } });
       const evidence = judgeDrain({
         minimumRelease: 'r-current',
         minimumCatalogVersion: { value: max!, source: 'the persisted catalog maximum' },

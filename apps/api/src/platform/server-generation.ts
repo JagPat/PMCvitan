@@ -39,14 +39,21 @@ import { Prisma } from '@prisma/client';
  */
 export const SERVER_GENERATION_FENCE_HOLD_MS = 600_000;
 
-/** THIS build's server generation. Raised by the unit whose migration raises the persisted minimum:
- *  1 at A6e (the fence installed), 2 at A8b (the last 4d-ii-a server unit — from here every A6-to-A8a
- *  build, an A7 image included, is refused at startup, which is what makes the drain's minimum release
- *  durable; the staging document, "The drain"). */
-export const SERVER_GENERATION = 2;
+/** THIS build's server generation: 1 at A6e (the fence installed), 2 at A8b (the last 4d-ii-a server unit
+ *  — from here every A6-to-A8a build, an A7 image included, is refused at startup, which is what makes the
+ *  drain's minimum release durable; the staging document, "The drain"), 3 at 4d-iii / R0c, the first build
+ *  that writes the system pair and records its generation on its `ReleaseLease`. R0c raises the COMPILED
+ *  generation only; R1, the first 4d-iii seal, raises the persisted minimum to it (the 4d-iii staging record,
+ *  "The order"), so until then a generation-3 build serves over a minimum of 2. */
+export const SERVER_GENERATION = 3;
 
-/** The migration that LAST RAISED the persisted minimum to {@link SERVER_GENERATION} — what the singleton's
- *  `raisedBy` reads after the ledger is applied; the unit test pins its raise literal to the constant. A6e's
+/** The persisted minimum the LAST raising migration wrote ({@link SERVER_GENERATION_MIGRATION}): what the
+ *  singleton's `minimumGeneration` reads after the ledger is applied. The unit test pins the migration's raise
+ *  literal to it, and pins that this build compiles at least it. It moves with the next raising migration. */
+export const SERVER_GENERATION_MINIMUM = 2;
+
+/** The migration that LAST RAISED the persisted minimum, to {@link SERVER_GENERATION_MINIMUM} — what the
+ *  singleton's `raisedBy` reads after the ledger is applied. A6e's
  *  `20280101000000_phase6_t4d_ii_a6e_generation_fence` installed the fence and wrote the first minimum. */
 export const SERVER_GENERATION_MIGRATION = '20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence';
 

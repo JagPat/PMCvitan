@@ -17,7 +17,7 @@ import { join, relative } from 'node:path';
  * Verdicts:
  * - `current: <who>` — the simulated actor stands on the project the event lands on, so its pair
  *   resolves, as a delivered writer's does;
- * - `system: <why>` — a `system` actor, which carries no pair until R0b admits one and R0c writes it;
+ * - `system: <why>` — a `system` actor naming no registered automation, so it carries no pair (R0c);
  * - `subject: <what>` — the suite's subject IS the actor envelope or the refusal, so its unresolved
  *   cases assert the refusal.
  * No direct caller takes a LEGACY bypass: R0a-2 installs no seal, so there is nothing to bypass.
@@ -27,7 +27,7 @@ const ROOTS = ['test', 'prisma/seed.ts', 'scripts'];
 
 const OWNER = 'current: the org owner, who stands as `pmc` on every orgA project (the windowed owner/admin arm)';
 const ENGINEER = 'current: an engineer enrolled on each fresh project by `freshProject`';
-const SYSTEM = 'system: a `system` actor — no pair until R0b admits and R0c writes one';
+const SYSTEM = 'system: a `system` actor naming no registered automation — it carries no pair';
 
 const CLASSIFIED: Record<string, { calls: number; verdict: string }> = {
   'test/integration/activities-projection.test.ts': { calls: 1, verdict: SYSTEM },
@@ -47,6 +47,7 @@ const CLASSIFIED: Record<string, { calls: number; verdict: string }> = {
   'test/integration/phase6-t4d-ii-a1-actor-envelope.test.ts': { calls: 2, verdict: 'subject: the actor envelope — its unresolved cases assert the R0a-2 refusal' },
   'test/integration/phase6-t4d-ii-a6d-delivery-seals.test.ts': { calls: 4, verdict: 'current: the projectA pmc member' },
   'test/integration/phase6-t4d-iii-r0a2-emit-refusal.test.ts': { calls: 5, verdict: 'subject: the R0a-2 refusal and attribution proofs' },
+  'test/integration/phase6-t4d-iii-r0c-system-emitters.test.ts': { calls: 7, verdict: 'subject: the R0c system pair — its system actors carry or are refused the pair, on the projectA stream' },
   'test/integration/projection.test.ts': { calls: 1, verdict: OWNER },
 };
 

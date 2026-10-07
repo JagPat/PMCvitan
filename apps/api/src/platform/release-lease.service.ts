@@ -4,6 +4,7 @@ import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { listConsumers } from './outbox/registry';
+import { SERVER_GENERATION } from './server-generation';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a — the `ReleaseLease` STARTUP WRITER (plan §D: "every serving process
@@ -79,16 +80,22 @@ export function newInstanceId(): string {
 
 type LeaseDb = Pick<Prisma.TransactionClient, '$executeRaw'>;
 
-/** INSERT one process's lease. Both timestamps from the database clock. */
+/**
+ * INSERT one process's lease. Both timestamps from the database clock.
+ *
+ * 4d-iii / R0c — the lease records THIS build's compiled {@link SERVER_GENERATION} in the column R0b
+ * added (and froze with the rest of the lease's identity). Each R1–R3 preflight refuses while a LIVE
+ * lease records NULL or a generation below 3, so every pre-R0c process must drain before a seal lands.
+ */
 export async function writeLease(
   db: LeaseDb,
   lease: { instanceId: string; catalogVersion: number; release: string; ttlSeconds?: number },
 ): Promise<void> {
   const ttl = lease.ttlSeconds ?? RELEASE_LEASE_TTL_SECONDS;
   await db.$executeRaw(Prisma.sql`
-    INSERT INTO "ReleaseLease" ("instanceId", "catalogVersion", "release", "startedAt", "leaseUntil")
+    INSERT INTO "ReleaseLease" ("instanceId", "catalogVersion", "release", "startedAt", "leaseUntil", "serverGeneration")
     VALUES (${lease.instanceId}, ${lease.catalogVersion}, ${lease.release},
-            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + make_interval(secs => ${ttl}))`);
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + make_interval(secs => ${ttl}), ${SERVER_GENERATION})`);
 }
 
 /**

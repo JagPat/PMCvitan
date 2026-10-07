@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { PrismaService } from '../prisma.service';
 import { recordAudit } from './audit';
+import { assertServerGenerationAdmitted } from './server-generation';
 import { systemActor } from '../common/actor';
 import { CommercialActivationService } from '../commercial/commercial-activation.service';
 import { CommercialParticipant } from '../commercial/commercial.participant';
@@ -123,6 +124,9 @@ async function main(): Promise<void> {
       return;
     }
     await prisma.$transaction(async (tx) => {
+      // 4d-iii / R0c — the server-generation fence, before anything is written (the commercial branch
+      // above takes it inside `activate`'s transaction). Read `FOR SHARE` and held to commit.
+      await assertServerGenerationAdmitted(tx);
       await tx.project.findUniqueOrThrow({ where: { id: f.project }, select: { id: true } });
       await tx.projectCapability.upsert({
         where: { projectId_capability: { projectId: f.project, capability: f.capability } },

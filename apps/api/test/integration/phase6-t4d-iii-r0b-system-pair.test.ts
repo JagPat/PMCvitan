@@ -135,13 +135,16 @@ describe('4d-iii / R0b — the system pair and the lease generation (live PG)', 
       .catch((e) => { if (e !== ROLLBACK) throw e; });
   };
 
-  it('ReleaseLease.serverGeneration is present and nullable, and the delivered writeLease still commits with it NULL', async () => {
+  it('ReleaseLease.serverGeneration is present and nullable, and the pre-R0c writer (no such column) still commits with it NULL', async () => {
     const col = await t.prisma.$queryRawUnsafe<Array<{ data_type: string; is_nullable: string }>>(
       `SELECT data_type, is_nullable FROM information_schema.columns WHERE table_name = 'ReleaseLease' AND column_name = 'serverGeneration'`);
     expect(col).toEqual([{ data_type: 'integer', is_nullable: 'YES' }]);
     await inRolledBack(async (tx) => {
       const instanceId = newInstanceId();
-      await writeLease(tx, { instanceId, catalogVersion: 3, release: 'r0b-probe' });
+      // the column list the R0b-era `writeLease` named; R0c's records the generation (its own suite)
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil")
+         VALUES ($1, 3, 'r0b-probe', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + interval '60 seconds')`, instanceId);
       const [row] = await tx.$queryRawUnsafe<Array<{ g: number | null }>>(`SELECT "serverGeneration" AS g FROM "ReleaseLease" WHERE "instanceId" = $1`, instanceId);
       expect(row!.g).toBeNull();
     });
@@ -184,7 +187,8 @@ describe('4d-iii / R0b — the system pair and the lease generation (live PG)', 
     await expect(t.prisma.$transaction(async (tx) => {
       const instanceId = newInstanceId();
       await writeLease(tx, { instanceId, catalogVersion: 3, release: 'r0b-replay' });
-      await tx.$executeRawUnsafe(`UPDATE "ReleaseLease" SET "serverGeneration" = 3 WHERE "instanceId" = $1`, instanceId);
+      // since R0c the writer records its generation (3), so the re-stamp probed is 3 → 2
+      await tx.$executeRawUnsafe(`UPDATE "ReleaseLease" SET "serverGeneration" = 2 WHERE "instanceId" = $1`, instanceId);
       throw ROLLBACK; // never commits a lease, whatever the database carries
     })).rejects.toThrow(/FROZEN/);
   });

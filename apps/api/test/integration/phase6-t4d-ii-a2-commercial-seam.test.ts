@@ -21,8 +21,9 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * resolved `Actor` it holds, so the compiler is the tripwire for a site that hands the seam less.
  * This pins the runtime half across the seam: a PO issue on a commercial-enabled project announces
  * money several frames below the command body, and the envelope still names the actor's role and
- * the account name read in the transaction. §L activation is a SYSTEM-kind operator process, and
- * 4d-i's envelope seal refuses a pair on a system actor, so its announcement stays NULL.
+ * the account name read in the transaction. §L activation is a SYSTEM-kind operator process: since
+ * 4d-iii / R0c its announcement carries the SYSTEM pair naming the automation (`system`,
+ * `commercial-activation`), with the operator's id as `systemActor`.
  */
 describe('4d-ii-a / A2 — the commercial seam carries the envelope pair (live PG)', () => {
   let t: TestApp;
@@ -167,13 +168,16 @@ describe('4d-ii-a / A2 — the commercial seam carries the envelope pair (live P
     for (const e of envelopes) expect(e).toMatchObject({ actorRole: 'pmc', actorName: await identityName(f.memberUser.id) });
   });
 
-  it('§L activation is a system-kind operator process: its announcements carry NO pair', async () => {
+  it('§L activation is a system-kind operator process: its announcements carry the system pair naming the automation (4d-iii / R0c)', async () => {
     const projectId = await freshProject();
     await enableCommercial(projectId);
-    const envelopes = await moneyEnvelopes(projectId);
+    const envelopes = await t.prisma.domainEvent.findMany({
+      where: { projectId, eventType: COMMERCIAL_MONEY_EVENT },
+      select: { actorId: true, actorKind: true, systemActor: true, actorRole: true, actorName: true },
+    });
     expect(envelopes.length, 'activation authors the initial heads and announces them').toBeGreaterThan(0);
     for (const e of envelopes) {
-      expect(e).toMatchObject({ actorKind: 'system', actorRole: null, actorName: null });
+      expect(e).toEqual({ actorId: null, actorKind: 'system', systemActor: f.memberUser.id, actorRole: 'system', actorName: 'commercial-activation' });
     }
   });
 });

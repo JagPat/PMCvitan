@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 4d-iii-r0b
+work_item: 4d-iii-r0c
 reviewed_merge: cffb251
-open_pr: 724
+open_pr: 725
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-06
+updated: 2026-10-07
 ```
 
-### Now — 4d-iii R0b, after the owner's UX queue and R0a-2 (one owner, one PR at a time)
+### Now — 4d-iii R0c, after the owner's UX queue, R0a-2 and R0b (one owner, one PR at a time)
 
 #715 (4d-iii R0a-1) trusted-merged at `67644e5`. The 10:53 UTC hold on #482 kept #710–#713 paused until
 #715 completed and a sequential handoff was recorded. The repository owner then directed this sequence,
@@ -62,13 +62,17 @@ redesign in smaller units. So #716 was closed and its work is split into server 
 7. **#722** — merged at `7732fcb`. 4d-iii R0a-2: `emitEvent` refuses an unresolved human pair, org
    owner/admin acts are attributed in a project role (re-judged inside the write), member events carry the
    transition fact's pair, and a tripwire pins the inventory of direct `emitEvent` writers.
-8. **#724** `claude/phase-6-task-4d-iii-r0b` (current work item) — 4d-iii R0b, migration-only: the event
+8. **#724** — merged at `202a7ae` and deployed (owner-confirmed). 4d-iii R0b, migration-only: the event
    envelope admits the system pair on `system` actors (the system role and a registered automation name),
    and `ReleaseLease.serverGeneration` is added and frozen with the lease's identity.
+9. **#725** `claude/phase-6-task-4d-iii-r0c` (current work item) — 4d-iii R0c, service-only: the three system
+   emitters write the system pair naming their automation, `writeLease` records the compiled server
+   generation (now 3; the persisted minimum stays 2 until R1), and the event-writing operator CLIs take the
+   server-generation fence inside their write transaction.
 
-The owner's UX queue is complete with #713 and R0a-2 merged as #722, so `work_item` and `open_pr` name R0b,
-the next unit of the 4d-iii staging record. `next_task` stays `phase-6-task-4d-iii`, which continues with R0c
-(it opens only after R0b is deployed). Each
+The owner's UX queue is complete with #713, R0a-2 merged as #722 and R0b as #724, so `work_item` and
+`open_pr` name R0c, the next unit of the 4d-iii staging record. `next_task` stays `phase-6-task-4d-iii`,
+which continues with R1 (it opens only after R0c is merged and deployed). Each
 unit is updated from `main` by a merge commit and passes fresh exact-head CI and independent Codex review.
 Nothing here authorises rollout activation, a manual merge or a deployment.
 

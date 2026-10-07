@@ -1297,6 +1297,27 @@ admission was lost before this process served` and exits, and the container rest
 fresh admission. A `FENCED` exit of this kind means the boot took longer than ten minutes or the
 database connection dropped during it: look there, not at the fence.
 
+### Operator CLIs run only from the currently deployed image
+
+Phase 6 unit **4d-iii / R0c** raises the compiled generation to 3 (the persisted minimum stays 2 until
+4d-iii's R1 raises it) and fences the two operator CLIs that write events, `capability:enable` (which
+drives §L commercial activation) and `commercial:reevaluate`. Each builds its own Prisma client and so
+never passes the server's startup admission. Instead, each reads the persisted minimum `FOR SHARE`
+inside the same transaction as its writes, holds it to that transaction's commit, and refuses before
+writing anything when its compiled generation is below the minimum. The refusal reads
+`server-generation fence: this build compiles server generation N, below the persisted minimum M …`,
+exactly as a refused server does, and nothing was written.
+
+**Run every operator CLI from the image that is currently deployed, never from an older one**: an older
+checkout, a cached container image or a developer machine on a stale commit. The fence covers only
+CLIs built at R0c or later; an image from before R0c carries no check. Once 4d-iii's later seals are
+installed, such an image still fails CLOSED: both operator paths emit inside the one transaction that
+holds their writes, so the seal's named refusal rolls the whole operation back and leaves no half-written
+state. But do not rely on that: a refusal of either kind means the wrong image. Re-run the command
+from the deployed one. Since R0c the events these CLIs write carry the system pair naming the
+automation (`commercial-activation`, `commercial-reevaluate`), with the operator's user id recorded as
+`systemActor`.
+
 ### Recording the drain's autonomous corroboration: `rollout:drain-evidence`
 
 The gate `phase-6-4d-previous-release-drained` no longer requires a human `OPERATOR-ATTESTATION`:

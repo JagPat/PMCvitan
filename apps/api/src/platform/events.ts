@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { ForbiddenException } from '@nestjs/common';
 import type { EventActor } from '../common/actor';
-import { resolveActorEnvelope, STALE_ROLE_MESSAGE, type ActorEnvelope } from './actor-envelope';
+import { isSystemEnvelope, resolveActorEnvelope, STALE_ROLE_MESSAGE, type ActorEnvelope } from './actor-envelope';
 import type { DomainEventType } from '@vitan/shared';
 import { materializeDeliveries, type DispatchIntent as PersistedDispatchIntent, type EmittedEventMeta } from './outbox/registry';
 import { buildDispatchIntent, type ExternalEffectKey, type DispatchInput } from './external-effects';
@@ -128,8 +128,20 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
   if (input.eventId !== undefined && !UUID.test(input.eventId)) {
     throw new Error(`emitEvent: eventId "${input.eventId}" is not a UUID`);
   }
-  if (input.actorEnvelope && input.actor.actorKind !== 'human') {
-    throw new Error(`emitEvent: a ${input.actor.actorKind} actor carries no envelope pair`);
+  // 4d-iii / R0c — a non-human actor carries a pair only as a `system` actor naming a registered
+  // automation (R0b's seal arm). A caller-supplied envelope is held to that here, before any write: an
+  // actor naming no automation may supply only NULL, and one naming an automation only exactly that
+  // automation's pair. An explicit NULL on a named actor is refused too (Codex 4202818435), or its
+  // event would commit permanently without the attribution the actor names.
+  if (input.actorEnvelope !== undefined && input.actor.actorKind !== 'human') {
+    const automation = input.actor.actorKind === 'system' ? input.actor.automation : undefined;
+    const supplied = input.actorEnvelope;
+    const admitted = automation === undefined
+      ? supplied === null
+      : supplied !== null && isSystemEnvelope(supplied) && supplied.actorName === automation;
+    if (!admitted) {
+      throw new Error(`emitEvent: a ${input.actor.actorKind} actor carries a pair only as its own registered automation's system pair`);
+    }
   }
   // Derive the tenant from the project itself — a forged organizationId is impossible.
   const { orgId } = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { orgId: true } });
@@ -143,8 +155,8 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
   // 4d-iii / R0a-2 — the Board's Decisions 1 and 2 (2026-10-05): EVERY human event carries the pair. A
   // human actor whose token role no longer stands on the project (a re-role or removal after the token
   // was issued) is refused with a re-sign-in, before the stream counter moves, and the whole command
-  // rolls back; the act is never recorded with an empty attribution. (A `system` actor carries no pair
-  // until R0b admits one and R0c writes it.)
+  // rolls back; the act is never recorded with an empty attribution. (A `system` actor carries the
+  // system pair when it names its automation — R0b admits it, R0c writes it — and no pair otherwise.)
   if (input.actor.actorKind === 'human' && envelope === null) {
     throw new ForbiddenException(STALE_ROLE_MESSAGE);
   }
