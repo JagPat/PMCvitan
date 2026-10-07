@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { pathForScreen } from '@/lib/screens';
+import { decisionsSliceSettled } from '@/lib/notifications';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
-import { Eyebrow, DecisionChip, Button, LocationContext, EditState, ConsultationThread, CountersignControls } from '@/components';
+import { Eyebrow, DecisionChip, Button, LocationContext, EditState, ConsultationThread, CountersignControls, ItemNotFound } from '@/components';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { Lock, Plus, ChevronRight } from '@/lib/icons';
 import { deciderNoun, signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
@@ -63,6 +64,20 @@ export function DecisionLogScreen() {
   // never-approved pending row is eligible (the service refuses everything else with a 409)
   const mayWithdrawDecision = (d: Decision): boolean =>
     can('decision.withdraw', role) && d.status === 'pending' && !d.draft;
+  // Live bug 1 — a link naming a decision this register does not hold says so, once the decision
+  // slice has settled (never during a load, and never over a failed read that holds nothing).
+  const routeItem = useStore((s) => s.routeItem);
+  const setRouteItem = useStore((s) => s.setRouteItem);
+  // Codex 4204448859 — and never while a committed command's reconcile is still owed: its own snapshot
+  // can land while the decision slice is still the pre-command one
+  const settled = useStore(decisionsSliceSettled);
+  const loadFailed = useStore((s) => s.decisionsLoad === 'error' || s.projectLoadState === 'error');
+  const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
+  const routedAbsent = routeItem !== null && !rows.some((d) => d.id === routeItem);
+  const missingItem = routedAbsent && settled ? routeItem : null;
+  // Codex 4204448863 — a named decision not (yet) in the slice while the read is unsettled shows the
+  // load boundary, never the whole register standing in for it under its URL
+  const unsettledItem = routedAbsent && !settled;
   const [issuing, setIssuing] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupBy>('location');
   const [query, setQuery] = useState('');
@@ -80,6 +95,34 @@ export function DecisionLogScreen() {
   }, [rows, nodes, query, statuses]);
 
   const groups = useMemo(() => groupDecisions(filtered, nodes, groupBy), [filtered, nodes, groupBy]);
+  // Codex 4203544317 — a record opened by its URL (a notification, a shared link) is SHOWN, not merely
+  // named: when the register's own search or status filters hide it they are cleared, and its group is
+  // expanded if collapsed. Once per navigation, and only when it is hidden: clicking a visible row keeps
+  // the viewer's filters, and a group they collapse afterwards stays collapsed.
+  const lastRoute = useRef<string | null>(null);
+  const revealing = useRef<string | null>(null);
+  useEffect(() => {
+    if (routeItem !== lastRoute.current) {
+      lastRoute.current = routeItem;
+      revealing.current = routeItem;
+    }
+    const id = revealing.current;
+    if (id === null || !rows.some((d) => d.id === id)) return; // not loaded yet: reveal when it is
+    if (!filtered.some((d) => d.id === id)) {
+      setQuery('');
+      setStatuses(new Set());
+      return; // the groups recompute, and this runs again to expand its group
+    }
+    const group = groups.find((g) => g.rows.some((r) => r.decision.id === id));
+    if (group && collapsed.has(group.key)) {
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        next.delete(group.key);
+        return next;
+      });
+    }
+    revealing.current = null;
+  }, [routeItem, rows, filtered, groups, collapsed]);
   const toggleStatus = (s: Decision['status']) =>
     setStatuses((prev) => {
       const next = new Set(prev);
@@ -94,6 +137,33 @@ export function DecisionLogScreen() {
       else next.add(key);
       return next;
     });
+
+  // Codex 4203544331 — a link to a decision this register does not hold shows ONLY that: the register
+  // is not rendered beneath it as if it were the answer, and "Show all decisions" reveals it.
+  if (unsettledItem) {
+    return (
+      <div className={`${styles.screen} ${styles.narrow}`} data-testid={loadFailed ? 'decisions-unavailable' : 'decisions-loading'}>
+        <Eyebrow>CLIENT DECISION LOG</Eyebrow>
+        {loadFailed ? (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
+            <span>Couldn't load decisions — check your connection and access.</span>
+            <Button data-testid="decisions-retry" onClick={() => requestFreshSnapshot()}>Retry</Button>
+          </div>
+        ) : (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading decisions…</div>
+        )}
+      </div>
+    );
+  }
+  if (missingItem) {
+    return (
+      <div className={`${styles.screen} ${styles.narrow}`}>
+        <Eyebrow>CLIENT DECISION LOG</Eyebrow>
+        <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em', margin: '6px 0 8px' }}>Decision Register</div>
+        <ItemNotFound what="Decision" id={missingItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show all decisions" />
+      </div>
+    );
+  }
 
   return (
     <div className={`${styles.screen} ${styles.narrow}`}>

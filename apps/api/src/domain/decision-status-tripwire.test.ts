@@ -294,6 +294,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     // approve, and admitting it would deep-link a named non-client decider to an empty approval screen
     // (#677 review, finding 4145060024); awaiting rows are read on the Decision Log and acted on through B5b
     "apps/web/src/layout/RouteBridge.tsx :: d.status === 'pending' || d.status === 'change'": 'excludes: the approval route opens on actionable states only; an awaiting row is the Decision Log’s (#677 review, finding 4145060024)',
+    "apps/web/src/layout/NotificationPanel.tsx :: d.status === 'pending' || d.status === 'change'": 'excludes: a notice opens the client’s approval screen only for a decision awaiting them, the same states that screen shows; an awaiting-countersign or any other row opens in the Decision Log (live bug 1, Codex 4203544271)',
     "apps/web/src/screens/ClientDecisionsScreen.tsx :: d.status === 'change'": 'excludes: the open change request’s panel, shown only while reopened',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'pending'": 'excludes: withdrawing the DECISION is refused after any approval act; a provisional approval is one (the phase6_t4a seal)',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'approved'": 'excludes: the lock icon marks a FINAL approval; an uncountersigned one is provisional',

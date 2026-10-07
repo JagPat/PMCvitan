@@ -641,6 +641,9 @@ export interface AppNotification {
   text: string;
   time: string;
   color: string;
+  /** The decision this notice is about, when the server knows it and the viewer can open it — the
+   *  bell then opens that decision itself (live bug 1, deep-link target fidelity). */
+  decisionId?: string;
 }
 
 export interface ModalState {

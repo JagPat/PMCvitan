@@ -62,6 +62,7 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
       expect.objectContaining({ id: 'd1' }), 'pmc', 'u1', expect.any(Map),
     );
     expect((decisionsQuery.renderKindedNotice.mock.calls[0]![5] as Map<string, unknown>).get('dar-d1-v1')).toEqual({ decisionId: 'd1', material: 'Granite', onBehalfOf: null });
-    expect(out.notifications).toEqual([{ text: 'rendered', time: 'now', color: '#C08A2D' }]);
+    // live bug 1 — the notice names its decision, which is in this viewer's slice
+    expect(out.notifications).toEqual([{ text: 'rendered', time: 'now', color: '#C08A2D', decisionId: 'd1' }]);
   });
 });
