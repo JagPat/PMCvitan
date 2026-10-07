@@ -3,10 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import { viewerIsDecider } from '@vitan/shared';
-import {
-  notificationLink, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords,
-} from '@/lib/notifications';
-import { inspectionsReadMode } from '@/data/apiGateway';
+import { notificationLink, decisionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
 import { SCREEN_META } from '@/lib/screens';
 import { ChevronRight } from '@/lib/icons';
 import styles from './NotificationPanel.module.css';
@@ -26,12 +23,6 @@ export function NotificationPanel() {
   // flight or after it failed (a module read can fail while the snapshot that carried the notice
   // succeeds), nor while a committed command's reconcile is owed
   const decisionsSettled = useStore(decisionsSliceSettled);
-  // Live bug 1b — the inspections each inspection screen can show: Inspection Review's queue and
-  // outstanding checklists, and the engineer's field checklists (the one in the slot included)
-  const reviews = useStore(useShallow((s) => s.reviews));
-  const openChecklists = useStore(useShallow((s) => s.openChecklists));
-  const slotChecklist = useStore((s) => s.checklist);
-  const inspectionsSettled = useStore((s) => inspectionsSliceSettled(s, inspectionsReadMode() === 'moduleQuery'));
   // Live bug 1 — the notice whose record could not be found, explained in place (by row index).
   const [explained, setExplained] = useState<number | null>(null);
   // a row index means nothing once the panel closes, or once the list itself changes (Codex
@@ -50,13 +41,8 @@ export function NotificationPanel() {
         awaitsViewer: (d.status === 'pending' || d.status === 'change') && viewerIsDecider(d, role, sessionUserId),
       })),
       decisionsSettled,
-      inspections: {
-        review: [...reviews, ...openChecklists].map((i) => ({ id: i.id, title: i.title, zone: i.zone })),
-        field: [...openChecklists, ...(slotChecklist ? [slotChecklist] : [])].map((i) => ({ id: i.id, title: i.title, zone: i.zone })),
-      },
-      inspectionsSettled,
     }),
-    [decisions, role, sessionUserId, decisionsSettled, reviews, openChecklists, slotChecklist, inspectionsSettled],
+    [decisions, role, sessionUserId, decisionsSettled],
   );
 
   if (!open) return null;

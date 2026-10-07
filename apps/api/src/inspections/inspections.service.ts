@@ -97,7 +97,9 @@ export class InspectionsService {
         for (const [i, name] of input.items.entries()) {
           await tx.inspectionItem.create({ data: { inspectionId: id, name, order: i, photos: 0, note: '' } });
         }
-        await tx.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone}`, color: '#C08A2D', time: 'just now' } });
+        // Live bug 1b (Codex 4209321875) — the notice names the inspection it issued, as its LAST token: a
+        // title and zone may repeat across inspections, so only this id lets a tap open THIS checklist
+        await tx.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone} (${id})`, color: '#C08A2D', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'inspection.create', entity: 'Inspection', entityId: id });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'inspection.created', entityType: 'Inspection', entityId: id, payload: { title: input.title, zone: input.zone }, effectKey: 'inspection.created', dispatch: { push: { body: `New checklist: ${input.title} — ${input.zone}` } } });
         return { resultRef: id, events: [ev] };

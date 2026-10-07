@@ -5,10 +5,9 @@ import { test, expect, type Page } from '@playwright/test';
  * survives a reload and walks back with Back; a link to a record that is not there says so. The two
  * notices are the owner's live repros, carried by the demo seed:
  * - 1a: "New decision issued for approval: Living Room Flooring" must open DL-014 itself;
- * - 1b: "Re-inspection due: Waterproofing, Terrace" names a re-inspection by its work and zone but no id,
- *   and the seed holds no such task (only "Waterproofing Ponding Test", which merely contains the work):
- *   the bell must say the record isn't available and offer Inspection Review — never open a near-titled
- *   inspection in its place (Codex 4203960929), and never drop the viewer on the list as the answer.
+ * - 1b: "Re-inspection due: Waterproofing, Terrace" is a legacy notice that names no inspection id: it
+ *   opens Inspection Review and never a near-titled inspection in its place (Codex 4203960929,
+ *   4209321875). Notices that name their inspection (by the writer's id) open it.
  * Demo mode, no sign-in, nothing written.
  */
 
@@ -66,14 +65,12 @@ test("clicking a visible row's link keeps the viewer's search", async ({ page })
   await expect(page.getByTestId('decision-search')).toHaveValue('Flooring');
 });
 
-test('"Re-inspection due: Waterproofing, Terrace" says its record is not available, and offers Inspection Review', async ({ page }) => {
+test('"Re-inspection due: Waterproofing, Terrace" names no record: it opens Inspection Review, never a near-titled inspection', async ({ page }) => {
+  // Codex 4209321875 — an id-less legacy notice is never matched to a current record by its text
   await page.goto('/projects/ambli/for-you');
   await tapNotice(page, 'Re-inspection due: Waterproofing, Terrace');
-  // explained in place: nothing navigated, and no near-titled inspection opened in its stead
-  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
-  await expect(page.getByTestId('notif-missing')).toContainText("isn't available");
-  await page.getByTestId('notif-missing-open').click();
   await expect(page).toHaveURL(/\/projects\/ambli\/review$/);
+  await expect(page.getByTestId('item-not-found')).toHaveCount(0);
 });
 
 test('a link that STARTS the tab opens its inspection, survives reload, and Back goes to the inspection list', async ({ page }) => {
@@ -159,10 +156,9 @@ test('a decision link that STARTS the tab: Back goes to the register, not out of
   await expect(page.locator('[data-testid^="log-row-"]').first()).toBeVisible();
 });
 
-test('an inspection notification pushes history: its "Open Inspection Review" lands there and Back returns', async ({ page }) => {
+test('an inspection notification pushes history: Back returns to the screen it was tapped on', async ({ page }) => {
   await page.goto('/projects/ambli/for-you');
   await tapNotice(page, 'Re-inspection due: Waterproofing, Terrace');
-  await page.getByTestId('notif-missing-open').click();
   await expect(page).toHaveURL(/\/projects\/ambli\/review$/);
   await expect(page.getByText('Waterproofing Ponding Test', { exact: true })).toBeVisible();
   await page.goBack();

@@ -70,6 +70,20 @@ describe('Inspection Review — a routed review is shown only once it is the act
   });
 });
 
+describe('Inspection Review — deciding the routed review releases its route (Codex 4209321867)', () => {
+  it('Approve on /review/<id> returns the URL to the queue, so a refresh without the decided review never reads "not found"', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const first = useStore.getState().reviews[0];
+    const view = await mount({ routeItem: first.id, activeReviewId: first.id });
+    fireEvent.click(view.getByRole('button', { name: /Approve Inspection/ }));
+    expect(useStore.getState().routeItem).toBeNull();
+    // the server's queue holds undecided reviews only: the decided one leaves it, and nothing is "not found"
+    act(() => { useStore.setState({ reviews: useStore.getState().reviews.filter((r) => r.id !== first.id) }); });
+    expect(view.queryByTestId('item-not-found')).toBeNull();
+  });
+});
+
 describe('Inspection Review — a route naming an outstanding checklist (Codex 4208735406)', () => {
   it('shows that checklist, and none of the active review\'s actions', async () => {
     Element.prototype.scrollIntoView = vi.fn(); // jsdom has no layout; the focused checklist scrolls itself into view

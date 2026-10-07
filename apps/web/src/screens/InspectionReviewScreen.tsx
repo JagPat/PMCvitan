@@ -51,6 +51,14 @@ export function InspectionReviewScreen() {
   // Codex 4203960945 — a named inspection that is not (yet) found while the inspections are loading or
   // failed shows that boundary, never a retained review standing in for it under its URL.
   const unsettledItem = routeItem !== null && !routeReview && !routeChecklist && !settled;
+  // Codex 4209321867 — a decision ends the route's claim on its review: the server's queue holds only
+  // undecided reviews, so a URL still naming the decided one would report it "not found" on the next
+  // refresh instead of the queue moving on. The URL returns to the queue as the decision is sent.
+  const decide = (act: () => void) => {
+    const decidedId = active?.id;
+    act();
+    if (decidedId !== undefined && useStore.getState().routeItem === decidedId) setRouteItem(null);
+  };
   // Codex 4208284788 — the routed review becomes the active one in an effect, so for one render the
   // previous active review (with its live Approve / Send Re-inspection, which act on the active id)
   // would stand under the routed URL: until the two agree, nothing actionable is rendered
@@ -278,8 +286,8 @@ export function InspectionReviewScreen() {
         ) : (
           <>
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-              <Button variant="success" onClick={approveInspection} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Approve Inspection</Button>
-              <Button variant="dangerOutline" onClick={sendReinspection} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Send Rejections &amp; Create Re-inspection</Button>
+              <Button variant="success" onClick={() => decide(approveInspection)} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Approve Inspection</Button>
+              <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Send Rejections &amp; Create Re-inspection</Button>
             </div>
             <div style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--faint)', marginTop: 9 }}>{summary}</div>
           </>

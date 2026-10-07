@@ -208,6 +208,9 @@ describe('phase 1 baseline characterization (integration)', () => {
   it('inspection pillar: a fail needs LINKED evidence; reject creates the linked, assigned, dated reinspection (Task 4)', async () => {
     expect((await post(`/projects/${f.projectA.id}/inspections`, { title: 'Ponding test', zone: 'Terrace', items: ['Drain slope'] })).status).toBe(201);
     const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: f.projectA.id, title: 'Ponding test' }, include: { items: true } });
+    // Live bug 1b (Codex 4209321875) — the issue notice names THIS inspection, as its last token, so a tap
+    // opens it even when another inspection reuses the title and zone
+    expect(await t.prisma.notification.count({ where: { projectId: f.projectA.id, text: `New checklist issued: Ponding test — Terrace (${insp.id})` } })).toBe(1);
     const countBefore = await t.prisma.inspection.count({ where: { projectId: f.projectA.id } });
 
     // a fail without a LINKED evidence row is refused — the counter alone is not proof

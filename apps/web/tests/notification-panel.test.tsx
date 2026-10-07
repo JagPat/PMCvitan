@@ -150,34 +150,26 @@ describe('a committed command still reconciling is not a settled slice (Codex 42
   });
 });
 
-describe('a reconcile still owed unsettles the MODULE-owned inspection slice too (Codex 4205058538)', () => {
-  const issued = [{ text: 'New checklist issued: Fresh Pour Check — Kitchen', time: 'now', color: '#000' }];
-
-  it('a checklist notice is "loading", not "missing", while the command that issued it reconciles', async () => {
-    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
-    // the retained (pre-command) slice reads 'ready' and does not hold the new checklist
-    const { useStore, getByTestId, queryByTestId } = await mount(issued, { inspectionsLoad: 'ready', commandReconcilePending: true });
-    fireEvent.click(getByTestId('notif-item'));
-    expect(getByTestId('notif-loading')).toBeTruthy();
-    expect(queryByTestId('notif-missing')).toBeNull();
-    expect(useStore.getState().screen).toBe('inbox');
-  });
-
-  it('once the reconcile has landed the same slice may say the checklist is not there', async () => {
-    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
-    const { getByTestId } = await mount(issued, { inspectionsLoad: 'ready', commandReconcilePending: false });
-    fireEvent.click(getByTestId('notif-item'));
-    expect(getByTestId('notif-missing')).toBeTruthy();
-  });
-
+describe('an inspection notice opens the inspection its writer named (live bug 1b)', () => {
   it("an engineer's checklist notice opens that checklist on their field screen (Codex 4205610125)", async () => {
     const { useStore, getByTestId } = await mount(
-      [{ text: 'New checklist issued: Pre-Tiling Inspection — Bathroom 2 · 3rd Floor', time: 'now', color: '#000' }],
+      [{ text: 'New checklist issued: Pre-Tiling Inspection — Bathroom 2 · 3rd Floor (INSP-22)', time: 'now', color: '#000' }],
       { role: 'engineer' },
     );
     fireEvent.click(getByTestId('notif-item'));
     expect(useStore.getState().screen).toBe('engineer-check');
     expect(useStore.getState().routeItem).toBe('INSP-22');
+  });
+
+  it('Codex 4209321875 — an id-less legacy notice opens the screen, never a record that reuses its title', async () => {
+    const { useStore, getByTestId, queryByTestId } = await mount(
+      [{ text: 'New checklist issued: Pre-Tiling Inspection — Bathroom 2 · 3rd Floor', time: 'now', color: '#000' }],
+      { role: 'engineer' },
+    );
+    fireEvent.click(getByTestId('notif-item'));
+    expect(useStore.getState().screen).toBe('engineer-check');
+    expect(useStore.getState().routeItem).toBeNull();
+    expect(queryByTestId('notif-missing')).toBeNull();
   });
 });
 
@@ -245,6 +237,8 @@ describe('the store marks a command still reconciling (Codex 4204448859)', () =>
     // the retained slice still says D-1 is pending and its read is 'ready' — and nothing may judge from it
     expect(s().decisionsLoad).toBe('ready');
     expect(s().commandReconcilePending).toBe(true);
+    // Codex 4209321885 — the approve's own snapshot APPLIED: only module-owned reads are owed
+    expect(s().commandReconcileModulesOnly).toBe(true);
 
     release({ decisions: [dec('D-1', 'approved')], source: 'live', generation: null } as ModuleDecisions);
     await flush();

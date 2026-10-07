@@ -225,6 +225,10 @@ export interface AppState {
    *  or notice may judge a record's state or absence from those slices. Mirrors the scope coordinator's
    *  command obligation; set when it is scheduled, cleared when a confirming snapshot clears it. */
   commandReconcilePending: boolean;
+  /** Live bug 1b (Codex 4209321885) — what the owed reconcile is owed FOR. true: the command's own
+   *  snapshot APPLIED, so every snapshot-owned slice is already current and only module-owned reads
+   *  wait; false: a superseded snapshot never applied, so every slice predates the command. */
+  commandReconcileModulesOnly: boolean;
   decisionsSource: 'projection' | 'live' | null;
   // Phase 2 Task 10 — the daily-log XOR read-ownership state, mirroring decisions. When
   // dailyLogReadMode() === 'moduleQuery', `dailyLog` + `materials` are owned by the module-owned read;
@@ -1145,6 +1149,7 @@ export function getInitialState(): AppState {
     decisions: structuredClone(SEED_DECISIONS),
     decisionsLoad: 'idle',
     commandReconcilePending: false,
+    commandReconcileModulesOnly: false,
     decisionsSource: null,
     dailyLogLoad: 'idle',
     dailyLogSource: null,
@@ -1329,7 +1334,7 @@ export const useStore = create<Store>()(
       submit: SubmitObligation | null;      // a frozen submit owed confirmation
     }
     type ReconcileObligation =
-      | { kind: 'command'; createdAfterSequence: number }
+      | { kind: 'command'; createdAfterSequence: number; modulesOnly?: boolean }
       | { kind: 'submit'; inspectionId: string; attempt: number; createdAfterSequence: number };
     let snapshotSeq = 0;
     // Serialize outbox flushes (finding 1 — write-ahead commands can fire a flush per command while one
@@ -1924,7 +1929,13 @@ export const useStore = create<Store>()(
     const scheduleReconcile = (scope: ProjectScope, obligation: ReconcileObligation): void => {
       if (!scopeStillCurrent(scope)) return;
       const c = coordinatorFor(scope);
-      if (obligation.kind === 'command') set((s) => { s.commandReconcilePending = true; });
+      if (obligation.kind === 'command') {
+        set((s) => {
+          // an obligation owed for EVERY slice is never narrowed by a later module-only one
+          s.commandReconcileModulesOnly = obligation.modulesOnly === true && (!s.commandReconcilePending || s.commandReconcileModulesOnly);
+          s.commandReconcilePending = true;
+        });
+      }
       if (obligation.kind === 'command') {
         // keep the LATEST command threshold: a snapshot crossing it necessarily reflects
         // every earlier committed command too, so no command obligation is ever dropped.
@@ -1978,7 +1989,7 @@ export const useStore = create<Store>()(
       if (result === 'applied' || result === 'superseded') {
         if (okMsg) get().flash(okMsg);
         if (result === 'superseded' || anyModuleOwnedRead()) {
-          scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+          scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq, modulesOnly: result === 'applied' });
         }
       } else if (result === 'invalid-project') {
         void requestFreshSnapshot(scope);
@@ -2408,6 +2419,7 @@ export const useStore = create<Store>()(
             Object.assign(s, emptyProjectData());
             Object.assign(s, emptyModuleReadState()); // finding 4: a new project's reads start fresh, not stale-'ready'
             s.commandReconcilePending = false;
+            s.commandReconcileModulesOnly = false;
           }
         } else if (!wasPending) {
           // same-project re-authentication: the previous identity's records are not
@@ -3142,7 +3154,7 @@ export const useStore = create<Store>()(
                 // Live bug 1b — the same rule as `consumeSnapshotResult`: an APPLIED snapshot carries no
                 // module slice, so under module ownership the submit still owes the read that shows it
                 // (and the inspection slice is not settled until that lands)
-                if (anyModuleOwnedRead()) scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+                if (anyModuleOwnedRead()) scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq, modulesOnly: true });
               } else if (result === 'superseded') {
                 // gate round 12/13: the submit committed, but a newer refresh owns the
                 // view. Keep the checklist FROZEN (don't unlock — the submit succeeded)
@@ -3472,7 +3484,7 @@ export const useStore = create<Store>()(
               // no module slice, so under module ownership the publish still owes its reconcile (and
               // the decision slice is not settled until it lands)
               if (result === 'superseded' || (result === 'applied' && anyModuleOwnedRead())) {
-                scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+                scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq, modulesOnly: result === 'applied' });
               } else if (result === 'invalid-project') void requestFreshSnapshot();
             } catch {
               decOk = false;
@@ -4374,6 +4386,7 @@ export const useStore = create<Store>()(
         Object.assign(s, emptyProjectData());
         Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
         s.commandReconcilePending = false; // the target scope owes no command of the old one
+        s.commandReconcileModulesOnly = false;
       });
       return gateway
         .switchProject(projectId)

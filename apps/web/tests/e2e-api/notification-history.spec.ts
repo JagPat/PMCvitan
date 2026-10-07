@@ -51,11 +51,10 @@ test('a notification opens its record, and Back and Forward walk the history the
   await expect(page).toHaveURL(/\/projects\/ambli\/decisions\/DL-014$/);
   await expect(page.getByTestId('log-row-DL-014')).toHaveAttribute('aria-current', 'true');
 
-  // inspection: the seeded notice names no task that exists, so the bell offers Inspection Review
+  // inspection: the seeded notice names no inspection id, so it opens Inspection Review itself
   await page.goBack();
   await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
   await tapNotice(page, 'Re-inspection due: Waterproofing, Terrace');
-  await page.getByTestId('notif-missing-open').click();
   await expect(page).toHaveURL(/\/projects\/ambli\/review$/);
   await page.goBack();
   await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
