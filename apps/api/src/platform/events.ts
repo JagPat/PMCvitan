@@ -129,9 +129,10 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
     throw new Error(`emitEvent: eventId "${input.eventId}" is not a UUID`);
   }
   // 4d-iii / R0c — a non-human actor carries a pair only as a `system` actor naming a registered
-  // automation (R0b's seal arm); a caller-supplied pair is held to the same rule here, before any write.
+  // automation (R0b's seal arm); a caller-supplied pair must be exactly that automation's pair.
   if (input.actorEnvelope && input.actor.actorKind !== 'human'
-      && !(input.actor.actorKind === 'system' && isSystemEnvelope(input.actorEnvelope))) {
+      && !(input.actor.actorKind === 'system' && input.actor.automation !== undefined
+           && isSystemEnvelope(input.actorEnvelope) && input.actorEnvelope.actorName === input.actor.automation)) {
     throw new Error(`emitEvent: a ${input.actor.actorKind} actor carries a pair only as a registered automation's system pair`);
   }
   // Derive the tenant from the project itself — a forged organizationId is impossible.
