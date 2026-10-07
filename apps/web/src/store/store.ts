@@ -3464,8 +3464,12 @@ export const useStore = create<Store>()(
               for (const id of decIds) await gw.publishDecision(id, newIdempotencyKey());
               const lease = beginSnapshotLease(scope);
               const result = acceptSnapshot(await gw.snapshot(), lease);
-              if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
-              else if (result === 'invalid-project') void requestFreshSnapshot();
+              // Codex 4206188320 — the same rule as `consumeSnapshotResult`: an APPLIED snapshot carries
+              // no module slice, so under module ownership the publish still owes its reconcile (and
+              // the decision slice is not settled until it lands)
+              if (result === 'superseded' || (result === 'applied' && anyModuleOwnedRead())) {
+                scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+              } else if (result === 'invalid-project') void requestFreshSnapshot();
             } catch {
               decOk = false;
             }

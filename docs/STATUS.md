@@ -82,14 +82,40 @@ redesign in smaller units. So #716 was closed and its work is split into server 
        - 1b. Inspection notices: Inspection Review's item route, and the engineer's field checklist
          selecting the named checklist (the Terrace waterproofing re-inspection).
        - 1c. Drawing notices open the drawing they name.
-    2. Duplicate notifications at source. 3. Dashboard pending counts from the canonical actionable records.
-    4. Notification panel WCAG AA contrast. 5. Plan dates as calendar dates. 6. Hide the unavailable Weekly
-    Report action.
+    Live-bug units 2–6 are folded into the Board's queue below (item 11), each into the item that covers it.
+11. **The Board's UI/UX fix queue** (the Top 10 of the 7 Oct 2026 UI/UX review of pms.vitan.in, every
+    role; relayed to this session by PMCvitan Promote on 2026-10-07). It starts once live-bug unit 1 (1a,
+    1b, 1c) is merged, in this order, one PR per item (split where review size needs it), under the normal
+    review rules:
+    1. Remove demo controls from production: Simulate offline, the fake QR and "Simulate a scan", the
+       hard-coded worker jobcard and mistri home, the dead Photo/Problem/Listen buttons. It also takes
+       live-bug 6 (hide the unavailable Generate Weekly Report action).
+    2. One source of truth for counts: the For You badge, the bell, Dashboard tiles, Site Map zone cards and
+       Portfolio. It takes live-bug 3 (Dashboard pending counts from the canonical actionable records).
+    3. Deep-link every card and notification to its record, not the parent list, beyond what live-bug unit 1
+       already covers.
+    4. Dedupe notification events at source, and add read/unread and an empty state. It takes live-bug 2
+       (one logical event yields one notification per recipient, with a deterministic regression proof).
+    5. Finish Hindi and Gujarati on the paths translated screens lead into: Daily Log, Checklist, the
+       Approve and Change modals, the bell, the "Also waiting" cards, and errors. Fix the Gujarati
+       letter-spacing/uppercase bug and the Hindi "aapak ke liye" typo.
+    6. One OTP sign-in flow (one code length), and a real Invite (a WhatsApp/SMS/email link and a pending
+       status).
+    7. Rename the PMC role in the UI to "Project manager (PMC)"; "Architect" stays for the countersigner.
+    8. Real calendar date pickers in the plan form, mapped to day offsets internally. It takes live-bug 5
+       (plan dates as calendar dates).
+    9. Trim the default nav per role; Materials, Labour, Money and Schedule move behind an opt-in "More
+       tools".
+    10. Notification-panel contrast, a 12px minimum text size (13px for status chips and schedule dates),
+        and legends for the gate dots and Site Map glyphs. It takes live-bug 4 (notification panel WCAG AA
+        contrast).
+12. **4d-iii, resuming with R1.** R0a-1 (#715), R0a-2 (#722), R0b (#724) and R0c (#725) are merged; R1–R4
+    remain. They follow the Board's queue, and R1 also needs R0c's deployment confirmed.
+13. **Site Visits**, queued after R1–R4 (the owner's direction).
 
 R0c merged as #725, and the owner then paused 4d-iii for the live-bug queue, so `work_item` and `open_pr`
-name its current unit. `next_task` stays `phase-6-task-4d-iii`, which resumes with R1 once the queue is
-delivered and live-validated (and R0c is deployed). Site Visits stays queued until after the bug queue and
-R1–R4 (the owner, this session). Each
+name its current unit. `next_task` stays `phase-6-task-4d-iii`, which resumes with R1 once live-bug unit 1
+and the Board's queue are delivered (and R0c is deployed). Each
 unit is updated from `main` by a merge commit and passes fresh exact-head CI and independent Codex review.
 Nothing here authorises rollout activation, a manual merge or a deployment.
 

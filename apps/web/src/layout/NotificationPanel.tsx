@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
+import { selectLogDecisions } from '@/store/selectors';
 import { viewerIsDecider } from '@vitan/shared';
 import { notificationLink, decisionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
 import { SCREEN_META } from '@/lib/screens';
@@ -14,7 +15,9 @@ export function NotificationPanel() {
   const role = useStore((s) => s.role);
   // openItem also closes the panel (it clears notifOpen), so a notification tap is one call.
   const openItem = useStore((s) => s.openItem);
-  const decisions = useStore(useShallow((s) => s.decisions));
+  // Codex 4206188363 — the rows the Decision Log shows this viewer (no drafts, no withdrawn or open-demand
+  // rows outside their audience), so a notice never resolves to a decision its destination hides
+  const decisions = useStore(useShallow(selectLogDecisions));
   const sessionUserId = useStore((s) => s.sessionUserId);
   // a decision is judged absent (or awaiting) only against a SETTLED slice: never while its read is in
   // flight or after it failed (a module read can fail while the snapshot that carried the notice
@@ -35,7 +38,7 @@ export function NotificationPanel() {
       decisions: decisions.map((d) => ({
         id: d.id,
         title: d.title,
-        awaitsViewer: !d.draft && (d.status === 'pending' || d.status === 'change') && viewerIsDecider(d, role, sessionUserId),
+        awaitsViewer: (d.status === 'pending' || d.status === 'change') && viewerIsDecider(d, role, sessionUserId),
       })),
       decisionsSettled,
     }),

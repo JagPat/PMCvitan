@@ -114,6 +114,37 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
     expect(notificationLink(n('New decision issued for approval: Living Room Flooring'), 'engineer', records)).toEqual(at('client-decisions', 'DL-014'));
   });
 
+  it('Codex 4206188328 — an id-less decision template is a decision notice, whatever keyword its title holds', () => {
+    const titled = (title: string) => ({ ...records, decisions: [{ id: 'DL-050', title, awaitsViewer: false }] });
+    for (const title of ['Material selection', 'Drawing room panelling', 'Inspection hatch', 'Checklist board']) {
+      expect(notificationLink(n(`Decision awaiting approval: ${title}`), 'pmc', titled(title))).toEqual(at('decision-log', 'DL-050'));
+      expect(notificationLink(n(`Decision awaiting approval: ${title}`), 'client', titled(title))).toEqual(at('decision-log', 'DL-050'));
+    }
+  });
+
+  it('Codex 4206188340 — an unresolved decision notice offers the register, never the approval queue', () => {
+    // a client's id-less notice whose decision is gone, still loading, or ambiguous
+    expect(notificationLink(n('New decision issued for approval: Porch Tiles'), 'client', records)).toEqual(at('decision-log', null, { missing: true }));
+    expect(notificationLink(n('New decision issued for approval: Porch Tiles'), 'client', { ...records, decisionsSettled: false })).toEqual(at('decision-log', null, { loading: true }));
+    const twins = { ...records, decisions: [{ id: 'A', title: 'Door', awaitsViewer: true }, { id: 'B', title: 'Door', awaitsViewer: true }] };
+    expect(notificationLink(n('Decision awaiting approval: Door'), 'client', twins)).toEqual(at('decision-log', null));
+    // a decision notice that names nothing still opens the client's own decision screen, as before
+    expect(notificationLink(n('Decision record updated'), 'client', records)).toEqual(at('client-decisions', null));
+  });
+
+  it('Codex 4206188348 — an approval notice is matched against whole titles, never split at an em dash', () => {
+    const doors = { ...records, decisions: [{ id: 'D1', title: 'Door', awaitsViewer: false }, { id: 'D2', title: 'Door — Oak', awaitsViewer: false }] };
+    // material "Oak — premium" on decision "Door": BOTH "Door" and "Door — Oak" are whole-title prefixes, so
+    // the notice is ambiguous and names neither — never the wrong record
+    expect(notificationLink(n('Client approved Door — Oak — premium'), 'pmc', doors)).toEqual(at('decision-log', null));
+    // with only "Door" present, the notice opens it (a greedy split would have looked for "Door — Oak")
+    const door = { ...records, decisions: [{ id: 'D1', title: 'Door', awaitsViewer: false }] };
+    expect(notificationLink(n('Client approved Door — Oak — premium'), 'pmc', door)).toEqual(at('decision-log', 'D1'));
+    // a title holding a dash itself resolves to that title
+    const dashed = { ...records, decisions: [{ id: 'D3', title: 'Gate — North', awaitsViewer: false }] };
+    expect(notificationLink(n('Client approved Gate — North — Teak'), 'pmc', dashed)).toEqual(at('decision-log', 'D3'));
+  });
+
   it('inspection and drawing notices open their screen (their records are resolved by the later units)', () => {
     expect(notificationLink(n('Inspection approved. Contractor and client notified.'), 'pmc', records)).toEqual(at('inspect-review', null));
     expect(notificationLink(n('Re-inspection due: Waterproofing, Terrace'), 'pmc', records)).toEqual(at('inspect-review', null));

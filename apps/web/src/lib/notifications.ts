@@ -69,7 +69,8 @@ export interface NotificationLink {
   loading: boolean;
 }
 
-/** The decisions a notice may name, from the viewer's own slice (nothing here widens access). */
+/** The decisions a notice may name: exactly those the Decision Log shows this viewer (nothing here
+ *  widens access, and a notice never resolves to a row its destination would hide). */
 export interface NotificationRecords {
   /** `awaitsViewer`: the decision is open and this viewer is its decider — exactly the rows the
    *  approval screen shows; every other decision is read in the Decision Log. */
@@ -96,12 +97,24 @@ export const decisionsSliceSettled = (s: SliceSettledState): boolean =>
   && (s.projectLoadState === 'ready' || s.projectLoadState === 'idle')
   && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle');
 
-/** The decision-notice templates that quote a title (legacy rows, and the demo seed, carry no id). */
-const DECISION_TITLE_TEMPLATES: readonly RegExp[] = [
-  /^Decision awaiting approval: (.+)$/,
-  /^New decision issued for approval: (.+)$/,
-  /^Client approved (.+) — [^—]*$/,
+/**
+ * The decision-notice templates that quote a title (legacy rows, and the demo seed, carry no id).
+ * `dash`: the title is followed by " — <material>" — titles and materials may themselves contain an em
+ * dash, so the title is never split out of the text: a decision matches when the text is exactly its
+ * prefix, its title and " — " and more (Codex 4206188348), and two such titles name neither.
+ */
+const DECISION_TITLE_TEMPLATES: readonly { prefix: string; dash: boolean }[] = [
+  { prefix: 'Decision awaiting approval: ', dash: false },
+  { prefix: 'New decision issued for approval: ', dash: false },
+  { prefix: 'Client approved ', dash: true },
 ];
+const DASH = ' — ';
+
+/** The decision template a notice is in, if any. */
+function decisionTemplateOf(text: string): { prefix: string; dash: boolean } | null {
+  return DECISION_TITLE_TEMPLATES.find((t) =>
+    text.startsWith(t.prefix) && text.length > t.prefix.length && (!t.dash || text.indexOf(DASH, t.prefix.length + 1) > 0)) ?? null;
+}
 
 type Match = { kind: 'one'; id: string } | { kind: 'none' } | { kind: 'many' };
 function matchOf(ids: readonly string[]): Match {
@@ -120,19 +133,26 @@ function decisionLink(n: AppNotification, role: Role, records: NotificationRecor
   const screenFor = (id: string): ScreenKey =>
     records.decisionsSettled && records.decisions.some((d) => d.id === id && d.awaitsViewer) ? 'client-decisions' : 'decision-log';
   const open = (id: string): NotificationLink => ({ screen: screenFor(id), item: id, missing: false, loading: false });
+  // a notice whose decision is not resolved — still loading, gone, or ambiguous — offers the register:
+  // the approval screen shows only decisions confirmed awaiting this viewer (Codex 4206188340)
+  const unresolved = (state: { missing?: boolean; loading?: boolean }): NotificationLink =>
+    ({ screen: 'decision-log', item: null, missing: state.missing ?? false, loading: state.loading ?? false });
 
   if (n.decisionId !== undefined) return open(n.decisionId);
-  const title = DECISION_TITLE_TEMPLATES.map((re) => n.text.match(re)?.[1]).find((t) => t !== undefined);
-  if (title === undefined) return { screen: fallback, item: null, missing: false, loading: false };
-  if (!records.decisionsSettled) return { screen: fallback, item: null, missing: false, loading: true };
-  const match = matchOf(records.decisions.filter((d) => d.title === title).map((d) => d.id));
+  const template = decisionTemplateOf(n.text);
+  if (!template) return { screen: fallback, item: null, missing: false, loading: false };
+  if (!records.decisionsSettled) return unresolved({ loading: true });
+  const quoted = (title: string): boolean =>
+    template.dash ? n.text.startsWith(`${template.prefix}${title}${DASH}`) : n.text === `${template.prefix}${title}`;
+  const match = matchOf(records.decisions.filter((d) => quoted(d.title)).map((d) => d.id));
   if (match.kind === 'one') return open(match.id);
-  return { screen: fallback, item: null, missing: match.kind === 'none', loading: false };
+  return unresolved({ missing: match.kind === 'none' });
 }
 
 export function notificationLink(n: AppNotification, role: Role, records: NotificationRecords): NotificationLink | null {
-  // a structured decision id decides the kind before any wording does ("…: Material selection" is a decision)
-  const kind = n.decisionId !== undefined ? 'decision' : notificationKind(n.text);
+  // structure decides the kind before any wording does: a decision id, or a decision template — a
+  // quoted title may itself contain another kind's keyword ("…: Material selection") (Codex 4206188328)
+  const kind = n.decisionId !== undefined || decisionTemplateOf(n.text) ? 'decision' : notificationKind(n.text);
   if (!kind) return null;
   if (kind === 'decision') return decisionLink(n, role, records);
   const screen = screenForKind(kind, role);

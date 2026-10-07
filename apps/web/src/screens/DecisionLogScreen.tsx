@@ -138,6 +138,14 @@ export function DecisionLogScreen() {
       return next;
     });
 
+  // Codex 4206188374 — "Show all decisions" means all: the register may still be mounted with the
+  // viewer's search, status filters or collapsed groups from before the link, so they are cleared too
+  const showAll = () => {
+    setQuery('');
+    setStatuses(new Set());
+    setCollapsed(new Set());
+    setRouteItem(null);
+  };
   // Codex 4203544331 — a link to a decision this register does not hold shows ONLY that: the register
   // is not rendered beneath it as if it were the answer, and "Show all decisions" reveals it.
   if (unsettledItem) {
@@ -160,7 +168,7 @@ export function DecisionLogScreen() {
       <div className={`${styles.screen} ${styles.narrow}`}>
         <Eyebrow>CLIENT DECISION LOG</Eyebrow>
         <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em', margin: '6px 0 8px' }}>Decision Register</div>
-        <ItemNotFound what="Decision" id={missingItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show all decisions" />
+        <ItemNotFound what="Decision" id={missingItem} onShowAll={showAll} showAllLabel="Show all decisions" />
       </div>
     );
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 
 /**
  * Live bug 1a (Codex 4204448859, 4204448863) — `/decisions/<id>` names ONE decision. While the
@@ -51,3 +51,21 @@ describe('Decision Log — a named decision on an unsettled read (Codex 42044488
   });
 });
 
+describe('"Show all decisions" shows all (Codex 4206188374)', () => {
+  it('clears the search and status filters the mounted register kept from before the link', async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const view = await mountLog({});
+    const { useStore } = await import('@/store/store');
+    const all = view.getAllByTestId(/^log-row-/).length;
+    fireEvent.click(view.getByTestId('filter-approved'));
+    fireEvent.change(view.getByTestId('decision-search'), { target: { value: 'zzz-no-match' } });
+    expect(view.queryAllByTestId(/^log-row-/)).toHaveLength(0);
+    // an in-app link names a decision that is not there; the register stays mounted underneath
+    act(() => { useStore.getState().setRouteItem('DL-404'); });
+    expect(view.getByTestId('item-not-found')).toBeTruthy();
+    fireEvent.click(view.getByTestId('item-not-found-show-all'));
+    expect(view.queryByTestId('item-not-found')).toBeNull();
+    expect((view.getByTestId('decision-search') as HTMLInputElement).value).toBe('');
+    expect(view.getAllByTestId(/^log-row-/)).toHaveLength(all);
+  });
+});

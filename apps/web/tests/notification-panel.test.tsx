@@ -99,6 +99,30 @@ describe('a decider of any role opens the approval screen (Codex review 54407518
   });
 });
 
+describe('a notice resolves only to a decision the viewer can open (Codex 4206188363)', () => {
+  it('a contractor\'s id-less notice for a client-held pending decision is not resolved to it', async () => {
+    const { useStore, getByTestId } = await mount(
+      [{ text: 'New decision issued for approval: Living Room Flooring', time: 'now', color: '#000' }],
+      { role: 'contractor' },
+    );
+    // the seeded DL-014 is pending and client-held: the contractor's register never shows it
+    expect(useStore.getState().decisions.find((d) => d.id === 'DL-014')?.status).toBe('pending');
+    fireEvent.click(getByTestId('notif-item'));
+    expect(useStore.getState().routeItem).toBeNull();
+    expect(getByTestId('notif-missing')).toBeTruthy();
+  });
+
+  it('a private draft never answers a notice, even for the pmc', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const draft = useStore.getState().decisions.find((d) => d.draft);
+    expect(draft).toBeDefined();
+    const { getByTestId } = await mount([{ text: `Decision awaiting approval: ${draft!.title}`, time: 'now', color: '#000' }]);
+    fireEvent.click(getByTestId('notif-item'));
+    expect(getByTestId('notif-missing')).toBeTruthy();
+  });
+});
+
 describe('a committed command still reconciling is not a settled slice (Codex 4204448859)', () => {
   it('a template notice is "loading" and a client is routed to the register, while the reconcile is owed', async () => {
     const { useStore, getByTestId } = await mount(
@@ -195,6 +219,43 @@ describe('the store marks a command still reconciling (Codex 4204448859)', () =>
     await flush();
     await flush();
     expect(s().decisions[0].status).toBe('approved');
+    expect(s().commandReconcilePending).toBe(false);
+    s()._setGateway(null);
+  });
+
+  it('Codex 4206188320 — an APPLIED bulk publish owes its module reconcile too', async () => {
+    vi.stubEnv('VITE_DECISIONS_READ', 'moduleQuery');
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const s = () => useStore.getState();
+    let release!: (d: ModuleDecisions) => void;
+    const draft = { ...dec('D-2'), draft: true } as Decision;
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(snapshot()),
+      decisions: vi.fn().mockResolvedValueOnce({ decisions: [draft], source: 'live', generation: null } as ModuleDecisions),
+      publishDecision: vi.fn().mockResolvedValue(snapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().requestFreshSnapshot();
+    await flush();
+    await flush();
+    useStore.setState({ drawings: [] });
+    expect(s().decisions[0].draft).toBe(true);
+
+    gw.decisions.mockImplementationOnce(() => new Promise<ModuleDecisions>((r) => { release = r; }));
+    s().publishAllDrafts();
+    await flush();
+    await flush();
+    await flush();
+    expect(gw.publishDecision).toHaveBeenCalled();
+    // the publish's own snapshot APPLIED, carrying no decision slice: the retained one still says draft
+    expect(s().decisions[0].draft).toBe(true);
+    expect(s().commandReconcilePending).toBe(true);
+
+    release({ decisions: [dec('D-2')], source: 'live', generation: null } as ModuleDecisions);
+    await flush();
+    await flush();
+    expect(s().decisions[0].draft).toBeFalsy();
     expect(s().commandReconcilePending).toBe(false);
     s()._setGateway(null);
   });
