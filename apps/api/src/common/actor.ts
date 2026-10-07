@@ -1,6 +1,5 @@
 import type { PrismaService } from '../prisma.service';
 import type { AuthUser } from './auth';
-import type { AutomationIdentity } from '../platform/actor-envelope';
 
 export const ROLE_LABEL: Record<string, string> = {
   pmc: 'PMC',
@@ -23,6 +22,24 @@ export interface Actor {
   actorRole: string;
   actorKind: ActorKind;
 }
+
+/**
+ * Phase 6 task 4d-iii / R0c — the CLOSED set of automations a `system` event may name as its pair: the
+ * TypeScript mirror of R0b's `platform_t4d_automation_identity(name)`
+ * (`20280107000000_phase6_t4d_iii_r0b_system_pair`), which the seal asks. A unit test pins the two
+ * equal, so a name added here without a migration adding it to the function is caught at the desk,
+ * not refused at the INSERT. It lives here, with the actor contract, so the contract depends on no
+ * platform module; `platform/actor-envelope.ts` turns a name into the pair.
+ *
+ * - `decisions-effects` — the effects processor's renotified countersign event;
+ * - `commercial-activation` — the §L activation operator process (`capability:enable`);
+ * - `commercial-reevaluate` — the §J re-evaluation sweep (`commercial:reevaluate`).
+ *
+ * The pair NAMES THE AUTOMATION; the event's `systemActor` keeps recording who or what triggered it
+ * (the membership-standing constant, or the resolved operator's user id).
+ */
+export const AUTOMATION_IDENTITIES = ['decisions-effects', 'commercial-activation', 'commercial-reevaluate'] as const;
+export type AutomationIdentity = (typeof AUTOMATION_IDENTITIES)[number];
 
 /**
  * The attribution a DomainEvent envelope records: who, whether they are a person, and the role

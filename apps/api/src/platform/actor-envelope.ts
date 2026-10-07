@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { ForbiddenException } from '@nestjs/common';
-import type { EventActor } from '../common/actor';
+import { AUTOMATION_IDENTITIES, type AutomationIdentity, type EventActor } from '../common/actor';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a / A1 — the actor ENVELOPE a human event records.
@@ -60,23 +60,6 @@ export interface ActorEnvelope {
   readonly actorRole: string;
   readonly actorName: string;
 }
-
-/**
- * Phase 6 task 4d-iii / R0c — the CLOSED set of automations a `system` event may name as its pair: the
- * TypeScript mirror of R0b's `platform_t4d_automation_identity(name)`
- * (`20280107000000_phase6_t4d_iii_r0b_system_pair`), which the seal asks. A unit test pins the two
- * equal, so a name added here without a migration adding it to the function is caught at the desk,
- * not refused at the INSERT.
- *
- * - `decisions-effects` — the effects processor's renotified countersign event;
- * - `commercial-activation` — the §L activation operator process (`capability:enable`);
- * - `commercial-reevaluate` — the §J re-evaluation sweep (`commercial:reevaluate`).
- *
- * The pair NAMES THE AUTOMATION; the event's `systemActor` keeps recording who or what triggered it
- * (the membership-standing constant, or the resolved operator's user id).
- */
-export const AUTOMATION_IDENTITIES = ['decisions-effects', 'commercial-activation', 'commercial-reevaluate'] as const;
-export type AutomationIdentity = (typeof AUTOMATION_IDENTITIES)[number];
 
 /** The role a `system` pair records (R0b's seal: `actorRole = 'system'`). */
 export const SYSTEM_ROLE = 'system';

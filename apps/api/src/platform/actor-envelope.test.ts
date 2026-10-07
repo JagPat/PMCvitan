@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AUTOMATION_IDENTITIES, isSystemEnvelope, resolveActorEnvelope, systemEnvelope } from './actor-envelope';
+import { isSystemEnvelope, resolveActorEnvelope, systemEnvelope } from './actor-envelope';
+import { AUTOMATION_IDENTITIES } from '../common/actor';
 import type { Prisma } from '@prisma/client';
 
 /**
