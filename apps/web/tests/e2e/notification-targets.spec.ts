@@ -76,15 +76,16 @@ test('"Re-inspection due: Waterproofing, Terrace" says its record is not availab
   await expect(page).toHaveURL(/\/projects\/ambli\/review$/);
 });
 
-test('a link that names its inspection opens it, reload-safe, and Back returns', async ({ page }) => {
-  await page.goto('/projects/ambli/for-you');
+test('a link that STARTS the tab opens its inspection, survives reload, and Back goes to the inspection list', async ({ page }) => {
+  // owner live check (#482 6039737806) — a record with nothing behind it must not make Back a dead end
   await page.goto('/projects/ambli/review/INSP-21');
   await expect(page.getByText('Waterproofing Ponding Test', { exact: true })).toBeVisible();
   await expect(page.getByTestId('item-not-found')).toHaveCount(0);
   await page.reload();
   await expect(page.getByText('Waterproofing Ponding Test', { exact: true })).toBeVisible();
   await page.goBack();
-  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
+  await expect(page).toHaveURL(/\/projects\/ambli\/review$/);
+  await expect(page.getByText('Waterproofing Ponding Test', { exact: true })).toBeVisible();
 });
 
 test('a link to an inspection that is not there says so ALONE — never an unrelated, actionable review', async ({ page }) => {
@@ -121,4 +122,51 @@ test("the engineer's field checklist opens the checklist a link names, and says 
   await page.getByTestId('item-not-found-show-all').click();
   await expect(page).toHaveURL(/\/projects\/ambli\/site\/checklist$/);
   await expect(page.getByTestId('checklist-title')).toHaveText('Pre-Tiling Inspection');
+});
+
+// Owner live check (#482 6039737806) — history is proven through the app's OWN actions: the test taps the
+// notification and the screen's controls, and never builds the history it then asserts.
+test('a decision notification pushes history: Back returns to the screen it was tapped on, Forward to the record', async ({ page }) => {
+  await page.goto('/projects/ambli/for-you');
+  await tapNotice(page, 'Living Room Flooring');
+  await expect(page).toHaveURL(/\/decisions\/DL-014$/);
+  await expect(page.getByTestId('log-row-DL-014')).toHaveAttribute('aria-current', 'true');
+  await page.goBack();
+  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
+  await expect(page.getByTestId('log-row-DL-014')).toHaveCount(0);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/decisions\/DL-014$/);
+  await expect(page.getByTestId('log-row-DL-014')).toHaveAttribute('aria-current', 'true');
+});
+
+test('a decision notification tapped on the register: Back returns to the register, its search intact', async ({ page }) => {
+  await page.goto('/projects/ambli/decisions');
+  await page.getByTestId('decision-search').fill('Living');
+  await tapNotice(page, 'Living Room Flooring');
+  await expect(page).toHaveURL(/\/decisions\/DL-014$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/projects\/ambli\/decisions$/);
+  await expect(page.getByTestId('decision-search')).toHaveValue('Living');
+});
+
+test('a decision link that STARTS the tab: Back goes to the register, not out of the app', async ({ page }) => {
+  await page.goto('/projects/ambli/decisions/DL-014');
+  await expect(page.getByTestId('log-row-DL-014')).toHaveAttribute('aria-current', 'true');
+  await page.reload();
+  await expect(page.getByTestId('log-row-DL-014')).toHaveAttribute('aria-current', 'true');
+  await page.goBack();
+  await expect(page).toHaveURL(/\/projects\/ambli\/decisions$/);
+  await expect(page.locator('[data-testid^="log-row-"]').first()).toBeVisible();
+});
+
+test('an inspection notification pushes history: its "Open Inspection Review" lands there and Back returns', async ({ page }) => {
+  await page.goto('/projects/ambli/for-you');
+  await tapNotice(page, 'Re-inspection due: Waterproofing, Terrace');
+  await page.getByTestId('notif-missing-open').click();
+  await expect(page).toHaveURL(/\/projects\/ambli\/review$/);
+  await expect(page.getByText('Waterproofing Ponding Test', { exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/projects\/ambli\/review$/);
 });
