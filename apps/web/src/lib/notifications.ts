@@ -20,15 +20,9 @@ export function notificationKind(text: string): NotificationKind | null {
   return null;
 }
 
-/**
- * Which screen a notification should jump to for the given role — the bridge from the bell to
- * the "For You" world. Returns null when the role has no relevant screen (the notification is
- * then not a link). The target is always validated against the role's own nav, so tapping a
- * notification can never land somewhere the role can't go (RouteBridge would bounce it).
- */
-export function notificationTarget(text: string, role: Role): ScreenKey | null {
-  const kind = notificationKind(text);
-  if (!kind) return null;
+/** The screen a notice of `kind` opens for `role`, validated against the role's own nav, so a tap can
+ *  never land somewhere the role can't go (RouteBridge would bounce it). */
+function screenForKind(kind: NotificationKind, role: Role): ScreenKey | null {
   const allowed = new Set(screensFor(role).map((m) => m.key));
   const pick = (...keys: ScreenKey[]): ScreenKey | null => keys.find((k) => allowed.has(k)) ?? null;
   switch (kind) {
@@ -44,74 +38,121 @@ export function notificationTarget(text: string, role: Role): ScreenKey | null {
 }
 
 /**
+ * Which screen a notification should jump to for the given role — the bridge from the bell to
+ * the "For You" world. Returns null when the role has no relevant screen (the notification is
+ * then not a link).
+ */
+export function notificationTarget(text: string, role: Role): ScreenKey | null {
+  const kind = notificationKind(text);
+  return kind ? screenForKind(kind, role) : null;
+}
+
+/**
  * Live bug 1 (deep-link target fidelity) — what a notification opens: its screen AND, where the
- * screen can show one record, that record. A notice about a decision opens the decision; a notice
- * about an inspection opens that inspection. A record the notice names by id is followed as given,
- * and the screen says so if it cannot show it. `missing` marks a notice that names no record at all
- * and whose title or place matches none the viewer can open: the bell then says so, instead of
- * dropping the viewer on the parent list as if that were the answer.
+ * notice NAMES one record, that record. A notice names a record only through structure, never by a
+ * guess:
+ *
+ * - a `decisionId` (the server's, judged against the viewer's slice, or a local writer's);
+ * - an inspection id (`INSP-N`) in its text;
+ * - one of the fixed notice templates that quote a decision title, or an inspection's work and zone,
+ *   matched EXACTLY against the viewer's records.
+ *
+ * A notice that names nothing opens its screen, as it always did. A named record that the settled
+ * records do not hold is `missing`, and the bell says so; while the records it must be matched against
+ * are still loading (or failed), it is `loading` rather than wrongly missing. Two records that both
+ * match exactly name neither, and the notice opens its screen.
  */
 export interface NotificationLink {
   screen: ScreenKey;
   item: string | null;
   missing: boolean;
+  loading: boolean;
 }
 
 /** The records a notice may name, from the viewer's own slices (nothing here widens access). */
 export interface NotificationRecords {
-  decisions: readonly { id: string; title: string }[];
+  /** `awaitsViewer`: the decision is open and this viewer is its decider (the client's approval screen
+   *  shows exactly those; every other decision is read in the Decision Log). */
+  decisions: readonly { id: string; title: string; awaitsViewer: boolean }[];
+  /** false while the decision slice is loading or failed: a title cannot be judged absent then */
+  decisionsSettled: boolean;
   /** Inspections the Inspection Review screen can show: the review queue and the outstanding
    *  checklists (a re-inspection task is an outstanding checklist until it is submitted). */
   inspections: readonly { id: string; title: string; zone: string }[];
+  inspectionsSettled: boolean;
 }
 
+/** The decision-notice templates that quote a title (legacy rows, and the demo seed, carry no id). */
+const DECISION_TITLE_TEMPLATES: readonly RegExp[] = [
+  /^Decision awaiting approval: (.+)$/,
+  /^New decision issued for approval: (.+)$/,
+  /^Client approved (.+) — [^—]*$/,
+];
 const INSPECTION_ID = /\bINSP-\d+\b/;
-/** "Re-inspection due: <trade>, <zone>" — the shape that names its work and place but no id. */
-const REINSPECTION_DUE = /re-inspection due:\s*(.+?),\s*(.+)$/i;
+/** "Re-inspection due: <work>, <zone>" — names its work and place, but no id. */
+const REINSPECTION_DUE = /^Re-inspection due:\s*(.+?),\s*(.+)$/i;
+/** "New checklist issued: <title> — <zone>" — the checklist writer's notice (inspections.service). */
+const CHECKLIST_ISSUED = /^New checklist issued:\s*(.+) — (.+)$/;
 
-/** The ONE record among `candidates`, or null when there is none or more than one. */
-function unique<T extends { id: string }>(candidates: readonly T[]): string | null {
-  const ids = [...new Set(candidates.map((c) => c.id))];
-  return ids.length === 1 ? ids[0] : null;
+const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+type Match = { kind: 'one'; id: string } | { kind: 'none' } | { kind: 'many' };
+function matchOf(ids: readonly string[]): Match {
+  const unique = [...new Set(ids)];
+  return unique.length === 1 ? { kind: 'one', id: unique[0] } : unique.length === 0 ? { kind: 'none' } : { kind: 'many' };
 }
 
-function decisionFor(n: AppNotification, records: NotificationRecords): string | null {
-  // the server names a decision only when it is in this viewer's slice, so its id is followed as
-  // given; the register itself says so if the decision is gone by the time it has loaded
-  if (n.decisionId !== undefined) return n.decisionId;
-  // a notice without the server's id (a legacy row, or one written locally): the decision whose
-  // title it quotes, the LONGEST quoted title winning so "Living Room Flooring" is not shadowed by
-  // a shorter title it contains; a tie is ambiguous and names nothing
-  const quoted = records.decisions.filter((d) => d.title.trim() !== '' && n.text.includes(d.title));
-  const longest = Math.max(0, ...quoted.map((d) => d.title.length));
-  return unique(quoted.filter((d) => d.title.length === longest));
+function decisionLink(n: AppNotification, role: Role, records: NotificationRecords): NotificationLink | null {
+  const fallback = screenForKind('decision', role);
+  if (!fallback) return null;
+  // the client's approval screen shows only decisions awaiting that client; any other decision is
+  // opened where it can be read, the Decision Log (every role holds it)
+  const screenFor = (id: string): ScreenKey =>
+    role === 'client' && !records.decisions.some((d) => d.id === id && d.awaitsViewer) ? 'decision-log' : fallback;
+  const open = (id: string): NotificationLink => ({ screen: screenFor(id), item: id, missing: false, loading: false });
+
+  if (n.decisionId !== undefined) return open(n.decisionId);
+  const title = DECISION_TITLE_TEMPLATES.map((re) => n.text.match(re)?.[1]).find((t) => t !== undefined);
+  if (title === undefined) return { screen: fallback, item: null, missing: false, loading: false };
+  if (!records.decisionsSettled) return { screen: fallback, item: null, missing: false, loading: true };
+  const match = matchOf(records.decisions.filter((d) => d.title === title).map((d) => d.id));
+  if (match.kind === 'one') return open(match.id);
+  return { screen: fallback, item: null, missing: match.kind === 'none', loading: false };
 }
 
-function inspectionFor(n: AppNotification, records: NotificationRecords): string | null {
-  // an id the notice names is followed as given (the review screen says so if it cannot show it)
+function inspectionLink(n: AppNotification, screen: ScreenKey, records: NotificationRecords): NotificationLink {
+  const plain: NotificationLink = { screen, item: null, missing: false, loading: false };
   const named = n.text.match(INSPECTION_ID)?.[0];
-  if (named) return named;
+  if (named) return { ...plain, item: named };
+
+  let candidates: readonly { id: string; title: string; zone: string }[] | null = null;
   const due = n.text.match(REINSPECTION_DUE);
-  if (!due) return null;
-  const work = due[1].trim().toLowerCase();
-  const zone = due[2].trim().toLowerCase();
-  const here = records.inspections.filter((i) => i.zone.trim().toLowerCase() === zone && i.title.toLowerCase().includes(work));
-  // the re-inspection TASK itself when one is out on site, else the one inspection of that work there
-  const tasks = here.filter((i) => /^re-inspection\b/i.test(i.title));
-  return unique(tasks.length > 0 ? tasks : here);
+  const issued = n.text.match(CHECKLIST_ISSUED);
+  if (due) {
+    const [, work, zone] = due;
+    const here = records.inspections.filter((i) => same(i.zone, zone) && i.title.toLowerCase().includes(work.trim().toLowerCase()));
+    // the re-inspection TASK itself when one is out on site, else the one inspection of that work there
+    const tasks = here.filter((i) => /^re-inspection\b/i.test(i.title));
+    candidates = tasks.length > 0 ? tasks : here;
+  } else if (issued) {
+    const [, title, zone] = issued;
+    candidates = records.inspections.filter((i) => same(i.title, title) && same(i.zone, zone));
+  }
+  if (candidates === null) return plain;
+  if (!records.inspectionsSettled) return { ...plain, loading: true };
+  const match = matchOf(candidates.map((i) => i.id));
+  if (match.kind === 'one') return { ...plain, item: match.id };
+  return { ...plain, missing: match.kind === 'none' };
 }
 
 export function notificationLink(n: AppNotification, role: Role, records: NotificationRecords): NotificationLink | null {
-  const screen = notificationTarget(n.text, role);
+  // a structured decision id decides the kind before any wording does ("…: Material selection" is a decision)
+  const kind = n.decisionId !== undefined ? 'decision' : notificationKind(n.text);
+  if (!kind) return null;
+  if (kind === 'decision') return decisionLink(n, role, records);
+  const screen = screenForKind(kind, role);
   if (!screen) return null;
   // a screen that cannot show one record (the field checklist, the daily log, …) opens as before
-  if (!ITEM_SCREENS.has(screen)) return { screen, item: null, missing: false };
-  const kind = notificationKind(n.text);
-  const item =
-    kind === 'decision' ? decisionFor(n, records)
-    : kind === 'inspection' ? inspectionFor(n, records)
-    : null;
-  // a drawing notice names its sheet by number, not id; it opens the register as before
-  if (kind !== 'decision' && kind !== 'inspection') return { screen, item: null, missing: false };
-  return { screen, item, missing: item === null };
+  if (kind !== 'inspection' || !ITEM_SCREENS.has(screen)) return { screen, item: null, missing: false, loading: false };
+  return inspectionLink(n, screen, records);
 }

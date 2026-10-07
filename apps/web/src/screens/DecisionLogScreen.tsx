@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { pathForScreen } from '@/lib/screens';
 import { useStore } from '@/store/store';
@@ -87,6 +87,34 @@ export function DecisionLogScreen() {
   }, [rows, nodes, query, statuses]);
 
   const groups = useMemo(() => groupDecisions(filtered, nodes, groupBy), [filtered, nodes, groupBy]);
+  // Codex 4203544317 — a record opened by its URL (a notification, a shared link) is SHOWN, not merely
+  // named: when the register's own search or status filters hide it they are cleared, and its group is
+  // expanded if collapsed. Once per navigation, and only when it is hidden: clicking a visible row keeps
+  // the viewer's filters, and a group they collapse afterwards stays collapsed.
+  const lastRoute = useRef<string | null>(null);
+  const revealing = useRef<string | null>(null);
+  useEffect(() => {
+    if (routeItem !== lastRoute.current) {
+      lastRoute.current = routeItem;
+      revealing.current = routeItem;
+    }
+    const id = revealing.current;
+    if (id === null || !rows.some((d) => d.id === id)) return; // not loaded yet: reveal when it is
+    if (!filtered.some((d) => d.id === id)) {
+      setQuery('');
+      setStatuses(new Set());
+      return; // the groups recompute, and this runs again to expand its group
+    }
+    const group = groups.find((g) => g.rows.some((r) => r.decision.id === id));
+    if (group && collapsed.has(group.key)) {
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        next.delete(group.key);
+        return next;
+      });
+    }
+    revealing.current = null;
+  }, [routeItem, rows, filtered, groups, collapsed]);
   const toggleStatus = (s: Decision['status']) =>
     setStatuses((prev) => {
       const next = new Set(prev);
@@ -101,6 +129,18 @@ export function DecisionLogScreen() {
       else next.add(key);
       return next;
     });
+
+  // Codex 4203544331 — a link to a decision this register does not hold shows ONLY that: the register
+  // is not rendered beneath it as if it were the answer, and "Show all decisions" reveals it.
+  if (missingItem) {
+    return (
+      <div className={`${styles.screen} ${styles.narrow}`}>
+        <Eyebrow>CLIENT DECISION LOG</Eyebrow>
+        <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em', margin: '6px 0 8px' }}>Decision Register</div>
+        <ItemNotFound what="Decision" id={missingItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show all decisions" />
+      </div>
+    );
+  }
 
   return (
     <div className={`${styles.screen} ${styles.narrow}`}>
@@ -117,7 +157,6 @@ export function DecisionLogScreen() {
         </div>
       </div>
       {issuing && <IssueDecisionModal onClose={() => setIssuing(false)} />}
-      {missingItem && <ItemNotFound what="Decision" id={missingItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show all decisions" />}
 
       {/* controls: group-by, search, status filter */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', margin: '12px 0 4px' }}>

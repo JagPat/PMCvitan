@@ -2670,7 +2670,7 @@ export const useStore = create<Store>()(
           d.photoSwatch = o.swatch;
           delete d.changeRequest; // a re-approval RESOLVES the open change request
         }
-        s.notifications.unshift({ text: 'Client approved ' + title + ' — ' + material, time: 'just now', color: '#3F7A54' });
+        s.notifications.unshift({ text: 'Client approved ' + title + ' — ' + material, time: 'just now', color: '#3F7A54', decisionId: decId });
         s.modal = { type: null };
       });
       get().flash('Approved & locked — the Decision Log and PMC dashboard are updated.');
@@ -3491,7 +3491,7 @@ export const useStore = create<Store>()(
         for (const row of s.decisions) {
           if (row.draft && decIds.includes(row.id)) {
             row.draft = false;
-            s.notifications.unshift({ text: `Decision awaiting approval: ${row.title}`, time: 'just now', color: '#C08A2D' });
+            s.notifications.unshift({ text: `Decision awaiting approval: ${row.title}`, time: 'just now', color: '#C08A2D', decisionId: row.id });
           }
         }
         for (const row of s.drawings) {
@@ -4591,7 +4591,7 @@ export const useStore = create<Store>()(
         const row = s.decisions.find((x) => x.id === decisionId);
         if (!row || !row.draft) return;
         row.draft = false;
-        s.notifications.unshift({ text: `Decision awaiting approval: ${row.title}`, time: 'just now', color: '#C08A2D' });
+        s.notifications.unshift({ text: `Decision awaiting approval: ${row.title}`, time: 'just now', color: '#C08A2D', decisionId: row.id });
       });
       get().flash(`Published: ${d.title} — the client has been asked to choose.`);
     },

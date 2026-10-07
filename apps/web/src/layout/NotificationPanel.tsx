@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
+import { viewerIsDecider } from '@vitan/shared';
 import { notificationLink, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
 import { SCREEN_META } from '@/lib/screens';
+import { inspectionsReadMode } from '@/data/apiGateway';
 import { ChevronRight } from '@/lib/icons';
 import styles from './NotificationPanel.module.css';
+
+const projectSettled = (s: { projectLoadState: string }): boolean => s.projectLoadState === 'ready' || s.projectLoadState === 'idle';
 
 export function NotificationPanel() {
   const open = useStore((s) => s.notifOpen);
@@ -16,6 +20,11 @@ export function NotificationPanel() {
   const decisions = useStore(useShallow((s) => s.decisions));
   const reviews = useStore(useShallow((s) => s.reviews));
   const openChecklists = useStore(useShallow((s) => s.openChecklists));
+  const sessionUserId = useStore((s) => s.sessionUserId);
+  // a record is judged absent only against a SETTLED slice: never while its read is in flight or
+  // after it failed (a module read can fail while the snapshot that carried the notice succeeds)
+  const decisionsSettled = useStore((s) => projectSettled(s) && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle'));
+  const inspectionsSettled = useStore((s) => (inspectionsReadMode() === 'moduleQuery' ? s.inspectionsLoad === 'ready' : projectSettled(s)));
   // Live bug 1 — the notice whose record could not be found, explained in place (by row index).
   const [explained, setExplained] = useState<number | null>(null);
   // a row index means nothing once the panel closes (the list may change before it reopens)
@@ -26,16 +35,22 @@ export function NotificationPanel() {
   // the records a notice may name, from the viewer's own slices only
   const records = useMemo<NotificationRecords>(
     () => ({
-      decisions,
+      decisions: decisions.map((d) => ({
+        id: d.id,
+        title: d.title,
+        awaitsViewer: !d.draft && (d.status === 'pending' || d.status === 'change') && viewerIsDecider(d, role, sessionUserId),
+      })),
+      decisionsSettled,
       inspections: [...reviews, ...openChecklists].map((i) => ({ id: i.id, title: i.title, zone: i.zone })),
+      inspectionsSettled,
     }),
-    [decisions, reviews, openChecklists],
+    [decisions, reviews, openChecklists, role, sessionUserId, decisionsSettled, inspectionsSettled],
   );
 
   if (!open) return null;
 
   const follow = (i: number, link: NotificationLink) => {
-    if (link.missing) setExplained(explained === i ? null : i);
+    if (link.missing || link.loading) setExplained(explained === i ? null : i);
     else openItem(link.screen, link.item);
   };
 
@@ -65,16 +80,21 @@ export function NotificationPanel() {
                 <button
                   className={styles.item}
                   data-testid="notif-item"
-                  aria-expanded={link.missing ? explained === i : undefined}
+                  aria-expanded={link.missing || link.loading ? explained === i : undefined}
                   onClick={() => follow(i, link)}
                   style={{ background: 'transparent', border: 'none', width: '100%', textAlign: 'left', cursor: 'pointer', font: 'inherit' }}
                 >
                   {body}
                 </button>
-                {link.missing && explained === i && (
-                  // the record is gone or out of reach: say so, and offer the screen it lived on
-                  <div role="status" data-testid="notif-missing" className={styles.time} style={{ display: 'grid', gap: 8, padding: '0 14px 12px 32px' }}>
-                    <span>The record this notification refers to isn't available. It may have been completed or removed.</span>
+                {(link.missing || link.loading) && explained === i && (
+                  // the record is gone or out of reach, or its list has not loaded: say which, and offer
+                  // the screen it lives on
+                  <div role="status" data-testid={link.missing ? 'notif-missing' : 'notif-loading'} className={styles.time} style={{ display: 'grid', gap: 8, padding: '0 14px 12px 32px' }}>
+                    <span>
+                      {link.missing
+                        ? "The record this notification refers to isn't available. It may have been completed or removed."
+                        : "This notification's record can't be checked yet — its list hasn't loaded. Try again in a moment."}
+                    </span>
                     <button
                       data-testid="notif-missing-open"
                       onClick={() => openItem(link.screen, null)}

@@ -42,9 +42,17 @@ export function InspectionReviewScreen() {
   useEffect(() => {
     if (routeReview && activeReviewId !== routeReview) setActiveReview(routeReview);
   }, [routeReview, activeReviewId, setActiveReview]);
-  const notFound = missingItem
-    ? <ItemNotFound what="Inspection" id={missingItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show all inspections" />
-    : null;
+  // Codex 4203544331 — a link to an inspection this screen cannot show shows ONLY that: never the
+  // default review beneath it, whose live approve/reject would present an unrelated inspection as the
+  // one the link meant. "Show all inspections" reveals the queue.
+  if (missingItem) {
+    return (
+      <div className={`${styles.screen} ${styles.mid}`}>
+        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        <ItemNotFound what="Inspection" id={missingItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show all inspections" />
+      </div>
+    );
+  }
 
   // finding-4 parity — these fire only when there is no last-good review to show; a failed refresh that
   // RETAINS a last-good queue falls through to the review below.
@@ -75,7 +83,6 @@ export function InspectionReviewScreen() {
           <Eyebrow>INSPECTION REVIEW</Eyebrow>
           <NewChecklist />
         </div>
-        {notFound}
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
           No inspections awaiting review. Submitted checklists and closing inspections land here.
         </div>
@@ -96,7 +103,6 @@ export function InspectionReviewScreen() {
         <NewChecklist />
       </div>
 
-      {notFound}
       {reviews.length > 1 && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0 2px' }} role="group" aria-label="Review queue">
           {reviews.map((r) => {

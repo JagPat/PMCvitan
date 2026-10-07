@@ -11,10 +11,13 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function mount(notifications: { text: string; time: string; color: string; decisionId?: string }[]) {
+async function mount(
+  notifications: { text: string; time: string; color: string; decisionId?: string }[],
+  over: Record<string, unknown> = {},
+) {
   const { useStore, getInitialState } = await import('@/store/store');
   useStore.setState(getInitialState());
-  useStore.setState({ notifOpen: true, notifications, role: 'pmc', screen: 'inbox' });
+  useStore.setState({ notifOpen: true, notifications, role: 'pmc', screen: 'inbox', ...over });
   const { NotificationPanel } = await import('@/layout/NotificationPanel');
   return { useStore, ...render(<NotificationPanel />) };
 }
@@ -43,5 +46,39 @@ describe('NotificationPanel — the record a notice opens', () => {
     expect(s.routeItem).toBeNull();
     expect(s.notifOpen).toBe(false);
     expect(queryByTestId('notif-missing')).toBeNull();
+  });
+
+  it('Codex 4203544279 — while the decision read is in flight, a template notice is "loading", never "missing"', async () => {
+    const { useStore, getByTestId, queryByTestId } = await mount(
+      [{ text: 'New decision issued for approval: Porch Tiles', time: 'now', color: '#000' }],
+      { decisionsLoad: 'loading' },
+    );
+    fireEvent.click(getByTestId('notif-item'));
+    expect(useStore.getState().screen).toBe('inbox');
+    expect(getByTestId('notif-loading').textContent).toContain("hasn't loaded");
+    expect(queryByTestId('notif-missing')).toBeNull();
+  });
+
+  it('Codex 4203544271 — a client opens a decision they are not deciding in the register, not the approval screen', async () => {
+    const { useStore, getByTestId } = await mount(
+      [{ text: 'Client approved Master Bath CP Fittings — Kohler', time: 'now', color: '#000', decisionId: 'DL-009' }],
+      { role: 'client' },
+    );
+    fireEvent.click(getByTestId('notif-item'));
+    const s = useStore.getState();
+    expect(s.screen).toBe('decision-log');
+    expect(s.routeItem).toBe('DL-009');
+  });
+});
+
+describe('the local decision writers stamp their notice with the decision (Codex 4203544300)', () => {
+  it('a demo approval files "Client approved …" naming its decision', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const pending = useStore.getState().decisions.find((d) => d.status === 'pending' && !d.draft)!;
+    useStore.setState({ modal: { type: 'approve', decId: pending.id, optIdx: 0 } });
+    useStore.getState().confirmApprove();
+    expect(useStore.getState().notifications[0]).toMatchObject({ decisionId: pending.id });
+    expect(useStore.getState().notifications[0].text).toMatch(/^Client approved /);
   });
 });
