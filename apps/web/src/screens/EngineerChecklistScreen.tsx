@@ -69,8 +69,11 @@ export function EngineerChecklistScreen() {
   if (routeItem !== null && checklist?.id === routeItem) honoured.current = routeItem;
   const released = routeItem !== null && !routeOpen && honoured.current === routeItem;
   useEffect(() => {
-    if (released) setRouteItem(null);
-    else if (routeItem !== null && routeOpen && checklist?.id !== routeItem) selectChecklist(routeItem);
+    if (released) {
+      // one navigation episode: a later link to the same id is judged afresh (Codex 4207530091)
+      honoured.current = null;
+      setRouteItem(null);
+    } else if (routeItem !== null && routeOpen && checklist?.id !== routeItem) selectChecklist(routeItem);
   }, [released, routeItem, routeOpen, checklist?.id, submissionStatus, selectChecklist, setRouteItem]);
   // one hidden file input, re-targeted per item (Task 4: photos are REAL evidence rows)
   const fileRef = useRef<HTMLInputElement>(null);
@@ -100,6 +103,18 @@ export function EngineerChecklistScreen() {
     if (fileRef.current) fileRef.current.value = '';
   };
 
+  // Codex 4207530085 — the switch to the named checklist is guarded (an online submit in flight refuses
+  // it): until it happens, the checklist in the slot is NOT the one the URL names, so it is not shown
+  // under that URL; the effect above completes the switch once the submit settles
+  if (routeItem !== null && routeOpen && checklist !== null && checklist.id !== routeItem) {
+    const named = openChecklists.find((c) => c.id === routeItem);
+    return (
+      <EmptyState
+        title={`Opening ${named?.title ?? routeItem}…`}
+        detail="Finishing the submit on the current checklist — this one opens as soon as it lands."
+      />
+    );
+  }
   if (routeItem !== null && !routeOpen && !released) {
     if (!settled) {
       const failed = moduleOwned ? unavailable : projectFailed;
@@ -221,6 +236,14 @@ export function EngineerChecklistScreen() {
             <StatTile label="DONE" value={`${doneCount}/${checklist.items.length}`} />
             <StatTile label="PHOTOS" value={photoCount} />
           </div>
+          {/* Codex 4207530065 — a failed module read with a retained checklist must still offer recovery:
+              a submit whose reconcile failed would otherwise sit frozen with nothing to press */}
+          {moduleOwned && unavailable && (
+            <div data-testid="inspections-stale" role="status" style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5, color: 'var(--muted)' }}>
+              <span>Couldn't refresh the checklist — what you see may be out of date.</span>
+              <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+            </div>
+          )}
           {/* Every item control below is read-only once a submit is dispatched. The submit
               button carries the same state, but it sits past a long list on a phone — so the
               reason is stated ONCE here, where the disabled controls actually are. */}

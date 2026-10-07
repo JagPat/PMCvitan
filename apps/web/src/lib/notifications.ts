@@ -55,7 +55,7 @@ export function notificationTarget(text: string, role: Role): ScreenKey | null {
  * - a `decisionId` (the server's, judged against the viewer's slice, or a local writer's);
  * - one of the fixed decision-notice templates that quote a title, matched EXACTLY against the
  *   viewer's decisions (never by substring: a near title is another record);
- * - (live bug 1b) an inspection id (`INSP-N`) in its text, or one of the fixed inspection templates
+ * - (live bug 1b) the re-inspection writer's id-bearing notice, or one of the fixed inspection templates
  *   ("New checklist issued: <title> — <zone>", "Re-inspection due: <work>, <zone>"), matched as WHOLE
  *   text against the inspections the target screen can show.
  *
@@ -167,7 +167,10 @@ function decisionLink(n: AppNotification, role: Role, records: NotificationRecor
   return unresolved({ missing: match.kind === 'none' });
 }
 
-const INSPECTION_ID = /\bINSP-\d+\b/;
+/** The one notice that names an inspection by id: the re-inspection writer's own
+ *  "Re-inspection <id> created for N item(s) — due …" (inspections.service). An id anywhere else is
+ *  user text — a checklist titled "Follow-up INSP-21" names no record (Codex 4207530075). */
+const REINSPECTION_CREATED = /^Re-inspection (INSP-\d+) created for /;
 /** The inspection templates: "New checklist issued: <title> — <zone>" (the checklist writer) and
  *  "Re-inspection due: <work>, <zone>". A title, work or zone may hold a dash or a comma itself, so the
  *  text is never split: a record matches when the WHOLE text is its template (as for decisions). */
@@ -182,7 +185,7 @@ function inspectionTemplateOf(text: string): 'issued' | 'due' | null {
 
 function inspectionLink(n: AppNotification, screen: ScreenKey, records: NotificationRecords): NotificationLink {
   const plain: NotificationLink = { screen, item: null, missing: false, loading: false };
-  const named = n.text.match(INSPECTION_ID)?.[0];
+  const named = n.text.match(REINSPECTION_CREATED)?.[1];
   if (named) return { ...plain, item: named };
   const template = inspectionTemplateOf(n.text);
   if (!template) return plain;

@@ -158,6 +158,16 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
     expect(notificationLink(n('Re-inspection INSP-022 created for 2 item(s) — due 10 Oct 2026.'), 'engineer', records)).toEqual(at('engineer-check', 'INSP-022'));
   });
 
+  it('Codex 4207530075 — only the re-inspection writer\'s notice names an id; an id inside user text names nothing', () => {
+    // a new checklist TITLED "Follow-up INSP-21" is matched by its title and zone, never sent to INSP-21
+    const followUp = { ...records, inspections: { ...records.inspections, review: [...records.inspections.review, { id: 'INSP-50', title: 'Follow-up INSP-21', zone: 'Terrace' }] } };
+    expect(notificationLink(n('New checklist issued: Follow-up INSP-21 — Terrace'), 'pmc', followUp)).toEqual(at('inspect-review', 'INSP-50'));
+    // settled and absent, it is missing — never INSP-21 in its place
+    expect(notificationLink(n('New checklist issued: Follow-up INSP-21 — Terrace'), 'pmc', records)).toEqual(at('inspect-review', null, { missing: true }));
+    // an id in a notice of no structural shape names nothing
+    expect(notificationLink(n('Inspection INSP-21 discussed on site'), 'pmc', records)).toEqual(at('inspect-review', null));
+  });
+
   it('Codex 4203544289 — "New checklist issued: <title> — <zone>" opens that checklist, on either inspection screen', () => {
     expect(notificationLink(n('New checklist issued: Pre-Tiling Inspection — Bathroom 2 · 3rd Floor'), 'pmc', records)).toEqual(at('inspect-review', 'INSP-22'));
     // Codex 4205610125 — the engineer's notice opens the checklist itself, not whichever is in the slot

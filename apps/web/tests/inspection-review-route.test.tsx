@@ -123,4 +123,40 @@ describe("the engineer's field checklist names ONE checklist (Codex 4205610125)"
     expect(useStore.getState().routeItem).toBeNull();
     expect(view.queryByTestId('item-not-found')).toBeNull();
   });
+
+  it('Codex 4207530085 — while a guarded switch is refused, the slot\'s checklist is not shown under the named URL', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const { useStore: store, view } = await mountField({
+      routeItem: 'INSP-51',
+      submission: { inspectionId: 'INSP-50', generation: getInitialState().projectScopeGeneration, status: 'submitting', attempt: 1 },
+    });
+    // the switch was refused: INSP-50 stays in the slot, and is not presented as INSP-51
+    expect(store.getState().checklist?.id).toBe('INSP-50');
+    expect(view.queryByTestId('checklist-title')).toBeNull();
+    expect(view.getByText('Opening Drain Slope Check…')).toBeTruthy();
+    // the submit settles: the switch completes
+    act(() => { store.setState({ submission: { ...store.getState().submission, status: 'idle' } }); });
+    expect(store.getState().checklist?.id).toBe('INSP-51');
+    expect(view.getByTestId('checklist-title').textContent).toBe('Drain Slope Check');
+  });
+
+  it('Codex 4207530091 — a released link does not pre-release a later link to the same id', async () => {
+    const { useStore, view } = await mountField({ routeItem: 'INSP-51' });
+    const rest = useStore.getState().openChecklists.filter((c) => c.id !== 'INSP-51');
+    act(() => { useStore.setState({ openChecklists: rest, checklist: structuredClone(rest[0]), selectedChecklistId: rest[0].id }); });
+    expect(useStore.getState().routeItem).toBeNull();
+    // the same (now submitted) checklist is linked again, e.g. from its notice: it is not there
+    act(() => { useStore.getState().setRouteItem('INSP-51'); });
+    expect(useStore.getState().routeItem).toBe('INSP-51');
+    expect(view.getByTestId('item-not-found').textContent).toContain('INSP-51');
+  });
+
+  it('Codex 4207530065 — a failed module read over a retained checklist still offers Retry', async () => {
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    const { view } = await mountField({ inspectionsLoad: 'error' });
+    expect(view.getByTestId('checklist-title')).toBeTruthy();
+    expect(view.getByTestId('inspections-stale')).toBeTruthy();
+    expect(view.getByTestId('inspections-retry')).toBeTruthy();
+  });
 });
