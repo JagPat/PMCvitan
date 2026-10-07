@@ -1,10 +1,11 @@
-import { useRef, type CSSProperties } from 'react';
+import { useEffect, useRef, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, checklistFrozen } from '@/store/store';
-import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState } from '@/components';
+import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState, ItemNotFound } from '@/components';
 import { Camera } from '@/lib/icons';
 import type { ItemState } from '@vitan/shared';
 import { inspectionsReadMode } from '@/data/apiGateway';
+import { inspectionsSliceSettled } from '@/lib/notifications';
 import styles from './responsive.module.css';
 
 const toggleBase: CSSProperties = {
@@ -52,6 +53,25 @@ export function EngineerChecklistScreen() {
   const moduleOwned = inspectionsReadMode() === 'moduleQuery';
   const reading = inspectionsLoad === 'idle' || inspectionsLoad === 'loading';
   const unavailable = inspectionsLoad === 'error';
+  // Live bug 1b (Codex 4205610125) — `/site/checklist/<inspectionId>` names ONE checklist: it is moved
+  // into the edit slot (the same switch the picker makes, with the same guard: an online submit in
+  // flight refuses it, and the effect tries again when that settles), so a notice about a checklist
+  // never leaves the engineer filling a different one. An id the screen cannot show says so once the
+  // inspections have settled; until then the load boundary stands in, never another checklist.
+  const routeItem = useStore((s) => s.routeItem);
+  const setRouteItem = useStore((s) => s.setRouteItem);
+  const settled = useStore((s) => inspectionsSliceSettled(s, moduleOwned));
+  const projectFailed = useStore((s) => s.projectLoadState === 'error');
+  const routeOpen = routeItem !== null && (openChecklists.some((c) => c.id === routeItem) || checklist?.id === routeItem);
+  // the checklist the link named, once it has been in the slot: when it is then submitted and leaves the
+  // outstanding set, the link has been honoured — the URL is released, not reported as a missing record
+  const honoured = useRef<string | null>(null);
+  if (routeItem !== null && checklist?.id === routeItem) honoured.current = routeItem;
+  const released = routeItem !== null && !routeOpen && honoured.current === routeItem;
+  useEffect(() => {
+    if (released) setRouteItem(null);
+    else if (routeItem !== null && routeOpen && checklist?.id !== routeItem) selectChecklist(routeItem);
+  }, [released, routeItem, routeOpen, checklist?.id, submissionStatus, selectChecklist, setRouteItem]);
   // one hidden file input, re-targeted per item (Task 4: photos are REAL evidence rows)
   const fileRef = useRef<HTMLInputElement>(null);
   // The capture target is the item AND the checklist it belongs to. More than one checklist can be out
@@ -79,6 +99,26 @@ export function EngineerChecklistScreen() {
     target.current = null; // one capture per gesture — the next file needs its own pin or the fallback
     if (fileRef.current) fileRef.current.value = '';
   };
+
+  if (routeItem !== null && !routeOpen && !released) {
+    if (!settled) {
+      const failed = moduleOwned ? unavailable : projectFailed;
+      return failed ? (
+        <div data-testid="inspections-unavailable" style={{ display: 'grid', gap: 14, justifyItems: 'center', padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
+          <span>Couldn't load the checklist — check your connection and access.</span>
+          <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+        </div>
+      ) : (
+        <EmptyState title="Loading checklist…" detail="Fetching this project's current inspection checklist." />
+      );
+    }
+    return (
+      <div className={styles.mobileScreen} style={{ paddingTop: 10 }}>
+        <Eyebrow size={9}>TODAY'S INSPECTION</Eyebrow>
+        <ItemNotFound what="Checklist" id={routeItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show my checklists" />
+      </div>
+    );
+  }
 
   // Phase 2 Task 10 (Module 3 — Inspections): under module read-ownership the checklist is a SEPARATE
   // async surface — never claim "No checklist issued" until a read has actually SUCCEEDED. While it loads
@@ -148,7 +188,12 @@ export function EngineerChecklistScreen() {
                   return (
                     <button
                       key={c.id}
-                      onClick={() => selectChecklist(c.id)}
+                      onClick={() => {
+                        selectChecklist(c.id);
+                        // the URL follows the slot only when the switch happened (an online submit in
+                        // flight refuses it, and says so)
+                        if (useStore.getState().checklist?.id === c.id) setRouteItem(c.id);
+                      }}
                       aria-current={active ? 'true' : undefined}
                       data-testid={`checklist-tab-${c.id}`}
                       style={{

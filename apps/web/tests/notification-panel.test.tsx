@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import type { ApiGateway, ApiSnapshot, ModuleDecisions } from '@/data/apiGateway';
-import type { Decision } from '@vitan/shared';
+import type { ApiGateway, ApiSnapshot, ModuleDecisions, ModuleInspections } from '@/data/apiGateway';
+import type { Checklist, Decision } from '@vitan/shared';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 
 /**
@@ -150,6 +150,37 @@ describe('a committed command still reconciling is not a settled slice (Codex 42
   });
 });
 
+describe('a reconcile still owed unsettles the MODULE-owned inspection slice too (Codex 4205058538)', () => {
+  const issued = [{ text: 'New checklist issued: Fresh Pour Check — Kitchen', time: 'now', color: '#000' }];
+
+  it('a checklist notice is "loading", not "missing", while the command that issued it reconciles', async () => {
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    // the retained (pre-command) slice reads 'ready' and does not hold the new checklist
+    const { useStore, getByTestId, queryByTestId } = await mount(issued, { inspectionsLoad: 'ready', commandReconcilePending: true });
+    fireEvent.click(getByTestId('notif-item'));
+    expect(getByTestId('notif-loading')).toBeTruthy();
+    expect(queryByTestId('notif-missing')).toBeNull();
+    expect(useStore.getState().screen).toBe('inbox');
+  });
+
+  it('once the reconcile has landed the same slice may say the checklist is not there', async () => {
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    const { getByTestId } = await mount(issued, { inspectionsLoad: 'ready', commandReconcilePending: false });
+    fireEvent.click(getByTestId('notif-item'));
+    expect(getByTestId('notif-missing')).toBeTruthy();
+  });
+
+  it("an engineer's checklist notice opens that checklist on their field screen (Codex 4205610125)", async () => {
+    const { useStore, getByTestId } = await mount(
+      [{ text: 'New checklist issued: Pre-Tiling Inspection — Bathroom 2 · 3rd Floor', time: 'now', color: '#000' }],
+      { role: 'engineer' },
+    );
+    fireEvent.click(getByTestId('notif-item'));
+    expect(useStore.getState().screen).toBe('engineer-check');
+    expect(useStore.getState().routeItem).toBe('INSP-22');
+  });
+});
+
 describe('the explanation belongs to its notice (Codex 4203960936)', () => {
   it('a refresh that changes the list withdraws the explanation instead of leaving it under another notice', async () => {
     const missing = { text: 'New decision issued for approval: Porch Tiles', time: 'now', color: '#000' };
@@ -259,5 +290,46 @@ describe('the store marks a command still reconciling (Codex 4204448859)', () =>
     expect(s().commandReconcilePending).toBe(false);
     s()._setGateway(null);
   });
-});
 
+  it('live bug 1b — an APPLIED inspection submit owes its module reconcile too', async () => {
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const s = () => useStore.getState();
+    const open: Checklist = {
+      id: 'INSP-60', title: 'Slab Check', zone: 'Roof', date: 'Today', submitted: false,
+      items: [{ id: 'i1', name: 'Slope', state: null, photos: 0, note: '' }],
+    };
+    const module = (checklists: Checklist[]): ModuleInspections =>
+      ({ checklist: checklists[0] ?? null, openChecklists: checklists, reviews: [], review: null, reinspectionCreated: false, placedInspections: [], source: 'live', generation: null }) as unknown as ModuleInspections;
+    let release!: (r: ModuleInspections) => void;
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(snapshot()),
+      inspections: vi.fn().mockResolvedValueOnce(module([open])),
+      submitInspection: vi.fn().mockResolvedValue(snapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().requestFreshSnapshot();
+    await flush();
+    await flush();
+    expect(s().checklist?.id).toBe('INSP-60');
+    expect(s().commandReconcilePending).toBe(false);
+
+    gw.inspections.mockImplementationOnce(() => new Promise<ModuleInspections>((r) => { release = r; }));
+    s().setItem(0, 'pass');
+    s().submitInspection();
+    await flush();
+    await flush();
+    expect(gw.submitInspection).toHaveBeenCalled();
+    // the submit's own snapshot APPLIED, carrying no inspection slice: the retained one still lists INSP-60
+    expect(s().openChecklists.map((c) => c.id)).toEqual(['INSP-60']);
+    expect(s().commandReconcilePending).toBe(true);
+
+    release(module([]));
+    await flush();
+    await flush();
+    expect(s().openChecklists).toHaveLength(0);
+    expect(s().commandReconcilePending).toBe(false);
+    s()._setGateway(null);
+  });
+});

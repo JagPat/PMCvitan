@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectActiveReview } from '@/store/selectors';
-import { Eyebrow, ResultChip, Button, LocationContext, EditState } from '@/components';
+import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound } from '@/components';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { X, Plus } from '@/lib/icons';
 import { swatch as swatchGradient, can, type Checklist, type Review } from '@vitan/shared';
 import { resolveMediaUrl, inspectionsReadMode } from '@/data/apiGateway';
+import { inspectionsSliceSettled } from '@/lib/notifications';
 import styles from './responsive.module.css';
 
 export function InspectionReviewScreen() {
@@ -27,6 +28,53 @@ export function InspectionReviewScreen() {
   const moduleOwned = inspectionsReadMode() === 'moduleQuery';
   const reading = moduleOwned && (inspectionsLoad === 'idle' || inspectionsLoad === 'loading');
   const unavailable = moduleOwned && inspectionsLoad === 'error';
+
+  // Live bug 1b — `/review/<inspectionId>` names ONE inspection: a review in the queue is opened, an
+  // outstanding checklist (a re-inspection task is one until it is submitted) is brought into view,
+  // and an id this screen cannot show says so once the inspections have settled.
+  const routeItem = useStore((s) => s.routeItem);
+  const setRouteItem = useStore((s) => s.setRouteItem);
+  const activeReviewId = useStore((s) => s.activeReviewId);
+  const projectLoadState = useStore((s) => s.projectLoadState);
+  // Codex 4204448859 — a committed command's reconcile still owed means the retained slices predate it
+  // (the predicate the bell judges by, so the two cannot disagree)
+  const settled = useStore((s) => inspectionsSliceSettled(s, moduleOwned));
+  const routeReview = routeItem !== null && reviews.some((r) => r.id === routeItem) ? routeItem : null;
+  const routeChecklist = routeItem !== null && openChecklists.some((c) => c.id === routeItem) ? routeItem : null;
+  const missingItem = routeItem !== null && settled && !routeReview && !routeChecklist ? routeItem : null;
+  useEffect(() => {
+    if (routeReview && activeReviewId !== routeReview) setActiveReview(routeReview);
+  }, [routeReview, activeReviewId, setActiveReview]);
+  // Codex 4203544331 — a link to an inspection this screen cannot show shows ONLY that: never the
+  // default review beneath it, whose live approve/reject would present an unrelated inspection as the
+  // one the link meant. "Show all inspections" reveals the queue.
+  // Codex 4203960945 — a named inspection that is not (yet) found while the inspections are loading or
+  // failed shows that boundary, never a retained review standing in for it under its URL.
+  const unsettledItem = routeItem !== null && !routeReview && !routeChecklist && !settled;
+  if (unsettledItem) {
+    const failed = moduleOwned ? unavailable : projectLoadState === 'error';
+    return (
+      <div className={`${styles.screen} ${styles.mid}`} data-testid={failed ? 'inspections-unavailable' : 'inspections-loading'}>
+        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        {failed ? (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
+            <span>Couldn't load inspections — check your connection and access.</span>
+            <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+          </div>
+        ) : (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading inspections…</div>
+        )}
+      </div>
+    );
+  }
+  if (missingItem) {
+    return (
+      <div className={`${styles.screen} ${styles.mid}`}>
+        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        <ItemNotFound what="Inspection" id={missingItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show all inspections" />
+      </div>
+    );
+  }
 
   // finding-4 parity — these fire only when there is no last-good review to show; a failed refresh that
   // RETAINS a last-good queue falls through to the review below.
@@ -60,7 +108,7 @@ export function InspectionReviewScreen() {
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
           No inspections awaiting review. Submitted checklists and closing inspections land here.
         </div>
-        <OutstandingChecklists items={openChecklists} />
+        <OutstandingChecklists items={openChecklists} focused={routeChecklist} />
       </div>
     );
   }
@@ -87,7 +135,10 @@ export function InspectionReviewScreen() {
                 // a plain pressed-button group: the queue switches the review in place, with no
                 // tab panel or arrow-key model, so tab roles would promise navigation it lacks
                 aria-pressed={on}
-                onClick={() => setActiveReview(r.id)}
+                onClick={() => {
+                  setActiveReview(r.id);
+                  setRouteItem(r.id);
+                }}
                 data-testid={`review-tab-${r.id}`}
                 style={{
                   padding: '7px 12px',
@@ -210,7 +261,7 @@ export function InspectionReviewScreen() {
           </>
         )}
       </div>
-      <OutstandingChecklists items={openChecklists} />
+      <OutstandingChecklists items={openChecklists} focused={routeChecklist} />
     </div>
   );
 }
@@ -222,7 +273,10 @@ export function InspectionReviewScreen() {
  * and the PMC who issued them saw none of them. Shown with a count, so "how many are open"
  * is answerable from the screen the PMC issues them on.
  */
-function OutstandingChecklists({ items }: { items: Checklist[] }) {
+function OutstandingChecklists({ items, focused }: { items: Checklist[]; focused: string | null }) {
+  useEffect(() => {
+    if (focused) document.querySelector(`[data-testid="outstanding-checklist-${CSS.escape(focused)}"]`)?.scrollIntoView({ block: 'center' });
+  }, [focused]);
   if (!items.length) return null;
   return (
     <div style={{ marginTop: 26 }} data-testid="outstanding-checklists">
@@ -234,7 +288,8 @@ function OutstandingChecklists({ items }: { items: Checklist[] }) {
           <div
             key={c.id}
             data-testid={`outstanding-checklist-${c.id}`}
-            style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', padding: '11px 13px', borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', background: '#fff' }}
+            aria-current={c.id === focused ? 'true' : undefined}
+            style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', padding: '11px 13px', borderRadius: 10, border: c.id === focused ? '2px solid var(--ink)' : '1px solid rgba(35,33,28,.12)', background: '#fff' }}
           >
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--faint)' }}>{c.id}</span>
             <span style={{ fontSize: 13.5, color: 'var(--ink)', flex: 1, minWidth: 160 }}>{c.title}</span>

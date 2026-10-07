@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  notificationKind, notificationLink, notificationTarget, decisionsSliceSettled, type NotificationRecords,
+  notificationKind, notificationLink, notificationTarget, decisionsSliceSettled, inspectionsSliceSettled, type NotificationRecords,
 } from '@/lib/notifications';
 
 describe('notificationKind — infer the subject from the templated text', () => {
@@ -47,6 +47,14 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
       { id: 'DL-009', title: 'Master Bath CP Fittings', awaitsViewer: false },
     ],
     decisionsSettled: true,
+    inspections: {
+      review: [
+        { id: 'INSP-21', title: 'Waterproofing Ponding Test', zone: 'Terrace' },
+        { id: 'INSP-22', title: 'Pre-Tiling Inspection', zone: 'Bathroom 2 · 3rd Floor' },
+      ],
+      field: [{ id: 'INSP-22', title: 'Pre-Tiling Inspection', zone: 'Bathroom 2 · 3rd Floor' }],
+    },
+    inspectionsSettled: true,
   };
   const n = (text: string, decisionId?: string) => ({ text, time: 'now', color: '#000', ...(decisionId ? { decisionId } : {}) });
   const at = (screen: string, item: string | null, extra: { missing?: boolean; loading?: boolean } = {}) =>
@@ -145,31 +153,83 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
     expect(notificationLink(n('Client approved Gate — North — Teak'), 'pmc', dashed)).toEqual(at('decision-log', 'D3'));
   });
 
-  it('inspection and drawing notices open their screen (their records are resolved by the later units)', () => {
+  it('live bug 1b — an inspection notice opens the inspection it names by id', () => {
+    expect(notificationLink(n('Re-inspection INSP-022 created for 2 item(s) — due 10 Oct 2026.'), 'pmc', records)).toEqual(at('inspect-review', 'INSP-022'));
+    expect(notificationLink(n('Re-inspection INSP-022 created for 2 item(s) — due 10 Oct 2026.'), 'engineer', records)).toEqual(at('engineer-check', 'INSP-022'));
+  });
+
+  it('Codex 4203544289 — "New checklist issued: <title> — <zone>" opens that checklist, on either inspection screen', () => {
+    expect(notificationLink(n('New checklist issued: Pre-Tiling Inspection — Bathroom 2 · 3rd Floor'), 'pmc', records)).toEqual(at('inspect-review', 'INSP-22'));
+    // Codex 4205610125 — the engineer's notice opens the checklist itself, not whichever is in the slot
+    expect(notificationLink(n('New checklist issued: Pre-Tiling Inspection — Bathroom 2 · 3rd Floor'), 'engineer', records)).toEqual(at('engineer-check', 'INSP-22'));
+    expect(notificationLink(n('New checklist issued: Pre-Tiling Inspection — Kitchen'), 'pmc', records)).toEqual(at('inspect-review', null, { missing: true }));
+  });
+
+  it('a notice is matched only against the inspections its screen can show', () => {
+    // INSP-21 is a review in the pmc's queue; the engineer's field screen never holds it
+    const due = n('Re-inspection due: Waterproofing Ponding Test, Terrace');
+    expect(notificationLink(due, 'pmc', records)).toEqual(at('inspect-review', 'INSP-21'));
+    expect(notificationLink(due, 'engineer', records)).toEqual(at('engineer-check', null, { missing: true }));
+  });
+
+  it('Codex 4203960929 — "Re-inspection due: <work>, <zone>" opens only an EXACT match; a near title never stands in', () => {
+    const due = n('Re-inspection due: Waterproofing, Terrace');
+    const withTask = { ...records, inspections: { ...records.inspections, review: [...records.inspections.review, { id: 'INSP-030', title: 'Re-inspection: Waterproofing', zone: 'Terrace' }] } };
+    expect(notificationLink(due, 'pmc', withTask)).toEqual(at('inspect-review', 'INSP-030'));
+    // "Waterproofing Ponding Test" and "Basement Waterproofing" CONTAIN the work but are other records
+    const near = { ...records, inspections: { ...records.inspections, review: [...records.inspections.review, { id: 'INSP-031', title: 'Basement Waterproofing', zone: 'Terrace' }] } };
+    expect(notificationLink(due, 'pmc', records)).toEqual(at('inspect-review', null, { missing: true }));
+    expect(notificationLink(due, 'pmc', near)).toEqual(at('inspect-review', null, { missing: true }));
+  });
+
+  it('an inspection template is matched as whole text, never split at a dash or a comma, and decides the kind first', () => {
+    const odd = { ...records, inspections: { review: [
+      { id: 'INSP-40', title: 'Material test — slab', zone: 'Roof, east' },
+      { id: 'INSP-41', title: 'Material test', zone: 'slab — Roof, east' },
+    ], field: [] } };
+    // "material" would classify the text as a material notice; the template says it is an inspection.
+    // Two whole-text readings exist, so it names neither (never the wrong one)
+    expect(notificationLink(n('New checklist issued: Material test — slab — Roof, east'), 'pmc', odd)).toEqual(at('inspect-review', null));
+    const one = { ...odd, inspections: { review: [odd.inspections.review[0]], field: [] } };
+    expect(notificationLink(n('New checklist issued: Material test — slab — Roof, east'), 'pmc', one)).toEqual(at('inspect-review', 'INSP-40'));
+    expect(notificationLink(n('Re-inspection due: Material test — slab, Roof, east'), 'pmc', one)).toEqual(at('inspect-review', 'INSP-40'));
+  });
+
+  it('while the inspections are unsettled, an inspection template is LOADING, never missing', () => {
+    expect(notificationLink(n('Re-inspection due: Waterproofing, Terrace'), 'pmc', { ...records, inspectionsSettled: false })).toEqual(at('inspect-review', null, { loading: true }));
+  });
+
+  it('an inspection notice naming no record opens its screen, never "missing"', () => {
     expect(notificationLink(n('Inspection approved. Contractor and client notified.'), 'pmc', records)).toEqual(at('inspect-review', null));
-    expect(notificationLink(n('Re-inspection due: Waterproofing, Terrace'), 'pmc', records)).toEqual(at('inspect-review', null));
   });
 
   it('a screen that cannot show one record opens as before', () => {
-    expect(notificationLink(n('Re-inspection due: Waterproofing, Terrace'), 'engineer', records)).toEqual(at('engineer-check', null));
     expect(notificationLink(n('Drawing issued: A-201 Rev C'), 'contractor', records)).toEqual(at('drawings', null));
     expect(notificationLink(n('Signal lost'), 'pmc', records)).toBeNull();
   });
 });
 
-describe('one "settled" for every judge (Codex 4204448859)', () => {
-  const base = { projectLoadState: 'ready', commandReconcilePending: false, decisionsLoad: 'ready' } as const;
+describe('one "settled" for every judge (Codex 4204448859 / 4205058538)', () => {
+  const base = { projectLoadState: 'ready', commandReconcilePending: false, decisionsLoad: 'ready', inspectionsLoad: 'ready' } as const;
 
-  it('a reconcile still owed unsettles the decision slice, though its read says ready', () => {
-    expect(decisionsSliceSettled({ ...base, commandReconcilePending: true })).toBe(false);
+  it('a reconcile still owed unsettles every slice, in BOTH inspection read modes, though each read says ready', () => {
+    const owed = { ...base, commandReconcilePending: true };
+    expect(decisionsSliceSettled(owed)).toBe(false);
+    expect(inspectionsSliceSettled(owed, true)).toBe(false);
+    expect(inspectionsSliceSettled(owed, false)).toBe(false);
   });
 
-  it('otherwise the slice is settled by its own read and the project read', () => {
+  it('otherwise each slice is settled by its own read', () => {
     expect(decisionsSliceSettled(base)).toBe(true);
     expect(decisionsSliceSettled({ ...base, decisionsLoad: 'idle' })).toBe(true);
     expect(decisionsSliceSettled({ ...base, decisionsLoad: 'loading' })).toBe(false);
     expect(decisionsSliceSettled({ ...base, decisionsLoad: 'error' })).toBe(false);
     expect(decisionsSliceSettled({ ...base, projectLoadState: 'loading' })).toBe(false);
     expect(decisionsSliceSettled({ ...base, projectLoadState: 'error' })).toBe(false);
+    expect(inspectionsSliceSettled(base, true)).toBe(true);
+    expect(inspectionsSliceSettled({ ...base, inspectionsLoad: 'idle' }, true)).toBe(false);
+    expect(inspectionsSliceSettled({ ...base, inspectionsLoad: 'error' }, true)).toBe(false);
+    expect(inspectionsSliceSettled({ ...base, inspectionsLoad: 'idle' }, false)).toBe(true);
+    expect(inspectionsSliceSettled({ ...base, projectLoadState: 'error' }, false)).toBe(false);
   });
 });

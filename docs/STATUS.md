@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: live-bug-1a-decision-deep-links
+work_item: live-bug-1b-inspection-deep-links
 reviewed_merge: cffb251
-open_pr: 727
+open_pr: 728
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-07
 ```
 
-### Now — the owner's live-bug queue, unit 1a (decision deep links), after 4d-iii R0c (one owner, one PR at a time)
+### Now — the owner's live-bug queue, unit 1b (inspection deep links), after 4d-iii R0c (one owner, one PR at a time)
 
 #715 (4d-iii R0a-1) trusted-merged at `67644e5`. The 10:53 UTC hold on #482 kept #710–#713 paused until
 #715 completed and a sequential handoff was recorded. The repository owner then directed this sequence,
@@ -77,10 +77,11 @@ redesign in smaller units. So #716 was closed and its work is split into server 
        missing record says so instead of leaving the viewer on the parent list. #726 used its five
        finding-bearing review heads and was closed unmerged; the unit is replaced from `main` in three
        sequential parts:
-       - 1a. **#727** `claude/live-bug-1a-decision-deep-links` (current work item) — decision notices
-         (DL-014), including a decider of any role landing on the approval screen.
-       - 1b. Inspection notices: Inspection Review's item route, and the engineer's field checklist
-         selecting the named checklist (the Terrace waterproofing re-inspection).
+       - 1a. **#727** — merged at `6972ec5`. Decision notices (DL-014), including a decider of any role
+         landing on the approval screen.
+       - 1b. **#728** `claude/live-bug-1b-inspection-deep-links` (current work item) — inspection notices:
+         Inspection Review's item route, the engineer's field checklist selecting the named checklist, and
+         the inspection slice's settledness in both read modes (the Terrace waterproofing re-inspection).
        - 1c. Drawing notices open the drawing they name.
     Live-bug units 2–6 are folded into the Board's queue below (item 11), each into the item that covers it.
 11. **The Board's UI/UX fix queue** (the Top 10 of the 7 Oct 2026 UI/UX review of pms.vitan.in, every

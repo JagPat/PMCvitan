@@ -1,5 +1,5 @@
 import type { AppNotification, Role, ScreenKey } from '@vitan/shared';
-import { screensFor } from './screens';
+import { ITEM_SCREENS, screensFor } from './screens';
 
 /**
  * The subject a notification is about, inferred from its (templated) text. The backend and the
@@ -54,13 +54,15 @@ export function notificationTarget(text: string, role: Role): ScreenKey | null {
  *
  * - a `decisionId` (the server's, judged against the viewer's slice, or a local writer's);
  * - one of the fixed decision-notice templates that quote a title, matched EXACTLY against the
- *   viewer's decisions (never by substring: a near title is another record).
+ *   viewer's decisions (never by substring: a near title is another record);
+ * - (live bug 1b) an inspection id (`INSP-N`) in its text, or one of the fixed inspection templates
+ *   ("New checklist issued: <title> — <zone>", "Re-inspection due: <work>, <zone>"), matched as WHOLE
+ *   text against the inspections the target screen can show.
  *
- * A notice that names nothing opens its screen, as it always did (inspection and drawing notices are
- * resolved to their records by the later units of this bug). A named decision that the settled slice
- * does not hold is `missing`, and the bell says so; while that slice is still loading (or failed), it
- * is `loading` rather than wrongly missing. Two decisions that both match exactly name neither, and
- * the notice opens its screen.
+ * A notice that names nothing opens its screen, as it always did (drawing notices are resolved to their
+ * records by unit 1c). A named record that the settled slice does not hold is `missing`, and the bell
+ * says so; while that slice is still loading (or failed), it is `loading` rather than wrongly missing.
+ * Two records that both match exactly name neither, and the notice opens its screen.
  */
 export interface NotificationLink {
   screen: ScreenKey;
@@ -78,13 +80,22 @@ export interface NotificationRecords {
   /** false while the decision slice is loading, failed or still reconciling a command: a title
    *  cannot be judged absent, nor a decision judged awaiting, then */
   decisionsSettled: boolean;
+  /** Live bug 1b — the inspections each inspection screen can show this viewer: Inspection Review's
+   *  queue and outstanding checklists (`review`), and the engineer's field checklists (`field`). A
+   *  notice is matched only against the screen it opens, so it never resolves to a record that screen
+   *  cannot show. */
+  inspections: { review: readonly InspectionRecord[]; field: readonly InspectionRecord[] };
+  inspectionsSettled: boolean;
 }
 
-/** The store fields that decide whether the decision slice can be trusted. */
+export interface InspectionRecord { id: string; title: string; zone: string }
+
+/** The store fields that decide whether a slice can be trusted. */
 export interface SliceSettledState {
   projectLoadState: string;
   commandReconcilePending: boolean;
   decisionsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  inspectionsLoad: 'idle' | 'loading' | 'ready' | 'error';
 }
 
 /**
@@ -92,10 +103,17 @@ export interface SliceSettledState {
  * committed command whose reconcile is still owed (`commandReconcilePending`) has retained the
  * pre-command slice, so it is not settled until that reconcile lands.
  */
-export const decisionsSliceSettled = (s: SliceSettledState): boolean =>
-  !s.commandReconcilePending
-  && (s.projectLoadState === 'ready' || s.projectLoadState === 'idle')
-  && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle');
+const projectSettled = (s: Pick<SliceSettledState, 'projectLoadState' | 'commandReconcilePending'>): boolean =>
+  !s.commandReconcilePending && (s.projectLoadState === 'ready' || s.projectLoadState === 'idle');
+
+export const decisionsSliceSettled = (s: Pick<SliceSettledState, 'projectLoadState' | 'commandReconcilePending' | 'decisionsLoad'>): boolean =>
+  projectSettled(s) && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle');
+
+/** Live bug 1b (Codex 4205058538) — the inspection slice, in either read mode: `moduleOwned` (the
+ *  `moduleQuery` read) is settled by its own read, the snapshot mode by the project read, and BOTH are
+ *  unsettled while a committed command's reconcile is owed. */
+export const inspectionsSliceSettled = (s: SliceSettledState, moduleOwned: boolean): boolean =>
+  !s.commandReconcilePending && (moduleOwned ? s.inspectionsLoad === 'ready' : projectSettled(s));
 
 /**
  * The decision-notice templates that quote a title (legacy rows, and the demo seed, carry no id).
@@ -149,12 +167,49 @@ function decisionLink(n: AppNotification, role: Role, records: NotificationRecor
   return unresolved({ missing: match.kind === 'none' });
 }
 
+const INSPECTION_ID = /\bINSP-\d+\b/;
+/** The inspection templates: "New checklist issued: <title> — <zone>" (the checklist writer) and
+ *  "Re-inspection due: <work>, <zone>". A title, work or zone may hold a dash or a comma itself, so the
+ *  text is never split: a record matches when the WHOLE text is its template (as for decisions). */
+const CHECKLIST_ISSUED = 'New checklist issued: ';
+const REINSPECTION_DUE = 'Re-inspection due: ';
+
+function inspectionTemplateOf(text: string): 'issued' | 'due' | null {
+  if (text.startsWith(CHECKLIST_ISSUED) && text.indexOf(DASH, CHECKLIST_ISSUED.length) > 0) return 'issued';
+  if (text.startsWith(REINSPECTION_DUE) && text.indexOf(', ', REINSPECTION_DUE.length) > 0) return 'due';
+  return null;
+}
+
+function inspectionLink(n: AppNotification, screen: ScreenKey, records: NotificationRecords): NotificationLink {
+  const plain: NotificationLink = { screen, item: null, missing: false, loading: false };
+  const named = n.text.match(INSPECTION_ID)?.[0];
+  if (named) return { ...plain, item: named };
+  const template = inspectionTemplateOf(n.text);
+  if (!template) return plain;
+  if (!records.inspectionsSettled) return { ...plain, loading: true };
+  const pool = screen === 'engineer-check' ? records.inspections.field : records.inspections.review;
+  // Codex 4203960929 — EXACT only. "Re-inspection due" names the re-inspection task the server files
+  // for that work ("Re-inspection: <work>") or an inspection titled exactly <work>, in that zone; a
+  // title that merely contains the work ("Basement Waterproofing") is another record, never a stand-in.
+  const quoted = (i: InspectionRecord): boolean => template === 'issued'
+    ? n.text === `${CHECKLIST_ISSUED}${i.title}${DASH}${i.zone}`
+    : n.text === `${REINSPECTION_DUE}${i.title.replace(/^Re-inspection: /, '')}, ${i.zone}`;
+  const match = matchOf(pool.filter(quoted).map((i) => i.id));
+  if (match.kind === 'one') return { ...plain, item: match.id };
+  return { ...plain, missing: match.kind === 'none' };
+}
+
 export function notificationLink(n: AppNotification, role: Role, records: NotificationRecords): NotificationLink | null {
-  // structure decides the kind before any wording does: a decision id, or a decision template — a
-  // quoted title may itself contain another kind's keyword ("…: Material selection") (Codex 4206188328)
-  const kind = n.decisionId !== undefined || decisionTemplateOf(n.text) ? 'decision' : notificationKind(n.text);
+  // structure decides the kind before any wording does: a decision id, or a decision or inspection
+  // template — a quoted title may itself contain another kind's keyword ("…: Material selection")
+  const kind = n.decisionId !== undefined || decisionTemplateOf(n.text)
+    ? 'decision'
+    : inspectionTemplateOf(n.text) ? 'inspection' : notificationKind(n.text);
   if (!kind) return null;
   if (kind === 'decision') return decisionLink(n, role, records);
   const screen = screenForKind(kind, role);
-  return screen ? { screen, item: null, missing: false, loading: false } : null;
+  if (!screen) return null;
+  // a screen that cannot show one record (the daily log, the drawings register until unit 1c) opens as before
+  if (kind !== 'inspection' || !ITEM_SCREENS.has(screen)) return { screen, item: null, missing: false, loading: false };
+  return inspectionLink(n, screen, records);
 }
