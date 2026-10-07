@@ -27,10 +27,12 @@ export function NotificationPanel() {
   const inspectionsSettled = useStore((s) => (inspectionsReadMode() === 'moduleQuery' ? s.inspectionsLoad === 'ready' : projectSettled(s)));
   // Live bug 1 — the notice whose record could not be found, explained in place (by row index).
   const [explained, setExplained] = useState<number | null>(null);
-  // a row index means nothing once the panel closes (the list may change before it reopens)
+  // a row index means nothing once the panel closes, or once the list itself changes (Codex
+  // 4203960936: a realtime refresh can prepend or drop notices while the panel is open), so the
+  // explanation is withdrawn rather than left under a different notice
   useEffect(() => {
-    if (!open) setExplained(null);
-  }, [open]);
+    setExplained(null);
+  }, [open, notifications]);
 
   // the records a notice may name, from the viewer's own slices only
   const records = useMemo<NotificationRecords>(

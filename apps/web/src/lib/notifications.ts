@@ -55,7 +55,7 @@ export function notificationTarget(text: string, role: Role): ScreenKey | null {
  * - a `decisionId` (the server's, judged against the viewer's slice, or a local writer's);
  * - an inspection id (`INSP-N`) in its text;
  * - one of the fixed notice templates that quote a decision title, or an inspection's work and zone,
- *   matched EXACTLY against the viewer's records.
+ *   matched EXACTLY against the viewer's records (never by substring: a near title is another record).
  *
  * A notice that names nothing opens its screen, as it always did. A named record that the settled
  * records do not hold is `missing`, and the bell says so; while the records it must be matched against
@@ -106,9 +106,11 @@ function decisionLink(n: AppNotification, role: Role, records: NotificationRecor
   const fallback = screenForKind('decision', role);
   if (!fallback) return null;
   // the client's approval screen shows only decisions awaiting that client; any other decision is
-  // opened where it can be read, the Decision Log (every role holds it)
+  // opened where it can be read, the Decision Log (every role holds it). Codex 4203960922 — "awaiting"
+  // is read only from a SETTLED decision slice: a command snapshot can carry the new notice while the
+  // slice still holds the decision's previous state, and the register is right in every state.
   const screenFor = (id: string): ScreenKey =>
-    role === 'client' && !records.decisions.some((d) => d.id === id && d.awaitsViewer) ? 'decision-log' : fallback;
+    role === 'client' && !(records.decisionsSettled && records.decisions.some((d) => d.id === id && d.awaitsViewer)) ? 'decision-log' : fallback;
   const open = (id: string): NotificationLink => ({ screen: screenFor(id), item: id, missing: false, loading: false });
 
   if (n.decisionId !== undefined) return open(n.decisionId);
@@ -129,11 +131,11 @@ function inspectionLink(n: AppNotification, screen: ScreenKey, records: Notifica
   const due = n.text.match(REINSPECTION_DUE);
   const issued = n.text.match(CHECKLIST_ISSUED);
   if (due) {
+    // Codex 4203960929 — EXACT only: the re-inspection task the server files for this work
+    // ("Re-inspection: <work>") or an inspection titled exactly <work>, in that zone. A title that
+    // merely contains the work ("Basement Waterproofing") is another record, never a stand-in.
     const [, work, zone] = due;
-    const here = records.inspections.filter((i) => same(i.zone, zone) && i.title.toLowerCase().includes(work.trim().toLowerCase()));
-    // the re-inspection TASK itself when one is out on site, else the one inspection of that work there
-    const tasks = here.filter((i) => /^re-inspection\b/i.test(i.title));
-    candidates = tasks.length > 0 ? tasks : here;
+    candidates = records.inspections.filter((i) => same(i.zone, zone) && (same(i.title, `Re-inspection: ${work}`) || same(i.title, work)));
   } else if (issued) {
     const [, title, zone] = issued;
     candidates = records.inspections.filter((i) => same(i.title, title) && same(i.zone, zone));

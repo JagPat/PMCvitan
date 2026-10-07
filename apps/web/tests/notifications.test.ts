@@ -100,12 +100,23 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
     expect(notificationLink(n('Re-inspection INSP-022 created for 2 item(s) — due 10 Oct 2026.'), 'pmc', records)).toEqual(at('inspect-review', 'INSP-022'));
   });
 
-  it('"Re-inspection due: <work>, <zone>" opens the re-inspection task there, else the one inspection of that work there', () => {
+  it('Codex 4203960929 — "Re-inspection due: <work>, <zone>" opens only an EXACT match; a near title never stands in', () => {
     const due = n('Re-inspection due: Waterproofing, Terrace');
-    expect(notificationLink(due, 'pmc', records)).toEqual(at('inspect-review', 'INSP-21'));
-    const withTask = { ...records, inspections: [...records.inspections, { id: 'INSP-030', title: 'Re-inspection: Waterproofing Ponding Test', zone: 'Terrace' }] };
-    expect(notificationLink(due, 'pmc', withTask)?.item).toBe('INSP-030');
-    expect(notificationLink(due, 'pmc', { ...records, inspections: [] })).toEqual(at('inspect-review', null, { missing: true }));
+    // the server's re-inspection task for that work, in that zone
+    const withTask = { ...records, inspections: [...records.inspections, { id: 'INSP-030', title: 'Re-inspection: Waterproofing', zone: 'Terrace' }] };
+    expect(notificationLink(due, 'pmc', withTask)).toEqual(at('inspect-review', 'INSP-030'));
+    // "Waterproofing Ponding Test" and "Basement Waterproofing" CONTAIN the work but are other records:
+    // the notice's own record is not there, and it says so rather than opening one of them
+    const near = { ...records, inspections: [...records.inspections, { id: 'INSP-031', title: 'Basement Waterproofing', zone: 'Terrace' }] };
+    expect(notificationLink(due, 'pmc', records)).toEqual(at('inspect-review', null, { missing: true }));
+    expect(notificationLink(due, 'pmc', near)).toEqual(at('inspect-review', null, { missing: true }));
+  });
+
+  it('Codex 4203960922 — a client is routed to the approval screen only on a SETTLED slice', () => {
+    // the command snapshot carried the notice; the slice still holds the pre-approval state
+    const stale = { ...records, decisionsSettled: false };
+    expect(notificationLink(n('Client approved Living Room Flooring — Marble', 'DL-014'), 'client', stale)).toEqual(at('decision-log', 'DL-014'));
+    expect(notificationLink(n('Decision awaiting approval: Living Room Flooring', 'DL-014'), 'client', records)).toEqual(at('client-decisions', 'DL-014'));
   });
 
   it('Codex 4203544289 — "New checklist issued: <title> — <zone>" opens that checklist', () => {

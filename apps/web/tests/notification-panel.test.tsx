@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 
 /**
  * Live bug 1 — the bell opens the record a notice is about; a notice whose record cannot be found
@@ -68,6 +68,21 @@ describe('NotificationPanel — the record a notice opens', () => {
     const s = useStore.getState();
     expect(s.screen).toBe('decision-log');
     expect(s.routeItem).toBe('DL-009');
+  });
+});
+
+describe('the explanation belongs to its notice (Codex 4203960936)', () => {
+  it('a refresh that changes the list withdraws the explanation instead of leaving it under another notice', async () => {
+    const missing = { text: 'New decision issued for approval: Porch Tiles', time: 'now', color: '#000' };
+    const { useStore, getAllByTestId, queryByTestId } = await mount([missing]);
+    fireEvent.click(getAllByTestId('notif-item')[0]);
+    expect(queryByTestId('notif-missing')).not.toBeNull();
+    // a realtime refresh prepends ANOTHER unresolvable notice: row 0 is now a different notice, and an
+    // index-keyed explanation would sit under it, explaining the wrong one
+    act(() => {
+      useStore.setState({ notifications: [{ text: 'New decision issued for approval: Garden Gate', time: 'now', color: '#000' }, missing] });
+    });
+    expect(queryByTestId('notif-missing')).toBeNull();
   });
 });
 

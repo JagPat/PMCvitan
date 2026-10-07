@@ -4,8 +4,11 @@ import { test, expect, type Page } from '@playwright/test';
  * Live bug 1 — deep-link target fidelity. A notification opens the RECORD it is about, at a URL that
  * survives a reload and walks back with Back; a link to a record that is not there says so. The two
  * notices are the owner's live repros, carried by the demo seed: "New decision issued for approval:
- * Living Room Flooring" must open DL-014 itself, and "Re-inspection due: Waterproofing, Terrace" must
- * open the Terrace waterproofing inspection rather than a review screen that never shows it.
+ * Living Room Flooring" must open DL-014 itself. "Re-inspection due: Waterproofing, Terrace" names a
+ * re-inspection by its work and zone but no id, and the seed holds no such task (only "Waterproofing
+ * Ponding Test", which merely contains the work): the bell must say the record isn't available and
+ * offer Inspection Review — never open a near-titled inspection in its place (Codex 4203960929), and
+ * never drop the viewer on the list as though that were the answer.
  * Demo mode, no sign-in, nothing written.
  */
 
@@ -32,14 +35,22 @@ test('"Living Room Flooring" opens DL-014 itself; reload keeps it and Back retur
   await expect(page.getByTestId('log-row-DL-014')).toHaveAttribute('aria-current', 'true');
 });
 
-test('"Re-inspection due: Waterproofing, Terrace" opens the Terrace waterproofing inspection, reload-safe', async ({ page }) => {
+test('"Re-inspection due: Waterproofing, Terrace" says its record is not available, and offers Inspection Review', async ({ page }) => {
   await page.goto('/projects/ambli/for-you');
   await tapNotice(page, 'Re-inspection due: Waterproofing, Terrace');
 
-  await expect(page).toHaveURL(/\/projects\/ambli\/review\/INSP-21$/);
+  // explained in place: nothing navigated, and no near-titled inspection opened in its stead
+  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
+  await expect(page.getByTestId('notif-missing')).toContainText("isn't available");
+  await page.getByTestId('notif-missing-open').click();
+  await expect(page).toHaveURL(/\/projects\/ambli\/review$/);
+});
+
+test('a re-inspection link that names its inspection opens it, reload-safe, and Back returns', async ({ page }) => {
+  await page.goto('/projects/ambli/for-you');
+  await page.goto('/projects/ambli/review/INSP-21');
   await expect(page.getByText('Waterproofing Ponding Test', { exact: true })).toBeVisible();
   await expect(page.getByTestId('item-not-found')).toHaveCount(0);
-
   await page.reload();
   await expect(page.getByText('Waterproofing Ponding Test', { exact: true })).toBeVisible();
   await page.goBack();

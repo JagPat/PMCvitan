@@ -34,7 +34,8 @@ export function InspectionReviewScreen() {
   const routeItem = useStore((s) => s.routeItem);
   const setRouteItem = useStore((s) => s.setRouteItem);
   const activeReviewId = useStore((s) => s.activeReviewId);
-  const projectSettled = useStore((s) => s.projectLoadState === 'ready' || s.projectLoadState === 'idle');
+  const projectLoadState = useStore((s) => s.projectLoadState);
+  const projectSettled = projectLoadState === 'ready' || projectLoadState === 'idle';
   const settled = moduleOwned ? inspectionsLoad === 'ready' : projectSettled;
   const routeReview = routeItem !== null && reviews.some((r) => r.id === routeItem) ? routeItem : null;
   const routeChecklist = routeItem !== null && openChecklists.some((c) => c.id === routeItem) ? routeItem : null;
@@ -45,6 +46,25 @@ export function InspectionReviewScreen() {
   // Codex 4203544331 — a link to an inspection this screen cannot show shows ONLY that: never the
   // default review beneath it, whose live approve/reject would present an unrelated inspection as the
   // one the link meant. "Show all inspections" reveals the queue.
+  // Codex 4203960945 — a named inspection that is not (yet) found while the inspections are loading or
+  // failed shows that boundary, never a retained review standing in for it under its URL.
+  const unsettledItem = routeItem !== null && !routeReview && !routeChecklist && !settled;
+  if (unsettledItem) {
+    const failed = moduleOwned ? unavailable : projectLoadState === 'error';
+    return (
+      <div className={`${styles.screen} ${styles.mid}`} data-testid={failed ? 'inspections-unavailable' : 'inspections-loading'}>
+        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        {failed ? (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
+            <span>Couldn't load inspections — check your connection and access.</span>
+            <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+          </div>
+        ) : (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading inspections…</div>
+        )}
+      </div>
+    );
+  }
   if (missingItem) {
     return (
       <div className={`${styles.screen} ${styles.mid}`}>
