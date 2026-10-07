@@ -50,6 +50,26 @@ describe('Inspection Review — a committed command still reconciling (Codex 420
   });
 });
 
+describe('Inspection Review — a routed review is shown only once it is the active one (Codex 4208284788)', () => {
+  it('while the selection still names another review, nothing actionable stands under the routed URL', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const realSet = useStore.getState().setActiveReview;
+    // hold the selection on INSP-21 so the transitional render can be seen
+    useStore.setState({ setActiveReview: () => {} });
+    const first = useStore.getState().reviews[0];
+    const second = { ...structuredClone(first), id: 'INSP-40', title: 'Slab Pour Check', decided: false };
+    const view = await mount({ reviews: [first, second], routeItem: 'INSP-40', activeReviewId: first.id });
+    expect(view.getByTestId('inspections-opening').textContent).toContain('INSP-40');
+    expect(view.queryByText('Waterproofing Ponding Test')).toBeNull();
+    expect(view.queryByRole('button', { name: /approve/i })).toBeNull();
+    // the selection follows the route: the routed review is shown
+    act(() => { useStore.setState({ setActiveReview: realSet }); useStore.getState().setActiveReview('INSP-40'); });
+    expect(view.queryByTestId('inspections-opening')).toBeNull();
+    expect(view.getAllByText('Slab Pour Check').length).toBeGreaterThan(0);
+  });
+});
+
 describe('Inspection Review — the module-owned read (Codex 4205058538)', () => {
   it('a reconcile still owed unsettles a READY module slice: loading, never not-found', async () => {
     vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');

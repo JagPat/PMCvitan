@@ -51,6 +51,17 @@ export function InspectionReviewScreen() {
   // Codex 4203960945 — a named inspection that is not (yet) found while the inspections are loading or
   // failed shows that boundary, never a retained review standing in for it under its URL.
   const unsettledItem = routeItem !== null && !routeReview && !routeChecklist && !settled;
+  // Codex 4208284788 — the routed review becomes the active one in an effect, so for one render the
+  // previous active review (with its live Approve / Send Re-inspection, which act on the active id)
+  // would stand under the routed URL: until the two agree, nothing actionable is rendered
+  if (routeReview && active?.id !== routeReview) {
+    return (
+      <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-opening">
+        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Opening {routeReview}…</div>
+      </div>
+    );
+  }
   if (unsettledItem) {
     const failed = moduleOwned ? unavailable : projectLoadState === 'error';
     return (
