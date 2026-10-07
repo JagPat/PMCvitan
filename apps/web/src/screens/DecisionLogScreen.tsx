@@ -67,9 +67,18 @@ export function DecisionLogScreen() {
   // slice has settled (never during a load, and never over a failed read that holds nothing).
   const routeItem = useStore((s) => s.routeItem);
   const setRouteItem = useStore((s) => s.setRouteItem);
+  // Codex 4204448859 — and never while a committed command's reconcile is still owed: its own snapshot
+  // can land while the decision slice is still the pre-command one
   const settled = useStore((s) =>
-    (s.projectLoadState === 'ready' || s.projectLoadState === 'idle') && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle'));
-  const missingItem = routeItem !== null && settled && !rows.some((d) => d.id === routeItem) ? routeItem : null;
+    !s.commandReconcilePending
+    && (s.projectLoadState === 'ready' || s.projectLoadState === 'idle') && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle'));
+  const loadFailed = useStore((s) => s.decisionsLoad === 'error' || s.projectLoadState === 'error');
+  const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
+  const routedAbsent = routeItem !== null && !rows.some((d) => d.id === routeItem);
+  const missingItem = routedAbsent && settled ? routeItem : null;
+  // Codex 4204448863 — a named decision not (yet) in the slice while the read is unsettled shows the
+  // load boundary, never the whole register standing in for it under its URL
+  const unsettledItem = routedAbsent && !settled;
   const [issuing, setIssuing] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupBy>('location');
   const [query, setQuery] = useState('');
@@ -132,6 +141,21 @@ export function DecisionLogScreen() {
 
   // Codex 4203544331 — a link to a decision this register does not hold shows ONLY that: the register
   // is not rendered beneath it as if it were the answer, and "Show all decisions" reveals it.
+  if (unsettledItem) {
+    return (
+      <div className={`${styles.screen} ${styles.narrow}`} data-testid={loadFailed ? 'decisions-unavailable' : 'decisions-loading'}>
+        <Eyebrow>CLIENT DECISION LOG</Eyebrow>
+        {loadFailed ? (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
+            <span>Couldn't load decisions — check your connection and access.</span>
+            <Button data-testid="decisions-retry" onClick={() => requestFreshSnapshot()}>Retry</Button>
+          </div>
+        ) : (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading decisions…</div>
+        )}
+      </div>
+    );
+  }
   if (missingItem) {
     return (
       <div className={`${styles.screen} ${styles.narrow}`}>

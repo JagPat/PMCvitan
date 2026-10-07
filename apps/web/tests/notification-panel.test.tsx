@@ -1,4 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import type { ApiGateway, ApiSnapshot, ModuleDecisions } from '@/data/apiGateway';
+import type { Decision } from '@vitan/shared';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 
 /**
@@ -9,6 +11,7 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react';
 afterEach(() => {
   cleanup();
   vi.resetModules();
+  vi.unstubAllEnvs();
 });
 
 async function mount(
@@ -71,6 +74,33 @@ describe('NotificationPanel — the record a notice opens', () => {
   });
 });
 
+describe('a committed command still reconciling is not a settled slice (Codex 4204448859)', () => {
+  it('a template notice is "loading" and a client is routed to the register, while the reconcile is owed', async () => {
+    const { useStore, getByTestId } = await mount(
+      [{ text: 'New decision issued for approval: Porch Tiles', time: 'now', color: '#000' }],
+      { commandReconcilePending: true },
+    );
+    fireEvent.click(getByTestId('notif-item'));
+    expect(getByTestId('notif-loading')).toBeTruthy();
+    expect(useStore.getState().screen).toBe('inbox');
+  });
+
+  it('a client tapping a notice for a decision the retained slice still shows awaiting them opens the register', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    // DL-014 is pending in the retained (pre-command) slice and the client is its decider
+    const awaiting = useStore.getState().decisions.find((d) => d.id === 'DL-014')!;
+    expect(awaiting.status).toBe('pending');
+    const { getByTestId } = await mount(
+      [{ text: 'Client approved Living Room Flooring — Marble', time: 'now', color: '#000', decisionId: 'DL-014' }],
+      { role: 'client', commandReconcilePending: true },
+    );
+    fireEvent.click(getByTestId('notif-item'));
+    expect(useStore.getState().screen).toBe('decision-log');
+    expect(useStore.getState().routeItem).toBe('DL-014');
+  });
+});
+
 describe('the explanation belongs to its notice (Codex 4203960936)', () => {
   it('a refresh that changes the list withdraws the explanation instead of leaving it under another notice', async () => {
     const missing = { text: 'New decision issued for approval: Porch Tiles', time: 'now', color: '#000' };
@@ -97,3 +127,51 @@ describe('the local decision writers stamp their notice with the decision (Codex
     expect(useStore.getState().notifications[0].text).toMatch(/^Client approved /);
   });
 });
+
+describe('the store marks a command still reconciling (Codex 4204448859)', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const dec = (id: string, status: Decision['status'] = 'pending'): Decision =>
+    ({ id, title: id, room: 'GF', status, photoSwatch: 'marble', options: [], deciderKind: 'client' }) as Decision;
+  const snapshot = (): ApiSnapshot => ({
+    project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: 'G+2', stage: 'Finishing', siteCode: 'AMB', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+    decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+    drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+  } as unknown as ApiSnapshot);
+
+  it('from the command\'s own snapshot until the reconcile carrying its module reads lands', async () => {
+    vi.stubEnv('VITE_DECISIONS_READ', 'moduleQuery');
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const s = () => useStore.getState();
+    let release!: (d: ModuleDecisions) => void;
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(snapshot()),
+      decisions: vi.fn().mockResolvedValueOnce({ decisions: [dec('D-1')], source: 'live', generation: null } as ModuleDecisions),
+      approveDecision: vi.fn().mockResolvedValue(snapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().requestFreshSnapshot();
+    await flush();
+    await flush();
+    expect(s().commandReconcilePending).toBe(false);
+
+    // the approval's own snapshot lands; the module read its reconcile owes is held open
+    gw.decisions.mockImplementationOnce(() => new Promise<ModuleDecisions>((r) => { release = r; }));
+    useStore.setState({ modal: { type: 'approve', decId: 'D-1', optIdx: 0 } });
+    s().confirmApprove();
+    await flush();
+    await flush();
+    expect(gw.approveDecision).toHaveBeenCalled();
+    // the retained slice still says D-1 is pending and its read is 'ready' — and nothing may judge from it
+    expect(s().decisionsLoad).toBe('ready');
+    expect(s().commandReconcilePending).toBe(true);
+
+    release({ decisions: [dec('D-1', 'approved')], source: 'live', generation: null } as ModuleDecisions);
+    await flush();
+    await flush();
+    expect(s().decisions[0].status).toBe('approved');
+    expect(s().commandReconcilePending).toBe(false);
+    s()._setGateway(null);
+  });
+});
+

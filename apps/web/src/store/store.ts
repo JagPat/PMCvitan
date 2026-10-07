@@ -219,6 +219,12 @@ export interface AppState {
   // last-good decisions are kept and a Retry boundary is exposed). `decisionsSource` records whether
   // the projection or its live fallback served the current data.
   decisionsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  /** Live bug 1 (Codex 4204448859) — the CURRENT scope owes a committed command its confirmed truth:
+   *  the command's own snapshot landed (notifications included) but the reads it does not carry (every
+   *  module-owned slice) are still the pre-command ones until the reconcile lands. While true, no screen
+   *  or notice may judge a record's state or absence from those slices. Mirrors the scope coordinator's
+   *  command obligation; set when it is scheduled, cleared when a confirming snapshot clears it. */
+  commandReconcilePending: boolean;
   decisionsSource: 'projection' | 'live' | null;
   // Phase 2 Task 10 — the daily-log XOR read-ownership state, mirroring decisions. When
   // dailyLogReadMode() === 'moduleQuery', `dailyLog` + `materials` are owned by the module-owned read;
@@ -1138,6 +1144,7 @@ export function getInitialState(): AppState {
     modal: { type: null },
     decisions: structuredClone(SEED_DECISIONS),
     decisionsLoad: 'idle',
+    commandReconcilePending: false,
     decisionsSource: null,
     dailyLogLoad: 'idle',
     dailyLogSource: null,
@@ -1789,6 +1796,10 @@ export const useStore = create<Store>()(
       c.refreshInFlight = true;
       const g = gateway;
       const lease = beginSnapshotLease(scope);
+      // the flag is the CURRENT scope's: a scope switched to carries only its own obligation
+      if (scopeStillCurrent(scope) && get().commandReconcilePending !== (c.commandAfterSequence !== null)) {
+        set((s) => { s.commandReconcilePending = c.commandAfterSequence !== null; });
+      }
       // initial load / retry surfaces 'loading'; a background refresh (already
       // 'ready') stays ready — stale-while-revalidate, no flash on every socket ping.
       if (scopeStillCurrent(scope) && get().projectLoadState !== 'ready') set((s) => { s.projectLoadState = 'loading'; });
@@ -1856,6 +1867,7 @@ export const useStore = create<Store>()(
           if (c.commandAfterSequence !== null && lease.sequence > c.commandAfterSequence && moduleReadsOk) {
             c.commandAfterSequence = null; // the committed command's change is now in this applied snapshot AND its module reads
           }
+          if (scopeStillCurrent(scope)) set((s) => { s.commandReconcilePending = c.commandAfterSequence !== null; });
           // If the snapshot applied but a required module read FAILED, the obligation is RETAINED (not
           // cleared): the module read's own error state (dailyLogLoad/decisionsLoad='error', last-good
           // kept) exposes a Retry that re-runs this pull. Bounded — no auto-loop re-queues it, and the
@@ -1912,6 +1924,7 @@ export const useStore = create<Store>()(
     const scheduleReconcile = (scope: ProjectScope, obligation: ReconcileObligation): void => {
       if (!scopeStillCurrent(scope)) return;
       const c = coordinatorFor(scope);
+      if (obligation.kind === 'command') set((s) => { s.commandReconcilePending = true; });
       if (obligation.kind === 'command') {
         // keep the LATEST command threshold: a snapshot crossing it necessarily reflects
         // every earlier committed command too, so no command obligation is ever dropped.
@@ -2394,6 +2407,7 @@ export const useStore = create<Store>()(
             s.timeZone = null; // the next project's zone is unknown until its snapshot lands
             Object.assign(s, emptyProjectData());
             Object.assign(s, emptyModuleReadState()); // finding 4: a new project's reads start fresh, not stale-'ready'
+            s.commandReconcilePending = false;
           }
         } else if (!wasPending) {
           // same-project re-authentication: the previous identity's records are not
@@ -4351,6 +4365,7 @@ export const useStore = create<Store>()(
         s.timeZone = null; // the target project's zone is unknown until its snapshot lands
         Object.assign(s, emptyProjectData());
         Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
+        s.commandReconcilePending = false; // the target scope owes no command of the old one
       });
       return gateway
         .switchProject(projectId)

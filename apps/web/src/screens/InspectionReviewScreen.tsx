@@ -35,8 +35,10 @@ export function InspectionReviewScreen() {
   const setRouteItem = useStore((s) => s.setRouteItem);
   const activeReviewId = useStore((s) => s.activeReviewId);
   const projectLoadState = useStore((s) => s.projectLoadState);
+  const reconcilePending = useStore((s) => s.commandReconcilePending);
   const projectSettled = projectLoadState === 'ready' || projectLoadState === 'idle';
-  const settled = moduleOwned ? inspectionsLoad === 'ready' : projectSettled;
+  // Codex 4204448859 — a committed command's reconcile still owed means the retained slices predate it
+  const settled = !reconcilePending && (moduleOwned ? inspectionsLoad === 'ready' : projectSettled);
   const routeReview = routeItem !== null && reviews.some((r) => r.id === routeItem) ? routeItem : null;
   const routeChecklist = routeItem !== null && openChecklists.some((c) => c.id === routeItem) ? routeItem : null;
   const missingItem = routeItem !== null && settled && !routeReview && !routeChecklist ? routeItem : null;

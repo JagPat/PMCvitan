@@ -8,7 +8,10 @@ import { inspectionsReadMode } from '@/data/apiGateway';
 import { ChevronRight } from '@/lib/icons';
 import styles from './NotificationPanel.module.css';
 
-const projectSettled = (s: { projectLoadState: string }): boolean => s.projectLoadState === 'ready' || s.projectLoadState === 'idle';
+// Codex 4204448859 — a command's own snapshot can deliver the notice while the module-owned slices are
+// still the pre-command ones (`commandReconcilePending`): those slices are not settled until it lands.
+const projectSettled = (s: { projectLoadState: string; commandReconcilePending: boolean }): boolean =>
+  (s.projectLoadState === 'ready' || s.projectLoadState === 'idle') && !s.commandReconcilePending;
 
 export function NotificationPanel() {
   const open = useStore((s) => s.notifOpen);
