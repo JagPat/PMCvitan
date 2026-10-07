@@ -471,6 +471,9 @@ export interface AppActions {
   openDrawing: (drawingId: string) => void;
   /** B6 — name (or clear) the current screen's item; the URL follows it (RouteBridge) */
   setRouteItem: (item: string | null) => void;
+  /** Live bug 1 — open a screen AT one of its records (a notification tap): the screen, its item
+   *  (a client's decision focus on `client-decisions`), and the panel closed, in one step. */
+  openItem: (screen: ScreenKey, item: string | null) => void;
   setLang: (l: Lang) => void;
   toggleNotif: () => void;
   openCreate: () => void;
@@ -2582,6 +2585,13 @@ export const useStore = create<Store>()(
       set((s) => {
         if (s.screen === 'client-decisions') s.decisionFocus = item;
         else s.routeItem = item;
+      }),
+    openItem: (screen, item) =>
+      set((s) => {
+        s.screen = screen;
+        s.notifOpen = false;
+        s.decisionFocus = screen === 'client-decisions' ? item : null;
+        s.routeItem = screen === 'client-decisions' ? null : item;
       }),
     openPlace: (nodeId) =>
       set((s) => {

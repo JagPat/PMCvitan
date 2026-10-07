@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { pathForScreen } from '@/lib/screens';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
-import { Eyebrow, DecisionChip, Button, LocationContext, EditState, ConsultationThread, CountersignControls } from '@/components';
+import { Eyebrow, DecisionChip, Button, LocationContext, EditState, ConsultationThread, CountersignControls, ItemNotFound } from '@/components';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { Lock, Plus, ChevronRight } from '@/lib/icons';
 import { deciderNoun, signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
@@ -63,6 +63,13 @@ export function DecisionLogScreen() {
   // never-approved pending row is eligible (the service refuses everything else with a 409)
   const mayWithdrawDecision = (d: Decision): boolean =>
     can('decision.withdraw', role) && d.status === 'pending' && !d.draft;
+  // Live bug 1 — a link naming a decision this register does not hold says so, once the decision
+  // slice has settled (never during a load, and never over a failed read that holds nothing).
+  const routeItem = useStore((s) => s.routeItem);
+  const setRouteItem = useStore((s) => s.setRouteItem);
+  const settled = useStore((s) =>
+    (s.projectLoadState === 'ready' || s.projectLoadState === 'idle') && (s.decisionsLoad === 'ready' || s.decisionsLoad === 'idle'));
+  const missingItem = routeItem !== null && settled && !rows.some((d) => d.id === routeItem) ? routeItem : null;
   const [issuing, setIssuing] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupBy>('location');
   const [query, setQuery] = useState('');
@@ -110,6 +117,7 @@ export function DecisionLogScreen() {
         </div>
       </div>
       {issuing && <IssueDecisionModal onClose={() => setIssuing(false)} />}
+      {missingItem && <ItemNotFound what="Decision" id={missingItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show all decisions" />}
 
       {/* controls: group-by, search, status filter */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', margin: '12px 0 4px' }}>

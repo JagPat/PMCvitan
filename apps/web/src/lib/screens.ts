@@ -177,8 +177,9 @@ export function pathForScreen(screen: ScreenKey, projectId: string, item?: strin
 
 /** B6 — the screens whose URL may name ONE item after the screen path, so a place, a drawing or a
  *  decision can be bookmarked, shared and reached with back/forward: `/places/<nodeId>`,
- *  `/drawings/<drawingId>`, `/decisions/<decisionId>` and `/client/decisions/<decisionId>`. */
-export const ITEM_SCREENS: ReadonlySet<ScreenKey> = new Set<ScreenKey>(['places', 'drawings', 'decision-log', 'client-decisions']);
+ *  `/drawings/<drawingId>`, `/decisions/<decisionId>` and `/client/decisions/<decisionId>`. Live bug 1
+ *  adds `/review/<inspectionId>`, so a notice about an inspection opens that inspection. */
+export const ITEM_SCREENS: ReadonlySet<ScreenKey> = new Set<ScreenKey>(['places', 'drawings', 'decision-log', 'client-decisions', 'inspect-review']);
 
 /** Match a bare screen path (`/decisions`, `/client/decisions`) to its screen key. */
 export function screenForPath(path: string): ScreenKey | null {
