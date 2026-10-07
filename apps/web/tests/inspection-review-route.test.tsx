@@ -241,3 +241,28 @@ describe("the engineer's field checklist names ONE checklist (Codex 4205610125)"
     expect(view.getByTestId('item-not-found').textContent).toContain('INSP-51');
   });
 });
+
+describe('Codex 4212402110 — nothing of another record stands under a departing route', () => {
+  it('Inspection Review: while the decided review\'s route is being released, no other review\'s actions are shown', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const first = useStore.getState().reviews[0];
+    // hold the route so the transitional render can be observed
+    const view = await mount({ routeItem: first.id, activeReviewId: first.id, setRouteItem: () => {} });
+    fireEvent.click(view.getByRole('button', { name: /Approve Inspection/ }));
+    // the decided review leaves the server's queue; another review remains and the selection falls to it
+    act(() => { useStore.setState({ reviews: [{ ...first, id: 'INSP-77', title: 'Another Review' }] }); });
+    expect(view.getByTestId('inspections-returning')).toBeTruthy();
+    expect(view.queryByRole('button', { name: /Approve Inspection/ })).toBeNull();
+    expect(view.queryByTestId('send-reinspection')).toBeNull();
+  });
+
+  it('the field checklist: while a submitted linked checklist\'s route is being released, the next checklist is not shown under it', async () => {
+    const { useStore, view } = await mountField({ routeItem: 'INSP-51', setRouteItem: () => {} });
+    expect(useStore.getState().checklist?.id).toBe('INSP-51');
+    const rest = useStore.getState().openChecklists.filter((c) => c.id !== 'INSP-51');
+    act(() => { useStore.setState({ openChecklists: rest, checklist: structuredClone(rest[0]), selectedChecklistId: rest[0].id }); });
+    expect(view.getByText('Returning to your checklists…')).toBeTruthy();
+    expect(view.queryByTestId('checklist-title')).toBeNull();
+  });
+});

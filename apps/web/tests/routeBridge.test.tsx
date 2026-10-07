@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, act } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { useStore, getInitialState } from '@/store/store';
 import { RouteBridge } from '@/layout/RouteBridge';
 import type { ApiGateway } from '@/data/apiGateway';
@@ -266,5 +266,47 @@ describe('RouteBridge — the decider route survives a loading decision slice (P
     act(() => { useStore.setState({ projectLoadState: 'ready' } as never); });
     await flush();
     expect(useStore.getState().screen).toBe('inbox');
+  });
+});
+
+describe('RouteBridge — a record link that STARTS the tab gets its parent list behind it (owner live check, #482)', () => {
+  const visited: string[] = [];
+  let back: () => void = () => {};
+  function HistoryProbe() {
+    const path = useLocation().pathname;
+    const navigate = useNavigate();
+    back = () => navigate(-1);
+    if (visited[visited.length - 1] !== path) visited.push(path);
+    return null;
+  }
+  const renderCold = (path: string) => {
+    visited.length = 0;
+    return render(
+      <MemoryRouter initialEntries={[path]}>
+        <RouteBridge />
+        <HistoryProbe />
+      </MemoryRouter>,
+    );
+  };
+
+  it('an allowed record gets its list underneath: Back goes to the list', async () => {
+    useStore.setState({ role: 'pmc' });
+    renderCold('/projects/ambli/review/INSP-21');
+    await flush();
+    expect(visited[visited.length - 1]).toBe('/projects/ambli/review/INSP-21');
+    act(() => back());
+    await flush();
+    expect(visited[visited.length - 1]).toBe('/projects/ambli/review');
+  });
+
+  it('Codex 4212402103 — a record the role cannot hold gets NO parent: its forbidden list is never entered, by Back or otherwise', async () => {
+    useStore.setState({ role: 'engineer' });
+    renderCold('/projects/ambli/review/INSP-21');
+    await flush();
+    // the guard redirected the forbidden record to the engineer's home
+    expect(visited[visited.length - 1]).not.toMatch(/\/review/);
+    act(() => back());
+    await flush();
+    expect(visited).not.toContain('/projects/ambli/review');
   });
 });

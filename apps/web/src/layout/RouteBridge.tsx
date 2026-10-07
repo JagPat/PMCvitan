@@ -1,8 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { DEV_AUTH } from '@/data/apiGateway';
+import { DEV_AUTH, API_BASE } from '@/data/apiGateway';
 import { viewerIsDecider } from '@vitan/shared';
 import { parseLocation, pathForScreen, screensFor, withDeciderRoute, SCREEN_CAPABILITY, ITEM_SCREENS } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
@@ -78,15 +78,15 @@ export function RouteBridge() {
   // Its parent list is put underneath it once, on the first render: Back then goes to the list the
   // record belongs to. A record opened IN the app (a notification, a card, a row) is a pushed entry with
   // the previous screen behind it, and a reload keeps its place in history — neither is touched.
-  useEffect(() => {
+  // Codex 4212402103 — the parent is placed only once the role guard below has ACCEPTED the record's
+  // screen for a settled identity (a loaded project, or a signed-out/local session): a forbidden record
+  // is redirected and gets no parent, so Back can never land on a screen the role cannot hold.
+  const [coldStart] = useState<string | null>(() => {
     const first = (window.history.state as { idx?: number } | null)?.idx ?? 0;
     const { screen: fromPath, item } = parseLocation(location.pathname);
-    if (first !== 0 || !fromPath || !item || !ITEM_SCREENS.has(fromPath)) return;
-    const record = location.pathname;
-    navigate(record.slice(0, record.lastIndexOf('/')), { replace: true });
-    navigate(record);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return first === 0 && fromPath && item && ITEM_SCREENS.has(fromPath) ? location.pathname : null;
+  });
+  const coldRecord = useRef<string | null>(coldStart);
 
   // URL -> store (project + screen reconciliation, role-guarded)
   useEffect(() => {
@@ -162,6 +162,7 @@ export function RouteBridge() {
     );
     if (!fromPath || !allowed.includes(fromPath)) {
       pendingItem.current = null;
+      coldRecord.current = null; // a redirected record gets no parent
       if (screen !== allowed[0]) setScreen(allowed[0]);
       return;
     }
@@ -174,6 +175,19 @@ export function RouteBridge() {
     if (want && want.projectId === activeProjectId && want.screen === fromPath && !itemLoading) {
       pendingItem.current = null;
       if (routeItemOf(useStore.getState()) !== want.item) setRouteItem(want.item);
+    }
+    // the cold record's parent, once the guard has accepted it for a settled identity
+    const record = coldRecord.current;
+    if (record !== null) {
+      // demo mode (no API) runs on a fixed persona; over the API the identity is settled once a signed-in
+      // project has loaded (before sign-in the role is not yet the viewer's)
+      const identitySettled = !API_BASE || (projectLoadState === 'ready' && !identityPending);
+      if (location.pathname !== record) coldRecord.current = null; // the viewer has moved on: nothing to place
+      else if (identitySettled && (fromPath !== 'client-decisions' || decisionsSettled)) {
+        coldRecord.current = null;
+        navigate(record.slice(0, record.lastIndexOf('/')), { replace: true });
+        navigate(record);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown, isOpenDecider, authed, identityPending, hasDecisions, decisionsLoad]);

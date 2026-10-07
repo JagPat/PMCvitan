@@ -49,11 +49,12 @@ export function InspectionReviewScreen() {
   const [decidedId, setDecidedId] = useState<string | null>(null);
   const released = routeItem !== null && routeItem === decidedId && !routeReview && !routeChecklist;
   useEffect(() => {
-    if (released) {
-      setDecidedId(null);
-      setRouteItem(null);
-    }
+    if (released) setRouteItem(null);
   }, [released, setRouteItem]);
+  // the decision's claim ends with the route that named it (released, Back, another link)
+  useEffect(() => {
+    if (decidedId !== null && routeItem !== decidedId) setDecidedId(null);
+  }, [routeItem, decidedId]);
   const missingItem = routeItem !== null && settled && !routeReview && !routeChecklist && !released ? routeItem : null;
   useEffect(() => {
     if (routeReview && activeReviewId !== routeReview) setActiveReview(routeReview);
@@ -68,6 +69,17 @@ export function InspectionReviewScreen() {
     if (active && routeItem === active.id) setDecidedId(active.id);
     act();
   };
+  // Codex 4212402110 — between the decided review leaving the queue and the route being cleared (an
+  // effect), the selection has already fallen back to another review: nothing actionable is rendered
+  // under the departing URL
+  if (released) {
+    return (
+      <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-returning">
+        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Returning to the inspection queue…</div>
+      </div>
+    );
+  }
   // Codex 4208284788 — the routed review becomes the active one in an effect, so for one render the
   // previous active review (with its live Approve / Send Re-inspection, which act on the active id)
   // would stand under the routed URL: until the two agree, nothing actionable is rendered
