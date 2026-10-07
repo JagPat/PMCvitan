@@ -127,7 +127,7 @@ describe('a committed command still reconciling is not a settled slice (Codex 42
   it('a template notice is "loading" and a client is routed to the register, while the reconcile is owed', async () => {
     const { useStore, getByTestId } = await mount(
       [{ text: 'New decision issued for approval: Porch Tiles', time: 'now', color: '#000' }],
-      { commandReconcilePending: true },
+      { commandReconcilePending: true, commandReconcileOwed: { decisions: true, dailyLog: false, drawings: false, inspections: false, activities: false } },
     );
     fireEvent.click(getByTestId('notif-item'));
     expect(getByTestId('notif-loading')).toBeTruthy();
@@ -142,7 +142,7 @@ describe('a committed command still reconciling is not a settled slice (Codex 42
     expect(awaiting.status).toBe('pending');
     const { getByTestId } = await mount(
       [{ text: 'Client approved Living Room Flooring — Marble', time: 'now', color: '#000', decisionId: 'DL-014' }],
-      { role: 'client', commandReconcilePending: true },
+      { role: 'client', commandReconcilePending: true, commandReconcileOwed: { decisions: true, dailyLog: false, drawings: false, inspections: false, activities: false } },
     );
     fireEvent.click(getByTestId('notif-item'));
     expect(useStore.getState().screen).toBe('decision-log');
@@ -214,6 +214,7 @@ describe('the store marks a command still reconciling (Codex 4204448859)', () =>
     // the retained slice still says D-1 is pending and its read is 'ready' — and nothing may judge from it
     expect(s().decisionsLoad).toBe('ready');
     expect(s().commandReconcilePending).toBe(true);
+    expect(s().commandReconcileOwed.decisions).toBe(true);
 
     release({ decisions: [dec('D-1', 'approved')], source: 'live', generation: null } as ModuleDecisions);
     await flush();
@@ -261,3 +262,55 @@ describe('the store marks a command still reconciling (Codex 4204448859)', () =>
   });
 });
 
+
+describe('an owed reconcile is tracked per slice (Codex 4209988801)', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const dec = (id: string, status: Decision['status'] = 'pending'): Decision =>
+    ({ id, title: id, room: 'GF', status, photoSwatch: 'marble', options: [], deciderKind: 'client' }) as Decision;
+  const snapshot = (): ApiSnapshot => ({
+    project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: 'G+2', stage: 'Finishing', siteCode: 'AMB', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+    decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+    drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+  } as unknown as ApiSnapshot);
+  const inspections = () => ({ checklist: null, openChecklists: [], reviews: [], review: null, reinspectionCreated: false, placedInspections: [], source: 'live', generation: null });
+
+  it('a failed decisions read leaves the refreshed inspection slice settled; a later read clears the rest', async () => {
+    vi.stubEnv('VITE_DECISIONS_READ', 'moduleQuery');
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    const { useStore, getInitialState } = await import('@/store/store');
+    const { decisionsSliceSettled, inspectionsSliceSettled } = await import('@/lib/notifications');
+    useStore.setState(getInitialState());
+    const s = () => useStore.getState();
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(snapshot()),
+      decisions: vi.fn().mockResolvedValue({ decisions: [dec('D-1')], source: 'live', generation: null } as ModuleDecisions),
+      inspections: vi.fn().mockResolvedValue(inspections()),
+      approveDecision: vi.fn().mockResolvedValue(snapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().requestFreshSnapshot();
+    await flush();
+    await flush();
+    expect(s().commandReconcilePending).toBe(false);
+
+    // the approval's reconcile: the inspections read lands, the decisions read fails
+    gw.decisions.mockRejectedValueOnce(new Error('decisions down'));
+    useStore.setState({ modal: { type: 'approve', decId: 'D-1', optIdx: 0 } });
+    s().confirmApprove();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(gw.approveDecision).toHaveBeenCalled();
+    expect(s().decisionsLoad).toBe('error');
+    expect(s().commandReconcilePending).toBe(true);
+    expect(s().commandReconcileOwed).toMatchObject({ decisions: true, inspections: false });
+    expect(inspectionsSliceSettled(s())).toBe(true);
+    expect(decisionsSliceSettled(s())).toBe(false);
+
+    // Retry: the decisions read lands, and the command is confirmed in every slice it was owed for
+    s().requestFreshSnapshot();
+    for (let i = 0; i < 3; i++) await flush();
+    expect(s().commandReconcilePending).toBe(false);
+    expect(s().commandReconcileOwed.decisions).toBe(false);
+    expect(decisionsSliceSettled(s())).toBe(true);
+    s()._setGateway(null);
+  });
+});
