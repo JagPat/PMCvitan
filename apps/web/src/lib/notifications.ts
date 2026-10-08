@@ -1,5 +1,5 @@
 import type { AppNotification, Role, ScreenKey } from '@vitan/shared';
-import { ITEM_SCREENS, screensFor } from './screens';
+import { screensFor } from './screens';
 
 /**
  * The subject a notification is about, inferred from its (templated) text. The backend and the
@@ -78,7 +78,20 @@ export interface NotificationRecords {
   /** false while the decision slice is loading, failed or still reconciling a command: a title
    *  cannot be judged absent, nor a decision judged awaiting, then */
   decisionsSettled: boolean;
+  /** Live bug 1b-3 (owner decision 2026-10-08: read-time validation) — per inspection screen, the
+   *  inspections THAT screen resolves from the viewer's own slice. A stamped notice opens its inspection only
+   *  when the destination screen holds it: the stamp is a plain column, so the bell, not the database, is
+   *  what keeps a wrong or foreign stamp from opening a record (Codex 4218186510: a record another screen
+   *  holds would open as "not found"). */
+  inspections: Readonly<Record<InspectionScreen, readonly { id: string }[]>>;
+  /** false while the inspection slice is loading, failed or still reconciling a command */
+  inspectionsSettled: boolean;
 }
+
+/** The screens that open one inspection by id (`/review/<id>`, `/site/checklist/<id>`). */
+export type InspectionScreen = 'inspect-review' | 'engineer-check';
+const isInspectionScreen = (screen: ScreenKey): screen is InspectionScreen =>
+  screen === 'inspect-review' || screen === 'engineer-check';
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -183,8 +196,12 @@ export function notificationLink(n: AppNotification, role: Role, records: Notifi
   if (kind === 'decision') return decisionLink(n, role, records);
   const screen = screenForKind(kind, role);
   if (!screen) return null;
-  // an inspection notice opens the inspection it names on whichever inspection screen the role holds;
-  // that screen judges the id against its settled slice and says so when the record is not there (1b-2)
-  const item = kind === 'inspection' && ITEM_SCREENS.has(screen) ? inspectionIdOf(n) : null;
-  return { screen, item, missing: false, loading: false };
+  // an inspection notice opens the inspection it names on whichever inspection screen the role holds — but
+  // only one the viewer's own settled slice holds (owner decision 2026-10-08: the stamp is validated when it
+  // is read). A stamp the slice does not hold is `missing`, and the bell offers the screen instead.
+  const id = kind === 'inspection' && isInspectionScreen(screen) ? inspectionIdOf(n) : null;
+  if (id === null || !isInspectionScreen(screen)) return { screen, item: null, missing: false, loading: false };
+  if (!records.inspectionsSettled) return { screen, item: null, missing: false, loading: true };
+  if (!records.inspections[screen].some((i) => i.id === id)) return { screen, item: null, missing: true, loading: false };
+  return { screen, item: id, missing: false, loading: false };
 }

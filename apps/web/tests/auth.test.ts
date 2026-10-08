@@ -203,6 +203,29 @@ describe('setRole drops any real OTP session', () => {
   });
 });
 
+describe('setRole against the API starts a new identity (Codex 4219959023)', () => {
+  it('clears the previous persona\'s slices and loads, so nothing judges against them', () => {
+    s()._setGateway({} as ApiGateway);
+    useStore.setState((st) => {
+      st.projectLoadState = 'ready';
+      st.inspectionsLoad = 'ready';
+      st.openChecklists = [{ id: 'INSP-40' }] as unknown as typeof st.openChecklists;
+    });
+    const generation = s().projectScopeGeneration;
+    s().setRole('engineer');
+    expect(s().openChecklists).toEqual([]);
+    expect(s().inspectionsLoad).toBe('idle');
+    expect(s().projectLoadState).toBe('loading');
+    expect(s().projectScopeGeneration).toBe(generation + 1);
+  });
+
+  it('the local demo (no API) keeps its seeded store', () => {
+    const seeded = s().openChecklists;
+    s().setRole('engineer');
+    expect(s().openChecklists).toBe(seeded);
+  });
+});
+
 describe('otpPress builds the code and auto-verifies', () => {
   afterEach(() => vi.useRealTimers());
 
