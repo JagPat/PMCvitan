@@ -158,7 +158,12 @@ export const CLAUDE_SHADOW_CONTEXT = 'claude-independent-review';
 export const CLAUDE_STATUS_CONTEXT = 'claude-current-head';
 export const ROOT_CAUSE_ADVISORY_AFTER_FINDING_HEADS = 2;
 
-export function requiredChecksForPullRequest(pullRequestNumber) {
+// `affected` (owner decision 2026-10-08, rule 7) is `affectedProducts(files).products` from
+// scripts/ci-affected.mjs — the product jobs this PR's CI launched. Absent, every product is required.
+export function requiredChecksForPullRequest(pullRequestNumber, affected = null) {
+  const required = Array.isArray(affected)
+    ? REQUIRED_CHECKS.filter((name) => !PRODUCT_CHECKS.includes(name) || affected.includes(name))
+    : REQUIRED_CHECKS;
   if (
     Number.isInteger(pullRequestNumber)
     && pullRequestNumber > 0
@@ -166,11 +171,11 @@ export function requiredChecksForPullRequest(pullRequestNumber) {
   ) {
     // Neither job exists on pre-policy branches; requiring them would strand
     // an older PR on a check it cannot emit.
-    return REQUIRED_CHECKS.filter(
+    return required.filter(
       (name) => name !== 'review-scope' && name !== 'battery-plan',
     );
   }
-  return REQUIRED_CHECKS;
+  return required;
 }
 
 // Review history can prompt an audit, but cannot refuse the next correction.

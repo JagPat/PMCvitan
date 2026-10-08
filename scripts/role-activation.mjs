@@ -286,7 +286,8 @@ export function roleTransferActivationVerdict(evidence, expected) {
   // install binds these ids, so a partial set could let an installer act on CI that omitted a required check
   // (Codex finding on #625).
   const ciDeciderRunIds = Array.isArray(finalCi?.deciders) ? finalCi.deciders.map((run) => run?.checkRunId) : [];
-  const requiredCheckNames = requiredChecksForPullRequest(pullRequest);
+  // the checks the evidence reader required for this PR's files (Codex 4214321794); absent, all of them
+  const requiredCheckNames = Array.isArray(finalCi?.requiredChecks) ? finalCi.requiredChecks : requiredChecksForPullRequest(pullRequest);
   const deciderNames = Array.isArray(finalCi?.deciders) ? finalCi.deciders.map((run) => run?.name) : [];
   prove('fullCiGreen', atBase(finalCi)
     && finalCi.headSha === correctiveHeadSha

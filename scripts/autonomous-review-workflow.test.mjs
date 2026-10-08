@@ -2875,7 +2875,11 @@ test('CI runs once per pull-request head', async () => {
   const ci = await readFile(ciPath, 'utf8');
 
   assert.match(ci, /pull_request:/);
-  assert.doesNotMatch(ci, /push:/);
+  // Owner decision 2026-10-08 (rule 7): the full battery runs on the push to main, never on a PR
+  // branch push, so a PR head still gets exactly one CI run.
+  const push = /\n  push:\n((?: {4}.*\n)+)/u.exec(ci);
+  assert.ok(push, 'the push to main runs the full battery');
+  assert.match(push[1], /^ {4}branches: \[main\]\n$/u);
 });
 
 test('a base retargeted MID-POLL cannot mint an obligation, publish a finding, or promote', async () => {
