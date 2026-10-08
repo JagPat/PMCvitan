@@ -24,8 +24,8 @@ export function NotificationPanel() {
   // flight or after it failed (a module read can fail while the snapshot that carried the notice
   // succeeds), nor while a committed command's reconcile is owed
   const decisionsSettled = useStore(decisionsSliceSettled);
-  // Live bug 1b-3 — the inspections the viewer's inspection screens hold (the PMC's review queue and the
-  // outstanding checklists), judged by the same settled predicate those screens use; under module
+  // Live bug 1b-3 — the inspections the viewer's inspection screens hold (the PMC's review queue, the
+  // outstanding checklists and the checklist in the slot), judged by the same settled predicate those screens use; under module
   // read-ownership a read that has not yet landed is not settled either
   const reviews = useStore(useShallow((s) => s.reviews));
   const openChecklists = useStore(useShallow((s) => s.openChecklists));
@@ -51,7 +51,13 @@ export function NotificationPanel() {
         awaitsViewer: (d.status === 'pending' || d.status === 'change') && viewerIsDecider(d, role, sessionUserId),
       })),
       decisionsSettled,
-      inspections: [...reviews, ...openChecklists, ...(checklist ? [checklist] : [])].map((i) => ({ id: i.id })),
+      // Codex 4218186510 — exactly what each destination resolves: the review screen opens a queued review
+      // or an outstanding checklist; the checklist screen opens an outstanding checklist, or the one in the
+      // slot only while it is unsubmitted (a submitted one is history, never a routed item)
+      inspections: {
+        'inspect-review': [...reviews, ...openChecklists].map((i) => ({ id: i.id })),
+        'engineer-check': [...openChecklists, ...(checklist && !checklist.submitted ? [checklist] : [])].map((i) => ({ id: i.id })),
+      },
       inspectionsSettled,
     }),
     [decisions, role, sessionUserId, decisionsSettled, reviews, openChecklists, checklist, inspectionsSettled],

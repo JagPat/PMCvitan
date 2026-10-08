@@ -47,7 +47,10 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
       { id: 'DL-009', title: 'Master Bath CP Fittings', awaitsViewer: false },
     ],
     decisionsSettled: true,
-    inspections: [{ id: 'INSP-21' }, { id: 'INSP-30' }, { id: 'INSP-31' }, { id: 'INSP-32' }],
+    inspections: {
+      'inspect-review': [{ id: 'INSP-21' }, { id: 'INSP-30' }, { id: 'INSP-31' }, { id: 'INSP-32' }],
+      'engineer-check': [{ id: 'INSP-21' }, { id: 'INSP-30' }, { id: 'INSP-31' }, { id: 'INSP-32' }],
+    },
     inspectionsSettled: true,
   };
   const n = (text: string, decisionId?: string) => ({ text, time: 'now', color: '#000', ...(decisionId ? { decisionId } : {}) });
@@ -174,6 +177,14 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
       .toEqual(at('inspect-review', null, { loading: true }));
     // a held stamp opens its record
     expect(notificationLink(stamped('INSP-21'), 'engineer', records)).toEqual(at('engineer-check', 'INSP-21'));
+  });
+
+  it('Codex 4218186510 — a stamp is judged against what its DESTINATION screen resolves', () => {
+    const stamped = { ...n('Re-inspection due: Waterproofing, Terrace'), inspectionId: 'INSP-21' };
+    // INSP-21 is a PMC review only: the review screen opens it, the engineer's checklist screen cannot
+    const split = { ...records, inspections: { 'inspect-review': [{ id: 'INSP-21' }], 'engineer-check': [] } };
+    expect(notificationLink(stamped, 'pmc', split)).toEqual(at('inspect-review', 'INSP-21'));
+    expect(notificationLink(stamped, 'engineer', split)).toEqual(at('engineer-check', null, { missing: true }));
   });
 
   it('Codex 4214386937 — an id in the TEXT names nothing, even trailing: a legacy zone can end in "(INSP-N)"', () => {
