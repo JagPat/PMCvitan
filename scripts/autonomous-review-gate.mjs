@@ -24,6 +24,7 @@ export {
 } from './review-policy.mjs';
 
 import { readFile } from 'node:fs/promises';
+import { affectedProducts } from './ci-affected.mjs';
 import { pathToFileURL } from 'node:url';
 
 import {
@@ -58,6 +59,21 @@ import {
   newestFirst,
   recency,
 } from './check-run-coverage.mjs';
+
+// Owner decision 2026-10-08 (rule 7): the required product checks are the ones this PR's files affect —
+// the same `affectedProducts` the CI battery plan launched. An unreadable file list requires them all.
+async function requiredChecksFor(client, pullRequest) {
+  let files = null;
+  try {
+    files = typeof client.pullRequestFiles === 'function' ? await client.pullRequestFiles(pullRequest.number) : null;
+  } catch {
+    files = null;
+  }
+  return requiredChecksForPullRequest(
+    pullRequest.number,
+    Array.isArray(files) ? affectedProducts(files).products : null,
+  );
+}
 
 const RECOVERY_CONTEXT_PREFIX = 'codex-recovery-request/';
 const COMMENT_MARKER = '<!-- autonomous-review-state -->';
@@ -1354,7 +1370,7 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
     client.checkRuns(expectedHead),
   ]);
   const latestReview = statuses.find((status) => status.context === STATUS_CONTEXT);
-  const required = summarizeRequiredChecks(checks, requiredChecksForPullRequest(live.number));
+  const required = summarizeRequiredChecks(checks, await requiredChecksFor(client, live));
   if (latestReview?.state !== 'success' || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
   }
@@ -1497,7 +1513,7 @@ export async function ensureTerminalReviewState(
 
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
-  const requiredChecks = requiredChecksForPullRequest(pullRequest.number);
+  const requiredChecks = await requiredChecksFor(client, pullRequest);
   while (true) {
     const live = await client.pullRequest(pullRequest.number);
     if (live.head.sha !== expectedHead) return { state: 'superseded' };
@@ -1630,7 +1646,7 @@ export async function handleCiFailure(
   { existingStatus = null, existingStatuses = [], scope = { allowed: true } } = {},
 ) {
   const checkRuns = await client.checkRuns(expectedHead);
-  const requiredChecks = requiredChecksForPullRequest(pullRequest.number);
+  const requiredChecks = await requiredChecksFor(client, pullRequest);
   const ciSummary = summarizeRequiredChecks(checkRuns, requiredChecks);
   const disposition = ciFailureDisposition(context, existingStatus, ciSummary.failed, {
     pullRequest, scope, skipped: skippedRequiredChecks(checkRuns, requiredChecks),
@@ -1795,7 +1811,7 @@ export async function rerunAdmittedCandidateScope(client, pullRequest, expectedH
   if (!failedChecks?.includes('review-scope') || scope?.allowed !== true) return null;
   if (correctionOwnerDeclaration(pullRequest).state !== 'candidate') return null;
   const runId = decidingRunId(
-    await client.checkRuns(expectedHead), 'review-scope', requiredChecksForPullRequest(pullRequest.number),
+    await client.checkRuns(expectedHead), 'review-scope', await requiredChecksFor(client, pullRequest),
   );
   if (!runId) return null;
   if (!await refreshCurrentHead(client, pullRequest.number, expectedHead)) return 'superseded';
@@ -2238,7 +2254,7 @@ export async function run() {
   // Before any status write: a wake from a run whose battery the plan skipped, while another run still
   // decides this head, has nothing to publish — that run's completion wakes the controller again.
   if (batteryDeferredToInFlightRun(
-    await client.checkRuns(expectedHead), context.ciRunId, requiredChecksForPullRequest(pullRequest.number),
+    await client.checkRuns(expectedHead), context.ciRunId, await requiredChecksFor(client, pullRequest),
   )) {
     console.log(
       `CI run ${context.ciRunId} skipped the product battery while another CI run for this head is still `
@@ -2455,7 +2471,7 @@ export async function run() {
       const finalStatuses = await client.statuses(expectedHead);
       const finalCheckSummary = summarizeRequiredChecks(
         await client.checkRuns(expectedHead),
-        requiredChecksForPullRequest(pullRequest.number),
+        await requiredChecksFor(client, pullRequest),
       );
       if (
         finalCheckSummary.state !== 'success'

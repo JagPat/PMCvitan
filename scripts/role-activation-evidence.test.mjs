@@ -12,7 +12,8 @@ import {
   readRoleActivationEvidence,
 } from './role-activation-evidence.mjs';
 import { probeMarker, probeTrailerValue } from './codex-fix-probe.mjs';
-import { CODEX_LOGIN, REQUIRED_CHECKS } from './review-policy.mjs';
+import { CODEX_LOGIN, PRODUCT_CHECKS, REQUIRED_CHECKS } from './review-policy.mjs';
+import { affectedProducts } from './ci-affected.mjs';
 import { EVENT_LOG_PAGE_SIZE } from './pull-request-event-log.mjs';
 import {
   BASE, BRANCH, CORRECTIVE, FINDING_REF, INITIAL_FINDING_RUN, ORIGINAL, OTHER, PR, REPO, REQUEST_ID, correctiveCommit,
@@ -102,12 +103,30 @@ test('the reader normalizes a full correction cycle with identity and server tim
     assert.ok(freshness.observedAtMs < readAt);
   }
   // Read-only: GETs only (the fake refuses writes), and only the documented read endpoints.
-  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619$|issues\/619\/(events|comments)\?|pulls\/619\/(comments|reviews)\?|activity\?|compare\/|commits\/[0-9a-f]{40}$)/u.test(path)));
+  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619$|issues\/619\/(events|comments)\?|pulls\/619\/(comments|reviews|files)\?|activity\?|compare\/|commits\/[0-9a-f]{40}$)/u.test(path)));
   // The reviewed head commit is read once (immutable) and its owner reported as the controller reads it.
   assert.equal(calls.filter((path) => path === `/repos/${REPO}/commits/${ORIGINAL}`).length, 1);
   assert.deepEqual(evidence.records.originalHead, { sha: ORIGINAL, correctionOwner: HELD_CODEX });
   // The push log names its period; this cycle is inside a day.
   assert.ok(calls.filter((path) => path.includes('/activity?')).every((path) => path.endsWith('&time_period=day')));
+});
+
+test('each head is classified by its own diff: a corrective head that adds a product does not strand the original CI (Codex 4214389885)', async () => {
+  const webOnly = affectedProducts([{ filename: 'apps/web/src/App.tsx' }]).products;
+  const expanded = (w) => {
+    // the original head touched the web app only, so its CI never launched the API product checks
+    w.runs[ORIGINAL] = w.runs[ORIGINAL].filter((run) => !PRODUCT_CHECKS.includes(run.name) || webOnly.includes(run.name));
+    w.originalComparison = { files: [{ filename: 'apps/web/src/App.tsx' }] };
+    // the corrective head added an API change, so the cumulative PR diff spans both products
+    w.prFiles = [{ filename: 'apps/web/src/App.tsx' }, { filename: 'apps/api/src/main.ts' }];
+  };
+  const { evidence } = await readWorld(expanded);
+  assert.equal(evidence.records.initialCi.state, 'success');
+  assert.ok(!evidence.records.initialCi.requiredChecks.includes('api'));
+  assert.ok(evidence.records.finalCi.requiredChecks.includes('api'));
+  // an unreadable original diff requires every product check, as before
+  const { evidence: unread } = await readWorld((w) => { expanded(w); delete w.originalComparison.files; });
+  assert.notEqual(unread.records.initialCi.state, 'success');
 });
 
 test('the final CI is the latest applicable attempt: a newer failed or cancelled run supersedes an earlier success', async () => {

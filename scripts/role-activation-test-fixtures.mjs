@@ -199,7 +199,9 @@ export function client(w) {
         after('activity');
         return page;
       }
+      if (path === `/repos/${REPO}/compare/${BASE}...${ORIGINAL}` && w.originalComparison) return w.originalComparison;
       if (path.startsWith(`/repos/${REPO}/compare/`)) return w.comparison;
+      if (path.startsWith(`/repos/${REPO}/pulls/${PR}/files?`) && w.prFiles) return w.prFiles;
       if (path === `/repos/${REPO}/commits/${ORIGINAL}`) {
         if (w.originalHeadError) throw new Error(w.originalHeadError);
         return w.originalHead;
