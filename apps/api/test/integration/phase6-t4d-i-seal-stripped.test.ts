@@ -4233,23 +4233,17 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       refused: {
         at: "phase6 4d-i: notice notification-probe is KINDED",
         color: "phase6 4d-i: notice notification-probe is KINDED",
-        // the probe row carries both an event and an inspection stamp, so either seal may refuse first
-        decisionId: [
-          "phase6 4d-i: notice notification-probe announces event ss-ev1 about de",
-          "live bug 1b-3a: notice notification-probe announces inspection t4d-i",
-        ],
+        decisionId: "phase6 4d-i: notice notification-probe announces event ss-ev1 about de",
         eventId: "phase6 4d-i: notice notification-probe is bound to event ss-ev1 and ma",
         id: "phase6 4d-i: Notification.notification-probe is the identity of a reco",
-        inspectionId: "live bug 1b-3a: notice notification-probe may not change the inspect",
         kind: "phase6 4d-i: notice notification-probe's kind",
-        projectId: [
-          "phase6 4d-i: notice notification-probe may not change project",
-          "live bug 1b-3a: notice notification-probe announces inspection t4d-i",
-        ],
+        projectId: "phase6 4d-i: notice notification-probe may not change project",
         text: "phase6 4d-i: notice notification-probe is KINDED",
         time: "phase6 4d-i: notice notification-probe is KINDED",
       },
       writable: {
+        inspectionId:
+          "live bug 1b-3a: the inspection an INSPECTION notice announces. Inspection notices are kindless (never event-bound), so the 4d-i seal, which governs KINDED decision notices, owes it no freeze; on a kinded notice it records no act, and the bell resolves a decision notice by its decisionId before any other identity, so a stamp there redirects nothing; the stamp is validated where it is read (owner decision 2026-10-08: the bell opens only an inspection the viewer's own slice holds)",
       },
     },
     OrgMembership: {
@@ -5089,10 +5083,11 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     Notification: {
       refused: {
         eventId: "phase6 4d-i: notice notification-probe is bound to event <null> and ma",
-        inspectionId: "live bug 1b-3a: notice notification-probe may not change the inspect",
         kind: "phase6 4d-i: notice notification-probe's kind",
       },
       fillable: {
+        inspectionId:
+          "live bug 1b-3a: a kindless inspection notice's writer stamps the inspection it announces at insert; filling it later on a legacy or kinded row records no act (see the writable arm above)",
         decisionId:
           "a LEGACY KINDLESS notice carries no event and records no act, so naming the decision it concerns claims nothing. It cannot become evidence afterwards either: `kind` is refused on the fill axis by the same seal, so a kindless row stays kindless, and a KINDED notice's `decisionId` is frozen from birth",
       },
