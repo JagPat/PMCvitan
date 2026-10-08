@@ -181,7 +181,8 @@ test('external id binds repository, PR, base, head, run and attempt', () => {
 
 test('hosted workflow is shadow-only, pinned, read-only, and publishes from trusted code', () => {
   const workflow = readFileSync('.github/workflows/claude-shadow-review.yml', 'utf8');
-  assert.match(workflow, /workflow_run:/u);
+  // Owner decision 2026-10-08: dispatch-only until the shadow is fixed (22 of 22 runs failed from 7 Oct).
+  assert.doesNotMatch(workflow.slice(0, workflow.indexOf('concurrency:')), /workflow_run:/u);
   assert.match(workflow, /workflow_dispatch:/u);
   assert.match(workflow, /group: claude-shadow-review-pr-\$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.pr_number \|\| github\.event\.workflow_run\.pull_requests\[0\]\.number \|\| github\.run_id \}\}/u);
   assert.match(workflow, /cancel-in-progress: true/u);
