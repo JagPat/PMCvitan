@@ -1,4 +1,5 @@
 import { CLAUDE_SHADOW_CONTEXT, CODEX_LOGIN, requiredChecksForPullRequest } from './review-policy.mjs';
+import { affectedProducts } from './ci-affected.mjs';
 import { resolveRequiredChecks } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { PROBE_MARKER_PREFIX, correctiveTrailerBlock, probeTrailersIn } from './codex-fix-probe.mjs';
@@ -348,9 +349,11 @@ export function checkRunsAsOf(checkRuns, asOfMs) {
  * DECIDED each required name (`deciders`: one check run per name, so a rerun is a different id) — never by
  * every run of a required name, since a superseded straggler can finish after the run that decides.
  */
-export function normalizeCi(checkRuns, { repository, pullRequest, headSha, baseSha, asOfMs = null, readAtMs }) {
+export function normalizeCi(checkRuns, { repository, pullRequest, headSha, baseSha, asOfMs = null, readAtMs, affected = null }) {
   if (!Array.isArray(checkRuns) || !SHA.test(headSha ?? '')) return null;
-  const required = requiredChecksForPullRequest(pullRequest);
+  // Codex 4214321794 — the product checks this PR's CI launched (`affectedProducts` of its files); unknown
+  // files require them all, as before
+  const required = requiredChecksForPullRequest(pullRequest, affected);
   const runs = checkRunsAsOf(checkRuns.filter((run) => run?.head_sha === headSha), asOfMs);
   const summary = resolveRequiredChecks(runs, required);
   const deciders = summary.deciders.map((run) => ({
@@ -368,6 +371,7 @@ export function normalizeCi(checkRuns, { repository, pullRequest, headSha, baseS
     baseSha: baseSha ?? null,
     headSha,
     state: summary.state,
+    requiredChecks: required,
     missing: summary.missing,
     pending: summary.pending,
     failed: summary.failed,
@@ -566,6 +570,28 @@ export async function readRoleActivationEvidence(
   // Closing: the live PR — head, base ref and both repositories, as they now stand.
   const pullAtEnd = await read('pull-recheck', () => client.pullRequest(pullRequest));
   const pullReadAtMs = now();
+  // The PR's changed files decide which product checks its CI ran (owner decision 2026-10-08, rule 7). An
+  // unreadable or truncated list leaves `affected` null, which requires every product check.
+  let affected = null;
+  try {
+    const files = await client.request(`/repos/${repository}/pulls/${pullRequest}/files?per_page=100`);
+    if (Array.isArray(files) && files.length < 100) affected = affectedProducts(files).products;
+  } catch {
+    affected = null;
+  }
+  // Codex 4214389885 — the ORIGINAL head's CI ran for the original head's own diff (base...original), not the
+  // cumulative one: a corrective head that adds a product must not demand checks the original never launched.
+  // The compare API lists at most 300 files; a full or unreadable list requires every product check.
+  let originalAffected = null;
+  if (baseSha && originalHeadSha) {
+    try {
+      const comparison = await client.request(`/repos/${repository}/compare/${baseSha}...${originalHeadSha}`);
+      const files = comparison?.files;
+      if (Array.isArray(files) && files.length < 300) originalAffected = affectedProducts(files).products;
+    } catch {
+      originalAffected = null;
+    }
+  }
 
   // Closing: the reviewed head's check runs. The finding is the run the request NAMES (a later review of
   // the same head must not stand in for it, and is listed beside it); CI is evaluated as of that finding.
@@ -603,6 +629,7 @@ export async function readRoleActivationEvidence(
           baseSha: initialFinding.testedBaseSha,
           asOfMs: initialFinding.atMs,
           readAtMs,
+          affected: originalAffected,
         });
       }
     }
@@ -624,6 +651,7 @@ export async function readRoleActivationEvidence(
         headSha: correctiveHeadSha,
         baseSha: finalReview?.testedBaseSha ?? null,
         readAtMs,
+        affected,
       });
     }
   }

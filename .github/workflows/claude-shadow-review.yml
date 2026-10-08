@@ -1,9 +1,9 @@
 name: Claude independent review shadow
 
+# Owner decision 2026-10-08 (rule 5): the automatic CI-completion trigger is OFF until the shadow is
+# fixed — it failed 22 of 22 runs from 7 Oct. A maintainer can still dispatch one review by hand to
+# verify a fix; the gate reads this check as non-authoritative evidence and never waits for it.
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
   workflow_dispatch:
     inputs:
       pr_number:

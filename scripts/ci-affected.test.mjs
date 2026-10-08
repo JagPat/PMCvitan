@@ -1,0 +1,133 @@
+// Owner decision 2026-10-08 (rule 7): affected-package CI on PRs, the full battery on main.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readdir, readFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { affectedProducts } from './ci-affected.mjs';
+import { PRODUCT_CHECKS, REQUIRED_CHECKS, requiredChecksForPullRequest } from './review-policy.mjs';
+
+test('docs and automation scripts run no product job', () => {
+  const result = affectedProducts(['docs/STATUS.md', 'README.md', 'scripts/review-cap.mjs']);
+  assert.deepEqual(result.products, []);
+  assert.equal(result.runnerProofs, false);
+});
+
+test('Codex 4213960372 — a rename runs the jobs of BOTH the package it leaves and the one it enters', () => {
+  const moved = affectedProducts([{ filename: 'docs/old-service.md', previous_filename: 'apps/api/src/x.service.ts' }]);
+  assert.deepEqual(moved.products, ['api', 'api-e2e']);
+  const migration = affectedProducts([{ filename: 'docs/m.sql', previous_filename: 'apps/api/prisma/migrations/1/migration.sql' }]);
+  assert.equal(migration.runnerProofs, true);
+  assert.equal(affectedProducts([{ filename: 'docs/x.md', previous_filename: 'packages/shared/src/x.ts' }]).full, true);
+});
+
+test('Codex 4214270280 — the build-info helper the web and API builds consume runs their jobs', () => {
+  assert.deepEqual(affectedProducts(['scripts/build-info.mjs']).products, ['web', 'api', 'e2e', 'api-e2e']);
+  assert.deepEqual(affectedProducts(['scripts/build-info.test.mjs']).products, []);
+});
+
+test('every root script a product imports (directly or transitively) runs a product job', async () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const sources = [];
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (/\.(?:[cm]?[jt]sx?)$/u.test(entry.name)) sources.push(path);
+    }
+  };
+  await walk(join(root, 'apps'));
+  await walk(join(root, 'packages'));
+  const rootScripts = join(root, 'scripts');
+  const consumed = new Set();
+  const visit = async (file) => {
+    if (consumed.has(file)) return;
+    consumed.add(file);
+    const text = await readFile(file, 'utf8');
+    for (const match of text.matchAll(/(?:from\s+|import\()['"](\.\/[^'"]+)['"]/gu)) await visit(resolve(dirname(file), match[1]));
+  };
+  for (const source of sources) {
+    const text = await readFile(source, 'utf8');
+    for (const match of text.matchAll(/['"]((?:\.\.\/)+scripts\/[^'"]+\.mjs)['"]/gu)) {
+      const target = resolve(dirname(source), match[1]);
+      if (dirname(target) === rootScripts) await visit(target);
+    }
+  }
+  assert.ok(consumed.size >= 2, 'the probe finds the known consumers');
+  for (const file of consumed) {
+    const path = relative(root, file);
+    assert.ok(affectedProducts([path]).products.length > 0, `${path} is consumed by a product but runs no product job`);
+  }
+});
+
+test('a web change runs web, e2e and api-e2e only', () => {
+  assert.deepEqual(affectedProducts(['apps/web/src/App.tsx']).products, ['web', 'e2e', 'api-e2e']);
+});
+
+test('an API source change runs api and api-e2e without the runner proofs', () => {
+  const result = affectedProducts([{ filename: 'apps/api/src/x.ts' }]);
+  assert.deepEqual(result.products, ['api', 'api-e2e']);
+  assert.equal(result.runnerProofs, false);
+});
+
+test('a migration runs the upgrade proof and the production-runner proofs', () => {
+  const result = affectedProducts(['apps/api/prisma/migrations/1/migration.sql']);
+  assert.deepEqual(result.products, ['api', 'api-e2e', 'upgrade-proof']);
+  assert.equal(result.runnerProofs, true);
+});
+
+test('shared code, workflows, lockfiles, unknown paths and unreadable lists fail toward the full battery', () => {
+  for (const files of [
+    ['packages/shared/src/index.ts'],
+    ['.github/workflows/ci.yml'],
+    ['pnpm-lock.yaml'],
+    ['scripts/test-api-e2e.sh'],
+    [],
+    null,
+  ]) {
+    const result = affectedProducts(files);
+    assert.deepEqual(result.products, PRODUCT_CHECKS, String(files));
+    assert.equal(result.full, true);
+    assert.equal(result.runnerProofs, true);
+  }
+});
+
+test('the gate requires exactly the affected products, or all when unknown', () => {
+  assert.deepEqual(requiredChecksForPullRequest(9_999), REQUIRED_CHECKS);
+  assert.deepEqual(
+    requiredChecksForPullRequest(9_999, affectedProducts(['apps/web/src/a.ts']).products),
+    ['review-scope', 'battery-plan', 'web', 'e2e', 'api-e2e'],
+  );
+  assert.deepEqual(requiredChecksForPullRequest(9_999, []), ['review-scope', 'battery-plan']);
+});
+
+test('ci.yml launches each product job only when the plan lists it, and proofs only on runner_proofs', async () => {
+  const ci = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  for (const job of PRODUCT_CHECKS) {
+    assert.ok(
+      ci.includes(`contains(fromJSON(needs.battery-plan.outputs.products), '${job}')`),
+      `${job} is gated on the affected products`,
+    );
+  }
+  assert.equal((ci.match(/if: needs\.battery-plan\.outputs\.runner_proofs == 'true'/gu) ?? []).length, 3);
+  assert.match(ci, /products: \$\{\{ steps\.plan\.outputs\.products \}\}/u);
+});
+
+test('Codex 4214321813 — the archived runbook an API integration test reads runs the api job', () => {
+  assert.deepEqual(affectedProducts(['docs/archive/RUNBOOK-2026-10-08.md']).products, ['api']);
+  assert.deepEqual(affectedProducts(['docs/archive/ROADMAP-2026-10-08.md']).products, []);
+});
+
+test('Codex 4214321794 — role-activation evidence requires only the affected product checks', async () => {
+  const { normalizeCi } = await import('./role-activation-evidence.mjs');
+  const head = 'c'.repeat(40);
+  const run = (name) => ({ name, head_sha: head, status: 'completed', conclusion: 'success', id: name.length, started_at: '2026-10-08T00:00:00Z', completed_at: '2026-10-08T00:01:00Z', html_url: `https://github.com/o/r/actions/runs/1/job/${name.length}` });
+  const runs = ['review-scope', 'battery-plan', 'web', 'e2e', 'api-e2e'].map(run);
+  const ci = normalizeCi(runs, { repository: 'o/r', pullRequest: 999, headSha: head, baseSha: 'b'.repeat(40), readAtMs: 1, affected: ['web', 'e2e', 'api-e2e'] });
+  assert.deepEqual(ci.requiredChecks, ['review-scope', 'battery-plan', 'web', 'e2e', 'api-e2e']);
+  assert.equal(ci.state, 'success');
+  // without the file classification every product check is still required
+  assert.equal(normalizeCi(runs, { repository: 'o/r', pullRequest: 999, headSha: head, baseSha: 'b'.repeat(40), readAtMs: 1 }).state, 'pending');
+});

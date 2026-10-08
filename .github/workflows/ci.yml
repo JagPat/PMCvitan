@@ -15,10 +15,17 @@ name: CI
 #
 # A path-based risk classifier was attempted here and withdrawn; see
 # docs/reviews/pr-263-convergence.md for why, and what it would need to return.
+#
+# Owner decision 2026-10-08 (rule 7): a pull request runs only the product jobs its changed files can
+# affect (`battery-plan`'s `products`, from scripts/ci-affected.mjs), and the three production-runner
+# proofs only when migrations or API scripts change. The merge gate requires exactly that same set, so
+# nothing waits on a job that was not launched. A push to main runs the full battery.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -46,8 +53,11 @@ jobs:
     permissions:
       contents: read
       checks: read
+      pull-requests: read
     outputs:
       run_products: ${{ steps.plan.outputs.run_products }}
+      products: ${{ steps.plan.outputs.products }}
+      runner_proofs: ${{ steps.plan.outputs.runner_proofs }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Decide whether this event needs the product battery
@@ -78,7 +88,7 @@ jobs:
 
   web:
     needs: [review-scope, battery-plan]
-    if: needs.battery-plan.outputs.run_products == 'true'
+    if: needs.battery-plan.outputs.run_products == 'true' && contains(fromJSON(needs.battery-plan.outputs.products), 'web')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -104,7 +114,7 @@ jobs:
 
   e2e:
     needs: [review-scope, battery-plan]
-    if: needs.battery-plan.outputs.run_products == 'true'
+    if: needs.battery-plan.outputs.run_products == 'true' && contains(fromJSON(needs.battery-plan.outputs.products), 'e2e')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -156,7 +166,7 @@ jobs:
   # are insufficient evidence (docs/ROADMAP.md).
   api-e2e:
     needs: [review-scope, battery-plan]
-    if: needs.battery-plan.outputs.run_products == 'true'
+    if: needs.battery-plan.outputs.run_products == 'true' && contains(fromJSON(needs.battery-plan.outputs.products), 'api-e2e')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     services:
@@ -218,7 +228,7 @@ jobs:
   # asserted to keep every legacy meaning intact. Pure psql — no build needed.
   upgrade-proof:
     needs: [review-scope, battery-plan]
-    if: needs.battery-plan.outputs.run_products == 'true'
+    if: needs.battery-plan.outputs.run_products == 'true' && contains(fromJSON(needs.battery-plan.outputs.products), 'upgrade-proof')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -242,7 +252,7 @@ jobs:
 
   api:
     needs: [review-scope, battery-plan]
-    if: needs.battery-plan.outputs.run_products == 'true'
+    if: needs.battery-plan.outputs.run_products == 'true' && contains(fromJSON(needs.battery-plan.outputs.products), 'api')
     runs-on: ubuntu-latest
     # Budget arithmetic, not a round number, and the dominant term is RUNNER VARIANCE.
     #
@@ -331,6 +341,7 @@ jobs:
       # `scripts/ci-baseline-proof-wiring.test.mjs` in the required `automation` job — deleting the
       # step turns that job red instead of silently removing the only proof of the baseline path.
       - name: Schedule B1 baseline proof (the real migrate.sh over pre-baseline databases)
+        if: needs.battery-plan.outputs.runner_proofs == 'true'
         timeout-minutes: 25
         run: bash apps/api/scripts/schedule-b1-baseline-proof.sh
 
@@ -347,6 +358,7 @@ jobs:
       # one above — deleting it turns that job red instead of quietly removing the only execution of
       # the production runner over a not-enforcing database.
       - name: Schema enforcement production-runner proof (the real migrate.sh over dirty databases)
+        if: needs.battery-plan.outputs.runner_proofs == 'true'
         timeout-minutes: 25
         run: bash apps/api/scripts/schema-enforcement-production-runner-proof.sh
 
@@ -362,6 +374,7 @@ jobs:
       # the step; that says nothing about whether THIS STEP still exists, so it is pinned by
       # `scripts/ci-baseline-proof-wiring.test.mjs` in the required `automation` job.
       - name: Phase 6 4c-iii-r production-runner proof (the real migrate.sh over the inbox repair)
+        if: needs.battery-plan.outputs.runner_proofs == 'true'
         timeout-minutes: 25
         run: bash apps/api/scripts/phase6-4c-iiir-production-runner-proof.sh
 
@@ -382,6 +395,7 @@ jobs:
   # gate, and fatal to shadow clearance — exactly the intended asymmetry.
   shadow-merge-identity:
     needs: [review-scope]
+    if: github.event_name == 'pull_request'
     continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 5
