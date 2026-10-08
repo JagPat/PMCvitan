@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: live-bug-1b-3-inspection-notices
-reviewed_merge: 8ab364e
-open_pr: 741
+work_item: maint-m2-review-cap-scope
+reviewed_merge: 647d580
+open_pr: 742
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-08
@@ -26,12 +26,11 @@ updated: 2026-10-08
 
 ### Current unit
 
-**Live bug 1b-3b, #741** (`claude/live-bug-1b-3b-stamp-inspection-notices`, issue #734). An inspection
-notice names its inspection by a column its writer stamps, validated where it is read (owner decision
-2026-10-08: no database seal). #735 (the bell opens the stamped inspection) merged at `3559f20`; #736 (the
-plain column) at `d028cc4`; #738 (the bell opens a stamp only when the destination screen holds it) at `8ab364e`; 1b-3b
-has the API writers stamp it and the snapshot serve it. 1b-1 (#729) merged at `a08f896` and 1b-2 (#730) at `20b5f0f`. Deploy visibility (#732)
-merged at `b46e1e7`; proxy-addr 2.0.8 (#737) at `dd6e0fd`.
+**Maintenance M2, #742** (`claude/maint-m2-review-cap-scope`): the review-round cap, changed-line review
+scope and completion reports (below). Live bug 1b-3 is done: #741 (the API writers stamp the inspection a
+notice names, and the snapshot serves it) merged at `647d580` and #734 is closed. **1c (drawing notices) waits
+on an owner decision** (#482, comment 6063160243): the API writes no drawing bell row today, so either the
+drawing push opens the drawing (A) or drawings gain bell rows (B).
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign
 stop and the owner approved splitting it, each unit from `main`: M1a (#740, merged at `94d1cdb`), this file's shrink (STATUS and ROADMAP
@@ -46,10 +45,8 @@ issue per work item. #731 stays open until they land. Maintenance runs beside th
    - 1b, inspection notices, in three parts:
      - 1b-1: done (#729, `a08f896`).
      - 1b-2: done (#730, `20b5f0f`).
-     - 1b-3: #735 (the bell reads the stamp) done at `3559f20`; #736 (the plain column) at `d028cc4`; #738
-       (read-time check) at `8ab364e`; 1b-3b #741 (the API writers stamp it; notification → record → Back end to
-       end over the real stack) open.
-   - 1c: drawing notices open the drawing they name.
+     - 1b-3: done (#735 `3559f20`, #736 `d028cc4`, #738 `8ab364e`, #741 `647d580`).
+   - 1c: drawing notices open the drawing they name; waiting on the owner's choice of A or B (#482).
 2. **Remaining live bugs**, folded into the Board's Top 10 queue (7 Oct 2026 UI/UX review), one PR per item:
    - demo controls out of production, including hiding Generate Weekly Report;
    - one source of truth for counts;
