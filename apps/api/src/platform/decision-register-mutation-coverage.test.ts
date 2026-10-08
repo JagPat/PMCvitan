@@ -101,6 +101,10 @@ const COVERAGE: Record<string, Class> = {
   // disagreement command is the only writer) to prove the fold, the rebuild and the live slice carry
   // the non-`standard` origin identically; the same whole-table, single-transaction shape as A7b's.
   'test/integration/phase6-t4d-ii-a7c-inbox-v3.test.ts': 'planted countersign_rejection origin under a whole-table, single-transaction DISABLE TRIGGER USER on ChangeRequest (the A7b shape); teardown by wipeDecisionsVia',
+  // Live bug 1b-3a — the inspection-stamp seal's suite: its UPDATEs are hostile arms asserted REFUSED by
+  // Notification_1b3_inspection_freeze (plus one allowed `time` edit on its own kindless probe); its deletes
+  // are a scoped teardown of the kindless probes it created.
+  'test/integration/notification-inspection-seal.test.ts': 'hostile arms asserting Notification_1b3_inspection_freeze refusals; scoped teardown of its own kindless probes; no DELETE seal on Notification',
   'test/integration/platform-command-receipt.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
   'test/integration/start-readiness-race.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
 
