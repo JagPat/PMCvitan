@@ -7,13 +7,14 @@ import {
   blocksUnderCap,
   changedLinesFromFiles,
   findingPriority,
+  findingRoundHeads,
   onChangedLine,
   reviewCapState,
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
 import { assessReviewScope } from './review-efficiency.mjs';
-import { completeTrivialPullRequest, fileDeferredFindings } from './autonomous-review-gate.mjs';
-import { completionReport, reviewRounds } from './completion-report.mjs';
+import { completeTrivialPullRequest, fileDeferredFindings, unionDeferred } from './autonomous-review-gate.mjs';
+import { completionReport, mergedThroughTrivialLane, reviewRounds } from './completion-report.mjs';
 import { REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -147,11 +148,50 @@ test('the completion report carries hours to the real merge, rounds and changed 
   assert.match(report, /Changed lines: 150 \(\+120 \/ −30\) across 4 files/u);
 });
 
-test('review rounds: every finding head plus the clean merged head; a trivial PR had none', () => {
+test('review rounds: every finding head plus the clean merged head; a trivial-lane head had none', () => {
   const comments = [finding({ head: 'a'.repeat(40) }), finding({ head: 'b'.repeat(40) })];
-  assert.equal(reviewRounds({ body: '', head: { sha: HEAD } }, { comments }), 3);
-  assert.equal(reviewRounds({ body: '', head: { sha: 'b'.repeat(40) } }, { comments }), 2);
-  assert.equal(reviewRounds({ body: '<!-- review-size: trivial -->', head: { sha: HEAD } }, {}), 0);
+  assert.equal(reviewRounds({ head: { sha: HEAD } }, { comments }), 3);
+  assert.equal(reviewRounds({ head: { sha: 'b'.repeat(40) } }, { comments }), 2);
+  assert.equal(reviewRounds({ head: { sha: HEAD } }, { trivial: true }), 0);
+});
+
+test('Codex 4214270301 — the trivial lane is read from the controller status, never the editable body', () => {
+  const status = (description) => ({ context: 'codex-current-head', description });
+  assert.equal(mergedThroughTrivialLane([status('review: trivial fast lane — CI only, no Codex round (owner decision 2026-10-08)')]), true);
+  // a standard PR relabelled trivial after its clean review: the status says how it was really completed
+  assert.equal(mergedThroughTrivialLane([status('review: Codex found no blocking issue on this exact head')]), false);
+  // the NEWEST status decides
+  assert.equal(mergedThroughTrivialLane([status('review: Codex found no blocking issue on this exact head'), status('review: trivial fast lane — x')]), false);
+  assert.equal(mergedThroughTrivialLane([]), false);
+});
+
+test('Codex 4214270298 — a Codex REPLY in an older thread is not a review round', () => {
+  const reply = { ...finding({ head: 'a'.repeat(40), id: 9 }), in_reply_to_id: 1 };
+  const opener = finding({ head: 'b'.repeat(40), id: 10 });
+  const state = reviewCapState({ expectedHead: HEAD, comments: [reply, opener], files: FILES });
+  assert.equal(state.priorRounds, 1);
+  assert.equal(state.reached, false);
+  assert.deepEqual([...findingRoundHeads([reply, opener])], ['b'.repeat(40)]);
+});
+
+test('Codex 4214270293 — deferred findings from the poll and the final re-read are filed once each', () => {
+  const a = finding({ id: 1 });
+  const b = finding({ id: 2 });
+  assert.deepEqual(unionDeferred([a], [a, b]).map((f) => f.id), [1, 2]);
+});
+
+test('Codex 4214270288 — an UNBADGED review-level finding past the cap is deferred too', () => {
+  const result = classifyCodexState({
+    expectedHead: HEAD,
+    readyAt: '2026-10-08T00:00:00Z',
+    deadline: '2026-10-08T01:00:00Z',
+    now: '2026-10-08T00:01:00Z',
+    comments: [],
+    reviews: [{ id: 78, user: { login: CODEX }, commit_id: HEAD, state: 'COMMENTED', body: 'The retry path drops the lease.', submitted_at: '2026-10-08T00:00:30Z' }],
+    cap: { reached: true, changedLines: changedLinesFromFiles(FILES) },
+  });
+  assert.equal(result.state, 'clear');
+  assert.deepEqual(result.deferred.map((r) => r.id), [78]);
 });
 
 test('Codex 4213960388 — a review-level finding past the cap is deferred, not dropped', () => {
@@ -180,9 +220,19 @@ function scope(body, files, extra = {}) {
 }
 
 test('a trivial web/docs change takes the fast lane', () => {
-  const result = scope(`<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}`, ['apps/web/src/components/Button.tsx', 'docs/x.md']);
+  const result = scope(`<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\nWork item issue: #9`, ['apps/web/src/components/Button.tsx', 'docs/x.md']);
   assert.equal(result.state, 'trivial');
   assert.equal(result.allowed, true);
+});
+
+test('Codex 4214270304 — a live-bug, UX or trivial unit without its work-item issue is refused', () => {
+  const missing = scope(`<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\n- Work item issue: #`, ['apps/web/src/components/Button.tsx']);
+  assert.equal(missing.allowed, false);
+  assert.match(missing.detail, /Work item issue/u);
+  const liveBug = scope(`<!-- review-size: standard -->\n<!-- unit-kind: live-bug -->\n${OWNER}`, ['apps/web/src/screens/x.tsx']);
+  assert.equal(liveBug.allowed, false);
+  // a unit that is not a work item (maintenance, a phase task) is not asked for one here
+  assert.equal(scope(`<!-- review-size: standard -->\n${OWNER}`, ['apps/web/src/screens/x.tsx']).allowed, true);
 });
 
 test('a trivial claim outside web/docs or over 100 lines is refused', () => {
@@ -202,7 +252,7 @@ test('a trivial claim outside web/docs or over 100 lines is refused', () => {
 
 test('a live-bug unit over 8 files or 300 lines needs an owner-approved size', () => {
   const files = Array.from({ length: 9 }, (_, i) => `apps/web/src/f${i}.ts`);
-  const body = `<!-- review-size: standard -->\n<!-- unit-kind: live-bug -->\n${OWNER}`;
+  const body = `<!-- review-size: standard -->\n<!-- unit-kind: live-bug -->\n${OWNER}\n- Work item issue: #734`;
   const over = scope(body, files);
   assert.equal(over.allowed, false);
   assert.match(over.detail, /live-bug unit targets at most 8 files and 300/u);
@@ -254,7 +304,7 @@ const PRE_REVIEW = ['concurrency-serialization', 'old-release-migration-compatib
 
 test('Codex 4213960382 — the trivial lane promotes the draft to ready before publishing success', async () => {
   const calls = [];
-  const body = `<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
+  const body = `<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\nWork item issue: #9\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
   const { client, pr, head } = trivialClient(body, calls);
   // the merge itself is outside this probe: the fake client has no merge methods
   await completeTrivialPullRequest(client, pr, head, null).catch(() => {});

@@ -21,6 +21,9 @@ const RULES = [
   { pattern: /^docs\//u, products: [], proofs: false },
   { pattern: /^[^/]+\.md$/u, products: [], proofs: false },
   { pattern: /^\.claude\//u, products: [], proofs: false },
+  // Codex 4214270280 — a root script a product build consumes is product code: build-info.mjs runs in the
+  // web (Vite) build and in the API image build
+  { pattern: /^scripts\/build-info\.(?:mjs|d\.mts)$/u, products: ['web', 'e2e', 'api', 'api-e2e'], proofs: false },
   { pattern: /^scripts\/[^/]+\.mjs$/u, products: [], proofs: false },
   { pattern: /^apps\/web\//u, products: WEB, proofs: false },
   { pattern: /^apps\/api\/(?:prisma|scripts)\//u, products: MIGRATION, proofs: true },

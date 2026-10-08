@@ -396,6 +396,11 @@ export function assessReviewScope(
       + `changed lines (this unit: ${changedFileCount} files, ${changedLines} lines); split it, or add an `
       + '"Owner-approved-size:" line linking the owner\'s OK'
     : null;
+  // Codex 4214270304 — rule 9: a live-bug, UX or trivial unit is a work item, and names its one issue
+  const workItemIssue = /^[\t -]*Work item issue:[\t ]*#\d+\b/imu.test(body);
+  const workItemProblem = (unitKind || trivialClaimed) && !workItemIssue
+    ? 'a live-bug, UX or trivial unit names its GitHub issue: add "Work item issue: #<number>" (owner decision 2026-10-08, rule 9)'
+    : null;
   const common = {
     changedFiles: changedFileCount,
     changedLines,
@@ -451,6 +456,7 @@ export function assessReviewScope(
     ...(sizeProblem ? [sizeProblem] : []),
     ...(trivialProblem ? [trivialProblem] : []),
     ...(focusedProblem ? [focusedProblem] : []),
+    ...(workItemProblem ? [workItemProblem] : []),
     ...(ownerProblem ? [ownerProblem] : []),
     ...preReviewProblems,
   ];

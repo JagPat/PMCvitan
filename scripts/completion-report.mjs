@@ -5,19 +5,32 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
-import { codexFindingHeads } from './review-efficiency.mjs';
+import { findingRoundHeads } from './review-cap.mjs';
+import { STATUS_CONTEXT } from './review-policy.mjs';
 
 export const COMPLETION_MARKER = '<!-- completion-report -->';
-const TRIVIAL = /^<!--\s*review-size:\s*trivial\s*-->/iu;
+const TRIVIAL_LANE_STATUS = 'review: trivial fast lane';
 
 /**
- * Codex review rounds for a merged PR: every finding-bearing head, plus the clean merged head's own round
- * when Codex found nothing there. A trivial fast-lane PR had no Codex round at all.
+ * Did the controller complete this head through the trivial fast lane? Read from the immutable evidence
+ * it recorded — the newest `codex-current-head` status on the merged head — never from the PR body, which
+ * can be edited after the review path ran (Codex 4214270301). `statuses` are newest first, as GitHub
+ * lists them.
  */
-export function reviewRounds(pullRequest, { comments = [], reviews = [] } = {}) {
-  const heads = new Set(codexFindingHeads(comments, reviews));
-  if (TRIVIAL.test(String(pullRequest?.body ?? '').trimStart())) return heads.size;
-  return heads.size + (heads.has(pullRequest?.head?.sha) ? 0 : 1);
+export function mergedThroughTrivialLane(statuses = []) {
+  const newest = statuses.find((status) => status?.context === STATUS_CONTEXT);
+  return String(newest?.description ?? '').startsWith(TRIVIAL_LANE_STATUS);
+}
+
+/**
+ * Codex review rounds for a merged PR: every head on which Codex opened findings (replies excluded, as the
+ * cap counts them), plus the clean merged head's own round when Codex found nothing there. A head merged
+ * through the trivial fast lane had no Codex round of its own.
+ */
+export function reviewRounds(pullRequest, { comments = [], reviews = [], trivial = false } = {}) {
+  const heads = new Set(findingRoundHeads(comments, reviews));
+  if (trivial || heads.has(pullRequest?.head?.sha)) return heads.size;
+  return heads.size + 1;
 }
 
 export function completionReport(pullRequest, { rounds }) {
@@ -67,11 +80,13 @@ export async function run({
     console.log('completion-report: already posted');
     return null;
   }
-  const [comments, reviews] = await Promise.all([
+  const [comments, reviews, statuses] = await Promise.all([
     readAll(fetchImpl, `${api}/pulls/${pullRequest.number}/comments`, token),
     readAll(fetchImpl, `${api}/pulls/${pullRequest.number}/reviews`, token),
+    readAll(fetchImpl, `${api}/commits/${pullRequest.head.sha}/statuses`, token),
   ]);
-  const body = completionReport(pullRequest, { rounds: reviewRounds(pullRequest, { comments, reviews }) });
+  const trivial = mergedThroughTrivialLane(statuses);
+  const body = completionReport(pullRequest, { rounds: reviewRounds(pullRequest, { comments, reviews, trivial }) });
   const response = await fetchImpl(`${api}/issues/${pullRequest.number}/comments`, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'pmcvitan-completion-report', 'content-type': 'application/json' },

@@ -2218,6 +2218,37 @@ export async function guardAgainstCurrentHeadFinding(
   return result.detail;
 }
 
+/** The current head's capped, non-blocking findings as the evidence stands now (empty unless capped). */
+export async function currentDeferredFindings(client, pullRequest, expectedHead) {
+  const [reviews, comments] = await Promise.all([
+    client.reviews(pullRequest.number),
+    client.reviewComments(pullRequest.number),
+  ]);
+  const now = new Date();
+  const result = classifyCodexState({
+    expectedHead,
+    readyAt: new Date(0).toISOString(),
+    deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
+    now: now.toISOString(),
+    reviews,
+    comments,
+    reactions: [],
+    cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments),
+  });
+  return result.state === 'clear' ? result.deferred ?? [] : [];
+}
+
+/** Deferred findings from two reads, each once (by its GitHub id). */
+export function unionDeferred(first, second) {
+  const seen = new Set();
+  return [...first, ...second].filter((finding) => {
+    const key = finding?.id ?? finding?.html_url;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function contextForEvent(eventName, event, dispatchNumber) {
   if (eventName === 'workflow_dispatch') {
     return {
@@ -2712,7 +2743,12 @@ export async function run() {
       pullRequest = finalPolicy.pullRequest;
       // Owner decision 2026-10-08 — past the review-round cap, the head's non-blocking findings are filed in
       // a follow-up issue BEFORE the success that lets the PR merge, so none is lost.
-      const deferred = verifiedResult.deferred ?? [];
+      // Codex 4214270293 — the final revalidation re-reads the evidence: a capped finding that arrived
+      // after the poll's verification is deferred too, never dropped
+      const deferred = unionDeferred(
+        verifiedResult.deferred ?? [],
+        await currentDeferredFindings(client, pullRequest, expectedHead),
+      );
       const followUp = deferred.length > 0
         ? await fileDeferredFindings(client, pullRequest, expectedHead, deferred)
         : null;

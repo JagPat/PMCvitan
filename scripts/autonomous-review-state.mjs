@@ -2,7 +2,7 @@ import { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN, isCodexReplyOnlyReview } from './revi
 export { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN } from './review-policy.mjs';
 
 import { isLineageBase } from './lineage-policy.mjs';
-import { blocksUnderCap, findingPriority } from './review-cap.mjs';
+import { blocksUnderCap } from './review-cap.mjs';
 
 function timestamp(value, field) {
   const parsed = Date.parse(value);
@@ -148,9 +148,10 @@ export function classifyCodexState({
     const headReviews = reviews.filter((review) => isCodexActor(review)
       && review.commit_id === expectedHead
       && !isCodexReplyOnlyReview(review, comments));
-    // Codex 4213960388 — a review-level finding (a badged review body with no inline comment of its own)
-    // has no line to judge, so it is deferred with the rest rather than silently dropped
-    const reviewLevel = headReviews.filter((review) => findingPriority(review?.body) !== null
+    // Codex 4213960388 / 4214270288 — a review-level finding (a review body with no inline comment of its
+    // own, badged or not: an unbadged one is read conservatively as finding-bearing, as elsewhere) has no
+    // line to judge, so it is deferred with the rest rather than silently dropped
+    const reviewLevel = headReviews.filter((review) => String(review?.body ?? '').trim().length > 0
       && !comments.some((comment) => comment?.pull_request_review_id === review.id));
     const deferred = [...findings, ...reviewLevel];
     if (deferred.length > 0 || headReviews.length > 0) {

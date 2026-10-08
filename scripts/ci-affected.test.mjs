@@ -20,6 +20,11 @@ test('Codex 4213960372 — a rename runs the jobs of BOTH the package it leaves 
   assert.equal(affectedProducts([{ filename: 'docs/x.md', previous_filename: 'packages/shared/src/x.ts' }]).full, true);
 });
 
+test('Codex 4214270280 — the build-info helper the web and API builds consume runs their jobs', () => {
+  assert.deepEqual(affectedProducts(['scripts/build-info.mjs']).products, ['web', 'api', 'e2e', 'api-e2e']);
+  assert.deepEqual(affectedProducts(['scripts/build-info.test.mjs']).products, []);
+});
+
 test('a web change runs web, e2e and api-e2e only', () => {
   assert.deepEqual(affectedProducts(['apps/web/src/App.tsx']).products, ['web', 'e2e', 'api-e2e']);
 });

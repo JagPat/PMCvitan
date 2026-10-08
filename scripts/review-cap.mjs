@@ -89,11 +89,20 @@ export function blocksUnderCap(comment, changedLines) {
 }
 
 /**
+ * The heads on which Codex opened findings. Codex 4214270298 — a REPLY (a comment answering an existing
+ * thread, `in_reply_to_id` set) opens no finding, so it never makes its thread's head a review round;
+ * only thread-opening comments and Codex's own reviews count.
+ */
+export function findingRoundHeads(comments = [], reviews = []) {
+  return codexFindingHeads(comments.filter((comment) => comment?.in_reply_to_id == null), reviews);
+}
+
+/**
  * The cap for `expectedHead`: how many earlier rounds the PR has had, and whether this head is past the
  * cap. `files` are the pull-request files (for the changed lines a capped finding is judged against).
  */
 export function reviewCapState({ expectedHead, reviews = [], comments = [], files = [] }) {
-  const priorRounds = [...codexFindingHeads(comments, reviews)].filter((head) => head !== expectedHead).length;
+  const priorRounds = [...findingRoundHeads(comments, reviews)].filter((head) => head !== expectedHead).length;
   return {
     priorRounds,
     reached: priorRounds >= REVIEW_ROUND_CAP,
