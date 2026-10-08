@@ -47,6 +47,8 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
       { id: 'DL-009', title: 'Master Bath CP Fittings', awaitsViewer: false },
     ],
     decisionsSettled: true,
+    inspections: [{ id: 'INSP-21' }, { id: 'INSP-30' }, { id: 'INSP-31' }, { id: 'INSP-32' }],
+    inspectionsSettled: true,
   };
   const n = (text: string, decisionId?: string) => ({ text, time: 'now', color: '#000', ...(decisionId ? { decisionId } : {}) });
   const at = (screen: string, item: string | null, extra: { missing?: boolean; loading?: boolean } = {}) =>
@@ -160,6 +162,18 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
     const reinspection = n('Re-inspection INSP-30 created for 2 item(s) — due 12 Oct 2026.');
     expect(notificationLink({ ...reinspection, inspectionId: 'INSP-30' }, 'engineer', records)).toEqual(at('engineer-check', 'INSP-30'));
     expect(inspectionIdOf(reinspection)).toBeNull();
+  });
+
+  it('owner decision 2026-10-08 — a stamp opens only an inspection the viewer\'s own settled slice holds', () => {
+    const stamped = (id: string) => ({ ...n('Re-inspection due: Waterproofing, Terrace'), inspectionId: id });
+    // a stamp naming a record outside the viewer's slice (another project's, or one this viewer cannot see)
+    // never opens it: the bell says it is not available and offers the screen
+    expect(notificationLink(stamped('INSP-999'), 'pmc', records)).toEqual(at('inspect-review', null, { missing: true }));
+    // while the slice is loading (or failed), the stamp cannot be judged either way
+    expect(notificationLink(stamped('INSP-21'), 'pmc', { ...records, inspectionsSettled: false }))
+      .toEqual(at('inspect-review', null, { loading: true }));
+    // a held stamp opens its record
+    expect(notificationLink(stamped('INSP-21'), 'engineer', records)).toEqual(at('engineer-check', 'INSP-21'));
   });
 
   it('Codex 4214386937 — an id in the TEXT names nothing, even trailing: a legacy zone can end in "(INSP-N)"', () => {

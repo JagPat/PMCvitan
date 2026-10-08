@@ -3,7 +3,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import { viewerIsDecider } from '@vitan/shared';
-import { notificationLink, decisionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
+import { notificationLink, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
+import { inspectionsReadMode } from '@/data/apiGateway';
 import { SCREEN_META } from '@/lib/screens';
 import { ChevronRight } from '@/lib/icons';
 import styles from './NotificationPanel.module.css';
@@ -23,6 +24,15 @@ export function NotificationPanel() {
   // flight or after it failed (a module read can fail while the snapshot that carried the notice
   // succeeds), nor while a committed command's reconcile is owed
   const decisionsSettled = useStore(decisionsSliceSettled);
+  // Live bug 1b-3 — the inspections the viewer's inspection screens hold (the PMC's review queue and the
+  // outstanding checklists), judged by the same settled predicate those screens use; under module
+  // read-ownership a read that has not yet landed is not settled either
+  const reviews = useStore(useShallow((s) => s.reviews));
+  const openChecklists = useStore(useShallow((s) => s.openChecklists));
+  const checklist = useStore((s) => s.checklist);
+  const inspectionsLoad = useStore((s) => s.inspectionsLoad);
+  const inspectionsSettled = useStore(inspectionsSliceSettled)
+    && !(inspectionsReadMode() === 'moduleQuery' && (inspectionsLoad === 'idle' || inspectionsLoad === 'loading'));
   // Live bug 1 — the notice whose record could not be found, explained in place (by row index).
   const [explained, setExplained] = useState<number | null>(null);
   // a row index means nothing once the panel closes, or once the list itself changes (Codex
@@ -41,8 +51,10 @@ export function NotificationPanel() {
         awaitsViewer: (d.status === 'pending' || d.status === 'change') && viewerIsDecider(d, role, sessionUserId),
       })),
       decisionsSettled,
+      inspections: [...reviews, ...openChecklists, ...(checklist ? [checklist] : [])].map((i) => ({ id: i.id })),
+      inspectionsSettled,
     }),
-    [decisions, role, sessionUserId, decisionsSettled],
+    [decisions, role, sessionUserId, decisionsSettled, reviews, openChecklists, checklist, inspectionsSettled],
   );
 
   if (!open) return null;
