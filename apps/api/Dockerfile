@@ -18,6 +18,11 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @vitan/shared build
 RUN pnpm --filter api prisma:generate
 RUN pnpm --filter api build
+# Deploy visibility: stamp the build's commit and time into dist/build-info.json, which /health reports.
+# Coolify passes SOURCE_COMMIT as a build argument (enable "Include Source Commit in Build"); without it
+# the commit reads "unknown" and the build still succeeds. Only a hex SHA is ever written.
+ARG SOURCE_COMMIT=""
+RUN node scripts/build-info.mjs > apps/api/dist/build-info.json && cat apps/api/dist/build-info.json
 
 # ---- run ----
 FROM node:22-slim AS run

@@ -28,6 +28,10 @@ RUN if [ -n "$VITE_API_URL" ] && [ -z "$VITE_GOOGLE_CLIENT_ID" ]; then \
       echo "WARNING: VITE_API_URL is set but VITE_GOOGLE_CLIENT_ID is empty — Google sign-in will be MISSING from this build"; fi \
  && if [ -n "$VITE_API_URL" ] && [ "$VITE_ALLOW_DEV_AUTH" = "true" ]; then \
       echo "ERROR: VITE_ALLOW_DEV_AUTH=true in an API-connected build — refusing to bake dev auth into production" && exit 1; fi
+# Deploy visibility: vite.config.ts stamps the build's commit and time into the bundle and /version.json.
+# Coolify passes SOURCE_COMMIT as a build argument (enable "Include Source Commit in Build"); without it
+# the commit reads "unknown" and the build still succeeds. Only a hex SHA is ever written.
+ARG SOURCE_COMMIT=""
 RUN pnpm --filter web build
 
 # ---- serve stage ----
