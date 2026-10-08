@@ -15,9 +15,10 @@
 // files (scripts/ci-affected.mjs) — the same set the merge gate requires. A push to main, a manual
 // dispatch, or an unreadable file list runs the full battery, the production-runner proofs included.
 import { readFile, appendFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { affectedProducts } from './ci-affected.mjs';
+import { affectedProducts, runnerSourceClosure } from './ci-affected.mjs';
 
 import {
   GATE_CHECKS,
@@ -180,6 +181,7 @@ export async function run({
   outputPath = process.env.GITHUB_OUTPUT,
   ownRunId = process.env.GITHUB_RUN_ID,
   fetchImpl = fetch,
+  repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..'),
 } = {}) {
   let plan;
   let affected = affectedProducts(null);
@@ -190,9 +192,16 @@ export async function run({
       // A push to main or a manual dispatch: the full battery, production-runner proofs included.
       plan = { runProducts: true, reason: 'no pull request in this event (push to main or dispatch); full battery' };
     } else {
+      // the checkout under test; unreadable, every API source change runs the runner proofs
+      let runnerSources = null;
+      try {
+        runnerSources = runnerSourceClosure(repoRoot);
+      } catch (error) {
+        console.log(`battery-plan: runner sources unavailable (${error.message}); API sources run the proofs`);
+      }
       affected = affectedProducts(await pullRequestFiles({
         fetchImpl, repository, token, number: event.pull_request.number,
-      }));
+      }), { runnerSources });
     }
     const action = event.action;
     const baseChanged = Boolean(event.changes?.base);

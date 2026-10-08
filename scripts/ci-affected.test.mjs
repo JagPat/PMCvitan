@@ -5,7 +5,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { affectedProducts } from './ci-affected.mjs';
+import { affectedProducts, runnerSourceClosure } from './ci-affected.mjs';
 import { PRODUCT_CHECKS, REQUIRED_CHECKS, requiredChecksForPullRequest } from './review-policy.mjs';
 
 test('docs and automation scripts run no product job', () => {
@@ -66,10 +66,39 @@ test('a web change runs web, e2e and api-e2e only', () => {
   assert.deepEqual(affectedProducts(['apps/web/src/App.tsx']).products, ['web', 'e2e', 'api-e2e']);
 });
 
-test('an API source change runs api and api-e2e without the runner proofs', () => {
-  const result = affectedProducts([{ filename: 'apps/api/src/x.ts' }]);
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+test('an API source change outside the runner sources runs api and api-e2e without the runner proofs', () => {
+  const result = affectedProducts([{ filename: 'apps/api/src/x.ts' }], { runnerSources: new Set() });
   assert.deepEqual(result.products, ['api', 'api-e2e']);
   assert.equal(result.runnerProofs, false);
+});
+
+test('Codex 4218299993 — a source a production-runner CLI executes runs the runner proofs', () => {
+  const runnerSources = runnerSourceClosure(repoRoot);
+  for (const cli of [
+    'apps/api/src/activities/b1/b1.cli.ts',
+    'apps/api/src/platform/enforcement/enforcement.cli.ts',
+    'apps/api/src/platform/projections/inbox-repair.cli.ts',
+    'apps/api/src/platform/t45/t45.cli.ts',
+    'apps/api/src/labour/t2c/t2c.cli.ts',
+    'apps/api/src/labour/t3c/t3c.cli.ts',
+  ]) {
+    assert.ok(runnerSources.has(cli), `${cli} is a runner entry`);
+    const result = affectedProducts([cli], { runnerSources });
+    assert.deepEqual(result.products, ['api', 'api-e2e']);
+    assert.equal(result.runnerProofs, true, cli);
+  }
+  // transitively: what a CLI imports is executed by the proof too
+  const imported = [...runnerSources].filter((path) => !path.endsWith('.cli.ts'));
+  assert.ok(imported.length > 0, 'the closure follows the CLIs\' imports');
+  assert.equal(affectedProducts([imported[0]], { runnerSources }).runnerProofs, true);
+  // the products, which the merge gate requires, never depend on the closure
+  assert.deepEqual(affectedProducts([imported[0]]).products, affectedProducts([imported[0]], { runnerSources }).products);
+  // the server entry is not a runner CLI: migrate.sh only names it in a comment
+  assert.equal(runnerSources.has('apps/api/src/main.ts'), false);
+  // without the closure (unreadable checkout) every API source change runs the proofs
+  assert.equal(affectedProducts(['apps/api/src/x.ts']).runnerProofs, true);
 });
 
 test('a migration runs the upgrade proof and the production-runner proofs', () => {
@@ -115,9 +144,34 @@ test('ci.yml launches each product job only when the plan lists it, and proofs o
   assert.match(ci, /products: \$\{\{ steps\.plan\.outputs\.products \}\}/u);
 });
 
-test('Codex 4214321813 — the archived runbook an API integration test reads runs the api job', () => {
-  assert.deepEqual(affectedProducts(['docs/archive/RUNBOOK-2026-10-08.md']).products, ['api']);
+test('Codex 4214321813 / 4218299974 — the live runbook an API integration test reads runs the api job', () => {
+  assert.deepEqual(affectedProducts(['docs/RUNBOOK.md']).products, ['api']);
   assert.deepEqual(affectedProducts(['docs/archive/ROADMAP-2026-10-08.md']).products, []);
+});
+
+test('every document a product source reads runs a product job', async () => {
+  const read = new Set();
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (/\.(?:[cm]?[jt]sx?)$/u.test(entry.name)) {
+        const text = await readFile(path, 'utf8');
+        if (!/readFile/u.test(text)) continue;
+        for (const line of text.split('\n')) {
+          if (!/readFile|join\(|resolve\(/u.test(line)) continue;
+          for (const match of line.matchAll(/['"`](docs\/[^'"`]+)['"`]/gu)) read.add(match[1]);
+        }
+      }
+    }
+  };
+  await walk(join(repoRoot, 'apps'));
+  await walk(join(repoRoot, 'packages'));
+  assert.ok(read.has('docs/RUNBOOK.md'), 'the probe finds the known reader');
+  for (const doc of read) {
+    assert.ok(affectedProducts([doc]).products.length > 0, `${doc} is read by a product but runs no product job`);
+  }
 });
 
 test('Codex 4214321794 — role-activation evidence requires only the affected product checks', async () => {
