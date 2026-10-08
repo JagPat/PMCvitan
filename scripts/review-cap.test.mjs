@@ -339,8 +339,10 @@ test('Codex 4220338659 — the cap reads a head\'s file list once, however many 
       return [{ filename: 'a.mjs' }];
     },
   };
-  // a failed read is not cached: the next poll retries it
-  await assert.rejects(capFiles(client, 9, 'h1'));
+  // a failed read is not cached: the next poll retries it. Codex 4221022493 — and it is not thrown either: it
+  // reads as an unknown list, which the cap treats as incomplete (fail closed)
+  assert.equal(await capFiles(client, 9, 'h1'), null);
+  assert.equal(reviewCapState({ expectedHead: 'h1', files: null }).changedLines.incomplete, true);
   for (let poll = 0; poll < 5; poll++) assert.deepEqual(await capFiles(client, 9, 'h1'), [{ filename: 'a.mjs' }]);
   assert.equal(reads, 2);
   // a new head is a new list

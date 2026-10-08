@@ -2041,8 +2041,10 @@ export async function capFiles(client, number, expectedHead) {
   if (!byHead) capFilesCache.set(client, (byHead = new Map()));
   const key = `${number}@${expectedHead}`;
   if (!byHead.has(key)) {
-    // a failed read is not cached: the next poll retries it
-    const pending = client.pullRequestFiles(number).catch((error) => { byHead.delete(key); throw error; });
+    // a failed read is not cached: the next poll retries it. Codex 4221022493 — nor is it thrown: it reads as
+    // an unknown list (null), which the cap already treats as incomplete (fail closed: a P0/P1 anywhere
+    // blocks), so a transient files-API failure never aborts the review orchestration mid-poll
+    const pending = client.pullRequestFiles(number).catch(() => { byHead.delete(key); return null; });
     byHead.set(key, pending);
   }
   return byHead.get(key);
