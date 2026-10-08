@@ -285,11 +285,19 @@ back to an unreviewed path.
 ## Review continuity
 
 The gate records review history without rejecting another correction head merely
-because earlier heads received findings. Current-head findings still fail
-`codex-current-head` and return the existing PR to draft. The watchdog routes the
-same declared owner to fix forward; it never orders closure based on a round count.
-Obsolete round-limit failures request the existing gate recovery workflow, which
-rechecks CI and current-head review rather than clearing the status directly.
+because earlier heads received findings. Through the second Codex round on a PR,
+every current-head finding fails `codex-current-head` and returns the existing PR to
+draft. From the third round on, the review-round cap applies (owner decision
+2026-10-08, [POLICY.md](POLICY.md)): only a P0/P1 on a line the PR changed still
+fails it. Every other current-head finding is filed in one `review-follow-up` issue
+for that head, and the PR merges on green CI. A capped success that merged with
+findings on the PR is therefore expected, not a controller fault; read the follow-up
+issue that the head's `codex-current-head` status names. The watchdog routes the same declared owner
+to fix forward; it never orders closure based on a round count.
+
+The retired close-and-replace round limit is a different thing. Its obsolete
+round-limit failures request the existing gate recovery workflow, which rechecks CI
+and current-head review rather than clearing the status directly.
 
 Historical replacement labels no longer block unrelated `Replaces: none` work.
 Explicit replacement declarations retain their existing provenance checks so

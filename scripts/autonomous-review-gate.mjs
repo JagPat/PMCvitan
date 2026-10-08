@@ -1483,6 +1483,18 @@ export async function ensureTerminalReviewState(
       }
       return true;
     }
+    // Codex 4216657933 — recovery settles the head's evidence through the same step as the ordinary success
+    // path before it merges: a finding that arrived since the success either blocks, or past the cap is filed
+    // in the head's follow-up issue, so a recovered merge never leaves a deferred finding unrecorded.
+    // Codex 4220338753 — and it settles BEFORE any success is republished: a green required status is what
+    // branch protection (and a queued auto-merge) acts on, so a blocking finding that landed since the
+    // original success must turn the head red without a green window in which it could merge
+    const settled = await settleFinalCodexEvidence(client, finalPolicy.pullRequest, expectedHead);
+    if (settled.state === 'changes_required') {
+      await client.setStatus(expectedHead, 'failure', settled.detail, pullRequest.html_url);
+      await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+      return true;
+    }
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -1493,15 +1505,6 @@ export async function ensureTerminalReviewState(
         'review: recovered prior clean Codex result on this exact head',
         pullRequest.html_url,
       );
-    }
-    // Codex 4216657933 — recovery settles the head's evidence through the same step as the ordinary success
-    // path before it merges: a finding that arrived since the success either blocks, or past the cap is filed
-    // in the head's follow-up issue, so a recovered merge never leaves a deferred finding unrecorded
-    const settled = await settleFinalCodexEvidence(client, finalPolicy.pullRequest, expectedHead);
-    if (settled.state === 'changes_required') {
-      await client.setStatus(expectedHead, 'failure', settled.detail, pullRequest.html_url);
-      await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
-      return true;
     }
     await completeReviewedPullRequest(
       client,
@@ -1982,8 +1985,26 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
  * and its changed lines. Every Codex classification goes through this, so the polling, the final
  * re-verification, the pre-review guard and the recovery all judge the same head the same way.
  */
+// Codex 4220338659 — a head's file list is immutable, and `reviewAttempt` asks for the cap on every poll:
+// read it ONCE per (client, PR, exact head), so a slow Codex does not spend the token's hourly budget
+// refetching the same list every 15 seconds
+const capFilesCache = new WeakMap();
+
+export async function capFiles(client, number, expectedHead) {
+  if (typeof client.pullRequestFiles !== 'function') return [];
+  let byHead = capFilesCache.get(client);
+  if (!byHead) capFilesCache.set(client, (byHead = new Map()));
+  const key = `${number}@${expectedHead}`;
+  if (!byHead.has(key)) {
+    // a failed read is not cached: the next poll retries it
+    const pending = client.pullRequestFiles(number).catch((error) => { byHead.delete(key); throw error; });
+    byHead.set(key, pending);
+  }
+  return byHead.get(key);
+}
+
 async function capFor(client, number, expectedHead, reviews, comments) {
-  const files = typeof client.pullRequestFiles === 'function' ? await client.pullRequestFiles(number) : [];
+  const files = await capFiles(client, number, expectedHead);
   return reviewCapState({ expectedHead, reviews, comments, files });
 }
 

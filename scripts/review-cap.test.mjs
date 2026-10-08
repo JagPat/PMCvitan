@@ -12,7 +12,7 @@ import {
   reviewCapState,
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
-import { fileDeferredFindings, unionDeferred } from './autonomous-review-gate.mjs';
+import { capFiles, fileDeferredFindings, unionDeferred } from './autonomous-review-gate.mjs';
 import { alreadyReported, completionReport, reviewRounds } from './completion-report.mjs';
 import { REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
@@ -316,4 +316,26 @@ test('Codex 4216657933 — recovering an earlier success settles the evidence be
   const settle = recovery.indexOf('await settleFinalCodexEvidence(');
   const merge = recovery.indexOf('await completeReviewedPullRequest(');
   assert.ok(settle > 0 && merge > settle, 'the recovery merge follows the evidence settlement');
+  // Codex 4220338753 — and so does the republished success: no green window before a blocking finding
+  const republish = recovery.indexOf("'review: recovered prior clean Codex result on this exact head'");
+  assert.ok(republish > settle, 'the recovered success is republished only after the evidence settles');
+});
+
+test('Codex 4220338659 — the cap reads a head\'s file list once, however many polls ask', async () => {
+  let reads = 0;
+  let fail = true;
+  const client = {
+    async pullRequestFiles() {
+      reads += 1;
+      if (fail) { fail = false; throw new Error('transient'); }
+      return [{ filename: 'a.mjs' }];
+    },
+  };
+  // a failed read is not cached: the next poll retries it
+  await assert.rejects(capFiles(client, 9, 'h1'));
+  for (let poll = 0; poll < 5; poll++) assert.deepEqual(await capFiles(client, 9, 'h1'), [{ filename: 'a.mjs' }]);
+  assert.equal(reads, 2);
+  // a new head is a new list
+  await capFiles(client, 9, 'h2');
+  assert.equal(reads, 3);
 });
