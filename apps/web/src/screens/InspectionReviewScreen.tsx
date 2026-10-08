@@ -36,7 +36,10 @@ export function InspectionReviewScreen() {
   const routeItem = useStore((s) => s.routeItem);
   // Codex 4212901994 — an inspection the URL names that the store has not yet adopted
   const urlItem = useUrlItem('inspect-review');
-  const adopting = urlItem !== null && urlItem !== routeItem ? urlItem : null;
+  const adopting = typeof urlItem === 'string' && urlItem !== routeItem ? urlItem : null;
+  // Codex 4213640383 — Back to the bare parent URL, before the store has cleared its item: the departing
+  // record is not shown under the parent's URL
+  const clearing = urlItem === null && routeItem !== null;
   const setRouteItem = useStore((s) => s.setRouteItem);
   const activeReviewId = useStore((s) => s.activeReviewId);
   const projectLoadState = useStore((s) => s.projectLoadState);
@@ -84,7 +87,7 @@ export function InspectionReviewScreen() {
       </div>
     );
   }
-  if (released) {
+  if (released || clearing) {
     return (
       <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-returning">
         <Eyebrow>INSPECTION REVIEW</Eyebrow>

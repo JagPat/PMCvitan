@@ -185,12 +185,16 @@ export function RouteBridge() {
       if (location.pathname !== record) coldRecord.current = null; // the viewer has moved on: nothing to place
       // Codex 4212901999 — only a record in the ACTIVE project gets a parent: a project the viewer
       // cannot open is never placed in history (a member project is placed once its switch lands)
-      else if (projectId !== activeProjectId) {
+      else if (projectId && projectId !== activeProjectId) {
         if (!memberships.some((m) => m.projectId === projectId)) coldRecord.current = null;
+      } else if (!fromPath || !item) {
+        coldRecord.current = null;
       } else if (identitySettled && (fromPath !== 'client-decisions' || decisionsSettled)) {
         coldRecord.current = null;
-        navigate(record.slice(0, record.lastIndexOf('/')), { replace: true });
-        navigate(record);
+        // Codex 4213640388 — both entries are the CANONICAL active-project paths: a legacy `/review/<id>`
+        // link must not leave a bare parent the store->URL pass would canonicalize by pushing on Back
+        navigate(pathForScreen(fromPath, activeProjectId, null), { replace: true });
+        navigate(pathForScreen(fromPath, activeProjectId, item));
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

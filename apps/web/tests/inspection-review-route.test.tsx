@@ -312,3 +312,45 @@ describe('Codex 4213284908 — submitting the LAST linked checklist releases its
     expect(view.queryByTestId('item-not-found')).toBeNull();
   });
 });
+
+describe('Codex 4213640383 — Back to the bare parent before the store clears its item shows nothing of the record', () => {
+  it('Inspection Review under /review with the store still on a review shows the returning boundary, no actions', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const reviewId = useStore.getState().reviews[0].id;
+    useStore.setState({ role: 'pmc', screen: 'inspect-review', routeItem: reviewId, activeReviewId: reviewId });
+    const { MemoryRouter } = await import('react-router-dom');
+    const { InspectionReviewScreen } = await import('@/screens/InspectionReviewScreen');
+    const view = render(<MemoryRouter initialEntries={['/projects/ambli/review']}><InspectionReviewScreen /></MemoryRouter>);
+    expect(view.getByTestId('inspections-returning')).toBeTruthy();
+    expect(view.queryByRole('button', { name: /Approve Inspection/ })).toBeNull();
+    expect(view.queryByTestId('send-reinspection')).toBeNull();
+    act(() => { useStore.getState().setRouteItem(null); });
+    expect(view.queryByTestId('inspections-returning')).toBeNull();
+  });
+
+  it('the field checklist under /site/checklist with the store still on a checklist shows no editable checklist', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const a = fieldChecklist('INSP-50', 'Slab Check');
+    useStore.setState({ role: 'engineer', screen: 'engineer-check', openChecklists: [a], checklist: structuredClone(a), selectedChecklistId: 'INSP-50', routeItem: 'INSP-50' });
+    const { MemoryRouter } = await import('react-router-dom');
+    const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
+    const view = render(<MemoryRouter initialEntries={['/projects/ambli/site/checklist']}><EngineerChecklistScreen /></MemoryRouter>);
+    expect(view.getByText('Returning to your checklists…')).toBeTruthy();
+    expect(view.queryByTestId('checklist-title')).toBeNull();
+  });
+});
+
+describe('Codex 4213640398 — a new link to an already-submitted checklist is judged afresh, not released', () => {
+  it('the submitted checklist still in the slot does not release a fresh route to it', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const only = fieldChecklist('INSP-51', 'Drain Slope Check');
+    useStore.setState({ role: 'engineer', screen: 'engineer-check', openChecklists: [], checklist: { ...structuredClone(only), submitted: true }, selectedChecklistId: 'INSP-51', routeItem: 'INSP-51' });
+    const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
+    const view = render(<EngineerChecklistScreen />);
+    expect(useStore.getState().routeItem).toBe('INSP-51');
+    expect(view.queryByText('Returning to your checklists…')).toBeNull();
+  });
+});

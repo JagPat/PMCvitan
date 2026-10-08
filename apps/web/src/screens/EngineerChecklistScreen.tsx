@@ -62,7 +62,10 @@ export function EngineerChecklistScreen() {
   const routeItem = useStore((s) => s.routeItem);
   // Codex 4212901994 — a checklist the URL names that the store has not yet adopted
   const urlItem = useUrlItem('engineer-check');
-  const adopting = urlItem !== null && urlItem !== routeItem ? urlItem : null;
+  const adopting = typeof urlItem === 'string' && urlItem !== routeItem ? urlItem : null;
+  // Codex 4213640383 — Back to the bare parent URL, before the store has cleared its item: the departing
+  // record is not shown under the parent's URL
+  const clearing = urlItem === null && routeItem !== null;
   const setRouteItem = useStore((s) => s.setRouteItem);
   // (a module read that has not yet landed — `idle` before its first pull — is not settled either)
   const settled = useStore(inspectionsSliceSettled) && !(moduleOwned && reading);
@@ -78,7 +81,9 @@ export function EngineerChecklistScreen() {
   // naming that checklist (released, Back to the list, another link), so a later visit to the same id —
   // Forward included — is judged afresh
   if (honoured.current !== null && routeItem !== honoured.current) honoured.current = null;
-  if (routeItem !== null && checklist?.id === routeItem) honoured.current = routeItem;
+  // Codex 4213640398 — honoured only while the route is OPEN: a later link (or Forward) to a checklist
+  // already submitted never saw it open in this episode, so it is judged afresh, not released
+  if (routeItem !== null && routeOpen && checklist?.id === routeItem) honoured.current = routeItem;
   const released = routeItem !== null && !routeOpen && honoured.current === routeItem;
   useEffect(() => {
     // (the honour ends with the route itself — the episode reset above — so a later link to the same id
@@ -119,6 +124,7 @@ export function EngineerChecklistScreen() {
   // departing URL
   if (adopting) return <EmptyState title={`Opening ${openChecklists.find((c) => c.id === adopting)?.title ?? adopting}…`} detail="Opening the checklist this link names." />;
   if (released) return <EmptyState title="Returning to your checklists…" detail="This checklist has been submitted." />;
+  if (clearing) return <EmptyState title="Returning to your checklists…" detail="Back to the checklist list." />;
   // Codex 4207530085 — the switch to the named checklist is guarded (an online submit in flight refuses
   // it): until it happens, the checklist in the slot is NOT the one the URL names, so it is not shown
   // under that URL; the effect above completes the switch once the submit settles

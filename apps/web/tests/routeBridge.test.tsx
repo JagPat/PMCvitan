@@ -338,3 +338,36 @@ describe('RouteBridge — Codex 4212901999: a cold record in a project the viewe
     expect(visited).not.toContain('/projects/not-mine/review');
   });
 });
+
+describe('RouteBridge — Codex 4213640388: a legacy cold record gets the CANONICAL parent', () => {
+  const visited: string[] = [];
+  let goBack: () => void = () => {};
+  function Probe() {
+    const path = useLocation().pathname;
+    const navigate = useNavigate();
+    goBack = () => navigate(-1);
+    if (visited[visited.length - 1] !== path) visited.push(path);
+    return null;
+  }
+  it('Back from a cold /review/<id> reaches the active project\'s list once, and never the bare /review', async () => {
+    visited.length = 0;
+    useStore.setState({ role: 'pmc' });
+    const active = useStore.getState().activeProjectId;
+    render(
+      <MemoryRouter initialEntries={['/review/INSP-21']}>
+        <RouteBridge />
+        <Probe />
+      </MemoryRouter>,
+    );
+    await flush();
+    expect(visited[visited.length - 1]).toBe(`/projects/${active}/review/INSP-21`);
+    for (let i = 0; i < 3; i++) {
+      act(() => goBack());
+      await flush();
+    }
+    expect(visited).not.toContain('/review');
+    expect(visited[visited.length - 1]).toBe(`/projects/${active}/review`);
+    // no two-entry loop: once on the list, further Backs stay there
+    expect(visited.filter((p) => p === `/projects/${active}/review`)).toHaveLength(1);
+  });
+});
