@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: live-bug-1b-2-inspection-routes
-reviewed_merge: a08f896
-open_pr: 730
+work_item: live-bug-1b-3-inspection-notices
+reviewed_merge: 20b5f0f
+open_pr: 735
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-08
@@ -26,13 +26,13 @@ updated: 2026-10-08
 
 ### Current unit
 
-**Live bug 1b-2, #730** (`claude/live-bug-1b-2-inspection-routes`). Inspection Review's and the field
-checklist's item routes, and Back to the parent list from a record link that starts the tab. 1b-1 (#729,
-per-slice command reconcile) merged at `a08f896`.
+**Live bug 1b-3, #735** (`claude/live-bug-1b-3-inspection-notices`, issue #734). An inspection notice
+opens the inspection its writer names. 1b-1 (#729) merged at `a08f896` and 1b-2 (#730, item routes and
+Back) at `20b5f0f`. Deploy visibility (#732) merged at `b46e1e7`.
 
 **Delivery-speed maintenance PR** (owner decision 2026-10-08, recorded on #482): the review-round cap, the
 review scope, the size target, the trivial fast lane, shadow review off, this file's shrink, affected-package
-CI, parallel units, one issue per work item, and completion reports. It touches no file #730 touches except
+CI, parallel units, one issue per work item, and completion reports. It touches no file #735 touches except
 this one. Rule 8 lets the two run in parallel.
 
 ### Queue (the owner's order of 2026-10-07, recorded on #482)
@@ -41,9 +41,9 @@ this one. Rule 8 lets the two run in parallel.
    - 1a, decision notices: done (#727, `6972ec5`).
    - 1b, inspection notices, in three parts:
      - 1b-1: done (#729, `a08f896`).
-     - 1b-2: #730, open.
-     - 1b-3: inspection notices name their inspection by the writer's id, and notification → record → Back
-       and reload → Back work end to end. The checklist id parse must be multiline-safe (Codex 4209988819).
+     - 1b-2: done (#730, `20b5f0f`).
+     - 1b-3: #735, open. Inspection notices name their inspection by the writer's id; notification →
+       record → Back and reload → Back work end to end; the id parse is multiline-safe.
    - 1c: drawing notices open the drawing they name.
 2. **Remaining live bugs**, folded into the Board's Top 10 queue (7 Oct 2026 UI/UX review), one PR per item:
    - demo controls out of production, including hiding Generate Weekly Report;

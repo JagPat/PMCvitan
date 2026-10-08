@@ -955,6 +955,28 @@ describe('per-slice reconcile debt (Codex 4210609574 / 4210609583 / 4210609591)'
     }
   });
 
+  it('live bug 1b-2 — an APPLIED submit under module ownership owes the inspections read that shows it', async () => {
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    const holdRead = deferred<ModuleInspections>();
+    let readCall = 0;
+    const gw = {
+      submitInspection: vi.fn().mockImplementation(() => Promise.resolve(makeSnapshot())),
+      snapshot: vi.fn().mockImplementation(() => Promise.resolve(makeSnapshot())),
+      inspections: vi.fn().mockImplementation(() => { readCall += 1; return readCall === 1 ? holdRead.promise : Promise.resolve(inspectionsRead()); }),
+      uploadMedia: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.inspectionsLoad = 'ready'; });
+    seedTwoPass();
+
+    s().submitInspection();                             // the submit's own snapshot APPLIES
+    await settles(() => gw.inspections.mock.calls.length === 1); // and its module reconcile is in flight
+    expect(s().commandReconcileOwed.inspections).toBe(true);
+    holdRead.release(inspectionsRead());
+    await settles(() => !s().commandReconcilePending);
+    expect(s().commandReconcileOwed.inspections).toBe(false);
+  });
+
   it('sign-out ends the scope, and with it the previous identity\'s owed reconcile', async () => {
     useStore.setState({ commandReconcilePending: true, commandReconcileOwed: { decisions: true, dailyLog: false, drawings: false, inspections: true, activities: false } });
     s().signOut();

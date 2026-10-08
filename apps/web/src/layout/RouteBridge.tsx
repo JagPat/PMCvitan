@@ -1,10 +1,10 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { DEV_AUTH } from '@/data/apiGateway';
+import { DEV_AUTH, API_BASE } from '@/data/apiGateway';
 import { viewerIsDecider } from '@vitan/shared';
-import { parseLocation, pathForScreen, screensFor, withDeciderRoute, SCREEN_CAPABILITY } from '@/lib/screens';
+import { parseLocation, pathForScreen, screensFor, withDeciderRoute, SCREEN_CAPABILITY, ITEM_SCREENS } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 
 /** B6 — the item the current screen's URL names. The client's decisions screen keeps its own
@@ -72,6 +72,21 @@ export function RouteBridge() {
   // into another project, or a cold API load, empties the project scope that holds it), then
   // adopted once. Only a URL change sets it, so a stale URL never overwrites an in-app selection.
   const pendingItem = useRef<{ projectId: string; screen: ScreenKey; item: string | null } | null>(null);
+
+  // Live bug 1 (owner live check, #482 6039737806) — a record reached by a link that STARTS this tab's
+  // history (a shared link, a new tab, a typed URL) has nothing behind it, so Back would leave the app.
+  // Its parent list is put underneath it once, on the first render: Back then goes to the list the
+  // record belongs to. A record opened IN the app (a notification, a card, a row) is a pushed entry with
+  // the previous screen behind it, and a reload keeps its place in history — neither is touched.
+  // Codex 4212402103 — the parent is placed only once the role guard below has ACCEPTED the record's
+  // screen for a settled identity (a loaded project, or a signed-out/local session): a forbidden record
+  // is redirected and gets no parent, so Back can never land on a screen the role cannot hold.
+  const [coldStart] = useState<string | null>(() => {
+    const first = (window.history.state as { idx?: number } | null)?.idx ?? 0;
+    const { screen: fromPath, item } = parseLocation(location.pathname);
+    return first === 0 && fromPath && item && ITEM_SCREENS.has(fromPath) ? location.pathname : null;
+  });
+  const coldRecord = useRef<string | null>(coldStart);
 
   // URL -> store (project + screen reconciliation, role-guarded)
   useEffect(() => {
@@ -147,6 +162,7 @@ export function RouteBridge() {
     );
     if (!fromPath || !allowed.includes(fromPath)) {
       pendingItem.current = null;
+      coldRecord.current = null; // a redirected record gets no parent
       if (screen !== allowed[0]) setScreen(allowed[0]);
       return;
     }
@@ -159,6 +175,27 @@ export function RouteBridge() {
     if (want && want.projectId === activeProjectId && want.screen === fromPath && !itemLoading) {
       pendingItem.current = null;
       if (routeItemOf(useStore.getState()) !== want.item) setRouteItem(want.item);
+    }
+    // the cold record's parent, once the guard has accepted it for a settled identity
+    const record = coldRecord.current;
+    if (record !== null) {
+      // demo mode (no API) runs on a fixed persona; over the API the identity is settled once a signed-in
+      // project has loaded (before sign-in the role is not yet the viewer's)
+      const identitySettled = !API_BASE || (projectLoadState === 'ready' && !identityPending);
+      if (location.pathname !== record) coldRecord.current = null; // the viewer has moved on: nothing to place
+      // Codex 4212901999 — only a record in the ACTIVE project gets a parent: a project the viewer
+      // cannot open is never placed in history (a member project is placed once its switch lands)
+      else if (projectId && projectId !== activeProjectId) {
+        if (!memberships.some((m) => m.projectId === projectId)) coldRecord.current = null;
+      } else if (!fromPath || !item) {
+        coldRecord.current = null;
+      } else if (identitySettled && (fromPath !== 'client-decisions' || decisionsSettled)) {
+        coldRecord.current = null;
+        // Codex 4213640388 — both entries are the CANONICAL active-project paths: a legacy `/review/<id>`
+        // link must not leave a bare parent the store->URL pass would canonicalize by pushing on Back
+        navigate(pathForScreen(fromPath, activeProjectId, null), { replace: true });
+        navigate(pathForScreen(fromPath, activeProjectId, item));
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown, isOpenDecider, authed, identityPending, hasDecisions, decisionsLoad]);
