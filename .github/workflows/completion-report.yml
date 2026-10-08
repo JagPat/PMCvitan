@@ -17,6 +17,11 @@ on:
   schedule:
     - cron: '23 * * * *'
   workflow_dispatch:
+    inputs:
+      window_hours:
+        description: How many hours back to report merges still missing one (recovery after an outage; default 48)
+        required: false
+        default: '48'
 
 permissions:
   actions: write
@@ -49,4 +54,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          SWEEP_WINDOW_HOURS: ${{ github.event.inputs.window_hours }}
         run: node scripts/completion-report.mjs

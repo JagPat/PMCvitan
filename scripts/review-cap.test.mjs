@@ -13,8 +13,8 @@ import {
   GITHUB_PR_FILES_LIMIT,
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
-import { capFiles, cappedSuccessDetail, fileDeferredFindings, readCodexEvidence, unionDeferred } from './autonomous-review-gate.mjs';
-import { alreadyReported, completionReport, reviewRounds, sweep, SWEEP_WINDOW_MS } from './completion-report.mjs';
+import { capFiles, cappedSuccessDetail, fileDeferredFindings, readCodexEvidence, settleFinalCodexEvidence, unionDeferred } from './autonomous-review-gate.mjs';
+import { alreadyReported, completionReport, mainNeedsCi, reviewRounds, sweep, SWEEP_WINDOW_MS } from './completion-report.mjs';
 import { REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -394,7 +394,7 @@ test('Codex 4220431609 — the sweep reports token-made merges and dispatches ma
     m = /\/issues\/(\d+)\/comments/u.exec(u);
     if (m) return json(m[1] === '2' ? [{ user: { login: 'github-actions[bot]', type: 'Bot' }, body: reportBody }] : []);
     if (u.includes('/commits/main')) return json({ sha: 'mainsha' });
-    if (u.includes('/actions/workflows/ci.yml/runs')) return json({ total_count: mainRuns });
+    if (u.includes('/actions/workflows/ci.yml/runs')) return json({ total_count: mainRuns, workflow_runs: Array.from({ length: mainRuns }, () => ({ status: 'completed', conclusion: 'success' })) });
     return json([]);
   };
   const first = await sweep({ repository: 'o/r', token: 't', fetchImpl: fetchFor(0), now });
@@ -477,11 +477,74 @@ test('Codex 4220621322 — the sweep pages until the window is exhausted', async
     if (page) { read.push(Number(page[1])); return json(pages[page[1]] ?? []); }
     if (/\/pulls\/5$/u.test(u)) return json({ number: 5, merged_at: recent, created_at: recent, head: { sha: 'h5' } });
     if (u.includes('/commits/main')) return json({ sha: 'm' });
-    if (u.includes('/actions/workflows/ci.yml/runs')) return json({ total_count: 1 });
+    if (u.includes('/actions/workflows/ci.yml/runs')) return json({ total_count: 1, workflow_runs: [{ status: 'in_progress', conclusion: null }] });
     return json([]);
   };
   const result = await sweep({ repository: 'o/r', token: 't', fetchImpl, now });
   // page 2 holds the merge page 1 crowded out; page 2 reaches past the window, so page 3 is never read
   assert.deepEqual(read, [1, 2]);
   assert.deepEqual(result.reported, [5]);
+});
+
+test('Codex 4220739652 — main CI is re-dispatched only when no run executed the battery', () => {
+  assert.equal(mainNeedsCi([]), true);
+  assert.equal(mainNeedsCi([{ status: 'completed', conclusion: 'cancelled' }]), true);
+  assert.equal(mainNeedsCi([{ status: 'completed', conclusion: 'startup_failure' }, { status: 'completed', conclusion: 'skipped' }]), true);
+  // active, green, or a genuine red: no dispatch (a red main is for a person, not an hourly re-run)
+  assert.equal(mainNeedsCi([{ status: 'in_progress', conclusion: null }]), false);
+  assert.equal(mainNeedsCi([{ status: 'queued', conclusion: null }]), false);
+  assert.equal(mainNeedsCi([{ status: 'completed', conclusion: 'cancelled' }, { status: 'completed', conclusion: 'success' }]), false);
+  assert.equal(mainNeedsCi([{ status: 'completed', conclusion: 'failure' }]), false);
+});
+
+test('Codex 4220739661 — a manual sweep may widen the window to recover an outage', async () => {
+  const now = Date.parse('2026-10-08T12:00:00Z');
+  const tenDaysAgo = new Date(now - 10 * 24 * 3_600_000).toISOString();
+  const json = (body) => ({ ok: true, json: async () => body });
+  const posted = [];
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url);
+    if (init.method === 'POST' && u.endsWith('/comments')) { posted.push(u); return json({}); }
+    if (u.includes('/pulls?state=closed')) return json([{ number: 3, merged_at: tenDaysAgo, updated_at: tenDaysAgo }]);
+    if (/\/pulls\/3$/u.test(u)) return json({ number: 3, merged_at: tenDaysAgo, created_at: tenDaysAgo, head: { sha: 'h3' } });
+    if (u.includes('/commits/main')) return json({ sha: 'm' });
+    if (u.includes('/actions/workflows/ci.yml/runs')) return json({ workflow_runs: [{ status: 'completed', conclusion: 'success' }] });
+    return json([]);
+  };
+  assert.deepEqual((await sweep({ repository: 'o/r', token: 't', fetchImpl, now })).reported, []);
+  assert.deepEqual((await sweep({ repository: 'o/r', token: 't', fetchImpl, now, windowMs: 11 * 24 * 3_600_000 })).reported, [3]);
+  const { readFile } = await import('node:fs/promises');
+  const workflow = await readFile(new URL('../.github/workflows/completion-report.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /window_hours:/u);
+  assert.match(workflow, /SWEEP_WINDOW_HOURS: \$\{\{ github\.event\.inputs\.window_hours \}\}/u);
+});
+
+test('Codex 4220739644 — the follow-up label is provisioned before the first issue carries it', async () => {
+  const calls = [];
+  const client = {
+    issuesLabelled: async () => [],
+    ensureLabel: async (name) => { calls.push(`label:${name}`); },
+    createIssue: async () => { calls.push('create'); return { number: 701 }; },
+  };
+  await fileDeferredFindings(client, { number: 9 }, HEAD, [finding({ p: 2, id: 12 })]);
+  assert.deepEqual(calls, [`label:${REVIEW_FOLLOW_UP_LABEL}`, 'create']);
+});
+
+test('Codex 4220739672 — the final settlement admits only clear or no-new-evidence, and fails closed otherwise', async () => {
+  const client = (comments, reviews) => ({
+    reviews: async () => reviews,
+    reviewComments: async () => comments,
+    pullRequestFiles: async () => FILES,
+  });
+  // nothing arrived since the clean result: the earlier verdict stands
+  const quiet = await settleFinalCodexEvidence(client([], []), { number: 9, changed_files: 2 }, HEAD);
+  assert.equal(quiet.state, 'clear');
+  // a finding arrived: blocking
+  const found = await settleFinalCodexEvidence(client([finding({ p: 1, id: 13 })], []), { number: 9, changed_files: 2 }, HEAD);
+  assert.equal(found.state, 'changes_required');
+  // the gate source admits nothing but `clear` and `pending`
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const body = gate.slice(gate.indexOf('export async function settleFinalCodexEvidence'), gate.indexOf('export function contextForEvent'));
+  assert.match(body, /evidence\.state !== 'clear' && evidence\.state !== 'pending'/u);
 });

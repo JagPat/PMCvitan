@@ -763,6 +763,24 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/issues`, { method: 'POST', body: { title, body, labels } });
   }
 
+  // Idempotent: an existing label (or one a concurrent run just created, 422) is left as it is.
+  async ensureLabel(name) {
+    try {
+      await this.request(`/repos/${this.repository}/labels/${encodeURIComponent(name)}`);
+      return;
+    } catch (error) {
+      if (!/failed \(404\)/u.test(String(error?.message))) throw error;
+    }
+    try {
+      await this.request(`/repos/${this.repository}/labels`, {
+        method: 'POST',
+        body: { name, color: 'c5def5', description: 'Codex findings the review-round cap deferred (owner decision 2026-10-08)' },
+      });
+    } catch (error) {
+      if (!/failed \(422\)/u.test(String(error?.message))) throw error;
+    }
+  }
+
   updateIssueBody(number, body) {
     return this.request(`/repos/${this.repository}/issues/${number}`, { method: 'PATCH', body: { body } });
   }
@@ -1964,6 +1982,10 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
     if (missing.length > 0) await client.updateIssueBody(existing.number, [body.trimEnd(), ...missing].join('\n'));
     return existing.number;
   }
+  // Codex 4220739644 — the label must exist before an issue carries it: an unknown label can fail the create,
+  // or be dropped, after which the label-filtered lookup above never finds the issue again and every retry
+  // files a duplicate
+  if (typeof client.ensureLabel === 'function') await client.ensureLabel(REVIEW_FOLLOW_UP_LABEL);
   const issue = await client.createIssue({
     title: `Review follow-up from #${pullRequest.number}: ${deferred.length} deferred Codex finding${deferred.length === 1 ? '' : 's'}`,
     labels: [REVIEW_FOLLOW_UP_LABEL],
@@ -2264,7 +2286,17 @@ export function unionDeferred(first, second) {
  */
 export async function settleFinalCodexEvidence(client, pullRequest, expectedHead, earlierDeferred = []) {
   const evidence = await finalCodexEvidence(client, pullRequest, expectedHead);
-  if (evidence.state === 'changes_required') return { state: 'changes_required', detail: evidence.detail };
+  // Codex 4220739672 — the settlement is a FINDINGS guard, never the source of the clean verdict: the caller
+  // already holds that (the poll's fresh +1 after this attempt's readyAt, or the recovered success status).
+  // So it admits exactly two outcomes: `clear` (past the cap, everything deferrable) and `pending` (no
+  // current-head finding and no current-head review — nothing arrived since the clean result). Every other
+  // state, present or future, fails closed rather than falling through to a success.
+  if (evidence.state !== 'clear' && evidence.state !== 'pending') {
+    return {
+      state: 'changes_required',
+      detail: evidence.state === 'changes_required' ? evidence.detail : `review: final Codex evidence is ${evidence.state}; not merging on it`,
+    };
+  }
   const deferred = unionDeferred(earlierDeferred, evidence.deferred);
   const followUp = deferred.length > 0 ? await fileDeferredFindings(client, pullRequest, expectedHead, deferred) : null;
   return { state: 'clear', deferred, followUp };

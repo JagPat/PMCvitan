@@ -120,7 +120,18 @@ export async function reportPullRequest({ api, token, fetchImpl, pullRequest }) 
  *  2. dispatches CI on `main` when `main`'s head has no CI run (a dispatch is an event that token may
  *     create; the battery plan runs the full battery for any non-PR event).
  */
-export async function sweep({ repository, token, fetchImpl = globalThis.fetch, now = Date.now() }) {
+/**
+ * Should the sweep dispatch CI on `main`'s head? Codex 4220739652 — yes when no run exists, or when every run
+ * ended WITHOUT executing the battery (cancelled, never started, skipped, stale). An active or successful run
+ * is enough. A run that executed and FAILED (or timed out) is not retried: a red `main` is a finding for a
+ * person, and re-running it every hour would only repeat it.
+ */
+export function mainNeedsCi(runs = []) {
+  const settled = new Set(['success', 'failure', 'timed_out', 'action_required']);
+  return !runs.some((run) => run?.status !== 'completed' || settled.has(run?.conclusion));
+}
+
+export async function sweep({ repository, token, fetchImpl = globalThis.fetch, now = Date.now(), windowMs = SWEEP_WINDOW_MS }) {
   const api = `https://api.github.com/repos/${repository}`;
   const reported = [];
   // Codex 4220621322 — every page whose activity is inside the window: the list is newest-updated first, and
@@ -130,18 +141,18 @@ export async function sweep({ repository, token, fetchImpl = globalThis.fetch, n
     const closed = await getJson(fetchImpl, `${api}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`, token);
     for (const summary of closed) {
       const mergedAt = Date.parse(summary?.merged_at ?? '');
-      if (!Number.isFinite(mergedAt) || now - mergedAt > SWEEP_WINDOW_MS) continue;
+      if (!Number.isFinite(mergedAt) || now - mergedAt > windowMs) continue;
       // the list omits additions/deletions: read the full pull request the report measures
       const pullRequest = await getJson(fetchImpl, `${api}/pulls/${summary.number}`, token);
       if (await reportPullRequest({ api, token, fetchImpl, pullRequest })) reported.push(pullRequest.number);
     }
     const oldest = Date.parse(closed.at(-1)?.updated_at ?? '');
-    if (closed.length < 100 || !Number.isFinite(oldest) || now - oldest > SWEEP_WINDOW_MS) break;
+    if (closed.length < 100 || !Number.isFinite(oldest) || now - oldest > windowMs) break;
   }
   const main = await getJson(fetchImpl, `${api}/commits/main`, token);
-  const runs = await getJson(fetchImpl, `${api}/actions/workflows/ci.yml/runs?head_sha=${main.sha}&per_page=1`, token);
+  const runs = await getJson(fetchImpl, `${api}/actions/workflows/ci.yml/runs?head_sha=${main.sha}&per_page=20`, token);
   let dispatched = false;
-  if (Number(runs?.total_count ?? 0) === 0) {
+  if (mainNeedsCi(runs?.workflow_runs ?? [])) {
     const response = await fetchImpl(`${api}/actions/workflows/ci.yml/dispatches`, {
       method: 'POST',
       headers: { ...headersFor(token), 'content-type': 'application/json' },
@@ -158,10 +169,15 @@ export async function run({
   eventName = process.env.GITHUB_EVENT_NAME,
   repository = process.env.GITHUB_REPOSITORY,
   token = process.env.GITHUB_TOKEN,
+  windowHours = process.env.SWEEP_WINDOW_HOURS,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (eventName !== 'pull_request') {
-    const result = await sweep({ repository, token, fetchImpl });
+    // Codex 4220739661 — a manual dispatch may widen the window (`window_hours`), so merges left unreported
+    // through an outage longer than the default window stay recoverable
+    const hours = Number(windowHours);
+    const windowMs = Number.isFinite(hours) && hours > 0 ? hours * 3_600_000 : SWEEP_WINDOW_MS;
+    const result = await sweep({ repository, token, fetchImpl, windowMs });
     console.log(`completion-report sweep: reported ${JSON.stringify(result.reported)}; main ${result.mainSha} CI dispatched=${result.dispatched}`);
     return result;
   }
