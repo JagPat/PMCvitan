@@ -141,6 +141,17 @@ describe('Phase 2 Task 10 (Module 4) — activity/phase commands are idempotent 
     expect((await t.prisma.activity.findUniqueOrThrow({ where: { id } })).status).toBe('awaiting_signoff');
   });
 
+  // live bug 1b-3 (Codex 4219780021) — the sign-off notice names the closing inspection it announces by a STAMP
+  it('complete: the sign-off notice is stamped with the closing inspection it created', async () => {
+    const { p, pmcA } = await freshProject();
+    const id = await planned(p, pmcA, 'Stampable', 'k-stamp');
+    await svc.start(p, id, asPmc(pmcA, p), 'k-start-stamp');
+    await svc.complete(p, id, asPmc(pmcA, p), 'k-complete-stamp');
+    const closing = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, activityId: id, closing: true } });
+    const notice = await t.prisma.notification.findFirstOrThrow({ where: { projectId: p, text: { startsWith: 'Sign-off requested: ' } } });
+    expect(notice.inspectionId).toBe(closing.id);
+  });
+
   it('complete: the SAME key naming a DIFFERENT activity is a 409', async () => {
     const { p, pmcA } = await freshProject();
     const a = await planned(p, pmcA, 'Complete A', 'k-g');
