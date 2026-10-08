@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: live-bug-1b-3-inspection-notices
-reviewed_merge: 20b5f0f
-open_pr: 735
+reviewed_merge: 3559f20
+open_pr: 736
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-08
@@ -26,13 +26,15 @@ updated: 2026-10-08
 
 ### Current unit
 
-**Live bug 1b-3, #735** (`claude/live-bug-1b-3-inspection-notices`, issue #734). An inspection notice
-opens the inspection its writer names. 1b-1 (#729) merged at `a08f896` and 1b-2 (#730, item routes and
-Back) at `20b5f0f`. Deploy visibility (#732) merged at `b46e1e7`.
+**Live bug 1b-3, #736** (`claude/live-bug-1b-3a-notification-inspection-id`, issue #734). An inspection
+notice names its inspection by a column its writer stamps, sealed in PostgreSQL. #735 (the bell opens the
+stamped inspection) merged at `3559f20`; #736 adds the column and its seal; 1b-3b has the API writers stamp
+it. 1b-1 (#729) merged at `a08f896` and 1b-2 (#730) at `20b5f0f`. Deploy visibility (#732) merged at
+`b46e1e7`; proxy-addr 2.0.8 (#737) at `dd6e0fd`.
 
 **Delivery-speed maintenance PR** (owner decision 2026-10-08, recorded on #482): the review-round cap, the
 review scope, the size target, the trivial fast lane, shadow review off, this file's shrink, affected-package
-CI, parallel units, one issue per work item, and completion reports. It touches no file #735 touches except
+CI, parallel units, one issue per work item, and completion reports. It touches no file #736 touches except
 this one. Rule 8 lets the two run in parallel.
 
 ### Queue (the owner's order of 2026-10-07, recorded on #482)
@@ -42,8 +44,9 @@ this one. Rule 8 lets the two run in parallel.
    - 1b, inspection notices, in three parts:
      - 1b-1: done (#729, `a08f896`).
      - 1b-2: done (#730, `20b5f0f`).
-     - 1b-3: #735, open. Inspection notices name their inspection by the writer's id; notification →
-       record → Back and reload → Back work end to end; the id parse is multiline-safe.
+     - 1b-3, in three parts: #735 (the bell reads the stamp) done at `3559f20`; #736 (the column and its
+       seal, migration only) open; 1b-3b (the API writers stamp it; notification → record → Back end to end
+       over the real stack) next.
    - 1c: drawing notices open the drawing they name.
 2. **Remaining live bugs**, folded into the Board's Top 10 queue (7 Oct 2026 UI/UX review), one PR per item:
    - demo controls out of production, including hiding Generate Weekly Report;
