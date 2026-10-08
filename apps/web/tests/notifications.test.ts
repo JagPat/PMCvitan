@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  notificationKind, notificationLink, notificationTarget, decisionsSliceSettled, inspectionsSliceSettled, type NotificationRecords,
+  inspectionIdOf, notificationKind, notificationLink, notificationTarget, decisionsSliceSettled, inspectionsSliceSettled, type NotificationRecords,
 } from '@/lib/notifications';
 
 describe('notificationKind — infer the subject from the templated text', () => {
@@ -145,9 +145,31 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
     expect(notificationLink(n('Client approved Gate — North — Teak'), 'pmc', dashed)).toEqual(at('decision-log', 'D3'));
   });
 
-  it('inspection and drawing notices open their screen (their records are resolved by the later units)', () => {
+  it('an id-less inspection notice names NOTHING and opens its screen', () => {
     expect(notificationLink(n('Inspection approved. Contractor and client notified.'), 'pmc', records)).toEqual(at('inspect-review', null));
     expect(notificationLink(n('Re-inspection due: Waterproofing, Terrace'), 'pmc', records)).toEqual(at('inspect-review', null));
+    // an id inside user text is not the writer's: the legacy text ends with the zone, not "(INSP-N)"
+    expect(notificationLink(n('New checklist issued: Follow-up INSP-21 — Terrace'), 'pmc', records)).toEqual(at('inspect-review', null));
+  });
+
+  it('live bug 1b-3 — an inspection notice opens the inspection its WRITER stamped, on the role\'s inspection screen', () => {
+    const stamped = { ...n('Re-inspection due: Waterproofing, Terrace'), inspectionId: 'INSP-21' };
+    expect(notificationLink(stamped, 'pmc', records)).toEqual(at('inspect-review', 'INSP-21'));
+    expect(notificationLink(stamped, 'engineer', records)).toEqual(at('engineer-check', 'INSP-21'));
+    // the re-inspection writer's own leading id, which no user text precedes
+    expect(notificationLink(n('Re-inspection INSP-30 created for 2 item(s) — due 12 Oct 2026.'), 'engineer', records)).toEqual(at('engineer-check', 'INSP-30'));
+  });
+
+  it('Codex 4214386937 — an id in the TEXT names nothing, even trailing: a legacy zone can end in "(INSP-N)"', () => {
+    expect(notificationLink(n('New checklist issued: Waterproofing — Terrace (INSP-21)'), 'pmc', records)).toEqual(at('inspect-review', null));
+    expect(inspectionIdOf(n('Re-inspection due: Waterproofing, Terrace (INSP-21)'))).toBeNull();
+  });
+
+  it('Codex 4214386914 — a stamped inspection is an inspection notice whatever its title says', () => {
+    const material = { ...n('New checklist issued: Material receiving — Store'), inspectionId: 'INSP-31' };
+    expect(notificationLink(material, 'pmc', records)).toEqual(at('inspect-review', 'INSP-31'));
+    const drawing = { ...n('New checklist issued: Drawing check — Level 2'), inspectionId: 'INSP-32' };
+    expect(notificationLink(drawing, 'engineer', records)).toEqual(at('engineer-check', 'INSP-32'));
   });
 
   it('a screen that cannot show one record opens as before', () => {
