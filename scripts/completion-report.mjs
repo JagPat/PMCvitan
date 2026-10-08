@@ -1,7 +1,8 @@
 // Owner decision 2026-10-08 (rule 10) — every merged PR carries a completion report: hours from open to
 // merge, Codex review rounds and changed lines. Posted by `.github/workflows/completion-report.yml` when the
-// PR is CLOSED AS MERGED, so a PR that waited in auto-merge is measured to its real `merged_at`
-// (Codex 4213960407), not to the moment the controller queued it.
+// PR is CLOSED AS MERGED, or by its sweep for merges the workflow token made (see `sweep`), so a PR that
+// waited in auto-merge is measured to its real `merged_at` (Codex 4213960407), not to the moment the
+// controller queued it.
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
@@ -74,24 +75,24 @@ async function readAll(fetchImpl, url, token) {
   return rows;
 }
 
-export async function run({
-  eventPath = process.env.GITHUB_EVENT_PATH,
-  repository = process.env.GITHUB_REPOSITORY,
-  token = process.env.GITHUB_TOKEN,
-  fetchImpl = globalThis.fetch,
-} = {}) {
-  const event = JSON.parse(await readFile(eventPath, 'utf8'));
-  const pullRequest = event.pull_request;
-  if (!pullRequest?.merged) {
-    console.log('completion-report: the pull request closed without merging; nothing to report');
-    return null;
-  }
-  const api = `https://api.github.com/repos/${repository}`;
+/** How far back a sweep looks for merged PRs still missing their report. */
+export const SWEEP_WINDOW_MS = 48 * 3_600_000;
+
+function headersFor(token) {
+  return { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'pmcvitan-completion-report' };
+}
+
+async function getJson(fetchImpl, url, token) {
+  const response = await fetchImpl(url, { headers: headersFor(token) });
+  if (!response.ok) throw new Error(`GitHub ${response.status} on ${url}`);
+  return response.json();
+}
+
+/** Post one merged PR's report unless the workflow already did. Returns the body, or null. */
+export async function reportPullRequest({ api, token, fetchImpl, pullRequest }) {
+  if (!pullRequest?.merged_at) return null;
   const issueComments = await readAll(fetchImpl, `${api}/issues/${pullRequest.number}/comments`, token);
-  if (alreadyReported(issueComments)) {
-    console.log('completion-report: already posted');
-    return null;
-  }
+  if (alreadyReported(issueComments)) return null;
   const [comments, reviews, statuses] = await Promise.all([
     readAll(fetchImpl, `${api}/pulls/${pullRequest.number}/comments`, token),
     readAll(fetchImpl, `${api}/pulls/${pullRequest.number}/reviews`, token),
@@ -101,11 +102,68 @@ export async function run({
   const body = completionReport(pullRequest, { rounds: reviewRounds(pullRequest, { comments, reviews, trivial }) });
   const response = await fetchImpl(`${api}/issues/${pullRequest.number}/comments`, {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'pmcvitan-completion-report', 'content-type': 'application/json' },
+    headers: { ...headersFor(token), 'content-type': 'application/json' },
     body: JSON.stringify({ body }),
   });
   if (!response.ok) throw new Error(`GitHub ${response.status} posting the completion report`);
-  console.log(body);
+  return body;
+}
+
+/**
+ * Codex 4220431609 — the controller merges with the workflow token, and GitHub creates no workflow run from
+ * an event that token causes: neither the `pull_request: closed` this report listens for nor the push to
+ * `main` that should run CI's full battery (owner rule 7). The SWEEP runs instead — after every controller
+ * run (`workflow_run`, which that token does trigger) and hourly — and does both duties idempotently:
+ *  1. reports every PR merged in the last `SWEEP_WINDOW_MS` that has no report yet;
+ *  2. dispatches CI on `main` when `main`'s head has no CI run (a dispatch is an event that token may
+ *     create; the battery plan runs the full battery for any non-PR event).
+ */
+export async function sweep({ repository, token, fetchImpl = globalThis.fetch, now = Date.now() }) {
+  const api = `https://api.github.com/repos/${repository}`;
+  const reported = [];
+  const closed = await getJson(fetchImpl, `${api}/pulls?state=closed&sort=updated&direction=desc&per_page=50`, token);
+  for (const summary of closed) {
+    const mergedAt = Date.parse(summary?.merged_at ?? '');
+    if (!Number.isFinite(mergedAt) || now - mergedAt > SWEEP_WINDOW_MS) continue;
+    // the list omits additions/deletions: read the full pull request the report measures
+    const pullRequest = await getJson(fetchImpl, `${api}/pulls/${summary.number}`, token);
+    if (await reportPullRequest({ api, token, fetchImpl, pullRequest })) reported.push(pullRequest.number);
+  }
+  const main = await getJson(fetchImpl, `${api}/commits/main`, token);
+  const runs = await getJson(fetchImpl, `${api}/actions/workflows/ci.yml/runs?head_sha=${main.sha}&per_page=1`, token);
+  let dispatched = false;
+  if (Number(runs?.total_count ?? 0) === 0) {
+    const response = await fetchImpl(`${api}/actions/workflows/ci.yml/dispatches`, {
+      method: 'POST',
+      headers: { ...headersFor(token), 'content-type': 'application/json' },
+      body: JSON.stringify({ ref: 'main' }),
+    });
+    if (!response.ok) throw new Error(`GitHub ${response.status} dispatching CI on main`);
+    dispatched = true;
+  }
+  return { reported, mainSha: main.sha, dispatched };
+}
+
+export async function run({
+  eventPath = process.env.GITHUB_EVENT_PATH,
+  eventName = process.env.GITHUB_EVENT_NAME,
+  repository = process.env.GITHUB_REPOSITORY,
+  token = process.env.GITHUB_TOKEN,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (eventName !== 'pull_request') {
+    const result = await sweep({ repository, token, fetchImpl });
+    console.log(`completion-report sweep: reported ${JSON.stringify(result.reported)}; main ${result.mainSha} CI dispatched=${result.dispatched}`);
+    return result;
+  }
+  const event = JSON.parse(await readFile(eventPath, 'utf8'));
+  const pullRequest = event.pull_request;
+  if (!pullRequest?.merged) {
+    console.log('completion-report: the pull request closed without merging; nothing to report');
+    return null;
+  }
+  const body = await reportPullRequest({ api: `https://api.github.com/repos/${repository}`, token, fetchImpl, pullRequest });
+  console.log(body ?? 'completion-report: already posted');
   return body;
 }
 

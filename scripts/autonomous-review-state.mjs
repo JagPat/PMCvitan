@@ -135,7 +135,10 @@ export function classifyCodexState({
     )
     .map((comment) => [findingIdentity(comment), comment]));
   if (cap?.reached) {
-    const findings = [...currentHeadComments.values()];
+    // Codex 4220431616 — a REPLY (in_reply_to_id set) opens no finding (findingRoundHeads), so it is neither
+    // judged nor deferred here: a reply alone can never let the cap clear a head Codex has not reviewed. It
+    // stays in `comments` for `isCodexReplyOnlyReview`, and falls through to the ordinary evidence rules.
+    const findings = [...currentHeadComments.values()].filter((comment) => comment?.in_reply_to_id == null);
     const blocking = findings.filter((comment) => blocksUnderCap(comment, cap.changedLines));
     if (blocking.length > 0) {
       const count = blocking.length;

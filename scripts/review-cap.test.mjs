@@ -10,10 +10,11 @@ import {
   findingRoundHeads,
   onChangedLine,
   reviewCapState,
+  GITHUB_PR_FILES_LIMIT,
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
-import { capFiles, fileDeferredFindings, unionDeferred } from './autonomous-review-gate.mjs';
-import { alreadyReported, completionReport, reviewRounds } from './completion-report.mjs';
+import { capFiles, cappedSuccessDetail, fileDeferredFindings, unionDeferred } from './autonomous-review-gate.mjs';
+import { alreadyReported, completionReport, reviewRounds, sweep, SWEEP_WINDOW_MS } from './completion-report.mjs';
 import { REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -319,6 +320,13 @@ test('Codex 4216657933 — recovering an earlier success settles the evidence be
   // Codex 4220338753 — and so does the republished success: no green window before a blocking finding
   const republish = recovery.indexOf("'review: recovered prior clean Codex result on this exact head'");
   assert.ok(republish > settle, 'the recovered success is republished only after the evidence settles');
+  // Codex 4220431600 — a recovery that filed a follow-up names it in the status, as the ordinary path does
+  const followUpStatus = recovery.indexOf('cappedSuccessDetail(settled)');
+  assert.ok(followUpStatus > settle, 'the recovered status names the follow-up issue');
+});
+
+test('Codex 4220431600 — the capped success description names the follow-up issue', () => {
+  assert.equal(cappedSuccessDetail({ deferred: [1, 2], followUp: 701 }), 'review: review-round cap; 2 non-blocking finding(s) deferred to #701');
 });
 
 test('Codex 4220338659 — the cap reads a head\'s file list once, however many polls ask', async () => {
@@ -338,4 +346,75 @@ test('Codex 4220338659 — the cap reads a head\'s file list once, however many 
   // a new head is a new list
   await capFiles(client, 9, 'h2');
   assert.equal(reads, 3);
+});
+
+test('Codex 4220431586 — an incomplete file list fails closed: a P1 in an unlisted file still blocks', () => {
+  const unlisted = finding({ p: 1, path: 'apps/api/src/far.ts', line: 3, id: 7 });
+  // complete list: the unlisted path is genuinely unchanged, so the P1 is deferred
+  const complete = reviewCapState({ expectedHead: HEAD, files: FILES });
+  assert.equal(blocksUnderCap(unlisted, complete.changedLines), false);
+  // GitHub's cap reached, the PR's own count higher than the list, or no list at all: it blocks
+  const capped = Array.from({ length: GITHUB_PR_FILES_LIMIT }, (_, i) => ({ filename: `f${i}.ts`, patch: '@@ -1 +1 @@\n+a' }));
+  for (const state of [
+    reviewCapState({ expectedHead: HEAD, files: capped }),
+    reviewCapState({ expectedHead: HEAD, files: FILES, changedFiles: FILES.length + 1 }),
+    reviewCapState({ expectedHead: HEAD, files: null }),
+  ]) {
+    assert.equal(blocksUnderCap(unlisted, state.changedLines), true);
+  }
+  // a listed file is still judged by its lines: an unchanged line in it does not block
+  assert.equal(blocksUnderCap(finding({ p: 1, line: 5, id: 8 }), reviewCapState({ expectedHead: HEAD, files: FILES, changedFiles: 99 }).changedLines), false);
+});
+
+test('Codex 4220431616 — past the cap, a Codex REPLY alone never clears the head', () => {
+  const reply = { ...finding({ p: 2, line: 5, id: 9 }), in_reply_to_id: 1 };
+  const result = classify([reply], { reached: true, changedLines: changedLinesFromFiles(FILES) });
+  assert.notEqual(result.state, 'clear');
+  // a real off-diff finding beside it is what clears it, and the reply is not filed with it
+  const both = classify([reply, finding({ p: 2, id: 10 })], { reached: true, changedLines: changedLinesFromFiles(FILES) });
+  assert.equal(both.state, 'clear');
+  assert.deepEqual(both.deferred.map((c) => c.id), [10]);
+});
+
+test('Codex 4220431609 — the sweep reports token-made merges and dispatches main CI when main has none', async () => {
+  const now = Date.parse('2026-10-08T12:00:00Z');
+  const reportBody = '<!-- completion-report -->\n**Completion report**\n- x';
+  const pr = (number, mergedAt, extra = {}) => ({ number, merged_at: mergedAt, created_at: '2026-10-08T10:00:00Z', head: { sha: `h${number}` }, additions: 1, deletions: 0, ...extra });
+  const prs = { 1: pr(1, '2026-10-08T11:00:00Z'), 2: pr(2, '2026-10-08T11:30:00Z'), 3: pr(3, new Date(now - SWEEP_WINDOW_MS - 1).toISOString()), 4: pr(4, null) };
+  const posted = [];
+  const dispatched = [];
+  const json = (body) => ({ ok: true, json: async () => body });
+  const fetchFor = (mainRuns) => async (url, init = {}) => {
+    const u = String(url);
+    if (init.method === 'POST' && u.endsWith('/comments')) { posted.push(Number(/issues\/(\d+)\//u.exec(u)[1])); return json({}); }
+    if (init.method === 'POST' && u.endsWith('/dispatches')) { dispatched.push(JSON.parse(init.body).ref); return { ok: true, json: async () => ({}) }; }
+    if (u.includes('/pulls?state=closed')) return json(Object.values(prs));
+    let m = /\/pulls\/(\d+)$/u.exec(u);
+    if (m) return json(prs[m[1]]);
+    m = /\/issues\/(\d+)\/comments/u.exec(u);
+    if (m) return json(m[1] === '2' ? [{ user: { login: 'github-actions[bot]', type: 'Bot' }, body: reportBody }] : []);
+    if (u.includes('/commits/main')) return json({ sha: 'mainsha' });
+    if (u.includes('/actions/workflows/ci.yml/runs')) return json({ total_count: mainRuns });
+    return json([]);
+  };
+  const first = await sweep({ repository: 'o/r', token: 't', fetchImpl: fetchFor(0), now });
+  // PR 1 is reported; 2 already was, 3 merged before the window, 4 never merged
+  assert.deepEqual(first.reported, [1]);
+  assert.deepEqual(posted, [1]);
+  assert.equal(first.dispatched, true);
+  assert.deepEqual(dispatched, ['main']);
+  // main's head already has a CI run: nothing is dispatched
+  const second = await sweep({ repository: 'o/r', token: 't', fetchImpl: fetchFor(1), now });
+  assert.equal(second.dispatched, false);
+  assert.deepEqual(dispatched, ['main']);
+});
+
+test('Codex 4220431609 — the report workflow sweeps after every controller run and hourly, and may dispatch CI', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const workflow = await readFile(new URL('../.github/workflows/completion-report.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /workflow_run:\n\s+workflows: \[Autonomous review and merge\]/u);
+  assert.match(workflow, /schedule:/u);
+  assert.match(workflow, /actions: write/u);
+  const gate = await readFile(new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8');
+  assert.match(gate, /^name: Autonomous review and merge$/mu, 'the workflow_run trigger names the controller exactly');
 });

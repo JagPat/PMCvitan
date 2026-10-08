@@ -1498,7 +1498,12 @@ export async function ensureTerminalReviewState(
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
-    if (String(latestStatus?.id) !== String(status.id)) {
+    // Codex 4220431600 — a settlement that filed a follow-up issue republishes the SAME follow-up-aware
+    // description the ordinary success path writes, even when the recovered success is still the newest:
+    // the operations guide sends operators to this status for the deferred findings
+    if (settled.followUp !== null && settled.followUp !== undefined) {
+      await client.setStatus(expectedHead, 'success', cappedSuccessDetail(settled), pullRequest.html_url);
+    } else if (String(latestStatus?.id) !== String(status.id)) {
       await client.setStatus(
         expectedHead,
         'success',
@@ -1990,8 +1995,14 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
 // refetching the same list every 15 seconds
 const capFilesCache = new WeakMap();
 
+/** The success description of a head the review-round cap cleared, naming its follow-up issue. */
+export function cappedSuccessDetail(settled) {
+  return `review: review-round cap; ${settled.deferred.length} non-blocking finding(s) deferred to #${settled.followUp}`;
+}
+
 export async function capFiles(client, number, expectedHead) {
-  if (typeof client.pullRequestFiles !== 'function') return [];
+  // no file reader: unknown, which the cap treats as incomplete (fail closed), never as "nothing changed"
+  if (typeof client.pullRequestFiles !== 'function') return null;
   let byHead = capFilesCache.get(client);
   if (!byHead) capFilesCache.set(client, (byHead = new Map()));
   const key = `${number}@${expectedHead}`;
@@ -2003,9 +2014,10 @@ export async function capFiles(client, number, expectedHead) {
   return byHead.get(key);
 }
 
-async function capFor(client, number, expectedHead, reviews, comments) {
+async function capFor(client, number, expectedHead, reviews, comments, changedFiles = null) {
   const files = await capFiles(client, number, expectedHead);
-  return reviewCapState({ expectedHead, reviews, comments, files });
+  // Codex 4220431586 — `changedFiles` (the PR's own count, when known) lets the cap detect a short list
+  return reviewCapState({ expectedHead, reviews, comments, files, changedFiles });
 }
 
 async function reviewAttempt(
@@ -2072,7 +2084,7 @@ async function reviewAttempt(
       reviews,
       comments,
       reactions,
-      cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments),
+      cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments, pullRequest.changed_files),
     });
     if (result.state !== 'pending') return result;
     await sleep(POLL_INTERVAL_MS);
@@ -2194,7 +2206,7 @@ export async function guardAgainstCurrentHeadFinding(
     reviews,
     comments,
     reactions: [],
-    cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments),
+    cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments, pullRequest.changed_files),
   });
   if (result.state !== 'changes_required') return null;
 
@@ -2227,7 +2239,7 @@ export async function finalCodexEvidence(client, pullRequest, expectedHead) {
     reviews,
     comments,
     reactions: [],
-    cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments),
+    cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments, pullRequest.changed_files),
   });
   return {
     state: result.state,
@@ -2764,7 +2776,7 @@ export async function run() {
         'success',
         settled.followUp === null
           ? 'review: Codex found no blocking issue on this exact head'
-          : `review: review-round cap; ${settled.deferred.length} non-blocking finding(s) deferred to #${settled.followUp}`,
+          : cappedSuccessDetail(settled),
         pullRequest.html_url,
       );
       await settleRecoveryRequest(
