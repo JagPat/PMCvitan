@@ -6,7 +6,7 @@
 // diff, or a review-level note with no anchor) is deferred to a follow-up issue and the PR merges on
 // green CI. Before the cap is reached, every current-head finding blocks, as before.
 
-import { REVIEW_ROUND_CAP } from './review-policy.mjs';
+import { CODEX_LOGIN, REVIEW_ROUND_CAP, isCodexReplyOnlyReview } from './review-policy.mjs';
 import { codexFindingHeads } from './review-efficiency.mjs';
 
 const BADGE = /!\[P(\d) Badge\]|badge\/P(\d)-/u;
@@ -94,7 +94,15 @@ export function blocksUnderCap(comment, changedLines) {
  * only thread-opening comments and Codex's own reviews count.
  */
 export function findingRoundHeads(comments = [], reviews = []) {
-  return codexFindingHeads(comments.filter((comment) => comment?.in_reply_to_id == null), reviews);
+  const heads = new Set(codexFindingHeads(comments.filter((comment) => comment?.in_reply_to_id == null), []));
+  // Reviews are judged against the FULL comment set: the replies are exactly the evidence
+  // `isCodexReplyOnlyReview` needs to recognise a blank reply-only review (Codex 4214359522); filtering them
+  // out first would count that review as a round.
+  for (const review of reviews ?? []) {
+    if (review?.user?.login !== CODEX_LOGIN || isCodexReplyOnlyReview(review, comments)) continue;
+    if (typeof review.commit_id === 'string' && review.commit_id.length > 0) heads.add(review.commit_id);
+  }
+  return [...heads];
 }
 
 /**

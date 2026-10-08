@@ -367,3 +367,17 @@ test('Codex 4214321797 — the cited work-item issue must exist and be an issue'
   // a unit that is not a work item is not looked up
   assert.equal(await verifyWorkItemIssue('<!-- review-size: standard -->', { ...at, fetchImpl: respond(404) }), null);
 });
+
+test('Codex 4214359522 — a blank reply-only Codex review is no round: its reply is kept as the evidence', () => {
+  const older = 'a'.repeat(40);
+  const later = 'd'.repeat(40);
+  // a human opened a thread on an older head; Codex replied there while reviewing a later head
+  const root = { id: 50, user: { login: 'someone' }, commit_id: older, original_commit_id: older, path: 'x', line: 1 };
+  const reply = { id: 51, user: { login: CODEX }, in_reply_to_id: 50, pull_request_review_id: 900, commit_id: older, original_commit_id: older, path: 'x', line: 1, body: 'reply' };
+  const replyOnly = { id: 900, user: { login: CODEX }, state: 'COMMENTED', body: '', commit_id: later };
+  const genuine = finding({ head: 'b'.repeat(40), id: 52 });
+  assert.deepEqual(findingRoundHeads([root, reply, genuine], [replyOnly]), ['b'.repeat(40)]);
+  const state = reviewCapState({ expectedHead: HEAD, comments: [root, reply, genuine], reviews: [replyOnly], files: FILES });
+  assert.equal(state.priorRounds, 1);
+  assert.equal(state.reached, false);
+});
