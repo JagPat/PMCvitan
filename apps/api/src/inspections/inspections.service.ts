@@ -97,7 +97,9 @@ export class InspectionsService {
         for (const [i, name] of input.items.entries()) {
           await tx.inspectionItem.create({ data: { inspectionId: id, name, order: i, photos: 0, note: '' } });
         }
-        await tx.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone}`, color: '#C08A2D', time: 'just now' } });
+        // live bug 1b-3 — the notice names the checklist it issued by a stamp, never by its text (the title
+        // and zone are user text)
+        await tx.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone}`, color: '#C08A2D', time: 'just now', inspectionId: id } });
         await recordAudit(tx, { projectId, actor, action: 'inspection.create', entity: 'Inspection', entityId: id });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'inspection.created', entityType: 'Inspection', entityId: id, payload: { title: input.title, zone: input.zone }, effectKey: 'inspection.created', dispatch: { push: { body: `New checklist: ${input.title} — ${input.zone}` } } });
         return { resultRef: id, events: [ev] };
@@ -438,7 +440,7 @@ export class InspectionsService {
             await this.activities.revertSignOff(tx, { projectId, activityId: activity.id });
             await recordAudit(tx, { projectId, actor, action: 'activity.signoff_rejected', entity: 'Activity', entityId: activity.id, payload: { closingInspectionId: inspectionId, reinspectionId: childId, assigneeId } });
           }
-          await tx.notification.create({ data: { projectId, text: pushBody, color: '#B23A34', time: 'just now' } });
+          await tx.notification.create({ data: { projectId, text: pushBody, color: '#B23A34', time: 'just now', inspectionId: childId } });
           await recordAudit(tx, { projectId, actor, action: 'inspection.reject', entity: 'Inspection', entityId: inspectionId, payload: { reinspectionId: childId, assigneeId, dueDate: dueIso } });
           // The rejection CAUSES both the linked reinspection and (for a closing) the sign-off reversal.
           const rejected = await emitEvent(tx, { projectId, actor, eventType: 'inspection.rejected', entityType: 'Inspection', entityId: inspectionId, payload: { reinspectionId: childId, assigneeId }, effectKey: 'inspection.rejected', dispatch: {} });
