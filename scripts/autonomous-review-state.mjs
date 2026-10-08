@@ -2,6 +2,7 @@ import { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN, isCodexReplyOnlyReview } from './revi
 export { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN } from './review-policy.mjs';
 
 import { isLineageBase } from './lineage-policy.mjs';
+import { blocksUnderCap } from './review-cap.mjs';
 
 function timestamp(value, field) {
   const parsed = Date.parse(value);
@@ -116,6 +117,9 @@ export function classifyCodexState({
   reviews = [],
   comments = [],
   reactions = [],
+  // Owner decision 2026-10-08: `{ reached, changedLines }` from `reviewCapState`. Past the cap, only a
+  // P0/P1 on a changed line blocks; the rest is returned as `deferred` on a `clear` result.
+  cap = null,
 }) {
   if (typeof expectedHead !== 'string' || expectedHead.length === 0) {
     throw new TypeError('expectedHead is required');
@@ -130,6 +134,40 @@ export function classifyCodexState({
       (comment) => isCodexActor(comment) && postedAgainst(comment) === expectedHead,
     )
     .map((comment) => [findingIdentity(comment), comment]));
+  if (cap?.reached) {
+    const findings = [...currentHeadComments.values()];
+    const blocking = findings.filter((comment) => blocksUnderCap(comment, cap.changedLines));
+    if (blocking.length > 0) {
+      const count = blocking.length;
+      return {
+        state: 'changes_required',
+        findingCount: count,
+        detail: `${count} blocking current-head Codex finding${count === 1 ? '' : 's'} (P1 on a changed line, past the review-round cap)`,
+      };
+    }
+    const headReviews = reviews.filter((review) => isCodexActor(review)
+      && review.commit_id === expectedHead
+      && !isCodexReplyOnlyReview(review, comments));
+    // Codex 4213960388 / 4214270288 — a review-level finding (a review body with no inline comment of its
+    // own, badged or not: an unbadged one is read conservatively as finding-bearing, as elsewhere) has no
+    // line to judge, so it is deferred with the rest rather than silently dropped
+    const reviewLevel = headReviews.filter((review) => String(review?.body ?? '').trim().length > 0
+      && !comments.some((comment) => comment?.pull_request_review_id === review.id));
+    const deferred = [...findings, ...reviewLevel];
+    // Codex 4216657953 — the cap clears a head only on findings it actually defers: a blank review record with
+    // nothing to defer is no verdict, so it falls through to the ordinary evidence rules (a fresh +1 clears;
+    // incomplete evidence stays pending or blocks) exactly as before the cap
+    if (deferred.length > 0) {
+      const count = deferred.length;
+      return {
+        state: 'clear',
+        findingCount: 0,
+        deferred,
+        detail: `review-round cap reached: ${count} non-blocking current-head finding${count === 1 ? '' : 's'} deferred to a follow-up issue`,
+      };
+    }
+  }
+
   if (currentHeadComments.size > 0) {
     const count = currentHeadComments.size;
     return {
