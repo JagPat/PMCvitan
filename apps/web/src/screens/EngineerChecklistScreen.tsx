@@ -67,7 +67,10 @@ export function EngineerChecklistScreen() {
   // (a module read that has not yet landed — `idle` before its first pull — is not settled either)
   const settled = useStore(inspectionsSliceSettled) && !(moduleOwned && reading);
   const projectFailed = useStore((s) => s.projectLoadState === 'error');
-  const routeOpen = routeItem !== null && (openChecklists.some((c) => c.id === routeItem) || checklist?.id === routeItem);
+  // Codex 4213284908 — a SUBMITTED checklist left in the slot (the demo's last checklist has no next one
+  // to advance to) is not an open route: it has been honoured, and the route is released
+  const routeOpen = routeItem !== null
+    && (openChecklists.some((c) => c.id === routeItem) || (checklist?.id === routeItem && !checklist.submitted));
   // the checklist the link named, once it has been in the slot: when it is then submitted and leaves the
   // outstanding set, the link has been honoured — the URL is released, not reported as a missing record
   const honoured = useRef<string | null>(null);

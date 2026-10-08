@@ -296,3 +296,19 @@ describe('Codex 4212901994 — a URL item not yet adopted by the store shows not
     expect(view.queryByTestId('checklist-title')).toBeNull();
   });
 });
+
+describe('Codex 4213284908 — submitting the LAST linked checklist releases its route', () => {
+  it('with no next checklist the submitted one stays in the slot, and the URL still returns to the list', async () => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const only = fieldChecklist('INSP-51', 'Drain Slope Check');
+    useStore.setState({ role: 'engineer', screen: 'engineer-check', openChecklists: [only], checklist: structuredClone(only), selectedChecklistId: 'INSP-51', routeItem: 'INSP-51' });
+    const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
+    const view = render(<EngineerChecklistScreen />);
+    expect(view.getByTestId('checklist-title').textContent).toBe('Drain Slope Check');
+    // the demo submit: the checklist leaves the outstanding set and stays in the slot, submitted
+    act(() => { useStore.setState({ openChecklists: [], checklist: { ...structuredClone(only), submitted: true } }); });
+    expect(useStore.getState().routeItem).toBeNull();
+    expect(view.queryByTestId('item-not-found')).toBeNull();
+  });
+});
