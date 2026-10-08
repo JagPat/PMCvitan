@@ -1409,6 +1409,14 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   if (!mergeVerdict?.mergeEligible || candidateBodyHold(live, mergeVerdict)) {
     return { allowed: false, state: 'ownership_not_eligible' };
   }
+  // Codex 4216250355 — a fast-lane success stands in for the Codex round only while the WHOLE trivial admission
+  // still holds on the live PR: the size marker, the trivial kind, the bounds and the cited work item, exactly as
+  // final admission judges them. Judged here, the one guard every merge and auto-merge passes through.
+  if (isTrivialLaneStatus(latestReview)) {
+    const lane = await revalidateFinalReviewPolicy(client, live.number, expectedHead);
+    if (lane.superseded) return { allowed: false, state: 'superseded' };
+    if (!lane.allowed || lane.scopeState !== 'trivial') return { allowed: false, state: 'left_trivial_lane' };
+  }
   // Re-read after remote evidence. A push, base update, retarget or draft
   // transition during validation fails closed.
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
@@ -1420,9 +1428,8 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   if (candidateBodyHold(finalLive, mergeVerdict)) {
     return { allowed: false, state: 'ownership_not_eligible' };
   }
-  // Codex 4215318377 — a fast-lane success stands in for the Codex round only while the live body still
-  // declares the lane: an edit to `standard` at any point before the merge (the draft promotion, a recovery
-  // run, a queued auto-merge's later run) leaves this head needing its review, so it never merges on that status
+  // Codex 4215318377 — and the body read LAST still declares the lane: an edit to `standard` at any point before
+  // the merge (the draft promotion, a recovery run, a queued auto-merge's later run) never merges on that status
   if (isTrivialLaneStatus(latestReview) && !declaresTrivialLane(finalLive.body)) {
     return { allowed: false, state: 'left_trivial_lane' };
   }

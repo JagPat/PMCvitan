@@ -37,6 +37,9 @@ jobs:
       # drain-evidence workflow's run and artifact (scripts/autonomous-drain-clearance.mjs).
       actions: read
       contents: read
+      # issues: read — `verifyWorkItemIssue` resolves a work item's cited issue (GET /issues/{n}); without it the
+      # read fails and every live-bug, UX or trivial unit is refused (Codex 4216250368)
+      issues: read
       pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

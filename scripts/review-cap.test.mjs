@@ -453,11 +453,31 @@ test('Codex 4215318377 — a body edited to standard during the draft promotion 
 test('Codex 4215318377 — the merge guard refuses a fast-lane success once the live body leaves the lane', async () => {
   const status = { id: 1, context: 'codex-current-head', state: 'success', description: TRIVIAL_LANE_SUCCESS };
   const verdict = { outcome: 'eligible', mergeEligible: true, owner: 'claude' };
-  const standard = `<!-- review-size: standard -->\n${OWNER}\nReplaces: none`;
+  const standard = `<!-- review-size: standard -->\n${OWNER}\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
   const left = trivialClient(standard, [], { draft: false, statuses: [status] });
   assert.equal((await authorizeExactHeadMerge(left.client, left.pr, left.head, verdict)).state, 'left_trivial_lane');
   // the same status on a body that still declares the lane is authorized, as before
-  const trivial = `<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\nWork item issue: #9\nReplaces: none`;
+  const trivial = `<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\nWork item issue: #9\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
   const kept = trivialClient(trivial, [], { draft: false, statuses: [status] });
   assert.equal((await authorizeExactHeadMerge(kept.client, kept.pr, kept.head, verdict)).state, 'authorized');
+});
+
+test('Codex 4216250355 — the merge guard re-runs the whole trivial admission, not only the size marker', async () => {
+  const status = { id: 1, context: 'codex-current-head', state: 'success', description: TRIVIAL_LANE_SUCCESS };
+  const verdict = { outcome: 'eligible', mergeEligible: true, owner: 'claude' };
+  // the size marker survives, but the trivial kind is gone: the lane no longer admits this PR
+  const kindless = `<!-- review-size: trivial -->\n${OWNER}\nWork item issue: #9\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
+  const noKind = trivialClient(kindless, [], { draft: false, statuses: [status] });
+  assert.equal((await authorizeExactHeadMerge(noKind.client, noKind.pr, noKind.head, verdict)).state, 'left_trivial_lane');
+  // the marker and kind survive, but the cited work item is no longer a real issue
+  const full = `<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\nWork item issue: #9\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
+  const badIssue = trivialClient(full, [], { draft: false, statuses: [status], workItemProblem: 'the cited work item #9 is a pull request, not an issue' });
+  assert.equal((await authorizeExactHeadMerge(badIssue.client, badIssue.pr, badIssue.head, verdict)).state, 'left_trivial_lane');
+});
+
+test('Codex 4216250368 — the review-scope job may read the cited work-item issue', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const ci = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  review-scope:'), ci.indexOf('node scripts/review-scope.mjs'));
+  assert.match(job, /\n {6}issues: read\n/u);
 });
