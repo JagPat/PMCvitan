@@ -55,7 +55,8 @@ test('a notification opens its record, and Back and Forward walk the history the
   await page.goBack();
   await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
   await tapNotice(page, 'Re-inspection due: Waterproofing, Terrace');
-  await expect(page).toHaveURL(/\/projects\/ambli\/review$/);
+  // live bug 1b-3 — the seeded notice is stamped with INSP-21, served by the snapshot, and opened by the bell
+  await expect(page).toHaveURL(/\/projects\/ambli\/review\/INSP-21$/);
   await page.goBack();
   await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
 });

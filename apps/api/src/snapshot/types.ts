@@ -430,7 +430,7 @@ export interface SnapshotDto {
   dailyLog: DailyLogDto | null;
   /** `decisionId` (live bug 1) names the decision a notice is about, present only when that decision
    *  is in the viewer's own decision slice, so the bell can open the record itself. */
-  notifications: { text: string; time: string; color: string; decisionId?: string }[];
+  notifications: { text: string; time: string; color: string; decisionId?: string; inspectionId?: string }[];
   /** Firms & consultants attached to the project (client company, contractor, MEP/structural consultants, …). */
   companies: CompanyDto[];
   /** The project location tree (zones → rooms → elements) the decision register groups by. */

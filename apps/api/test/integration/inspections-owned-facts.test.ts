@@ -139,6 +139,20 @@ describe('Phase 2 Task 10 (Module 3) correction — foreign mutations keep inspe
     expect(stripTokens(proj.slices), 'a CURRENT projection MUST equal the live read').toEqual(stripTokens(live));
   };
 
+  // ── live bug 1b-3: the issue notice names the checklist it issued by a STAMP, not by its text ──
+  it('the "New checklist issued" notice is stamped with the inspection it issued, and the snapshot serves the stamp', async () => {
+    const p = await freshProject();
+    // a title and zone that LOOK like an id are user text: they never decide the stamp
+    const { id } = await createChecklist(p, 'Follow-up (INSP-21)\nsecond line', ['A']);
+    const notice = await t.prisma.notification.findFirstOrThrow({ where: { projectId: p.id, text: { startsWith: 'New checklist issued: ' } } });
+    expect(notice.inspectionId).toBe(id);
+    expect(notice.text).toBe('New checklist issued: Follow-up (INSP-21)\nsecond line — GF');
+    const snap = await http().get(`/projects/${p.id}/snapshot`).set('Authorization', `Bearer ${p.pmcToken}`);
+    expect(snap.status).toBe(200);
+    const served = (snap.body.notifications as { text: string; inspectionId?: string }[]).find((n) => n.text === notice.text);
+    expect(served?.inspectionId).toBe(id);
+  });
+
   // ── (1) activity completion → the closing review is visible in the caught-up projection ──
   it('activity completion creates a closing review the caught-up projection shows; projection == live', async () => {
     const p = await freshProject();
