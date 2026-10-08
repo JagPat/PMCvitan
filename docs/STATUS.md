@@ -89,7 +89,8 @@ redesign in smaller units. So #716 was closed and its work is split into server 
          - 1b-3 (issue #734, current work item). An inspection notice names its inspection by a column
            its writer stamps, never by its text. Three parts: **#735** (the bell opens the stamped
            inspection; an unstamped notice opens the inspection screen) — merged at `3559f20`; 1b-3a
-           **#736** (current PR) adds `Notification.inspectionId` and its seal (migration only); then 1b-3b
+           **#736** (current PR) adds `Notification.inspectionId` as a plain column with no database seal
+           (migration only; owner decision 2026-10-08: the bell validates it where it is read, #738); then 1b-3b
            has the API writers stamp it and the snapshot serve it, with notification → record → Back and
            reload → Back end to end over the real stack.
        - 1c. Drawing notices open the drawing they name.
