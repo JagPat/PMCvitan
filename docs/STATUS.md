@@ -66,9 +66,9 @@ issue per work item. #731 stays open until they land. Maintenance runs beside th
 5. **Isolated QA** (owner decision 2026-10-08, proposal on #482): QA-1 a `Project.synthetic` flag, QA-2 its
    exclusion from portfolio totals, counts and notifications, QA-3 an owner-only test-project option; then the
    owner or Hark creates "QA – Test Site" and invites the five qa.* aliases through the app (email + password).
-6. **Site Visits.**
-7. **4d-iii R1–R4.** R0a-1 (#715), R0a-2 (#722), R0b (#724) and R0c (#725) are merged. R1 also needs R0c's
+6. **4d-iii R1–R4.** R0a-1 (#715), R0a-2 (#722), R0b (#724) and R0c (#725) are merged. R1 also needs R0c's
    deployment confirmed. `next_task` stays `phase-6-task-4d-iii` until then.
+7. **Site Visits**, after R1–R4 (the owner's direction, unchanged by the 2026-10-08 order).
 
 Each unit is a focused PR from `main`, with its own GitHub issue (rule 9). It goes through CI, exact-head
 Codex review (capped at two rounds once M2 lands), merge, deployment evidence and live validation. Nothing
