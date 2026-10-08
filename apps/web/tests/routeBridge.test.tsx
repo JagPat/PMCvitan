@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, act } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { useStore, getInitialState } from '@/store/store';
 import { RouteBridge } from '@/layout/RouteBridge';
 import type { ApiGateway } from '@/data/apiGateway';
@@ -266,5 +266,108 @@ describe('RouteBridge — the decider route survives a loading decision slice (P
     act(() => { useStore.setState({ projectLoadState: 'ready' } as never); });
     await flush();
     expect(useStore.getState().screen).toBe('inbox');
+  });
+});
+
+describe('RouteBridge — a record link that STARTS the tab gets its parent list behind it (owner live check, #482)', () => {
+  const visited: string[] = [];
+  let back: () => void = () => {};
+  function HistoryProbe() {
+    const path = useLocation().pathname;
+    const navigate = useNavigate();
+    back = () => navigate(-1);
+    if (visited[visited.length - 1] !== path) visited.push(path);
+    return null;
+  }
+  const renderCold = (path: string) => {
+    visited.length = 0;
+    return render(
+      <MemoryRouter initialEntries={[path]}>
+        <RouteBridge />
+        <HistoryProbe />
+      </MemoryRouter>,
+    );
+  };
+
+  it('an allowed record gets its list underneath: Back goes to the list', async () => {
+    useStore.setState({ role: 'pmc' });
+    renderCold('/projects/ambli/review/INSP-21');
+    await flush();
+    expect(visited[visited.length - 1]).toBe('/projects/ambli/review/INSP-21');
+    act(() => back());
+    await flush();
+    expect(visited[visited.length - 1]).toBe('/projects/ambli/review');
+  });
+
+  it('Codex 4212402103 — a record the role cannot hold gets NO parent: its forbidden list is never entered, by Back or otherwise', async () => {
+    useStore.setState({ role: 'engineer' });
+    renderCold('/projects/ambli/review/INSP-21');
+    await flush();
+    // the guard redirected the forbidden record to the engineer's home
+    expect(visited[visited.length - 1]).not.toMatch(/\/review/);
+    act(() => back());
+    await flush();
+    expect(visited).not.toContain('/projects/ambli/review');
+  });
+});
+
+describe('RouteBridge — Codex 4212901999: a cold record in a project the viewer cannot open gets no parent', () => {
+  const visited: string[] = [];
+  let goBack: () => void = () => {};
+  function Probe() {
+    const path = useLocation().pathname;
+    const navigate = useNavigate();
+    goBack = () => navigate(-1);
+    if (visited[visited.length - 1] !== path) visited.push(path);
+    return null;
+  }
+  it('the forged project\'s list is never entered, however far Back goes', async () => {
+    visited.length = 0;
+    useStore.setState({ role: 'pmc' });
+    render(
+      <MemoryRouter initialEntries={['/projects/not-mine/review/INSP-21']}>
+        <RouteBridge />
+        <Probe />
+      </MemoryRouter>,
+    );
+    await flush();
+    for (let i = 0; i < 3; i++) {
+      act(() => goBack());
+      await flush();
+    }
+    expect(visited).not.toContain('/projects/not-mine/review');
+  });
+});
+
+describe('RouteBridge — Codex 4213640388: a legacy cold record gets the CANONICAL parent', () => {
+  const visited: string[] = [];
+  let goBack: () => void = () => {};
+  function Probe() {
+    const path = useLocation().pathname;
+    const navigate = useNavigate();
+    goBack = () => navigate(-1);
+    if (visited[visited.length - 1] !== path) visited.push(path);
+    return null;
+  }
+  it('Back from a cold /review/<id> reaches the active project\'s list once, and never the bare /review', async () => {
+    visited.length = 0;
+    useStore.setState({ role: 'pmc' });
+    const active = useStore.getState().activeProjectId;
+    render(
+      <MemoryRouter initialEntries={['/review/INSP-21']}>
+        <RouteBridge />
+        <Probe />
+      </MemoryRouter>,
+    );
+    await flush();
+    expect(visited[visited.length - 1]).toBe(`/projects/${active}/review/INSP-21`);
+    for (let i = 0; i < 3; i++) {
+      act(() => goBack());
+      await flush();
+    }
+    expect(visited).not.toContain('/review');
+    expect(visited[visited.length - 1]).toBe(`/projects/${active}/review`);
+    // no two-entry loop: once on the list, further Backs stay there
+    expect(visited.filter((p) => p === `/projects/${active}/review`)).toHaveLength(1);
   });
 });

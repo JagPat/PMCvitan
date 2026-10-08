@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: live-bug-1b-1-reconcile-per-slice
+work_item: live-bug-1b-2-inspection-routes
 reviewed_merge: cffb251
-open_pr: 729
+open_pr: 730
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-07
 ```
 
-### Now — the owner's live-bug queue, unit 1b-1 (per-slice command reconcile), after 4d-iii R0c (one owner, one PR at a time)
+### Now — the owner's live-bug queue, unit 1b-2 (inspection item routes and Back), after 4d-iii R0c (one owner, one PR at a time)
 
 #715 (4d-iii R0a-1) trusted-merged at `67644e5`. The 10:53 UTC hold on #482 kept #710–#713 paused until
 #715 completed and a sequential handoff was recorded. The repository owner then directed this sequence,
@@ -82,11 +82,11 @@ redesign in smaller units. So #716 was closed and its work is split into server 
        - 1b. Inspection notices (the Terrace waterproofing re-inspection). #728 used its five
          finding-bearing review heads and was closed unmerged; it is replaced from `main` in three
          sequential parts:
-         - 1b-1. **#729** `claude/live-bug-1b-1-reconcile-per-slice` (current work item) — a committed
-           command's owed reconcile is tracked per slice, so one failed module read unsettles only its
-           own slice; the shared decision and inspection settled predicates.
-         - 1b-2. Inspection Review's and the field checklist's item routes, and Back to the parent list
-           from a record link that starts the tab.
+         - 1b-1. **#729** — merged at `a08f896`. A committed command's owed reconcile is tracked per
+           slice; the shared decision and inspection settled predicates.
+         - 1b-2. **#730** `claude/live-bug-1b-2-inspection-routes` (current work item) — Inspection
+           Review's and the field checklist's item routes, and Back to the parent list from a record
+           link that starts the tab.
          - 1b-3. Inspection notices name their inspection by the writer's id; notification → record →
            Back and reload → Back end to end.
        - 1c. Drawing notices open the drawing they name.
