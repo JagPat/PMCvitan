@@ -144,6 +144,32 @@ test('ci.yml launches each product job only when the plan lists it, and proofs o
   assert.match(ci, /products: \$\{\{ steps\.plan\.outputs\.products \}\}/u);
 });
 
+test('Codex 4219073959 — only what the proofs provably never build or run skips them', () => {
+  const runnerSources = runnerSourceClosure(repoRoot);
+  for (const path of [
+    'apps/api/tsconfig.json',
+    'apps/api/tsconfig.contracts.json',
+    'apps/api/package.json',
+    'apps/api/Dockerfile',
+    'apps/api/.env.example',
+    'apps/api/nest-cli.json',
+  ]) {
+    const result = affectedProducts([path], { runnerSources });
+    assert.deepEqual(result.products, ['api', 'api-e2e'], path);
+    assert.equal(result.runnerProofs, true, path);
+  }
+  for (const path of [
+    'apps/api/test/integration/fixtures.ts',
+    'apps/api/vitest.config.ts',
+    'apps/api/vitest.integration.config.ts',
+    'apps/api/README.md',
+  ]) {
+    assert.equal(affectedProducts([path], { runnerSources }).runnerProofs, false, path);
+  }
+  // a path no rule singles out — a new config file, say — runs the proofs
+  assert.equal(affectedProducts(['apps/api/brand-new.config.mjs'], { runnerSources }).runnerProofs, true);
+});
+
 test('Codex 4214321813 / 4218299974 — the live runbook an API integration test reads runs the api job', () => {
   assert.deepEqual(affectedProducts(['docs/RUNBOOK.md']).products, ['api']);
   assert.deepEqual(affectedProducts(['docs/archive/ROADMAP-2026-10-08.md']).products, []);

@@ -44,7 +44,13 @@ const RULES = [
   // `proofs: 'runner-source'` — the production-runner proofs run when the file is in `runnerSources`
   // (Codex 4218299993); see `runnerSourceClosure`
   { pattern: /^apps\/api\/src\//u, products: API, proofs: 'runner-source' },
-  { pattern: /^apps\/api\//u, products: API, proofs: false },
+  // Codex 4219073959 — the proofs are skipped only for what they PROVABLY never build or execute: the
+  // API's tests, their runner configs and its README. Every other API path — tsconfig*, package.json,
+  // the Dockerfile, anything new — can change what `migrate.sh` runs, so it runs the proofs. (Three
+  // findings on this PR were the same root: a list of what needs the proofs is incomplete by
+  // construction; the list of what provably does not is the one that can be closed.)
+  { pattern: /^apps\/api\/(?:test\/|vitest(?:\.[a-z]+)?\.config\.ts$|README\.md$)/u, products: API, proofs: false },
+  { pattern: /^apps\/api\//u, products: API, proofs: true },
 ];
 
 const API_SCRIPTS = 'apps/api/scripts';
