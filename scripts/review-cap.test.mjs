@@ -14,10 +14,11 @@ import {
 import { classifyCodexState } from './autonomous-review-state.mjs';
 import { assessReviewScope } from './review-efficiency.mjs';
 import {
-  TRIVIAL_LANE_SUCCESS, completeTrivialPullRequest, ensureTerminalReviewState, fileDeferredFindings, unionDeferred,
+  TRIVIAL_LANE_SUCCESS, authorizeExactHeadMerge, completeTrivialPullRequest, ensureTerminalReviewState, fileDeferredFindings,
+  unionDeferred,
 } from './autonomous-review-gate.mjs';
 import { alreadyReported, completionReport, mergedThroughTrivialLane, reviewRounds } from './completion-report.mjs';
-import { REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
+import { REQUIRED_CHECKS, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 const HEAD = 'c'.repeat(40);
@@ -268,14 +269,15 @@ test('a live-bug unit over 8 files or 300 lines needs an owner-approved size', (
   assert.equal(small.allowed, true);
 });
 
-function trivialClient(body, calls, { draft = true, workItemProblem = null } = {}) {
+function trivialClient(body, calls, { draft = true, workItemProblem = null, onDraft = null, statuses = [] } = {}) {
+  const live = { body };
   const head = 'd'.repeat(40);
   const pr = () => ({
     number: 9_999,
     additions: 4,
     deletions: 1,
     changed_files: 1,
-    body,
+    body: live.body,
     state: 'open',
     draft,
     node_id: 'PR_1',
@@ -295,7 +297,15 @@ function trivialClient(body, calls, { draft = true, workItemProblem = null } = {
       async reviews() { return []; },
       async markReplacementRequired() {},
       async commit() { return { commit: { message: 'copy\n\nCorrection-Owner: claude\n' }, files: [] }; },
-      async setDraft(live, draft) { calls.push(['draft', draft]); return { ...live, draft }; },
+      async setDraft(pull, toDraft) {
+        calls.push(['draft', toDraft]);
+        onDraft?.(live);
+        return { ...pull, body: live.body, draft: toDraft };
+      },
+      async statuses() { return statuses; },
+      async checkRuns() {
+        return REQUIRED_CHECKS.map((name) => ({ name, head_sha: head, status: 'completed', conclusion: 'success', started_at: '2026-10-08T00:00:00Z', completed_at: '2026-10-08T00:01:00Z', check_suite: { id: 1 } }));
+      },
       async setStatus(_head, state) { calls.push(['status', state]); },
       async updateStickyComment() {},
     },
@@ -429,4 +439,25 @@ test('Codex 4214389894 — recovery never consumes a fast-lane success once the 
   const status = { id: 1, context: 'codex-current-head', state: 'success', description: TRIVIAL_LANE_SUCCESS };
   assert.equal(await ensureTerminalReviewState(client, pr, head, status, [status]), false);
   assert.deepEqual(calls, []);
+});
+
+test('Codex 4215318377 — a body edited to standard during the draft promotion publishes no fast-lane success', async () => {
+  const calls = [];
+  const body = `<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\nWork item issue: #9\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
+  const standard = `<!-- review-size: standard -->\n${OWNER}\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
+  const { client, pr, head } = trivialClient(body, calls, { onDraft: (live) => { live.body = standard; } });
+  assert.equal(await completeTrivialPullRequest(client, pr, head, null), 'not_trivial');
+  assert.equal(calls.some(([kind, value]) => kind === 'status' && value === 'success'), false);
+});
+
+test('Codex 4215318377 — the merge guard refuses a fast-lane success once the live body leaves the lane', async () => {
+  const status = { id: 1, context: 'codex-current-head', state: 'success', description: TRIVIAL_LANE_SUCCESS };
+  const verdict = { outcome: 'eligible', mergeEligible: true, owner: 'claude' };
+  const standard = `<!-- review-size: standard -->\n${OWNER}\nReplaces: none`;
+  const left = trivialClient(standard, [], { draft: false, statuses: [status] });
+  assert.equal((await authorizeExactHeadMerge(left.client, left.pr, left.head, verdict)).state, 'left_trivial_lane');
+  // the same status on a body that still declares the lane is authorized, as before
+  const trivial = `<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\nWork item issue: #9\nReplaces: none`;
+  const kept = trivialClient(trivial, [], { draft: false, statuses: [status] });
+  assert.equal((await authorizeExactHeadMerge(kept.client, kept.pr, kept.head, verdict)).state, 'authorized');
 });

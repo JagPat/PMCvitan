@@ -1420,6 +1420,12 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   if (candidateBodyHold(finalLive, mergeVerdict)) {
     return { allowed: false, state: 'ownership_not_eligible' };
   }
+  // Codex 4215318377 — a fast-lane success stands in for the Codex round only while the live body still
+  // declares the lane: an edit to `standard` at any point before the merge (the draft promotion, a recovery
+  // run, a queued auto-merge's later run) leaves this head needing its review, so it never merges on that status
+  if (isTrivialLaneStatus(latestReview) && !declaresTrivialLane(finalLive.body)) {
+    return { allowed: false, state: 'left_trivial_lane' };
+  }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
 
@@ -1988,6 +1994,7 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
 
 export const TRIVIAL_LANE_SUCCESS = 'review: trivial fast lane — CI only, no Codex round (owner decision 2026-10-08)';
 const isTrivialLaneStatus = (status) => status?.description === TRIVIAL_LANE_SUCCESS;
+const declaresTrivialLane = (body) => /^<!--\s*review-size:\s*trivial\s*-->/iu.test(String(body ?? '').trimStart());
 
 /** The trivial fast lane's completion: final admission, success, exact-SHA merge, report, sticky. */
 export async function completeTrivialPullRequest(client, pullRequest, expectedHead, recoveryRequest) {
@@ -2008,7 +2015,12 @@ export async function completeTrivialPullRequest(client, pullRequest, expectedHe
   // exact current head first, with the same post-mutation head/base validation the reviewed path uses
   const ready = await setDraftForCurrentHead(client, pullRequest.number, expectedHead, false);
   if (!ready) return 'superseded';
-  pullRequest = ready;
+  // Codex 4215318377 — the body may change while the promotion runs: admit the lane again on the promoted
+  // PR before its success is published, and leave for the ordinary review path if it no longer qualifies
+  const promoted = await revalidateFinalReviewPolicy(client, pullRequest.number, expectedHead);
+  if (promoted.superseded) return 'superseded';
+  if (!promoted.allowed || promoted.scopeState !== 'trivial') return 'not_trivial';
+  pullRequest = promoted.pullRequest;
   await client.setStatus(
     expectedHead,
     'success',
