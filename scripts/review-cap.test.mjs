@@ -576,3 +576,16 @@ test('Codex 4220861349 — the non-blocking findings beside a blocker are kept a
   const red = recovery.indexOf("await client.setStatus(expectedHead, 'failure', settled.detail");
   assert.ok(red > 0 && recovery.indexOf('await fileDeferredFindings(client, finalPolicy.pullRequest', red) > red);
 });
+
+test('Codex 4220861370 — a blank Codex review container that opens no thread is no review round', () => {
+  const blank = (id, head) => ({ id, user: { login: CODEX }, commit_id: head, body: '', state: 'COMMENTED' });
+  const a = 'a'.repeat(40);
+  const b = 'b'.repeat(40);
+  // two empty containers on two heads: no rounds, so the cap is not reached
+  assert.deepEqual(findingRoundHeads([], [blank(1, a), blank(2, b)]), []);
+  assert.equal(reviewCapState({ expectedHead: HEAD, reviews: [blank(1, a), blank(2, b)], files: FILES }).reached, false);
+  // a blank container that owns a thread-opening comment, or a review with a body, still counts
+  const opener = { ...finding({ head: a, id: 3 }), pull_request_review_id: 1 };
+  assert.deepEqual(findingRoundHeads([opener], [blank(1, a)]), [a]);
+  assert.deepEqual(findingRoundHeads([], [{ ...blank(2, b), body: '**Review-level finding**' }]), [b]);
+});

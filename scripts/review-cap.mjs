@@ -110,6 +110,11 @@ export function findingRoundHeads(comments = [], reviews = []) {
   // out first would count that review as a round.
   for (const review of reviews ?? []) {
     if (review?.user?.login !== CODEX_LOGIN || isCodexReplyOnlyReview(review, comments)) continue;
+    // Codex 4220861370 — a blank review container that opens no thread is no verdict (`classifyCodexState`
+    // reads it the same way), so it is no round either: counting it would let empty records reach the cap.
+    // Missing a round only delays the cap, which is the safe direction.
+    const opensThread = comments.some((comment) => comment?.pull_request_review_id === review.id && comment?.in_reply_to_id == null);
+    if (String(review?.body ?? '').trim().length === 0 && !opensThread) continue;
     if (typeof review.commit_id === 'string' && review.commit_id.length > 0) heads.add(review.commit_id);
   }
   return [...heads];
