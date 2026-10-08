@@ -548,3 +548,31 @@ test('Codex 4220739672 — the final settlement admits only clear or no-new-evid
   const body = gate.slice(gate.indexOf('export async function settleFinalCodexEvidence'), gate.indexOf('export function contextForEvent'));
   assert.match(body, /evidence\.state !== 'clear' && evidence\.state !== 'pending'/u);
 });
+
+test('Codex 4220861349 — the non-blocking findings beside a blocker are kept and filed before the head moves', async () => {
+  // past the cap a blocking verdict carries the rest: a P2 and an off-diff P1 beside a changed-line P1
+  const comments = [finding({ p: 1, id: 14 }), finding({ p: 2, id: 15 }), finding({ p: 1, line: 5, id: 16 })];
+  const result = classify(comments, { reached: true, changedLines: changedLinesFromFiles(FILES) });
+  assert.equal(result.state, 'changes_required');
+  assert.deepEqual(result.deferred.map((comment) => comment.id), [15, 16]);
+  // the final settlement returns them with its blocking verdict, joined to the caller's earlier read
+  const rounds = [finding({ head: 'a'.repeat(40), id: 18 }), finding({ head: 'b'.repeat(40), id: 19 })];
+  const client = { reviews: async () => [], reviewComments: async () => [...rounds, ...comments], pullRequestFiles: async () => FILES };
+  const earlier = finding({ p: 3, id: 17 });
+  const settled = await settleFinalCodexEvidence(client, { number: 9, changed_files: 2 }, HEAD, [earlier]);
+  assert.equal(settled.state, 'changes_required');
+  assert.deepEqual(settled.deferred.map((comment) => comment.id).sort(), [15, 16, 17]);
+  // every blocking publication files them first, and every caller hands them over
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const publish = gate.slice(gate.indexOf('export async function publishCurrentHeadFinding'), gate.indexOf('export async function guardAgainstCurrentHeadFinding'));
+  const filed = publish.indexOf('await fileDeferredFindings(');
+  assert.ok(filed > 0 && filed < publish.indexOf('await enforceReviewConvergence('), 'filed before anything can return early');
+  const calls = gate.split('publishCurrentHeadFinding(').slice(2);
+  assert.equal(calls.length, 4);
+  for (const call of calls) assert.match(call.slice(0, 400), /deferred: \w+\.deferred \?\? \[\]/u);
+  // recovery turns the head red first, then files them
+  const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
+  const red = recovery.indexOf("await client.setStatus(expectedHead, 'failure', settled.detail");
+  assert.ok(red > 0 && recovery.indexOf('await fileDeferredFindings(client, finalPolicy.pullRequest', red) > red);
+});

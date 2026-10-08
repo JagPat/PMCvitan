@@ -1508,6 +1508,8 @@ export async function ensureTerminalReviewState(
     if (settled.state === 'changes_required') {
       await client.setStatus(expectedHead, 'failure', settled.detail, pullRequest.html_url);
       await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+      // Codex 4220861349 — the head is red first (it held a success), then its non-blocking findings are filed
+      if (settled.deferred?.length > 0) await fileDeferredFindings(client, finalPolicy.pullRequest, expectedHead, settled.deferred);
       return true;
     }
     const latestStatus = statuses.find(
@@ -2144,8 +2146,12 @@ export async function publishCurrentHeadFinding(
   pullRequest,
   expectedHead,
   recoveryRequest,
-  { detail, attempt },
+  { detail, attempt, deferred = [] },
 ) {
+  // Codex 4220861349 — past the cap, the non-blocking findings beside a blocker are filed BEFORE anything
+  // else: the correction this verdict asks for moves the head, after which they are no longer current-head
+  // evidence and no later read (final settlement, recovery) would ever see them again
+  if (deferred.length > 0) await fileDeferredFindings(client, pullRequest, expectedHead, deferred);
   const reset = await enforceReviewConvergence(
     client,
     pullRequest,
@@ -2236,7 +2242,7 @@ export async function guardAgainstCurrentHeadFinding(
     pullRequest,
     expectedHead,
     recoveryRequest,
-    { detail: result.detail, attempt: 0 },
+    { detail: result.detail, attempt: 0, deferred: result.deferred ?? [] },
   );
   return result.detail;
 }
@@ -2262,7 +2268,8 @@ export async function finalCodexEvidence(client, pullRequest, expectedHead) {
   return {
     state: result.state,
     detail: result.detail,
-    deferred: result.state === 'clear' ? result.deferred ?? [] : [],
+    // Codex 4220861349 — past the cap a blocking verdict carries its non-blocking findings too
+    deferred: result.deferred ?? [],
   };
 }
 
@@ -2295,6 +2302,8 @@ export async function settleFinalCodexEvidence(client, pullRequest, expectedHead
     return {
       state: 'changes_required',
       detail: evidence.state === 'changes_required' ? evidence.detail : `review: final Codex evidence is ${evidence.state}; not merging on it`,
+      // Codex 4220861349 — what was deferrable stays deferrable beside a blocker; the caller files it
+      deferred: unionDeferred(earlierDeferred, evidence.deferred),
     };
   }
   const deferred = unionDeferred(earlierDeferred, evidence.deferred);
@@ -2586,7 +2595,7 @@ export async function run() {
         pullRequest,
         expectedHead,
         recoveryRequest,
-        { detail: result.detail, attempt },
+        { detail: result.detail, attempt, deferred: result.deferred ?? [] },
       );
       if (published.superseded) return;
       throw new Error(result.detail);
@@ -2619,7 +2628,7 @@ export async function run() {
             pullRequest,
             expectedHead,
             recoveryRequest,
-            { detail, attempt },
+            { detail, attempt, deferred: verifiedResult.deferred ?? [] },
           );
           if (published.superseded) return;
           throw new Error(detail);
@@ -2793,6 +2802,7 @@ export async function run() {
         await publishCurrentHeadFinding(client, pullRequest, expectedHead, recoveryRequest, {
           detail: settled.detail,
           attempt,
+          deferred: settled.deferred ?? [],
         });
         return;
       }
