@@ -13,8 +13,10 @@ import {
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
 import { assessReviewScope } from './review-efficiency.mjs';
-import { completeTrivialPullRequest, fileDeferredFindings, unionDeferred } from './autonomous-review-gate.mjs';
-import { completionReport, mergedThroughTrivialLane, reviewRounds } from './completion-report.mjs';
+import {
+  TRIVIAL_LANE_SUCCESS, completeTrivialPullRequest, ensureTerminalReviewState, fileDeferredFindings, unionDeferred,
+} from './autonomous-review-gate.mjs';
+import { alreadyReported, completionReport, mergedThroughTrivialLane, reviewRounds } from './completion-report.mjs';
 import { REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -266,7 +268,7 @@ test('a live-bug unit over 8 files or 300 lines needs an owner-approved size', (
   assert.equal(small.allowed, true);
 });
 
-function trivialClient(body, calls) {
+function trivialClient(body, calls, { draft = true, workItemProblem = null } = {}) {
   const head = 'd'.repeat(40);
   const pr = () => ({
     number: 9_999,
@@ -275,7 +277,7 @@ function trivialClient(body, calls) {
     changed_files: 1,
     body,
     state: 'open',
-    draft: true,
+    draft,
     node_id: 'PR_1',
     html_url: 'https://github.com/JagPat/PMCvitan/pull/9999',
     head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
@@ -288,6 +290,7 @@ function trivialClient(body, calls) {
       async pullRequest() { return pr(); },
       async pullRequestFiles() { return [{ filename: 'apps/web/src/components/Label.tsx', patch: '@@ -1 +1 @@\n-a\n+b' }]; },
       async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+      async workItemProblem() { return workItemProblem; },
       async reviewComments() { return []; },
       async reviews() { return []; },
       async markReplacementRequired() {},
@@ -380,4 +383,50 @@ test('Codex 4214359522 — a blank reply-only Codex review is no round: its repl
   const state = reviewCapState({ expectedHead: HEAD, comments: [root, reply, genuine], reviews: [replyOnly], files: FILES });
   assert.equal(state.priorRounds, 1);
   assert.equal(state.reached, false);
+});
+
+test('Codex 4214389907 — only the workflow\'s own report suppresses a second one; a pasted marker does not', () => {
+  const report = completionReport({ created_at: '2026-10-08T00:00:00Z', merged_at: '2026-10-08T01:00:00Z' }, { rounds: 1 });
+  const actions = { login: 'github-actions[bot]', type: 'Bot' };
+  assert.equal(alreadyReported([{ user: actions, body: report }]), true);
+  assert.equal(alreadyReported([{ user: { login: 'someone', type: 'User' }, body: report }]), false);
+  assert.equal(alreadyReported([{ user: { login: 'github-actions[bot]', type: 'User' }, body: report }]), false);
+  assert.equal(alreadyReported([{ user: actions, body: '<!-- completion-report --> copied diagnostic' }]), false);
+  assert.equal(alreadyReported([]), false);
+});
+
+test('Codex 4214389903 — a retry adds the deferred findings the existing follow-up issue does not list yet', async () => {
+  const issues = [];
+  const client = {
+    async issuesLabelled() { return issues; },
+    async createIssue(issue) { const made = { ...issue, number: 900 }; issues.push(made); return made; },
+    async updateIssueBody(number, body) { issues.find((issue) => issue.number === number).body = body; },
+  };
+  const pr = { number: 9 };
+  const first = finding({ p: 2, id: 1 });
+  const second = { ...finding({ p: 3, id: 2 }), html_url: 'https://github.com/JagPat/PMCvitan/pull/9#discussion_r2' };
+  assert.equal(await fileDeferredFindings(client, pr, HEAD, [first]), 900);
+  assert.equal(await fileDeferredFindings(client, pr, HEAD, [first, second]), 900);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].body, /discussion_r2/u);
+  const before = issues[0].body;
+  await fileDeferredFindings(client, pr, HEAD, [first, second]);
+  assert.equal(issues[0].body, before, 'a listed finding is never duplicated');
+});
+
+test('Codex 4214389878 — final admission resolves the cited work item again; a stale green check admits nothing', async () => {
+  const calls = [];
+  const body = `<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\nWork item issue: #9\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
+  const { client, pr, head } = trivialClient(body, calls, { workItemProblem: 'the cited work item #9 is a pull request, not an issue' });
+  await assert.rejects(completeTrivialPullRequest(client, pr, head, null), /scope_required/u);
+  assert.equal(calls.some(([kind, value]) => kind === 'status' && value === 'success'), false);
+});
+
+test('Codex 4214389894 — recovery never consumes a fast-lane success once the live body is no longer trivial', async () => {
+  const calls = [];
+  const body = `<!-- review-size: standard -->\n${OWNER}\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
+  const { client, pr, head } = trivialClient(body, calls, { draft: false });
+  const status = { id: 1, context: 'codex-current-head', state: 'success', description: TRIVIAL_LANE_SUCCESS };
+  assert.equal(await ensureTerminalReviewState(client, pr, head, status, [status]), false);
+  assert.deepEqual(calls, []);
 });

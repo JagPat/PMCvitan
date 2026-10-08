@@ -10,6 +10,7 @@ import { STATUS_CONTEXT } from './review-policy.mjs';
 
 export const COMPLETION_MARKER = '<!-- completion-report -->';
 const TRIVIAL_LANE_STATUS = 'review: trivial fast lane';
+const ACTIONS_LOGIN = 'github-actions[bot]';
 
 /**
  * Did the controller complete this head through the trivial fast lane? Read from the immutable evidence
@@ -31,6 +32,17 @@ export function reviewRounds(pullRequest, { comments = [], reviews = [], trivial
   const heads = new Set(findingRoundHeads(comments, reviews));
   if (trivial || heads.has(pullRequest?.head?.sha)) return heads.size;
   return heads.size + 1;
+}
+
+/**
+ * Has the workflow already reported on this PR? Only a comment the Actions identity authored, carrying the
+ * report's own shape, counts (Codex 4214389907): anyone can paste the marker, and a pasted one must not
+ * suppress the report.
+ */
+export function alreadyReported(issueComments = []) {
+  return issueComments.some((comment) => comment?.user?.login === ACTIONS_LOGIN
+    && comment?.user?.type === 'Bot'
+    && String(comment?.body ?? '').startsWith(`${COMPLETION_MARKER}\n**Completion report**\n`));
 }
 
 export function completionReport(pullRequest, { rounds }) {
@@ -76,7 +88,7 @@ export async function run({
   }
   const api = `https://api.github.com/repos/${repository}`;
   const issueComments = await readAll(fetchImpl, `${api}/issues/${pullRequest.number}/comments`, token);
-  if (issueComments.some((comment) => String(comment?.body ?? '').startsWith(COMPLETION_MARKER))) {
+  if (alreadyReported(issueComments)) {
     console.log('completion-report: already posted');
     return null;
   }

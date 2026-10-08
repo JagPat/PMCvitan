@@ -36,6 +36,7 @@ import {
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
 import { reviewCapState, findingPriority } from './review-cap.mjs';
 import { affectedProducts } from './ci-affected.mjs';
+import { verifyWorkItemIssue } from './review-scope.mjs';
 import {
   CORRECTION_STALLED,
   correctionOwnerDeclaration,
@@ -763,6 +764,16 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/issues`, { method: 'POST', body: { title, body, labels } });
   }
 
+  updateIssueBody(number, body) {
+    return this.request(`/repos/${this.repository}/issues/${number}`, { method: 'PATCH', body: { body } });
+  }
+
+  // The cited work-item issue, resolved against this repository: null when it is a real issue (or none is
+  // cited); otherwise the problem, as the `review-scope` job reports it.
+  workItemProblem(body) {
+    return verifyWorkItemIssue(body, { fetchImpl: fetch, repository: this.repository, token: this.token });
+  }
+
   postComment(number, body) {
     return this.request(`/repos/${this.repository}/issues/${number}/comments`, { method: 'POST', body: { body } });
   }
@@ -1483,6 +1494,9 @@ export async function ensureTerminalReviewState(
       }
       return true;
     }
+    // Codex 4214389894 — a fast-lane success is valid only while the live body is still admitted as trivial:
+    // a PR edited to `standard` after the status was written resumes the ordinary Codex review path
+    if (isTrivialLaneStatus(status) && finalPolicy.scopeState !== 'trivial') return false;
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -1892,6 +1906,10 @@ export async function revalidateFinalReviewPolicy(
     return { state: 'ownership_withheld', allowed: false, ownershipReason: OWNERSHIP_READ_RETRY, verdict: scope.verdict, pullRequest };
   }
   if (!scope.allowed) return { ...scope, state: 'scope_required' };
+  // Codex 4214389878 — the body can be edited while this run waits, so the cited work item is resolved again
+  // at final admission: a stale green `review-scope` must not admit a number that is no longer a real issue
+  const workItemProblem = await client.workItemProblem(pullRequest.body);
+  if (workItemProblem) return { state: 'scope_required', allowed: false, detail: workItemProblem };
 
   const convergence = await enforceReviewConvergence(
     client,
@@ -1938,7 +1956,6 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
   const marker = `<!-- review-follow-up: pr-${pullRequest.number} head-${expectedHead} -->`;
   const existing = (await client.issuesLabelled(REVIEW_FOLLOW_UP_LABEL))
     .find((issue) => String(issue?.body ?? '').includes(marker));
-  if (existing) return existing.number;
   const lines = deferred.map((comment) => {
     const priority = findingPriority(comment?.body);
     const title = String(comment?.body ?? '').split('\n').map((line) => line.replace(/\*\*|<[^>]+>|!\[[^\]]*\]\([^)]*\)/gu, '').trim())
@@ -1946,6 +1963,14 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
     const where = comment?.path ? `${comment.path}:${comment?.line ?? comment?.original_line ?? '?'}` : 'review-level';
     return `- [ ] ${priority === null ? 'P?' : `P${priority}`} \`${where}\` — ${title} (${comment?.html_url ?? 'no link'})`;
   });
+  if (existing) {
+    // Codex 4214389903 — a retry may see findings the first run did not: add each one not yet listed (by its
+    // line, which carries the finding's URL), so the issue stays the complete deferred set
+    const body = String(existing.body ?? '');
+    const missing = lines.filter((line) => !body.includes(line));
+    if (missing.length > 0) await client.updateIssueBody(existing.number, [body.trimEnd(), ...missing].join('\n'));
+    return existing.number;
+  }
   const issue = await client.createIssue({
     title: `Review follow-up from #${pullRequest.number}: ${deferred.length} deferred Codex finding${deferred.length === 1 ? '' : 's'}`,
     labels: [REVIEW_FOLLOW_UP_LABEL],
@@ -1960,6 +1985,9 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
   });
   return issue.number;
 }
+
+export const TRIVIAL_LANE_SUCCESS = 'review: trivial fast lane — CI only, no Codex round (owner decision 2026-10-08)';
+const isTrivialLaneStatus = (status) => status?.description === TRIVIAL_LANE_SUCCESS;
 
 /** The trivial fast lane's completion: final admission, success, exact-SHA merge, report, sticky. */
 export async function completeTrivialPullRequest(client, pullRequest, expectedHead, recoveryRequest) {
@@ -1984,7 +2012,7 @@ export async function completeTrivialPullRequest(client, pullRequest, expectedHe
   await client.setStatus(
     expectedHead,
     'success',
-    'review: trivial fast lane — CI only, no Codex round (owner decision 2026-10-08)',
+    TRIVIAL_LANE_SUCCESS,
     pullRequest.html_url,
   );
   await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, 'trivial fast lane');

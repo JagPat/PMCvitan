@@ -640,6 +640,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
   let autoMergeDraft = null;
   let reviewComments = [];
   const client = {
+    async workItemProblem() { return null; },
     ...automatedMergeEvidence(pullRequest),
     async pullRequest() {
       return pullRequest;
@@ -1498,6 +1499,7 @@ test('trusted scope enforcement reads the cumulative file list and rejects a mig
     async replacementLineage() {
       return { requiredReplacements: [], replacementPullRequests: [] };
     },
+    async workItemProblem() { return null; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
     async updateStickyComment() {},
@@ -1526,6 +1528,7 @@ test('final admission revalidates live scope and the late review-round reset', a
   const statuses = [];
   const sticky = [];
   const client = {
+    async workItemProblem() { return null; },
     async pullRequest() { return pullRequest; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
@@ -1590,6 +1593,7 @@ test('the SHA merge-authority verdict gates final admission (unit 2B2)', async (
   // A promotable head — scope in-limit, no unresolved Codex thread, no finding — so the ONLY
   // remaining gate is the SHA merge-authority verdict this unit reads from the head commit trailer.
   const makeClient = (message, { throws = false } = {}) => ({
+    async workItemProblem() { return null; },
     async pullRequest() { return promotablePull(); },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus() {},
@@ -1694,6 +1698,7 @@ test('a candidate-owned PR passes scope but its reviewed head is held, never suc
     const statusWrites = [];
     const stickies = [];
     const client = {
+      async workItemProblem() { return null; },
       async pullRequest() { return candidatePull(); },
       async setDraft(live, draft) { return { ...live, draft }; },
       async setStatus(h, state, description) { statusWrites.push({ state, description }); },
@@ -1804,6 +1809,7 @@ test('finding 4101926931 on #630: an exhausted candidate-head read recovers on t
   const stickies = [];
   const drafts = [];
   const client = {
+    async workItemProblem() { return null; },
     async pause() {},
     async pullRequest() { return pull(); },
     async setDraft(live, draft) { drafts.push(draft); return { ...live, draft }; },
@@ -2194,6 +2200,7 @@ test('recovery does not republish success when the SHA verdict is no longer elig
     const drafts = [];
     const stickies = [];
     const client = {
+      async workItemProblem() { return null; },
       async pullRequest() { return pull(); },
       async setDraft(current, draft) { drafts.push(draft); return { ...current, draft }; },
       async setStatus(h, state, description) { statusWrites.push({ state, description }); },
@@ -2277,6 +2284,7 @@ test('recovery does not overwrite the singleton sticky once the reviewed head is
   });
   const stickies = [];
   const client = {
+    async workItemProblem() { return null; },
     async pullRequest() { return currentPull(); },
     // The retarget lands exactly at the draft write: setDraft returns a DIFFERENT head, so
     // setDraftForCurrentHead resolves the unit as no longer current (returns null).
@@ -2332,6 +2340,7 @@ test('recovering a retryable unreadable ownership failure does not flip readines
   };
   const drafts = [];
   const client = {
+    async workItemProblem() { return null; },
     async pullRequest() {
       return {
         number: 253,
@@ -3419,6 +3428,7 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
       async pullRequest() { return pull(); },
       async pullRequestFiles() { return files; },
       async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+      async workItemProblem() { return null; },
       repository: 'JagPat/PMCvitan',
       drainProvenanceReader() { return producerOf(produced); },
       async commit(sha) {

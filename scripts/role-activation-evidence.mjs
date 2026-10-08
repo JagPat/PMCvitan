@@ -579,6 +579,19 @@ export async function readRoleActivationEvidence(
   } catch {
     affected = null;
   }
+  // Codex 4214389885 — the ORIGINAL head's CI ran for the original head's own diff (base...original), not the
+  // cumulative one: a corrective head that adds a product must not demand checks the original never launched.
+  // The compare API lists at most 300 files; a full or unreadable list requires every product check.
+  let originalAffected = null;
+  if (baseSha && originalHeadSha) {
+    try {
+      const comparison = await client.request(`/repos/${repository}/compare/${baseSha}...${originalHeadSha}`);
+      const files = comparison?.files;
+      if (Array.isArray(files) && files.length < 300) originalAffected = affectedProducts(files).products;
+    } catch {
+      originalAffected = null;
+    }
+  }
 
   // Closing: the reviewed head's check runs. The finding is the run the request NAMES (a later review of
   // the same head must not stand in for it, and is listed beside it); CI is evaluated as of that finding.
@@ -616,7 +629,7 @@ export async function readRoleActivationEvidence(
           baseSha: initialFinding.testedBaseSha,
           asOfMs: initialFinding.atMs,
           readAtMs,
-          affected,
+          affected: originalAffected,
         });
       }
     }
