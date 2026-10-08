@@ -22,7 +22,8 @@ export function findingPriority(body) {
  * The lines each file of the PR changes, per side, from the pull-request files API: `right` holds the
  * new-side lines it adds or modifies, `left` the old-side lines it deletes (Codex 4213960366 — a finding
  * GitHub anchors on the LEFT side of a deletion names an old-file line). A file whose patch GitHub omits
- * (binary, or too large) counts as changed throughout ('*') on both sides.
+ * (binary, or too large), or serves shorter than its own addition/deletion counts, counts as changed
+ * throughout ('*') on both sides.
  */
 export function changedLinesFromFiles(files = [], { complete = true } = {}) {
   const changed = new Map();
@@ -61,7 +62,12 @@ export function changedLinesFromFiles(files = [], { complete = true } = {}) {
         nextOld += 1;
       }
     }
-    changed.set(path, { right, left });
+    // Codex 4220621316 — GitHub can serve a LIMITED patch that is still a string. A patch is complete only
+    // when it carries every line the file's own counts report; a shorter one is treated as changed
+    // throughout, so a finding in an omitted hunk is never read as off-diff
+    const truncated = (Number.isInteger(file.additions) && right.size < file.additions)
+      || (Number.isInteger(file.deletions) && left.size < file.deletions);
+    changed.set(path, truncated ? { right: '*', left: '*' } : { right, left });
   }
   return changed;
 }

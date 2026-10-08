@@ -77,6 +77,8 @@ async function readAll(fetchImpl, url, token) {
 
 /** How far back a sweep looks for merged PRs still missing their report. */
 export const SWEEP_WINDOW_MS = 48 * 3_600_000;
+/** A bound on the closed-PR pages one sweep reads (10,000 PRs closed inside the window). */
+export const SWEEP_MAX_PAGES = 100;
 
 function headersFor(token) {
   return { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'pmcvitan-completion-report' };
@@ -121,13 +123,20 @@ export async function reportPullRequest({ api, token, fetchImpl, pullRequest }) 
 export async function sweep({ repository, token, fetchImpl = globalThis.fetch, now = Date.now() }) {
   const api = `https://api.github.com/repos/${repository}`;
   const reported = [];
-  const closed = await getJson(fetchImpl, `${api}/pulls?state=closed&sort=updated&direction=desc&per_page=50`, token);
-  for (const summary of closed) {
-    const mergedAt = Date.parse(summary?.merged_at ?? '');
-    if (!Number.isFinite(mergedAt) || now - mergedAt > SWEEP_WINDOW_MS) continue;
-    // the list omits additions/deletions: read the full pull request the report measures
-    const pullRequest = await getJson(fetchImpl, `${api}/pulls/${summary.number}`, token);
-    if (await reportPullRequest({ api, token, fetchImpl, pullRequest })) reported.push(pullRequest.number);
+  // Codex 4220621322 — every page whose activity is inside the window: the list is newest-updated first, and
+  // a PR's merge is never later than its last update, so the first page that reaches past the window is the
+  // last one that can hold an in-window merge
+  for (let page = 1; page <= SWEEP_MAX_PAGES; page += 1) {
+    const closed = await getJson(fetchImpl, `${api}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`, token);
+    for (const summary of closed) {
+      const mergedAt = Date.parse(summary?.merged_at ?? '');
+      if (!Number.isFinite(mergedAt) || now - mergedAt > SWEEP_WINDOW_MS) continue;
+      // the list omits additions/deletions: read the full pull request the report measures
+      const pullRequest = await getJson(fetchImpl, `${api}/pulls/${summary.number}`, token);
+      if (await reportPullRequest({ api, token, fetchImpl, pullRequest })) reported.push(pullRequest.number);
+    }
+    const oldest = Date.parse(closed.at(-1)?.updated_at ?? '');
+    if (closed.length < 100 || !Number.isFinite(oldest) || now - oldest > SWEEP_WINDOW_MS) break;
   }
   const main = await getJson(fetchImpl, `${api}/commits/main`, token);
   const runs = await getJson(fetchImpl, `${api}/actions/workflows/ci.yml/runs?head_sha=${main.sha}&per_page=1`, token);

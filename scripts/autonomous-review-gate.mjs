@@ -1016,10 +1016,7 @@ async function freshAdvisory(client, pullRequest) {
 export async function reportReviewLifecycle(client, pullRequest, log = console.log) {
   let observation = null;
   try {
-    const [comments, reviews] = await Promise.all([
-      client.reviewComments(pullRequest.number),
-      client.reviews(pullRequest.number),
-    ]);
+    const { comments, reviews } = await readCodexEvidence(client, pullRequest.number);
     observation = observeReviewLifecycle({ comments, reviews });
   } catch {
     // Evidence unreadable. This path reports; it does not decide, so there is
@@ -1565,10 +1562,7 @@ export async function enforceReviewConvergence(
   pullRequest,
   expectedHead,
 ) {
-  const [comments, reviews] = await Promise.all([
-    client.reviewComments(pullRequest.number),
-    client.reviews(pullRequest.number),
-  ]);
+  const { comments, reviews } = await readCodexEvidence(client, pullRequest.number);
   const findingHeads = codexFindingHeads(comments, reviews);
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!live) return { state: 'superseded', allowed: false, superseded: true };
@@ -1995,6 +1989,22 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
 // refetching the same list every 15 seconds
 const capFilesCache = new WeakMap();
 
+/**
+ * Codex 4220621334 — read a PR's Codex evidence REVIEWS FIRST, then their comments. GitHub submits a review
+ * and its inline comments together, so every review in the first response already has its comments when the
+ * second is read; read concurrently, the comments could predate a review submitted between the two, and its
+ * container would look like a review-level finding with no inline comment (deferrable past the cap) while
+ * its changed-line P0/P1 was simply not read yet. Reactions are independent of both.
+ */
+export async function readCodexEvidence(client, number, { reactions = false } = {}) {
+  const reviews = await client.reviews(number);
+  const [comments, reactionList] = await Promise.all([
+    client.reviewComments(number),
+    reactions ? client.reactions(number) : Promise.resolve(undefined),
+  ]);
+  return reactions ? { reviews, comments, reactions: reactionList } : { reviews, comments };
+}
+
 /** The success description of a head the review-round cap cleared, naming its follow-up issue. */
 export function cappedSuccessDetail(settled) {
   return `review: review-round cap; ${settled.deferred.length} non-blocking finding(s) deferred to #${settled.followUp}`;
@@ -2071,11 +2081,7 @@ async function reviewAttempt(
     );
     if (!live) return { state: 'superseded' };
 
-    const [reviews, comments, reactions] = await Promise.all([
-      client.reviews(pullRequest.number),
-      client.reviewComments(pullRequest.number),
-      client.reactions(pullRequest.number),
-    ]);
+    const { reviews, comments, reactions } = await readCodexEvidence(client, pullRequest.number, { reactions: true });
     const result = classifyCodexState({
       expectedHead,
       readyAt: reviewNotBefore,
@@ -2097,11 +2103,7 @@ async function reclassifyCurrentCodexEvidence(
   expectedHead,
   reviewNotBefore,
 ) {
-  const [reviews, comments, reactions] = await Promise.all([
-    client.reviews(number),
-    client.reviewComments(number),
-    client.reactions(number),
-  ]);
+  const { reviews, comments, reactions } = await readCodexEvidence(client, number, { reactions: true });
   const now = new Date();
   return classifyCodexState({
     expectedHead,
@@ -2193,10 +2195,7 @@ export async function guardAgainstCurrentHeadFinding(
   expectedHead,
   recoveryRequest,
 ) {
-  const [reviews, comments] = await Promise.all([
-    client.reviews(pullRequest.number),
-    client.reviewComments(pullRequest.number),
-  ]);
+  const { reviews, comments } = await readCodexEvidence(client, pullRequest.number);
   const now = new Date();
   const result = classifyCodexState({
     expectedHead,
@@ -2226,10 +2225,7 @@ export async function guardAgainstCurrentHeadFinding(
  * 4214321785) or, past the cap, is deferred with the rest (Codex 4214270293).
  */
 export async function finalCodexEvidence(client, pullRequest, expectedHead) {
-  const [reviews, comments] = await Promise.all([
-    client.reviews(pullRequest.number),
-    client.reviewComments(pullRequest.number),
-  ]);
+  const { reviews, comments } = await readCodexEvidence(client, pullRequest.number);
   const now = new Date();
   const result = classifyCodexState({
     expectedHead,

@@ -25,8 +25,10 @@ permissions:
   pull-requests: read
   statuses: read
 
+# Codex 4220621326 — ONE serialization domain for every report writer (a direct `closed` report and every
+# sweep), so two runs can never both find a PR unreported and both post
 concurrency:
-  group: completion-report-sweep-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'sweep' }}
+  group: completion-report
   cancel-in-progress: false
 
 jobs:

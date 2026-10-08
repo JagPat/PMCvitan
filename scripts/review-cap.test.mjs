@@ -13,7 +13,7 @@ import {
   GITHUB_PR_FILES_LIMIT,
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
-import { capFiles, cappedSuccessDetail, fileDeferredFindings, unionDeferred } from './autonomous-review-gate.mjs';
+import { capFiles, cappedSuccessDetail, fileDeferredFindings, readCodexEvidence, unionDeferred } from './autonomous-review-gate.mjs';
 import { alreadyReported, completionReport, reviewRounds, sweep, SWEEP_WINDOW_MS } from './completion-report.mjs';
 import { REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
@@ -417,4 +417,71 @@ test('Codex 4220431609 — the report workflow sweeps after every controller run
   assert.match(workflow, /actions: write/u);
   const gate = await readFile(new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8');
   assert.match(gate, /^name: Autonomous review and merge$/mu, 'the workflow_run trigger names the controller exactly');
+});
+
+test('Codex 4220621316 — a patch shorter than its own counts is truncated and counts as changed throughout', () => {
+  const patch = '@@ -1,2 +1,3 @@\n a\n+b\n c';
+  const whole = changedLinesFromFiles([{ filename: 'x.ts', patch, additions: 1, deletions: 0 }]).get('x.ts');
+  assert.ok(whole.right instanceof Set && whole.right.has(2));
+  const cut = changedLinesFromFiles([{ filename: 'x.ts', patch, additions: 40, deletions: 0 }]).get('x.ts');
+  assert.deepEqual(cut, { right: '*', left: '*' });
+  // a P1 in an omitted hunk of a truncated patch blocks
+  assert.equal(blocksUnderCap(finding({ p: 1, path: 'x.ts', line: 900, id: 11 }), changedLinesFromFiles([{ filename: 'x.ts', patch, additions: 40, deletions: 3 }])), true);
+});
+
+test('Codex 4220621334 — Codex evidence is read reviews first, then their comments', async () => {
+  const order = [];
+  let releaseReviews;
+  const client = {
+    reviews: () => new Promise((resolve) => { order.push('reviews:start'); releaseReviews = () => { order.push('reviews:done'); resolve([]); }; }),
+    reviewComments: async () => { order.push('comments:start'); return []; },
+    reactions: async () => { order.push('reactions:start'); return []; },
+  };
+  const pending = readCodexEvidence(client, 9, { reactions: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(order, ['reviews:start'], 'no comment read starts before the reviews have been read');
+  releaseReviews();
+  const evidence = await pending;
+  assert.deepEqual(order.slice(0, 2), ['reviews:start', 'reviews:done']);
+  assert.ok(order.indexOf('comments:start') > order.indexOf('reviews:done'));
+  assert.deepEqual(Object.keys(evidence).sort(), ['comments', 'reactions', 'reviews']);
+  // every gate read of Codex evidence goes through it
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const concurrent = [...gate.matchAll(/Promise\.all\(\[[^\]]*client\.reviews\(/gu)];
+  assert.equal(concurrent.length, 0, 'no read fetches the reviews concurrently with anything');
+});
+
+test('Codex 4220621326 — every completion-report writer shares one concurrency group', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const workflow = await readFile(new URL('../.github/workflows/completion-report.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /concurrency:\n(?:#.*\n)*\s+group: completion-report\n/u);
+  assert.doesNotMatch(workflow, /group: .*\$\{\{/u, 'the group is not split by event');
+});
+
+test('Codex 4220621322 — the sweep pages until the window is exhausted', async () => {
+  const now = Date.parse('2026-10-08T12:00:00Z');
+  const recent = '2026-10-08T11:00:00Z';
+  const old = '2026-10-01T00:00:00Z';
+  const pages = {
+    1: Array.from({ length: 100 }, (_, i) => ({ number: 1000 + i, merged_at: null, updated_at: recent })),
+    2: [{ number: 5, merged_at: recent, updated_at: recent }, { number: 6, merged_at: old, updated_at: old }],
+    3: [{ number: 7, merged_at: recent, updated_at: recent }],
+  };
+  const read = [];
+  const json = (body) => ({ ok: true, json: async () => body });
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url);
+    if (init.method === 'POST') return json({});
+    const page = /pulls\?state=closed.*page=(\d+)/u.exec(u);
+    if (page) { read.push(Number(page[1])); return json(pages[page[1]] ?? []); }
+    if (/\/pulls\/5$/u.test(u)) return json({ number: 5, merged_at: recent, created_at: recent, head: { sha: 'h5' } });
+    if (u.includes('/commits/main')) return json({ sha: 'm' });
+    if (u.includes('/actions/workflows/ci.yml/runs')) return json({ total_count: 1 });
+    return json([]);
+  };
+  const result = await sweep({ repository: 'o/r', token: 't', fetchImpl, now });
+  // page 2 holds the merge page 1 crowded out; page 2 reaches past the window, so page 3 is never read
+  assert.deepEqual(read, [1, 2]);
+  assert.deepEqual(result.reported, [5]);
 });
