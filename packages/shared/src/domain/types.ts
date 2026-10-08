@@ -644,6 +644,9 @@ export interface AppNotification {
   /** The decision this notice is about, when the server knows it and the viewer can open it — the
    *  bell then opens that decision itself (live bug 1, deep-link target fidelity). */
   decisionId?: string;
+  /** The inspection this notice is about, stamped by its writer (live bug 1b-3) — never read back out of
+   *  the display text, whose title and zone are user text. Absent on every legacy notice. */
+  inspectionId?: string;
 }
 
 export interface ModalState {
