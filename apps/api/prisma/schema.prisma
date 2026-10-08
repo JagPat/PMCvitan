@@ -3148,6 +3148,9 @@ model Notification {
   // relation: a notice may outlive nothing, but a deleted project cascades via projectId
   // and a decision id is a plain stamp, never a join the feed depends on.
   decisionId String?
+  // Live bug 1b-3a — the inspection an inspection notice announces, stamped by its writer (never read
+  // back out of the display text). Nullable: other notices and legacy rows carry none. Not a relation.
+  inspectionId String?
 
   /// Phase 6 task 4d unit 4d-i — the EVENT this notice announces, and what kind of notice it is.
   /// A notice is a derived communication artifact and the event is the fact, so binding the two

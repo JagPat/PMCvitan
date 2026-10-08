@@ -1,0 +1,11 @@
+-- Live bug 1b-3a — the inspection an inspection notice announces.
+--
+-- A notice is a derived communication artifact, so which inspection it is about must not be read back out
+-- of its display text: a title or zone is user text and can carry anything (Codex 4214386937 on #735). The
+-- writers stamp this column, exactly as "decisionId" is stamped for decision notices
+-- (20270810000000_phase6_t4a_withdraw). Nullable: non-inspection notices and every legacy row carry none,
+-- and a legacy row names no inspection. NOT a relation: a notice may outlive its inspection, and a deleted
+-- project cascades via "projectId".
+--
+-- Additive and previous-release safe: an old release neither reads nor writes the column.
+ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS "inspectionId" TEXT;
