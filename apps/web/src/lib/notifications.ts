@@ -162,20 +162,13 @@ function decisionLink(n: AppNotification, role: Role, records: NotificationRecor
 }
 
 /**
- * Live bug 1b-3 — the inspection a notice names, ONLY by its writer's structure, never by its wording:
- *
- * - `inspectionId`, the column the writer stamps (Codex 4214386937: a title or zone is user text, so a
- *   trailing "(INSP-N)" in the text could be the user's, and is never read);
- * - the re-inspection writer's own leading id, "Re-inspection <id> created for …": nothing a user types
- *   comes before it.
- *
- * Any other notice names no inspection and opens its screen.
+ * Live bug 1b-3 — the inspection a notice names, ONLY by the `inspectionId` column its writer stamps, never
+ * by its wording (Codex 4214386937, 4215083196): a title or zone is user text, and an unstamped row carries no
+ * provenance that an id in its text came from a writer. Any other notice names no inspection and opens its
+ * screen.
  */
-const ID_LED_INSPECTION = /^Re-inspection (INSP-\d+) created for /u;
-
-export function inspectionIdOf(n: Pick<AppNotification, 'text' | 'inspectionId'>): string | null {
-  if (n.inspectionId) return n.inspectionId;
-  return ID_LED_INSPECTION.exec(n.text)?.[1] ?? null;
+export function inspectionIdOf(n: Pick<AppNotification, 'inspectionId'>): string | null {
+  return n.inspectionId || null;
 }
 
 export function notificationLink(n: AppNotification, role: Role, records: NotificationRecords): NotificationLink | null {

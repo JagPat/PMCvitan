@@ -156,8 +156,10 @@ describe('notificationLink — the record a notice opens (live bug 1)', () => {
     const stamped = { ...n('Re-inspection due: Waterproofing, Terrace'), inspectionId: 'INSP-21' };
     expect(notificationLink(stamped, 'pmc', records)).toEqual(at('inspect-review', 'INSP-21'));
     expect(notificationLink(stamped, 'engineer', records)).toEqual(at('engineer-check', 'INSP-21'));
-    // the re-inspection writer's own leading id, which no user text precedes
-    expect(notificationLink(n('Re-inspection INSP-30 created for 2 item(s) — due 12 Oct 2026.'), 'engineer', records)).toEqual(at('engineer-check', 'INSP-30'));
+    // the re-inspection writer stamps its child's id; the same text without the stamp names nothing (Codex 4215083196)
+    const reinspection = n('Re-inspection INSP-30 created for 2 item(s) — due 12 Oct 2026.');
+    expect(notificationLink({ ...reinspection, inspectionId: 'INSP-30' }, 'engineer', records)).toEqual(at('engineer-check', 'INSP-30'));
+    expect(inspectionIdOf(reinspection)).toBeNull();
   });
 
   it('Codex 4214386937 — an id in the TEXT names nothing, even trailing: a legacy zone can end in "(INSP-N)"', () => {
