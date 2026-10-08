@@ -172,6 +172,22 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submitted).toBe(true);
   });
 
+  // live bug 1b-3 — the rejection's notice names the re-inspection it created by a STAMP
+  it('reject: the re-inspection notice is stamped with the re-inspection it created', async () => {
+    const { p, pmcA } = await freshProject();
+    const eng = `it-inidem-u-engS-${projSeq}`;
+    await t.prisma.user.create({ data: { id: eng, projectId: p, role: 'engineer', name: 'Eng S', email: `${eng}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: eng, role: 'engineer', status: 'active' } });
+    await svc.create(p, createInput({ title: 'Stamp QA' }), asPmc(pmcA, p), 'k-stamp-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p }, include: { items: true } });
+    const items = insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' }));
+    await svc.submit(p, insp.id, { items }, { sub: eng, role: 'engineer', projectId: p } as AuthUser, 'k-stamp-2');
+    await svc.decide(p, insp.id, { approve: false, rejectedItemIds: [insp.items[0].id], assigneeId: eng }, asPmc(pmcA, p), 'k-stamp-3');
+    const child = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, reinspectionOfId: insp.id } });
+    const notice = await t.prisma.notification.findFirstOrThrow({ where: { projectId: p, text: { startsWith: 'Re-inspection ' } } });
+    expect(notice.inspectionId).toBe(child.id);
+  });
+
   /**
    * A CONTRACTOR CANNOT BE ASSIGNED CORRECTIVE WORK, and that is the point rather than an omission.
    * `assigneeId` decides who may submit, so an assignee who cannot reach the submit route is work

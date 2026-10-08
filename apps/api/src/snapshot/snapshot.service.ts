@@ -242,7 +242,9 @@ export class SnapshotService {
         // decision is invisible to every other role INCLUDING the client (§A.3), so its
         // explanation must not leak through the bell either.
         if (role !== 'pmc' && isWithdrawnDecisionNotice(n.text)) return [];
-        return [{ text: n.text, time: n.time, color: n.color, ...noticeSubject(n.decisionId) }];
+        // live bug 1b-3 — a kindless inspection notice carries the inspection its writer stamped; the
+        // inspection screen judges it against the viewer's own slice
+        return [{ text: n.text, time: n.time, color: n.color, ...noticeSubject(n.decisionId), ...(n.inspectionId ? { inspectionId: n.inspectionId } : {}) }];
       }),
       companies: companies.map((c) => ({
         id: c.id,

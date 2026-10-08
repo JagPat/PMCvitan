@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: live-bug-1b-3-inspection-notices
-reviewed_merge: 3559f20
-open_pr: 736
+reviewed_merge: 8ab364e
+open_pr: 741
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-08
@@ -26,16 +26,16 @@ updated: 2026-10-08
 
 ### Current unit
 
-**Live bug 1b-3, #736** (`claude/live-bug-1b-3a-notification-inspection-id`, issue #734). An inspection
+**Live bug 1b-3b, #741** (`claude/live-bug-1b-3b-stamp-inspection-notices`, issue #734). An inspection
 notice names its inspection by a column its writer stamps, validated where it is read (owner decision
-2026-10-08: no database seal). #735 (the bell opens the stamped inspection) merged at `3559f20`; #738 has the
-bell open a stamp only when the viewer's own slice holds it; #736 adds the plain column; 1b-3b has the API
-writers stamp it. 1b-1 (#729) merged at `a08f896` and 1b-2 (#730) at `20b5f0f`. Deploy visibility (#732)
+2026-10-08: no database seal). #735 (the bell opens the stamped inspection) merged at `3559f20`; #736 (the
+plain column) at `d028cc4`; #738 (the bell opens a stamp only when the destination screen holds it) at `8ab364e`; 1b-3b
+has the API writers stamp it and the snapshot serve it. 1b-1 (#729) merged at `a08f896` and 1b-2 (#730) at `20b5f0f`. Deploy visibility (#732)
 merged at `b46e1e7`; proxy-addr 2.0.8 (#737) at `dd6e0fd`.
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign
-stop and the owner approved splitting it, each unit from `main`: M1a, this file's shrink (STATUS and ROADMAP
-archived); M1b (#739), affected-only PR CI and shadow review off; M2, the review-round cap and changed-line
+stop and the owner approved splitting it, each unit from `main`: M1a (#740, merged at `94d1cdb`), this file's shrink (STATUS and ROADMAP
+archived); M1b (#739, merged at `f970180`), affected-only PR CI and shadow review off; M2 (#742), the review-round cap and changed-line
 scope, with completion reports; M3, the trivial fast lane on the ordinary merge path, the size target and one
 issue per work item. #731 stays open until they land. Maintenance runs beside the live-bug unit (rule 8).
 
@@ -46,9 +46,9 @@ issue per work item. #731 stays open until they land. Maintenance runs beside th
    - 1b, inspection notices, in three parts:
      - 1b-1: done (#729, `a08f896`).
      - 1b-2: done (#730, `20b5f0f`).
-     - 1b-3: #735 (the bell reads the stamp) done at `3559f20`; #738 (read-time check) and #736 (the plain
-       column) open; 1b-3b (the API writers stamp it; notification → record → Back end to end over the real
-       stack) next.
+     - 1b-3: #735 (the bell reads the stamp) done at `3559f20`; #736 (the plain column) at `d028cc4`; #738
+       (read-time check) at `8ab364e`; 1b-3b #741 (the API writers stamp it; notification → record → Back end to
+       end over the real stack) open.
    - 1c: drawing notices open the drawing they name.
 2. **Remaining live bugs**, folded into the Board's Top 10 queue (7 Oct 2026 UI/UX review), one PR per item:
    - demo controls out of production, including hiding Generate Weekly Report;

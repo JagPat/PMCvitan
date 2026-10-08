@@ -602,7 +602,8 @@ export class ActivitiesService {
           inspectionDate: fromIsoCivilDate(today),
           dateLabel: ddMmmYyyy(fromIsoCivilDate(today)!),
         });
-        await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${fresh.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now' } });
+        // live bug 1b-3 (Codex 4219780021) — the notice names the closing inspection it announces by a stamp
+        await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${fresh.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now', inspectionId: closingId } });
         await recordAudit(tx, { projectId, actor, action: 'activity.complete_requested', entity: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } });
         const completionEv = await emitEvent(tx, { projectId, actor, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId }, effectKey: 'activity.completion_requested', dispatch: { push: { body: `Sign-off requested: ${fresh.name}` } } });
         return { resultRef: activityId, events: [closingEv, completionEv] };
