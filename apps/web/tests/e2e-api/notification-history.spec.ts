@@ -51,12 +51,12 @@ test('a notification opens its record, and Back and Forward walk the history the
   await expect(page).toHaveURL(/\/projects\/ambli\/decisions\/DL-014$/);
   await expect(page.getByTestId('log-row-DL-014')).toHaveAttribute('aria-current', 'true');
 
-  // inspection: the seeded notice is stamped with INSP-21 and the snapshot serves it (1b-3b), but the bell
-  // reads the stamp only from #735 on, so until then it opens Inspection Review itself
+  // inspection — live bug 1b-3: the seeded notice is stamped with INSP-21 (1b-3b), the snapshot serves the
+  // stamp, and the bell (#735) opens that inspection
   await page.goBack();
   await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
   await tapNotice(page, 'Re-inspection due: Waterproofing, Terrace');
-  await expect(page).toHaveURL(/\/projects\/ambli\/review$/);
+  await expect(page).toHaveURL(/\/projects\/ambli\/review\/INSP-21$/);
   await page.goBack();
   await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
 });
