@@ -167,7 +167,7 @@ function decisionLink(n: AppNotification, role: Role, records: NotificationRecor
  * provenance that an id in its text came from a writer. Any other notice names no inspection and opens its
  * screen.
  */
-export function inspectionIdOf(n: Pick<AppNotification, 'inspectionId'>): string | null {
+export function inspectionIdOf(n: AppNotification): string | null {
   return n.inspectionId || null;
 }
 
