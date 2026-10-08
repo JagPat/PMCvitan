@@ -1,8 +1,9 @@
-# Review rubric — whole-file self-review before a push
+# Review rubric — self-review before a push
 
 Read [POLICY.md](POLICY.md) first; this rubric is how an author reviews their own diff and how a
-reviewer reads it. Run it on the WHOLE of every touched file, not on the changed hunks (five of
-#590's six round-2 findings sat in untouched lines); repeat until a pass finds nothing, then push once.
+reviewer reads it. Scope (owner decision 2026-10-08): the changed lines and their direct callers. Run it
+on the WHOLE of every touched file only for a justified-large or migration PR. Repeat until a pass finds
+nothing, then push once.
 
 ## The six invariants (one row each in the PR's invariant matrix)
 
@@ -54,8 +55,8 @@ Each family names the probe that turns the question into a failing test first (h
   correction can affect; continue on the same PR. Rank by severity (correctness, data integrity,
   ordering first), give the concrete failure (inputs or interleaving), no style nits beside
   substantive findings, say plainly when there are none, cite the POLICY rule violated.
-- A family-wide correction answers the family, not the line: a finding on one dimension of a
-  binding means auditing every dimension on every branch before pushing.
+- In a justified-large or migration PR, a family-wide correction answers the family, not the line: a
+  finding on one dimension of a binding means auditing every dimension on every branch before pushing.
 - Dispute path: reply on the thread with a concrete counterexample (inputs, interleaving or a
   test). No label and no gate state reads a dispute: the finding blocks that head until a new
   head answers it or the repository owner rules on the thread. The cap is not dismissal.

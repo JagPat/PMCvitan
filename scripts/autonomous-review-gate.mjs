@@ -13,6 +13,8 @@ import {
   ownershipInconsistentScopeDetail,
   isOwnershipInconsistentScopeDetail,
   isBodyOnlyOwnershipRecoveryDetail,
+  REVIEW_FOLLOW_UP_LABEL,
+  REVIEW_ROUND_CAP,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -32,6 +34,8 @@ import {
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
+import { reviewCapState, findingPriority } from './review-cap.mjs';
+import { affectedProducts } from './ci-affected.mjs';
 import {
   CORRECTION_STALLED,
   correctionOwnerDeclaration,
@@ -91,6 +95,21 @@ function attemptOf(run) {
 function intentionalSkip(skipped, gatesPassed) {
   const attempt = attemptOf(skipped);
   return attempt !== null && gatesPassed.has(attempt);
+}
+
+// Owner decision 2026-10-08 (rule 7): the required product checks are the ones this PR's files affect —
+// the same `affectedProducts` the CI battery plan launched. An unreadable file list requires them all.
+async function requiredChecksFor(client, pullRequest) {
+  let files = null;
+  try {
+    files = typeof client.pullRequestFiles === 'function' ? await client.pullRequestFiles(pullRequest.number) : null;
+  } catch {
+    files = null;
+  }
+  return requiredChecksForPullRequest(
+    pullRequest.number,
+    Array.isArray(files) ? affectedProducts(files).products : null,
+  );
 }
 
 export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
@@ -735,6 +754,19 @@ export class GitHubClient {
     throw new Error(`GitHub GET contents ${path} retry loop exhausted`);
   }
 
+  // Owner decision 2026-10-08 — the follow-up issue a capped review's deferred findings are filed in.
+  issuesLabelled(label) {
+    return this.paginated(`/repos/${this.repository}/issues?labels=${encodeURIComponent(label)}&state=all`);
+  }
+
+  createIssue({ title, body, labels }) {
+    return this.request(`/repos/${this.repository}/issues`, { method: 'POST', body: { title, body, labels } });
+  }
+
+  postComment(number, body) {
+    return this.request(`/repos/${this.repository}/issues/${number}/comments`, { method: 'POST', body: { body } });
+  }
+
   // The PR's CUMULATIVE diff against its base — every file the review unit touches,
   // not just the files of the current head commit.
   pullRequestFiles(number) {
@@ -1354,7 +1386,7 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
     client.checkRuns(expectedHead),
   ]);
   const latestReview = statuses.find((status) => status.context === STATUS_CONTEXT);
-  const required = summarizeRequiredChecks(checks, requiredChecksForPullRequest(live.number));
+  const required = summarizeRequiredChecks(checks, await requiredChecksFor(client, live));
   if (latestReview?.state !== 'success' || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
   }
@@ -1497,7 +1529,7 @@ export async function ensureTerminalReviewState(
 
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
-  const requiredChecks = requiredChecksForPullRequest(pullRequest.number);
+  const requiredChecks = await requiredChecksFor(client, pullRequest);
   while (true) {
     const live = await client.pullRequest(pullRequest.number);
     if (live.head.sha !== expectedHead) return { state: 'superseded' };
@@ -1630,7 +1662,7 @@ export async function handleCiFailure(
   { existingStatus = null, existingStatuses = [], scope = { allowed: true } } = {},
 ) {
   const checkRuns = await client.checkRuns(expectedHead);
-  const requiredChecks = requiredChecksForPullRequest(pullRequest.number);
+  const requiredChecks = await requiredChecksFor(client, pullRequest);
   const ciSummary = summarizeRequiredChecks(checkRuns, requiredChecks);
   const disposition = ciFailureDisposition(context, existingStatus, ciSummary.failed, {
     pullRequest, scope, skipped: skippedRequiredChecks(checkRuns, requiredChecks),
@@ -1795,7 +1827,7 @@ export async function rerunAdmittedCandidateScope(client, pullRequest, expectedH
   if (!failedChecks?.includes('review-scope') || scope?.allowed !== true) return null;
   if (correctionOwnerDeclaration(pullRequest).state !== 'candidate') return null;
   const runId = decidingRunId(
-    await client.checkRuns(expectedHead), 'review-scope', requiredChecksForPullRequest(pullRequest.number),
+    await client.checkRuns(expectedHead), 'review-scope', await requiredChecksFor(client, pullRequest),
   );
   if (!runId) return null;
   if (!await refreshCurrentHead(client, pullRequest.number, expectedHead)) return 'superseded';
@@ -1897,6 +1929,121 @@ export async function revalidateFinalReviewPolicy(
   return { state: 'allowed', allowed: true, pullRequest, verdict };
 }
 
+/**
+ * Owner decision 2026-10-08 — file a capped review's deferred findings in ONE follow-up issue per reviewed
+ * head (idempotent: a re-run finds the issue by its marker), so nothing Codex said is lost when the PR
+ * merges past the cap. Returns the issue number.
+ */
+export async function fileDeferredFindings(client, pullRequest, expectedHead, deferred) {
+  const marker = `<!-- review-follow-up: pr-${pullRequest.number} head-${expectedHead} -->`;
+  const existing = (await client.issuesLabelled(REVIEW_FOLLOW_UP_LABEL))
+    .find((issue) => String(issue?.body ?? '').includes(marker));
+  if (existing) return existing.number;
+  const lines = deferred.map((comment) => {
+    const priority = findingPriority(comment?.body);
+    const title = String(comment?.body ?? '').split('\n').map((line) => line.replace(/\*\*|<[^>]+>|!\[[^\]]*\]\([^)]*\)/gu, '').trim())
+      .find((line) => line.length > 0) ?? 'Codex finding';
+    const where = `${comment?.path ?? '?'}:${comment?.line ?? comment?.original_line ?? '?'}`;
+    return `- [ ] ${priority === null ? 'P?' : `P${priority}`} \`${where}\` — ${title} (${comment?.html_url ?? 'no link'})`;
+  });
+  const issue = await client.createIssue({
+    title: `Review follow-up from #${pullRequest.number}: ${deferred.length} deferred Codex finding${deferred.length === 1 ? '' : 's'}`,
+    labels: [REVIEW_FOLLOW_UP_LABEL],
+    body: [
+      marker,
+      `Codex findings on #${pullRequest.number} at \`${expectedHead.slice(0, 7)}\` that the review-round cap `
+        + `(owner decision 2026-10-08, ${REVIEW_ROUND_CAP} rounds) deferred instead of blocking the merge: `
+        + 'each is a P2 or lower, or not on a line the PR changed.',
+      '',
+      ...lines,
+    ].join('\n'),
+  });
+  return issue.number;
+}
+
+/**
+ * Owner decision 2026-10-08 (rule 10) — the completion report posted on a completed PR: hours from open to
+ * completion, Codex review rounds, and changed lines.
+ */
+export function completionReport(pullRequest, { rounds, completion, now = new Date() }) {
+  const opened = Date.parse(pullRequest?.created_at);
+  const hours = Number.isFinite(opened) ? ((now.getTime() - opened) / 3_600_000).toFixed(1) : '?';
+  const changed = Number(pullRequest?.additions ?? 0) + Number(pullRequest?.deletions ?? 0);
+  return [
+    '<!-- completion-report -->',
+    `**Completion report** — ${completion === 'merged' ? 'merged' : 'auto-merge queued'}`,
+    `- Hours from open to ${completion === 'merged' ? 'merge' : 'queue'}: ${hours}`,
+    `- Codex review rounds: ${rounds}`,
+    `- Changed lines: ${changed} (+${Number(pullRequest?.additions ?? 0)} / −${Number(pullRequest?.deletions ?? 0)}) across ${Number(pullRequest?.changed_files ?? 0)} files`,
+  ].join('\n');
+}
+
+/** The trivial fast lane's completion: final admission, success, exact-SHA merge, report, sticky. */
+export async function completeTrivialPullRequest(client, pullRequest, expectedHead, recoveryRequest) {
+  const finalPolicy = await revalidateFinalReviewPolicy(client, pullRequest.number, expectedHead);
+  if (finalPolicy.superseded) return 'superseded';
+  if (!finalPolicy.allowed) {
+    if (finalPolicy.ownershipReason) {
+      await client.setStatus(expectedHead, 'failure', finalPolicy.ownershipReason, pullRequest.html_url);
+      await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, 'ownership hold');
+      return 'held';
+    }
+    throw new Error(`Final review policy changed: ${finalPolicy.state}`);
+  }
+  pullRequest = finalPolicy.pullRequest;
+  await client.setStatus(
+    expectedHead,
+    'success',
+    'review: trivial fast lane — CI only, no Codex round (owner decision 2026-10-08)',
+    pullRequest.html_url,
+  );
+  await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, 'trivial fast lane');
+  const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (!live) return 'superseded';
+  const completion = await completeReviewedPullRequest(client, live, expectedHead, finalPolicy.verdict);
+  if (completion === 'merged' || completion === 'queued') {
+    await postCompletionReport(client, live, expectedHead, completion, { rounds: 0 });
+  }
+  await client.updateStickyComment(
+    live.number,
+    statusBody({
+      state: 'clear',
+      head: expectedHead,
+      detail: 'trivial fast lane: required CI is green; no Codex round',
+      attempt: 0,
+      next: completion === 'merged'
+        ? 'GitHub squash-merged this exact head.'
+        : completion === 'queued'
+          ? 'GitHub auto-merge is queued behind branch protection.'
+          : 'Merge is held because the current head, base, readiness or required gates changed during validation.',
+    }),
+  );
+  return completion;
+}
+
+/** Post the completion report once a PR is merged or queued (best effort: a report never blocks a merge). */
+async function postCompletionReport(client, pullRequest, expectedHead, completion, { rounds } = {}) {
+  try {
+    const counted = rounds ?? new Set([
+      ...codexFindingHeads(await client.reviewComments(pullRequest.number), await client.reviews(pullRequest.number)),
+      expectedHead,
+    ]).size;
+    await client.postComment(pullRequest.number, completionReport(pullRequest, { rounds: counted, completion }));
+  } catch (error) {
+    console.log(`Completion report not posted: ${error?.message ?? error}`);
+  }
+}
+
+/**
+ * Owner decision 2026-10-08 — the review-round cap for this exact head, read from the PR's review history
+ * and its changed lines. Every Codex classification goes through this, so the polling, the final
+ * re-verification and the pre-review guard all judge the same head the same way.
+ */
+async function capFor(client, number, expectedHead, reviews, comments) {
+  const files = typeof client.pullRequestFiles === 'function' ? await client.pullRequestFiles(number) : [];
+  return reviewCapState({ expectedHead, reviews, comments, files });
+}
+
 async function reviewAttempt(
   client,
   pullRequest,
@@ -1961,6 +2108,7 @@ async function reviewAttempt(
       reviews,
       comments,
       reactions,
+      cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments),
     });
     if (result.state !== 'pending') return result;
     await sleep(POLL_INTERVAL_MS);
@@ -1987,6 +2135,7 @@ async function reclassifyCurrentCodexEvidence(
     reviews,
     comments,
     reactions,
+    cap: await capFor(client, number, expectedHead, reviews, comments),
   });
 }
 
@@ -2081,6 +2230,7 @@ export async function guardAgainstCurrentHeadFinding(
     reviews,
     comments,
     reactions: [],
+    cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments),
   });
   if (result.state !== 'changes_required') return null;
 
@@ -2238,7 +2388,7 @@ export async function run() {
   // Before any status write: a wake from a run whose battery the plan skipped, while another run still
   // decides this head, has nothing to publish — that run's completion wakes the controller again.
   if (batteryDeferredToInFlightRun(
-    await client.checkRuns(expectedHead), context.ciRunId, requiredChecksForPullRequest(pullRequest.number),
+    await client.checkRuns(expectedHead), context.ciRunId, await requiredChecksFor(client, pullRequest),
   )) {
     console.log(
       `CI run ${context.ciRunId} skipped the product battery while another CI run for this head is still `
@@ -2356,6 +2506,15 @@ export async function run() {
     );
   }
 
+  // Owner decision 2026-10-08 (rule 4) — the trivial fast lane: copy, labels, contrast and hiding or
+  // removing controls (`<!-- review-size: trivial -->`, admitted only within TRIVIAL_* bounds by
+  // `assessReviewScope`) merge on green CI with no Codex round. The final admission, ownership verdict and
+  // exact-SHA merge below are the same ones a reviewed head goes through.
+  if (scope.state === 'trivial') {
+    await completeTrivialPullRequest(client, pullRequest, expectedHead, recoveryRequest);
+    return;
+  }
+
   // Observe the lifecycle BEFORE promoting for another review — this is the
   // path the first attempt missed.
   const { advisory = null } = await reportReviewLifecycle(client, pullRequest) ?? {};
@@ -2455,7 +2614,7 @@ export async function run() {
       const finalStatuses = await client.statuses(expectedHead);
       const finalCheckSummary = summarizeRequiredChecks(
         await client.checkRuns(expectedHead),
-        requiredChecksForPullRequest(pullRequest.number),
+        await requiredChecksFor(client, pullRequest),
       );
       if (
         finalCheckSummary.state !== 'success'
@@ -2577,13 +2736,21 @@ export async function run() {
         throw new Error(`Final review policy changed: ${finalPolicy.state}`);
       }
       pullRequest = finalPolicy.pullRequest;
+      // Owner decision 2026-10-08 — past the review-round cap, the head's non-blocking findings are filed in
+      // a follow-up issue BEFORE the success that lets the PR merge, so none is lost.
+      const deferred = verifiedResult.deferred ?? [];
+      const followUp = deferred.length > 0
+        ? await fileDeferredFindings(client, pullRequest, expectedHead, deferred)
+        : null;
       // One run polls one Codex invocation to its mutually exclusive terminal
       // result: finding-bearing evidence or the clean reaction. Review webhooks
       // never enter this orchestrator, so no second writer can race admission.
       await client.setStatus(
         expectedHead,
         'success',
-        'review: Codex found no blocking issue on this exact head',
+        followUp === null
+          ? 'review: Codex found no blocking issue on this exact head'
+          : `review: review-round cap; ${deferred.length} non-blocking finding(s) deferred to #${followUp}`,
         pullRequest.html_url,
       );
       await settleRecoveryRequest(
@@ -2605,6 +2772,9 @@ export async function run() {
         expectedHead,
         finalPolicy.verdict,
       );
+      if (completion === 'merged' || completion === 'queued') {
+        await postCompletionReport(client, pullRequest, expectedHead, completion);
+      }
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({

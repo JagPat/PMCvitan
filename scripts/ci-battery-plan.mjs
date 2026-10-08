@@ -10,8 +10,14 @@
 //     finally launch, or the autonomous loop is stuck on that SHA.
 // Any uncertainty (missing payload, unreachable check history) fails toward
 // running the battery — never toward skipping it.
+//
+// Owner decision 2026-10-08 (rule 7): WHICH product jobs run is `affectedProducts` of the PR's changed
+// files (scripts/ci-affected.mjs) — the same set the merge gate requires. A push to main, a manual
+// dispatch, or an unreadable file list runs the full battery, the production-runner proofs included.
 import { readFile, appendFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+
+import { affectedProducts } from './ci-affected.mjs';
 
 import {
   GATE_CHECKS,
@@ -86,7 +92,7 @@ function newestCompleted(checkRuns, name) {
     .sort(newestFirst)[0] ?? null;
 }
 
-export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
+export function assessBatteryPlan({ action, baseChanged, checkRuns, products = PRODUCT_CHECKS }) {
   if (action !== 'edited') {
     return { runProducts: true, reason: `code event (${action ?? 'no pull_request action'})` };
   }
@@ -153,7 +159,7 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   }
 
   const notBefore = gateWatermarks(checkRuns);
-  for (const name of PRODUCT_CHECKS) {
+  for (const name of products) {
     if (!coveredBy(checkRuns, name, notBefore.get(name) ?? '', stamps)) {
       return {
         runProducts: true,
@@ -176,9 +182,18 @@ export async function run({
   fetchImpl = fetch,
 } = {}) {
   let plan;
+  let affected = affectedProducts(null);
   try {
     if (!eventPath) throw new Error('GITHUB_EVENT_PATH is required');
     const event = JSON.parse(await readFile(eventPath, 'utf8'));
+    if (!event.pull_request) {
+      // A push to main or a manual dispatch: the full battery, production-runner proofs included.
+      plan = { runProducts: true, reason: 'no pull request in this event (push to main or dispatch); full battery' };
+    } else {
+      affected = affectedProducts(await pullRequestFiles({
+        fetchImpl, repository, token, number: event.pull_request.number,
+      }));
+    }
     const action = event.action;
     const baseChanged = Boolean(event.changes?.base);
     const headSha = event.pull_request?.head?.sha;
@@ -222,19 +237,56 @@ export async function run({
       // construction and must not be read as another attempt's pending verdict
       if (complete) checkRuns = runs.filter((run) => !belongsToRun(run, ownRunId));
     }
-    plan = assessBatteryPlan({ action, baseChanged, checkRuns });
+    plan ??= assessBatteryPlan({ action, baseChanged, checkRuns, products: affected.products });
   } catch (error) {
+    affected = affectedProducts(null);
     plan = {
       runProducts: true,
       reason: `battery plan errored (${error.message}); failing toward a full run`,
     };
   }
 
+  const products = plan.runProducts ? affected.products : [];
+  const runnerProofs = plan.runProducts && affected.runnerProofs;
   console.log(`battery-plan: run_products=${plan.runProducts}; ${plan.reason}`);
+  console.log(`battery-plan: products=${JSON.stringify(products)}; runner_proofs=${runnerProofs}; ${affected.reason}`);
   if (outputPath) {
-    await appendFile(outputPath, `run_products=${plan.runProducts}\n`);
+    await appendFile(
+      outputPath,
+      `run_products=${plan.runProducts}\nproducts=${JSON.stringify(products)}\nrunner_proofs=${runnerProofs}\n`,
+    );
   }
-  return plan;
+  return { ...plan, products, runnerProofs };
+}
+
+// The PR's changed files, every page. Any failure returns null, which `affectedProducts` reads as
+// "unknown" and answers with the full battery.
+async function pullRequestFiles({ fetchImpl, repository, token, number }) {
+  if (!repository || !token || !Number.isInteger(number)) return null;
+  const files = [];
+  for (let page = 1; page <= 30; page += 1) {
+    let response;
+    try {
+      response = await fetchImpl(
+        `https://api.github.com/repos/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
+        {
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'application/vnd.github+json',
+            'user-agent': 'pmcvitan-ci-battery-plan',
+          },
+        },
+      );
+    } catch {
+      return null;
+    }
+    if (!response.ok) return null;
+    const batch = await response.json();
+    if (!Array.isArray(batch)) return null;
+    files.push(...batch);
+    if (batch.length < 100) return files;
+  }
+  return null;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

@@ -11,6 +11,9 @@ Do not recreate policy lists here or treat historical chronology as a current or
 
 ## Review guidelines
 
+Report findings only on changed lines and their direct callers; whole-file audits only for `justified-large`
+or migration PRs. Badge every finding P0–P3 (docs/POLICY.md, owner decision 2026-10-08).
+
 Do not report findings about a commit's `Correction-Owner` trailer. The controller reads the PR's exact
 head commit itself and holds a head without a valid trailer. A review checkout does not reliably show that
 commit's message: past reviews reported missing trailers on commits outside the PR and on heads whose

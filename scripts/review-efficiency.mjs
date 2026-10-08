@@ -10,6 +10,11 @@ import {
   CODEX_LOGIN,
   isCodexReplyOnlyReview,
   isRetryableReviewFailureDescription,
+  FOCUSED_UNIT_MAX_FILES,
+  FOCUSED_UNIT_MAX_CHANGED_LINES,
+  TRIVIAL_MAX_FILES,
+  TRIVIAL_MAX_CHANGED_LINES,
+  TRIVIAL_PATH,
 } from './review-policy.mjs';
 export {
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
@@ -359,6 +364,32 @@ export function assessReviewScope(
       ? ['an inseparable migration/service unit needs a concrete "Migration/service seam" explanation']
       : []),
   ];
+  // Owner decision 2026-10-08 (rules 3 and 4): the trivial fast lane and the focused-unit size target.
+  const declaredSize = /^<!--\s*review-size:\s*(standard|justified-large|trivial)\s*-->/iu
+    .exec(body.trimStart())?.[1]?.toLowerCase();
+  const trivialClaimed = declaredSize === 'trivial';
+  const trivialStray = trivialClaimed && (
+    !Array.isArray(changedFiles)
+    || paths.length === 0
+    || paths.some((path) => !TRIVIAL_PATH.test(path))
+    || changedFileCount > TRIVIAL_MAX_FILES
+    || changedLines > TRIVIAL_MAX_CHANGED_LINES
+  );
+  const trivialProblem = trivialStray
+    ? `the trivial fast lane admits only web UI, web test and docs changes within ${TRIVIAL_MAX_FILES} files `
+      + `and ${TRIVIAL_MAX_CHANGED_LINES} changed lines (this unit: ${changedFileCount} files, ${changedLines} lines`
+      + `${paths.some((path) => !TRIVIAL_PATH.test(path)) ? `, outside: ${paths.filter((path) => !TRIVIAL_PATH.test(path)).slice(0, 3).join(', ')}` : ''}`
+      + `${Array.isArray(changedFiles) ? '' : ', file list unreadable'}); declare it standard instead`
+    : null;
+  const unitKind = /<!--\s*unit-kind:\s*(live-bug|ux)\s*-->/iu.exec(body)?.[1]?.toLowerCase();
+  const ownerApprovedSize = /^[\t ]*Owner-approved-size:[\t ]*https:\/\/github\.com\/\S+/imu.test(body);
+  const focusedProblem = unitKind
+    && (changedFileCount > FOCUSED_UNIT_MAX_FILES || changedLines > FOCUSED_UNIT_MAX_CHANGED_LINES)
+    && !ownerApprovedSize
+    ? `a ${unitKind} unit targets at most ${FOCUSED_UNIT_MAX_FILES} files and ${FOCUSED_UNIT_MAX_CHANGED_LINES} `
+      + `changed lines (this unit: ${changedFileCount} files, ${changedLines} lines); split it, or add an `
+      + '"Owner-approved-size:" line linking the owner\'s OK'
+    : null;
   const common = {
     changedFiles: changedFileCount,
     changedLines,
@@ -371,7 +402,9 @@ export function assessReviewScope(
   let missingInvariants = [];
   let sizeProblem = null;
 
-  if (large && number <= enforceAfterPr) {
+  if (trivialClaimed && !trivialStray) {
+    state = 'trivial';
+  } else if (large && number <= enforceAfterPr) {
     state = 'grandfathered';
   } else if (large) {
     const sizeDeclaration = /^<!--\s*review-size:\s*(standard|justified-large)\s*-->/iu
@@ -410,6 +443,8 @@ export function assessReviewScope(
   const { problem: ownerProblem, unread: ownerUnread } = assessCorrectionOwner(pullRequest, { headCommitMessage });
   const problems = [
     ...(sizeProblem ? [sizeProblem] : []),
+    ...(trivialProblem ? [trivialProblem] : []),
+    ...(focusedProblem ? [focusedProblem] : []),
     ...(ownerProblem ? [ownerProblem] : []),
     ...preReviewProblems,
   ];

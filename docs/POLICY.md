@@ -54,28 +54,28 @@ Repository maintenance PRs do not replace an unrelated product task's STATUS poi
 
 ## Review continuity and scope
 
-Keep unresolved PRs open and fix forward on the same branch, regardless of how many
-heads have received findings. This user decision of 2026-09-08 supersedes the old
-two-head close-and-replace rule. New PR numbers are not delivery progress; only
-merged changes advance `main`. Historical replacement labels cannot block unrelated
-fresh work. Existing explicit replacement declarations retain provenance validation.
+Owner decision of 2026-10-08 (delivery speed) governs every PR. It partly supersedes the 2026-09-08
+fix-forward rule. A PR gets at most TWO Codex review rounds (a round is a reviewed head with findings).
+From round 3 on, only a P0/P1 on a changed line blocks merge. Every other finding is filed by the controller
+as one `review-follow-up` issue; the PR merges on green CI (review-cap.mjs). Keep unresolved PRs open;
+fix forward on the same branch. A replacement is exceptional: record a concrete benefit, carry open findings, link both;
+the declared correction owner continues fixing the current PR. Review scope: findings, and that owner's audit, cover
+the changed lines and their direct callers; whole-file and family-wide audits (REVIEW_RUBRIC.md) are only for
+justified-large or migration PRs. At the THIRD distinct reviewed head with a P1 in the same file, ordinary patching stops for an additive
+redesign in smaller units. That stop binds the correction owner; the controller counts finding heads as a
+signal and mints no obligation from the count (review-lifecycle.mjs). A disputed finding is argued on its
+thread with a concrete counterexample; no label or gate state reads a dispute, and the finding blocks until
+a new head answers it, the cap defers it, or the repository owner rules. Review machinery changes only in
+a requested maintenance PR.
 
-A replacement is exceptional: record a concrete scope or approach benefit, preserve
-every unresolved finding and reproduce-first proof, and link both PRs.
-The declared correction owner continues fixing the current PR, family-wide
-(REVIEW_RUBRIC.md): every dimension, every writer branch, whole file, before one push. At the THIRD distinct
-reviewed head with a P1 in the same file, ordinary patching stops for an additive
-redesign in smaller units; the findings stay open. This stop binds the correction owner,
-who records it on the PR; the controller counts finding heads as a signal and mints no
-obligation from the count (review-lifecycle.mjs). A disputed finding is argued on its
-thread with a concrete counterexample; no label or gate state reads a dispute, and the
-finding blocks until a new head answers it or the repository owner rules. Review machinery
-is frozen: no new controller, watchdog or lease feature outside a requested maintenance PR.
-
-Keep one concern per PR. A standard review unit is at most 20 files and 1,500 changed
-lines. Larger units need `<!-- review-size: justified-large -->` and all six invariant
-rows with concrete risk and verification evidence. Numeric limits are review aids,
-not proof of quality. Legacy PR-number exemptions remain solely for compatibility.
+Keep one concern per PR, with one GitHub issue per work item; #482 is for owner direction and reports only.
+A live-bug or UX fix (`<!-- unit-kind: live-bug -->` or `ux`) targets at most 8 files and 300 changed lines.
+A larger one needs an `Owner-approved-size:` link to the owner's OK. `<!-- review-size: trivial -->` covers
+copy, labels, contrast and hiding or removing controls within web/docs, 8 files and 100 lines: CI only, no
+Codex round, then auto-merge. Other units stay within 20 files and 1,500 changed lines, or carry
+`<!-- review-size: justified-large -->` and all six invariant rows with concrete risk and evidence. Two units
+may be in flight at once when they touch no common file. Every completion carries a report: hours from open
+to merge, review rounds and changed lines. Legacy PR-number exemptions remain solely for compatibility.
 
 Complete the template's five pre-review checks: concurrency/serialization, previous-
 release compatibility, alternate writers/triggers, authorization/tenancy, and

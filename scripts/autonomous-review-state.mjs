@@ -2,6 +2,7 @@ import { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN, isCodexReplyOnlyReview } from './revi
 export { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN } from './review-policy.mjs';
 
 import { isLineageBase } from './lineage-policy.mjs';
+import { blocksUnderCap } from './review-cap.mjs';
 
 function timestamp(value, field) {
   const parsed = Date.parse(value);
@@ -116,6 +117,9 @@ export function classifyCodexState({
   reviews = [],
   comments = [],
   reactions = [],
+  // Owner decision 2026-10-08: `{ reached, changedLines }` from `reviewCapState`. Past the cap, only a
+  // P0/P1 on a changed line blocks; the rest is returned as `deferred` on a `clear` result.
+  cap = null,
 }) {
   if (typeof expectedHead !== 'string' || expectedHead.length === 0) {
     throw new TypeError('expectedHead is required');
@@ -130,6 +134,31 @@ export function classifyCodexState({
       (comment) => isCodexActor(comment) && postedAgainst(comment) === expectedHead,
     )
     .map((comment) => [findingIdentity(comment), comment]));
+  if (cap?.reached) {
+    const findings = [...currentHeadComments.values()];
+    const blocking = findings.filter((comment) => blocksUnderCap(comment, cap.changedLines));
+    if (blocking.length > 0) {
+      const count = blocking.length;
+      return {
+        state: 'changes_required',
+        findingCount: count,
+        detail: `${count} blocking current-head Codex finding${count === 1 ? '' : 's'} (P1 on a changed line, past the ${'review-round'} cap)`,
+      };
+    }
+    const reviewedHere = reviews.some((review) => isCodexActor(review)
+      && review.commit_id === expectedHead
+      && !isCodexReplyOnlyReview(review, comments));
+    if (findings.length > 0 || reviewedHere) {
+      const count = findings.length;
+      return {
+        state: 'clear',
+        findingCount: 0,
+        deferred: findings,
+        detail: `review-round cap reached: ${count} non-blocking current-head finding${count === 1 ? '' : 's'} deferred to a follow-up issue`,
+      };
+    }
+  }
+
   if (currentHeadComments.size > 0) {
     const count = currentHeadComments.size;
     return {

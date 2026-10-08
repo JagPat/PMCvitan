@@ -1,6 +1,7 @@
 <!-- review-size: standard -->
 <!-- migration-scope: separated -->
 <!-- correction-owner: claude -->
+<!-- unit-kind: (live-bug | ux — delete this line for other units; at most 8 files / 300 lines) -->
 
 <!-- The POLICY.md links below are absolute on purpose. GitHub copies this file into a PR
      DESCRIPTION, where a relative path resolves against /pull/<number> and lands on a
@@ -13,6 +14,7 @@ One user workflow or one architectural concern:
 
 ## Review unit
 
+- Work item issue: #
 - Base SHA:
 - Scope:
 - Changed files / changed lines:

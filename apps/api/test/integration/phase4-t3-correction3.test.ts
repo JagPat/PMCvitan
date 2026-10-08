@@ -482,7 +482,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     // and it runs BEFORE prisma
     expect(migrateSh.indexOf('T3C_PREFLIGHT')).toBeLessThan(migrateSh.indexOf('npx prisma migrate deploy'));
 
-    const runbook = readFileSync(join(repoRoot, 'docs/RUNBOOK.md'), 'utf8');
+    const runbook = readFileSync(join(repoRoot, 'docs/archive/RUNBOOK-2026-10-08.md'), 'utf8');
     const section = runbook.slice(runbook.indexOf('## §P4T3C2'), runbook.indexOf('## §P4T3C3'));
     expect(section.length).toBeGreaterThan(0);
     // RED at f6af800: this section contained `DELETE FROM "LabourAttendance"` under a disabled
