@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: live-bug-1b-2-inspection-routes
-reviewed_merge: cffb251
-open_pr: 730
+work_item: live-bug-1b-3-inspection-notices
+reviewed_merge: 20b5f0f
+open_pr: 736
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-07
+updated: 2026-10-08
 ```
 
-### Now — the owner's live-bug queue, unit 1b-2 (inspection item routes and Back), after 4d-iii R0c (one owner, one PR at a time)
+### Now — the owner's live-bug queue, unit 1b-3 (inspection notices open their inspection), after 4d-iii R0c
 
 #715 (4d-iii R0a-1) trusted-merged at `67644e5`. The 10:53 UTC hold on #482 kept #710–#713 paused until
 #715 completed and a sequential handoff was recorded. The repository owner then directed this sequence,
@@ -84,11 +84,13 @@ redesign in smaller units. So #716 was closed and its work is split into server 
          sequential parts:
          - 1b-1. **#729** — merged at `a08f896`. A committed command's owed reconcile is tracked per
            slice; the shared decision and inspection settled predicates.
-         - 1b-2. **#730** `claude/live-bug-1b-2-inspection-routes` (current work item) — Inspection
-           Review's and the field checklist's item routes, and Back to the parent list from a record
-           link that starts the tab.
-         - 1b-3. Inspection notices name their inspection by the writer's id; notification → record →
-           Back and reload → Back end to end.
+         - 1b-2. **#730** — merged at `20b5f0f`. Inspection Review's and the field checklist's item
+           routes, and Back to the parent list from a record link that starts the tab.
+         - 1b-3 (issue #734, current work item). An inspection notice names its inspection by a column
+           its writer stamps, never by its text. Three parts, merged in this order: 1b-3a **#736**
+           (current PR) adds `Notification.inspectionId` (migration only); 1b-3b has the API writers
+           stamp it and the snapshot serve it; then **#735** has the bell open the stamped inspection,
+           with notification → record → Back and reload → Back end to end.
        - 1c. Drawing notices open the drawing they name.
     Live-bug units 2–6 are folded into the Board's queue below (item 11), each into the item that covers it.
 11. **The Board's UI/UX fix queue** (the Top 10 of the 7 Oct 2026 UI/UX review of pms.vitan.in, every
