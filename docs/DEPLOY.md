@@ -19,6 +19,12 @@ The repo ships a root **`Dockerfile`** (build with pnpm → serve the built SPA 
 
 Every push to the configured branch redeploys (enable auto-deploy in Coolify if you want CD).
 
+**Deploy visibility.** Enable **Include Source Commit in Build** on both Coolify apps (web and API), so
+Coolify passes `SOURCE_COMMIT` as a build argument. The API then reports `commit`, `commitShort` and
+`builtAt` on `/health`. The web app serves the same three fields at `/version.json` and shows `build <sha>`
+in the desktop rail footer. Without that setting the build still succeeds and the commit reads `"unknown"`.
+Only a hex SHA and the build time are ever written; no other environment value reaches either output.
+
 ## Custom domain with HTTPS (e.g. `pms.vitan.in`)
 
 1. **DNS** — at your DNS provider for `vitan.in`, add an **A record**:

@@ -1,4 +1,5 @@
 import { useStore } from '@/store/store';
+import { BUILD_INFO } from '@/lib/buildInfo';
 import { useShallow } from 'zustand/react/shallow';
 import { useNavItems } from './useNavItems';
 import { RolePicker } from './RolePicker';
@@ -96,6 +97,9 @@ export function LeftRail() {
         <div>
           <div className={styles.projName}>{activeName}</div>
           <div className={styles.projMeta}>{projMeta}</div>
+          <div className={styles.projMeta} title={`Built ${BUILD_INFO.builtAt}`} data-testid="build-version">
+            build {BUILD_INFO.commitShort}
+          </div>
         </div>
         <button className={styles.bell} onClick={toggleNotif} aria-label="Notifications">
           <Bell size={16} />
