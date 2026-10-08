@@ -51,6 +51,12 @@ describe('live bug 1b-3a — the inspection stamp is project-bound at insert and
       .rejects.toThrow(/which is not an inspection of project/u);
   });
 
+  it('admits a stamp only on a kindless inspection notice: never beside a decision, a kind or an event (Codex 4216092340)', async () => {
+    const notInspection = /live bug 1b-3a: notice .* names inspection .* but is not an inspection notice/u;
+    await expect(t.prisma.notification.create({ data: { ...notice(f.projectA.id, inspA), decisionId: `dec-${run}` } })).rejects.toThrow(notInspection);
+    await expect(t.prisma.notification.create({ data: { ...notice(f.projectA.id, inspA), kind: 'decision.published' } })).rejects.toThrow(notInspection);
+  });
+
   it('judges the stamp at commit: a notice written before its inspection in one transaction is admitted', async () => {
     const late = `INSP-1b3-late-${run}`;
     await t.prisma.$transaction(async (tx) => {
@@ -69,6 +75,13 @@ describe('live bug 1b-3a — the inspection stamp is project-bound at insert and
     await expect(t.prisma.notification.update({ where: { id: stamped.id }, data: { inspectionId: inspA2 } })).rejects.toThrow(frozen);
     await expect(t.prisma.notification.update({ where: { id: stamped.id }, data: { inspectionId: null } })).rejects.toThrow(frozen);
     await expect(t.prisma.notification.update({ where: { id: bare.id }, data: { inspectionId: inspA } })).rejects.toThrow(frozen);
+    // a stamped notice keeps its project and its class (Codex 4216092325, 4216092340)
+    await expect(t.prisma.notification.update({ where: { id: stamped.id }, data: { projectId: f.projectB.id } }))
+      .rejects.toThrow(/live bug 1b-3a: notice .* announces inspection .* and may not change project/u);
+    await expect(t.prisma.notification.update({ where: { id: stamped.id }, data: { decisionId: `dec-${run}` } }))
+      .rejects.toThrow(/live bug 1b-3a: notice .* announces inspection .* and may not name a decision/u);
+    // an UNSTAMPED kindless notice keeps its delivered editability, project included
+    await t.prisma.notification.update({ where: { id: bare.id }, data: { decisionId: `dec-${run}` } });
     // a kindless notice's other columns stay as editable as before
     await t.prisma.notification.update({ where: { id: stamped.id }, data: { time: '1m ago' } });
   });

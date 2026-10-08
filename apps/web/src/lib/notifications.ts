@@ -1,5 +1,5 @@
 import type { AppNotification, Role, ScreenKey } from '@vitan/shared';
-import { screensFor } from './screens';
+import { ITEM_SCREENS, screensFor } from './screens';
 
 /**
  * The subject a notification is about, inferred from its (templated) text. The backend and the
@@ -161,12 +161,30 @@ function decisionLink(n: AppNotification, role: Role, records: NotificationRecor
   return unresolved({ missing: match.kind === 'none' });
 }
 
+/**
+ * Live bug 1b-3 — the inspection a notice names, ONLY by the `inspectionId` column its writer stamps, never
+ * by its wording (Codex 4214386937, 4215083196): a title or zone is user text, and an unstamped row carries no
+ * provenance that an id in its text came from a writer. Any other notice names no inspection and opens its
+ * screen.
+ */
+export function inspectionIdOf(n: AppNotification): string | null {
+  return n.inspectionId || null;
+}
+
 export function notificationLink(n: AppNotification, role: Role, records: NotificationRecords): NotificationLink | null {
   // structure decides the kind before any wording does: a decision id, or a decision template — a
   // quoted title may itself contain another kind's keyword ("…: Material selection") (Codex 4206188328)
-  const kind = n.decisionId !== undefined || decisionTemplateOf(n.text) ? 'decision' : notificationKind(n.text);
+  // and a stamped inspection is an inspection notice whatever its title says ("Material receiving") —
+  // Codex 4214386914
+  const kind = n.decisionId !== undefined || decisionTemplateOf(n.text)
+    ? 'decision'
+    : inspectionIdOf(n) !== null ? 'inspection' : notificationKind(n.text);
   if (!kind) return null;
   if (kind === 'decision') return decisionLink(n, role, records);
   const screen = screenForKind(kind, role);
-  return screen ? { screen, item: null, missing: false, loading: false } : null;
+  if (!screen) return null;
+  // an inspection notice opens the inspection it names on whichever inspection screen the role holds;
+  // that screen judges the id against its settled slice and says so when the record is not there (1b-2)
+  const item = kind === 'inspection' && ITEM_SCREENS.has(screen) ? inspectionIdOf(n) : null;
+  return { screen, item, missing: false, loading: false };
 }

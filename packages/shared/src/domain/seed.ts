@@ -353,7 +353,7 @@ export const SEED_MATERIALS: Material[] = [
 
 export const SEED_NOTIFICATIONS: AppNotification[] = [
   { text: 'Client approved Master Bath CP Fittings — Kohler', time: '2h ago', color: '#3F7A54' },
-  { text: 'Re-inspection due: Waterproofing, Terrace', time: '1d ago', color: '#B23A34' },
+  { text: 'Re-inspection due: Waterproofing, Terrace', time: '1d ago', color: '#B23A34', inspectionId: 'INSP-21' },
   { text: 'New decision issued for approval: Living Room Flooring', time: '2d ago', color: '#C08A2D' },
 ];
 

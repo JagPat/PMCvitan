@@ -15,7 +15,7 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: live-bug-1b-3-inspection-notices
-reviewed_merge: 20b5f0f
+reviewed_merge: 3559f20
 open_pr: 736
 next_task: phase-6-task-4d-iii
 blocking_directive: none
@@ -87,10 +87,11 @@ redesign in smaller units. So #716 was closed and its work is split into server 
          - 1b-2. **#730** — merged at `20b5f0f`. Inspection Review's and the field checklist's item
            routes, and Back to the parent list from a record link that starts the tab.
          - 1b-3 (issue #734, current work item). An inspection notice names its inspection by a column
-           its writer stamps, never by its text. Three parts, merged in this order: 1b-3a **#736**
-           (current PR) adds `Notification.inspectionId` (migration only); 1b-3b has the API writers
-           stamp it and the snapshot serve it; then **#735** has the bell open the stamped inspection,
-           with notification → record → Back and reload → Back end to end.
+           its writer stamps, never by its text. Three parts: **#735** (the bell opens the stamped
+           inspection; an unstamped notice opens the inspection screen) — merged at `3559f20`; 1b-3a
+           **#736** (current PR) adds `Notification.inspectionId` and its seal (migration only); then 1b-3b
+           has the API writers stamp it and the snapshot serve it, with notification → record → Back and
+           reload → Back end to end over the real stack.
        - 1c. Drawing notices open the drawing they name.
     Live-bug units 2–6 are folded into the Board's queue below (item 11), each into the item that covers it.
 11. **The Board's UI/UX fix queue** (the Top 10 of the 7 Oct 2026 UI/UX review of pms.vitan.in, every
