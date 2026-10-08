@@ -1,7 +1,9 @@
 // Owner decision 2026-10-08 (rule 7): affected-package CI on PRs, the full battery on main.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { affectedProducts } from './ci-affected.mjs';
 import { PRODUCT_CHECKS, REQUIRED_CHECKS, requiredChecksForPullRequest } from './review-policy.mjs';
@@ -23,6 +25,41 @@ test('Codex 4213960372 — a rename runs the jobs of BOTH the package it leaves 
 test('Codex 4214270280 — the build-info helper the web and API builds consume runs their jobs', () => {
   assert.deepEqual(affectedProducts(['scripts/build-info.mjs']).products, ['web', 'api', 'e2e', 'api-e2e']);
   assert.deepEqual(affectedProducts(['scripts/build-info.test.mjs']).products, []);
+});
+
+test('every root script a product imports (directly or transitively) runs a product job', async () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const sources = [];
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (/\.(?:[cm]?[jt]sx?)$/u.test(entry.name)) sources.push(path);
+    }
+  };
+  await walk(join(root, 'apps'));
+  await walk(join(root, 'packages'));
+  const rootScripts = join(root, 'scripts');
+  const consumed = new Set();
+  const visit = async (file) => {
+    if (consumed.has(file)) return;
+    consumed.add(file);
+    const text = await readFile(file, 'utf8');
+    for (const match of text.matchAll(/(?:from\s+|import\()['"](\.\/[^'"]+)['"]/gu)) await visit(resolve(dirname(file), match[1]));
+  };
+  for (const source of sources) {
+    const text = await readFile(source, 'utf8');
+    for (const match of text.matchAll(/['"]((?:\.\.\/)+scripts\/[^'"]+\.mjs)['"]/gu)) {
+      const target = resolve(dirname(source), match[1]);
+      if (dirname(target) === rootScripts) await visit(target);
+    }
+  }
+  assert.ok(consumed.size >= 2, 'the probe finds the known consumers');
+  for (const file of consumed) {
+    const path = relative(root, file);
+    assert.ok(affectedProducts([path]).products.length > 0, `${path} is consumed by a product but runs no product job`);
+  }
 });
 
 test('a web change runs web, e2e and api-e2e only', () => {
