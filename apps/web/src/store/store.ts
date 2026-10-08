@@ -2528,6 +2528,21 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
+        // Codex 4219959023 — against the API, a persona switch is a NEW identity exactly like a
+        // re-authentication: the previous persona's records (an engineer sees only the checklists
+        // assigned to them) are not this persona's truth, and a reply issued for the old persona must
+        // not satisfy the new scope. Clear them and show loading until the new persona's snapshot
+        // lands, so no screen — nor the bell's read-time check — judges against the old slices. The
+        // local demo (no gateway) keeps its seeded store.
+        if (gateway) {
+          s.projectScopeGeneration += 1;
+          s.commandReconcilePending = false;
+          s.commandReconcileOwed = noReconcileOwed();
+          Object.assign(s, emptyProjectData());
+          Object.assign(s, emptyModuleReadState());
+          s.projectLoadState = 'loading';
+          s.projectLoadError = null;
+        }
       }); get().syncProjectCreateHold(); };
       // round-11 Codex F3 — on a push-capable browser a persona switch is a DEPARTURE exactly
       // like sign-out: the departing identity's subscription link is severed BEFORE the switch
