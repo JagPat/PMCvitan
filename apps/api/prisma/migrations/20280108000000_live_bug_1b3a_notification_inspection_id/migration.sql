@@ -1,0 +1,16 @@
+-- Live bug 1b-3a — the inspection an inspection notice announces.
+--
+-- A notice is a derived communication artifact, so which inspection it is about must not be read back out
+-- of its display text: a title or zone is user text and can carry anything (Codex 4214386937 on #735). The
+-- writers stamp this column, exactly as "decisionId" is stamped for decision notices
+-- (20270810000000_phase6_t4a_withdraw). Nullable: non-inspection notices and every legacy row carry none,
+-- and a legacy row names no inspection. NOT a relation: a notice may outlive its inspection, and a deleted
+-- project cascades via "projectId".
+--
+-- A PLAIN stamp, with exactly the standing `decisionId` has on a kindless notice (owner decision 2026-10-08,
+-- #482): it is validated where it is READ. The bell opens a stamped inspection only when the viewer's own
+-- settled inspection slice holds it (#738), so a wrong or foreign stamp never opens another record; no
+-- database seal reaches across into the inspections module for it.
+--
+-- Additive and previous-release safe: an old release neither reads nor writes the column.
+ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS "inspectionId" TEXT;
