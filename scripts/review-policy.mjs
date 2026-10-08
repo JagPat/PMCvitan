@@ -41,7 +41,12 @@ export const FOCUSED_UNIT_MAX_CHANGED_LINES = 300;
 // hiding/removing controls. Only web UI source, web tests and docs, within these bounds.
 export const TRIVIAL_MAX_FILES = 8;
 export const TRIVIAL_MAX_CHANGED_LINES = 100;
-export const TRIVIAL_PATH = /^(?:apps\/web\/src\/|apps\/web\/tests\/|docs\/)/u;
+// Codex 4213960368 — presentation files only: screens, components, layout, copy (i18n), styles and assets,
+// their tests, and docs other than the machine-read contract and state files. Never the store, data
+// gateway or lib (state, routing, auth), and never POLICY/STATUS/the rubric/the loop runbook.
+export const TRIVIAL_PATH = /^(?:apps\/web\/src\/(?:screens|components|layout|i18n|styles|assets)\/|apps\/web\/tests\/|docs\/(?!(?:POLICY|STATUS|REVIEW_RUBRIC|AUTONOMOUS_LOOP)\.md$))/u;
+// …and the declared kind of change, one of the owner's four: copy, labels, contrast, hiding/removing controls
+export const TRIVIAL_KIND = /^[\t ]*<!--\s*trivial-kind:\s*(?:copy|labels?|contrast|hide-controls?|remove-controls?)\s*-->/imu;
 // 40 minutes covers measured ~29-minute API jobs; 25 minutes covers measured
 // 13-23-minute Codex latency. Keep the workflow budget above both review attempts
 // plus CI settlement and overhead (validated by workflow tests).

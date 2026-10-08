@@ -19,8 +19,10 @@ export function findingPriority(body) {
 }
 
 /**
- * The new-side lines each file of the PR adds or modifies, from the pull-request files API. A file whose
- * patch GitHub omits (binary, or too large) counts as changed throughout ('*').
+ * The lines each file of the PR changes, per side, from the pull-request files API: `right` holds the
+ * new-side lines it adds or modifies, `left` the old-side lines it deletes (Codex 4213960366 — a finding
+ * GitHub anchors on the LEFT side of a deletion names an old-file line). A file whose patch GitHub omits
+ * (binary, or too large) counts as changed throughout ('*') on both sides.
  */
 export function changedLinesFromFiles(files = []) {
   const changed = new Map();
@@ -28,41 +30,51 @@ export function changedLinesFromFiles(files = []) {
     const path = file?.filename;
     if (typeof path !== 'string') continue;
     if (typeof file.patch !== 'string') {
-      changed.set(path, '*');
+      changed.set(path, { right: '*', left: '*' });
       continue;
     }
-    const lines = new Set();
-    let next = 0;
+    const right = new Set();
+    const left = new Set();
+    let nextNew = 0;
+    let nextOld = 0;
     for (const row of file.patch.split('\n')) {
-      const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(row);
+      const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(row);
       if (hunk) {
-        next = Number(hunk[1]);
+        nextOld = Number(hunk[1]);
+        nextNew = Number(hunk[2]);
         continue;
       }
       if (row.startsWith('+')) {
-        lines.add(next);
-        next += 1;
-      } else if (row.startsWith('-') || row.startsWith('\\')) {
-        // a removed line, or "\ No newline at end of file": no new-side line
+        right.add(nextNew);
+        nextNew += 1;
+      } else if (row.startsWith('-')) {
+        left.add(nextOld);
+        nextOld += 1;
+      } else if (row.startsWith('\\')) {
+        // "\ No newline at end of file": no line on either side
       } else {
-        next += 1;
+        nextNew += 1;
+        nextOld += 1;
       }
     }
-    changed.set(path, lines);
+    changed.set(path, { right, left });
   }
   return changed;
 }
 
-/** Is this finding anchored on a line the PR changed (any line of a multi-line anchor counts)? */
+/** Is this finding anchored on a line the PR changed (any line of a multi-line anchor counts, on its side)? */
 export function onChangedLine(comment, changedLines) {
-  const lines = changedLines?.get(comment?.path);
-  if (lines === undefined) return false;
-  if (lines === '*') return true;
+  const sides = changedLines?.get(comment?.path);
+  if (sides === undefined) return false;
   const end = comment?.line ?? comment?.original_line;
   if (!Number.isInteger(end)) return false;
   const start = comment?.start_line ?? comment?.original_start_line ?? end;
+  const endSide = comment?.side === 'LEFT' ? 'left' : 'right';
+  const startSide = comment?.start_side ? (comment.start_side === 'LEFT' ? 'left' : 'right') : endSide;
+  const hit = (side, line) => sides[side] === '*' || sides[side].has(line);
+  if (startSide !== endSide) return hit(startSide, start) || hit(endSide, end);
   for (let line = Math.min(start, end); line <= Math.max(start, end); line += 1) {
-    if (lines.has(line)) return true;
+    if (hit(endSide, line)) return true;
   }
   return false;
 }

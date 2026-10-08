@@ -1926,7 +1926,7 @@ export async function revalidateFinalReviewPolicy(
     return { state: 'ownership_withheld', allowed: false, ownershipReason: OWNERSHIP_CANDIDATE_HELD, verdict: bodyHold, pullRequest };
   }
 
-  return { state: 'allowed', allowed: true, pullRequest, verdict };
+  return { state: 'allowed', allowed: true, pullRequest, verdict, scopeState: scope.state };
 }
 
 /**
@@ -1943,7 +1943,7 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
     const priority = findingPriority(comment?.body);
     const title = String(comment?.body ?? '').split('\n').map((line) => line.replace(/\*\*|<[^>]+>|!\[[^\]]*\]\([^)]*\)/gu, '').trim())
       .find((line) => line.length > 0) ?? 'Codex finding';
-    const where = `${comment?.path ?? '?'}:${comment?.line ?? comment?.original_line ?? '?'}`;
+    const where = comment?.path ? `${comment.path}:${comment?.line ?? comment?.original_line ?? '?'}` : 'review-level';
     return `- [ ] ${priority === null ? 'P?' : `P${priority}`} \`${where}\` — ${title} (${comment?.html_url ?? 'no link'})`;
   });
   const issue = await client.createIssue({
@@ -1961,23 +1961,6 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
   return issue.number;
 }
 
-/**
- * Owner decision 2026-10-08 (rule 10) — the completion report posted on a completed PR: hours from open to
- * completion, Codex review rounds, and changed lines.
- */
-export function completionReport(pullRequest, { rounds, completion, now = new Date() }) {
-  const opened = Date.parse(pullRequest?.created_at);
-  const hours = Number.isFinite(opened) ? ((now.getTime() - opened) / 3_600_000).toFixed(1) : '?';
-  const changed = Number(pullRequest?.additions ?? 0) + Number(pullRequest?.deletions ?? 0);
-  return [
-    '<!-- completion-report -->',
-    `**Completion report** — ${completion === 'merged' ? 'merged' : 'auto-merge queued'}`,
-    `- Hours from open to ${completion === 'merged' ? 'merge' : 'queue'}: ${hours}`,
-    `- Codex review rounds: ${rounds}`,
-    `- Changed lines: ${changed} (+${Number(pullRequest?.additions ?? 0)} / −${Number(pullRequest?.deletions ?? 0)}) across ${Number(pullRequest?.changed_files ?? 0)} files`,
-  ].join('\n');
-}
-
 /** The trivial fast lane's completion: final admission, success, exact-SHA merge, report, sticky. */
 export async function completeTrivialPullRequest(client, pullRequest, expectedHead, recoveryRequest) {
   const finalPolicy = await revalidateFinalReviewPolicy(client, pullRequest.number, expectedHead);
@@ -1990,7 +1973,14 @@ export async function completeTrivialPullRequest(client, pullRequest, expectedHe
     }
     throw new Error(`Final review policy changed: ${finalPolicy.state}`);
   }
-  pullRequest = finalPolicy.pullRequest;
+  // Codex 4213960394 — the body is re-read at final admission: a PR no longer declared (or admitted as)
+  // trivial leaves the fast lane for the ordinary Codex review path
+  if (finalPolicy.scopeState !== 'trivial') return 'not_trivial';
+  // Codex 4213960382 — a PR starts draft and only a ready one can merge or queue auto-merge: promote the
+  // exact current head first, with the same post-mutation head/base validation the reviewed path uses
+  const ready = await setDraftForCurrentHead(client, pullRequest.number, expectedHead, false);
+  if (!ready) return 'superseded';
+  pullRequest = ready;
   await client.setStatus(
     expectedHead,
     'success',
@@ -2001,9 +1991,6 @@ export async function completeTrivialPullRequest(client, pullRequest, expectedHe
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!live) return 'superseded';
   const completion = await completeReviewedPullRequest(client, live, expectedHead, finalPolicy.verdict);
-  if (completion === 'merged' || completion === 'queued') {
-    await postCompletionReport(client, live, expectedHead, completion, { rounds: 0 });
-  }
   await client.updateStickyComment(
     live.number,
     statusBody({
@@ -2019,19 +2006,6 @@ export async function completeTrivialPullRequest(client, pullRequest, expectedHe
     }),
   );
   return completion;
-}
-
-/** Post the completion report once a PR is merged or queued (best effort: a report never blocks a merge). */
-async function postCompletionReport(client, pullRequest, expectedHead, completion, { rounds } = {}) {
-  try {
-    const counted = rounds ?? new Set([
-      ...codexFindingHeads(await client.reviewComments(pullRequest.number), await client.reviews(pullRequest.number)),
-      expectedHead,
-    ]).size;
-    await client.postComment(pullRequest.number, completionReport(pullRequest, { rounds: counted, completion }));
-  } catch (error) {
-    console.log(`Completion report not posted: ${error?.message ?? error}`);
-  }
 }
 
 /**
@@ -2511,8 +2485,8 @@ export async function run() {
   // `assessReviewScope`) merge on green CI with no Codex round. The final admission, ownership verdict and
   // exact-SHA merge below are the same ones a reviewed head goes through.
   if (scope.state === 'trivial') {
-    await completeTrivialPullRequest(client, pullRequest, expectedHead, recoveryRequest);
-    return;
+    const trivial = await completeTrivialPullRequest(client, pullRequest, expectedHead, recoveryRequest);
+    if (trivial !== 'not_trivial') return;
   }
 
   // Observe the lifecycle BEFORE promoting for another review — this is the
@@ -2772,9 +2746,6 @@ export async function run() {
         expectedHead,
         finalPolicy.verdict,
       );
-      if (completion === 'merged' || completion === 'queued') {
-        await postCompletionReport(client, pullRequest, expectedHead, completion);
-      }
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({

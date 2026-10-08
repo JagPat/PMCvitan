@@ -70,9 +70,9 @@ a requested maintenance PR.
 
 Keep one concern per PR, with one GitHub issue per work item; #482 is for owner direction and reports only.
 A live-bug or UX fix (`<!-- unit-kind: live-bug -->` or `ux`) targets at most 8 files and 300 changed lines.
-A larger one needs an `Owner-approved-size:` link to the owner's OK. `<!-- review-size: trivial -->` covers
-copy, labels, contrast and hiding or removing controls within web/docs, 8 files and 100 lines: CI only, no
-Codex round, then auto-merge. Other units stay within 20 files and 1,500 changed lines, or carry
+A larger one needs an `Owner-approved-size:` link to the owner's OK (an issue comment here). `review-size: trivial`
+with a `trivial-kind:` of copy, labels, contrast or hide/remove-controls, on web screens/components/styles or
+docs, within 8 files and 100 lines: CI only, no Codex round, then auto-merge. Other units stay within 20 files and 1,500 changed lines, or carry
 `<!-- review-size: justified-large -->` and all six invariant rows with concrete risk and evidence. Two units
 may be in flight at once when they touch no common file. Every completion carries a report: hours from open
 to merge, review rounds and changed lines. Legacy PR-number exemptions remain solely for compatibility.

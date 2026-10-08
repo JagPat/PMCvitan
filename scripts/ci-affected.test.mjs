@@ -12,6 +12,14 @@ test('docs and automation scripts run no product job', () => {
   assert.equal(result.runnerProofs, false);
 });
 
+test('Codex 4213960372 — a rename runs the jobs of BOTH the package it leaves and the one it enters', () => {
+  const moved = affectedProducts([{ filename: 'docs/old-service.md', previous_filename: 'apps/api/src/x.service.ts' }]);
+  assert.deepEqual(moved.products, ['api', 'api-e2e']);
+  const migration = affectedProducts([{ filename: 'docs/m.sql', previous_filename: 'apps/api/prisma/migrations/1/migration.sql' }]);
+  assert.equal(migration.runnerProofs, true);
+  assert.equal(affectedProducts([{ filename: 'docs/x.md', previous_filename: 'packages/shared/src/x.ts' }]).full, true);
+});
+
 test('a web change runs web, e2e and api-e2e only', () => {
   assert.deepEqual(affectedProducts(['apps/web/src/App.tsx']).products, ['web', 'e2e', 'api-e2e']);
 });

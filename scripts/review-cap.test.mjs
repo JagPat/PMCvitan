@@ -12,7 +12,8 @@ import {
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
 import { assessReviewScope } from './review-efficiency.mjs';
-import { completionReport, fileDeferredFindings } from './autonomous-review-gate.mjs';
+import { completeTrivialPullRequest, fileDeferredFindings } from './autonomous-review-gate.mjs';
+import { completionReport, reviewRounds } from './completion-report.mjs';
 import { REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -43,8 +44,9 @@ test('findingPriority reads both badge forms and returns null without one', () =
 
 test('changedLinesFromFiles maps new-side added lines per hunk; a patchless file is wholly changed', () => {
   const lines = changedLinesFromFiles(FILES);
-  assert.deepEqual([...lines.get('apps/web/src/a.ts')], [2, 12]);
-  assert.equal(lines.get('image.png'), '*');
+  assert.deepEqual([...lines.get('apps/web/src/a.ts').right], [2, 12]);
+  assert.deepEqual([...lines.get('apps/web/src/a.ts').left], [2]);
+  assert.deepEqual(lines.get('image.png'), { right: '*', left: '*' });
 });
 
 test('onChangedLine honours multi-line anchors and unknown files', () => {
@@ -53,6 +55,14 @@ test('onChangedLine honours multi-line anchors and unknown files', () => {
   assert.equal(onChangedLine({ path: 'apps/web/src/a.ts', start_line: 1, line: 3 }, lines), true);
   assert.equal(onChangedLine({ path: 'other.ts', line: 2 }, lines), false);
   assert.equal(onChangedLine({ path: 'image.png', line: 99 }, lines), true);
+});
+
+test('Codex 4213960366 — a finding on the LEFT side of a deletion is judged against the deleted lines', () => {
+  const lines = changedLinesFromFiles(FILES);
+  // old line 2 (`x`) was deleted; new line 2 is the added `b`, new line 3 is unchanged `c`
+  assert.equal(onChangedLine({ path: 'apps/web/src/a.ts', line: 2, side: 'LEFT' }, lines), true);
+  assert.equal(onChangedLine({ path: 'apps/web/src/a.ts', line: 3, side: 'LEFT' }, lines), false);
+  assert.equal(blocksUnderCap({ ...finding({ p: 1 }), line: 2, side: 'LEFT' }, lines), true);
 });
 
 test('blocksUnderCap: only P0/P1 (or unbadged) on a changed line', () => {
@@ -126,15 +136,38 @@ test('deferred findings are filed once per head, idempotently', async () => {
   assert.deepEqual(created[0].labels, [REVIEW_FOLLOW_UP_LABEL]);
 });
 
-test('the completion report carries hours, rounds and changed lines', () => {
+test('the completion report carries hours to the real merge, rounds and changed lines', () => {
   const report = completionReport(
-    { created_at: '2026-10-08T00:00:00Z', additions: 120, deletions: 30, changed_files: 4 },
-    { rounds: 2, completion: 'merged', now: new Date('2026-10-08T03:30:00Z') },
+    { created_at: '2026-10-08T00:00:00Z', merged_at: '2026-10-08T03:30:00Z', additions: 120, deletions: 30, changed_files: 4 },
+    { rounds: 2 },
   );
   assert.match(report, /^<!-- completion-report -->/u);
   assert.match(report, /open to merge: 3\.5/u);
   assert.match(report, /review rounds: 2/u);
   assert.match(report, /Changed lines: 150 \(\+120 \/ −30\) across 4 files/u);
+});
+
+test('review rounds: every finding head plus the clean merged head; a trivial PR had none', () => {
+  const comments = [finding({ head: 'a'.repeat(40) }), finding({ head: 'b'.repeat(40) })];
+  assert.equal(reviewRounds({ body: '', head: { sha: HEAD } }, { comments }), 3);
+  assert.equal(reviewRounds({ body: '', head: { sha: 'b'.repeat(40) } }, { comments }), 2);
+  assert.equal(reviewRounds({ body: '<!-- review-size: trivial -->', head: { sha: HEAD } }, {}), 0);
+});
+
+test('Codex 4213960388 — a review-level finding past the cap is deferred, not dropped', () => {
+  const readyAt = '2026-10-08T00:00:00Z';
+  const result = classifyCodexState({
+    expectedHead: HEAD,
+    readyAt,
+    deadline: '2026-10-08T01:00:00Z',
+    now: '2026-10-08T00:01:00Z',
+    comments: [],
+    reviews: [{ id: 77, user: { login: CODEX }, commit_id: HEAD, state: 'COMMENTED', body: '![P2 Badge](x) Consider the retry path', submitted_at: '2026-10-08T00:00:30Z' }],
+    cap: { reached: true, changedLines: changedLinesFromFiles(FILES) },
+  });
+  assert.equal(result.state, 'clear');
+  assert.equal(result.deferred.length, 1);
+  assert.equal(result.deferred[0].id, 77);
 });
 
 const OWNER = '<!-- correction-owner: claude -->';
@@ -147,17 +180,24 @@ function scope(body, files, extra = {}) {
 }
 
 test('a trivial web/docs change takes the fast lane', () => {
-  const result = scope(`<!-- review-size: trivial -->\n${OWNER}`, ['apps/web/src/Button.tsx', 'docs/x.md']);
+  const result = scope(`<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}`, ['apps/web/src/components/Button.tsx', 'docs/x.md']);
   assert.equal(result.state, 'trivial');
   assert.equal(result.allowed, true);
 });
 
 test('a trivial claim outside web/docs or over 100 lines is refused', () => {
-  const api = scope(`<!-- review-size: trivial -->\n${OWNER}`, ['apps/api/src/x.ts']);
+  const trivial = `<!-- review-size: trivial -->\n<!-- trivial-kind: labels -->\n${OWNER}`;
+  const api = scope(trivial, ['apps/api/src/x.ts']);
   assert.equal(api.allowed, false);
   assert.match(api.detail, /trivial fast lane/u);
-  const big = scope(`<!-- review-size: trivial -->\n${OWNER}`, ['apps/web/src/x.ts'], { additions: 101, deletions: 0 });
+  const big = scope(trivial, ['apps/web/src/screens/x.tsx'], { additions: 101, deletions: 0 });
   assert.equal(big.allowed, false);
+  // Codex 4213960368 — state, routing and auth code, and the contract files, are never trivial
+  for (const path of ['apps/web/src/store/store.ts', 'apps/web/src/lib/screens.ts', 'apps/web/src/data/apiGateway.ts', 'docs/POLICY.md', 'docs/STATUS.md']) {
+    assert.equal(scope(trivial, [path]).allowed, false, path);
+  }
+  // …and the kind of change must be declared
+  assert.equal(scope(`<!-- review-size: trivial -->\n${OWNER}`, ['apps/web/src/screens/x.tsx']).allowed, false);
 });
 
 test('a live-bug unit over 8 files or 300 lines needs an owner-approved size', () => {
@@ -166,8 +206,68 @@ test('a live-bug unit over 8 files or 300 lines needs an owner-approved size', (
   const over = scope(body, files);
   assert.equal(over.allowed, false);
   assert.match(over.detail, /live-bug unit targets at most 8 files and 300/u);
-  const approved = scope(`${body}\nOwner-approved-size: https://github.com/o/r/issues/482#issuecomment-1`, files);
+  const approved = scope(`${body}\nOwner-approved-size: https://github.com/JagPat/PMCvitan/issues/482#issuecomment-1`, files);
   assert.equal(approved.allowed, true);
+  // Codex 4213960401 — only an issue comment in this repository counts as the owner's OK
+  for (const link of ['https://github.com/JagPat/PMCvitan/pull/730', 'https://github.com/JagPat/PMCvitan/issues/482', 'https://github.com/o/r/issues/1#issuecomment-1']) {
+    assert.equal(scope(`${body}\nOwner-approved-size: ${link}`, files).allowed, false, link);
+  }
   const small = scope(body, files.slice(0, 3), { additions: 250, deletions: 50 });
   assert.equal(small.allowed, true);
+});
+
+function trivialClient(body, calls) {
+  const head = 'd'.repeat(40);
+  const pr = () => ({
+    number: 9_999,
+    additions: 4,
+    deletions: 1,
+    changed_files: 1,
+    body,
+    state: 'open',
+    draft: true,
+    node_id: 'PR_1',
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/9999',
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'e'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  return {
+    head,
+    pr: pr(),
+    client: {
+      async pullRequest() { return pr(); },
+      async pullRequestFiles() { return [{ filename: 'apps/web/src/components/Label.tsx', patch: '@@ -1 +1 @@\n-a\n+b' }]; },
+      async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+      async reviewComments() { return []; },
+      async reviews() { return []; },
+      async markReplacementRequired() {},
+      async commit() { return { commit: { message: 'copy\n\nCorrection-Owner: claude\n' }, files: [] }; },
+      async setDraft(live, draft) { calls.push(['draft', draft]); return { ...live, draft }; },
+      async setStatus(_head, state) { calls.push(['status', state]); },
+      async updateStickyComment() {},
+    },
+  };
+}
+
+const PRE_REVIEW = ['concurrency-serialization', 'old-release-migration-compatibility', 'trigger-alternate-writers', 'authorization-tenancy', 'ci-reproduce-first']
+  .map((key) => `- [x] \`${key}\` — n/a`).join('\n');
+
+test('Codex 4213960382 — the trivial lane promotes the draft to ready before publishing success', async () => {
+  const calls = [];
+  const body = `<!-- review-size: trivial -->\n<!-- trivial-kind: copy -->\n${OWNER}\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
+  const { client, pr, head } = trivialClient(body, calls);
+  // the merge itself is outside this probe: the fake client has no merge methods
+  await completeTrivialPullRequest(client, pr, head, null).catch(() => {});
+  const ready = calls.findIndex(([kind, value]) => kind === 'draft' && value === false);
+  const success = calls.findIndex(([kind, value]) => kind === 'status' && value === 'success');
+  assert.ok(ready >= 0, JSON.stringify(calls));
+  assert.ok(success > ready, JSON.stringify(calls));
+});
+
+test('Codex 4213960394 — a body no longer trivial at final admission leaves the fast lane', async () => {
+  const calls = [];
+  const body = `<!-- review-size: standard -->\n${OWNER}\nReplaces: none\n\n## Pre-review checklist\n${PRE_REVIEW}`;
+  const { client, pr, head } = trivialClient(body, calls);
+  assert.equal(await completeTrivialPullRequest(client, pr, head, null), 'not_trivial');
+  assert.equal(calls.some(([kind, value]) => kind === 'status' && value === 'success'), false);
 });

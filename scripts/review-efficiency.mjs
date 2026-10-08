@@ -15,6 +15,7 @@ import {
   TRIVIAL_MAX_FILES,
   TRIVIAL_MAX_CHANGED_LINES,
   TRIVIAL_PATH,
+  TRIVIAL_KIND,
 } from './review-policy.mjs';
 export {
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
@@ -369,20 +370,25 @@ export function assessReviewScope(
     .exec(body.trimStart())?.[1]?.toLowerCase();
   const trivialClaimed = declaredSize === 'trivial';
   const trivialStray = trivialClaimed && (
-    !Array.isArray(changedFiles)
+    !TRIVIAL_KIND.test(body)
+    || !Array.isArray(changedFiles)
     || paths.length === 0
     || paths.some((path) => !TRIVIAL_PATH.test(path))
     || changedFileCount > TRIVIAL_MAX_FILES
     || changedLines > TRIVIAL_MAX_CHANGED_LINES
   );
   const trivialProblem = trivialStray
-    ? `the trivial fast lane admits only web UI, web test and docs changes within ${TRIVIAL_MAX_FILES} files `
+    ? 'the trivial fast lane admits only a declared `<!-- trivial-kind: copy|labels|contrast|hide-controls|remove-controls -->` '
+      + `change to web screens/components/layout/i18n/styles, web tests or docs within ${TRIVIAL_MAX_FILES} files `
       + `and ${TRIVIAL_MAX_CHANGED_LINES} changed lines (this unit: ${changedFileCount} files, ${changedLines} lines`
       + `${paths.some((path) => !TRIVIAL_PATH.test(path)) ? `, outside: ${paths.filter((path) => !TRIVIAL_PATH.test(path)).slice(0, 3).join(', ')}` : ''}`
       + `${Array.isArray(changedFiles) ? '' : ', file list unreadable'}); declare it standard instead`
     : null;
   const unitKind = /<!--\s*unit-kind:\s*(live-bug|ux)\s*-->/iu.exec(body)?.[1]?.toLowerCase();
-  const ownerApprovedSize = /^[\t ]*Owner-approved-size:[\t ]*https:\/\/github\.com\/\S+/imu.test(body);
+  // Codex 4213960401 — the exception must cite an issue COMMENT in this repository (the owner's OK on the
+  // work item or #482), never a PR, a bare issue or another repository. Authorship cannot be checked
+  // mechanically here: the owner and this repository's agent post under the same account.
+  const ownerApprovedSize = /^[\t ]*Owner-approved-size:[\t ]*https:\/\/github\.com\/JagPat\/PMCvitan\/issues\/\d+#issuecomment-\d+[\t ]*$/imu.test(body);
   const focusedProblem = unitKind
     && (changedFileCount > FOCUSED_UNIT_MAX_FILES || changedLines > FOCUSED_UNIT_MAX_CHANGED_LINES)
     && !ownerApprovedSize

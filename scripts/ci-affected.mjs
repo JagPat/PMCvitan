@@ -39,11 +39,16 @@ export function affectedProducts(files) {
   const products = new Set();
   let runnerProofs = false;
   for (const file of files) {
-    const path = typeof file === 'string' ? file : file?.filename;
-    const rule = typeof path === 'string' ? RULES.find(({ pattern }) => pattern.test(path)) : undefined;
-    if (!rule) return { ...all, reason: `${path ?? 'an unnamed file'} is outside the per-package rules; full battery` };
-    for (const product of rule.products) products.add(product);
-    runnerProofs ||= rule.proofs;
+    // Codex 4213960372 — a rename affects BOTH packages: the one it leaves and the one it enters
+    const paths = typeof file === 'string'
+      ? [file]
+      : [file?.filename, ...(file?.previous_filename ? [file.previous_filename] : [])];
+    for (const path of paths) {
+      const rule = typeof path === 'string' ? RULES.find(({ pattern }) => pattern.test(path)) : undefined;
+      if (!rule) return { ...all, reason: `${path ?? 'an unnamed file'} is outside the per-package rules; full battery` };
+      for (const product of rule.products) products.add(product);
+      runnerProofs ||= rule.proofs;
+    }
   }
   const ordered = PRODUCT_CHECKS.filter((name) => products.has(name));
   return {
