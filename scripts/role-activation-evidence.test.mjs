@@ -102,7 +102,7 @@ test('the reader normalizes a full correction cycle with identity and server tim
     assert.ok(freshness.observedAtMs < readAt);
   }
   // Read-only: GETs only (the fake refuses writes), and only the documented read endpoints.
-  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619$|issues\/619\/(events|comments)\?|pulls\/619\/(comments|reviews)\?|activity\?|compare\/|commits\/[0-9a-f]{40}$)/u.test(path)));
+  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619$|issues\/619\/(events|comments)\?|pulls\/619\/(comments|reviews|files)\?|activity\?|compare\/|commits\/[0-9a-f]{40}$)/u.test(path)));
   // The reviewed head commit is read once (immutable) and its owner reported as the controller reads it.
   assert.equal(calls.filter((path) => path === `/repos/${REPO}/commits/${ORIGINAL}`).length, 1);
   assert.deepEqual(evidence.records.originalHead, { sha: ORIGINAL, correctionOwner: HELD_CODEX });

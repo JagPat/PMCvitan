@@ -1422,7 +1422,7 @@ test('the trusted owner observes review history after CI without requiring repla
   assert.match(gate, /reviewComments\(number\)[\s\S]*?this\.paginated/u);
   assert.equal(
     [...gate.matchAll(/await publishCurrentHeadFinding\(/gu)].length,
-    3,
+    4, // + the final evidence re-read before success (Codex 4214321785)
     'every finding-result path must re-evaluate the reset before directing another push',
   );
 });

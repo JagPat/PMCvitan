@@ -2218,8 +2218,12 @@ export async function guardAgainstCurrentHeadFinding(
   return result.detail;
 }
 
-/** The current head's capped, non-blocking findings as the evidence stands now (empty unless capped). */
-export async function currentDeferredFindings(client, pullRequest, expectedHead) {
+/**
+ * The current head's Codex classification as the evidence stands NOW: `{ state, detail, deferred }`. The
+ * success path reads it last, so a finding that lands after final revalidation either blocks (Codex
+ * 4214321785) or, past the cap, is deferred with the rest (Codex 4214270293).
+ */
+export async function finalCodexEvidence(client, pullRequest, expectedHead) {
   const [reviews, comments] = await Promise.all([
     client.reviews(pullRequest.number),
     client.reviewComments(pullRequest.number),
@@ -2235,7 +2239,11 @@ export async function currentDeferredFindings(client, pullRequest, expectedHead)
     reactions: [],
     cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments),
   });
-  return result.state === 'clear' ? result.deferred ?? [] : [];
+  return {
+    state: result.state,
+    detail: result.detail,
+    deferred: result.state === 'clear' ? result.deferred ?? [] : [],
+  };
 }
 
 /** Deferred findings from two reads, each once (by its GitHub id). */
@@ -2745,10 +2753,15 @@ export async function run() {
       // a follow-up issue BEFORE the success that lets the PR merge, so none is lost.
       // Codex 4214270293 — the final revalidation re-reads the evidence: a capped finding that arrived
       // after the poll's verification is deferred too, never dropped
-      const deferred = unionDeferred(
-        verifiedResult.deferred ?? [],
-        await currentDeferredFindings(client, pullRequest, expectedHead),
-      );
+      const finalEvidence = await finalCodexEvidence(client, pullRequest, expectedHead);
+      if (finalEvidence.state === 'changes_required') {
+        await publishCurrentHeadFinding(client, pullRequest, expectedHead, recoveryRequest, {
+          detail: finalEvidence.detail,
+          attempt,
+        });
+        return;
+      }
+      const deferred = unionDeferred(verifiedResult.deferred ?? [], finalEvidence.deferred);
       const followUp = deferred.length > 0
         ? await fileDeferredFindings(client, pullRequest, expectedHead, deferred)
         : null;

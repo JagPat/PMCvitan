@@ -18,6 +18,9 @@ const MIGRATION = ['api', 'api-e2e', 'upgrade-proof'];
 
 // First match wins. `products: []` means the always-on `automation` job covers the path.
 const RULES = [
+  // Codex 4214321813 — a document a product test reads is product input: the API integration suite asserts
+  // the archived runbook's operator procedures (phase4-t3-correction3.test.ts)
+  { pattern: /^docs\/archive\/RUNBOOK-[^/]+\.md$/u, products: ['api'], proofs: false },
   { pattern: /^docs\//u, products: [], proofs: false },
   { pattern: /^[^/]+\.md$/u, products: [], proofs: false },
   { pattern: /^\.claude\//u, products: [], proofs: false },

@@ -321,3 +321,49 @@ test('Codex 4213960394 — a body no longer trivial at final admission leaves th
   assert.equal(await completeTrivialPullRequest(client, pr, head, null), 'not_trivial');
   assert.equal(calls.some(([kind, value]) => kind === 'status' && value === 'success'), false);
 });
+
+test('Codex 4214321785 — a blocking finding seen by the final read is returned as blocking, never deferred', async () => {
+  const { finalCodexEvidence } = await import('./autonomous-review-gate.mjs');
+  const earlier = [finding({ head: 'a'.repeat(40), id: 1 }), finding({ head: 'b'.repeat(40), id: 2 })];
+  const client = {
+    async reviews() { return []; },
+    async reviewComments() { return [...earlier, finding({ p: 1, id: 3 })]; },
+    async pullRequestFiles() { return FILES; },
+  };
+  const evidence = await finalCodexEvidence(client, { number: 9 }, HEAD);
+  assert.equal(evidence.state, 'changes_required');
+  assert.deepEqual(evidence.deferred, []);
+});
+
+test('Codex 4214321803 — the completion-report workflow may read commit statuses', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const workflow = await readFile(new URL('../.github/workflows/completion-report.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /\n {2}statuses: read\n/u);
+});
+
+test('Codex 4214321822 — every relative link in the archived documents resolves', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { existsSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const { join, normalize, dirname } = await import('node:path');
+  const archive = fileURLToPath(new URL('../docs/archive/', import.meta.url));
+  for (const name of ['ROADMAP-2026-10-08.md', 'RUNBOOK-2026-10-08.md', 'STATUS-history-2026-10-08.md']) {
+    const text = await readFile(join(archive, name), 'utf8');
+    for (const [, target] of text.matchAll(/\]\(([^)\s#]+)(?:#[^)]*)?\)/gu)) {
+      if (/^[a-z][a-z0-9+.-]*:/iu.test(target) || target.startsWith('/')) continue;
+      assert.ok(existsSync(normalize(join(dirname(join(archive, name)), target))), `${name} → ${target}`);
+    }
+  }
+});
+
+test('Codex 4214321797 — the cited work-item issue must exist and be an issue', async () => {
+  const { verifyWorkItemIssue } = await import('./review-scope.mjs');
+  const body = '<!-- review-size: standard -->\n<!-- unit-kind: live-bug -->\n- Work item issue: #734';
+  const respond = (status, json = {}) => async () => ({ status, ok: status < 400, async json() { return json; } });
+  const at = { repository: 'JagPat/PMCvitan', token: 't' };
+  assert.equal(await verifyWorkItemIssue(body, { ...at, fetchImpl: respond(200, { number: 734 }) }), null);
+  assert.match(await verifyWorkItemIssue(body, { ...at, fetchImpl: respond(404) }), /does not exist/u);
+  assert.match(await verifyWorkItemIssue(body, { ...at, fetchImpl: respond(200, { pull_request: {} }) }), /pull request/u);
+  // a unit that is not a work item is not looked up
+  assert.equal(await verifyWorkItemIssue('<!-- review-size: standard -->', { ...at, fetchImpl: respond(404) }), null);
+});

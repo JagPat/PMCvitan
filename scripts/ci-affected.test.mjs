@@ -114,3 +114,20 @@ test('ci.yml launches each product job only when the plan lists it, and proofs o
   assert.equal((ci.match(/if: needs\.battery-plan\.outputs\.runner_proofs == 'true'/gu) ?? []).length, 3);
   assert.match(ci, /products: \$\{\{ steps\.plan\.outputs\.products \}\}/u);
 });
+
+test('Codex 4214321813 — the archived runbook an API integration test reads runs the api job', () => {
+  assert.deepEqual(affectedProducts(['docs/archive/RUNBOOK-2026-10-08.md']).products, ['api']);
+  assert.deepEqual(affectedProducts(['docs/archive/ROADMAP-2026-10-08.md']).products, []);
+});
+
+test('Codex 4214321794 — role-activation evidence requires only the affected product checks', async () => {
+  const { normalizeCi } = await import('./role-activation-evidence.mjs');
+  const head = 'c'.repeat(40);
+  const run = (name) => ({ name, head_sha: head, status: 'completed', conclusion: 'success', id: name.length, started_at: '2026-10-08T00:00:00Z', completed_at: '2026-10-08T00:01:00Z', html_url: `https://github.com/o/r/actions/runs/1/job/${name.length}` });
+  const runs = ['review-scope', 'battery-plan', 'web', 'e2e', 'api-e2e'].map(run);
+  const ci = normalizeCi(runs, { repository: 'o/r', pullRequest: 999, headSha: head, baseSha: 'b'.repeat(40), readAtMs: 1, affected: ['web', 'e2e', 'api-e2e'] });
+  assert.deepEqual(ci.requiredChecks, ['review-scope', 'battery-plan', 'web', 'e2e', 'api-e2e']);
+  assert.equal(ci.state, 'success');
+  // without the file classification every product check is still required
+  assert.equal(normalizeCi(runs, { repository: 'o/r', pullRequest: 999, headSha: head, baseSha: 'b'.repeat(40), readAtMs: 1 }).state, 'pending');
+});

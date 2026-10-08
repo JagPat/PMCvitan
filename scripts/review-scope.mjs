@@ -22,6 +22,34 @@ import {
   githubProvenanceReader,
 } from './autonomous-drain-clearance.mjs';
 
+/**
+ * The cited work-item issue of a live-bug, UX or trivial unit, resolved against the repository: null when the
+ * unit cites none (scope already refuses that) or the citation is a real issue; otherwise the problem.
+ */
+export async function verifyWorkItemIssue(body, { fetchImpl, repository, token }) {
+  const text = String(body ?? '');
+  const isWorkItem = /<!--\s*unit-kind:\s*(?:live-bug|ux)\s*-->/iu.test(text)
+    || /^<!--\s*review-size:\s*trivial\s*-->/iu.test(text.trimStart());
+  const number = /^[\t -]*Work item issue:[\t ]*#(\d+)\b/imu.exec(text)?.[1];
+  if (!isWorkItem || !number) return null;
+  try {
+    const response = await fetchImpl(`https://api.github.com/repos/${repository}/issues/${number}`, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token}`,
+        'x-github-api-version': '2022-11-28',
+      },
+    });
+    if (response.status === 404) return `the cited work item #${number} does not exist in ${repository}`;
+    if (!response.ok) return `the cited work item #${number} could not be read (HTTP ${response.status}); re-run this check`;
+    const issue = await response.json();
+    if (issue?.pull_request) return `the cited work item #${number} is a pull request, not an issue`;
+    return null;
+  } catch (error) {
+    return `the cited work item #${number} could not be read (${error?.message ?? error}); re-run this check`;
+  }
+}
+
 async function pullRequestFiles({ fetchImpl, repository, number, token }) {
   if (typeof fetchImpl !== 'function' || !repository || !token) {
     throw new Error('repository, GITHUB_TOKEN, and fetch are required to inspect PR files');
@@ -115,6 +143,15 @@ export async function run({
   console.log(
     `review-scope: ${result.state}; ${result.changedFiles} files, ${result.changedLines} changed lines`,
   );
+  // Codex 4214321797 — a work item's cited issue must EXIST in this repository and be an issue, not a pull
+  // request: a made-up number would otherwise satisfy the syntax and let a trivial unit auto-merge
+  const workItemProblem = await verifyWorkItemIssue(event.pull_request?.body, {
+    fetchImpl, repository: repository || event.repository?.full_name, token,
+  });
+  if (workItemProblem) {
+    console.error(`::error title=Review preflight failed::${workItemProblem}`);
+    process.exitCode = 1;
+  }
   if (!result.allowed) {
     // An unread candidate head still fails closed, but as RETRYABLE: the controller re-runs this job on the
     // same head once its own read of that head succeeds (`ciFailureDisposition`), and does not draft the PR.
