@@ -43,7 +43,9 @@ const reviewBody = (id, text = 'A substantive review-level finding') => ({
  * actor).
  */
 function fakeGitHub() {
-  const state = { issues: [], comments: [], fail: {}, nextIssue: 1, nextComment: 1, calls: [], onIssueComment: null };
+  // `labelLag`: how many label-filtered listings omit an issue after it is created — GitHub attaches a new
+  // issue's labels asynchronously (#752–#757 were each labelled one to two seconds after creation)
+  const state = { issues: [], comments: [], fail: {}, nextIssue: 1, nextComment: 1, calls: [], onIssueComment: null, labelLag: 0 };
   const tick = () => new Promise((resolve) => setImmediate(resolve));
   const guard = async (method) => {
     await tick();
@@ -62,12 +64,18 @@ function fakeGitHub() {
   const client = {
     async issuesLabelled(label) {
       await guard('issuesLabelled');
-      return copy(state.issues.filter((issue) => issue.labels.includes(label)).sort((a, b) => b.number - a.number));
+      const visible = state.issues.filter((issue) => issue.labels.includes(label) && !(issue.unlabelledFor > 0));
+      for (const issue of state.issues) if (issue.unlabelledFor > 0) issue.unlabelledFor -= 1;
+      return copy(visible.sort((a, b) => b.number - a.number));
+    },
+    async issue(number) {
+      await guard('issue');
+      return copy(state.issues.find((issue) => issue.number === number));
     },
     async ensureLabel() { await guard('ensureLabel'); },
     async createIssue({ title, body, labels }) {
       await guard('createIssue');
-      const issue = { number: state.nextIssue++, title, body, labels, state: 'open', state_reason: null };
+      const issue = { number: state.nextIssue++, title, body, labels, state: 'open', state_reason: null, unlabelledFor: state.labelLag };
       state.issues.push(issue);
       return copy(issue);
     },
@@ -338,4 +346,69 @@ test('nothing to file is not a filing', async () => {
   const { client, state } = fakeGitHub();
   assert.equal(await fileFollowUp(client, PR, HEAD_A, []), null);
   assert.equal(state.comments.length + state.issues.length, 0);
+});
+
+test('#482 6085143973 — a new issue missing from the label list is read back by number: one issue, not one per attempt', async () => {
+  const { client, state } = fakeGitHub();
+  // longer than every attempt: before this repair, each attempt created another issue (#752–#754)
+  state.labelLag = 10;
+  const number = await fileFollowUp(client, PR, HEAD_A, [inline(1, 2), reviewBody(901)]);
+  assert.equal(state.issues.length, 1, 'exactly one issue for the head');
+  assert.equal(number, state.issues[0].number);
+  assert.deepEqual(listed(state, number), [`${URL}#discussion_r1`, `${URL}#pullrequestreview-901`]);
+  assert.deepEqual(pendingFollowUpHeads(state.comments, 7), []);
+  assert.equal(state.calls.filter((call) => call === 'createIssue').length, 1);
+  // once the label is attached, the same head converges on that issue: nothing new is created or added
+  state.labelLag = 0;
+  for (const issue of state.issues) issue.unlabelledFor = 0;
+  assert.equal(await fileFollowUp(client, PR, HEAD_A, [inline(1, 2)]), number);
+  assert.equal(state.issues.length, 1);
+});
+
+test('#482 6085143973 — verification still reads the created issue: a filing that never lands throws even when it is unlisted', async () => {
+  const { client, state } = fakeGitHub();
+  state.labelLag = 10;
+  const create = client.createIssueComment;
+  // the issue body carries the lines, so this proves the verify step reads the issue, not the record
+  client.createIssue = async () => { await create(PR.number, 'noise'); return { number: undefined }; };
+  await assert.rejects(fileFollowUp(client, PR, HEAD_A, [inline(1, 2)]), /returned no issue number/u);
+  assert.deepEqual(pendingFollowUpHeads(state.comments, 7), [HEAD_A], 'a pending record is not completion');
+});
+
+test('#482 6085143973 — after a new push, the earlier head\'s durable record is recovered into one issue despite the label lag', async () => {
+  const { client, state } = fakeGitHub();
+  state.labelLag = 10;
+  state.fail.createIssue = 1;
+  await assert.rejects(fileFollowUp(client, PR, HEAD_A, [inline(1, 2), reviewBody(901)]));
+  const recordedOnA = followUpRecords(state.comments, 7)[0].records[0].lines;
+
+  // the head moves; B files (lagged) without touching A's pending record
+  await fileFollowUp(client, PR, HEAD_B, [inline(2, 3)]);
+  assert.deepEqual(pendingFollowUpHeads(state.comments, 7), [HEAD_A]);
+
+  const recovered = await reconcilePendingFollowUps(client, PR);
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].head, HEAD_A);
+  assert.equal(issueFor(state, HEAD_A).length, 1, 'one issue for A, however long its label lags');
+  assert.equal(issueFor(state, HEAD_B).length, 1);
+  assert.deepEqual(checklistOf(issueFor(state, HEAD_A)[0].body), recordedOnA, 'original-head classification and identity');
+  assert.deepEqual(pendingFollowUpHeads(state.comments, 7), []);
+  // idempotent once listed
+  state.labelLag = 0;
+  for (const issue of state.issues) issue.unlabelledFor = 0;
+  assert.deepEqual(await reconcilePendingFollowUps(client, PR), []);
+  assert.equal(state.issues.length, 2);
+});
+
+test('#482 6085143973 — duplicates left by the lag are converged once listed: the lowest open issue is canonical', async () => {
+  const { client, state, issue } = fakeGitHub();
+  // the shape #752–#754 were left in: three open twins for one head, the findings only in their bodies
+  const line = renderFollowUpLines([inline(1, 2)]);
+  issue(52, HEAD_A, line);
+  issue(53, HEAD_A, line);
+  issue(54, HEAD_A, line);
+  assert.equal(await fileFollowUpLines(client, PR, HEAD_A, line), 52);
+  assert.deepEqual(openIssueFor(state, HEAD_A).map((open) => open.number), [52]);
+  assert.deepEqual(issueFor(state, HEAD_A).filter((twin) => twin.state === 'closed').map((twin) => twin.number), [53, 54]);
+  assert.equal(state.calls.filter((call) => call === 'createIssue').length, 0);
 });

@@ -160,10 +160,17 @@ export const FILING_ATTEMPTS = 3;
  * The head's follow-up issues, each with the findings it lists — its body and the workflow's comments on it
  * (findings are APPENDED as comments, never written into the body, so no write can drop another's line) —
  * and whether this component closed it as a duplicate.
+ *
+ * `created` are the issues this filing created itself, read back BY NUMBER as well (#482, 6085143973). GitHub
+ * attaches the labels of a new issue asynchronously — #752–#754 and #755–#757 each carry a `labeled` event one
+ * to two seconds after creation — so the label-filtered list can omit an issue created a moment ago. Read
+ * only through that list, a filing never saw its own issue and created another on every attempt.
  */
-async function followUpIssues(client, pullRequest, head) {
+async function followUpIssues(client, pullRequest, head, created = []) {
   const marker = issueMarker(pullRequest.number, head);
-  const issues = (await client.issuesLabelled(REVIEW_FOLLOW_UP_LABEL))
+  const labelled = await client.issuesLabelled(REVIEW_FOLLOW_UP_LABEL);
+  const unlisted = created.filter((number) => !labelled.some((issue) => issue?.number === number));
+  const issues = [...labelled, ...await Promise.all(unlisted.map((number) => client.issue(number)))]
     .filter((issue) => String(issue?.body ?? '').includes(marker) && issue?.pull_request == null);
   return Promise.all(issues.map(async (issue) => {
     const own = (await client.issueComments(issue.number)).filter((comment) => comment?.user?.login === FOLLOW_UP_RECORD_AUTHOR);
@@ -210,10 +217,11 @@ export async function fileFollowUpLines(client, pullRequest, head, lines) {
   }
 
   let issues = initial;
+  const created = [];
   for (let attempt = 1; attempt <= FILING_ATTEMPTS; attempt += 1) {
     if (!issues.some((issue) => issue.open)) {
       await client.ensureLabel(REVIEW_FOLLOW_UP_LABEL);
-      await client.createIssue({
+      const issue = await client.createIssue({
         title: `Review follow-up from #${pullRequest.number}: Codex findings on ${head.slice(0, 7)}`,
         labels: [REVIEW_FOLLOW_UP_LABEL],
         body: [
@@ -223,7 +231,9 @@ export async function fileFollowUpLines(client, pullRequest, head, lines) {
           ...required,
         ].join('\n'),
       });
-      issues = await followUpIssues(client, pullRequest, head);
+      if (!Number.isInteger(issue?.number)) throw new Error('GitHub created a follow-up issue but returned no issue number');
+      created.push(issue.number);
+      issues = await followUpIssues(client, pullRequest, head, created);
     }
     const open = issues.filter((issue) => issue.open).sort((a, b) => a.number - b.number);
     if (open.length > 0) {
@@ -236,7 +246,7 @@ export async function fileFollowUpLines(client, pullRequest, head, lines) {
       for (const duplicate of duplicates) {
         await client.closeIssue(duplicate.number, `${DUPLICATE_MARKER}${canonical.number} -->\nDuplicate of #${canonical.number} (the same head's follow-up).`);
       }
-      issues = await followUpIssues(client, pullRequest, head);
+      issues = await followUpIssues(client, pullRequest, head, created);
       const after = issues.find((issue) => issue.number === canonical.number);
       if (after?.open && required.every((line) => after.identities.has(lineIdentity(line)))) return canonical.number;
     }

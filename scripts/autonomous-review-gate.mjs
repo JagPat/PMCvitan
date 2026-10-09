@@ -767,6 +767,11 @@ export class GitHubClient {
     return this.paginated(`/repos/${this.repository}/issues?labels=${encodeURIComponent(label)}&state=all`);
   }
 
+  // read by number: unlike the label-filtered list, it includes an issue whose labels GitHub has not attached yet
+  issue(number) {
+    return this.request(`/repos/${this.repository}/issues/${number}`);
+  }
+
   createIssue({ title, body, labels }) {
     return this.request(`/repos/${this.repository}/issues`, { method: 'POST', body: { title, body, labels } });
   }
