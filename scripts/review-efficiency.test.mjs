@@ -1833,6 +1833,12 @@ test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in t
   calls.length = 0;
   assert.equal(await verifyWorkItemIssue('no citation', { fetchImpl: fetchImpl(answers), repository: 'o/r', token: 't' }), null);
   assert.equal(calls.length, 0);
+  // #751 Codex 4231952204 — a second citation is refused before any read, so a valid first one cannot mask it
+  assert.deepEqual(
+    await verifyWorkItemIssue('- Work item issue: #10\n- Work item issue: #12', { fetchImpl: fetchImpl(answers), repository: 'o/r', token: 't' }),
+    { detail: 'the body cites 2 work items (#10, #12); cite exactly one', retryable: false },
+  );
+  assert.equal(calls.length, 0);
 });
 
 test('M3 / #751 Codex 4230918008 — the scope job only warns on an unread citation; the controller re-verifies it', async () => {

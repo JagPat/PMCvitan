@@ -2005,17 +2005,23 @@ test('M3 / #751 Codex 4231455040 and 4231455030: the citation is rechecked on th
   const edited = harness([pull('#750'), pull('#9999')]);
   assert.equal((await reviewGate.authorizeExactHeadMerge(edited.client, pull('#750'), head, eligible)).state, 'work_item_not_verified');
   const refused = harness([pull('#750'), pull('#9999')]);
-  assert.equal(await reviewGate.completeReviewedPullRequest(refused.client, pull('#750'), head, eligible), 'held_for_gates');
+  assert.equal(await reviewGate.completeReviewedPullRequest(refused.client, pull('#750'), head, eligible), 'held_work_item');
   assert.equal(refused.log.merges + refused.log.autoMerges, 0);
   assert.deepEqual(refused.log.drafts, [true]);
   assert.match(refused.log.statuses.at(-1).description, /^scope: work item: the cited work item #9999 does not exist/u);
 
   // Unreadable at the final read: no merge, the retryable hold replaces the green status, and no draft.
   const unread = harness([pull('#750'), pull('#752')]);
-  assert.equal(await reviewGate.completeReviewedPullRequest(unread.client, pull('#750'), head, eligible), 'held_for_gates');
+  assert.equal(await reviewGate.completeReviewedPullRequest(unread.client, pull('#750'), head, eligible), 'held_work_item');
   assert.equal(unread.log.merges + unread.log.autoMerges, 0);
   assert.deepEqual(unread.log.drafts, []);
   assert.deepEqual(unread.log.statuses.map((write) => [write.state, write.description]), [['failure', WORK_ITEM_READ_RETRY]]);
+
+  // #751 Codex 4231952187 — run() keeps the hold's own sticky: it returns before its generic `clear` update
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const completion = gate.slice(gate.indexOf('const completion = await completeReviewedPullRequest('));
+  assert.ok(completion.indexOf("if (completion === 'held_work_item') return;") >= 0);
+  assert.ok(completion.indexOf("if (completion === 'held_work_item') return;") < completion.indexOf("state: 'clear'"));
 
   // Recovery of a stored WORK_ITEM_READ_RETRY (no recovery request yet) keeps the PR ready, as for an
   // unreadable ownership read: drafting would strand the head once the citation is readable again.

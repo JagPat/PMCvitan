@@ -229,8 +229,12 @@ const SYMLINK_MODE = '120000';
  */
 /** The issue number a PR body cites as its work item (`Work item issue: #N`), or null when it cites none. */
 export function workItemIssueNumber(body) {
-  const match = /^[\t -]*Work item issue:[\t ]*#(\d+)\b/imu.exec(String(body ?? ''));
-  return match ? Number(match[1]) : null;
+  return workItemIssueNumbers(body)[0] ?? null;
+}
+
+/** Every work-item issue number the body cites, in order (one per `Work item issue: #N` line). */
+export function workItemIssueNumbers(body) {
+  return [...String(body ?? '').matchAll(/^[\t -]*Work item issue:[\t ]*#(\d+)\b/gimu)].map((match) => Number(match[1]));
 }
 
 /**
@@ -240,8 +244,14 @@ export function workItemIssueNumber(body) {
  * is `retryable` (#751 Codex 4230918008): the citation is unknown, not wrong, so no correction is owed.
  */
 export async function verifyWorkItemIssue(body, { fetchImpl, repository, token }) {
-  const number = workItemIssueNumber(body);
-  if (number === null) return null;
+  const numbers = workItemIssueNumbers(body);
+  if (numbers.length === 0) return null;
+  // one work item per PR: a second citation is refused outright, so a valid first one cannot mask an
+  // invalid or stale second (#751 Codex 4231952204)
+  if (numbers.length > 1) {
+    return { detail: `the body cites ${numbers.length} work items (${numbers.map((n) => `#${n}`).join(', ')}); cite exactly one`, retryable: false };
+  }
+  const [number] = numbers;
   const unreadable = (reason) => ({ detail: `the cited work item #${number} could not be read (${reason})`, retryable: true });
   try {
     // `manual`: a transferred issue answers 301 to its new repository, and a followed redirect would accept an

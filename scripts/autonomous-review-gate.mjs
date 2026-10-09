@@ -1384,7 +1384,9 @@ export async function completeReviewedPullRequest(
     } else {
       await refuseScope(client, authorization.pullRequest, expectedHead, scope);
     }
-    return 'held_for_gates';
+    // distinct from `held_for_gates`: the hold published its own sticky, which the caller must not
+    // overwrite with a generic `clear` (#751 Codex 4231952187)
+    return 'held_work_item';
   }
   if (!authorization.allowed) {
     return 'held_for_gates';
@@ -3003,6 +3005,7 @@ export async function run() {
         expectedHead,
         finalPolicy.verdict,
       );
+      if (completion === 'held_work_item') return;
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
