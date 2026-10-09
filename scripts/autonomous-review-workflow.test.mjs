@@ -2475,7 +2475,7 @@ test('one polled Codex invocation owns terminal success and merge completion', a
   const finalEvidence = clearBranch.lastIndexOf(
     'reclassifyCurrentCodexEvidence',
   );
-  const publishedSuccess = clearBranch.lastIndexOf("'success'");
+  const publishedSuccess = clearBranch.lastIndexOf('publishSettledSuccess(');
   const mergeCompletion = clearBranch.lastIndexOf(
     'completeReviewedPullRequest',
   );
@@ -2503,7 +2503,7 @@ test('the clean verdict is published while the PR is still open', async () => {
   // status and BEFORE merge completion — it is the success path's only
   // guaranteed-delivery wake event for watching sessions.
   const publishedClean = clearBranch.indexOf("state: 'review_clean'");
-  const publishedSuccess = clearBranch.lastIndexOf("'success'");
+  const publishedSuccess = clearBranch.lastIndexOf('publishSettledSuccess(');
   const mergeCompletion = clearBranch.lastIndexOf('completeReviewedPullRequest');
   assert.ok(publishedClean >= 0);
   assert.ok(publishedSuccess > publishedClean);

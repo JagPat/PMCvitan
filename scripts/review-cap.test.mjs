@@ -13,7 +13,7 @@ import {
   GITHUB_PR_FILES_LIMIT,
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
-import { capDefersStoredFailure, capFiles, cappedSuccessDetail, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, publishBlockingVerdict, readCodexEvidence, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
+import { capDefersStoredFailure, capFiles, cappedSuccessDetail, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, publishBlockingVerdict, publishSettledSuccess, readCodexEvidence, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
 import { pendingFollowUpHeads } from './review-follow-up.mjs';
 import { FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
@@ -682,8 +682,8 @@ test('Codex 4226684322 — the settlement withdraws any earlier green before it 
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
   const settle = recovery.indexOf('await settleFinalCodexEvidence(');
   assert.ok(settle > 0);
-  assert.doesNotMatch(recovery.slice(0, settle), /client\.setStatus\(\s*expectedHead,\s*'success'/u, 'no success is written before the settlement');
-  assert.match(recovery.slice(settle), /await client\.setStatus\(\s*expectedHead,\s*'success',/u, 'the withdrawn success is always republished after it');
+  assert.doesNotMatch(recovery.slice(0, settle), /client\.setStatus\(\s*expectedHead,\s*'success'|publishSettledSuccess\(/u, 'no success is written before the settlement');
+  assert.match(recovery.slice(settle), /await publishSettledSuccess\(/u, 'the withdrawn success is always republished after it');
 });
 
 test('Codex 4226684328 — a substantive review body is deferred alongside its review\'s inline findings; a bare summary is not', () => {
@@ -703,4 +703,80 @@ test('Codex 4226684328 — a substantive review body is deferred alongside its r
   // Codex 4229506031 — a finding inside a <details> of its own is review text, not the About-Codex boilerplate
   const tucked = run(`${summary}\n\n<details><summary>Additional finding</summary>\n\nThe lease is never released.\n</details>`);
   assert.deepEqual(tucked.deferred.map((item) => item.id), [501, 500]);
+});
+
+test('Codex 4229881000 — the evidence is read again after filing: a finding that lands meanwhile is settled, never merged past', async () => {
+  const rounds = [finding({ head: 'a'.repeat(40), id: 110 }), finding({ head: 'b'.repeat(40), id: 111 })];
+  const pr = { number: 9, html_url: 'u', changed_files: 2 };
+  const during = (extra) => {
+    const run = fakeGitHub({ comments: [...rounds, finding({ p: 2, id: 112 })], pr });
+    const create = run.client.createIssue;
+    let added = false;
+    run.client.createIssue = async (issue) => {
+      const made = await create(issue);
+      if (!added && extra) { run.state.comments.push(extra); added = true; }
+      return made;
+    };
+    return run;
+  };
+  // a changed-line P1 arrives while the follow-up issue is being written: it blocks
+  const blocker = during(finding({ p: 1, id: 113 }));
+  const blocked = await settleFinalCodexEvidence(blocker.client, pr, HEAD);
+  assert.equal(blocked.state, 'changes_required');
+  assert.equal(blocker.state.statuses.some((status) => status.state === 'success'), false);
+  // a deferrable one arrives instead: it is filed too before the head can clear
+  const later = during(finding({ p: 2, id: 114 }));
+  const cleared = await settleFinalCodexEvidence(later.client, pr, HEAD);
+  assert.equal(cleared.state, 'clear');
+  assert.deepEqual(cleared.deferred.map((item) => item.id).sort(), [112, 114]);
+  assert.match(later.listed(800), /discussion_r114/u);
+  // evidence that never stops changing does not clear: the retryable follow-up failure
+  const churn = fakeGitHub({ comments: [...rounds, finding({ p: 2, id: 115 })], pr });
+  const create = churn.client.createIssueComment;
+  let next = 200;
+  churn.client.createIssueComment = async (number, body) => {
+    const made = await create(number, body);
+    churn.state.comments.push(finding({ p: 2, id: next++ }));
+    return made;
+  };
+  await assert.rejects(settleFinalCodexEvidence(churn.client, pr, HEAD), /kept changing/u);
+  assert.deepEqual(churn.state.statuses.at(-1), { sha: HEAD, state: 'failure', description: FOLLOW_UP_RETRY });
+});
+
+test('Codex 4229881007 — an inline comment and a review that share a numeric id are two findings', () => {
+  const comment = { ...finding({ p: 2, id: 77 }) };
+  const review = { id: 77, user: { login: CODEX }, commit_id: HEAD, body: 'Review-level finding', html_url: 'https://github.com/o/r/pull/9#pullrequestreview-77' };
+  assert.equal(unionDeferred([comment], [review]).length, 2);
+  assert.equal(unionDeferred([comment], [{ ...comment }]).length, 1, 'the same finding read twice is still one');
+});
+
+test('Codex 4229880987 — no write after a gate-written pending status can leave it standing', async () => {
+  const pr = { number: 9, html_url: 'u', state: 'open', draft: false, head: { sha: HEAD, repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } };
+  // the record succeeds, then the verdict's own status write fails: the retryable failure replaces "recording"
+  const run = fakeGitHub({ pr });
+  const setStatus = run.client.setStatus;
+  let failVerdict = true;
+  run.client.setStatus = async (sha, statusState, description) => {
+    if (statusState === 'failure' && description === 'review: 1 blocking' && failVerdict) { failVerdict = false; throw new Error('GitHub 502'); }
+    return setStatus(sha, statusState, description);
+  };
+  await assert.rejects(publishBlockingVerdict(run.client, pr, HEAD, { description: 'review: 1 blocking', deferred: [finding({ p: 2, id: 120 })] }), /502/u);
+  assert.deepEqual(run.state.statuses.at(-1), { sha: HEAD, state: 'failure', description: FOLLOW_UP_RETRY });
+  assert.deepEqual(pendingFollowUpHeads(run.state.notes, 9), [HEAD], 'the record it made stays recoverable');
+  // and the success that ends a settlement is guarded the same way
+  const success = fakeGitHub({ pr });
+  const write = success.client.setStatus;
+  success.client.setStatus = async (sha, statusState, description) => {
+    if (statusState === 'success') throw new Error('GitHub 502');
+    return write(sha, statusState, description);
+  };
+  await assert.rejects(publishSettledSuccess(success.client, pr, HEAD, 'review: clean'), /502/u);
+  assert.deepEqual(success.state.statuses.at(-1), { sha: HEAD, state: 'failure', description: FOLLOW_UP_RETRY });
+  // every success write in the gate goes through it
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  // (the only other success write is settleRecoveryRequest's, on its own recovery-request context)
+  const direct = gate.slice(0, gate.indexOf('export function publishSettledSuccess'));
+  assert.doesNotMatch(direct.slice(direct.indexOf('export async function ensureTerminalReviewState')), /client\.setStatus\(\s*expectedHead,\s*'success'/u);
+  assert.equal([...gate.matchAll(/await publishSettledSuccess\(/gu)].length, 2, 'the ordinary path and recovery');
 });
