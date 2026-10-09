@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { PrismaClient } from '@prisma/client';
 import { BILL_CERTIFY_FROM, BILL_STATUSES_PAST_CERTIFICATION } from '@vitan/shared';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
@@ -57,6 +58,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
   let payments: CommercialPaymentService;
   let claims: CommercialClaimQuery;
   let capabilities: CapabilitiesService;
+  let raceDb: PrismaClient;
   let seq = 0;
 
   const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
@@ -103,8 +105,12 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     payments = t.app.get(CommercialPaymentService);
     claims = t.app.get(CommercialClaimQuery);
     capabilities = t.app.get(CapabilitiesService);
+    // a SEPARATE client for the lock-order probes: a second session is the whole point
+    raceDb = new PrismaClient();
+    await raceDb.$connect();
   });
   afterAll(async () => {
+    await raceDb?.$disconnect();
     await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await t?.prisma.vendor.deleteMany({ where: { orgId: f.orgA.id } });
     await t?.prisma.membership.deleteMany({ where: { projectId: { startsWith: 'it-p57bii-' } } });
@@ -445,6 +451,82 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     // the defect, and it is the only outcome this rules out.
     expect(claim.payments.approvable).toBe(claim.deductions.netPayable);
     expect(['100.00', '90.00']).toContain(claim.deductions.netPayable);
+  });
+
+  // ── 2c — a screen read takes no row lock (the commercial-approval deadlock) ──────────────────
+
+  /**
+   * The claim screen is read while the same claim is being approved, and `api-e2e` deadlocked on
+   * exactly that pair (#739, twice in one run, after the 20270825 lock-mode fix):
+   *
+   *   approve:  readiness → VendorBill → Membership FOR UPDATE → … COMMIT → PurchaseOrderLine (bound check)
+   *   readClaim (no readiness lock): PurchaseOrderLine FOR UPDATE → … → Membership FOR UPDATE
+   *
+   * The read took the §E triple's PO-line lock and the payment rule's standing lock because it
+   * reused the COMMAND helpers, and each helper locks. A read answers from its repeatable-read
+   * snapshot and must hold nothing, so it can neither wait on a command nor make one wait.
+   *
+   * Each probe holds ONE of the two rows in a second session, then reads. Blocking is OBSERVED in
+   * `pg_stat_activity` rather than inferred from a timeout, and the holder signals after its lock
+   * statement returns, so a read that finishes proves it ran while the row was held.
+   */
+  const readWhileHeld = async (
+    lockSql: string, params: unknown[], read: () => Promise<unknown>,
+  ): Promise<'finished' | 'blocked'> => {
+    let acquired!: () => void;
+    const held = new Promise<void>((resolve) => { acquired = resolve; });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const holder = raceDb.$transaction(async (tx) => {
+      const [{ pid }] = await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid');
+      await tx.$queryRawUnsafe(lockSql, ...params);
+      acquired();
+      await released;
+      return pid;
+    }, { timeout: 30_000 });
+    await held;
+    let done = false;
+    const reading = read().finally(() => { done = true; });
+    let outcome: 'finished' | 'blocked' = 'finished';
+    for (let i = 0; i < 200 && !done; i += 1) {
+      const waiting = await raceDb.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT count(*) AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,
+      );
+      if (Number(waiting[0]?.n ?? 0) > 0) { outcome = 'blocked'; break; }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    release();
+    await holder;
+    await reading;
+    return outcome;
+  };
+
+  it('2c: the claim bundle reads through a held PO line and a held membership — it locks neither', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const { poLineId } = await t.prisma.vendorBillLine.findFirstOrThrow({ where: { projectId, billId }, select: { poLineId: true } });
+
+    expect(await readWhileHeld(
+      'SELECT 1 FROM "PurchaseOrderLine" WHERE "projectId" = $1 AND "id" = $2 FOR UPDATE', [projectId, poLineId],
+      () => claims.readClaim(projectId, billId, pmc(projectId)),
+    ), 'the §E triple on a READ must not lock the PO line the approval\'s bound check locks at COMMIT').toBe('finished');
+
+    // the certifier's standing row — the one `approve()` locks before its COMMIT reaches the PO line
+    expect(await readWhileHeld(
+      'SELECT 1 FROM "Membership" WHERE "projectId" = $1 AND "userId" = $2 FOR UPDATE', [projectId, f.memberUser.id],
+      () => claims.readClaim(projectId, billId, pmc(projectId)),
+    ), 'the payment-rule preflight on a READ must not lock the certifier\'s membership').toBe('finished');
+  });
+
+  it('2d: the standalone verification read takes no PO-line lock either', async () => {
+    const projectId = await freshProject();
+    const billId = await verifiedOnly(projectId);
+    const { poLineId } = await t.prisma.vendorBillLine.findFirstOrThrow({ where: { projectId, billId }, select: { poLineId: true } });
+    expect(await readWhileHeld(
+      'SELECT 1 FROM "PurchaseOrderLine" WHERE "projectId" = $1 AND "id" = $2 FOR UPDATE', [projectId, poLineId],
+      () => verification.readVerification(projectId, billId, pmc(projectId)),
+    )).toBe('finished');
   });
 
   // ── 3 — an uncertified claim is an ordinary state of this page ────────────────────────────────

@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: live-bug-1c-drawing-push-links
-reviewed_merge: e9a944b
-open_pr: 746
+work_item: commercial-approval-deadlock-read-locks
+reviewed_merge: 79d0d15
+open_pr: 747
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-09
@@ -26,12 +26,13 @@ updated: 2026-10-09
 
 ### Current unit
 
-**Live bug 1c, option A** (`claude/live-bug-1c-drawing-push-links`; owner, #482 6063443276): the existing drawing
-push (issue, revise, publish, acknowledge) carries the path of its drawing; a tap takes an open window to it (or
-opens one); the drawing screen says a drawing it does not hold isn't available. No bell rows, no schema or
-audience change. Reload and Back are verified end to end.
+**Commercial-approval deadlock correction** (`claude/commercial-read-lock-order`; owner, #482 6062791947): the
+claim screen's read (`readClaim`, and the standalone verification read) took the §E triple's purchase-order-line
+lock and the payment preflight's membership lock with no readiness lock first, the reverse of `approve()`, whose
+COMMIT-time bound check locks the same line. Both reads now answer from their repeatable-read snapshot and lock
+nothing; every command keeps its locks. Reproduced from #739's `api-e2e` log and a local statement log.
 
-M2a (#743) merged at `1b9a4d7` and its fix (#745) at `e9a944b`: completion reports and the main-CI sweep are live.
+Live bug 1c (option A) merged at `79d0d15` (#746). M2a (#743) merged at `1b9a4d7` and its fix (#745) at `e9a944b`.
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign
 stop and the owner approved splitting it, each unit from `main`: M1a (#740, merged at `94d1cdb`), this file's shrink (STATUS and ROADMAP
@@ -50,11 +51,9 @@ issue per work item. #731 stays open until they land. Maintenance runs beside th
      - 1b-1: done (#729, `a08f896`).
      - 1b-2: done (#730, `20b5f0f`).
      - 1b-3: done (#735 `3559f20`, #736 `d028cc4`, #738 `8ab364e`, #741 `647d580`; #734 closed).
-   - 1c, drawing notices: option A approved (owner, #482 6063443276), in progress as #746. The existing drawing push opens the exact
-     drawing, the drawing screen shows a clear unavailable state, and reload and Back are verified. No drawing
-     bell rows, no schema or audience change.
+   - 1c, drawing notices: done (#746, `79d0d15`, option A).
    - Then the commercial-approval deadlock correction (owner, #482 6062791947): a small, separate application
-     correction after the notification work and before new features.
+     correction after the notification work and before new features. In progress (current unit).
 2. **Remaining live bugs**, folded into the Board's Top 10 queue (7 Oct 2026 UI/UX review), one PR per item:
    - demo controls out of production, including hiding Generate Weekly Report;
    - one source of truth for counts;

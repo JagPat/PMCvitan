@@ -682,7 +682,7 @@ export class CommercialPaymentService {
   ): Promise<string | null> {
     return (await payableGrantOffer(
       tx, { folds: this.deductions, orgs: this.orgs }, projectId, billId, callerActorId,
-      SOD_RULE, ROLE_POLICY['commercial.approve-payment'], asOf,
+      SOD_RULE, ROLE_POLICY['commercial.approve-payment'], asOf, { lock: false },
     )).actorId;
   }
 

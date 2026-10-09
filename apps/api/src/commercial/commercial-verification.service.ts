@@ -141,6 +141,10 @@ export class CommercialVerificationService {
    * work. Not "the PO line" per bill line: a multi-line bill visited in bill-line order lets
    * certification A hold line X and wait for Y while B holds Y and waits for X. This is the
    * Phase-4 Task-3 crew-allocation guardrail — stable ascending lock order — applied to money.
+   *
+   * `lock: false` is the READ: the same triple from the caller's snapshot, locking nothing. A
+   * screen that locked these lines held them across its own later standing lock, with no readiness
+   * lock first — the reverse of `approve()`, whose bound check locks the same line at COMMIT.
    */
   async computeTriple(
     tx: Prisma.TransactionClient,
@@ -148,6 +152,7 @@ export class CommercialVerificationService {
     billId: string,
     vendorId: string,
     billStatus: VendorBillStatus,
+    { lock = true }: { lock?: boolean } = {},
   ): Promise<VerificationDto> {
     const { versionId, lines } = await this.claimLines(tx, projectId, billId);
 
@@ -173,14 +178,14 @@ export class CommercialVerificationService {
     for (const target of targets) {
       const [kind, poLineId] = target.split(' ') as ['material' | 'labour', string];
       if (kind === 'material') {
-        const o = await this.procurement.lockOrderedLineForClaim(tx, projectId, poLineId);
+        const o = await this.procurement.lockOrderedLineForClaim(tx, projectId, poLineId, { lock });
         if (!o) throw new NotFoundException(`Purchase-order line ${poLineId} not found in this project`);
         ordered.set(target, {
           ordered: o.ordered, live: o.live, rate: o.rate,
           tax: o.taxAmount, freight: o.freightAmount, orderedQty: o.orderedQty,
         });
       } else {
-        const o = await this.labour.lockOrderedLineForClaim(tx, projectId, poLineId);
+        const o = await this.labour.lockOrderedLineForClaim(tx, projectId, poLineId, { lock });
         if (!o) throw new NotFoundException(`Labour purchase-order line ${poLineId} not found in this project`);
         // a labour line freezes no tax or freight, which is why a labour claim's are pinned to zero
         ordered.set(target, {
@@ -444,14 +449,18 @@ export class CommercialVerificationService {
   async readVerification(projectId: string, billId: string, user: AuthUser): Promise<VerificationDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
-    return this.prisma.$transaction((tx) => this.verificationIn(tx, projectId, billId));
+    // one repeatable-read snapshot stands in for the PO-line lock a read no longer takes
+    return this.prisma.$transaction(
+      (tx) => this.verificationIn(tx, projectId, billId),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
   }
 
   /**
    * The §E triple ON A GIVEN TRANSACTION — the ONE spelling, so the standalone
    * `commercial.verification` route and the §M claim bundle (Task 7B-ii) cannot drift about what
    * the triple is derived from or when a claim counts as missing. The same reason
-   * `cashForecastIn` exists one page over.
+   * `cashForecastIn` exists one page over. Both callers are READS, so it locks nothing.
    */
   async verificationIn(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
@@ -460,7 +469,7 @@ export class CommercialVerificationService {
       where: { projectId, id: billId }, select: { vendorId: true, status: true },
     });
     if (!bill) throw new NotFoundException('Vendor bill not found in this project');
-    return this.computeTriple(tx, projectId, billId, bill.vendorId, bill.status as VendorBillStatus);
+    return this.computeTriple(tx, projectId, billId, bill.vendorId, bill.status as VendorBillStatus, { lock: false });
   }
 
   // ── shared machinery ─────────────────────────────────────────────────────────────────────────
