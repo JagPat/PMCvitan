@@ -17,7 +17,7 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: maint-m2b-review-cap
-reviewed_merge: 1b9a4d7
+reviewed_merge: e9a944b
 open_pr: 744
 next_task: phase-6-task-4d-iii
 blocking_directive: none
