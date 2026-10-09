@@ -175,6 +175,9 @@ export function mainNeedsCi(runs = []) {
 export async function sweep({ repository, token, fetchImpl = globalThis.fetch, now = Date.now(), windowMs = SWEEP_WINDOW_MS }) {
   const api = `https://api.github.com/repos/${repository}`;
   const reported = [];
+  // one PR's failure (a 403, a locked conversation) must not cost the others their reports, nor `main` its CI
+  // dispatch: failures are collected, the sweep finishes, and then it fails visibly naming them
+  const failed = [];
   // Codex 4220621322 — every page whose activity is inside the window: the list is newest-updated first, and
   // a PR's merge is never later than its last update, so the first page that reaches past the window is the
   // last one that can hold an in-window merge
@@ -186,8 +189,12 @@ export async function sweep({ repository, token, fetchImpl = globalThis.fetch, n
       // already reported: known from the list itself, at no further request
       if ((summary?.labels ?? []).some((label) => label?.name === COMPLETION_REPORTED_LABEL)) continue;
       // the list omits additions/deletions: read the full pull request the report measures
-      const pullRequest = await getJson(fetchImpl, `${api}/pulls/${summary.number}`, token);
-      if (await reportPullRequest({ api, token, fetchImpl, pullRequest })) reported.push(pullRequest.number);
+      try {
+        const pullRequest = await getJson(fetchImpl, `${api}/pulls/${summary.number}`, token);
+        if (await reportPullRequest({ api, token, fetchImpl, pullRequest })) reported.push(pullRequest.number);
+      } catch (error) {
+        failed.push(`#${summary.number}: ${error.message}`);
+      }
     }
     const oldest = Date.parse(closed.at(-1)?.updated_at ?? '');
     if (closed.length < 100 || !Number.isFinite(oldest) || now - oldest > windowMs) break;
@@ -203,6 +210,10 @@ export async function sweep({ repository, token, fetchImpl = globalThis.fetch, n
     });
     if (!response.ok) throw new Error(`GitHub ${response.status} dispatching CI on main`);
     dispatched = true;
+  }
+  if (failed.length > 0) {
+    throw new Error(`completion-report sweep: reported ${JSON.stringify(reported)}; main ${main.sha} CI dispatched=${dispatched}; `
+      + `failed ${failed.join('; ')}`);
   }
   return { reported, mainSha: main.sha, dispatched };
 }
