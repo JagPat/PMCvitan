@@ -16,27 +16,27 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: live-bug-1b-3-inspection-notices
-reviewed_merge: 8ab364e
-open_pr: 741
+work_item: maint-m2a-completion-reports
+reviewed_merge: 647d580
+open_pr: 743
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-08
+updated: 2026-10-09
 ```
 
 ### Current unit
 
-**Live bug 1b-3b, #741** (`claude/live-bug-1b-3b-stamp-inspection-notices`, issue #734). An inspection
-notice names its inspection by a column its writer stamps, validated where it is read (owner decision
-2026-10-08: no database seal). #735 (the bell opens the stamped inspection) merged at `3559f20`; #736 (the
-plain column) at `d028cc4`; #738 (the bell opens a stamp only when the destination screen holds it) at `8ab364e`; 1b-3b
-has the API writers stamp it and the snapshot serve it. 1b-1 (#729) merged at `a08f896` and 1b-2 (#730) at `20b5f0f`. Deploy visibility (#732)
-merged at `b46e1e7`; proxy-addr 2.0.8 (#737) at `dd6e0fd`.
+**Maintenance M2a** (`claude/maint-m2a-completion-reports`): completion reports, the main-CI recovery sweep
+(with the reported-label skip, Codex 4221120387), the changed-line review-scope text and the round count the
+reports use. No gate changes. Owner decision 2026-10-08 on #482 (6063788241).
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign
 stop and the owner approved splitting it, each unit from `main`: M1a (#740, merged at `94d1cdb`), this file's shrink (STATUS and ROADMAP
-archived); M1b (#739, merged at `f970180`), affected-only PR CI and shadow review off; M2 (#742), the review-round cap and changed-line
-scope, with completion reports; M3, the trivial fast lane on the ordinary merge path, the size target and one
+archived); M1b (#739, merged at `f970180`), affected-only PR CI and shadow review off. M2 (#742) hit the same
+stop at `d31aaf7` (third reviewed head with a P1 in `autonomous-review-gate.mjs`); the owner approved splitting
+it in turn: M2a first (this unit), then M2b, the review-round cap through one reviews → comments → reviews
+evidence snapshot and one failure → draft → deferred-findings publication path. #742 stays open and stopped
+until they replace it. M3 follows: the trivial fast lane on the ordinary merge path, the size target and one
 issue per work item. #731 stays open until they land. Maintenance runs beside the live-bug unit (rule 8).
 
 ### Queue (the owner's order of 2026-10-07, recorded on #482)
@@ -46,10 +46,12 @@ issue per work item. #731 stays open until they land. Maintenance runs beside th
    - 1b, inspection notices, in three parts:
      - 1b-1: done (#729, `a08f896`).
      - 1b-2: done (#730, `20b5f0f`).
-     - 1b-3: #735 (the bell reads the stamp) done at `3559f20`; #736 (the plain column) at `d028cc4`; #738
-       (read-time check) at `8ab364e`; 1b-3b #741 (the API writers stamp it; notification → record → Back end to
-       end over the real stack) open.
-   - 1c: drawing notices open the drawing they name.
+     - 1b-3: done (#735 `3559f20`, #736 `d028cc4`, #738 `8ab364e`, #741 `647d580`; #734 closed).
+   - 1c, drawing notices: option A approved (owner, #482 6063443276). The existing drawing push opens the exact
+     drawing, the drawing screen shows a clear unavailable state, and reload and Back are verified. No drawing
+     bell rows, no schema or audience change.
+   - Then the commercial-approval deadlock correction (owner, #482 6062791947): a small, separate application
+     correction after the notification work and before new features.
 2. **Remaining live bugs**, folded into the Board's Top 10 queue (7 Oct 2026 UI/UX review), one PR per item:
    - demo controls out of production, including hiding Generate Weekly Report;
    - one source of truth for counts;
