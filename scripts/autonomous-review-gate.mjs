@@ -1149,8 +1149,26 @@ async function publishOwnershipHoldSticky(
   client,
   pullRequest,
   expectedHead,
-  { ownershipReason, verdict, attempt = null },
+  { ownershipReason, verdict, attempt = null, detail = null },
 ) {
+  if (ownershipReason === WORK_ITEM_READ_RETRY) {
+    // #751 Codex 4232642470 — the head and its owner were read; only the cited issue was not. Keep the
+    // declared owner and the read error, and owe no correction.
+    await client.updateStickyComment(
+      pullRequest.number,
+      statusBody({
+        state: 'scope_required',
+        head: expectedHead,
+        detail: detail ? `${ownershipReason} (${detail})` : ownershipReason,
+        attempt,
+        owner: correctionOwnerDeclaration(pullRequest).owner ?? 'undeclared',
+        correctionState: null,
+        next: 'The cited work-item issue could not be read; no correction is owed. The required status stays red '
+          + 'until recovery re-reads it on this same head.',
+      }),
+    );
+    return;
+  }
   const hold = ownershipHoldNotice(verdict);
   await client.updateStickyComment(
     pullRequest.number,
@@ -1565,6 +1583,7 @@ export async function ensureTerminalReviewState(
           await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
             ownershipReason: finalPolicy.ownershipReason,
             verdict: finalPolicy.verdict,
+            detail: finalPolicy.retryDetail,
           });
         }
       }
@@ -1895,6 +1914,7 @@ export async function holdUnreadableCandidateHead(client, pullRequest, expectedH
     await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
       ownershipReason: retryReason,
       verdict: scope?.verdict ?? UNREADABLE_VERDICT,
+      detail: scope?.retryReason ? scope.detail : null,
     });
   }
 }
@@ -2027,7 +2047,10 @@ export async function revalidateFinalReviewPolicy(
   // An unread candidate head keeps its retryable meaning here, never `scope_required`: callers publish
   // `OWNERSHIP_READ_RETRY` without drafting, so a later read of the same SHA recovers.
   if (scope.retryable) {
-    return { state: 'ownership_withheld', allowed: false, ownershipReason: scope.retryReason ?? OWNERSHIP_READ_RETRY, verdict: scope.verdict, pullRequest };
+    return {
+      state: 'ownership_withheld', allowed: false, ownershipReason: scope.retryReason ?? OWNERSHIP_READ_RETRY,
+      retryDetail: scope.retryReason ? scope.detail : null, verdict: scope.verdict, pullRequest,
+    };
   }
   if (!scope.allowed) return { ...scope, state: 'scope_required' };
 
@@ -2958,6 +2981,7 @@ export async function run() {
               ownershipReason: finalPolicy.ownershipReason,
               verdict: finalPolicy.verdict,
               attempt,
+              detail: finalPolicy.retryDetail,
             });
           }
           return;

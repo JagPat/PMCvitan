@@ -1978,7 +1978,7 @@ test('M3 / #751 Codex 4231455040 and 4231455030: the citation is rechecked on th
   const eligible = { outcome: 'eligible', mergeEligible: true, owner: 'claude' };
   const checks = reviewGate.REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
   const harness = (pulls) => {
-    const log = { statuses: [], drafts: [], merges: 0, autoMerges: 0 };
+    const log = { statuses: [], drafts: [], merges: 0, autoMerges: 0, stickies: [] };
     const client = {
       repository: 'JagPat/PMCvitan',
       async pause() {},
@@ -1987,7 +1987,7 @@ test('M3 / #751 Codex 4231455040 and 4231455030: the citation is rechecked on th
       async checkRuns() { return checks; },
       async setDraft(pr, draft) { log.drafts.push(draft); return { ...pr, draft }; },
       async setStatus(sha, state, description) { log.statuses.push({ sha, state, description }); },
-      async updateStickyComment() {},
+      async updateStickyComment(number, body) { log.stickies.push(body); },
       async mergeExactHead() { log.merges += 1; return { merged: true }; },
       async enableAutoMerge() { log.autoMerges += 1; },
       async dispatchHandoff() {},
@@ -2021,6 +2021,10 @@ test('M3 / #751 Codex 4231455040 and 4231455030: the citation is rechecked on th
   assert.equal(unread.log.merges + unread.log.autoMerges, 0);
   assert.deepEqual(unread.log.drafts, []);
   assert.deepEqual(unread.log.statuses.map((write) => [write.state, write.description]), [['failure', WORK_ITEM_READ_RETRY]]);
+  // #751 Codex 4232642470 — its sticky keeps the declared owner and the read error, and owes no correction
+  assert.match(unread.log.stickies.at(-1), /could not be read \(HTTP 502\)/u);
+  assert.match(unread.log.stickies.at(-1), /`claude`/u);
+  assert.doesNotMatch(unread.log.stickies.at(-1), /This exact head could not be read/u);
 
   // #751 Codex 4231952187 — run() keeps the hold's own sticky: it returns before its generic `clear` update
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');

@@ -1830,6 +1830,13 @@ test('M3 — the cited work-item issue is parsed from the template line', () => 
     assert.deepEqual(workItemCitations(lookalike).numbers, [], lookalike);
   }
   assert.equal(citesWorkItem('The PR template asks for `Work item issue: #N`.'), false, 'prose and inline code cite nothing');
+  // #751 Codex 4232642450 — one number per field: a second reference on the line is refused, never skipped
+  assert.deepEqual(workItemCitations('- Work item issue: #750, #9999'), { numbers: [], malformed: ['- Work item issue: #750, #9999'] });
+  assert.deepEqual(workItemCitations('- Work item issue: #750 (live bug 1c)').numbers, [750]);
+  // #751 Codex 4232642460 — code indented four past a list item's content is an example; a continuation is not
+  assert.deepEqual(workItemIssueNumbers('- item\n\n        Work item issue: #1\n\n- Work item issue: #2'), [2]);
+  assert.deepEqual(workItemIssueNumbers('1. item\n\n         Work item issue: #1'), [], 'nested under a numbered item');
+  assert.deepEqual(workItemIssueNumbers('- a\n\npara\n\n    Work item issue: #1'), [], 'after the list ends, four spaces is code');
 });
 
 test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in this repository', async () => {

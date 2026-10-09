@@ -250,7 +250,7 @@ const WORK_ITEM_FIELD = /^[^\S\n]*(?:(?:[-*+>]|\d+[.)]|#{1,6})[^\S\n]*)*[*_]*Wor
 // refused, so no Markdown form can carry a citation past verification — the class of finding the rounds above
 // found one form at a time.
 const WORK_ITEM_LOOKALIKE = /work[^\w\n]*item[^\w\n]*issue[^\w\n]*\d/iu;
-const LIST_ITEM = /^[^\S\n]{0,3}(?:[-*+]|\d+[.)])[^\S\n]/u;
+const LIST_ITEM = /^ {0,3}(?:[-*+]|\d+[.)])[^\S\n]+/u;
 
 /**
  * The body's work-item citations over its RENDERED text only: HTML comments, fenced code (closed by the same
@@ -266,19 +266,23 @@ export function workItemCitations(body) {
   const malformed = [];
   let previousBlank = true;
   let inIndentedCode = false;
-  let inList = false;
-  for (const raw of text.split('\n')) {
+  // the column a list item's content starts at (0 outside a list); an indented code block is indented four
+  // more than that, so code nested in a list item is an example too (#751 Codex 4232642460)
+  let contentColumn = 0;
+  for (const raw of text.replace(/\t/gu, '    ').split('\n')) {
     const blank = raw.trim() === '';
-    // an indented code block starts after a blank line outside a list, and runs while lines stay indented
-    const indented = /^(?: {4}|\t)/u.test(raw);
-    inIndentedCode = indented && (inIndentedCode || (previousBlank && !inList)) && !blank;
-    if (!blank && !indented) inList = LIST_ITEM.test(raw);
+    const indent = raw.length - raw.trimStart().length;
+    inIndentedCode = !blank && indent >= contentColumn + 4 && (inIndentedCode || previousBlank);
+    const item = !blank && !inIndentedCode ? LIST_ITEM.exec(raw.slice(Math.min(indent, contentColumn))) : null;
+    if (item) contentColumn = Math.min(indent, contentColumn) + item[0].length;
+    else if (!blank && !inIndentedCode && indent < contentColumn && previousBlank) contentColumn = 0;
     previousBlank = blank;
     if (inIndentedCode) continue;
     const line = raw.replace(/(`+)[\s\S]*?\1/gu, '');
     const field = WORK_ITEM_FIELD.exec(line);
-    if (field) numbers.push(Number(field[1]));
-    else if (WORK_ITEM_LOOKALIKE.test(line)) malformed.push(line.trim());
+    // one number per field: a second issue reference on the same line is refused (#751 Codex 4232642450)
+    if (field && !/#\d/u.test(line.slice(field.index + field[0].length))) numbers.push(Number(field[1]));
+    else if (field || WORK_ITEM_LOOKALIKE.test(line)) malformed.push(line.trim());
   }
   return { numbers, malformed };
 }
