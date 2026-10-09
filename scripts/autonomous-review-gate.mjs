@@ -7,12 +7,14 @@ import {
   POLL_INTERVAL_MS,
   REQUIRED_CHECKS,
   STATUS_CONTEXT,
+  FOLLOW_UP_RETRY,
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
   CI_SCOPE_ADMITTED,
   ownershipInconsistentScopeDetail,
   isOwnershipInconsistentScopeDetail,
   isBodyOnlyOwnershipRecoveryDetail,
+  REVIEW_ROUND_CAP,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -33,6 +35,8 @@ import {
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
+import { reviewCapState } from './review-cap.mjs';
+import { fileFollowUp, findingIdentity, reconcilePendingFollowUps, recordPendingFollowUp, renderFollowUpLines } from './review-follow-up.mjs';
 import {
   CORRECTION_STALLED,
   correctionOwnerDeclaration,
@@ -1046,10 +1050,7 @@ async function freshAdvisory(client, pullRequest) {
 export async function reportReviewLifecycle(client, pullRequest, log = console.log) {
   let observation = null;
   try {
-    const [comments, reviews] = await Promise.all([
-      client.reviewComments(pullRequest.number),
-      client.reviews(pullRequest.number),
-    ]);
+    const { comments, reviews } = await readCodexEvidence(client, pullRequest.number);
     observation = observeReviewLifecycle({ comments, reviews });
   } catch {
     // Evidence unreadable. This path reports; it does not decide, so there is
@@ -1442,6 +1443,25 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
 
+/**
+ * Codex 4225790715 — does the review-round cap now defer a STORED findings failure on this head? A failure
+ * published before the cap reached this head, or by a controller without the cap, would otherwise be
+ * preserved (or latched beneath a later success) and the head could only move on with a new push. Only a
+ * Codex-findings failure qualifies, and only when the current evidence, classified with the cap, is clear
+ * with findings to defer; a blocking finding, or anything less than a settled snapshot, keeps the failure.
+ */
+export async function capDefersStoredFailure(client, pullRequest, expectedHead, failure) {
+  const description = String(failure?.description ?? '');
+  if (!/current-head Codex finding|Codex submitted a current-head review/u.test(description)) return false;
+  try {
+    const evidence = await finalCodexEvidence(client, pullRequest, expectedHead);
+    return evidence.state === 'clear' && evidence.deferred.length > 0;
+  } catch {
+    // unreadable evidence decides nothing: the stored failure stands (fail closed)
+    return false;
+  }
+}
+
 export async function ensureTerminalReviewState(
   client,
   pullRequest,
@@ -1451,7 +1471,8 @@ export async function ensureTerminalReviewState(
 ) {
   if (!isTerminalReviewStatus(status)) return false;
   if (status.state === 'success') {
-    if (persistentReviewFailure(statuses)) {
+    const latched = persistentReviewFailure(statuses);
+    if (latched && !(await capDefersStoredFailure(client, pullRequest, expectedHead, latched))) {
       await client.setStatus(
         expectedHead,
         'failure',
@@ -1513,17 +1534,32 @@ export async function ensureTerminalReviewState(
       }
       return true;
     }
-    const latestStatus = statuses.find(
-      (candidate) => candidate.context === STATUS_CONTEXT,
-    );
-    if (String(latestStatus?.id) !== String(status.id)) {
-      await client.setStatus(
-        expectedHead,
-        'success',
-        'review: recovered prior clean Codex result on this exact head',
-        pullRequest.html_url,
-      );
+    // Codex 4216657933 — recovery settles the head's evidence through the same step as the ordinary success
+    // path before it merges: a finding that arrived since the success either blocks, or past the cap is filed
+    // in the head's follow-up issue, so a recovered merge never leaves a deferred finding unrecorded.
+    // Codex 4220338753 — and it settles BEFORE any success is republished: a green required status is what
+    // branch protection (and a queued auto-merge) acts on, so a blocking finding that landed since the
+    // original success must turn the head red without a green window in which it could merge
+    const settled = await settleFinalCodexEvidence(client, finalPolicy.pullRequest, expectedHead);
+    if (settled.state === 'changes_required') {
+      await publishBlockingVerdict(client, finalPolicy.pullRequest, expectedHead, {
+        description: settled.detail,
+        deferred: settled.deferred ?? [],
+      });
+      return true;
     }
+    // Codex 4226684322 — the settlement withdrew the recovered success, so success is ALWAYS republished here,
+    // after the filing completed. Codex 4220431600 — a settlement that filed a follow-up issue writes the SAME
+    // follow-up-aware description the ordinary success path writes: operators are sent to this status for the
+    // deferred findings
+    await publishSettledSuccess(
+      client,
+      pullRequest,
+      expectedHead,
+      settled.followUp !== null && settled.followUp !== undefined
+        ? cappedSuccessDetail(settled)
+        : 'review: recovered prior clean Codex result on this exact head',
+    );
     await completeReviewedPullRequest(
       client,
       finalPolicy.pullRequest,
@@ -1531,6 +1567,9 @@ export async function ensureTerminalReviewState(
       finalPolicy.verdict,
     );
   } else {
+    // Codex 4225790715 — a stored findings failure the cap now defers is not preserved: the ordinary review
+    // path runs instead, which files the deferred findings and completes the head without a new push
+    if (await capDefersStoredFailure(client, pullRequest, expectedHead, status)) return false;
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -1578,10 +1617,7 @@ export async function enforceReviewConvergence(
   pullRequest,
   expectedHead,
 ) {
-  const [comments, reviews] = await Promise.all([
-    client.reviewComments(pullRequest.number),
-    client.reviews(pullRequest.number),
-  ]);
+  const { comments, reviews } = await readCodexEvidence(client, pullRequest.number);
   const findingHeads = codexFindingHeads(comments, reviews);
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!live) return { state: 'superseded', allowed: false, superseded: true };
@@ -1959,6 +1995,85 @@ export async function revalidateFinalReviewPolicy(
   return { state: 'allowed', allowed: true, pullRequest, verdict };
 }
 
+/**
+ * Owner decision 2026-10-08 — file a capped review's deferred findings through the same-PR follow-up component
+ * (scripts/review-follow-up.mjs, M2b-1): recorded on the PR first, then filed in the head's one OPEN follow-up
+ * issue, with each finding's original-head classification and identity. Returns the issue number; throws on
+ * any failure, leaving the record pending for `reconcilePendingFollowUps`.
+ */
+export function fileDeferredFindings(client, pullRequest, expectedHead, deferred) {
+  return fileFollowUp(client, pullRequest, expectedHead, deferred);
+}
+
+/**
+ * Owner decision 2026-10-08 — the review-round cap for this exact head, read from the PR's review history
+ * and its changed lines. Every Codex classification goes through this, so the polling, the final
+ * re-verification, the pre-review guard and the recovery all judge the same head the same way.
+ */
+// Codex 4220338659 — a head's file list is immutable, and `reviewAttempt` asks for the cap on every poll:
+// read it ONCE per (client, PR, exact head), so a slow Codex does not spend the token's hourly budget
+// refetching the same list every 15 seconds
+const capFilesCache = new WeakMap();
+
+/** How many times one evidence snapshot is attempted before it is reported unstable. */
+export const EVIDENCE_SNAPSHOT_ATTEMPTS = 3;
+
+function sameReviewSet(before, after) {
+  const ids = (list) => (list ?? []).map((review) => String(review?.id)).sort().join(',');
+  return ids(before) === ids(after);
+}
+
+/**
+ * Owner decision 2026-10-08 (M2b) — ONE coherent Codex evidence snapshot, which every classifier caller uses:
+ * reviews → comments → reviews. GitHub submits a review and its inline comments together.
+ *  - A review submitted before the comments read is in both review reads, with its comments (Codex 4220621334).
+ *  - A review submitted after the comments read is in the second review read only. Its inline comments may be
+ *    missing, so its container would pass for a review-level finding (deferrable past the cap) while its
+ *    changed-line P0/P1 was simply not read; a BODY-ONLY review there would be missed outright by a single
+ *    reviews read (Codex 4221120415).
+ * So the snapshot is accepted only when both review reads hold the same reviews; otherwise it is read again,
+ * up to EVIDENCE_SNAPSHOT_ATTEMPTS times. An unstable snapshot is returned with `stable: false`, which
+ * `classifyCodexState` reads as `unsettled`: never clear, never "nothing new". Reactions are read last.
+ */
+export async function readCodexEvidence(client, number, { reactions = false } = {}) {
+  let snapshot;
+  for (let attempt = 1; attempt <= EVIDENCE_SNAPSHOT_ATTEMPTS; attempt += 1) {
+    const before = await client.reviews(number);
+    const comments = await client.reviewComments(number);
+    const reviews = await client.reviews(number);
+    snapshot = { reviews, comments, stable: sameReviewSet(before, reviews) };
+    if (snapshot.stable) break;
+  }
+  return reactions ? { ...snapshot, reactions: await client.reactions(number) } : snapshot;
+}
+
+/** The success description of a head the review-round cap cleared, naming its follow-up issue. */
+export function cappedSuccessDetail(settled) {
+  return `review: review-round cap; ${settled.deferred.length} non-blocking finding(s) deferred to #${settled.followUp}`;
+}
+
+export async function capFiles(client, number, expectedHead) {
+  // no file reader: unknown, which the cap treats as incomplete (fail closed), never as "nothing changed"
+  if (typeof client.pullRequestFiles !== 'function') return null;
+  let byHead = capFilesCache.get(client);
+  if (!byHead) capFilesCache.set(client, (byHead = new Map()));
+  const key = `${number}@${expectedHead}`;
+  if (!byHead.has(key)) {
+    // a failed read is not cached: the next poll retries it. Codex 4221022493 — nor is it thrown: it reads as
+    // an unknown list (null), which the cap already treats as incomplete (fail closed: a P0/P1 anywhere
+    // blocks), so a transient files-API failure never aborts the review orchestration mid-poll
+    const pending = client.pullRequestFiles(number).catch(() => { byHead.delete(key); return null; });
+    byHead.set(key, pending);
+  }
+  return byHead.get(key);
+}
+
+async function capFor(client, number, expectedHead, reviews, comments, changedFiles = null) {
+  const files = await capFiles(client, number, expectedHead);
+  // Codex 4220431586 — `changedFiles` (the PR's own count, when known) lets the cap detect a short list
+  return reviewCapState({ expectedHead, reviews, comments, files, changedFiles });
+}
+
 async function reviewAttempt(
   client,
   pullRequest,
@@ -2010,12 +2125,9 @@ async function reviewAttempt(
     );
     if (!live) return { state: 'superseded' };
 
-    const [reviews, comments, reactions] = await Promise.all([
-      client.reviews(pullRequest.number),
-      client.reviewComments(pullRequest.number),
-      client.reactions(pullRequest.number),
-    ]);
+    const { reviews, comments, reactions, stable } = await readCodexEvidence(client, pullRequest.number, { reactions: true });
     const result = classifyCodexState({
+      stable,
       expectedHead,
       readyAt: reviewNotBefore,
       deadline,
@@ -2023,8 +2135,10 @@ async function reviewAttempt(
       reviews,
       comments,
       reactions,
+      cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments, pullRequest.changed_files),
     });
-    if (result.state !== 'pending') return result;
+    // an unsettled snapshot is read again on the next poll, like a pending one
+    if (result.state !== 'pending' && result.state !== 'unsettled') return result;
     await sleep(POLL_INTERVAL_MS);
   }
 }
@@ -2035,13 +2149,10 @@ async function reclassifyCurrentCodexEvidence(
   expectedHead,
   reviewNotBefore,
 ) {
-  const [reviews, comments, reactions] = await Promise.all([
-    client.reviews(number),
-    client.reviewComments(number),
-    client.reactions(number),
-  ]);
+  const { reviews, comments, reactions, stable } = await readCodexEvidence(client, number, { reactions: true });
   const now = new Date();
   return classifyCodexState({
+    stable,
     expectedHead,
     readyAt: reviewNotBefore,
     deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
@@ -2049,7 +2160,42 @@ async function reclassifyCurrentCodexEvidence(
     reviews,
     comments,
     reactions,
+    cap: await capFor(client, number, expectedHead, reviews, comments),
   });
+}
+
+/**
+ * Owner decision 2026-10-08 (M2b) — the ONE way a blocking Codex verdict is published, in a fixed order:
+ *  1. the `codex-current-head` FAILURE status, first, because a head that held a success is mergeable (branch
+ *     protection, a queued auto-merge) until that status turns red (Codex 4220338753, 4221120404);
+ *  2. back to DRAFT, so no reviewer or controller treats it as ready;
+ *  3. past the cap, the non-blocking findings beside the blocker are FILED in the head's follow-up issue: the
+ *     correction this verdict asks for moves the head, after which they are no longer current-head evidence
+ *     and no later read would see them again (Codex 4220861349). They are filed even when the head has
+ *     already moved, since they were found on this one.
+ * Returns the refreshed pull request, or null when the head is no longer current.
+ */
+export async function publishBlockingVerdict(client, pullRequest, expectedHead, { description, deferred = [] }) {
+  const lines = renderFollowUpLines(deferred);
+  if (lines.length > 0) {
+    // Codex 4229506050 — the deferred siblings are made durable BEFORE the correction verdict exists: the head
+    // first goes non-green without asking anyone for a push, then the lines are recorded, and only then is the
+    // verdict published. A recording that fails leaves a retryable failure, so no correction can move the head
+    // past findings nothing recorded. (Codex 4226440227 — and the record still precedes the fallible draft.)
+    await client.setStatus(expectedHead, 'pending', RECORDING_DESCRIPTION, pullRequest.html_url);
+    // Codex 4229880987 — every write after that pending status, the verdict's own included, is guarded: the gate
+    // never ends a run on a pending status it wrote, because recovery resumes only retryable failures
+    await withFollowUpRetry(client, pullRequest, expectedHead, async () => {
+      await recordPendingFollowUp(client, pullRequest, expectedHead, lines);
+      await client.setStatus(expectedHead, 'failure', description, pullRequest.html_url);
+    });
+  } else {
+    await client.setStatus(expectedHead, 'failure', description, pullRequest.html_url);
+  }
+  const live = await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+  // files this head's record, and any other pending one on the PR, each in its own head's issue
+  if (lines.length > 0) await reconcilePendingFollowUps(client, pullRequest);
+  return live;
 }
 
 export async function publishCurrentHeadFinding(
@@ -2057,8 +2203,10 @@ export async function publishCurrentHeadFinding(
   pullRequest,
   expectedHead,
   recoveryRequest,
-  { detail, attempt },
+  { detail, attempt, deferred = [] },
 ) {
+  const live = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: `review: ${detail}`, deferred });
+  if (!live) return { state: 'superseded', superseded: true };
   const reset = await enforceReviewConvergence(
     client,
     pullRequest,
@@ -2075,20 +2223,6 @@ export async function publishCurrentHeadFinding(
     );
     return reset;
   }
-
-  const live = await setDraftForCurrentHead(
-    client,
-    pullRequest.number,
-    expectedHead,
-    true,
-  );
-  if (!live) return { state: 'superseded', superseded: true };
-  await client.setStatus(
-    expectedHead,
-    'failure',
-    `review: ${detail}`,
-    pullRequest.html_url,
-  );
   await settleRecoveryRequest(
     client,
     expectedHead,
@@ -2130,12 +2264,10 @@ export async function guardAgainstCurrentHeadFinding(
   expectedHead,
   recoveryRequest,
 ) {
-  const [reviews, comments] = await Promise.all([
-    client.reviews(pullRequest.number),
-    client.reviewComments(pullRequest.number),
-  ]);
+  const { reviews, comments, stable } = await readCodexEvidence(client, pullRequest.number);
   const now = new Date();
   const result = classifyCodexState({
+    stable,
     expectedHead,
     readyAt: new Date(0).toISOString(),
     deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
@@ -2143,6 +2275,7 @@ export async function guardAgainstCurrentHeadFinding(
     reviews,
     comments,
     reactions: [],
+    cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments, pullRequest.changed_files),
   });
   if (result.state !== 'changes_required') return null;
 
@@ -2151,9 +2284,141 @@ export async function guardAgainstCurrentHeadFinding(
     pullRequest,
     expectedHead,
     recoveryRequest,
-    { detail: result.detail, attempt: 0 },
+    { detail: result.detail, attempt: 0, deferred: result.deferred ?? [] },
   );
   return result.detail;
+}
+
+/**
+ * The current head's Codex classification as the evidence stands NOW: `{ state, detail, deferred }`. The
+ * success paths read it last, so a finding that lands after final revalidation either blocks (Codex
+ * 4214321785) or, past the cap, is deferred with the rest (Codex 4214270293).
+ */
+export async function finalCodexEvidence(client, pullRequest, expectedHead) {
+  const { reviews, comments, stable } = await readCodexEvidence(client, pullRequest.number);
+  const now = new Date();
+  const result = classifyCodexState({
+    stable,
+    expectedHead,
+    readyAt: new Date(0).toISOString(),
+    deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
+    now: now.toISOString(),
+    reviews,
+    comments,
+    reactions: [],
+    cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments, pullRequest.changed_files),
+  });
+  return {
+    state: result.state,
+    detail: result.detail,
+    // Codex 4220861349 — past the cap a blocking verdict carries its non-blocking findings too
+    deferred: result.deferred ?? [],
+  };
+}
+
+/** Deferred findings from two reads, each once (by its GitHub id). */
+export function unionDeferred(first, second) {
+  const seen = new Set();
+  return [...first, ...second].filter((finding) => {
+    // Codex 4229881007 — an inline comment and a review are different GitHub resources that can share a numeric
+    // id: keyed by URL, or by kind and id, exactly as the follow-up component identifies a finding
+    const key = findingIdentity(finding);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** The non-success status a head carries while its evidence and follow-up filing are settled. */
+export const SETTLING_DESCRIPTION = 'review: settling Codex evidence and follow-up filing before completion';
+/** The non-success status a head carries while a blocking verdict's deferred siblings are recorded. */
+export const RECORDING_DESCRIPTION = 'review: recording deferred Codex findings before the verdict';
+
+/**
+ * Run a step of follow-up work the gate owes; if it throws, leave the head on the RETRYABLE `FOLLOW_UP_RETRY`
+ * failure (never a pending status nothing resumes — Codex 4229506042), then rethrow. Recovery re-runs the head.
+ */
+async function withFollowUpRetry(client, pullRequest, expectedHead, work) {
+  try {
+    return await work();
+  } catch (error) {
+    await client.setStatus(expectedHead, 'failure', FOLLOW_UP_RETRY, pullRequest.html_url).catch(() => {});
+    throw error;
+  }
+}
+
+/**
+ * Owner decision 2026-10-08 — the ONE settlement of a head's Codex evidence before a success lets it merge,
+ * shared by the ordinary success path and the recovery of an earlier success (Codex 4216657933): the evidence
+ * is re-read now; a blocking finding is returned as blocking; past the cap, every deferred finding — the
+ * caller's earlier read and this one — is filed in the head's follow-up issue (reconciled into an existing
+ * one) before the merge. `{ state: 'changes_required', detail } | { state: 'clear', deferred, followUp }`.
+ */
+export async function settleFinalCodexEvidence(client, pullRequest, expectedHead, earlierDeferred = []) {
+  // Owner direction 2026-10-09 (#482, 6075561748) / Codex 4226684322 — withdraw any earlier green FIRST: branch
+  // protection and a queued auto-merge act on a success, so a head must not stay mergeable while its follow-up
+  // filing is still being written. Success is restored only by the caller, after this settlement — filing
+  // included — has succeeded; a run that fails here leaves the head non-green, and the stored success it
+  // withdrew is recovered (and re-settled) by the next run.
+  await client.setStatus(expectedHead, 'pending', SETTLING_DESCRIPTION, pullRequest.html_url);
+  // any step below that throws leaves the retryable FOLLOW_UP_RETRY failure, not the pending status
+  return withFollowUpRetry(client, pullRequest, expectedHead, () => settleAfterWithdrawal(client, pullRequest, expectedHead, earlierDeferred));
+}
+
+async function settleAfterWithdrawal(client, pullRequest, expectedHead, earlierDeferred) {
+  // recover any follow-up filing on this PR that was recorded but never completed (an earlier head's included),
+  // so no deferred finding is lost when this head merges
+  await reconcilePendingFollowUps(client, pullRequest);
+  const evidence = await finalCodexEvidence(client, pullRequest, expectedHead);
+  // Codex 4220739672 — the settlement is a FINDINGS guard, never the source of the clean verdict: the caller
+  // already holds that (the poll's fresh +1 after this attempt's readyAt, or the recovered success status).
+  // So it admits exactly two outcomes: `clear` (past the cap, everything deferrable) and `pending` (no
+  // current-head finding and no current-head review — nothing arrived since the clean result). Every other
+  // state, present or future, fails closed rather than falling through to a success.
+  if (evidence.state !== 'clear' && evidence.state !== 'pending') return blockingSettlement(evidence, earlierDeferred);
+  // Codex 4229881000 — filing takes time, and Codex can land a finding meanwhile (a late first invocation, after
+  // a second one supplied the clean result). So the evidence is read AGAIN after every filing, and the head
+  // settles only on a read taken after the last write: a blocker found then blocks, a new deferrable finding is
+  // filed too, and evidence that keeps changing throws (the retryable follow-up failure, never a success).
+  let current = evidence;
+  let deferred = [];
+  let followUp = null;
+  const filed = new Set();
+  for (let attempt = 1; ; attempt += 1) {
+    deferred = unionDeferred(deferred, unionDeferred(earlierDeferred, current.deferred));
+    const unfiled = deferred.filter((finding) => !filed.has(findingIdentity(finding)));
+    if (unfiled.length === 0) return { state: 'clear', deferred, followUp };
+    if (attempt > EVIDENCE_SNAPSHOT_ATTEMPTS) throw new Error('Codex evidence kept changing while its follow-ups were filed');
+    followUp = await fileDeferredFindings(client, pullRequest, expectedHead, deferred);
+    for (const finding of deferred) filed.add(findingIdentity(finding));
+    current = await finalCodexEvidence(client, pullRequest, expectedHead);
+    if (current.state !== 'clear' && current.state !== 'pending') return blockingSettlement(current, deferred);
+  }
+}
+
+/** The settlement's answer when the evidence is neither `clear` nor `pending`. */
+function blockingSettlement(evidence, deferred) {
+  return {
+    state: 'changes_required',
+    detail: evidence.state === 'changes_required'
+      ? evidence.detail
+      // an unsettled read is retryable (review-policy RETRYABLE_REVIEW_FAILURES), never a latched finding
+      : evidence.state === 'unsettled'
+        ? 'review: Codex evidence changed during final verification'
+        : `review: final Codex evidence is ${evidence.state}; not merging on it`,
+    // Codex 4220861349 — what was deferrable stays deferrable beside a blocker; the caller files it
+    deferred: unionDeferred(deferred, evidence.deferred),
+    // Codex 4226440219 — an unsettled read is an infrastructure retry, published on the recovery path
+    retryable: evidence.state === 'unsettled',
+  };
+}
+
+/**
+ * Publish the success a settlement has earned. It is the last write after the settlement's pending status, so it
+ * is guarded like the rest (Codex 4229880987): a failed write leaves the retryable follow-up failure.
+ */
+export function publishSettledSuccess(client, pullRequest, expectedHead, description) {
+  return withFollowUpRetry(client, pullRequest, expectedHead, () => client.setStatus(expectedHead, 'success', description, pullRequest.html_url));
 }
 
 export function contextForEvent(eventName, event, dispatchNumber) {
@@ -2440,7 +2705,7 @@ export async function run() {
         pullRequest,
         expectedHead,
         recoveryRequest,
-        { detail: result.detail, attempt },
+        { detail: result.detail, attempt, deferred: result.deferred ?? [] },
       );
       if (published.superseded) return;
       throw new Error(result.detail);
@@ -2473,24 +2738,13 @@ export async function run() {
             pullRequest,
             expectedHead,
             recoveryRequest,
-            { detail, attempt },
+            { detail, attempt, deferred: verifiedResult.deferred ?? [] },
           );
           if (published.superseded) return;
           throw new Error(detail);
         }
-        pullRequest = await setDraftForCurrentHead(
-          client,
-          pullRequest.number,
-          expectedHead,
-          true,
-        );
+        pullRequest = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: `review: ${detail}` });
         if (!pullRequest) return;
-        await client.setStatus(
-          expectedHead,
-          'failure',
-          `review: ${detail}`,
-          pullRequest.html_url,
-        );
         await settleRecoveryRequest(
           client,
           expectedHead,
@@ -2639,14 +2893,35 @@ export async function run() {
         throw new Error(`Final review policy changed: ${finalPolicy.state}`);
       }
       pullRequest = finalPolicy.pullRequest;
+      // Owner decision 2026-10-08 — the head's evidence is settled once more before the success that lets it
+      // merge: a finding that arrived after the poll's verification blocks (Codex 4214321785) or, past the cap,
+      // is filed in the head's follow-up issue with the rest (Codex 4214270293), so none is lost.
+      const settled = await settleFinalCodexEvidence(client, pullRequest, expectedHead, verifiedResult.deferred ?? []);
+      if (settled.retryable) {
+        // Codex 4226440219 — recovery-only publication: no correction instruction; recovery reruns this head
+        pullRequest = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: settled.detail });
+        if (!pullRequest) return;
+        await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, 'changed review evidence');
+        throw new Error(settled.detail);
+      }
+      if (settled.state === 'changes_required') {
+        await publishCurrentHeadFinding(client, pullRequest, expectedHead, recoveryRequest, {
+          detail: settled.detail,
+          attempt,
+          deferred: settled.deferred ?? [],
+        });
+        return;
+      }
       // One run polls one Codex invocation to its mutually exclusive terminal
       // result: finding-bearing evidence or the clean reaction. Review webhooks
       // never enter this orchestrator, so no second writer can race admission.
-      await client.setStatus(
+      await publishSettledSuccess(
+        client,
+        pullRequest,
         expectedHead,
-        'success',
-        'review: Codex found no blocking issue on this exact head',
-        pullRequest.html_url,
+        settled.followUp === null
+          ? 'review: Codex found no blocking issue on this exact head'
+          : cappedSuccessDetail(settled),
       );
       await settleRecoveryRequest(
         client,

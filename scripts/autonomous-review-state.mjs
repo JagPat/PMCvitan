@@ -2,6 +2,7 @@ import { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN, isCodexReplyOnlyReview } from './revi
 export { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN } from './review-policy.mjs';
 
 import { isLineageBase } from './lineage-policy.mjs';
+import { blocksUnderCap } from './review-cap.mjs';
 
 function timestamp(value, field) {
   const parsed = Date.parse(value);
@@ -108,6 +109,21 @@ export function codexThreadIdsToResolve(threads = [], expectedHead) {
     .map((thread) => thread.id);
 }
 
+/**
+ * Is a Codex review body nothing but the standard container Codex wraps its inline findings in (the heading,
+ * the "automated review suggestions" line, the reviewed commit and the About-Codex details)? Such a body adds
+ * no finding beyond the inline comments it introduces; any other text in it is a review-level finding.
+ */
+export function isCodexReviewSummaryOnly(body) {
+  const rest = String(body ?? '')
+    // only Codex's own About-Codex block: a <details> holding anything else is review text (Codex 4229506031)
+    .replace(/<details>\s*<summary>[^<]*About Codex in GitHub\s*<\/summary>[\s\S]*?<\/details>/gu, '')
+    .replace(/^#{1,6}\s*(?:\p{Extended_Pictographic}\uFE0F?\s*)?Codex Review\s*$/gmu, '')
+    .replace(/^Here are some automated review suggestions for this pull request\.\s*$/gmu, '')
+    .replace(/^\*\*Reviewed commit:\*\*\s*`[0-9a-f]{7,40}`\s*$/gmu, '');
+  return rest.trim().length === 0;
+}
+
 export function classifyCodexState({
   expectedHead,
   readyAt,
@@ -116,6 +132,12 @@ export function classifyCodexState({
   reviews = [],
   comments = [],
   reactions = [],
+  // Owner decision 2026-10-08: `{ reached, changedLines }` from `reviewCapState`. Past the cap, only a
+  // P0/P1 on a changed line blocks; the rest is returned as `deferred` on a `clear` result.
+  cap = null,
+  // Owner decision 2026-10-08 (M2b) — whether the evidence is one coherent snapshot (`readCodexEvidence`).
+  // An unstable one is `unsettled`: it never clears a head and never reads as "nothing new".
+  stable = true,
 }) {
   if (typeof expectedHead !== 'string' || expectedHead.length === 0) {
     throw new TypeError('expectedHead is required');
@@ -125,11 +147,65 @@ export function classifyCodexState({
   const deadlineMs = timestamp(deadline, 'deadline');
   const nowMs = timestamp(now, 'now');
 
+  if (stable !== true) {
+    // past the deadline it times out like a silent Codex (a retryable attempt), so a poll never outlives it
+    return nowMs > deadlineMs
+      ? { state: 'timed_out', findingCount: 0, detail: 'Codex evidence did not settle before the deadline' }
+      : { state: 'unsettled', findingCount: 0, detail: 'Codex evidence changed while it was read' };
+  }
+
   const currentHeadComments = new Map(comments
     .filter(
       (comment) => isCodexActor(comment) && postedAgainst(comment) === expectedHead,
     )
     .map((comment) => [findingIdentity(comment), comment]));
+  if (cap?.reached) {
+    // Codex 4220431616 — a REPLY (in_reply_to_id set) opens no finding (findingRoundHeads), so it is neither
+    // judged nor deferred here: a reply alone can never let the cap clear a head Codex has not reviewed. It
+    // stays in `comments` for `isCodexReplyOnlyReview`, and falls through to the ordinary evidence rules.
+    // Codex 4225790723 — past the cap every finding is judged as GitHub returned it, one per comment id: the
+    // `findingIdentity` dedupe (path, line, body) omits the side and range, so a changed-line P1 on the LEFT
+    // could be overwritten by an identical one on unchanged RIGHT context and the head would clear
+    const byId = new Map(comments
+      .filter((comment) => isCodexActor(comment) && postedAgainst(comment) === expectedHead && comment?.in_reply_to_id == null)
+      .map((comment) => [comment?.id ?? comment?.html_url ?? findingIdentity(comment), comment]));
+    const findings = [...byId.values()];
+    const blocking = findings.filter((comment) => blocksUnderCap(comment, cap.changedLines));
+    const headReviews = reviews.filter((review) => isCodexActor(review)
+      && review.commit_id === expectedHead
+      && !isCodexReplyOnlyReview(review, comments));
+    // Codex 4213960388 / 4214270288 — a review-level finding (a review body, badged or not: an unbadged one is
+    // read conservatively as finding-bearing, as elsewhere) has no line to judge, so it is deferred with the
+    // rest rather than silently dropped. Codex 4226684328 — that holds when the review ALSO owns inline
+    // comments: its body is a finding of its own unless it is only Codex's standard summary of them
+    const reviewLevel = headReviews.filter((review) => String(review?.body ?? '').trim().length > 0
+      && !(comments.some((comment) => comment?.pull_request_review_id === review.id) && isCodexReviewSummaryOnly(review.body)));
+    const deferred = [...findings.filter((comment) => !blocking.includes(comment)), ...reviewLevel];
+    if (blocking.length > 0) {
+      const count = blocking.length;
+      // Codex 4220861349 — the non-blocking findings beside a blocker are returned too: once the correction
+      // moves the head they are no longer current-head evidence, so the gate files them now or never
+      return {
+        state: 'changes_required',
+        findingCount: count,
+        deferred,
+        detail: `${count} blocking current-head Codex finding${count === 1 ? '' : 's'} (P1 on a changed line, past the review-round cap)`,
+      };
+    }
+    // Codex 4216657953 — the cap clears a head only on findings it actually defers: a blank review record with
+    // nothing to defer is no verdict, so it falls through to the ordinary evidence rules (a fresh +1 clears;
+    // incomplete evidence stays pending or blocks) exactly as before the cap
+    if (deferred.length > 0) {
+      const count = deferred.length;
+      return {
+        state: 'clear',
+        findingCount: 0,
+        deferred,
+        detail: `review-round cap reached: ${count} non-blocking current-head finding${count === 1 ? '' : 's'} deferred to a follow-up issue`,
+      };
+    }
+  }
+
   if (currentHeadComments.size > 0) {
     const count = currentHeadComments.size;
     return {

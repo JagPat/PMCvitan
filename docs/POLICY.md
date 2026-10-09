@@ -54,11 +54,11 @@ Repository maintenance PRs do not replace an unrelated product task's STATUS poi
 
 ## Review continuity and scope
 
-Keep unresolved PRs open and fix forward on the same branch, regardless of how many
-heads have received findings. This user decision of 2026-09-08 supersedes the old
-two-head close-and-replace rule. New PR numbers are not delivery progress; only
-merged changes advance `main`. Historical replacement labels cannot block unrelated
-fresh work. Existing explicit replacement declarations retain provenance validation.
+Keep unresolved PRs open and fix forward on the same branch (2026-09-08; it supersedes close-and-replace).
+Review-round cap (owner, 2026-10-08): from the third Codex round (a reviewed head with findings) only a P0/P1
+on a changed line blocks; every other finding goes to one `review-follow-up` issue per head and the PR merges
+on green CI (review-cap.mjs). New PR numbers are not delivery progress; only merged changes advance `main`.
+Historical replacement labels cannot block unrelated work; explicit declarations keep provenance validation.
 
 A replacement is exceptional: record a concrete scope or approach benefit, preserve
 every unresolved finding and reproduce-first proof, and link both PRs.
@@ -69,7 +69,7 @@ redesign in smaller units; the findings stay open. This stop binds the correctio
 who records it on the PR; the controller counts finding heads as a signal and mints no
 obligation from the count (review-lifecycle.mjs). A disputed finding is argued on its
 thread with a concrete counterexample; no label or gate state reads a dispute, and the
-finding blocks until a new head answers it or the repository owner rules. Review machinery
+finding blocks until a new head answers it, the cap defers it, or the owner rules. Review machinery
 is frozen: no new controller, watchdog or lease feature outside a requested maintenance PR.
 
 Keep one concern per PR. A standard review unit is at most 20 files and 1,500 changed

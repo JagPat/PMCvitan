@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: maint-m2b1-follow-up-durability
-reviewed_merge: 1281962
-open_pr: 748
+work_item: maint-m2b2-cap-integration
+reviewed_merge: 8cd1315
+open_pr: 749
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-09
@@ -26,13 +26,13 @@ updated: 2026-10-09
 
 ### Current unit
 
-**M2b-1, follow-up durability** (`claude/maint-m2b1-follow-up-durability`; owner, #482 6075561748; selected in
-6076742015): the bounded same-PR follow-up component on its own (`scripts/review-follow-up.mjs`). It records a head's
-findings on the PR before filing them, files them in that head's one open follow-up issue, and recovers a recorded
-filing whose head has moved; identity is the finding's URL, and every failure throws. The review cap stays inactive
-and the strict gate is unchanged: nothing calls the component until M2b-2 integrates it.
+**M2b-2, cap and evidence-snapshot integration** (`claude/maint-m2b2-cap-integration`; owner, #482 6075561748;
+selected in 6078164776): the approved review-round cap and the reviews → comments → reviews evidence snapshot from
+#744, with every deferred-finding filing routed through the M2b-1 component. A head's settlement withdraws any
+earlier green first, completes every recorded filing on the PR and its own, and only then may success be
+published; a substantive review body is deferred beside its inline findings. #744 and #742 stay stopped.
 
-The commercial-approval deadlock correction merged at `1281962` (#747); live bug 1c (option A) at `79d0d15` (#746).
+M2b-1 merged at `8cd1315` (#748); the commercial-approval deadlock correction at `1281962` (#747).
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign
 stop and the owner approved splitting it, each unit from `main`: M1a (#740, merged at `94d1cdb`), this file's shrink (STATUS and ROADMAP
@@ -40,8 +40,8 @@ archived); M1b (#739, merged at `f970180`), affected-only PR CI and shadow revie
 stop at `d31aaf7` (third reviewed head with a P1 in `autonomous-review-gate.mjs`); the owner approved splitting
 it in turn: M2a (merged), then M2b (#744), the review-round cap through one reviews → comments → reviews
 evidence snapshot and one failure → draft → deferred-findings publication path. #744 hit the same stop at
-`e5842f1`; the owner approved a durability-first split (#482, 6075561748): M2b-1 (current unit), then M2b-2, the
-cap and evidence snapshot. #742 stays open and stopped until M2b replaces it. M3 follows: the trivial fast lane on the ordinary merge path, the size target and one
+`e5842f1`; the owner approved a durability-first split (#482, 6075561748): M2b-1 (merged), then M2b-2 (current
+unit), the cap and evidence snapshot. #742 stays open and stopped until M2b replaces it. M3 follows: the trivial fast lane on the ordinary merge path, the size target and one
 issue per work item. #731 stays open until they land. Maintenance runs beside the live-bug unit (rule 8).
 
 ### Queue (the owner's order of 2026-10-07, recorded on #482)

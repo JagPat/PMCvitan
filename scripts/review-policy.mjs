@@ -27,6 +27,11 @@ export const STATUS_DOCUMENT = 'docs/STATUS.md';
 export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
 export const GATE_CHECKS = ['review-scope', 'battery-plan'];
 export const MAX_REVIEW_ATTEMPTS = 2;
+// Owner decision 2026-10-08 (delivery speed) — see docs/POLICY.md "Review continuity and scope".
+// A PR gets at most REVIEW_ROUND_CAP Codex review rounds (distinct Codex-reviewed finding heads); from
+// the next round on, only a P0/P1 finding anchored on a line the PR changed blocks, and every other
+// finding is filed as a follow-up issue under REVIEW_FOLLOW_UP_LABEL.
+export const REVIEW_ROUND_CAP = 2;
 // Owner direction 2026-10-09 (M2b-1) — the label on a PR's follow-up issues (scripts/review-follow-up.mjs).
 export const REVIEW_FOLLOW_UP_LABEL = 'review-follow-up';
 // 40 minutes covers measured ~29-minute API jobs; 25 minutes covers measured
@@ -196,7 +201,13 @@ export function reviewHistoryPolicy(findingHeads) {
   };
 }
 
+// Owner direction 2026-10-09 (M2b-2) — a follow-up record or filing the gate owes did not complete (a transient
+// API failure). Retryable: recovery re-runs the head, which completes the owed filing before any success; no
+// correction is owed, so the watchdog opens no lease and no author push is asked for (Codex 4229506042, 4229506050).
+export const FOLLOW_UP_RETRY = 'review: Codex follow-up filing did not complete; the gate retries this head';
+
 const RETRYABLE_REVIEW_FAILURES = [
+  FOLLOW_UP_RETRY,
   'Codex review timed out',
   'Codex evidence changed during final verification',
   'review: Required CI changed during current-head Codex review',

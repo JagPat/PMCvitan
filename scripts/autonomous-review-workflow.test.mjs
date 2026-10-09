@@ -654,6 +654,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     },
     async reviewComments() { return reviewComments; },
     async reviews() { return []; },
+    async issueComments() { return []; },
     async markReplacementRequired() {},
     async commit() {
       // 2B2: the SHA merge authority reads the head commit trailer; this promotable head carries a
@@ -700,8 +701,10 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
   );
   assert.deepEqual(draftTransitions, []);
   assert.equal(autoMergeDraft, false, 'clean review and CI queue merge automatically');
-  assert.equal(statusWrites[0].state, 'success');
-  assert.match(statusWrites[0].description, /recovered prior clean/u);
+  // Codex 4226684322 — the recovered success is withdrawn before settlement and republished after it
+  assert.deepEqual(statusWrites.map((write) => write.state), ['pending', 'success']);
+  assert.equal(statusWrites[0].description, reviewGate.SETTLING_DESCRIPTION);
+  assert.match(statusWrites[1].description, /recovered prior clean/u);
 
   pullRequest.draft = false;
   autoMergeDraft = null;
@@ -1422,7 +1425,7 @@ test('the trusted owner observes review history after CI without requiring repla
   assert.match(gate, /reviewComments\(number\)[\s\S]*?this\.paginated/u);
   assert.equal(
     [...gate.matchAll(/await publishCurrentHeadFinding\(/gu)].length,
-    3,
+    4, // + the final evidence settlement before success (Codex 4214321785)
     'every finding-result path must re-evaluate the reset before directing another push',
   );
 });
@@ -2472,7 +2475,7 @@ test('one polled Codex invocation owns terminal success and merge completion', a
   const finalEvidence = clearBranch.lastIndexOf(
     'reclassifyCurrentCodexEvidence',
   );
-  const publishedSuccess = clearBranch.lastIndexOf("'success'");
+  const publishedSuccess = clearBranch.lastIndexOf('publishSettledSuccess(');
   const mergeCompletion = clearBranch.lastIndexOf(
     'completeReviewedPullRequest',
   );
@@ -2500,7 +2503,7 @@ test('the clean verdict is published while the PR is still open', async () => {
   // status and BEFORE merge completion — it is the success path's only
   // guaranteed-delivery wake event for watching sessions.
   const publishedClean = clearBranch.indexOf("state: 'review_clean'");
-  const publishedSuccess = clearBranch.lastIndexOf("'success'");
+  const publishedSuccess = clearBranch.lastIndexOf('publishSettledSuccess(');
   const mergeCompletion = clearBranch.lastIndexOf('completeReviewedPullRequest');
   assert.ok(publishedClean >= 0);
   assert.ok(publishedSuccess > publishedClean);
