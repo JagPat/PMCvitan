@@ -44,9 +44,10 @@ archived); M1b (#739, merged at `f970180`), affected-only PR CI and shadow revie
 stop at `d31aaf7` (third reviewed head with a P1 in `autonomous-review-gate.mjs`); the owner approved splitting
 it in turn: M2a (merged), then M2b (#744), the review-round cap through one reviews → comments → reviews
 evidence snapshot and one failure → draft → deferred-findings publication path. #744 hit the same stop at
-`e5842f1`; the owner approved a durability-first split (#482, 6075561748): M2b-1 (merged), then M2b-2 (current
-unit), the cap and evidence snapshot. #742 stays open and stopped until M2b replaces it. M3 follows: the trivial fast lane on the ordinary merge path, the size target and one
-issue per work item. #731 stays open until they land. Maintenance runs beside the live-bug unit (rule 8).
+`e5842f1`; the owner approved a durability-first split (#482, 6075561748): M2b-1 (merged), then M2b-2 (merged),
+the cap and evidence snapshot. #742 stays open and stopped. M3 (#751) hit the same stop at `08816b7`; its
+successors are M3a, M3b and M3c (the current unit and plan are above; the size target and whether a citation is
+mandatory await the owner). #731 stays open until they land. Maintenance runs beside the live-bug unit (rule 8).
 
 ### Queue (the owner's order of 2026-10-07, recorded on #482)
 
