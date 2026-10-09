@@ -562,3 +562,51 @@ test('Codex 4225790715 — a stored findings failure that the cap now defers no 
   assert.match(recovery, /if \(latched && !\(await capDefersStoredFailure\(/u);
   assert.match(recovery, /\} else \{[\s\S]{0,400}if \(await capDefersStoredFailure\(client, pullRequest, expectedHead, status\)\) return false;/u);
 });
+
+test('Codex 4226080917 — a failed follow-up filing is retried by the next controller run on the same head', async () => {
+  const { guardAgainstCurrentHeadFinding } = await import('./autonomous-review-gate.mjs');
+  const rounds = [finding({ head: 'a'.repeat(40), id: 60 }), finding({ head: 'b'.repeat(40), id: 61 })];
+  const current = [finding({ p: 1, id: 62 }), finding({ p: 2, id: 63 })];
+  const pr = { number: 9, html_url: 'u', state: 'open', draft: false, changed_files: 2, body: '<!-- correction-owner: claude -->', head: { sha: HEAD, ref: 'b', repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } };
+  const issues = [];
+  let failFiling = true;
+  const calls = [];
+  const client = {
+    reviews: async () => [],
+    reviewComments: async () => [...rounds, ...current],
+    pullRequestFiles: async () => FILES,
+    pullRequest: async () => pr,
+    statuses: async () => [],
+    setStatus: async (sha, state) => { calls.push(`status:${state}`); },
+    setDraft: async (p, draft) => ({ ...p, draft }),
+    issuesLabelled: async () => issues,
+    ensureLabel: async () => {},
+    createIssue: async (issue) => {
+      calls.push('file');
+      if (failFiling) throw new Error('issues API down');
+      const made = { ...issue, number: 703 };
+      issues.push(made);
+      return made;
+    },
+    updateIssueBody: async () => {},
+    updateStickyComment: async () => {},
+    reactions: async () => [],
+  };
+  // first run: the blocking verdict is published (failure first), then the filing fails
+  await assert.rejects(guardAgainstCurrentHeadFinding(client, pr, HEAD, null), /issues API down/u);
+  assert.deepEqual(calls, ['status:failure', 'file']);
+  // the next controller run on this head reaches the same guard first (before any terminal-state recovery),
+  // re-derives the blocker and its deferred sibling, and files the sibling
+  failFiling = false;
+  calls.length = 0;
+  assert.match(await guardAgainstCurrentHeadFinding(client, pr, HEAD, null), /1 blocking current-head Codex finding/u);
+  assert.deepEqual(calls.slice(0, 2), ['status:failure', 'file']);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].body, /discussion_r63/u);
+  assert.doesNotMatch(issues[0].body, /discussion_r62/u, 'the blocker itself is not deferred');
+  // and in the orchestrator that guard precedes the terminal-state recovery
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  assert.ok(runBody.indexOf('await guardAgainstCurrentHeadFinding(') < runBody.indexOf('await ensureTerminalReviewState('));
+});
