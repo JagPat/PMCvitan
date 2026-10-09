@@ -206,8 +206,13 @@ export function reviewHistoryPolicy(findingHeads) {
 // correction is owed, so the watchdog opens no lease and no author push is asked for (Codex 4229506042, 4229506050).
 export const FOLLOW_UP_RETRY = 'review: Codex follow-up filing did not complete; the gate retries this head';
 
+// M3 (#751 Codex 4230918008): the PR's cited work-item issue could not be read from the trusted default branch.
+// The citation is unknown, not wrong, so recovery re-reads it on the same head; no correction is owed.
+export const WORK_ITEM_READ_RETRY = 'review: cited work item issue temporarily unreadable; the gate retries this head';
+
 const RETRYABLE_REVIEW_FAILURES = [
   FOLLOW_UP_RETRY,
+  WORK_ITEM_READ_RETRY,
   'Codex review timed out',
   'Codex evidence changed during final verification',
   'review: Required CI changed during current-head Codex review',

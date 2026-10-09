@@ -1816,15 +1816,26 @@ test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in t
   };
   const check = (number) => verifyWorkItemIssue(`- Work item issue: #${number}`, { fetchImpl: fetchImpl(answers), repository: 'o/r', token: 't' });
   assert.equal(await check(10), null);
-  assert.match(await check(11), /is a pull request, not an issue/u);
-  assert.match(await check(12), /does not exist in o\/r/u);
-  assert.match(await check(13), /could not be read \(HTTP 502\); re-run/u);
-  assert.match(await check(14), /could not be read \(socket hang up\)/u);
+  assert.deepEqual(await check(11), { detail: 'the cited work item #11 is a pull request, not an issue', retryable: false });
+  assert.deepEqual(await check(12), { detail: 'the cited work item #12 does not exist in o/r', retryable: false });
+  // #751 Codex 4230918008 — an answer that could not be read is retryable, never a correction
+  assert.deepEqual(await check(13), { detail: 'the cited work item #13 could not be read (HTTP 502)', retryable: true });
+  assert.deepEqual(await check(14), { detail: 'the cited work item #14 could not be read (socket hang up)', retryable: true });
   assert.equal(calls[0], 'https://api.github.com/repos/o/r/issues/10');
   // a body that cites none makes no request (whether a citation is REQUIRED is not decided here)
   calls.length = 0;
   assert.equal(await verifyWorkItemIssue('no citation', { fetchImpl: fetchImpl(answers), repository: 'o/r', token: 't' }), null);
   assert.equal(calls.length, 0);
+});
+
+test('M3 / #751 Codex 4230918008 — the scope job only warns on an unread citation; the controller re-verifies it', async () => {
+  const scope = await readFile(new URL('./review-scope.mjs', import.meta.url), 'utf8');
+  const block = scope.slice(scope.indexOf('const workItem = await verifyWorkItemIssue('), scope.indexOf('// The tracked tree itself'));
+  assert.match(block, /if \(workItem\?\.retryable\) \{\n\s+console\.warn\(`::warning title=Work item issue::/u);
+  assert.doesNotMatch(block.slice(0, block.indexOf('} else if (workItem)')), /process\.exitCode/u);
+  assert.match(block, /\} else if \(workItem\) \{\n\s+console\.error\(`::error title=Work item issue::\$\{workItem\.detail\}`\);\n\s+process\.exitCode = 1;/u);
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  assert.match(gate, /if \(result\.allowed\) result = await assessWorkItemCitation\(client, pullRequest, result\);/u);
 });
 
 test('M3 — the scope job may read issues, and the template asks for the work item', async () => {

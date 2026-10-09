@@ -10,6 +10,7 @@ import {
   FOLLOW_UP_RETRY,
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
+  WORK_ITEM_READ_RETRY,
   CI_SCOPE_ADMITTED,
   ownershipInconsistentScopeDetail,
   isOwnershipInconsistentScopeDetail,
@@ -53,6 +54,7 @@ import {
   REPLACEMENT_REQUIRED_LABEL,
 } from './review-efficiency.mjs';
 import { assessCommittedDirectiveClearance, githubProvenanceReader, headCommitFromGitHub } from './autonomous-drain-clearance.mjs';
+import { verifyWorkItemIssue, workItemIssueNumber } from './review-scope.mjs';
 import {
   PRODUCT_CHECKS,
   attemptGateStamps,
@@ -541,6 +543,11 @@ export class GitHubClient {
       );
     }
     throw new Error(`GitHub ${method} ${path} retry loop exhausted`);
+  }
+
+  /** The problem with the body's cited work-item issue, `{ detail, retryable }`, or null (review-scope.mjs). */
+  async workItemProblem(body) {
+    return verifyWorkItemIssue(body, { fetchImpl: fetch, repository: this.repository, token: this.token });
   }
 
   async graphql(query, variables) {
@@ -1113,7 +1120,7 @@ function ownershipHoldNotice(verdict) {
         owner: 'undeclared',
         correctionState: null,
         next: 'This exact head could not be read; the required status stays red until a later run '
-          + 're-reads the commit and recovers.',
+          + 're-reads it and recovers.',
       };
     default:
       // `invalid`: the head trailer is missing, malformed, or conflicting — it authenticates nobody.
@@ -1680,12 +1687,41 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       result = { ...result, allowed: false, state: 'drain_clearance_refused', detail: `drain clearance: ${clearance.detail}`, clearance };
     }
   }
+  if (result.allowed) result = await assessWorkItemCitation(client, pullRequest, result);
   if (result.allowed) return result;
   // An unread candidate head is RETRYABLE on this same SHA (Codex finding 4101926931 on #630): no draft, no
   // `scope:` hold, no correction notice. The caller publishes the retryable `OWNERSHIP_READ_RETRY` (or, on a
   // failed CI run, re-runs it), so a later read of the same head and body recovers.
   if (result.retryable) return { ...result, verdict: UNREADABLE_VERDICT };
+  return refuseScope(client, pullRequest, expectedHead, result);
+}
 
+// The PR's cited work-item issue (M3), re-verified HERE from the trusted default branch (#751 Codex
+// 4230917999): the PR-side `review-scope` job runs from a body that can be edited after it passed. A
+// citation that is not a real issue refuses the head like any scope failure; one that could not be read is
+// retryable on this same head (`WORK_ITEM_READ_RETRY`, #751 Codex 4230918008), never a correction.
+async function assessWorkItemCitation(client, pullRequest, result) {
+  if (workItemIssueNumber(pullRequest.body) === null) return result;
+  const problem = await client.workItemProblem(pullRequest.body);
+  if (!problem) return result;
+  if (problem.retryable) {
+    return { ...result, allowed: false, retryable: true, retryReason: WORK_ITEM_READ_RETRY, state: 'work_item_unreadable', detail: problem.detail };
+  }
+  return { ...result, allowed: false, state: 'work_item_refused', detail: `work item: ${problem.detail}` };
+}
+
+// A body edit on a head that declares no candidate checks only its cited work item, refusing (draft and
+// `scope:` failure) or holding it retryably exactly as `enforceReviewScope` does.
+async function enforceWorkItemCitation(client, pullRequest, expectedHead) {
+  const result = await assessWorkItemCitation(client, pullRequest, { allowed: true });
+  if (result.allowed) return result;
+  if (result.retryable) return { ...result, verdict: UNREADABLE_VERDICT };
+  return refuseScope(client, pullRequest, expectedHead, result);
+}
+
+// Refuse one exact head on scope: draft it (cancelling any queued auto-merge), revoke its required status
+// with the `scope:` failure, and publish the correction notice.
+async function refuseScope(client, pullRequest, expectedHead, result) {
   const live = await setDraftForCurrentHead(
     client,
     pullRequest.number,
@@ -1819,14 +1855,15 @@ export async function handleCiFailure(
 // so the watchdog can request a fresh same-SHA recovery of this newer status (Codex findings 4101926931
 // and 4103259698 on #630).
 export async function holdUnreadableCandidateHead(client, pullRequest, expectedHead, scope, existingStatuses = []) {
-  await client.setStatus(expectedHead, 'failure', OWNERSHIP_READ_RETRY, pullRequest.html_url);
+  const retryReason = scope?.retryReason ?? OWNERSHIP_READ_RETRY;
+  await client.setStatus(expectedHead, 'failure', retryReason, pullRequest.html_url);
   await settleRecoveryRequest(
     client, expectedHead, pullRequest, pendingRecoveryRequest(existingStatuses), 'unreadable candidate head',
   );
   const stillCurrent = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (stillCurrent) {
     await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
-      ownershipReason: OWNERSHIP_READ_RETRY,
+      ownershipReason: retryReason,
       verdict: scope?.verdict ?? UNREADABLE_VERDICT,
     });
   }
@@ -1926,8 +1963,13 @@ export async function rerunAdmittedCandidateScope(client, pullRequest, expectedH
 // body that declares no candidate, is left untouched. It adds no new writer path: it is the controller's
 // scope enforcement, serialized with the controller on the same exact-head concurrency group.
 export async function guardCandidateRelabel(client, pullRequest, expectedHead, existingStatuses = []) {
-  if (correctionOwnerDeclaration(pullRequest).state !== 'candidate') return 'not_candidate';
-  const scope = await enforceReviewScope(client, pullRequest, expectedHead);
+  // M3 (#751 Codex 4230917999): an edit can also swap a verified work-item citation for a bad one after
+  // review-scope passed, so a non-candidate body that cites one has that citation checked on the edit.
+  const candidate = correctionOwnerDeclaration(pullRequest).state === 'candidate';
+  if (!candidate && workItemIssueNumber(pullRequest.body) === null) return 'not_candidate';
+  const scope = candidate
+    ? await enforceReviewScope(client, pullRequest, expectedHead)
+    : await enforceWorkItemCitation(client, pullRequest, expectedHead);
   if (scope.superseded) return 'superseded';
   if (scope.retryable) {
     await holdUnreadableCandidateHead(client, pullRequest, expectedHead, scope, existingStatuses);
@@ -1955,7 +1997,7 @@ export async function revalidateFinalReviewPolicy(
   // An unread candidate head keeps its retryable meaning here, never `scope_required`: callers publish
   // `OWNERSHIP_READ_RETRY` without drafting, so a later read of the same SHA recovers.
   if (scope.retryable) {
-    return { state: 'ownership_withheld', allowed: false, ownershipReason: OWNERSHIP_READ_RETRY, verdict: scope.verdict, pullRequest };
+    return { state: 'ownership_withheld', allowed: false, ownershipReason: scope.retryReason ?? OWNERSHIP_READ_RETRY, verdict: scope.verdict, pullRequest };
   }
   if (!scope.allowed) return { ...scope, state: 'scope_required' };
 
@@ -2553,7 +2595,7 @@ export async function run() {
   if (scope.retryable && !ciFailed) {
     // The exact candidate head could not be read (Codex finding 4101926931 on #630): retryable on this SHA.
     await holdUnreadableCandidateHead(client, pullRequest, expectedHead, scope, existingStatuses);
-    console.log(`Exact candidate head is unreadable; retryable on this same head: ${scope.detail}`);
+    console.log(`Exact-head scope evidence is unreadable; retryable on this same head: ${scope.detail}`);
     return;
   }
 

@@ -184,14 +184,19 @@ export async function run({
   }
 
   // The cited work-item issue (owner, 2026-10-09, M3: one GitHub issue per work item), verified against the
-  // repository: a cited number must be a real issue here. Reported independently, like the checks above.
-  const workItemProblem = await verifyWorkItemIssue(event.pull_request?.body, {
+  // repository: a cited number must be a real issue here. Reported independently, like the checks above. A
+  // transient read only warns (#751 Codex 4230918008): failing here would draft the PR over a GitHub outage,
+  // and the controller re-verifies the citation from the default branch before merge, where an unreadable
+  // answer is retryable on the same head (autonomous-review-gate.mjs `enforceReviewScope`).
+  const workItem = await verifyWorkItemIssue(event.pull_request?.body, {
     fetchImpl,
     repository: repository || event.repository?.full_name,
     token,
   });
-  if (workItemProblem) {
-    console.error(`::error title=Work item issue::${workItemProblem}`);
+  if (workItem?.retryable) {
+    console.warn(`::warning title=Work item issue::${workItem.detail}; the controller re-verifies it before merge`);
+  } else if (workItem) {
+    console.error(`::error title=Work item issue::${workItem.detail}`);
     process.exitCode = 1;
   } else if (workItemIssueNumber(event.pull_request?.body) !== null) {
     console.log(`review-scope: work item issue #${workItemIssueNumber(event.pull_request?.body)} verified`);
@@ -229,13 +234,15 @@ export function workItemIssueNumber(body) {
 }
 
 /**
- * The problem with a PR's cited work-item issue, or null when it cites none or the citation is a real issue in
- * this repository. #731's Codex 4214321797 — a made-up number must not satisfy the syntax: the issue has to
- * exist here and be an issue, not a pull request. An unreadable answer is a problem too (re-run the check).
+ * The problem with a PR's cited work-item issue as `{ detail, retryable }`, or null when it cites none or the
+ * citation is a real issue in this repository. #731's Codex 4214321797 — a made-up number must not satisfy the
+ * syntax: the issue has to exist here and be an issue, not a pull request. An answer that could not be read
+ * is `retryable` (#751 Codex 4230918008): the citation is unknown, not wrong, so no correction is owed.
  */
 export async function verifyWorkItemIssue(body, { fetchImpl, repository, token }) {
   const number = workItemIssueNumber(body);
   if (number === null) return null;
+  const unreadable = (reason) => ({ detail: `the cited work item #${number} could not be read (${reason})`, retryable: true });
   try {
     const response = await fetchImpl(`https://api.github.com/repos/${repository}/issues/${number}`, {
       headers: {
@@ -244,13 +251,13 @@ export async function verifyWorkItemIssue(body, { fetchImpl, repository, token }
         'x-github-api-version': '2022-11-28',
       },
     });
-    if (response.status === 404) return `the cited work item #${number} does not exist in ${repository}`;
-    if (!response.ok) return `the cited work item #${number} could not be read (HTTP ${response.status}); re-run this check`;
+    if (response.status === 404) return { detail: `the cited work item #${number} does not exist in ${repository}`, retryable: false };
+    if (!response.ok) return unreadable(`HTTP ${response.status}`);
     const issue = await response.json();
-    if (issue?.pull_request) return `the cited work item #${number} is a pull request, not an issue`;
+    if (issue?.pull_request) return { detail: `the cited work item #${number} is a pull request, not an issue`, retryable: false };
     return null;
   } catch (error) {
-    return `the cited work item #${number} could not be read (${error?.message ?? error}); re-run this check`;
+    return unreadable(error?.message ?? String(error));
   }
 }
 

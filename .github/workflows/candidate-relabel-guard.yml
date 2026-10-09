@@ -4,7 +4,9 @@ name: Candidate relabel guard
 # `codex-current-head` already on the head. On the edit itself, this runs the
 # controller's own scope check from trusted default-branch code. A head that does
 # not declare the candidate is refused: a `scope:` failure, and a draft conversion
-# that cancels any queued auto-merge. See docs/CLOUD_ROLE_TRANSFER.md.
+# that cancels any queued auto-merge. See docs/CLOUD_ROLE_TRANSFER.md. A cited
+# work-item issue is re-verified on the same edit (M3): one that is not a real
+# issue is refused the same way; one that cannot be read is held retryably.
 on:
   pull_request_target:
     types: [edited]

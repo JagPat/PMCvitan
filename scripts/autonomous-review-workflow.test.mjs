@@ -8,6 +8,7 @@ import { buildZip } from './zip-test-fixture.mjs';
 import {
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
+  WORK_ITEM_READ_RETRY,
   CI_SCOPE_ADMITTED,
   PRODUCT_CHECKS,
   ownershipInconsistentScopeDetail,
@@ -1883,6 +1884,81 @@ test('finding 4101926931 on #630: an exhausted candidate-head read recovers on t
   assert.deepEqual(drafts, []);
   assert.ok(!statusWrites.some((write) => write.state === 'success'));
   assert.equal(pull().body, body);
+});
+
+test('M3 / #751 Codex 4230917999 and 4230918008: the cited work item is re-verified from trusted code; an unread one is retryable', async () => {
+  const head = '7'.repeat(40);
+  const pull = (citation) => ({
+    number: 258, additions: 1, deletions: 0, changed_files: 1,
+    body: `<!-- review-size: standard -->\n<!-- correction-owner: claude -->\n- Work item issue: ${citation}`,
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/258',
+    head: { sha: head, ref: 'claude/m3', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const answers = {
+    '#750': null,
+    '#9999': { detail: 'the cited work item #9999 does not exist in JagPat/PMCvitan', retryable: false },
+    '#751': { detail: 'the cited work item #751 is a pull request, not an issue', retryable: false },
+    '#752': { detail: 'the cited work item #752 could not be read (HTTP 502)', retryable: true },
+  };
+  const harness = (live) => {
+    const log = { statuses: [], drafts: [], citations: 0 };
+    const client = {
+      async pause() {},
+      async pullRequest() { return live; },
+      async setDraft(pr, draft) { log.drafts.push(draft); return { ...pr, draft }; },
+      async setStatus(sha, state, description) { log.statuses.push({ sha, state, description }); },
+      async updateStickyComment() {},
+      async workItemProblem(body) {
+        log.citations += 1;
+        return answers[/Work item issue: (#\d+)/u.exec(body)[1]];
+      },
+    };
+    return { client, log };
+  };
+
+  // A real issue: admitted, nothing written.
+  const valid = harness(pull('#750'));
+  assert.equal((await reviewGate.enforceReviewScope(valid.client, pull('#750'), head)).allowed, true);
+  assert.equal(await reviewGate.guardCandidateRelabel(valid.client, pull('#750'), head), 'admitted');
+  assert.equal(valid.log.citations, 2);
+  assert.deepEqual(valid.log.statuses, []);
+  assert.deepEqual(valid.log.drafts, []);
+
+  // An edit to a missing issue or a pull request: refused on the edit itself — the green status is revoked
+  // and the draft conversion cancels any queued auto-merge — and again at the controller's scope check.
+  for (const citation of ['#9999', '#751']) {
+    const bad = harness(pull(citation));
+    assert.equal(await reviewGate.guardCandidateRelabel(bad.client, pull(citation), head), 'refused');
+    assert.deepEqual(bad.log.drafts, [true]);
+    assert.deepEqual(bad.log.statuses.map((write) => [write.sha, write.state]), [[head, 'failure']]);
+    assert.match(bad.log.statuses[0].description, /^scope: work item: the cited work item #\d+ (does not exist|is a pull request)/u);
+    const scope = await reviewGate.enforceReviewScope(bad.client, pull(citation), head);
+    assert.equal(scope.allowed, false);
+    assert.notEqual(scope.retryable, true);
+  }
+
+  // An unreadable citation is retryable on this same head: no draft, no `scope:` hold, no correction owed.
+  const unread = harness(pull('#752'));
+  const scope = await reviewGate.enforceReviewScope(unread.client, pull('#752'), head);
+  assert.equal(scope.retryable, true);
+  assert.equal(scope.retryReason, WORK_ITEM_READ_RETRY);
+  assert.equal(await reviewGate.guardCandidateRelabel(unread.client, pull('#752'), head), 'unreadable');
+  assert.deepEqual(unread.log.statuses.map((write) => write.description), [WORK_ITEM_READ_RETRY]);
+  assert.deepEqual(unread.log.drafts, []);
+  const retryStatus = { context: 'codex-current-head', state: 'failure', description: WORK_ITEM_READ_RETRY };
+  assert.ok(reviewGate.isRetryableTerminalReviewFailure(retryStatus));
+  assert.equal(correctionReasonFor(retryStatus), null);
+  assert.ok(WORK_ITEM_READ_RETRY.length <= 140, 'GitHub cuts status descriptions at 140 characters');
+  // A CI run whose only failure is unrelated still drafts as an ordinary CI failure: the citation does not hide it.
+  assert.equal(reviewGate.ciFailureDisposition({ trigger: 'ci', ciConclusion: 'failure', ciRunId: 1, ciRunAttempt: 1 }, null, ['web'], {
+    pullRequest: pull('#752'), scope,
+  }).draft, true);
+
+  // A body that cites none and declares no candidate is still not read or touched.
+  const none = harness({ ...pull('#750'), body: '<!-- review-size: standard -->' });
+  assert.equal(await reviewGate.guardCandidateRelabel(none.client, { ...pull('#750'), body: '<!-- review-size: standard -->' }, head), 'not_candidate');
+  assert.equal(none.log.citations, 0);
 });
 
 test('findings 4100230308 (#628) and 4103625675 (#630): a relabel to a candidate marker is refused on the edit itself', async () => {
