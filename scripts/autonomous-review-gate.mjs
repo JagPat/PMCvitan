@@ -781,6 +781,19 @@ export class GitHubClient {
     }
   }
 
+  // Owner direction 2026-10-09 — the PR's own comments, where follow-up filings are recorded before they run.
+  issueComments(number) {
+    return this.paginated(`/repos/${this.repository}/issues/${number}/comments`);
+  }
+
+  createIssueComment(number, body) {
+    return this.request(`/repos/${this.repository}/issues/${number}/comments`, { method: 'POST', body: { body } });
+  }
+
+  updateIssueComment(id, body) {
+    return this.request(`/repos/${this.repository}/issues/comments/${id}`, { method: 'PATCH', body: { body } });
+  }
+
   updateIssueBody(number, body) {
     return this.request(`/repos/${this.repository}/issues/${number}`, { method: 'PATCH', body: { body } });
   }
@@ -1989,26 +2002,43 @@ export async function revalidateFinalReviewPolicy(
  * merges past the cap. Returns the issue number.
  */
 export async function fileDeferredFindings(client, pullRequest, expectedHead, deferred) {
-  const marker = `<!-- review-follow-up: pr-${pullRequest.number} head-${expectedHead} -->`;
-  const existing = (await client.issuesLabelled(REVIEW_FOLLOW_UP_LABEL))
-    .find((issue) => String(issue?.body ?? '').includes(marker));
-  const lines = deferred.map((comment) => {
+  const lines = renderDeferredLines(deferred);
+  // Owner direction 2026-10-09 (#482, 6073308339) — the follow-up lines are RECORDED on the PR before they are
+  // filed, so a filing that fails is recovered later even when a new head is pushed first (the head's findings
+  // are then no longer current-head evidence, and no later classification would see them again)
+  const record = await recordPendingFollowUp(client, pullRequest, expectedHead, lines);
+  const number = await fileDeferredLines(client, pullRequest, expectedHead, lines);
+  await markFollowUpFiled(client, record, pullRequest, expectedHead, number);
+  return number;
+}
+
+/** One checklist line per deferred finding, as classified on the head it was found on. */
+export function renderDeferredLines(deferred) {
+  return deferred.map((comment) => {
     const priority = findingPriority(comment?.body);
     const title = String(comment?.body ?? '').split('\n').map((line) => line.replace(/\*\*|<[^>]+>|!\[[^\]]*\]\([^)]*\)/gu, '').trim())
       .find((line) => line.length > 0) ?? 'Codex finding';
     const where = comment?.path ? `${comment.path}:${comment?.line ?? comment?.original_line ?? '?'}` : 'review-level';
     return `- [ ] ${priority === null ? 'P?' : `P${priority}`} \`${where}\` — ${title} (${comment?.html_url ?? 'no link'})`;
   });
+}
+
+/** A rendered line's stable identity: the finding's URL (the last parenthesised link), else the line itself. */
+function deferredLineIdentity(line) {
+  return /\((https?:\/\/[^)\s]+)\)\s*$/u.exec(line)?.[1] ?? line;
+}
+
+/** File rendered lines in the head's ONE follow-up issue, adding only the findings it does not list yet. */
+async function fileDeferredLines(client, pullRequest, expectedHead, lines) {
+  const marker = `<!-- review-follow-up: pr-${pullRequest.number} head-${expectedHead} -->`;
+  const existing = (await client.issuesLabelled(REVIEW_FOLLOW_UP_LABEL))
+    .find((issue) => String(issue?.body ?? '').includes(marker));
   if (existing) {
-    // Codex 4214389903 — a retry may see findings the first run did not: add each one not yet listed (by its
-    // line, which carries the finding's URL), so the issue stays the complete deferred set
+    // Codex 4214389903 — a retry may see findings the first run did not: add each one not yet listed, so the
+    // issue stays the complete deferred set. Codex 4225790718 — matched by the finding's stable identity (its
+    // URL), not the whole checklist line, which someone may tick (`- [x]`) or edit
     const body = String(existing.body ?? '');
-    // Codex 4225790718 — a finding is matched by its stable identity (its URL), not by the whole checklist line,
-    // which someone may tick (`- [x]`) or edit: a ticked finding must not be appended again as unresolved
-    const missing = lines.filter((line, index) => {
-      const url = deferred[index]?.html_url;
-      return url ? !body.includes(url) : !body.includes(line);
-    });
+    const missing = lines.filter((line) => !body.includes(deferredLineIdentity(line)));
     if (missing.length > 0) await client.updateIssueBody(existing.number, [body.trimEnd(), ...missing].join('\n'));
     return existing.number;
   }
@@ -2017,7 +2047,7 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
   // files a duplicate
   if (typeof client.ensureLabel === 'function') await client.ensureLabel(REVIEW_FOLLOW_UP_LABEL);
   const issue = await client.createIssue({
-    title: `Review follow-up from #${pullRequest.number}: ${deferred.length} deferred Codex finding${deferred.length === 1 ? '' : 's'}`,
+    title: `Review follow-up from #${pullRequest.number}: ${lines.length} deferred Codex finding${lines.length === 1 ? '' : 's'}`,
     labels: [REVIEW_FOLLOW_UP_LABEL],
     body: [
       marker,
@@ -2029,6 +2059,74 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
     ].join('\n'),
   });
   return issue.number;
+}
+
+const FOLLOW_UP_RECORD_AUTHOR = 'github-actions[bot]';
+const pendingMarker = (number, head) => `<!-- review-follow-up-pending: pr-${number} head-${head} -->`;
+const filedMarker = (number, head) => `<!-- review-follow-up-filed: pr-${number} head-${head} -->`;
+
+function followUpRecords(comments, number) {
+  return (comments ?? []).filter((comment) => comment?.user?.login === FOLLOW_UP_RECORD_AUTHOR
+    && /<!-- review-follow-up-(pending|filed): pr-\d+ head-[0-9a-f]{7,40} -->/u.test(String(comment?.body ?? ''))
+    && String(comment.body).includes(`: pr-${number} head-`));
+}
+
+/**
+ * Record the lines about to be filed for `head`, in ONE bot-authored PR comment per head (created, or updated
+ * with any line it lacks). Returns the record, or null when the client cannot keep records.
+ */
+async function recordPendingFollowUp(client, pullRequest, head, lines) {
+  if (typeof client.issueComments !== 'function' || typeof client.createIssueComment !== 'function') return null;
+  const records = followUpRecords(await client.issueComments(pullRequest.number), pullRequest.number);
+  const existing = records.find((comment) => String(comment.body).includes(`: pr-${pullRequest.number} head-${head} -->`));
+  const body = (marker, listed) => [
+    marker,
+    `Codex findings deferred on \`${head.slice(0, 7)}\`, recorded before they are filed in that head's follow-up `
+      + 'issue (owner direction 2026-10-09), so a failed filing is recovered before this PR merges.',
+    '',
+    ...listed,
+  ].join('\n');
+  if (existing) {
+    const current = String(existing.body);
+    const missing = lines.filter((line) => !current.includes(deferredLineIdentity(line)));
+    const listed = [...current.split('\n').filter((line) => line.startsWith('- [')), ...missing];
+    await client.updateIssueComment(existing.id, body(pendingMarker(pullRequest.number, head), listed));
+    return { id: existing.id, lines: listed };
+  }
+  const created = await client.createIssueComment(pullRequest.number, body(pendingMarker(pullRequest.number, head), lines));
+  return { id: created?.id, lines };
+}
+
+async function markFollowUpFiled(client, record, pullRequest, head, issueNumber) {
+  if (!record?.id || typeof client.updateIssueComment !== 'function') return;
+  await client.updateIssueComment(record.id, [
+    filedMarker(pullRequest.number, head),
+    `Codex findings deferred on \`${head.slice(0, 7)}\`: filed in #${issueNumber}.`,
+    '',
+    ...record.lines,
+  ].join('\n'));
+}
+
+/**
+ * Owner direction 2026-10-09 (#482, 6073308339) — recover every follow-up filing on this PR that was recorded
+ * but never completed, typically one whose filing failed before a new head was pushed. Each is filed in ITS OWN
+ * head's follow-up issue, with the lines as classified on that head, adding only findings the issue does not
+ * list yet. Same PR only. Runs in the final settlement, so nothing recorded is lost when the PR merges.
+ */
+export async function reconcilePendingFollowUps(client, pullRequest) {
+  if (typeof client.issueComments !== 'function') return [];
+  const recovered = [];
+  for (const record of followUpRecords(await client.issueComments(pullRequest.number), pullRequest.number)) {
+    const match = /<!-- review-follow-up-pending: pr-\d+ head-([0-9a-f]{7,40}) -->/u.exec(String(record.body));
+    if (!match) continue;
+    const head = match[1];
+    const lines = String(record.body).split('\n').filter((line) => line.startsWith('- ['));
+    if (lines.length === 0) continue;
+    const number = await fileDeferredLines(client, pullRequest, head, lines);
+    await markFollowUpFiled(client, { id: record.id, lines }, pullRequest, head, number);
+    recovered.push({ head, issue: number, findings: lines.length });
+  }
+  return recovered;
 }
 
 /**
@@ -2345,6 +2443,9 @@ export function unionDeferred(first, second) {
  * one) before the merge. `{ state: 'changes_required', detail } | { state: 'clear', deferred, followUp }`.
  */
 export async function settleFinalCodexEvidence(client, pullRequest, expectedHead, earlierDeferred = []) {
+  // Owner direction 2026-10-09 — first recover any follow-up filing on this PR that was recorded but never
+  // completed (an earlier head's included), so no deferred finding is lost when this head merges
+  await reconcilePendingFollowUps(client, pullRequest);
   const evidence = await finalCodexEvidence(client, pullRequest, expectedHead);
   // Codex 4220739672 — the settlement is a FINDINGS guard, never the source of the clean verdict: the caller
   // already holds that (the poll's fresh +1 after this attempt's readyAt, or the recovered success status).

@@ -610,3 +610,60 @@ test('Codex 4226080917 — a failed follow-up filing is retried by the next cont
   const runBody = gate.slice(gate.indexOf('export async function run()'));
   assert.ok(runBody.indexOf('await guardAgainstCurrentHeadFinding(') < runBody.indexOf('await ensureTerminalReviewState('));
 });
+
+test('owner direction 2026-10-09 — filing fails, a new head is pushed, and the final settlement recovers the earlier head\'s findings', async () => {
+  const H1 = 'd'.repeat(40);
+  const H2 = 'e'.repeat(40);
+  const pr = { number: 9, html_url: 'u', changed_files: 2 };
+  const prComments = [];
+  const issues = [];
+  let failFiling = true;
+  let creates = 0;
+  let nextId = 1;
+  const client = {
+    // the PR's own comments, where the gate records follow-up filings
+    issueComments: async () => prComments,
+    createIssueComment: async (number, body) => { const c = { id: nextId++, user: { login: 'github-actions[bot]' }, body }; prComments.push(c); return c; },
+    updateIssueComment: async (id, body) => { prComments.find((c) => c.id === id).body = body; },
+    issuesLabelled: async () => issues,
+    ensureLabel: async () => {},
+    createIssue: async (issue) => {
+      creates += 1;
+      if (failFiling) throw new Error('issues API down');
+      const made = { ...issue, number: 800 + issues.length };
+      issues.push(made);
+      return made;
+    },
+    updateIssueBody: async (number, body) => { issues.find((i) => i.number === number).body = body; },
+    // H2 carries no Codex finding of its own
+    reviews: async () => [],
+    reviewComments: async () => [],
+    pullRequestFiles: async () => FILES,
+  };
+  // H1: past the cap, a P2 and an off-diff P1 were deferred (classified on H1); the filing fails
+  const onH1 = [finding({ head: H1, p: 2, id: 70 }), finding({ head: H1, p: 1, line: 5, id: 71 })];
+  await assert.rejects(fileDeferredFindings(client, pr, H1, onH1), /issues API down/u);
+  assert.equal(issues.length, 0);
+  assert.equal(prComments.length, 1, 'the filing was recorded before it ran');
+  assert.match(prComments[0].body, new RegExp(`review-follow-up-pending: pr-9 head-${H1}`, 'u'));
+  // a new head H2 is pushed before any retry: H1's findings are no longer current-head evidence
+  failFiling = false;
+  const settled = await settleFinalCodexEvidence(client, pr, H2);
+  assert.equal(settled.state, 'clear');
+  // recovered into H1's OWN follow-up issue, with H1's classification and each finding's identity
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].body, new RegExp(`review-follow-up: pr-9 head-${H1}`, 'u'));
+  assert.match(issues[0].body, /P2 `apps\/web\/src\/a\.ts:2` — Title 70 \(https:\/\/github\.com\/o\/r\/pull\/9#discussion_r70\)/u);
+  assert.match(issues[0].body, /P1 `apps\/web\/src\/a\.ts:5` — Title 71 \(https:\/\/github\.com\/o\/r\/pull\/9#discussion_r71\)/u);
+  assert.match(prComments[0].body, new RegExp(`review-follow-up-filed: pr-9 head-${H1}`, 'u'));
+  // no duplicate entries: a later settlement files nothing again, and a re-recorded finding is matched by URL
+  const before = issues[0].body;
+  await settleFinalCodexEvidence(client, pr, H2);
+  await fileDeferredFindings(client, pr, H1, onH1);
+  assert.equal(issues[0].body, before);
+  assert.equal(creates, 2, 'one failed create, one successful create, nothing more');
+  // a pending record someone else wrote is ignored: only the gate's own records are recovered
+  prComments.push({ id: 99, user: { login: 'someone' }, body: `<!-- review-follow-up-pending: pr-9 head-${H2} -->\n- [ ] P2 \`x:1\` — injected (https://example.com/x)` });
+  await settleFinalCodexEvidence(client, pr, H2);
+  assert.equal(issues.length, 1);
+});

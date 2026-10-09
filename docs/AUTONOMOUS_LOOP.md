@@ -298,8 +298,12 @@ Every Codex verdict is read from one evidence snapshot (reviews, then comments, 
 reviews again; read again until both review reads agree). Evidence that changes
 while it is read is `unsettled`: it never clears a head. A blocking verdict is always
 published in one order: the failure status, then back to draft, then the follow-up
-issue for any non-blocking findings beside it. The watchdog routes the same declared
-owner to fix forward; it never orders closure based on a round count.
+issue for any non-blocking findings beside it. Before it files them, the gate records
+the lines in one comment on the PR per head; the final settlement of any later head files
+whatever is still recorded but unfiled into that head's own follow-up issue, matched by
+finding URL. So a filing that failed is recovered even when a new head was pushed first.
+The watchdog routes the same declared owner to fix forward; it never orders closure
+based on a round count.
 
 The retired close-and-replace round limit is a different thing. Its obsolete
 round-limit failures request the existing gate recovery workflow, which rechecks CI
