@@ -148,7 +148,13 @@ export function classifyCodexState({
     // Codex 4220431616 — a REPLY (in_reply_to_id set) opens no finding (findingRoundHeads), so it is neither
     // judged nor deferred here: a reply alone can never let the cap clear a head Codex has not reviewed. It
     // stays in `comments` for `isCodexReplyOnlyReview`, and falls through to the ordinary evidence rules.
-    const findings = [...currentHeadComments.values()].filter((comment) => comment?.in_reply_to_id == null);
+    // Codex 4225790723 — past the cap every finding is judged as GitHub returned it, one per comment id: the
+    // `findingIdentity` dedupe (path, line, body) omits the side and range, so a changed-line P1 on the LEFT
+    // could be overwritten by an identical one on unchanged RIGHT context and the head would clear
+    const byId = new Map(comments
+      .filter((comment) => isCodexActor(comment) && postedAgainst(comment) === expectedHead && comment?.in_reply_to_id == null)
+      .map((comment) => [comment?.id ?? comment?.html_url ?? findingIdentity(comment), comment]));
+    const findings = [...byId.values()];
     const blocking = findings.filter((comment) => blocksUnderCap(comment, cap.changedLines));
     const headReviews = reviews.filter((review) => isCodexActor(review)
       && review.commit_id === expectedHead

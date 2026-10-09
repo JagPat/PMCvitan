@@ -13,8 +13,8 @@ import {
   GITHUB_PR_FILES_LIMIT,
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
-import { capFiles, cappedSuccessDetail, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, publishBlockingVerdict, readCodexEvidence, settleFinalCodexEvidence, unionDeferred } from './autonomous-review-gate.mjs';
-import { REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
+import { capDefersStoredFailure, capFiles, cappedSuccessDetail, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, publishBlockingVerdict, readCodexEvidence, settleFinalCodexEvidence, unionDeferred } from './autonomous-review-gate.mjs';
+import { isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 const HEAD = 'c'.repeat(40);
@@ -408,7 +408,9 @@ test('M2b — evidence that never settles is unsettled: it never clears a head a
   assert.equal(classifyCodexState({ expectedHead: HEAD, readyAt: now, deadline: now, now: later, stable: false }).state, 'timed_out');
   const settled = await settleFinalCodexEvidence(client, { number: 9, changed_files: 2 }, HEAD);
   assert.equal(settled.state, 'changes_required');
-  assert.match(settled.detail, /unsettled/u);
+  // a retryable failure, never a latched finding that would need a push to move on
+  assert.equal(settled.detail, 'review: Codex evidence changed during final verification');
+  assert.equal(isRetryableReviewFailureDescription(settled.detail), true);
 });
 
 test('Codex 4220739644 — the follow-up label is provisioned before the first issue carries it', async () => {
@@ -507,4 +509,56 @@ test('Codex 4220861370 — a blank Codex review container that opens no thread i
   const opener = { ...finding({ head: a, id: 3 }), pull_request_review_id: 1 };
   assert.deepEqual(findingRoundHeads([opener], [blank(1, a)]), [a]);
   assert.deepEqual(findingRoundHeads([], [{ ...blank(2, b), body: '**Review-level finding**' }]), [b]);
+});
+
+test('Codex 4225790723 — past the cap, identical findings on the two sides of a line are judged separately', () => {
+  // the same P1 text at line 1: on the LEFT it names the deleted (changed) old line 1; on the RIGHT, new line
+  // 1 is unchanged context
+  const files = [{ filename: 'apps/web/src/a.ts', patch: '@@ -1,3 +1,2 @@\n-x\n a\n c' }];
+  const left = { ...finding({ p: 1, line: 1, id: 30 }), side: 'LEFT', body: '**![P1 Badge](x)** same text' };
+  const right = { ...finding({ p: 1, line: 1, id: 31 }), side: 'RIGHT', body: '**![P1 Badge](x)** same text' };
+  const changedLines = changedLinesFromFiles(files);
+  assert.equal(blocksUnderCap(left, changedLines), true, 'the deleted line is a changed line');
+  assert.equal(blocksUnderCap(right, changedLines), false, 'the context line is not');
+  // whichever order GitHub returns them in, the changed-line P1 still blocks
+  for (const comments of [[left, right], [right, left]]) {
+    const result = classify(comments, { reached: true, changedLines });
+    assert.equal(result.state, 'changes_required');
+  }
+});
+
+test('Codex 4225790718 — a ticked or edited follow-up item is not appended again', async () => {
+  const deferred = [finding({ p: 2, id: 40 })];
+  const marker = `<!-- review-follow-up: pr-9 head-${HEAD} -->`;
+  const issue = { number: 702, body: `${marker}\n- [x] P2 \`apps/web/src/a.ts:2\` — done (https://github.com/o/r/pull/9#discussion_r40)` };
+  const updates = [];
+  const client = { issuesLabelled: async () => [issue], updateIssueBody: async (number, body) => { updates.push(body); } };
+  assert.equal(await fileDeferredFindings(client, { number: 9 }, HEAD, deferred), 702);
+  assert.deepEqual(updates, [], 'the ticked finding stays as the person left it');
+  // a genuinely new finding is still added
+  await fileDeferredFindings(client, { number: 9 }, HEAD, [...deferred, finding({ p: 2, id: 41 })]);
+  assert.equal(updates.length, 1);
+  assert.match(updates[0], /discussion_r41/u);
+  assert.equal(updates[0].match(/discussion_r40/gu).length, 1);
+});
+
+test('Codex 4225790715 — a stored findings failure that the cap now defers no longer latches the head', async () => {
+  const rounds = [finding({ head: 'a'.repeat(40), id: 50 }), finding({ head: 'b'.repeat(40), id: 51 })];
+  const client = (current) => ({ reviews: async () => [], reviewComments: async () => [...rounds, ...current], pullRequestFiles: async () => FILES });
+  const failure = { context: 'codex-current-head', state: 'failure', description: 'review: 1 current-head Codex finding' };
+  const pr = { number: 9, changed_files: 2 };
+  // past the cap, only a deferrable P2 on this head: the stored failure is re-judged and not preserved
+  assert.equal(await capDefersStoredFailure(client([finding({ p: 2, id: 52 })]), pr, HEAD, failure), true);
+  // a changed-line P1 still blocks: the failure stands
+  assert.equal(await capDefersStoredFailure(client([finding({ p: 1, id: 53 })]), pr, HEAD, failure), false);
+  // under the cap nothing is deferrable: the failure stands
+  assert.equal(await capDefersStoredFailure({ ...client([finding({ p: 2, id: 54 })]), reviewComments: async () => [finding({ p: 2, id: 54 })] }, pr, HEAD, failure), false);
+  // only a findings failure qualifies
+  assert.equal(await capDefersStoredFailure(client([finding({ p: 2, id: 55 })]), pr, HEAD, { ...failure, description: 'review: Codex review timed out' }), false);
+  // both recovery branches consult it before preserving the failure
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
+  assert.match(recovery, /if \(latched && !\(await capDefersStoredFailure\(/u);
+  assert.match(recovery, /\} else \{[\s\S]{0,400}if \(await capDefersStoredFailure\(client, pullRequest, expectedHead, status\)\) return false;/u);
 });

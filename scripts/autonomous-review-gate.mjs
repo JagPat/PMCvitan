@@ -1427,6 +1427,25 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
 
+/**
+ * Codex 4225790715 — does the review-round cap now defer a STORED findings failure on this head? A failure
+ * published before the cap reached this head, or by a controller without the cap, would otherwise be
+ * preserved (or latched beneath a later success) and the head could only move on with a new push. Only a
+ * Codex-findings failure qualifies, and only when the current evidence, classified with the cap, is clear
+ * with findings to defer; a blocking finding, or anything less than a settled snapshot, keeps the failure.
+ */
+export async function capDefersStoredFailure(client, pullRequest, expectedHead, failure) {
+  const description = String(failure?.description ?? '');
+  if (!/current-head Codex finding|Codex submitted a current-head review/u.test(description)) return false;
+  try {
+    const evidence = await finalCodexEvidence(client, pullRequest, expectedHead);
+    return evidence.state === 'clear' && evidence.deferred.length > 0;
+  } catch {
+    // unreadable evidence decides nothing: the stored failure stands (fail closed)
+    return false;
+  }
+}
+
 export async function ensureTerminalReviewState(
   client,
   pullRequest,
@@ -1436,7 +1455,8 @@ export async function ensureTerminalReviewState(
 ) {
   if (!isTerminalReviewStatus(status)) return false;
   if (status.state === 'success') {
-    if (persistentReviewFailure(statuses)) {
+    const latched = persistentReviewFailure(statuses);
+    if (latched && !(await capDefersStoredFailure(client, pullRequest, expectedHead, latched))) {
       await client.setStatus(
         expectedHead,
         'failure',
@@ -1535,6 +1555,9 @@ export async function ensureTerminalReviewState(
       finalPolicy.verdict,
     );
   } else {
+    // Codex 4225790715 — a stored findings failure the cap now defers is not preserved: the ordinary review
+    // path runs instead, which files the deferred findings and completes the head without a new push
+    if (await capDefersStoredFailure(client, pullRequest, expectedHead, status)) return false;
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -1980,7 +2003,12 @@ export async function fileDeferredFindings(client, pullRequest, expectedHead, de
     // Codex 4214389903 — a retry may see findings the first run did not: add each one not yet listed (by its
     // line, which carries the finding's URL), so the issue stays the complete deferred set
     const body = String(existing.body ?? '');
-    const missing = lines.filter((line) => !body.includes(line));
+    // Codex 4225790718 — a finding is matched by its stable identity (its URL), not by the whole checklist line,
+    // which someone may tick (`- [x]`) or edit: a ticked finding must not be appended again as unresolved
+    const missing = lines.filter((line, index) => {
+      const url = deferred[index]?.html_url;
+      return url ? !body.includes(url) : !body.includes(line);
+    });
     if (missing.length > 0) await client.updateIssueBody(existing.number, [body.trimEnd(), ...missing].join('\n'));
     return existing.number;
   }
@@ -2326,7 +2354,12 @@ export async function settleFinalCodexEvidence(client, pullRequest, expectedHead
   if (evidence.state !== 'clear' && evidence.state !== 'pending') {
     return {
       state: 'changes_required',
-      detail: evidence.state === 'changes_required' ? evidence.detail : `review: final Codex evidence is ${evidence.state}; not merging on it`,
+      detail: evidence.state === 'changes_required'
+        ? evidence.detail
+        // an unsettled read is retryable (review-policy RETRYABLE_REVIEW_FAILURES), never a latched finding
+        : evidence.state === 'unsettled'
+          ? 'review: Codex evidence changed during final verification'
+          : `review: final Codex evidence is ${evidence.state}; not merging on it`,
       // Codex 4220861349 — what was deferrable stays deferrable beside a blocker; the caller files it
       deferred: unionDeferred(earlierDeferred, evidence.deferred),
     };
