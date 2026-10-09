@@ -794,6 +794,11 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/issues/comments/${id}`, { method: 'PATCH', body: { body } });
   }
 
+  async closeIssue(number, comment) {
+    await this.request(`/repos/${this.repository}/issues/${number}/comments`, { method: 'POST', body: { body: comment } });
+    await this.request(`/repos/${this.repository}/issues/${number}`, { method: 'PATCH', body: { state: 'closed', state_reason: 'not_planned' } });
+  }
+
   updateIssueBody(number, body) {
     return this.request(`/repos/${this.repository}/issues/${number}`, { method: 'PATCH', body: { body } });
   }
@@ -2058,7 +2063,23 @@ async function fileDeferredLines(client, pullRequest, expectedHead, lines) {
       ...lines,
     ].join('\n'),
   });
-  return issue.number;
+  // Codex 4226440202 — runs for different heads of one PR are not serialized, so two may both miss the head's
+  // issue and both create one. Converge after the create: the lowest-numbered issue for this head is the one
+  // issue, every line is carried into it (matched by URL), and any other is closed as a duplicate.
+  const twins = (await client.issuesLabelled(REVIEW_FOLLOW_UP_LABEL))
+    .filter((candidate) => String(candidate?.body ?? '').includes(marker) && candidate?.state !== 'closed');
+  if (twins.length < 2) return issue.number;
+  const [canonical, ...duplicates] = [...twins].sort((a, b) => a.number - b.number);
+  const carried = duplicates.flatMap((duplicate) => String(duplicate.body ?? '').split('\n').filter((line) => line.startsWith('- [')));
+  const missing = [...lines, ...carried].filter((line, index, all) => {
+    const identity = deferredLineIdentity(line);
+    return !String(canonical.body ?? '').includes(identity) && all.findIndex((other) => deferredLineIdentity(other) === identity) === index;
+  });
+  if (missing.length > 0) await client.updateIssueBody(canonical.number, [String(canonical.body ?? '').trimEnd(), ...missing].join('\n'));
+  if (typeof client.closeIssue === 'function') {
+    for (const duplicate of duplicates) await client.closeIssue(duplicate.number, `Duplicate of #${canonical.number} (the same head's follow-up).`);
+  }
+  return canonical.number;
 }
 
 const FOLLOW_UP_RECORD_AUTHOR = 'github-actions[bot]';
@@ -2301,8 +2322,16 @@ async function reclassifyCurrentCodexEvidence(
  */
 export async function publishBlockingVerdict(client, pullRequest, expectedHead, { description, deferred = [] }) {
   await client.setStatus(expectedHead, 'failure', description, pullRequest.html_url);
+  // Codex 4226440227 — the deferred lines are RECORDED right after the failure status, before the fallible
+  // draft transition: a failure there must not leave them unrecorded when a new head follows (the final
+  // settlement recovers a recorded filing). The filing itself stays after the draft.
+  const lines = renderDeferredLines(deferred);
+  const record = deferred.length > 0 ? await recordPendingFollowUp(client, pullRequest, expectedHead, lines) : null;
   const live = await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
-  if (deferred.length > 0) await fileDeferredFindings(client, pullRequest, expectedHead, deferred);
+  if (deferred.length > 0) {
+    const number = await fileDeferredLines(client, pullRequest, expectedHead, lines);
+    await markFollowUpFiled(client, record, pullRequest, expectedHead, number);
+  }
   return live;
 }
 
@@ -2463,6 +2492,9 @@ export async function settleFinalCodexEvidence(client, pullRequest, expectedHead
           : `review: final Codex evidence is ${evidence.state}; not merging on it`,
       // Codex 4220861349 — what was deferrable stays deferrable beside a blocker; the caller files it
       deferred: unionDeferred(earlierDeferred, evidence.deferred),
+      // Codex 4226440219 — an unsettled read is an infrastructure retry, not a finding: callers publish it on
+      // the recovery path, never as a correction for the author
+      retryable: evidence.state === 'unsettled',
     };
   }
   const deferred = unionDeferred(earlierDeferred, evidence.deferred);
@@ -2946,6 +2978,14 @@ export async function run() {
       // merge: a finding that arrived after the poll's verification blocks (Codex 4214321785) or, past the cap,
       // is filed in the head's follow-up issue with the rest (Codex 4214270293), so none is lost.
       const settled = await settleFinalCodexEvidence(client, pullRequest, expectedHead, verifiedResult.deferred ?? []);
+      if (settled.retryable) {
+        // Codex 4226440219 — recovery-only publication: a retryable failure status and draft, the recovery request
+        // settled, and NO correction instruction; the gate's recovery reruns this head without a push
+        pullRequest = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: settled.detail });
+        if (!pullRequest) return;
+        await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, 'changed review evidence');
+        throw new Error(settled.detail);
+      }
       if (settled.state === 'changes_required') {
         await publishCurrentHeadFinding(client, pullRequest, expectedHead, recoveryRequest, {
           detail: settled.detail,

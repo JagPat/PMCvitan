@@ -495,7 +495,7 @@ test('Codex 4221120404 — a blocking verdict is published in one fixed order: f
   assert.doesNotMatch(publish, /client\.setStatus\(|setDraftForCurrentHead\(|fileDeferredFindings\(/u, 'no step of its own');
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
   assert.match(recovery, /if \(settled\.state === 'changes_required'\) \{\s*await publishBlockingVerdict\(/u);
-  assert.equal([...gate.matchAll(/await publishBlockingVerdict\(/gu)].length, 3, 'the finding path, recovery and changed final evidence');
+  assert.equal([...gate.matchAll(/await publishBlockingVerdict\(/gu)].length, 4, 'the finding path, recovery, changed final evidence and an unsettled settlement');
 });
 
 test('Codex 4220861370 — a blank Codex review container that opens no thread is no review round', () => {
@@ -666,4 +666,61 @@ test('owner direction 2026-10-09 — filing fails, a new head is pushed, and the
   prComments.push({ id: 99, user: { login: 'someone' }, body: `<!-- review-follow-up-pending: pr-9 head-${H2} -->\n- [ ] P2 \`x:1\` — injected (https://example.com/x)` });
   await settleFinalCodexEvidence(client, pr, H2);
   assert.equal(issues.length, 1);
+});
+
+test('Codex 4226440227 — the deferred lines are recorded before the draft transition, so a failing draft cannot lose them', async () => {
+  const calls = [];
+  const prComments = [];
+  const pr = { number: 9, html_url: 'u' };
+  const client = {
+    setStatus: async (sha, state) => { calls.push(`status:${state}`); },
+    issueComments: async () => prComments,
+    createIssueComment: async (number, body) => { calls.push('record'); const c = { id: 1, user: { login: 'github-actions[bot]' }, body }; prComments.push(c); return c; },
+    updateIssueComment: async () => {},
+    pullRequest: async () => { calls.push('draft'); throw new Error('GitHub 502'); },
+  };
+  await assert.rejects(publishBlockingVerdict(client, pr, HEAD, { description: 'review: 1 blocking', deferred: [finding({ p: 2, id: 90 })] }), /502/u);
+  assert.deepEqual(calls, ['status:failure', 'record', 'draft']);
+  assert.match(prComments[0].body, /review-follow-up-pending/u);
+  assert.match(prComments[0].body, /discussion_r90/u);
+});
+
+test('Codex 4226440202 — two runs that both created the head\'s follow-up issue converge on one', async () => {
+  const marker = `<!-- review-follow-up: pr-9 head-${HEAD} -->`;
+  // another head's run created #810 between this run's lookup and its create
+  const issues = [{ number: 810, state: 'open', body: `${marker}\n- [ ] P2 \`a.ts:2\` — Title 91 (https://github.com/o/r/pull/9#discussion_r91)` }];
+  const closed = [];
+  let lookups = 0;
+  const client = {
+    issuesLabelled: async () => { lookups += 1; return lookups === 1 ? [] : issues; },
+    ensureLabel: async () => {},
+    createIssue: async (issue) => { const made = { ...issue, number: 811, state: 'open' }; issues.push(made); return made; },
+    updateIssueBody: async (number, body) => { issues.find((i) => i.number === number).body = body; },
+    closeIssue: async (number) => { closed.push(number); issues.find((i) => i.number === number).state = 'closed'; },
+  };
+  const number = await fileDeferredFindings(client, { number: 9 }, HEAD, [finding({ p: 2, id: 92 })]);
+  assert.equal(number, 810, 'the lowest-numbered issue is the one issue');
+  assert.deepEqual(closed, [811]);
+  assert.match(issues[0].body, /discussion_r91/u);
+  assert.match(issues[0].body, /discussion_r92/u, 'the duplicate\'s line is carried over');
+  assert.equal(issues[0].body.match(/discussion_r91/gu).length, 1);
+});
+
+test('Codex 4226440219 — an unsettled final settlement is published on the recovery path, not as a correction', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const success = gate.slice(gate.indexOf('const settled = await settleFinalCodexEvidence(client, pullRequest, expectedHead, verifiedResult.deferred'));
+  const retry = success.indexOf('if (settled.retryable) {');
+  assert.ok(retry > 0 && retry < success.indexOf('if (settled.state === \'changes_required\') {'), 'checked before the correction path');
+  const branch = success.slice(retry, success.indexOf('if (settled.state === \'changes_required\') {'));
+  assert.match(branch, /publishBlockingVerdict\(/u);
+  assert.match(branch, /'changed review evidence'/u);
+  assert.doesNotMatch(branch, /publishCurrentHeadFinding|updateStickyComment|correctionNotice/u, 'no correction instruction for the author');
+  // and the settlement marks exactly that case retryable
+  let reads = 0;
+  const client = { reviews: async () => { reads += 1; return [{ id: reads }]; }, reviewComments: async () => [], pullRequestFiles: async () => FILES };
+  const settled = await settleFinalCodexEvidence(client, { number: 9, changed_files: 2 }, HEAD);
+  assert.equal(settled.retryable, true);
+  const blocked = await settleFinalCodexEvidence({ reviews: async () => [], reviewComments: async () => [finding({ p: 1, id: 93 })], pullRequestFiles: async () => FILES }, { number: 9, changed_files: 2 }, HEAD);
+  assert.equal(blocked.retryable, false);
 });
