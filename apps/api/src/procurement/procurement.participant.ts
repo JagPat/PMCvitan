@@ -320,6 +320,11 @@ export class ProcurementParticipant {
     tx: Prisma.TransactionClient,
     projectId: string,
     poLineId: string,
+    /** `lock: false` is for a READ (the §E triple a screen shows): it answers from the caller's
+     *  snapshot and holds nothing, so it can never sit between a command's authority lock and the
+     *  bound check that locks this line at COMMIT — the commercial-approval deadlock. Commands keep
+     *  the default. */
+    { lock = true }: { lock?: boolean } = {},
   ): Promise<{
     vendorId: string; uom: string; ordered: Prisma.Decimal; live: boolean; status: string;
     /** Phase 5 Task 5 (§E) — the FROZEN commercial terms the three-way check compares a claim
@@ -339,7 +344,7 @@ export class ProcurementParticipant {
       SELECT "vendorId", "uom", "qty", "approvedOverage", "poVersionId", "rate", "taxAmount", "freightAmount"
         FROM "PurchaseOrderLine"
        WHERE "projectId" = ${projectId} AND "id" = ${poLineId}
-       FOR UPDATE`;
+       ${lock ? Prisma.sql`FOR UPDATE` : Prisma.empty}`;
     const line = rows[0];
     if (!line) return null;
     const version = await tx.purchaseOrderVersion.findFirstOrThrow({

@@ -444,10 +444,18 @@ export class OrgsParticipant {
     projectId: string,
     userId: string,
     roles: readonly string[],
+    /**
+     * `lock: false` is a READING of the same answer, for a screen that reports what an approval
+     * would be allowed (the claim bundle's payment preflight). It takes neither the row locks nor
+     * the readiness lock: a read holding the standing rows sat in front of `approve()`, which locks
+     * them after the readiness lock and the bill, and deadlocked against it. The command re-decides
+     * under its locks, so a reading that goes stale is refused there, never acted on.
+     */
+    { lock = true }: { lock?: boolean } = {},
   ): Promise<{ standing: false } | { standing: true; ceiling: Prisma.Decimal | null }> {
     // ONE statement of the rule, under the lock. `forUpdate` is what makes this an authority
     // decision rather than a reading of one: the downgrade waits for this transaction.
-    const entitled = await this.hasProjectRoleStanding(tx, projectId, userId, roles, { forUpdate: true });
+    const entitled = await this.hasProjectRoleStanding(tx, projectId, userId, roles, { forUpdate: lock });
     if (!entitled) return { standing: false };
 
     const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ approvalLimit: Prisma.Decimal | null }>>(
@@ -456,6 +464,8 @@ export class OrgsParticipant {
       projectId, userId,
     );
     if (rows.length > 0) return { standing: true, ceiling: rows[0]!.approvalLimit ?? null };
+    // a reading answers from its snapshot: the org arm, unlimited, with nothing to serialize
+    if (!lock) return { standing: true, ceiling: null };
 
     // No active membership, yet standing held — the ORG owner/admin arm. There is no project row
     // to carry a ceiling, and inventing zero here is exactly the refusal round 2 named.

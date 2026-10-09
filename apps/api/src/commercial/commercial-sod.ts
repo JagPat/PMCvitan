@@ -140,6 +140,8 @@ export async function payableGrantOffer(
   rule: string,
   approveRoles: readonly string[],
   asOf: { status: string; lifecycleVersion: number },
+  /** `lock: false` for the READ that offers the actor — see `OrgsParticipant.approvalAuthorityFor` */
+  { lock = true }: { lock?: boolean } = {},
 ): Promise<{
   actorId: string | null;
   context: ApprovalContext | null;
@@ -153,7 +155,7 @@ export async function payableGrantOffer(
   // the CERTIFIER's own authority — standing AND ceiling — because they are the only actor this
   // rule can excuse and `approve()` applies both to them
   const authority = await deps.orgs.approvalAuthorityFor(
-    tx, projectId, context.certifiedById, approveRoles,
+    tx, projectId, context.certifiedById, approveRoles, { lock },
   );
   // …and whether one already stands. Resolved through the SAME function the spend path consumes
   // with, against the certificate's version, so "an approval would select it" is not re-derived.

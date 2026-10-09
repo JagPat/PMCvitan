@@ -205,6 +205,8 @@ export class LabourRequirementParticipant {
     tx: Prisma.TransactionClient,
     projectId: string,
     labourPoLineId: string,
+    /** `lock: false` for a READ — see `ProcurementParticipant.lockOrderedLineForClaim` */
+    { lock = true }: { lock?: boolean } = {},
   ): Promise<{
     vendorId: string; ordered: Prisma.Decimal; live: boolean; status: string;
     /** Phase 5 Task 5 (§E) — the frozen labour terms, from the SAME locked read. §E compares a
@@ -220,7 +222,7 @@ export class LabourRequirementParticipant {
       SELECT "vendorId", "personShiftQty", "poVersionId", "ratePerPersonShift", "shiftPremium"
         FROM "LabourPurchaseOrderLine"
        WHERE "projectId" = ${projectId} AND "id" = ${labourPoLineId}
-       FOR UPDATE`;
+       ${lock ? Prisma.sql`FOR UPDATE` : Prisma.empty}`;
     const line = rows[0];
     if (!line) return null;
     const version = await tx.labourPurchaseOrderVersion.findFirstOrThrow({
