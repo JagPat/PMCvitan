@@ -27,7 +27,8 @@ permissions:
   actions: write
   contents: read
   issues: write
-  pull-requests: read
+  # a comment or label on a PULL REQUEST needs pull-requests: write; issues: write alone is refused (403)
+  pull-requests: write
   statuses: read
 
 # Codex 4220621326 — ONE serialization domain for every report writer (a direct `closed` report and every

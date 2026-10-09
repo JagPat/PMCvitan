@@ -233,3 +233,36 @@ test('Codex 4221120387 — a reported PR is labelled, and later sweeps skip it w
   // the fifty labelled PRs cost nothing beyond the list itself
   for (let n = 3; n <= 52; n += 1) assert.ok(!requests.some((r) => r.includes(`/pulls/${n}`) || r.includes(`/issues/${n}/`)), `#${n} is not re-read`);
 });
+
+test('the report workflow may comment on and label pull requests (run 37866832598: 403 with issues: write alone)', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const workflow = await readFile(new URL('../.github/workflows/completion-report.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /\n {2}pull-requests: write\n/u);
+  assert.match(workflow, /\n {2}issues: write\n/u);
+});
+
+test('one PR that cannot be reported costs neither the others their reports nor main its CI dispatch', async () => {
+  const now = Date.parse('2026-10-08T12:00:00Z');
+  const pr = (number) => ({ number, labels: [], merged_at: '2026-10-08T11:00:00Z', created_at: '2026-10-08T10:00:00Z', head: { sha: `h${number}` }, additions: 1, deletions: 0 });
+  const prs = [pr(1), pr(2)];
+  const posted = [];
+  const dispatched = [];
+  const json = (body, status = 200) => ({ ok: status < 300, status, json: async () => body });
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url);
+    if (init.method === 'POST' && u.endsWith('/issues/1/comments')) return json({}, 403);
+    if (init.method === 'POST' && u.endsWith('/comments')) { posted.push(Number(/issues\/(\d+)\//u.exec(u)[1])); return json({}); }
+    if (init.method === 'POST' && u.endsWith('/dispatches')) { dispatched.push('main'); return json({}); }
+    if (init.method === 'POST') return json({});
+    if (u.endsWith(`/labels/${COMPLETION_REPORTED_LABEL}`)) return json({});
+    if (u.includes('/pulls?state=closed')) return json(prs);
+    const m = /\/pulls\/(\d+)$/u.exec(u);
+    if (m) return json(prs[Number(m[1]) - 1]);
+    if (u.includes('/commits/main')) return json({ sha: 'mainsha' });
+    if (u.includes('/actions/workflows/ci.yml/runs')) return json({ workflow_runs: [] });
+    return json([]);
+  };
+  await assert.rejects(sweep({ repository: 'o/r', token: 't', fetchImpl, now }), /reported \[2\].*dispatched=true.*failed #1: GitHub 403 posting the completion report/su);
+  assert.deepEqual(posted, [2]);
+  assert.deepEqual(dispatched, ['main']);
+});
