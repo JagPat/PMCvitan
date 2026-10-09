@@ -237,7 +237,8 @@ export function workItemIssueNumbers(body) {
   // only rendered text: an example in a fenced block or an HTML comment is not a citation (#751 Codex 4232445400)
   const rendered = String(body ?? '')
     .replace(/<!--[\s\S]*?(?:-->|$)/gu, '')
-    .replace(/^[^\S\n]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[^\S\n]*\1[^\S\n]*$|(?![\s\S]))/gmu, '');
+    // a fence closes on the same character at least as long as its opener (#751 Codex 4232521953)
+    .replace(/^[^\S\n]*((`)`{2,}|(~)~{2,})[^\n]*\n[\s\S]*?(?:^[^\S\n]*\1\2*\3*[^\S\n]*$|(?![\s\S]))/gmu, '');
   // any Markdown prefix — list markers (`-`, `*`, `+`, `1.`), quotes, emphasis — so formatting cannot hide a
   // citation from verification (#751 Codex 4232401607)
   return [...rendered.matchAll(/^[^\S\n]*(?:(?:[-*+>]|\d+[.)])[^\S\n]*)*[*_]*Work item issue:[*_]*[^\S\n]*#(\d+)\b/gimu)]

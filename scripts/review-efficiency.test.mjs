@@ -1811,6 +1811,11 @@ test('M3 — the cited work-item issue is parsed from the template line', () => 
   assert.deepEqual(workItemIssueNumbers('~~~\nWork item issue: #1\n~~~\n- Work item issue: #2'), [2]);
   assert.deepEqual(workItemIssueNumbers('<!-- Work item issue: #1 -->\n- Work item issue: #2'), [2]);
   assert.deepEqual(workItemIssueNumbers('```\nWork item issue: #1'), [], 'an unclosed fence runs to the end, as GitHub renders it');
+  // #751 Codex 4232521953 — a longer closer of the same character closes the fence; a shorter one does not
+  assert.deepEqual(workItemIssueNumbers('```\nWork item issue: #1\n`````\n- Work item issue: #2'), [2]);
+  assert.deepEqual(workItemIssueNumbers('~~~\nWork item issue: #1\n~~~~\n- Work item issue: #2'), [2]);
+  assert.deepEqual(workItemIssueNumbers('````\nWork item issue: #1\n```\n- Work item issue: #2'), [], 'a shorter closer is content');
+  assert.deepEqual(workItemIssueNumbers('```\nWork item issue: #1\n~~~\n- Work item issue: #2'), [], 'a different character is content');
 });
 
 test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in this repository', async () => {

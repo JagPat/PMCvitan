@@ -17,7 +17,7 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: maint-m3-ordinary-lane-work-items
-reviewed_merge: 163c4c1
+reviewed_merge: 2d52a39
 open_pr: 751
 next_task: phase-6-task-4d-iii
 blocking_directive: none
@@ -32,7 +32,8 @@ gets the full CI battery and a fresh exact-head Codex review — and the scope g
 `Work item issue: #N` is a real issue. No size threshold is added; whether a citation is mandatory, and any size
 target, await the owner (#482 6081490888). #744 and #742 stay open and stopped.
 
-M2b-2 merged at `163c4c1` (#749); M2b-1 at `8cd1315` (#748).
+The reliable follow-up filing repair merged at `2d52a39` (#758; #482 6085143973); M2b-2 at `163c4c1` (#749);
+M2b-1 at `8cd1315` (#748).
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign
 stop and the owner approved splitting it, each unit from `main`: M1a (#740, merged at `94d1cdb`), this file's shrink (STATUS and ROADMAP
