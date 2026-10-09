@@ -1801,8 +1801,9 @@ test('M3 — the cited work-item issue is parsed from the template line', () => 
 
 test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in this repository', async () => {
   const calls = [];
-  const fetchImpl = (answers) => async (url) => {
+  const fetchImpl = (answers) => async (url, init) => {
     calls.push(url);
+    assert.equal(init?.redirect, 'manual', 'a transferred issue must not be followed to its new repository');
     const answer = answers[url.split('/').pop()];
     if (answer instanceof Error) throw answer;
     return { status: answer.status, ok: answer.status >= 200 && answer.status < 300, json: async () => answer.body };
@@ -1813,6 +1814,8 @@ test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in t
     12: { status: 404, body: {} },
     13: { status: 502, body: {} },
     14: new Error('socket hang up'),
+    15: { status: 410, body: {} },
+    16: { status: 301, body: { url: 'https://api.github.com/repos/other/repo/issues/3' } },
   };
   const check = (number) => verifyWorkItemIssue(`- Work item issue: #${number}`, { fetchImpl: fetchImpl(answers), repository: 'o/r', token: 't' });
   assert.equal(await check(10), null);
@@ -1821,6 +1824,10 @@ test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in t
   // #751 Codex 4230918008 — an answer that could not be read is retryable, never a correction
   assert.deepEqual(await check(13), { detail: 'the cited work item #13 could not be read (HTTP 502)', retryable: true });
   assert.deepEqual(await check(14), { detail: 'the cited work item #14 could not be read (socket hang up)', retryable: true });
+  // #751 Codex 4231455047 / 4231455060 — a deleted issue and one transferred out of this repository are
+  // permanent answers, and the transfer redirect is never followed
+  assert.deepEqual(await check(15), { detail: 'the cited work item #15 was deleted from o/r', retryable: false });
+  assert.deepEqual(await check(16), { detail: 'the cited work item #16 was moved out of o/r', retryable: false });
   assert.equal(calls[0], 'https://api.github.com/repos/o/r/issues/10');
   // a body that cites none makes no request (whether a citation is REQUIRED is not decided here)
   calls.length = 0;

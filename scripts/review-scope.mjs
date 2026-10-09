@@ -244,7 +244,10 @@ export async function verifyWorkItemIssue(body, { fetchImpl, repository, token }
   if (number === null) return null;
   const unreadable = (reason) => ({ detail: `the cited work item #${number} could not be read (${reason})`, retryable: true });
   try {
+    // `manual`: a transferred issue answers 301 to its new repository, and a followed redirect would accept an
+    // issue that no longer belongs here (#751 Codex 4231455060)
     const response = await fetchImpl(`https://api.github.com/repos/${repository}/issues/${number}`, {
+      redirect: 'manual',
       headers: {
         accept: 'application/vnd.github+json',
         authorization: `Bearer ${token}`,
@@ -252,6 +255,12 @@ export async function verifyWorkItemIssue(body, { fetchImpl, repository, token }
       },
     });
     if (response.status === 404) return { detail: `the cited work item #${number} does not exist in ${repository}`, retryable: false };
+    // permanent answers, never retried (#751 Codex 4231455047 and 4231455060): 410 is a deleted issue (or issues
+    // disabled here), and a redirect is an issue transferred out of this repository
+    if (response.status === 410) return { detail: `the cited work item #${number} was deleted from ${repository}`, retryable: false };
+    if (response.status >= 300 && response.status < 400) {
+      return { detail: `the cited work item #${number} was moved out of ${repository}`, retryable: false };
+    }
     if (!response.ok) return unreadable(`HTTP ${response.status}`);
     const issue = await response.json();
     if (issue?.pull_request) return { detail: `the cited work item #${number} is a pull request, not an issue`, retryable: false };

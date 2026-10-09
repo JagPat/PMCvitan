@@ -1292,6 +1292,7 @@ export function ownershipStatusWithholdsAutoMerge(status) {
   if (status?.context !== STATUS_CONTEXT || status?.state !== 'failure') return false;
   const description = String(status?.description ?? '');
   return description.startsWith(OWNERSHIP_READ_RETRY)
+    || description.startsWith(WORK_ITEM_READ_RETRY)
     || description.startsWith(OWNERSHIP_CANDIDATE_HELD)
     || isOwnershipInconsistentScopeDetail('scope', description.replace(/^\s*scope:\s*/u, ''));
 }
@@ -1374,6 +1375,17 @@ export async function completeReviewedPullRequest(
   verdict,
 ) {
   const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead, verdict);
+  if (authorization.state === 'work_item_not_verified') {
+    // The green status this head carries is revoked, not merely left unmerged: a citation that is not a real
+    // issue is refused (draft, cancelling any queued auto-merge); an unreadable one gets the retryable hold.
+    const { scope } = authorization;
+    if (scope.retryable) {
+      await holdUnreadableCandidateHead(client, authorization.pullRequest, expectedHead, { ...scope, verdict: UNREADABLE_VERDICT });
+    } else {
+      await refuseScope(client, authorization.pullRequest, expectedHead, scope);
+    }
+    return 'held_for_gates';
+  }
   if (!authorization.allowed) {
     return 'held_for_gates';
   }
@@ -1446,6 +1458,12 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   // (Codex finding 4098699869 on #628). The PR this returns, and the merge acts on, is the one checked.
   if (candidateBodyHold(finalLive, mergeVerdict)) {
     return { allowed: false, state: 'ownership_not_eligible' };
+  }
+  // So is the cited work item (#751 Codex 4231455040): an edit since final admission that cites a missing
+  // issue or a pull request, or one that cannot be read now, is caught on the body the merge would act on.
+  const citation = await assessWorkItemCitation(client, finalLive, { allowed: true });
+  if (!citation.allowed) {
+    return { allowed: false, state: 'work_item_not_verified', scope: citation, pullRequest: finalLive };
   }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
@@ -1591,7 +1609,8 @@ export async function ensureTerminalReviewState(
     // 2B2: a retryable `OWNERSHIP_READ_RETRY` failure must not flip readiness here either — the exact
     // head could not be read, so a later run re-reads and recovers. Drafting on a transient read
     // failure would strand the PR draft until a manual re-ready; every other recovered failure drafts.
-    if (!String(status.description ?? '').startsWith(OWNERSHIP_READ_RETRY)) {
+    // The same holds for an unreadable cited work item (#751 Codex 4231455030).
+    if (![OWNERSHIP_READ_RETRY, WORK_ITEM_READ_RETRY].some((reason) => String(status.description ?? '').startsWith(reason))) {
       await setDraftForCurrentHead(
         client,
         pullRequest.number,

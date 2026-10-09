@@ -1961,6 +1961,72 @@ test('M3 / #751 Codex 4230917999 and 4230918008: the cited work item is re-verif
   assert.equal(none.log.citations, 0);
 });
 
+test('M3 / #751 Codex 4231455040 and 4231455030: the citation is rechecked on the body the merge acts on; a read retry never drafts', async () => {
+  const head = '6'.repeat(40);
+  const base = '5'.repeat(40);
+  const pull = (citation) => ({
+    number: 600, state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/600',
+    body: `<!-- correction-owner: claude -->\n- Work item issue: ${citation}`,
+    head: { sha: head, ref: 'claude/m3', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const answers = {
+    '#750': null,
+    '#9999': { detail: 'the cited work item #9999 does not exist in JagPat/PMCvitan', retryable: false },
+    '#752': { detail: 'the cited work item #752 could not be read (HTTP 502)', retryable: true },
+  };
+  const eligible = { outcome: 'eligible', mergeEligible: true, owner: 'claude' };
+  const checks = reviewGate.REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+  const harness = (pulls) => {
+    const log = { statuses: [], drafts: [], merges: 0, autoMerges: 0 };
+    const client = {
+      repository: 'JagPat/PMCvitan',
+      async pause() {},
+      async pullRequest() { return pulls.length > 1 ? pulls.shift() : pulls[0]; },
+      async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+      async checkRuns() { return checks; },
+      async setDraft(pr, draft) { log.drafts.push(draft); return { ...pr, draft }; },
+      async setStatus(sha, state, description) { log.statuses.push({ sha, state, description }); },
+      async updateStickyComment() {},
+      async mergeExactHead() { log.merges += 1; return { merged: true }; },
+      async enableAutoMerge() { log.autoMerges += 1; },
+      async dispatchHandoff() {},
+      async workItemProblem(body) { return answers[/Work item issue: (#\d+)/u.exec(body)[1]]; },
+    };
+    return { client, log };
+  };
+
+  // A valid citation on both reads merges.
+  const valid = harness([pull('#750'), pull('#750')]);
+  assert.equal(await reviewGate.completeReviewedPullRequest(valid.client, pull('#750'), head, eligible), 'merged');
+
+  // A body edited to a missing issue between admission and the merge's final read: no merge, and the green
+  // status is revoked with the scope refusal and a draft (which cancels any queued auto-merge).
+  const edited = harness([pull('#750'), pull('#9999')]);
+  assert.equal((await reviewGate.authorizeExactHeadMerge(edited.client, pull('#750'), head, eligible)).state, 'work_item_not_verified');
+  const refused = harness([pull('#750'), pull('#9999')]);
+  assert.equal(await reviewGate.completeReviewedPullRequest(refused.client, pull('#750'), head, eligible), 'held_for_gates');
+  assert.equal(refused.log.merges + refused.log.autoMerges, 0);
+  assert.deepEqual(refused.log.drafts, [true]);
+  assert.match(refused.log.statuses.at(-1).description, /^scope: work item: the cited work item #9999 does not exist/u);
+
+  // Unreadable at the final read: no merge, the retryable hold replaces the green status, and no draft.
+  const unread = harness([pull('#750'), pull('#752')]);
+  assert.equal(await reviewGate.completeReviewedPullRequest(unread.client, pull('#750'), head, eligible), 'held_for_gates');
+  assert.equal(unread.log.merges + unread.log.autoMerges, 0);
+  assert.deepEqual(unread.log.drafts, []);
+  assert.deepEqual(unread.log.statuses.map((write) => [write.state, write.description]), [['failure', WORK_ITEM_READ_RETRY]]);
+
+  // Recovery of a stored WORK_ITEM_READ_RETRY (no recovery request yet) keeps the PR ready, as for an
+  // unreadable ownership read: drafting would strand the head once the citation is readable again.
+  const recovered = harness([pull('#750')]);
+  const retryStatus = { id: 601, context: 'codex-current-head', state: 'failure', description: WORK_ITEM_READ_RETRY };
+  assert.equal(await reviewGate.ensureTerminalReviewState(recovered.client, pull('#750'), head, retryStatus, [retryStatus]), true);
+  assert.deepEqual(recovered.log.drafts, []);
+  // and the auto-merge withholding predicate classifies it with the other read retry
+  assert.equal(reviewGate.ownershipStatusWithholdsAutoMerge(retryStatus), true);
+});
+
 test('findings 4100230308 (#628) and 4103625675 (#630): a relabel to a candidate marker is refused on the edit itself', async () => {
   const head = '9'.repeat(40);
   const pull = (marker, draft = false) => ({
