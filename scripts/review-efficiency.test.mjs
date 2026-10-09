@@ -1806,37 +1806,31 @@ test('M3 — the cited work-item issue is parsed from the template line', () => 
     assert.equal(workItemIssueNumber(`intro\n${line}\n`), 9, line);
   }
   assert.equal(workItemIssueNumber('the Work item issue: #9 is mentioned mid-line'), null, 'only a line that IS the field');
-  // #751 Codex 4232445400 — an example in a fenced block or an HTML comment is not a citation
-  const example = '```md\n- Work item issue: #9999\n```';
-  assert.deepEqual(workItemIssueNumbers(`- Work item issue: #750\n\n${example}\n`), [750]);
-  assert.deepEqual(workItemIssueNumbers(`${example}\n`), []);
-  assert.deepEqual(workItemIssueNumbers('~~~\nWork item issue: #1\n~~~\n- Work item issue: #2'), [2]);
-  assert.deepEqual(workItemIssueNumbers('<!-- Work item issue: #1 -->\n- Work item issue: #2'), [2]);
-  assert.deepEqual(workItemIssueNumbers('```\nWork item issue: #1'), [], 'an unclosed fence runs to the end, as GitHub renders it');
-  // #751 Codex 4232521953 — a longer closer of the same character closes the fence; a shorter one does not
-  assert.deepEqual(workItemIssueNumbers('```\nWork item issue: #1\n`````\n- Work item issue: #2'), [2]);
-  assert.deepEqual(workItemIssueNumbers('~~~\nWork item issue: #1\n~~~~\n- Work item issue: #2'), [2]);
-  assert.deepEqual(workItemIssueNumbers('````\nWork item issue: #1\n```\n- Work item issue: #2'), [], 'a shorter closer is content');
-  assert.deepEqual(workItemIssueNumbers('```\nWork item issue: #1\n~~~\n- Work item issue: #2'), [], 'a different character is content');
-  // #751 Codex 4232566806 — a heading is the field too
-  assert.deepEqual(workItemIssueNumbers('### Work item issue: #9'), [9]);
-  // #751 Codex 4232566819 — indented code is an example; an indented list continuation is not code
-  assert.deepEqual(workItemIssueNumbers('intro\n\n    Work item issue: #1\n\n- Work item issue: #2'), [2]);
-  assert.deepEqual(workItemIssueNumbers('- item\n\n    Work item issue: #3'), [3], 'list continuation, not code');
-  assert.deepEqual(workItemIssueNumbers('see `Work item issue: #1` inline\n- Work item issue: #2'), [2]);
-  // fail closed: a line that reads like the field but is not one is refused, never skipped
-  for (const lookalike of ['Work item: issue #9', 'work item issue #9', '| Work item issue | #9 |', 'the Work item issue: #9 mid-line']) {
+  assert.deepEqual(workItemIssueNumbers('### Work item issue: #9'), [9], 'a heading is the field too (Codex 4232566806)');
+  assert.deepEqual(workItemIssueNumbers('<!-- Work item issue: #1 -->\n- Work item issue: #2'), [2], 'an HTML comment is never rendered');
+
+  // FAIL CLOSED (#751 rounds 4-9): nothing is skipped as an "example". A line that names the field with a number
+  // or a link is either exactly one readable citation or malformed (refused) — never silently ignored.
+  const refused = (body) => { const c = workItemCitations(body); return c.numbers.length === 0 && c.malformed.length > 0; };
+  for (const lookalike of ['Work item: issue #9', 'work item issue #9', '| Work item issue | #9 |', 'the Work item issue: #9 mid-line',
+    '- Work item issue: #750, #9999', // a second number on the line (Codex 4232642450)
+    '- Work item issue: https://github.com/JagPat/PMCvitan/issues/9999', // a URL value (Codex 4232707002)
+  ]) {
+    assert.ok(refused(lookalike), lookalike);
     assert.ok(citesWorkItem(lookalike), lookalike);
-    assert.deepEqual(workItemCitations(lookalike).numbers, [], lookalike);
   }
-  assert.equal(citesWorkItem('The PR template asks for `Work item issue: #N`.'), false, 'prose and inline code cite nothing');
-  // #751 Codex 4232642450 — one number per field: a second reference on the line is refused, never skipped
-  assert.deepEqual(workItemCitations('- Work item issue: #750, #9999'), { numbers: [], malformed: ['- Work item issue: #750, #9999'] });
-  assert.deepEqual(workItemCitations('- Work item issue: #750 (live bug 1c)').numbers, [750]);
-  // #751 Codex 4232642460 — code indented four past a list item's content is an example; a continuation is not
-  assert.deepEqual(workItemIssueNumbers('- item\n\n        Work item issue: #1\n\n- Work item issue: #2'), [2]);
-  assert.deepEqual(workItemIssueNumbers('1. item\n\n         Work item issue: #1'), [], 'nested under a numbered item');
-  assert.deepEqual(workItemIssueNumbers('- a\n\npara\n\n    Work item issue: #1'), [], 'after the list ends, four spaces is code');
+  assert.deepEqual(workItemCitations('- Work item issue: #750 (live bug 1c)'), { numbers: [750], malformed: [] }, 'prose after it is fine');
+  // a citation after any code block is still read: nothing the parser mis-models can swallow it (Codex 4232706998)
+  for (const block of ['- ~~~md\n  x\n  ~~~', '```\nx\n`````', '````\nx\n```', '- item\n\n        x', '```\nunclosed']) {
+    assert.deepEqual(workItemIssueNumbers(`${block}\n- Work item issue: #9999`), [9999], block);
+  }
+  // an example that cites a number is verified like a citation, so a second one makes the body malformed-free but
+  // two-numbered — which verifyWorkItemIssue refuses as more than one work item
+  assert.deepEqual(workItemIssueNumbers('- Work item issue: #750\n\n```md\n- Work item issue: #9999\n```'), [750, 9999]);
+  // naming the field without a number cites nothing: the empty template line and prose stay optional
+  assert.equal(citesWorkItem('- Work item issue: #\nThe PR template asks for `Work item issue: #N`.'), false);
+  // an identifier is not the field: #751's own body names `verifyWorkItemIssue` beside a finding number
+  assert.equal(citesWorkItem('| 4214321797: a cited work item must exist | `verifyWorkItemIssue`; test covers 404 |'), false);
 });
 
 test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in this repository', async () => {

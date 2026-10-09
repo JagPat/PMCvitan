@@ -246,43 +246,27 @@ export function citesWorkItem(body) {
 // The field in any ordinary Markdown form: list markers (`-`, `*`, `+`, `1.`), quotes, headings, emphasis
 // (#751 Codex 4232401607 and 4232566806).
 const WORK_ITEM_FIELD = /^[^\S\n]*(?:(?:[-*+>]|\d+[.)]|#{1,6})[^\S\n]*)*[*_]*Work item issue:[*_]*[^\S\n]*#(\d+)\b/iu;
-// Anything that reads like the field with a number. Fail closed: such a line is a readable citation or it is
-// refused, so no Markdown form can carry a citation past verification — the class of finding the rounds above
-// found one form at a time.
-const WORK_ITEM_LOOKALIKE = /work[^\w\n]*item[^\w\n]*issue[^\w\n]*\d/iu;
-const LIST_ITEM = /^ {0,3}(?:[-*+]|\d+[.)])[^\S\n]+/u;
+// A line that names the field AND carries a number or a link: it must be exactly one readable citation.
+const WORK_ITEM_VALUED = /\bwork[^\w\n]+item[^\w\n]+issue\b.*(?:\d|https?:)/iu;
 
 /**
- * The body's work-item citations over its RENDERED text only: HTML comments, fenced code (closed by the same
- * character at least as long as its opener), indented code and inline code are examples, never citations
- * (#751 Codex 4232445400, 4232521953, 4232566819). Returns the cited numbers and any line that reads like the
- * field but is not one (`malformed`).
+ * The body's work-item citations. FAIL CLOSED by construction (#751 rounds 4-9): the parser does not model
+ * Markdown rendering — every attempt to skip "examples" (fences, indented and nested code) opened a way for
+ * a real citation to be skipped instead (Codex 4232706998). So only HTML comments, which GitHub never
+ * renders, are ignored; every other line that names the field with a number or a link must be exactly one
+ * `Work item issue: #N` field, or it is `malformed` and refused. An example in code is therefore verified or
+ * refused like a citation — a visible, fixable rejection, never a silent bypass. A URL value
+ * (Codex 4232707002), a second number on the line (4232642450) and any unknown form are malformed. The empty
+ * template line names no number and cites nothing, so a citation stays optional.
  */
 export function workItemCitations(body) {
-  const text = String(body ?? '')
-    .replace(/<!--[\s\S]*?(?:-->|$)/gu, '')
-    .replace(/^[^\S\n]*((`)`{2,}|(~)~{2,})[^\n]*\n[\s\S]*?(?:^[^\S\n]*\1\2*\3*[^\S\n]*$|(?![\s\S]))/gmu, '');
   const numbers = [];
   const malformed = [];
-  let previousBlank = true;
-  let inIndentedCode = false;
-  // the column a list item's content starts at (0 outside a list); an indented code block is indented four
-  // more than that, so code nested in a list item is an example too (#751 Codex 4232642460)
-  let contentColumn = 0;
-  for (const raw of text.replace(/\t/gu, '    ').split('\n')) {
-    const blank = raw.trim() === '';
-    const indent = raw.length - raw.trimStart().length;
-    inIndentedCode = !blank && indent >= contentColumn + 4 && (inIndentedCode || previousBlank);
-    const item = !blank && !inIndentedCode ? LIST_ITEM.exec(raw.slice(Math.min(indent, contentColumn))) : null;
-    if (item) contentColumn = Math.min(indent, contentColumn) + item[0].length;
-    else if (!blank && !inIndentedCode && indent < contentColumn && previousBlank) contentColumn = 0;
-    previousBlank = blank;
-    if (inIndentedCode) continue;
-    const line = raw.replace(/(`+)[\s\S]*?\1/gu, '');
+  for (const line of String(body ?? '').replace(/<!--[\s\S]*?(?:-->|$)/gu, '').split('\n')) {
     const field = WORK_ITEM_FIELD.exec(line);
-    // one number per field: a second issue reference on the same line is refused (#751 Codex 4232642450)
-    if (field && !/#\d/u.test(line.slice(field.index + field[0].length))) numbers.push(Number(field[1]));
-    else if (field || WORK_ITEM_LOOKALIKE.test(line)) malformed.push(line.trim());
+    const rest = field ? line.slice(field.index + field[0].length) : '';
+    if (field && !/#\d|https?:/iu.test(rest)) numbers.push(Number(field[1]));
+    else if (field || WORK_ITEM_VALUED.test(line)) malformed.push(line.trim());
   }
   return { numbers, malformed };
 }
