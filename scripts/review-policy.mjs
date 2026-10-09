@@ -27,6 +27,8 @@ export const STATUS_DOCUMENT = 'docs/STATUS.md';
 export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
 export const GATE_CHECKS = ['review-scope', 'battery-plan'];
 export const MAX_REVIEW_ATTEMPTS = 2;
+// Owner direction 2026-10-09 (M2b-1) — the label on a PR's follow-up issues (scripts/review-follow-up.mjs).
+export const REVIEW_FOLLOW_UP_LABEL = 'review-follow-up';
 // 40 minutes covers measured ~29-minute API jobs; 25 minutes covers measured
 // 13-23-minute Codex latency. Keep the workflow budget above both review attempts
 // plus CI settlement and overhead (validated by workflow tests).

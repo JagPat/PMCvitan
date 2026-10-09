@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: commercial-approval-deadlock-read-locks
-reviewed_merge: 79d0d15
-open_pr: 747
+work_item: maint-m2b1-follow-up-durability
+reviewed_merge: 1281962
+open_pr: 748
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-09
@@ -26,13 +26,13 @@ updated: 2026-10-09
 
 ### Current unit
 
-**Commercial-approval deadlock correction** (`claude/commercial-read-lock-order`; owner, #482 6062791947): the
-claim screen's read (`readClaim`, and the standalone verification read) took the §E triple's purchase-order-line
-lock and the payment preflight's membership lock with no readiness lock first, the reverse of `approve()`, whose
-COMMIT-time bound check locks the same line. Both reads now answer from their repeatable-read snapshot and lock
-nothing; every command keeps its locks. Reproduced from #739's `api-e2e` log and a local statement log.
+**M2b-1, follow-up durability** (`claude/maint-m2b1-follow-up-durability`; owner, #482 6075561748; selected in
+6076742015): the bounded same-PR follow-up component on its own (`scripts/review-follow-up.mjs`). It records a head's
+findings on the PR before filing them, files them in that head's one open follow-up issue, and recovers a recorded
+filing whose head has moved; identity is the finding's URL, and every failure throws. The review cap stays inactive
+and the strict gate is unchanged: nothing calls the component until M2b-2 integrates it.
 
-Live bug 1c (option A) merged at `79d0d15` (#746). M2a (#743) merged at `1b9a4d7` and its fix (#745) at `e9a944b`.
+The commercial-approval deadlock correction merged at `1281962` (#747); live bug 1c (option A) at `79d0d15` (#746).
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign
 stop and the owner approved splitting it, each unit from `main`: M1a (#740, merged at `94d1cdb`), this file's shrink (STATUS and ROADMAP
@@ -40,7 +40,8 @@ archived); M1b (#739, merged at `f970180`), affected-only PR CI and shadow revie
 stop at `d31aaf7` (third reviewed head with a P1 in `autonomous-review-gate.mjs`); the owner approved splitting
 it in turn: M2a (merged), then M2b (#744), the review-round cap through one reviews → comments → reviews
 evidence snapshot and one failure → draft → deferred-findings publication path. #744 hit the same stop at
-`e5842f1`; its shape awaits the owner (#482, 6074443710). #742 stays open and stopped until M2b replaces it. M3 follows: the trivial fast lane on the ordinary merge path, the size target and one
+`e5842f1`; the owner approved a durability-first split (#482, 6075561748): M2b-1 (current unit), then M2b-2, the
+cap and evidence snapshot. #742 stays open and stopped until M2b replaces it. M3 follows: the trivial fast lane on the ordinary merge path, the size target and one
 issue per work item. #731 stays open until they land. Maintenance runs beside the live-bug unit (rule 8).
 
 ### Queue (the owner's order of 2026-10-07, recorded on #482)
@@ -52,8 +53,7 @@ issue per work item. #731 stays open until they land. Maintenance runs beside th
      - 1b-2: done (#730, `20b5f0f`).
      - 1b-3: done (#735 `3559f20`, #736 `d028cc4`, #738 `8ab364e`, #741 `647d580`; #734 closed).
    - 1c, drawing notices: done (#746, `79d0d15`, option A).
-   - Then the commercial-approval deadlock correction (owner, #482 6062791947): a small, separate application
-     correction after the notification work and before new features. In progress (current unit).
+   - Then the commercial-approval deadlock correction (owner, #482 6062791947): done (#747, `1281962`).
 2. **Remaining live bugs**, folded into the Board's Top 10 queue (7 Oct 2026 UI/UX review), one PR per item:
    - demo controls out of production, including hiding Generate Weekly Report;
    - one source of truth for counts;

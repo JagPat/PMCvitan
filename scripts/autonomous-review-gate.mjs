@@ -751,6 +751,56 @@ export class GitHubClient {
     throw new Error(`GitHub GET contents ${path} retry loop exhausted`);
   }
 
+  // Owner direction 2026-10-09 (M2b-1) — the I/O of the same-PR follow-up component (review-follow-up.mjs).
+  issuesLabelled(label) {
+    return this.paginated(`/repos/${this.repository}/issues?labels=${encodeURIComponent(label)}&state=all`);
+  }
+
+  createIssue({ title, body, labels }) {
+    return this.request(`/repos/${this.repository}/issues`, { method: 'POST', body: { title, body, labels } });
+  }
+
+  // Idempotent: an existing label (or one a concurrent run just created, 422) is left as it is. Codex
+  // 4220739644 — the label must exist before an issue carries it, or the labelled lookup never finds the issue.
+  async ensureLabel(name) {
+    try {
+      await this.request(`/repos/${this.repository}/labels/${encodeURIComponent(name)}`);
+      return;
+    } catch (error) {
+      if (!/failed \(404\)/u.test(String(error?.message))) throw error;
+    }
+    try {
+      await this.request(`/repos/${this.repository}/labels`, {
+        method: 'POST',
+        body: { name, color: 'c5def5', description: 'Codex findings carried into follow-up work' },
+      });
+    } catch (error) {
+      if (!/failed \(422\)/u.test(String(error?.message))) throw error;
+    }
+  }
+
+  issueComments(number) {
+    return this.paginated(`/repos/${this.repository}/issues/${number}/comments`);
+  }
+
+  createIssueComment(number, body) {
+    return this.request(`/repos/${this.repository}/issues/${number}/comments`, { method: 'POST', body: { body } });
+  }
+
+  updateIssueComment(id, body) {
+    return this.request(`/repos/${this.repository}/issues/comments/${id}`, { method: 'PATCH', body: { body } });
+  }
+
+  updateIssueBody(number, body) {
+    return this.request(`/repos/${this.repository}/issues/${number}`, { method: 'PATCH', body: { body } });
+  }
+
+  // a duplicate is closed `not_planned`, which is how the follow-up component tells it from completed work
+  async closeIssue(number, comment) {
+    await this.request(`/repos/${this.repository}/issues/${number}/comments`, { method: 'POST', body: { body: comment } });
+    await this.request(`/repos/${this.repository}/issues/${number}`, { method: 'PATCH', body: { state: 'closed', state_reason: 'not_planned' } });
+  }
+
   // The PR's CUMULATIVE diff against its base — every file the review unit touches,
   // not just the files of the current head commit.
   pullRequestFiles(number) {
