@@ -1797,6 +1797,12 @@ test('M3 — the cited work-item issue is parsed from the template line', () => 
   assert.equal(workItemIssueNumber('Work item issue: #12 (live bug 1c)'), 12);
   assert.equal(workItemIssueNumber('- Work item issue: #\n'), null, 'the unfilled template line cites nothing');
   assert.equal(workItemIssueNumber('see #731'), null, 'a mention is not a citation');
+  // #751 Codex 4232401607 — every ordinary Markdown form of the field is a citation
+  for (const line of ['* Work item issue: #9', '+ Work item issue: #9', '1. Work item issue: #9', '2) Work item issue: #9',
+    '> - Work item issue: #9', '**Work item issue:** #9', '- **Work item issue:** #9', '  - Work item issue: #9']) {
+    assert.equal(workItemIssueNumber(`intro\n${line}\n`), 9, line);
+  }
+  assert.equal(workItemIssueNumber('the Work item issue: #9 is mentioned mid-line'), null, 'only a line that IS the field');
 });
 
 test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in this repository', async () => {

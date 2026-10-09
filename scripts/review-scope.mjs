@@ -234,7 +234,10 @@ export function workItemIssueNumber(body) {
 
 /** Every work-item issue number the body cites, in order (one per `Work item issue: #N` line). */
 export function workItemIssueNumbers(body) {
-  return [...String(body ?? '').matchAll(/^[\t -]*Work item issue:[\t ]*#(\d+)\b/gimu)].map((match) => Number(match[1]));
+  // any Markdown prefix — list markers (`-`, `*`, `+`, `1.`), quotes, emphasis — so formatting cannot hide a
+  // citation from verification (#751 Codex 4232401607)
+  return [...String(body ?? '').matchAll(/^[^\S\n]*(?:(?:[-*+>]|\d+[.)])[^\S\n]*)*[*_]*Work item issue:[*_]*[^\S\n]*#(\d+)\b/gimu)]
+    .map((match) => Number(match[1]));
 }
 
 /**
