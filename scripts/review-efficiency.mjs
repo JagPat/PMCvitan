@@ -374,7 +374,9 @@ export function assessReviewScope(
   if (large && number <= enforceAfterPr) {
     state = 'grandfathered';
   } else if (large) {
-    const sizeDeclaration = /^<!--\s*review-size:\s*(standard|justified-large)\s*-->/iu
+    // `trivial` (owner, 2026-10-09, M3) is a CLASSIFICATION only: it is recognised and changes nothing here or in
+    // the gate — a trivial unit is sized, reviewed by Codex and CI-gated exactly like any standard unit
+    const sizeDeclaration = /^<!--\s*review-size:\s*(standard|trivial|justified-large)\s*-->/iu
       .exec(body.trimStart());
     const justified = sizeDeclaration?.[1]?.toLowerCase() === 'justified-large';
     const tableRows = body

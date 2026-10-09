@@ -37,6 +37,8 @@ jobs:
       # drain-evidence workflow's run and artifact (scripts/autonomous-drain-clearance.mjs).
       actions: read
       contents: read
+      # issues: read — a cited work-item issue is verified to exist and be an issue (M3; #731's Codex 4214321797)
+      issues: read
       pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

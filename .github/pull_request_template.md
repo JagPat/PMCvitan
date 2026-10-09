@@ -13,6 +13,7 @@ One user workflow or one architectural concern:
 
 ## Review unit
 
+- Work item issue: #
 - Base SHA:
 - Scope:
 - Changed files / changed lines:

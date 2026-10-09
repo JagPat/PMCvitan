@@ -21,6 +21,8 @@ import {
   assessTrackedTree,
   parseTrackedTree,
   run as runScope,
+  verifyWorkItemIssue,
+  workItemIssueNumber,
 } from './review-scope.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -1768,4 +1770,67 @@ test('the scope CLI refuses a tracked dependency path independently of the scope
     process.exitCode = previousExitCode;
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+// ── M3 (owner, 2026-10-09, #482 6081440703): trivial changes on the ordinary path; one issue per work item ──
+
+test('M3 — `review-size: trivial` only classifies: it is sized like any standard unit and grants no exemption', () => {
+  const trivial = (overrides = {}) => pullRequest({ body: '<!-- review-size: trivial -->\n<!-- correction-owner: claude -->', ...overrides });
+  assert.equal(assessReviewScope(trivial()).state, 'standard');
+  // a large "trivial" unit is still a large unit: the justified-large evidence is required
+  const large = assessReviewScope(trivial({ additions: 1_501, changed_files: 21 }));
+  assert.equal(large.allowed, false);
+  assert.match(large.detail, /justified-large marker/u);
+});
+
+test('M3 — no gate decision reads the trivial marker: every head gets the full CI battery and an exact-head Codex review', async () => {
+  // the owner's record forbids a CI-only or no-Codex lane, and a manufactured clean status for an unreviewed
+  // trivial head: no review, merge or CI-selection code may branch on the marker
+  for (const file of ['autonomous-review-gate.mjs', 'autonomous-review-state.mjs', 'review-cap.mjs', 'review-policy.mjs', 'ci-battery-plan.mjs', 'ci-affected.mjs']) {
+    const source = await readFile(new URL(`./${file}`, import.meta.url), 'utf8').catch(() => '');
+    assert.doesNotMatch(source, /trivial/iu, `${file} must not treat a trivial unit differently`);
+  }
+});
+
+test('M3 — the cited work-item issue is parsed from the template line', () => {
+  assert.equal(workItemIssueNumber('## Review unit\n\n- Work item issue: #731\n- Base SHA: x'), 731);
+  assert.equal(workItemIssueNumber('Work item issue: #12 (live bug 1c)'), 12);
+  assert.equal(workItemIssueNumber('- Work item issue: #\n'), null, 'the unfilled template line cites nothing');
+  assert.equal(workItemIssueNumber('see #731'), null, 'a mention is not a citation');
+});
+
+test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in this repository', async () => {
+  const calls = [];
+  const fetchImpl = (answers) => async (url) => {
+    calls.push(url);
+    const answer = answers[url.split('/').pop()];
+    if (answer instanceof Error) throw answer;
+    return { status: answer.status, ok: answer.status >= 200 && answer.status < 300, json: async () => answer.body };
+  };
+  const answers = {
+    10: { status: 200, body: { number: 10 } },
+    11: { status: 200, body: { number: 11, pull_request: { url: 'x' } } },
+    12: { status: 404, body: {} },
+    13: { status: 502, body: {} },
+    14: new Error('socket hang up'),
+  };
+  const check = (number) => verifyWorkItemIssue(`- Work item issue: #${number}`, { fetchImpl: fetchImpl(answers), repository: 'o/r', token: 't' });
+  assert.equal(await check(10), null);
+  assert.match(await check(11), /is a pull request, not an issue/u);
+  assert.match(await check(12), /does not exist in o\/r/u);
+  assert.match(await check(13), /could not be read \(HTTP 502\); re-run/u);
+  assert.match(await check(14), /could not be read \(socket hang up\)/u);
+  assert.equal(calls[0], 'https://api.github.com/repos/o/r/issues/10');
+  // a body that cites none makes no request (whether a citation is REQUIRED is not decided here)
+  calls.length = 0;
+  assert.equal(await verifyWorkItemIssue('no citation', { fetchImpl: fetchImpl(answers), repository: 'o/r', token: 't' }), null);
+  assert.equal(calls.length, 0);
+});
+
+test('M3 — the scope job may read issues, and the template asks for the work item', async () => {
+  const ci = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('  review-scope:'), ci.indexOf('  battery-plan:'));
+  assert.match(job, /^\s+issues: read$/mu);
+  const template = await readFile(new URL('../.github/pull_request_template.md', import.meta.url), 'utf8');
+  assert.match(template, /^- Work item issue: #$/mu);
 });

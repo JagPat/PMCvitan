@@ -183,6 +183,20 @@ export async function run({
     }
   }
 
+  // The cited work-item issue (owner, 2026-10-09, M3: one GitHub issue per work item), verified against the
+  // repository: a cited number must be a real issue here. Reported independently, like the checks above.
+  const workItemProblem = await verifyWorkItemIssue(event.pull_request?.body, {
+    fetchImpl,
+    repository: repository || event.repository?.full_name,
+    token,
+  });
+  if (workItemProblem) {
+    console.error(`::error title=Work item issue::${workItemProblem}`);
+    process.exitCode = 1;
+  } else if (workItemIssueNumber(event.pull_request?.body) !== null) {
+    console.log(`review-scope: work item issue #${workItemIssueNumber(event.pull_request?.body)} verified`);
+  }
+
   // The tracked tree itself, checked HERE for the same reason: this is the one
   // job that runs BEFORE `pnpm install`, so it is the only place a packaging
   // defect can be named instead of reported five times as an install failure.
@@ -208,6 +222,38 @@ const SYMLINK_MODE = '120000';
  * Read from the repository this module lives in, not the working directory,
  * matching the STATUS read above.
  */
+/** The issue number a PR body cites as its work item (`Work item issue: #N`), or null when it cites none. */
+export function workItemIssueNumber(body) {
+  const match = /^[\t -]*Work item issue:[\t ]*#(\d+)\b/imu.exec(String(body ?? ''));
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * The problem with a PR's cited work-item issue, or null when it cites none or the citation is a real issue in
+ * this repository. #731's Codex 4214321797 — a made-up number must not satisfy the syntax: the issue has to
+ * exist here and be an issue, not a pull request. An unreadable answer is a problem too (re-run the check).
+ */
+export async function verifyWorkItemIssue(body, { fetchImpl, repository, token }) {
+  const number = workItemIssueNumber(body);
+  if (number === null) return null;
+  try {
+    const response = await fetchImpl(`https://api.github.com/repos/${repository}/issues/${number}`, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token}`,
+        'x-github-api-version': '2022-11-28',
+      },
+    });
+    if (response.status === 404) return `the cited work item #${number} does not exist in ${repository}`;
+    if (!response.ok) return `the cited work item #${number} could not be read (HTTP ${response.status}); re-run this check`;
+    const issue = await response.json();
+    if (issue?.pull_request) return `the cited work item #${number} is a pull request, not an issue`;
+    return null;
+  } catch (error) {
+    return `the cited work item #${number} could not be read (${error?.message ?? error}); re-run this check`;
+  }
+}
+
 export async function trackedTreeEntries(execImpl = promisify(execFile)) {
   const { stdout } = await execImpl('git', ['ls-files', '--stage', '-z'], {
     cwd: fileURLToPath(new URL('..', import.meta.url)),
