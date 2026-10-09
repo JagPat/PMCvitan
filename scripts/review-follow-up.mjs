@@ -98,9 +98,11 @@ function missingLines(candidates, known) {
   return out;
 }
 
-const identitiesOf = (body) => checklist(body).map(lineIdentity);
-
-/** This PR's follow-up records, grouped by head: `{ head, records, lines, pending }`, oldest head first. */
+/**
+ * This PR's follow-up records, grouped by head: `{ head, records: [{ id, pending, lines }], pending }`. Each
+ * record is its own workflow-authored comment holding the lines ONE recording wrote; a record is never
+ * rewritten to add lines, so concurrent recordings cannot overwrite each other (Codex 4228313741).
+ */
 export function followUpRecords(comments, pullRequestNumber) {
   const byHead = new Map();
   for (const comment of comments ?? []) {
@@ -108,10 +110,10 @@ export function followUpRecords(comments, pullRequestNumber) {
     const match = RECORD_MARKER.exec(String(comment?.body ?? ''));
     if (!match || Number(match[2]) !== pullRequestNumber) continue;
     const head = match[3];
-    const entry = byHead.get(head) ?? { head, records: [], lines: [], pending: false };
-    entry.records.push(comment);
-    entry.lines = [...entry.lines, ...missingLines(checklist(comment.body), entry.lines.map(lineIdentity))];
-    if (match[1] === 'pending') entry.pending = true;
+    const entry = byHead.get(head) ?? { head, records: [], pending: false };
+    const pending = match[1] === 'pending';
+    entry.records.push({ id: comment.id, pending, lines: checklist(comment.body) });
+    if (pending) entry.pending = true;
     byHead.set(head, entry);
   }
   return [...byHead.values()];
@@ -130,119 +132,128 @@ const recordBody = (marker, head, intro, lines) => [
 ].join('\n');
 
 /**
- * Record `lines` for `head` on the PR BEFORE they are filed: one workflow-authored comment per head, created,
- * or updated with any line it lacks (a line already recorded is kept verbatim, with its original-head
- * classification). Returns the head's merged record entry.
+ * Record `lines` for `head` on the PR BEFORE they are filed: a NEW workflow-authored comment, so the lines
+ * survive a filing that fails, with their original-head classification, however many runs record at once.
  */
 export async function recordPendingFollowUp(client, pullRequest, head, lines) {
   requirePullRequest(pullRequest);
   requireHead(head);
-  const entry = followUpRecords(await client.issueComments(pullRequest.number), pullRequest.number)
-    .find((candidate) => candidate.head === head);
-  const pendingIntro = 'recorded before they are filed in this head\'s follow-up issue, so a filing that fails is recovered.';
-  if (!entry) {
-    const created = await client.createIssueComment(pullRequest.number, recordBody(pendingMarker(pullRequest.number, head), head, pendingIntro, lines));
-    return { head, records: [created], lines: [...lines], pending: true };
-  }
-  const merged = [...entry.lines, ...missingLines(lines, entry.lines.map(lineIdentity))];
-  const [first] = entry.records;
-  await client.updateIssueComment(first.id, recordBody(pendingMarker(pullRequest.number, head), head, pendingIntro, merged));
-  return { head, records: entry.records, lines: merged, pending: true };
+  const created = await client.createIssueComment(pullRequest.number, recordBody(
+    pendingMarker(pullRequest.number, head), head,
+    'recorded before they are filed in this head\'s follow-up issue, so a filing that fails is recovered.', lines,
+  ));
+  return { id: created?.id, pending: true, lines: [...lines] };
+}
+
+/** Mark one record filed in `issueNumber`, keeping exactly its own lines. */
+async function markRecordFiled(client, pullRequest, head, record, issueNumber) {
+  await client.updateIssueComment(record.id, recordBody(
+    filedMarker(pullRequest.number, head), head, `filed in #${issueNumber}.`, record.lines,
+  ));
+}
+
+const DUPLICATE_MARKER = '<!-- review-follow-up-duplicate-of: ';
+/** How many times one filing re-reads and retries before it reports itself incomplete. */
+export const FILING_ATTEMPTS = 3;
+
+/**
+ * The head's follow-up issues, each with the findings it lists — its body and the workflow's comments on it
+ * (findings are APPENDED as comments, never written into the body, so no write can drop another's line) —
+ * and whether this component closed it as a duplicate.
+ */
+async function followUpIssues(client, pullRequest, head) {
+  const marker = issueMarker(pullRequest.number, head);
+  const issues = (await client.issuesLabelled(REVIEW_FOLLOW_UP_LABEL))
+    .filter((issue) => String(issue?.body ?? '').includes(marker) && issue?.pull_request == null);
+  return Promise.all(issues.map(async (issue) => {
+    const own = (await client.issueComments(issue.number)).filter((comment) => comment?.user?.login === FOLLOW_UP_RECORD_AUTHOR);
+    const lines = [...checklist(issue.body), ...own.flatMap((comment) => checklist(comment.body))];
+    return {
+      number: issue.number,
+      open: issue.state === 'open',
+      duplicate: own.some((comment) => String(comment.body).includes(DUPLICATE_MARKER)),
+      lines,
+      identities: new Set(lines.map(lineIdentity)),
+    };
+  }));
 }
 
 /**
  * File `lines` in `head`'s ONE open follow-up issue and return its number. Deterministic under retries and
- * concurrent runs for different heads of the same PR:
- *  - The canonical issue is the lowest-numbered OPEN issue carrying the head's marker. A closed duplicate is
- *    never selected (Codex 4226684318).
- *  - A finding already listed in ANY of the head's issues — open, or closed as completed — is not added again,
- *    so completed work is not reopened; identity is the finding's URL, not the editable line (Codex 4225790718).
- *  - Two runs that both create an issue converge on the lowest-numbered one: lines from the other open
- *    issues, and from duplicates this path closed (`not_planned`), are carried before they are closed
+ * concurrent runs:
+ *  - The canonical issue is the lowest-numbered OPEN issue carrying the head's marker; a closed one is never
+ *    selected (Codex 4226684318).
+ *  - A finding listed in an issue that was already closed (completed, or closed by a person) when this filing
+ *    began is not filed again, so finished or declined work is not reopened. Identity is the finding's URL,
+ *    not the editable line (Codex 4225790718).
+ *  - Findings are appended to the canonical issue as a COMMENT. Concurrent filings each append; none rewrites
+ *    what another wrote (Codex 4228313741). GitHub offers no compare-and-set on an issue, so the trade is
+ *    explicit: two racing runs may list one finding twice, and can never drop one. A rerun adds nothing listed.
+ *  - Two runs that both create an issue converge on the lowest-numbered one; lines from the other open issues,
+ *    and from duplicates this component closed earlier, are carried before the duplicates are closed
  *    (Codex 4226440202).
- *  - The filing is VERIFIED by reading the issues back: every line must be listed in the canonical issue or
- *    in a completed one, or this throws and the record stays pending.
+ *  - The filing is VERIFIED by reading the issues back: the canonical issue must still be OPEN and list every
+ *    finding. Otherwise — say it was closed meanwhile (Codex 4228313747) — the filing retries into an open
+ *    issue, up to FILING_ATTEMPTS times, then throws and the record stays pending.
  */
 export async function fileFollowUpLines(client, pullRequest, head, lines) {
   requirePullRequest(pullRequest);
   requireHead(head);
   if (lines.length === 0) return null;
   const marker = issueMarker(pullRequest.number, head);
-  const issuesFor = async () => (await client.issuesLabelled(REVIEW_FOLLOW_UP_LABEL))
-    .filter((issue) => String(issue?.body ?? '').includes(marker) && issue?.pull_request == null);
-  const completedIdentities = (issues) => issues
-    .filter((issue) => issue.state === 'closed' && issue.state_reason !== 'not_planned')
-    .flatMap((issue) => identitiesOf(issue.body));
-
-  let issues = await issuesFor();
-  if (!issues.some((issue) => issue.state === 'open')) {
-    // only a COMPLETED issue holds a finding; one closed as a duplicate (or not planned) does not
-    const fresh = missingLines(lines, completedIdentities(issues));
-    if (fresh.length === 0) return verified(client, pullRequest, head, lines, issues);
-    await client.ensureLabel(REVIEW_FOLLOW_UP_LABEL);
-    await client.createIssue({
-      title: `Review follow-up from #${pullRequest.number}: Codex findings on ${head.slice(0, 7)}`,
-      labels: [REVIEW_FOLLOW_UP_LABEL],
-      body: [
-        marker,
-        `Codex findings on #${pullRequest.number} at \`${head.slice(0, 7)}\` that need follow-up work after it merges.`,
-        '',
-        ...fresh,
-      ].join('\n'),
-    });
-    issues = await issuesFor();
+  const initial = await followUpIssues(client, pullRequest, head);
+  const settled = new Set(initial.filter((issue) => !issue.open && !issue.duplicate).flatMap((issue) => [...issue.identities]));
+  const required = missingLines(lines, [...settled]);
+  if (required.length === 0) {
+    return Math.min(...initial.filter((issue) => !issue.open && !issue.duplicate
+      && lines.some((line) => issue.identities.has(lineIdentity(line)))).map((issue) => issue.number));
   }
 
-  const open = issues.filter((issue) => issue.state === 'open').sort((a, b) => a.number - b.number);
-  if (open.length === 0) throw new Error(`the follow-up issue for #${pullRequest.number} at ${head.slice(0, 7)} was not found after it was created`);
-  const [canonical, ...duplicates] = open;
-  const carried = [
-    ...duplicates,
-    ...issues.filter((issue) => issue.state === 'closed' && issue.state_reason === 'not_planned'),
-  ].flatMap((issue) => checklist(issue.body));
-  const add = missingLines([...lines, ...carried], [...identitiesOf(canonical.body), ...completedIdentities(issues)]);
-  if (add.length > 0) await client.updateIssueBody(canonical.number, [String(canonical.body ?? '').trimEnd(), ...add].join('\n'));
-  for (const duplicate of duplicates) {
-    await client.closeIssue(duplicate.number, `Duplicate of #${canonical.number} (the same head's follow-up).`);
+  let issues = initial;
+  for (let attempt = 1; attempt <= FILING_ATTEMPTS; attempt += 1) {
+    if (!issues.some((issue) => issue.open)) {
+      await client.ensureLabel(REVIEW_FOLLOW_UP_LABEL);
+      await client.createIssue({
+        title: `Review follow-up from #${pullRequest.number}: Codex findings on ${head.slice(0, 7)}`,
+        labels: [REVIEW_FOLLOW_UP_LABEL],
+        body: [
+          marker,
+          `Codex findings on #${pullRequest.number} at \`${head.slice(0, 7)}\` that need follow-up work after it merges.`,
+          '',
+          ...required,
+        ].join('\n'),
+      });
+      issues = await followUpIssues(client, pullRequest, head);
+    }
+    const open = issues.filter((issue) => issue.open).sort((a, b) => a.number - b.number);
+    if (open.length > 0) {
+      const [canonical, ...duplicates] = open;
+      const carried = [...duplicates, ...issues.filter((issue) => !issue.open && issue.duplicate)].flatMap((issue) => issue.lines);
+      const add = missingLines([...required, ...carried], [...canonical.identities, ...settled]);
+      if (add.length > 0) {
+        await client.createIssueComment(canonical.number, ['Codex findings filed for follow-up:', '', ...add].join('\n'));
+      }
+      for (const duplicate of duplicates) {
+        await client.closeIssue(duplicate.number, `${DUPLICATE_MARKER}${canonical.number} -->\nDuplicate of #${canonical.number} (the same head's follow-up).`);
+      }
+      issues = await followUpIssues(client, pullRequest, head);
+      const after = issues.find((issue) => issue.number === canonical.number);
+      if (after?.open && required.every((line) => after.identities.has(lineIdentity(line)))) return canonical.number;
+    }
   }
-  return verified(client, pullRequest, head, lines, null, canonical.number);
-}
-
-/** Read the head's issues back and return the issue that holds the filing, or throw if any line is missing. */
-async function verified(client, pullRequest, head, lines, known, canonicalNumber = null) {
-  const marker = issueMarker(pullRequest.number, head);
-  const issues = known ?? (await client.issuesLabelled(REVIEW_FOLLOW_UP_LABEL))
-    .filter((issue) => String(issue?.body ?? '').includes(marker) && issue?.pull_request == null);
-  const holding = issues.filter((issue) => issue.number === canonicalNumber
-    || (issue.state === 'closed' && issue.state_reason !== 'not_planned'));
-  const listed = new Set(holding.flatMap((issue) => identitiesOf(issue.body)));
-  const absent = lines.filter((line) => !listed.has(lineIdentity(line)));
-  if (absent.length > 0) {
-    throw new Error(`follow-up filing for #${pullRequest.number} at ${head.slice(0, 7)} is incomplete: ${absent.length} finding(s) not listed`);
-  }
-  return canonicalNumber ?? Math.min(...holding.map((issue) => issue.number));
-}
-
-/** Mark every record of `head` filed in `issueNumber`, keeping its lines. */
-async function markFollowUpFiled(client, pullRequest, entry, issueNumber) {
-  for (const record of entry.records) {
-    if (record?.id == null) continue;
-    await client.updateIssueComment(record.id, recordBody(
-      filedMarker(pullRequest.number, entry.head), entry.head, `filed in #${issueNumber}.`, entry.lines,
-    ));
-  }
+  throw new Error(`follow-up filing for #${pullRequest.number} at ${head.slice(0, 7)} is incomplete after ${FILING_ATTEMPTS} attempts`);
 }
 
 /**
  * Record, then file, then mark filed — the whole required filing for one head's findings. Returns the issue
- * number. Throws on any failure, leaving whatever was recorded pending for `reconcilePendingFollowUps`.
+ * number. Throws on any failure, leaving the record pending for `reconcilePendingFollowUps`.
  */
 export async function fileFollowUp(client, pullRequest, head, findings) {
   const lines = renderFollowUpLines(findings);
   if (lines.length === 0) return null;
-  const entry = await recordPendingFollowUp(client, pullRequest, head, lines);
-  const number = await fileFollowUpLines(client, pullRequest, head, entry.lines);
-  await markFollowUpFiled(client, pullRequest, entry, number);
+  const record = await recordPendingFollowUp(client, pullRequest, head, lines);
+  const number = await fileFollowUpLines(client, pullRequest, head, lines);
+  await markRecordFiled(client, pullRequest, head, record, number);
   return number;
 }
 
@@ -255,10 +266,12 @@ export async function reconcilePendingFollowUps(client, pullRequest) {
   requirePullRequest(pullRequest);
   const recovered = [];
   for (const entry of followUpRecords(await client.issueComments(pullRequest.number), pullRequest.number)) {
-    if (!entry.pending || entry.lines.length === 0) continue;
-    const number = await fileFollowUpLines(client, pullRequest, entry.head, entry.lines);
-    await markFollowUpFiled(client, pullRequest, entry, number);
-    recovered.push({ head: entry.head, issue: number, findings: entry.lines.length });
+    const pending = entry.records.filter((record) => record.pending && record.lines.length > 0);
+    if (pending.length === 0) continue;
+    const lines = missingLines(pending.flatMap((record) => record.lines), []);
+    const number = await fileFollowUpLines(client, pullRequest, entry.head, lines);
+    for (const record of pending) await markRecordFiled(client, pullRequest, entry.head, record, number);
+    recovered.push({ head: entry.head, issue: number, findings: lines.length });
   }
   return recovered;
 }

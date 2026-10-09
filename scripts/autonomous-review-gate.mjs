@@ -791,11 +791,7 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/issues/comments/${id}`, { method: 'PATCH', body: { body } });
   }
 
-  updateIssueBody(number, body) {
-    return this.request(`/repos/${this.repository}/issues/${number}`, { method: 'PATCH', body: { body } });
-  }
-
-  // a duplicate is closed `not_planned`, which is how the follow-up component tells it from completed work
+  // the closing comment carries the follow-up component's duplicate marker; the issue closes `not_planned`
   async closeIssue(number, comment) {
     await this.request(`/repos/${this.repository}/issues/${number}/comments`, { method: 'POST', body: { body: comment } });
     await this.request(`/repos/${this.repository}/issues/${number}`, { method: 'PATCH', body: { state: 'closed', state_reason: 'not_planned' } });
