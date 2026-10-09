@@ -7,6 +7,7 @@ import {
   POLL_INTERVAL_MS,
   REQUIRED_CHECKS,
   STATUS_CONTEXT,
+  FOLLOW_UP_RETRY,
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
   CI_SCOPE_ADMITTED,
@@ -2175,10 +2176,16 @@ async function reclassifyCurrentCodexEvidence(
  * Returns the refreshed pull request, or null when the head is no longer current.
  */
 export async function publishBlockingVerdict(client, pullRequest, expectedHead, { description, deferred = [] }) {
-  await client.setStatus(expectedHead, 'failure', description, pullRequest.html_url);
-  // Codex 4226440227 — recorded right after the failure status, before the fallible draft (filing stays after)
   const lines = renderFollowUpLines(deferred);
-  if (lines.length > 0) await recordPendingFollowUp(client, pullRequest, expectedHead, lines);
+  if (lines.length > 0) {
+    // Codex 4229506050 — the deferred siblings are made durable BEFORE the correction verdict exists: the head
+    // first goes non-green without asking anyone for a push, then the lines are recorded, and only then is the
+    // verdict published. A recording that fails leaves a retryable failure, so no correction can move the head
+    // past findings nothing recorded. (Codex 4226440227 — and the record still precedes the fallible draft.)
+    await client.setStatus(expectedHead, 'pending', RECORDING_DESCRIPTION, pullRequest.html_url);
+    await withFollowUpRetry(client, pullRequest, expectedHead, () => recordPendingFollowUp(client, pullRequest, expectedHead, lines));
+  }
+  await client.setStatus(expectedHead, 'failure', description, pullRequest.html_url);
   const live = await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
   // files this head's record, and any other pending one on the PR, each in its own head's issue
   if (lines.length > 0) await reconcilePendingFollowUps(client, pullRequest);
@@ -2316,6 +2323,21 @@ export function unionDeferred(first, second) {
 
 /** The non-success status a head carries while its evidence and follow-up filing are settled. */
 export const SETTLING_DESCRIPTION = 'review: settling Codex evidence and follow-up filing before completion';
+/** The non-success status a head carries while a blocking verdict's deferred siblings are recorded. */
+export const RECORDING_DESCRIPTION = 'review: recording deferred Codex findings before the verdict';
+
+/**
+ * Run a step of follow-up work the gate owes; if it throws, leave the head on the RETRYABLE `FOLLOW_UP_RETRY`
+ * failure (never a pending status nothing resumes — Codex 4229506042), then rethrow. Recovery re-runs the head.
+ */
+async function withFollowUpRetry(client, pullRequest, expectedHead, work) {
+  try {
+    return await work();
+  } catch (error) {
+    await client.setStatus(expectedHead, 'failure', FOLLOW_UP_RETRY, pullRequest.html_url).catch(() => {});
+    throw error;
+  }
+}
 
 /**
  * Owner decision 2026-10-08 — the ONE settlement of a head's Codex evidence before a success lets it merge,
@@ -2331,8 +2353,13 @@ export async function settleFinalCodexEvidence(client, pullRequest, expectedHead
   // included — has succeeded; a run that fails here leaves the head non-green, and the stored success it
   // withdrew is recovered (and re-settled) by the next run.
   await client.setStatus(expectedHead, 'pending', SETTLING_DESCRIPTION, pullRequest.html_url);
-  // then recover any follow-up filing on this PR that was recorded but never completed (an earlier head's
-  // included), so no deferred finding is lost when this head merges
+  // any step below that throws leaves the retryable FOLLOW_UP_RETRY failure, not the pending status
+  return withFollowUpRetry(client, pullRequest, expectedHead, () => settleAfterWithdrawal(client, pullRequest, expectedHead, earlierDeferred));
+}
+
+async function settleAfterWithdrawal(client, pullRequest, expectedHead, earlierDeferred) {
+  // recover any follow-up filing on this PR that was recorded but never completed (an earlier head's included),
+  // so no deferred finding is lost when this head merges
   await reconcilePendingFollowUps(client, pullRequest);
   const evidence = await finalCodexEvidence(client, pullRequest, expectedHead);
   // Codex 4220739672 — the settlement is a FINDINGS guard, never the source of the clean verdict: the caller

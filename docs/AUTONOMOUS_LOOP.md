@@ -297,8 +297,10 @@ issue that the head's `codex-current-head` status names.
 Every Codex verdict is read from one evidence snapshot (reviews, then comments, then
 reviews again; read again until both review reads agree). Evidence that changes
 while it is read is `unsettled`: it never clears a head. A blocking verdict is always
-published in one order: the failure status, then a record of any non-blocking findings
-beside it (a comment on the PR), then back to draft, then the follow-up issue. Filing goes
+published in one order: when it has non-blocking findings beside it, the head first goes
+non-green (pending) and they are recorded in a comment on the PR; then the failure status,
+then back to draft, then the follow-up issue. A record or settlement step that fails leaves
+the retryable `FOLLOW_UP_RETRY` failure, which recovery re-runs; no correction is asked for. Filing goes
 through `scripts/review-follow-up.mjs`: each finding keeps the classification and URL it had
 on its own head, and lands in that head's one open `review-follow-up` issue. Before a head
 can turn green, the settlement withdraws any earlier success, completes every recorded

@@ -201,7 +201,13 @@ export function reviewHistoryPolicy(findingHeads) {
   };
 }
 
+// Owner direction 2026-10-09 (M2b-2) — a follow-up record or filing the gate owes did not complete (a transient
+// API failure). Retryable: recovery re-runs the head, which completes the owed filing before any success; no
+// correction is owed, so the watchdog opens no lease and no author push is asked for (Codex 4229506042, 4229506050).
+export const FOLLOW_UP_RETRY = 'review: Codex follow-up filing did not complete; the gate retries this head';
+
 const RETRYABLE_REVIEW_FAILURES = [
+  FOLLOW_UP_RETRY,
   'Codex review timed out',
   'Codex evidence changed during final verification',
   'review: Required CI changed during current-head Codex review',

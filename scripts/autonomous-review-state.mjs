@@ -116,7 +116,8 @@ export function codexThreadIdsToResolve(threads = [], expectedHead) {
  */
 export function isCodexReviewSummaryOnly(body) {
   const rest = String(body ?? '')
-    .replace(/<details>[\s\S]*?<\/details>/gu, '')
+    // only Codex's own About-Codex block: a <details> holding anything else is review text (Codex 4229506031)
+    .replace(/<details>\s*<summary>[^<]*About Codex in GitHub\s*<\/summary>[\s\S]*?<\/details>/gu, '')
     .replace(/^#{1,6}\s*(?:\p{Extended_Pictographic}\uFE0F?\s*)?Codex Review\s*$/gmu, '')
     .replace(/^Here are some automated review suggestions for this pull request\.\s*$/gmu, '')
     .replace(/^\*\*Reviewed commit:\*\*\s*`[0-9a-f]{7,40}`\s*$/gmu, '');

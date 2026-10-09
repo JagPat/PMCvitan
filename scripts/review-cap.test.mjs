@@ -15,7 +15,7 @@ import {
 import { classifyCodexState } from './autonomous-review-state.mjs';
 import { capDefersStoredFailure, capFiles, cappedSuccessDetail, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, publishBlockingVerdict, readCodexEvidence, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
 import { pendingFollowUpHeads } from './review-follow-up.mjs';
-import { isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
+import { FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 const HEAD = 'c'.repeat(40);
@@ -466,23 +466,38 @@ test('Codex 4220861349 — the non-blocking findings beside a blocker are kept a
   for (const call of calls) assert.match(call.slice(0, 400), /deferred: \w+\.deferred \?\? \[\]/u);
 });
 
-test('Codex 4221120404 / 4226440227 — a blocking verdict is published in one fixed order: failure, record, draft, then filing', async () => {
+test('Codex 4221120404 / 4226440227 / 4229506050 — a blocking verdict is published in one fixed order: non-green, record, verdict, draft, filing', async () => {
   const pr = { number: 9, html_url: 'u', state: 'open', draft: false, head: { sha: HEAD, repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } };
   const deferred = [finding({ p: 2, id: 20 })];
   const run = fakeGitHub({ pr });
   await publishBlockingVerdict(run.client, pr, HEAD, { description: 'review: 1 blocking', deferred });
-  assert.deepEqual(run.state.log, ['status:failure', 'record', 'draft:true', 'file']);
+  assert.deepEqual(run.state.log, ['status:pending', 'record', 'status:failure', 'draft:true', 'file']);
+  // with nothing to defer there is nothing to record: the verdict comes first, as before
+  const plain = fakeGitHub({ pr });
+  await publishBlockingVerdict(plain.client, pr, HEAD, { description: 'review: 1 blocking' });
+  assert.deepEqual(plain.state.log, ['status:failure', 'draft:true']);
+  // Codex 4229506050 — a recording that fails exposes NO correction verdict: the head is left on the retryable
+  // follow-up failure, so no push is asked for while the siblings are unrecorded
+  const unrecorded = fakeGitHub({ pr });
+  unrecorded.state.fail.createIssueComment = 1;
+  await assert.rejects(publishBlockingVerdict(unrecorded.client, pr, HEAD, { description: 'review: 1 blocking', deferred }), /issues API down/u);
+  assert.deepEqual(unrecorded.state.statuses.map((status) => [status.state, status.description]), [
+    ['pending', 'review: recording deferred Codex findings before the verdict'],
+    ['failure', FOLLOW_UP_RETRY],
+  ]);
+  assert.equal(isRetryableReviewFailureDescription(FOLLOW_UP_RETRY), true);
   // a slow or failed issue write can no longer leave a green head: the failure status is already published,
   // and the record stays pending for recovery
   const failed = fakeGitHub({ pr });
   failed.state.fail.createIssue = 1;
   await assert.rejects(publishBlockingVerdict(failed.client, pr, HEAD, { description: 'review: 1 blocking', deferred }), /issues API down/u);
-  assert.deepEqual(failed.state.log.slice(0, 3), ['status:failure', 'record', 'draft:true']);
+  assert.deepEqual(failed.state.log.slice(0, 4), ['status:pending', 'record', 'status:failure', 'draft:true']);
+  assert.equal(failed.state.statuses.at(-1).description, 'review: 1 blocking', 'the recorded verdict stands; the filing is recovered later');
   assert.deepEqual(pendingFollowUpHeads(failed.state.notes, 9), [HEAD]);
   // the head moved: no draft for a head that is not current, but the findings found on it are still filed
   const moved = fakeGitHub({ pr: { ...pr, head: { ...pr.head, sha: 'f'.repeat(40) } } });
   assert.equal(await publishBlockingVerdict(moved.client, pr, HEAD, { description: 'review: 1 blocking', deferred }), null);
-  assert.deepEqual(moved.state.log, ['status:failure', 'record', 'file']);
+  assert.deepEqual(moved.state.log, ['status:pending', 'record', 'status:failure', 'file']);
   // every path that publishes a blocking Codex verdict goes through it
   const { readFile } = await import('node:fs/promises');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
@@ -553,13 +568,13 @@ test('Codex 4226080917 — a failed follow-up filing is retried by the next cont
   state.fail.createIssue = 1;
   // first run: the blocking verdict is published (failure first), recorded, then the filing fails
   await assert.rejects(guardAgainstCurrentHeadFinding(client, pr, HEAD, null), /issues API down/u);
-  assert.deepEqual(state.log.filter((entry) => entry !== 'draft:true'), ['status:failure', 'record', 'file']);
+  assert.deepEqual(state.log.filter((entry) => entry !== 'draft:true'), ['status:pending', 'record', 'status:failure', 'file']);
   assert.deepEqual(pendingFollowUpHeads(state.notes, 9), [HEAD]);
   // the next controller run on this head reaches the same guard first (before any terminal-state recovery),
   // re-derives the blocker and its deferred sibling, and files the sibling
   state.log.length = 0;
   assert.match(await guardAgainstCurrentHeadFinding(client, pr, HEAD, null), /1 blocking current-head Codex finding/u);
-  assert.equal(state.log[0], 'status:failure');
+  assert.ok(state.log.includes('status:failure'));
   assert.equal(state.issues.length, 1);
   assert.match(listed(state.issues[0].number), /discussion_r63/u);
   assert.doesNotMatch(listed(state.issues[0].number), /discussion_r62/u, 'the blocker itself is not deferred');
@@ -608,7 +623,7 @@ test('Codex 4226440227 — the deferred lines are recorded before the draft tran
   const { client, state } = fakeGitHub();
   client.pullRequest = async () => { state.log.push('draft'); throw new Error('GitHub 502'); };
   await assert.rejects(publishBlockingVerdict(client, pr, HEAD, { description: 'review: 1 blocking', deferred: [finding({ p: 2, id: 90 })] }), /502/u);
-  assert.deepEqual(state.log, ['status:failure', 'record', 'draft']);
+  assert.deepEqual(state.log, ['status:pending', 'record', 'status:failure', 'draft']);
   assert.deepEqual(pendingFollowUpHeads(state.notes, 9), [HEAD]);
   assert.match(state.notes[0].body, /discussion_r90/u);
 });
@@ -645,14 +660,22 @@ test('Codex 4226684322 — the settlement withdraws any earlier green before it 
   const failing = fakeGitHub({ comments: [...rounds, finding({ p: 2, id: 103 })], pr });
   failing.state.fail.createIssue = 1;
   await assert.rejects(settleFinalCodexEvidence(failing.client, pr, HEAD), /issues API down/u);
-  assert.deepEqual(failing.state.statuses.map((status) => status.state), ['pending']);
+  // Codex 4229506042 — and not a pending status nothing resumes: the retryable follow-up failure recovery re-runs
+  assert.deepEqual(failing.state.statuses.map((status) => [status.state, status.description]), [['pending', SETTLING_DESCRIPTION], ['failure', FOLLOW_UP_RETRY]]);
   assert.deepEqual(pendingFollowUpHeads(failing.state.notes, 9), [HEAD]);
   // and an earlier head's pending filing that cannot be completed blocks this head's clearance too
   const owed = fakeGitHub({ pr });
   owed.state.fail.createIssue = 2;
   await assert.rejects(fileDeferredFindings(owed.client, pr, 'd'.repeat(40), [finding({ head: 'd'.repeat(40), p: 2, id: 104 })]));
   await assert.rejects(settleFinalCodexEvidence(owed.client, pr, HEAD), /issues API down/u);
-  assert.deepEqual(owed.state.statuses.map((status) => status.state), ['pending']);
+  assert.deepEqual(owed.state.statuses.map((status) => status.state), ['pending', 'failure']);
+  // a transient evidence read failure is the same retryable state
+  const unreadable = { ...fakeGitHub({ pr }).client };
+  const writes = [];
+  unreadable.setStatus = async (sha, statusState, description) => { writes.push([statusState, description]); };
+  unreadable.reviewComments = async () => { throw new Error('GitHub 502'); };
+  await assert.rejects(settleFinalCodexEvidence(unreadable, pr, HEAD), /502/u);
+  assert.deepEqual(writes.at(-1), ['failure', FOLLOW_UP_RETRY]);
   // the recovery path republishes success only after the settlement returned clear — never before it
   const { readFile } = await import('node:fs/promises');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
@@ -677,4 +700,7 @@ test('Codex 4226684328 — a substantive review body is deferred alongside its r
   assert.deepEqual(substantive.deferred.map((item) => item.id), [501, 500], 'the review body is a finding of its own');
   const bare = run(summary);
   assert.deepEqual(bare.deferred.map((item) => item.id), [501], 'a summary of the inline findings adds none');
+  // Codex 4229506031 — a finding inside a <details> of its own is review text, not the About-Codex boilerplate
+  const tucked = run(`${summary}\n\n<details><summary>Additional finding</summary>\n\nThe lease is never released.\n</details>`);
+  assert.deepEqual(tucked.deferred.map((item) => item.id), [501, 500]);
 });
