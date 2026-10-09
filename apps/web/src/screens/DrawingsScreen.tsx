@@ -2,7 +2,8 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, drawingMutationsBlocked } from '@/store/store';
 import { resolveDrawingUrl, drawingsReadMode, type IssueDrawingInput } from '@/data/apiGateway';
-import { Eyebrow, Button, Modal, LocationContext, EditState } from '@/components';
+import { Eyebrow, Button, Modal, LocationContext, EditState, ItemNotFound } from '@/components';
+import { drawingsSliceSettled } from '@/lib/notifications';
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
 import { Download, FileText, History, ChevronRight, X, Plus, Lock, Check, HardHat, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
@@ -55,6 +56,15 @@ export function DrawingsScreen() {
   const openId = useStore((st) => st.routeItem);
   const setOpenId = useStore((st) => st.setRouteItem);
   const open = openId ? drawings.find((d) => d.id === openId) ?? null : null;
+  // Live bug 1c (owner, #482 6063443276) — a link (a push notification, a shared URL) naming a drawing this
+  // register does not hold — missing, removed, unpublished or not visible to this viewer — says so once
+  // the register has settled; while it is still loading the load boundary stands in, never the whole
+  // register under the drawing's URL
+  const settled = useStore(drawingsSliceSettled);
+  const loadFailed = useStore((s) => s.drawingsLoad === 'error' || s.projectLoadState === 'error');
+  const routedAbsent = openId !== null && open === null;
+  const missingItem = routedAbsent && settled ? openId : null;
+  const unsettledItem = routedAbsent && !settled;
   const [issuing, setIssuing] = useState(false);
 
   // Discipline-scoped default: a consultant lands on THEIR discipline's drawings (e.g. a
@@ -71,6 +81,30 @@ export function DrawingsScreen() {
     return scopeKey && scoped ? all.filter((g) => g.key === scopeKey) : all;
   }, [drawings, scopeKey, scoped]);
   const scopeLabel = scopeKey ? DISCIPLINES.find((d) => d.key === scopeKey)?.label ?? scopeKey : '';
+
+  if (unsettledItem) {
+    return (
+      <div className={`${styles.screen} ${styles.mid}`} data-testid={loadFailed ? 'drawings-unavailable' : 'drawings-loading'}>
+        <Eyebrow>DRAWINGS · REGISTER</Eyebrow>
+        {loadFailed ? (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
+            <span>Couldn't load the drawing register — check your connection and access.</span>
+            <Button data-testid="drawings-retry" onClick={() => requestFreshSnapshot()}>Retry</Button>
+          </div>
+        ) : (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the drawing register…</div>
+        )}
+      </div>
+    );
+  }
+  if (missingItem) {
+    return (
+      <div className={`${styles.screen} ${styles.mid}`}>
+        <Eyebrow>DRAWINGS · REGISTER</Eyebrow>
+        <ItemNotFound what="Drawing" id={missingItem} onShowAll={() => setOpenId(null)} showAllLabel="Show all drawings" />
+      </div>
+    );
+  }
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>

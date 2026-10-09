@@ -52,6 +52,8 @@ export interface DispatchIntent {
     /** 4d-ii-a / A6d — a SET of targets (the 4d plan's architect set); projected into the delivery
      *  payload as the canonical sorted, distinct array where present, absent where not. */
     targetUserIds?: string[] | null;
+    /** Live bug 1c — the app path the notification opens; read by the push consumer from the intent. */
+    url?: string;
   };
 }
 

@@ -19,6 +19,12 @@ import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 
+/** Live bug 1c (owner, #482 6063443276) — the app path a drawing notification opens: the web route
+ *  `/projects/<p>/drawings/<id>` (apps/web lib/screens.ts `pathForScreen`), relative to the app origin. */
+export function drawingPath(projectId: string, drawingId: string): string {
+  return `/projects/${encodeURIComponent(projectId)}/drawings/${encodeURIComponent(drawingId)}`;
+}
+
 export interface IssuedDrawing {
   drawingId: string;
   revisionId: string;
@@ -268,7 +274,7 @@ export class DrawingsService {
           entityId: revisionId,
           payload: { number: input.number, rev: input.rev, status: input.status },
         });
-        issued = await emitEvent(tx, { projectId, actor, eventType: isRevise ? 'drawing.revised' : 'drawing.issued', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: input.number, rev: input.rev, status: input.status }, effectKey: published ? (isRevise ? 'drawing.revised' : 'drawing.issued') : (isRevise ? 'drawing.revised_draft' : 'drawing.issued_draft'), dispatch: published ? { push: { body: `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}` } } : {} });
+        issued = await emitEvent(tx, { projectId, actor, eventType: isRevise ? 'drawing.revised' : 'drawing.issued', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: input.number, rev: input.rev, status: input.status }, effectKey: published ? (isRevise ? 'drawing.revised' : 'drawing.issued') : (isRevise ? 'drawing.revised_draft' : 'drawing.issued_draft'), dispatch: published ? { push: { body: `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}`, url: drawingPath(projectId, drawingId) } } : {} });
           // A draft notifies no one — its intent is weightless. Only a published issue|revise carries the
           // push-bearing event to the sender; the recipients-frozen events are weightless no-ops.
           return { resultRef: revisionId, events: issued ? [issued] : [] };
@@ -330,7 +336,7 @@ export class DrawingsService {
         });
         for (const rev of unfrozen) await this.freezeRecipients(tx, actor, projectId, rev.id);
         await recordAudit(tx, { projectId, actor, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } });
-        const ev = await emitEvent(tx, { projectId, actor, eventType: 'drawing.published', entityType: 'Drawing', entityId: drawingId, payload: { number: d.number }, effectKey: 'drawing.published', dispatch: { push: { body: `Drawing issued: ${d.number} — ${d.title}` } } });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'drawing.published', entityType: 'Drawing', entityId: drawingId, payload: { number: d.number }, effectKey: 'drawing.published', dispatch: { push: { body: `Drawing issued: ${d.number} — ${d.title}`, url: drawingPath(projectId, drawingId) } } });
         return { resultRef: drawingId, events: [ev] };
       },
     });
@@ -402,7 +408,7 @@ export class DrawingsService {
           if (existing) return { resultRef: revisionId, events: [] }; // replay — the fact is already recorded and audited
           await tx.drawingAck.create({ data: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role } });
           await recordAudit(tx, { projectId, actor, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } });
-          const ackEvent = await emitEvent(tx, { projectId, actor, eventType: 'drawing.acknowledged', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev }, effectKey: 'drawing.acknowledged', dispatch: { push: { body: `${actor.actorName} is building to ${rev.drawing.number} Rev ${rev.rev}` } } });
+          const ackEvent = await emitEvent(tx, { projectId, actor, eventType: 'drawing.acknowledged', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev }, effectKey: 'drawing.acknowledged', dispatch: { push: { body: `${actor.actorName} is building to ${rev.drawing.number} Rev ${rev.rev}`, url: drawingPath(projectId, rev.drawingId) } } });
           return { resultRef: revisionId, events: [ackEvent] };
         },
       });

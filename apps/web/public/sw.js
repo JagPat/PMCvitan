@@ -111,13 +111,36 @@ self.addEventListener('push', (event) => {
   );
 });
 
+/**
+ * Live bug 1c (owner, #482 6063443276) — a tap opens the record the notification names. The target is an app
+ * path on this origin; anything else falls back to the app root. An open window is focused AND taken to the
+ * record (a history entry, so Back returns to where the viewer was); with none, a new window opens there.
+ */
+function notificationTarget(data) {
+  try {
+    const url = new URL((data && data.url) || '/', self.location.origin);
+    return url.origin === self.location.origin ? url.href : new URL('/', self.location.origin).href;
+  } catch {
+    return new URL('/', self.location.origin).href;
+  }
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || '/';
+  const target = notificationTarget(event.notification.data);
   event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-      for (const client of clients) {
-        if ('focus' in client) return client.focus();
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (clients) => {
+      const client = clients.find((candidate) => 'focus' in candidate);
+      if (!client) return self.clients.openWindow(target);
+      const focused = (await client.focus()) || client;
+      if (focused.url === target) return focused;
+      if ('navigate' in focused) {
+        try {
+          const navigated = await focused.navigate(target);
+          if (navigated) return navigated;
+        } catch {
+          /* a window this worker does not control cannot be navigated: open the record instead */
+        }
       }
       return self.clients.openWindow(target);
     }),

@@ -122,6 +122,10 @@ export const decisionsSliceSettled = (s: Pick<SliceSettledState, 'projectLoadSta
 export const inspectionsSliceSettled = (s: Pick<SliceSettledState, 'projectLoadState' | 'commandReconcileOwed' | 'inspectionsLoad'>): boolean =>
   sliceSettled(s.projectLoadState, s.commandReconcileOwed.inspections, s.inspectionsLoad);
 
+/** The same judgement for the drawing register (live bug 1c: a drawing link that the register does not hold). */
+export const drawingsSliceSettled = (s: { projectLoadState: string; commandReconcileOwed: { drawings: boolean }; drawingsLoad: LoadState }): boolean =>
+  sliceSettled(s.projectLoadState, s.commandReconcileOwed.drawings, s.drawingsLoad);
+
 /**
  * The decision-notice templates that quote a title (legacy rows, and the demo seed, carry no id).
  * `dash`: the title is followed by " — <material>" — titles and materials may themselves contain an em
