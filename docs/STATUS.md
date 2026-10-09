@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: maint-m2a-completion-reports
-reviewed_merge: 647d580
-open_pr: 743
+work_item: live-bug-1c-drawing-push-links
+reviewed_merge: e9a944b
+open_pr: 746
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-09
@@ -26,17 +26,20 @@ updated: 2026-10-09
 
 ### Current unit
 
-**Maintenance M2a** (`claude/maint-m2a-completion-reports`): completion reports, the main-CI recovery sweep
-(with the reported-label skip, Codex 4221120387), the changed-line review-scope text and the round count the
-reports use. No gate changes. Owner decision 2026-10-08 on #482 (6063788241).
+**Live bug 1c, option A** (`claude/live-bug-1c-drawing-push-links`; owner, #482 6063443276): the existing drawing
+push (issue, revise, publish, acknowledge) carries the path of its drawing; a tap takes an open window to it (or
+opens one); the drawing screen says a drawing it does not hold isn't available. No bell rows, no schema or
+audience change. Reload and Back are verified end to end.
+
+M2a (#743) merged at `1b9a4d7` and its fix (#745) at `e9a944b`: completion reports and the main-CI sweep are live.
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign
 stop and the owner approved splitting it, each unit from `main`: M1a (#740, merged at `94d1cdb`), this file's shrink (STATUS and ROADMAP
 archived); M1b (#739, merged at `f970180`), affected-only PR CI and shadow review off. M2 (#742) hit the same
 stop at `d31aaf7` (third reviewed head with a P1 in `autonomous-review-gate.mjs`); the owner approved splitting
-it in turn: M2a first (this unit), then M2b, the review-round cap through one reviews → comments → reviews
-evidence snapshot and one failure → draft → deferred-findings publication path. #742 stays open and stopped
-until they replace it. M3 follows: the trivial fast lane on the ordinary merge path, the size target and one
+it in turn: M2a (merged), then M2b (#744), the review-round cap through one reviews → comments → reviews
+evidence snapshot and one failure → draft → deferred-findings publication path. #744 hit the same stop at
+`e5842f1`; its shape awaits the owner (#482, 6074443710). #742 stays open and stopped until M2b replaces it. M3 follows: the trivial fast lane on the ordinary merge path, the size target and one
 issue per work item. #731 stays open until they land. Maintenance runs beside the live-bug unit (rule 8).
 
 ### Queue (the owner's order of 2026-10-07, recorded on #482)
@@ -47,7 +50,7 @@ issue per work item. #731 stays open until they land. Maintenance runs beside th
      - 1b-1: done (#729, `a08f896`).
      - 1b-2: done (#730, `20b5f0f`).
      - 1b-3: done (#735 `3559f20`, #736 `d028cc4`, #738 `8ab364e`, #741 `647d580`; #734 closed).
-   - 1c, drawing notices: option A approved (owner, #482 6063443276). The existing drawing push opens the exact
+   - 1c, drawing notices: option A approved (owner, #482 6063443276), in progress as #746. The existing drawing push opens the exact
      drawing, the drawing screen shows a clear unavailable state, and reload and Back are verified. No drawing
      bell rows, no schema or audience change.
    - Then the commercial-approval deadlock correction (owner, #482 6062791947): a small, separate application

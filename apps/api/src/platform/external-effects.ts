@@ -383,6 +383,9 @@ export interface DispatchInput {
      *  entry a nonblank user id; persisted sorted and distinct (the canonical array the delivery
      *  seal compares), so `[A, A]` cannot deliver twice. */
     targetUserIds?: readonly string[];
+    /** Live bug 1c (owner, #482 6063443276) — the app path the notification opens when tapped, e.g.
+     *  `/projects/<p>/drawings/<id>`. Carried in the intent only (not the sealed delivery payload). */
+    url?: string;
   };
 }
 
@@ -496,6 +499,7 @@ export function buildDispatchIntent(effectKey: ExternalEffectKey, eventType: Dom
           roles: dispatch.push.roles ?? def.push ?? [],
           ...(dispatch.push.targetUserId ? { targetUserId: dispatch.push.targetUserId } : {}),
           ...(frozen ? { targetUserIds: frozen } : {}),
+          ...(typeof dispatch.push.url === 'string' && dispatch.push.url.startsWith('/') ? { url: dispatch.push.url } : {}),
         },
       }
       : {}),

@@ -165,7 +165,10 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
     handle: async (ctx) => {
       const p = (ctx.delivery.payload ?? null) as { body?: string; roles?: string[] | null; targetUserId?: string | null; targetUserIds?: string[] | null } | null;
       if (!p?.body) return;
-      const payload = { title: 'Vitan PMC', body: p.body };
+      // Live bug 1c — the path the notification opens, read from the event's persisted intent (the sealed
+      // delivery payload carries only body and audience)
+      const url = ctx.meta.dispatchIntent?.push?.url;
+      const payload = { title: 'Vitan PMC', body: p.body, ...(typeof url === 'string' && url.startsWith('/') ? { url } : {}) };
       // Phase 6 task 4b (§A.3) — a catalog entry carrying a pushFamily is re-judged AT CLAIM
       // through the owning module's bound predicate: the delivery goes to the CURRENT target
       // (a holder change between enqueue and claim re-targets), or is dropped with the

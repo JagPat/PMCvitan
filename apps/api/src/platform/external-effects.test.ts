@@ -93,6 +93,14 @@ describe('PR C — external-effect catalog', () => {
       });
     });
 
+    it('live bug 1c — carries the app path a push opens, and only an app-relative one', () => {
+      const intent = buildDispatchIntent('drawing.published', 'drawing.published', { push: { body: 'Drawing issued: A-1 — GA', url: '/projects/p/drawings/d1' } });
+      expect(intent.push).toEqual({ body: 'Drawing issued: A-1 — GA', roles: ['engineer', 'contractor'], url: '/projects/p/drawings/d1' });
+      // an absolute or scheme URL is never carried: the service worker opens paths on the app's own origin
+      const external = buildDispatchIntent('drawing.published', 'drawing.published', { push: { body: 'x', url: 'https://evil.example/' } });
+      expect(external.push).not.toHaveProperty('url');
+    });
+
     describe('4d-ii-a / A7d — the frozen-audience families and `targetUserIds`', () => {
       it('a frozen family carries its recipients as the canonical (sorted, distinct) set and the catalog body', () => {
         const intent = buildDispatchIntent('decision.awaiting_countersign', 'decision.awaiting_countersign', {

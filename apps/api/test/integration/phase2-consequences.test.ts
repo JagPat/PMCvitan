@@ -51,12 +51,12 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
   /** exactly one `changed` signal to the project room, payload EXACTLY { projectId }. */
   const expectSignal = () => expect(changedEmits().map((e) => e.payload), 'exactly one changed signal, payload { projectId }').toEqual([{ projectId: pid }]);
   const expectNoSignal = () => expect(changedEmits(), 'no changed signal expected').toEqual([]);
-  const pushCalls = () => pushSpy.mock.calls as unknown as Array<[string, { title: string; body: string }, string[] | undefined]>;
-  /** exactly one push, exact { title:'Vitan PMC', body }, exact target roles. */
-  const expectPush = (body: string, roles: string[]) => {
+  const pushCalls = () => pushSpy.mock.calls as unknown as Array<[string, { title: string; body: string; url?: string }, string[] | undefined]>;
+  /** exactly one push, exact { title:'Vitan PMC', body } (+ the path it opens, live bug 1c), exact target roles. */
+  const expectPush = (body: string, roles: string[], url?: string) => {
     expect(pushCalls(), 'exactly one push expected').toHaveLength(1);
     expect(pushCalls()[0][0]).toBe(pid);
-    expect(pushCalls()[0][1]).toEqual({ title: 'Vitan PMC', body });
+    expect(pushCalls()[0][1]).toEqual({ title: 'Vitan PMC', body, ...(url ? { url } : {}) });
     expect(pushCalls()[0][2]).toEqual(roles);
   };
   /** exactly one push whose body matches a pattern (for bodies embedding a name/date/seq id). */
@@ -462,7 +462,9 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       expect(res.status).toBeLessThan(300);
       expect((await lastAudit('drawing.issue'))?.actorId).toBe(uid);
       expect(await notifCount(), 'drawings never create a Notification row').toBe(before);
-      expectPush('Drawing issued: A-100 Rev A — GA', ['engineer', 'contractor']);
+      // live bug 1c — the push opens the exact drawing it announces
+      const issued = await t.prisma.drawing.findFirstOrThrow({ where: { projectId: pid, number: 'A-100' } });
+      expectPush('Drawing issued: A-100 Rev A — GA', ['engineer', 'contractor'], `/projects/${encodeURIComponent(pid)}/drawings/${encodeURIComponent(issued.id)}`);
       expectSignal();
     });
 
@@ -482,7 +484,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       expect(res.status).toBeLessThan(300);
       expect((await lastAudit('drawing.revise'))?.actorId).toBe(uid);
       expect((await t.prisma.drawingRevision.findUniqueOrThrow({ where: { id: revA.id } })).status, 'the prior for_construction revision is superseded').toBe('superseded');
-      expectPush('Drawing issued: A-700 Rev B — GA7', ['engineer', 'contractor']);
+      expectPush('Drawing issued: A-700 Rev B — GA7', ['engineer', 'contractor'], `/projects/${encodeURIComponent(pid)}/drawings/${encodeURIComponent(d.id)}`);
       expectSignal();
     });
 
@@ -492,7 +494,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       const res = await post(`/projects/${pid}/drawings/${d.id}/publish`);
       expect(res.status).toBeLessThan(300);
       expect((await lastAudit('drawing.publish'))?.actorId).toBe(uid);
-      expectPush('Drawing issued: A-200 — Detail', ['engineer', 'contractor']);
+      expectPush('Drawing issued: A-200 — Detail', ['engineer', 'contractor'], `/projects/${encodeURIComponent(pid)}/drawings/${encodeURIComponent(d.id)}`);
       expectSignal();
     });
 
@@ -511,6 +513,8 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       expect(res.body.ackCount).toBe(1);
       expect((await lastAudit('drawing.ack'))?.actorId).toBe(uid);
       expectPushMatching(/ is building to A-200 Rev A$/, ['pmc']);
+      // live bug 1c — the acknowledgement push opens the drawing the revision belongs to
+      expect(pushCalls()[0][1].url).toBe(`/projects/${encodeURIComponent(pid)}/drawings/${encodeURIComponent(sk('p2c-dwg-draft'))}`);
       expectSignal();
     });
 

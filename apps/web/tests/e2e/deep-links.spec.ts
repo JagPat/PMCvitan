@@ -74,8 +74,36 @@ test('a modified click on a Decision Log link keeps the browser’s new-tab beha
   await expect(page).toHaveURL(/\/projects\/ambli\/decisions$/);
 });
 
-test('an unknown item opens the screen at its list', async ({ page }) => {
+test('an unknown drawing says it is not available, and "Show all drawings" opens the register', async ({ page }) => {
+  // live bug 1c — a push or shared link naming a drawing the register does not hold says so, rather than
+  // silently showing the register as though that were the drawing
   await page.goto('/projects/ambli/drawings/NOPE');
-  await expect(page.getByText('DRAWINGS · REGISTER')).toBeVisible();
+  await expect(page.getByTestId('item-not-found')).toContainText("Drawing NOPE isn't available");
   await expect(page.getByText(/BUILDING TO REV C/)).toHaveCount(0);
+  await page.getByTestId('item-not-found-show-all').click();
+  await expect(page).toHaveURL(/\/projects\/ambli\/drawings$/);
+  await expect(page.getByTestId('item-not-found')).toHaveCount(0);
+});
+
+test('a drawing opened from a notification link survives a reload, and Back returns to where the viewer was', async ({ page }) => {
+  // live bug 1c — the service worker takes the open window to the push's path (a history entry); in the app
+  // that is an ordinary navigation to the drawing's URL
+  await page.goto('/projects/ambli/for-you');
+  await page.evaluate(() => { window.location.assign('/projects/ambli/drawings/DWG-1'); });
+  await expect(page).toHaveURL(/\/projects\/ambli\/drawings\/DWG-1$/);
+  await expect(page.getByText(/BUILDING TO REV C/)).toBeVisible();
+
+  await page.reload();
+  await expect(page).toHaveURL(/\/projects\/ambli\/drawings\/DWG-1$/);
+  await expect(page.getByText(/BUILDING TO REV C/)).toBeVisible();
+
+  // a full navigation is a cold record link, so (as for every record link, #728's RouteBridge) the register
+  // sits underneath it: Back closes the drawing to the register, and Back again returns to where the viewer was
+  await page.goBack();
+  await expect(page).toHaveURL(/\/projects\/ambli\/drawings$/);
+  await expect(page.getByText(/BUILDING TO REV C/)).toHaveCount(0);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/projects\/ambli\/drawings$/);
 });

@@ -220,7 +220,7 @@ describe('DrawingsService.issue', () => {
     // Asserted exactly, and in emit order, so a future event appearing here has to be classified.
     expect(dispatchedIntents(dispatcher)).toEqual([
       { effectKey: 'drawing.recipients_frozen', invalidate: false, coverageVersion: expect.any(String) },
-      { effectKey: 'drawing.issued', invalidate: true, push: { body: expect.stringContaining('A-201 Rev A'), roles: ['engineer', 'contractor'] }, coverageVersion: expect.any(String) },
+      { effectKey: 'drawing.issued', invalidate: true, push: { body: expect.stringContaining('A-201 Rev A'), roles: ['engineer', 'contractor'], url: `/projects/ambli/drawings/${draws[0].id}` }, coverageVersion: expect.any(String) },
     ]);
   });
 
@@ -236,7 +236,7 @@ describe('DrawingsService.issue', () => {
     // weightless, so exactly one intent in this batch reaches a person.
     expect(dispatchedIntents(dispatcher)).toEqual([
       { effectKey: 'drawing.recipients_frozen', invalidate: false, coverageVersion: expect.any(String) },
-      { effectKey: 'drawing.published', invalidate: true, push: { body: expect.stringContaining('A-201'), roles: ['engineer', 'contractor'] }, coverageVersion: expect.any(String) },
+      { effectKey: 'drawing.published', invalidate: true, push: { body: expect.stringContaining('A-201'), roles: ['engineer', 'contractor'], url: `/projects/ambli/drawings/${id}` }, coverageVersion: expect.any(String) },
     ]);
 
     await expect(svc.publish('ambli', id, drawUser)).rejects.toBeInstanceOf(ConflictException);
