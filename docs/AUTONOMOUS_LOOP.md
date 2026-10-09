@@ -285,11 +285,32 @@ back to an unreviewed path.
 ## Review continuity
 
 The gate records review history without rejecting another correction head merely
-because earlier heads received findings. Current-head findings still fail
-`codex-current-head` and return the existing PR to draft. The watchdog routes the
-same declared owner to fix forward; it never orders closure based on a round count.
-Obsolete round-limit failures request the existing gate recovery workflow, which
-rechecks CI and current-head review rather than clearing the status directly.
+because earlier heads received findings. Through the second Codex round on a PR,
+every current-head finding fails `codex-current-head` and returns the existing PR to
+draft. From the third round on, the review-round cap applies (owner decision
+2026-10-08, [POLICY.md](POLICY.md)): only a P0/P1 on a line the PR changed still
+fails it. Every other current-head finding is filed in one `review-follow-up` issue
+for that head, and the PR merges on green CI. A capped success that merged with
+findings on the PR is therefore expected, not a controller fault; read the follow-up
+issue that the head's `codex-current-head` status names.
+
+Every Codex verdict is read from one evidence snapshot (reviews, then comments, then
+reviews again; read again until both review reads agree). Evidence that changes
+while it is read is `unsettled`: it never clears a head. A blocking verdict is always
+published in one order: the failure status, then a record of any non-blocking findings
+beside it (a comment on the PR), then back to draft, then the follow-up issue. Filing goes
+through `scripts/review-follow-up.mjs`: each finding keeps the classification and URL it had
+on its own head, and lands in that head's one open `review-follow-up` issue. Before a head
+can turn green, the settlement withdraws any earlier success, completes every recorded
+filing on the PR (an earlier head's included), and files its own; success is published
+only after all of that succeeded. So a filing that failed is recovered even when a new
+head was pushed first, and no head is mergeable while a filing it owes is unwritten.
+The watchdog routes the same declared owner to fix forward; it never orders closure
+based on a round count.
+
+The retired close-and-replace round limit is a different thing. Its obsolete
+round-limit failures request the existing gate recovery workflow, which rechecks CI
+and current-head review rather than clearing the status directly.
 
 Historical replacement labels no longer block unrelated `Replaces: none` work.
 Explicit replacement declarations retain their existing provenance checks so

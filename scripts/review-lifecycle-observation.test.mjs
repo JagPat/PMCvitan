@@ -232,7 +232,7 @@ test('L8: the crossing CAUSED by the current review still reaches the sticky', a
   }
   assert.equal(
     [...source.matchAll(/await publishCurrentHeadFinding\(/gu)].length,
-    3,
+    4, // + the final evidence re-read before success (Codex 4214321785)
     'every path that observes findings must use the reset-aware publisher',
   );
 
