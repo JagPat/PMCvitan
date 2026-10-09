@@ -2000,18 +2000,23 @@ test('M3 / #751 Codex 4231455040 and 4231455030: the citation is rechecked on th
   const valid = harness([pull('#750'), pull('#750')]);
   assert.equal(await reviewGate.completeReviewedPullRequest(valid.client, pull('#750'), head, eligible), 'merged');
 
-  // A body edited to a missing issue between admission and the merge's final read: no merge, and the green
-  // status is revoked with the scope refusal and a draft (which cancels any queued auto-merge).
-  const edited = harness([pull('#750'), pull('#9999')]);
+  // A body edited to a missing issue since final admission: no merge, and the green status is revoked with the
+  // scope refusal and a draft (which cancels any queued auto-merge).
+  const edited = harness([pull('#9999'), pull('#9999')]);
   assert.equal((await reviewGate.authorizeExactHeadMerge(edited.client, pull('#750'), head, eligible)).state, 'work_item_not_verified');
-  const refused = harness([pull('#750'), pull('#9999')]);
+  // #751 Codex 4232445394 — the citation is verified BEFORE the final read, and a body that changes in between
+  // (while the issue lookup was in flight) fails closed: no merge on a body that was not the one verified.
+  const raced = harness([pull('#750'), pull('#9999')]);
+  assert.equal((await reviewGate.authorizeExactHeadMerge(raced.client, pull('#750'), head, eligible)).state, 'changed_during_validation');
+  assert.equal(await reviewGate.completeReviewedPullRequest(harness([pull('#750'), pull('#9999')]).client, pull('#750'), head, eligible), 'held_for_gates');
+  const refused = harness([pull('#9999'), pull('#9999')]);
   assert.equal(await reviewGate.completeReviewedPullRequest(refused.client, pull('#750'), head, eligible), 'held_work_item');
   assert.equal(refused.log.merges + refused.log.autoMerges, 0);
   assert.deepEqual(refused.log.drafts, [true]);
   assert.match(refused.log.statuses.at(-1).description, /^scope: work item: the cited work item #9999 does not exist/u);
 
   // Unreadable at the final read: no merge, the retryable hold replaces the green status, and no draft.
-  const unread = harness([pull('#750'), pull('#752')]);
+  const unread = harness([pull('#752'), pull('#752')]);
   assert.equal(await reviewGate.completeReviewedPullRequest(unread.client, pull('#750'), head, eligible), 'held_work_item');
   assert.equal(unread.log.merges + unread.log.autoMerges, 0);
   assert.deepEqual(unread.log.drafts, []);

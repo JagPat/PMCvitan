@@ -23,6 +23,7 @@ import {
   run as runScope,
   verifyWorkItemIssue,
   workItemIssueNumber,
+  workItemIssueNumbers,
 } from './review-scope.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -1803,6 +1804,13 @@ test('M3 — the cited work-item issue is parsed from the template line', () => 
     assert.equal(workItemIssueNumber(`intro\n${line}\n`), 9, line);
   }
   assert.equal(workItemIssueNumber('the Work item issue: #9 is mentioned mid-line'), null, 'only a line that IS the field');
+  // #751 Codex 4232445400 — an example in a fenced block or an HTML comment is not a citation
+  const example = '```md\n- Work item issue: #9999\n```';
+  assert.deepEqual(workItemIssueNumbers(`- Work item issue: #750\n\n${example}\n`), [750]);
+  assert.deepEqual(workItemIssueNumbers(`${example}\n`), []);
+  assert.deepEqual(workItemIssueNumbers('~~~\nWork item issue: #1\n~~~\n- Work item issue: #2'), [2]);
+  assert.deepEqual(workItemIssueNumbers('<!-- Work item issue: #1 -->\n- Work item issue: #2'), [2]);
+  assert.deepEqual(workItemIssueNumbers('```\nWork item issue: #1'), [], 'an unclosed fence runs to the end, as GitHub renders it');
 });
 
 test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in this repository', async () => {

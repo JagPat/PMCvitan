@@ -1450,8 +1450,15 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   if (!mergeVerdict?.mergeEligible || candidateBodyHold(live, mergeVerdict)) {
     return { allowed: false, state: 'ownership_not_eligible' };
   }
+  // The cited work item, verified on this read (#751 Codex 4231455040): an edit since final admission that
+  // cites a missing issue or a pull request, or one that cannot be read now, holds the merge. It is checked
+  // BEFORE the final read below, so no network wait follows the body the merge acts on (#751 Codex 4232445394).
+  const citation = await assessWorkItemCitation(client, live, { allowed: true });
+  if (!citation.allowed) {
+    return { allowed: false, state: 'work_item_not_verified', scope: citation, pullRequest: live };
+  }
   // Re-read after remote evidence. A push, base update, retarget or draft
-  // transition during validation fails closed.
+  // transition during validation fails closed, and so does a body edit: the citation was verified on `live`.
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
   if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
     return { allowed: false, state: 'changed_during_validation' };
@@ -1461,11 +1468,8 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   if (candidateBodyHold(finalLive, mergeVerdict)) {
     return { allowed: false, state: 'ownership_not_eligible' };
   }
-  // So is the cited work item (#751 Codex 4231455040): an edit since final admission that cites a missing
-  // issue or a pull request, or one that cannot be read now, is caught on the body the merge would act on.
-  const citation = await assessWorkItemCitation(client, finalLive, { allowed: true });
-  if (!citation.allowed) {
-    return { allowed: false, state: 'work_item_not_verified', scope: citation, pullRequest: finalLive };
+  if (String(finalLive.body ?? '') !== String(live.body ?? '')) {
+    return { allowed: false, state: 'changed_during_validation' };
   }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
