@@ -27,6 +27,12 @@ export const STATUS_DOCUMENT = 'docs/STATUS.md';
 export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
 export const GATE_CHECKS = ['review-scope', 'battery-plan'];
 export const MAX_REVIEW_ATTEMPTS = 2;
+// Owner decision 2026-10-08 (delivery speed) — see docs/POLICY.md "Review continuity and scope".
+// A PR gets at most REVIEW_ROUND_CAP Codex review rounds (distinct Codex-reviewed finding heads); from
+// the next round on, only a P0/P1 finding anchored on a line the PR changed blocks, and every other
+// finding is filed as a follow-up issue under REVIEW_FOLLOW_UP_LABEL.
+export const REVIEW_ROUND_CAP = 2;
+export const REVIEW_FOLLOW_UP_LABEL = 'review-follow-up';
 // 40 minutes covers measured ~29-minute API jobs; 25 minutes covers measured
 // 13-23-minute Codex latency. Keep the workflow budget above both review attempts
 // plus CI settlement and overhead (validated by workflow tests).

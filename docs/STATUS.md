@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: maint-m2a-completion-reports
-reviewed_merge: 647d580
-open_pr: 743
+work_item: maint-m2b-review-cap
+reviewed_merge: 1b9a4d7
+open_pr: 744
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-09
@@ -26,15 +26,16 @@ updated: 2026-10-09
 
 ### Current unit
 
-**Maintenance M2a** (`claude/maint-m2a-completion-reports`): completion reports, the main-CI recovery sweep
-(with the reported-label skip, Codex 4221120387), the changed-line review-scope text and the round count the
-reports use. No gate changes. Owner decision 2026-10-08 on #482 (6063788241).
+**Maintenance M2b** (`claude/maint-m2b-review-cap`): the review-round cap, integrated through one reviews →
+comments → reviews evidence snapshot and one failure → draft → deferred-findings publication path. It carries
+#742's cap logic, findings and tests forward (Codex 4221120404 and 4221120415 included). Owner decision
+2026-10-08 on #482 (6063788241). M2a (#743) merged at `1b9a4d7`.
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign
 stop and the owner approved splitting it, each unit from `main`: M1a (#740, merged at `94d1cdb`), this file's shrink (STATUS and ROADMAP
 archived); M1b (#739, merged at `f970180`), affected-only PR CI and shadow review off. M2 (#742) hit the same
 stop at `d31aaf7` (third reviewed head with a P1 in `autonomous-review-gate.mjs`); the owner approved splitting
-it in turn: M2a first (this unit), then M2b, the review-round cap through one reviews → comments → reviews
+it in turn: M2a (#743, merged at `1b9a4d7`), then M2b (this unit), the review-round cap through one reviews → comments → reviews
 evidence snapshot and one failure → draft → deferred-findings publication path. #742 stays open and stopped
 until they replace it. M3 follows: the trivial fast lane on the ordinary merge path, the size target and one
 issue per work item. #731 stays open until they land. Maintenance runs beside the live-bug unit (rule 8).

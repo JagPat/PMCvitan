@@ -5,10 +5,13 @@ import { assessCorrectionLease, correctionReasonFor } from './correction-lease.m
 import { assessReplacementLineage, isRetryableReviewFailureDescription } from './review-efficiency.mjs';
 const head = 'c'.repeat(40);
 const pr = { number: 572, state: 'open', draft: false, body: '<!-- correction-owner: claude -->', head: { sha: head, ref: 'claude/unit', repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } } };
-const findings = ['a', 'b', 'c'].map(x => ({ user: { login: 'chatgpt-codex-connector[bot]' }, original_commit_id: x.repeat(40), body: '**P1** unresolved defect' }));
+// Anchored on a line the PR changes (`pullRequestFiles` below), so a finding past the review-round cap
+// (owner decision 2026-10-08) still blocks: a P1 on a changed line.
+const findings = ['a', 'b', 'c'].map(x => ({ user: { login: 'chatgpt-codex-connector[bot]' }, original_commit_id: x.repeat(40), path: 'apps/web/src/a.ts', line: 2, body: '**P1** unresolved defect' }));
 function client(reviewFindings = findings) {
   const calls = [];
-  return { calls, async reviews() { return []; }, async reviewComments() { return reviewFindings; }, async pullRequest() { return pr; }, async setDraft(p, draft) { calls.push(['draft', draft]); return { ...p, draft }; }, async setStatus(...args) { calls.push(['status', ...args]); }, async markReplacementRequired() { calls.push(['replacement']); }, async updateStickyComment(...args) { calls.push(['notice', ...args]); } };
+  return { calls, async reviews() { return []; }, async reviewComments() { return reviewFindings; }, async pullRequest() { return pr; },
+    async pullRequestFiles() { return [{ filename: 'apps/web/src/a.ts', patch: '@@ -1,1 +1,3 @@\n a\n+b\n+c' }]; }, async setDraft(p, draft) { calls.push(['draft', draft]); return { ...p, draft }; }, async setStatus(...args) { calls.push(['status', ...args]); }, async markReplacementRequired() { calls.push(['replacement']); }, async updateStickyComment(...args) { calls.push(['notice', ...args]); } };
 }
 test('multiple finding heads allow another correction without replacement mutations', async () => {
   const c = client();
