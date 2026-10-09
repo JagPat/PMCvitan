@@ -62,8 +62,8 @@ fresh work. Existing explicit replacement declarations retain provenance validat
 
 A replacement is exceptional: record a concrete scope or approach benefit, preserve
 every unresolved finding and reproduce-first proof, and link both PRs.
-The declared correction owner continues fixing the current PR, family-wide
-(REVIEW_RUBRIC.md): every dimension, every writer branch, whole file, before one push. At the THIRD distinct
+The declared correction owner continues fixing the current PR. Scope (owner, 2026-10-08): changed lines and direct callers;
+whole-file, family-wide audits (REVIEW_RUBRIC.md) only for justified-large or migration PRs. At the THIRD distinct
 reviewed head with a P1 in the same file, ordinary patching stops for an additive
 redesign in smaller units; the findings stay open. This stop binds the correction owner,
 who records it on the PR; the controller counts finding heads as a signal and mints no
@@ -75,7 +75,7 @@ is frozen: no new controller, watchdog or lease feature outside a requested main
 Keep one concern per PR. A standard review unit is at most 20 files and 1,500 changed
 lines. Larger units need `<!-- review-size: justified-large -->` and all six invariant
 rows with concrete risk and verification evidence. Numeric limits are review aids,
-not proof of quality. Legacy PR-number exemptions remain solely for compatibility.
+not proof of quality. Each merged PR gets a completion report (completion-report.mjs). Legacy PR-number exemptions remain solely for compatibility.
 
 Complete the template's five pre-review checks: concurrency/serialization, previous-
 release compatibility, alternate writers/triggers, authorization/tenancy, and

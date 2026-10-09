@@ -301,3 +301,21 @@ Voluntary replacements without a historical round-limit label must include a
 concrete `Replacement reason:` alongside `Replaces: #N`; the source must be a
 closed, unmerged PR from this repository targeting `main`, with findings and
 proofs preserved in both PRs. Do not replace an already settled source.
+
+## Completion reports and the main-CI sweep
+
+Every merged PR gets one completion report comment: hours from open to merge, Codex review
+rounds and changed lines (`scripts/completion-report.mjs`, `.github/workflows/completion-report.yml`).
+The controller merges with the workflow token, and GitHub creates no workflow run from an
+event that token causes. A controller merge therefore triggers neither the report's
+`pull_request: closed` nor push-to-`main` CI. The workflow also sweeps after every controller
+run and hourly. Each sweep:
+
+- reports every PR merged in the last 48 hours that has no report yet, and labels each reported
+  PR `completion-reported` so later sweeps skip it without re-reading it;
+- dispatches `ci.yml` on `main` when no CI run on `main`'s head executed the battery (none
+  exists, or every one was cancelled, skipped, stale or never started). A run that executed
+  and failed is not retried: a red `main` needs a person.
+
+After an outage longer than 48 hours, run the workflow manually with a wider `window_hours`.
+Reports stay single: a PR already carrying a report is labelled, not reported again.
