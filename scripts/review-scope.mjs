@@ -234,15 +234,53 @@ export function workItemIssueNumber(body) {
 
 /** Every work-item issue number the body cites, in order (one per `Work item issue: #N` line). */
 export function workItemIssueNumbers(body) {
-  // only rendered text: an example in a fenced block or an HTML comment is not a citation (#751 Codex 4232445400)
-  const rendered = String(body ?? '')
+  return workItemCitations(body).numbers;
+}
+
+/** Whether the body carries a work-item field at all — a readable citation or one this check refuses. */
+export function citesWorkItem(body) {
+  const { numbers, malformed } = workItemCitations(body);
+  return numbers.length > 0 || malformed.length > 0;
+}
+
+// The field in any ordinary Markdown form: list markers (`-`, `*`, `+`, `1.`), quotes, headings, emphasis
+// (#751 Codex 4232401607 and 4232566806).
+const WORK_ITEM_FIELD = /^[^\S\n]*(?:(?:[-*+>]|\d+[.)]|#{1,6})[^\S\n]*)*[*_]*Work item issue:[*_]*[^\S\n]*#(\d+)\b/iu;
+// Anything that reads like the field with a number. Fail closed: such a line is a readable citation or it is
+// refused, so no Markdown form can carry a citation past verification — the class of finding the rounds above
+// found one form at a time.
+const WORK_ITEM_LOOKALIKE = /work[^\w\n]*item[^\w\n]*issue[^\w\n]*\d/iu;
+const LIST_ITEM = /^[^\S\n]{0,3}(?:[-*+]|\d+[.)])[^\S\n]/u;
+
+/**
+ * The body's work-item citations over its RENDERED text only: HTML comments, fenced code (closed by the same
+ * character at least as long as its opener), indented code and inline code are examples, never citations
+ * (#751 Codex 4232445400, 4232521953, 4232566819). Returns the cited numbers and any line that reads like the
+ * field but is not one (`malformed`).
+ */
+export function workItemCitations(body) {
+  const text = String(body ?? '')
     .replace(/<!--[\s\S]*?(?:-->|$)/gu, '')
-    // a fence closes on the same character at least as long as its opener (#751 Codex 4232521953)
     .replace(/^[^\S\n]*((`)`{2,}|(~)~{2,})[^\n]*\n[\s\S]*?(?:^[^\S\n]*\1\2*\3*[^\S\n]*$|(?![\s\S]))/gmu, '');
-  // any Markdown prefix — list markers (`-`, `*`, `+`, `1.`), quotes, emphasis — so formatting cannot hide a
-  // citation from verification (#751 Codex 4232401607)
-  return [...rendered.matchAll(/^[^\S\n]*(?:(?:[-*+>]|\d+[.)])[^\S\n]*)*[*_]*Work item issue:[*_]*[^\S\n]*#(\d+)\b/gimu)]
-    .map((match) => Number(match[1]));
+  const numbers = [];
+  const malformed = [];
+  let previousBlank = true;
+  let inIndentedCode = false;
+  let inList = false;
+  for (const raw of text.split('\n')) {
+    const blank = raw.trim() === '';
+    // an indented code block starts after a blank line outside a list, and runs while lines stay indented
+    const indented = /^(?: {4}|\t)/u.test(raw);
+    inIndentedCode = indented && (inIndentedCode || (previousBlank && !inList)) && !blank;
+    if (!blank && !indented) inList = LIST_ITEM.test(raw);
+    previousBlank = blank;
+    if (inIndentedCode) continue;
+    const line = raw.replace(/(`+)[\s\S]*?\1/gu, '');
+    const field = WORK_ITEM_FIELD.exec(line);
+    if (field) numbers.push(Number(field[1]));
+    else if (WORK_ITEM_LOOKALIKE.test(line)) malformed.push(line.trim());
+  }
+  return { numbers, malformed };
 }
 
 /**
@@ -252,7 +290,10 @@ export function workItemIssueNumbers(body) {
  * is `retryable` (#751 Codex 4230918008): the citation is unknown, not wrong, so no correction is owed.
  */
 export async function verifyWorkItemIssue(body, { fetchImpl, repository, token }) {
-  const numbers = workItemIssueNumbers(body);
+  const { numbers, malformed } = workItemCitations(body);
+  if (malformed.length > 0) {
+    return { detail: `the body has a work-item field this check cannot read ("${malformed[0].slice(0, 60)}"); write it as \`- Work item issue: #N\``, retryable: false };
+  }
   if (numbers.length === 0) return null;
   // one work item per PR: a second citation is refused outright, so a valid first one cannot mask an
   // invalid or stale second (#751 Codex 4231952204)

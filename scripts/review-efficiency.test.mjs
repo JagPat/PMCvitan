@@ -22,8 +22,10 @@ import {
   parseTrackedTree,
   run as runScope,
   verifyWorkItemIssue,
+  workItemCitations,
   workItemIssueNumber,
   workItemIssueNumbers,
+  citesWorkItem,
 } from './review-scope.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -1816,6 +1818,18 @@ test('M3 — the cited work-item issue is parsed from the template line', () => 
   assert.deepEqual(workItemIssueNumbers('~~~\nWork item issue: #1\n~~~~\n- Work item issue: #2'), [2]);
   assert.deepEqual(workItemIssueNumbers('````\nWork item issue: #1\n```\n- Work item issue: #2'), [], 'a shorter closer is content');
   assert.deepEqual(workItemIssueNumbers('```\nWork item issue: #1\n~~~\n- Work item issue: #2'), [], 'a different character is content');
+  // #751 Codex 4232566806 — a heading is the field too
+  assert.deepEqual(workItemIssueNumbers('### Work item issue: #9'), [9]);
+  // #751 Codex 4232566819 — indented code is an example; an indented list continuation is not code
+  assert.deepEqual(workItemIssueNumbers('intro\n\n    Work item issue: #1\n\n- Work item issue: #2'), [2]);
+  assert.deepEqual(workItemIssueNumbers('- item\n\n    Work item issue: #3'), [3], 'list continuation, not code');
+  assert.deepEqual(workItemIssueNumbers('see `Work item issue: #1` inline\n- Work item issue: #2'), [2]);
+  // fail closed: a line that reads like the field but is not one is refused, never skipped
+  for (const lookalike of ['Work item: issue #9', 'work item issue #9', '| Work item issue | #9 |', 'the Work item issue: #9 mid-line']) {
+    assert.ok(citesWorkItem(lookalike), lookalike);
+    assert.deepEqual(workItemCitations(lookalike).numbers, [], lookalike);
+  }
+  assert.equal(citesWorkItem('The PR template asks for `Work item issue: #N`.'), false, 'prose and inline code cite nothing');
 });
 
 test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in this repository', async () => {
@@ -1847,6 +1861,18 @@ test('M3 / #731 Codex 4214321797 — a cited work item must be a real issue in t
   // permanent answers, and the transfer redirect is never followed
   assert.deepEqual(await check(15), { detail: 'the cited work item #15 was deleted from o/r', retryable: false });
   assert.deepEqual(await check(16), { detail: 'the cited work item #16 was moved out of o/r', retryable: false });
+  // a field this check cannot read is refused before any read (#751 Codex 4232566806: fail closed)
+  const callsBefore = calls.length;
+  assert.deepEqual(
+    await verifyWorkItemIssue('Work item: issue #9999', { fetchImpl: fetchImpl(answers), repository: 'o/r', token: 't' }),
+    { detail: 'the body has a work-item field this check cannot read ("Work item: issue #9999"); write it as `- Work item issue: #N`', retryable: false },
+  );
+  assert.equal(calls.length, callsBefore);
+  // the shape of #751's own body: prose naming the field in inline code, then the template line
+  assert.deepEqual(
+    workItemCitations('<!-- review-size: standard -->\n## Objective\n  - The PR template asks for `Work item issue: #N`.\n\n## Review unit\n\n- Work item issue: #750\n- Base SHA: x'),
+    { numbers: [750], malformed: [] },
+  );
   assert.equal(calls[0], 'https://api.github.com/repos/o/r/issues/10');
   // a body that cites none makes no request (whether a citation is REQUIRED is not decided here)
   calls.length = 0;

@@ -54,7 +54,7 @@ import {
   REPLACEMENT_REQUIRED_LABEL,
 } from './review-efficiency.mjs';
 import { assessCommittedDirectiveClearance, githubProvenanceReader, headCommitFromGitHub } from './autonomous-drain-clearance.mjs';
-import { verifyWorkItemIssue, workItemIssueNumber } from './review-scope.mjs';
+import { citesWorkItem, verifyWorkItemIssue } from './review-scope.mjs';
 import {
   PRODUCT_CHECKS,
   attemptGateStamps,
@@ -1731,7 +1731,7 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
 // citation that is not a real issue refuses the head like any scope failure; one that could not be read is
 // retryable on this same head (`WORK_ITEM_READ_RETRY`, #751 Codex 4230918008), never a correction.
 async function assessWorkItemCitation(client, pullRequest, result) {
-  if (workItemIssueNumber(pullRequest.body) === null) return result;
+  if (!citesWorkItem(pullRequest.body)) return result;
   const problem = await client.workItemProblem(pullRequest.body);
   if (!problem) return result;
   if (problem.retryable) {
@@ -1996,7 +1996,7 @@ export async function guardCandidateRelabel(client, pullRequest, expectedHead, e
   // M3 (#751 Codex 4230917999): an edit can also swap a verified work-item citation for a bad one after
   // review-scope passed, so a non-candidate body that cites one has that citation checked on the edit.
   const candidate = correctionOwnerDeclaration(pullRequest).state === 'candidate';
-  if (!candidate && workItemIssueNumber(pullRequest.body) === null) return 'not_candidate';
+  if (!candidate && !citesWorkItem(pullRequest.body)) return 'not_candidate';
   const scope = candidate
     ? await enforceReviewScope(client, pullRequest, expectedHead)
     : await enforceWorkItemCitation(client, pullRequest, expectedHead);
