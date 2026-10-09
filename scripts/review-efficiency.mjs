@@ -359,8 +359,14 @@ export function assessReviewScope(
       ? ['an inseparable migration/service unit needs a concrete "Migration/service seam" explanation']
       : []),
   ];
+  // The declared size class (owner, 2026-10-09, M3a; #482 6090908355). `trivial` is a CLASSIFICATION only: it is
+  // reported here and decides nothing — a trivial unit is sized, CI-gated and reviewed by an exact-head Codex
+  // review exactly like a standard one. No gate, CI-selection or review module reads it.
+  const declaredSize = /^<!--\s*review-size:\s*(standard|trivial|justified-large)\s*-->/iu
+    .exec(body.trimStart())?.[1]?.toLowerCase() ?? null;
   const common = {
     changedFiles: changedFileCount,
+    declaredSize,
     changedLines,
     large,
     limits: { maxFiles, maxChangedLines },
@@ -374,9 +380,7 @@ export function assessReviewScope(
   if (large && number <= enforceAfterPr) {
     state = 'grandfathered';
   } else if (large) {
-    const sizeDeclaration = /^<!--\s*review-size:\s*(standard|justified-large)\s*-->/iu
-      .exec(body.trimStart());
-    const justified = sizeDeclaration?.[1]?.toLowerCase() === 'justified-large';
+    const justified = declaredSize === 'justified-large';
     const tableRows = body
       .split(/\r?\n/u)
       .filter((line) => line.trimStart().startsWith('|'))

@@ -1769,3 +1769,35 @@ test('the scope CLI refuses a tracked dependency path independently of the scope
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+// ── M3a (owner, 2026-10-09, #482 6090833573 / 6090908355): `review-size: trivial` is a classification only ──
+
+test('M3a — a trivial unit is reported as trivial and decided exactly like a standard one', () => {
+  const withSize = (size, overrides = {}) => pullRequest({
+    body: `<!-- review-size: ${size} -->\n${pullRequest().body}`,
+    ...overrides,
+  });
+  const trivial = assessReviewScope(withSize('trivial'));
+  const standard = assessReviewScope(withSize('standard'));
+  assert.equal(trivial.declaredSize, 'trivial');
+  assert.equal(standard.declaredSize, 'standard');
+  const { declaredSize: _t, ...trivialDecision } = trivial;
+  const { declaredSize: _s, ...standardDecision } = standard;
+  assert.deepEqual(trivialDecision, standardDecision, 'the classification changes no decision');
+  // a large "trivial" unit is still a large unit: the justified-large evidence is required
+  const large = assessReviewScope(withSize('trivial', { additions: 1_501, changed_files: 21 }));
+  assert.equal(large.allowed, false);
+  assert.match(large.detail, /justified-large marker/u);
+  assert.equal(assessReviewScope(withSize('justified-large')).declaredSize, 'justified-large');
+  assert.equal(assessReviewScope(pullRequest({ body: 'no marker' })).declaredSize, null);
+});
+
+test('M3a — no gate, CI-selection or review module reads the trivial marker: no CI-only or no-Codex lane', async () => {
+  for (const file of ['autonomous-review-gate.mjs', 'autonomous-review-state.mjs', 'review-cap.mjs', 'review-policy.mjs',
+    'review-lifecycle.mjs', 'ci-battery-plan.mjs', 'ci-affected.mjs', 'correction-lease.mjs']) {
+    const source = await readFile(new URL(`./${file}`, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /trivial/iu, `${file} must not treat a trivial unit differently`);
+  }
+  const policy = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
+  assert.match(policy, /review-size: trivial -->` only classifies a unit and never skips CI or Codex review/u);
+});
