@@ -48,6 +48,9 @@ function fakeGitHub({ comments = [], reviews = [], files = FILES, pr = null } = 
     pullRequestFiles: async () => files,
     reactions: async () => [],
     statuses: async () => [],
+    // M3c: the success writer reads the exact head's Work-Item trailer; this head cites none
+    commit: async () => ({ commit: { message: 'fix\n\nCorrection-Owner: claude\n' } }),
+    pause: async () => {},
     pullRequest: async () => pr,
     setDraft: async (current, draft) => { state.log.push(`draft:${draft}`); return { ...current, draft }; },
     setStatus: async (sha, statusState, description) => { state.log.push(`status:${statusState}`); state.statuses.push({ sha, state: statusState, description }); },

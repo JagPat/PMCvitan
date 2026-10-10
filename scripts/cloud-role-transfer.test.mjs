@@ -311,7 +311,7 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   // 2B2: the exact head commit carries a valid terminal Correction-Owner trailer by default, so the
   // SHA merge-authority verdict is `eligible`. `merge` overrides it to exercise the ownership gate.
   const eligibleCommit = { commit: { message: 'fix: something\n\nCorrection-Owner: claude\n' } };
-  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], runs = checks, commit = eligibleCommit } = {}) => ({
+  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success', description: 'review: clean [wi:none]' }], runs = checks, commit = eligibleCommit } = {}) => ({
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pulls.shift() ?? pull; },
     async statuses() { return statuses; },
@@ -338,7 +338,7 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, candidatePull] }), pull, head,
     { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).state, 'ownership_not_eligible');
   // A caller that pre-parsed the eligible verdict authorizes without a second commit read.
-  assert.equal((await authorizeExactHeadMerge({ ...makeClient(), async commit() { throw new Error('must not re-read when verdict is carried'); } }, pull, head, { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).allowed, true);
+  assert.equal((await authorizeExactHeadMerge({ ...makeClient(), async commit() { throw new Error('must not re-read when verdict is carried'); } }, pull, head, { outcome: 'eligible', mergeEligible: true, owner: 'claude', workItem: { state: 'none' } })).allowed, true);
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [{ ...pull, draft: true }] }), pull, head)).state, 'draft');
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, { ...pull, head: { ...pull.head, sha: 'c'.repeat(40) } }] }), pull, head)).state, 'changed_during_validation');
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, { ...pull, base: { ...pull.base, sha: 'd'.repeat(40) } }] }), pull, head)).state, 'changed_during_validation');
