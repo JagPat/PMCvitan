@@ -17,14 +17,19 @@
 import { asciiTrim, gitParsedTrailers } from './git-trailers.mjs';
 
 const FIELD_KEY = 'work-item';
-// Any line whose FIRST WORD names the field, however it is spelled, prefixed or decorated: `Work-Item:`,
-// `work item:`, `WORK_ITEM :`, `Work  Item:`, `Work.Item:` (#761 Codex 4235863454), and behind any run of
-// non-alphanumeric prefix — indentation, list bullets, a numbered-list marker, quotes, emphasis or code ticks
-// (`- Work-Item:`, `> Work-Item:`, `1. Work-Item:`, `**Work-Item**:`; 4235885068). So an attempted citation in an
-// unrecognised form is `malformed`, never `none`. Prose that merely mentions the field after another word is
-// not a field line.
-const FIELD_LINE = /^[^\p{L}\p{N}\n]*(?:\d+[.)][^\p{L}\p{N}\n]*)?work(?:[^\S\n]|[-_.])*item[^\p{L}\p{N}\n:]*:/imu;
+// Any line whose FIRST WORDS name the field and then attempt a value, however the name is spelled, prefixed,
+// separated or delimited: `Work-Item:`, `work item:`, `WORK_ITEM :`, `Work  Item:`, `Work.Item:` (#761 Codex
+// 4235863454); behind indentation, list bullets, a numbered-list marker, quotes, emphasis or code ticks
+// (`- Work-Item:`, `1. Work-Item:`, `**Work-Item**:`; 4235885068); and with any non-alphanumeric joiner or
+// delimiter — `Work/Item: #750`, `Work-Item #750`, `Work-Item = #750` (4235903051). After the name, a `:`, `=`,
+// `#` or digit marks an attempted value. So an attempted citation in an unrecognised form is `malformed`, never
+// `none`. Prose that mentions the field after another word, or that continues with a word (`Work items are…`),
+// is not a field line.
+const FIELD_LINE = /^[^\p{L}\p{N}\n]*(?:\d+[.)][^\p{L}\p{N}\n]*)?work[^\p{L}\p{N}\n]*item[^\p{L}\p{N}\n]*?[:=#\d]/imu;
 const FIELD_LINES = new RegExp(FIELD_LINE.source, 'gimu');
+// The one field line, raw, must itself be the canonical trailer: git's `--unfold` joins an indented continuation
+// into the value, so `Work-Item:` followed by an indented ` #750` would otherwise read as cited (4235903046).
+const CANONICAL_LINE = /^work-item:[ \t]*#[1-9]\d{0,9}[ \t]*$/iu;
 const VALUE = /^#([1-9]\d{0,9})$/u;
 
 /**
@@ -58,6 +63,15 @@ export function parseWorkItemTrailer(commitMessage, { parse = gitParsedTrailers 
     };
   }
   const match = VALUE.exec(values[0]);
+  const lines = commitMessage.split('\n');
+  const at = lines.findIndex((line) => FIELD_LINE.test(line));
+  if (match && (!CANONICAL_LINE.test(lines[at]) || /^[ \t]/u.test(lines[at + 1] ?? ''))) {
+    return {
+      state: 'malformed',
+      issue: null,
+      detail: 'the Work-Item trailer must be one unfolded line, exactly `Work-Item: #<issue number>`',
+    };
+  }
   if (!match) {
     return {
       state: 'malformed',

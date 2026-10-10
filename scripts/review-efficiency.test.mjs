@@ -1848,6 +1848,12 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     ['a numbered item', `fix\n\n1. Work-Item: #750\n\n${owner}\n`],
     ['emphasis', `fix\n\n**Work-Item**: #750\n\n${owner}\n`],
     ['code ticks', `fix\n\n\`Work-Item: #750\`\n\n${owner}\n`],
+    // 4235903051: any joiner or delimiter after the name; 4235903046: a value supplied by continuation folding
+    ['a slash joiner', `fix\n\nWork/Item: #750\n${owner}\n`],
+    ['no colon', `fix\n\nWork-Item #750\n${owner}\n`],
+    ['an equals delimiter', `fix\n\nWork-Item = #750\n${owner}\n`],
+    ['a value folded onto the next line', `fix\n\nWork-Item:\n #750\n${owner}\n`],
+    ['a value folded under spaces', `fix\n\nWork-Item:   \n\t#750\n${owner}\n`],
   ]) {
     const result = parse(message);
     assert.equal(result.state, 'malformed', label);
