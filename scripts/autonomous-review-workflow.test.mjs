@@ -3817,3 +3817,27 @@ test('M3c — the merge guard refuses a green whose approval token is missing or
   run.client.pullRequest = async () => ({ ...run.pr, head: { ...run.pr.head, sha: head } });
   assert.equal((await reviewGate.authorizeExactHeadMerge(run.client, run.pr, head, { mergeEligible: true, outcome: 'eligible' })).state, 'gates_not_green');
 });
+
+test('M3c / #764 Codex 4237161956 — run() withdraws a token-less green before any scope, commit or issue read', async () => {
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const body = gate.slice(gate.indexOf('export async function run()'));
+  const statusesRead = body.indexOf('await client.statuses(expectedHead)');
+  const withdraw = body.indexOf('await withdrawUntokenedSuccess(');
+  assert.ok(statusesRead > 0 && withdraw > statusesRead, 'withdrawal follows the status read');
+  // nothing between the status read and the withdrawal reads anything else
+  assert.doesNotMatch(body.slice(statusesRead + 1, withdraw), /await /u);
+  for (const later of ['enforceReviewScope(', 'guardCandidateRelabel(', 'authorizeRecoveryDispatch(', 'client.commit(']) {
+    const at = body.indexOf(later);
+    assert.ok(at === -1 || at > withdraw, `${later} comes after the withdrawal`);
+  }
+  // the helper withdraws only a token-less success
+  const writes = [];
+  const client = { async setStatus(head, state, description) { writes.push({ state, description }); } };
+  const pr = { html_url: 'u' };
+  assert.equal(await reviewGate.withdrawUntokenedSuccess(client, pr, 'c'.repeat(40), { state: 'success', description: 'review: clean' }), true);
+  assert.equal(writes.at(-1).state, 'pending');
+  for (const status of [{ state: 'success', description: 'review: clean [wi:none]' }, { state: 'failure', description: 'x' }, { state: 'pending', description: 'y' }, null]) {
+    assert.equal(await reviewGate.withdrawUntokenedSuccess(client, pr, 'c'.repeat(40), status), false);
+  }
+  assert.equal(writes.length, 1);
+});

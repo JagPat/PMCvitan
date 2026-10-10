@@ -1503,6 +1503,17 @@ export async function capDefersStoredFailure(client, pullRequest, expectedHead, 
   }
 }
 
+/**
+ * M3c (v3 §A5) — withdraw a `codex-current-head` success that carries no approval token: it was written before
+ * work-item verification existed, so it is not an approval this controller can stand behind. Returns whether it
+ * withdrew. The pending status it writes is then re-earned through the single success writer.
+ */
+export async function withdrawUntokenedSuccess(client, pullRequest, expectedHead, newestStatus) {
+  if (newestStatus?.state !== 'success' || parseApprovalToken(newestStatus.description)) return false;
+  await client.setStatus(expectedHead, 'pending', WORK_ITEM_APPROVAL_WITHDRAWN, pullRequest.html_url);
+  return true;
+}
+
 export async function ensureTerminalReviewState(
   client,
   pullRequest,
@@ -1515,9 +1526,7 @@ export async function ensureTerminalReviewState(
     // M3c (v3 §A5) — a success without an approval token was written before work-item verification existed. It
     // is withdrawn FIRST, before any fallible read, so a crash or timeout below can never leave it green beneath
     // an already-enabled native auto-merge; the rest of recovery then re-earns it through the single writer.
-    if (!parseApprovalToken(status.description)) {
-      await client.setStatus(expectedHead, 'pending', WORK_ITEM_APPROVAL_WITHDRAWN, pullRequest.html_url);
-    }
+    await withdrawUntokenedSuccess(client, pullRequest, expectedHead, status);
     const latched = persistentReviewFailure(statuses);
     if (latched && !(await capDefersStoredFailure(client, pullRequest, expectedHead, latched))) {
       await client.setStatus(
@@ -2632,6 +2641,11 @@ export async function run() {
   const existingStatus = existingStatuses.find(
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
+  // M3c (v3 §A5, #764 Codex 4237161956) — the first write of every run, before any scope, commit or issue read:
+  // the only reads before it are the pull request (to know the head) and this status list (to know a green is
+  // there). A green without an approval token is withdrawn here, so a later read that stalls until the job is
+  // cancelled can never leave it standing beneath an already-queued native auto-merge.
+  await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);
 
   if (mode === 'relabel-guard') {
     if (context.trigger !== 'relabel') throw new Error('The relabel guard runs only on a pull request body edit');
