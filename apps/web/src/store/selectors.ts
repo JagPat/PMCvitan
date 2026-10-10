@@ -194,7 +194,23 @@ export function selectFailedItems(s: AppState): number {
 }
 
 /**
- * Dashboard "failed items awaiting re-inspection". Note the ternary can RISE
+ * Top 10 #2b (#771) — the RE-INSPECTIONS not yet decided, and the failed items they carry. Rejecting an
+ * inspection decides it (so it leaves the review queue) and creates a linked re-inspection holding only
+ * the rejected items: open while the engineer works it, then in the review queue until the PMC decides it.
+ * Each item here is a failed item still awaiting re-inspection, read from the records the PMC can open.
+ */
+export function selectOpenReinspections(s: AppState): { count: number; items: number } {
+  const open = s.openChecklists.filter((c) => c.reinspectionOfId && !c.submitted);
+  const inReview = s.reviews.filter((r) => r.reinspectionOfId && !r.decided);
+  return {
+    count: open.length + inReview.length,
+    items: open.reduce((n, c) => n + c.items.length, 0) + inReview.reduce((n, r) => n + r.items.length, 0),
+  };
+}
+
+/**
+ * Dashboard "failed items awaiting re-inspection" — the API-LESS DEMO's count (its seed creates no linked
+ * re-inspection; a live project reads `selectOpenReinspections`). Note the ternary can RISE
  * after the PMC rejects PASS items and sends re-inspection — mirror it exactly.
  */
 export function selectFailedCount(s: AppState): number {

@@ -369,6 +369,9 @@ export interface Checklist {
   nodeId?: string;
   date: string;
   submitted: boolean;
+  /** Top 10 #2b (#771) — set on a RE-INSPECTION: the rejected inspection whose failed items it re-checks.
+   *  Absent on an ordinary issued checklist (and from an API older than this field). */
+  reinspectionOfId?: string;
   items: ChecklistItem[];
 }
 

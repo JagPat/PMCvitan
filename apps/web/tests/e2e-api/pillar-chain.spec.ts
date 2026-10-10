@@ -315,6 +315,12 @@ test('the ENGINEER fails an item with a REAL photo; the PMC rejects; the linked 
   // decided review LEAVES the queue and the empty state renders once the reconciled read lands
   await expect(page.getByText(/No inspections awaiting review/)).toBeVisible();
 
+  // Top 10 #2b (#771, live-bug 3) — the PMC's Dashboard counts the rejected item now awaiting
+  // re-inspection. It used to read 0 here: the decided original leaves the review queue it counted.
+  await page.getByRole('button', { name: 'Dashboard' }).click();
+  await expect(page.getByTestId('tile-failed-value')).toHaveText('1');
+  await expect(page.getByText('In 1 open re-inspection')).toBeVisible();
+
   // the correction chain is OPEN — the gate reads FAIL until the fix is accepted
   await pollGate(request, 'inspection', 'fail');
   // …the gate poll covers the GATE, not the checklist row the Inbox composes — wait until the
