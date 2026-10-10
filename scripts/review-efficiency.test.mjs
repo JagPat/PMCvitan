@@ -22,6 +22,7 @@ import {
   parseTrackedTree,
   run as runScope,
 } from './review-scope.mjs';
+import { parseWorkItemTrailer } from './work-item-trailer.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 
@@ -1800,4 +1801,102 @@ test('M3a — no gate, CI-selection or review module reads the trivial marker: n
   }
   const policy = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
   assert.match(policy, /review-size: trivial -->` only classifies a unit and never skips CI or Codex review/u);
+});
+
+// ── M3b (owner, #482 6090833573 / 6091212460): the cited work item is an immutable head-commit trailer ──
+
+test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer block, failing closed', () => {
+  const owner = 'Correction-Owner: claude';
+  const parse = (message) => parseWorkItemTrailer(message);
+  assert.deepEqual(parse(`fix\n\nWork-Item: #750\n${owner}\n`), { state: 'cited', issue: 750, detail: null });
+  assert.equal(parse(`fix\n\nwork-item: #750\n${owner}\n`).issue, 750, 'git trailer keys are case-insensitive');
+  assert.deepEqual(parse(`fix\n\n${owner}\n`), { state: 'none', issue: null, detail: null }, 'a citation stays optional');
+  assert.equal(parse(undefined).state, 'unreadable');
+  assert.equal(parseWorkItemTrailer('fix\n\nWork-Item: #750\n', { parse: () => null }).state, 'unreadable');
+  for (const [label, message] of [
+    ['a duplicate trailer', `fix\n\nWork-Item: #750\nWork-Item: #751\n${owner}\n`],
+    ['a URL value', `fix\n\nWork-Item: https://github.com/JagPat/PMCvitan/issues/750\n${owner}\n`],
+    ['a second number', `fix\n\nWork-Item: #750, #9999\n${owner}\n`],
+    ['a folded continuation adding a number', `fix\n\nWork-Item: #750\n  #9999\n${owner}\n`],
+    ['a value without #', `fix\n\nWork-Item: 750\n${owner}\n`],
+    ['issue zero', `fix\n\nWork-Item: #0\n${owner}\n`],
+    ['a field line in the body, not the trailer block', `fix\n\nWork-Item: #750\n\nmore prose\n\n${owner}\n`],
+    ['a body line beside a valid trailer', `fix\n\nWork-Item: #9999 was the old one\n\nWork-Item: #750\n${owner}\n`],
+    ['a spelling git does not parse as a trailer', `fix\n\nWork Item: #750\n${owner}\n`],
+    ['an underscore spelling', `fix\n\nWORK_ITEM: #750\n${owner}\n`],
+  ]) {
+    const result = parse(message);
+    assert.equal(result.state, 'malformed', label);
+    assert.equal(result.issue, null, label);
+  }
+});
+
+test('M3b / #751 4232759655 (#759) — no message content can hide or invent a citation: nothing is parsed as Markdown', () => {
+  // The defect at #751 08816b7: a literal, unclosed `<!--` inside a code example made the Markdown body parser
+  // drop everything after it, so a real later field produced no citation and was never verified. Trailers are
+  // read by git from the terminal block, so preceding content of any shape leaves the trailer intact.
+  const trailer = 'Work-Item: #9999\nCorrection-Owner: claude\n';
+  for (const body of ['a `<!--` opener with no closer', '<!-- unclosed', '```\n<!--\n```', '~~~md\nx\n', '    indented <!--', '# heading']) {
+    assert.deepEqual(parseWorkItemTrailer(`fix\n\n${body}\n\n${trailer}`), { state: 'cited', issue: 9999, detail: null }, body);
+  }
+  // A field line inside an example is refused, never silently skipped: a hidden citation can neither pass as
+  // "no citation" (the optional-missing case) nor be taken for the real one.
+  for (const body of ['```\nWork-Item: #1\n```', '<!--\nWork-Item: #1\n-->', '    Work-Item: #1']) {
+    assert.equal(parseWorkItemTrailer(`fix\n\n${body}\n\n${trailer}`).state, 'malformed', body);
+    assert.equal(parseWorkItemTrailer(`fix\n\n${body}\n\nCorrection-Owner: claude\n`).state, 'malformed', `${body} (alone)`);
+  }
+});
+
+test('M3b — the required scope CLI fails a malformed head-commit Work-Item trailer and reads no issue', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-work-item-'));
+  const eventPath = join(directory, 'event.json');
+  const previousExitCode = process.exitCode;
+  const sha = 'f'.repeat(40);
+  const requested = [];
+  const options = (message) => ({
+    eventPath,
+    token: 'test-token',
+    sleep: async () => {},
+    fetchImpl: async (url) => {
+      requested.push(url);
+      if (url.includes(`/commits/${sha}`)) {
+        return message === null ? new Response('no', { status: 502 }) : new Response(JSON.stringify({ commit: { message } }));
+      }
+      return new Response(JSON.stringify([{ filename: 'scripts/review-efficiency.mjs' }]));
+    },
+  });
+  await writeFile(eventPath, JSON.stringify({
+    repository: { full_name: 'JagPat/PMCvitan' },
+    pull_request: pullRequest({
+      number: 401, changed_files: 1, additions: 40, deletions: 0, body: preReviewBody(),
+      head: { ref: 'claude/m3b', sha },
+    }),
+  }));
+  try {
+    process.exitCode = previousExitCode;
+    const cited = await runScope(options('fix\n\nWork-Item: #750\nCorrection-Owner: claude\n'));
+    assert.equal(cited.allowed, true, cited.detail ?? 'expected a cited head to pass');
+    assert.deepEqual(cited.workItem, { state: 'cited', issue: 750, detail: null });
+    assert.notEqual(process.exitCode, 1);
+    // syntax only: no issue is read, so no issues permission is needed
+    assert.ok(!requested.some((url) => /\/issues\//u.test(url)), 'the scope job reads no issue');
+
+    process.exitCode = previousExitCode;
+    const malformed = await runScope(options('fix\n\nWork-Item: #750, #9999\nCorrection-Owner: claude\n'));
+    assert.equal(malformed.workItem.state, 'malformed');
+    assert.equal(process.exitCode, 1, 'a malformed trailer fails the required check');
+
+    process.exitCode = previousExitCode;
+    const none = await runScope(options('fix\n\nCorrection-Owner: claude\n'));
+    assert.equal(none.workItem.state, 'none');
+    assert.notEqual(process.exitCode, 1, 'no trailer cites nothing and fails nothing');
+
+    process.exitCode = previousExitCode;
+    const unread = await runScope(options(null));
+    assert.equal(unread.workItem.state, 'unreadable');
+    assert.notEqual(process.exitCode, 1, 'an unread message only warns: nothing depends on the trailer yet');
+  } finally {
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
 });

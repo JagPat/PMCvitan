@@ -9,6 +9,7 @@ import {
   STATUS_DOCUMENT,
 } from './review-efficiency.mjs';
 import { correctionOwnerDeclaration, readHeadCommitMessage } from './correction-owner.mjs';
+import { parseWorkItemTrailer } from './work-item-trailer.mjs';
 import {
   assessPostMergeRunnerState,
   parseMaintenanceQueue,
@@ -123,6 +124,28 @@ export async function run({
     process.exitCode = 1;
   }
 
+  // The cited work item (M3b, #482 6091212460): a `Work-Item: #N` trailer on the exact head commit, checked for
+  // SYNTAX only. Whether the issue exists is a later, trusted verification (M3c), not this job: it reads no
+  // issue and needs no new permission. A malformed field fails the check; an unreadable message only warns,
+  // since nothing here depends on it yet. Reported independently, like the checks below.
+  const workItem = parseWorkItemTrailer(correctionOwnerDeclaration(event.pull_request).state === 'candidate'
+    ? message
+    : await headCommitMessage({
+      fetchImpl,
+      repository: repository || event.repository?.full_name,
+      sha: event.pull_request.head?.sha,
+      token,
+      sleep,
+    }));
+  if (workItem.state === 'malformed') {
+    console.error(`::error title=Work-Item trailer::${workItem.detail}`);
+    process.exitCode = 1;
+  } else if (workItem.state === 'unreadable') {
+    console.warn(`::warning title=Work-Item trailer::${workItem.detail}; the trailer was not checked`);
+  } else if (workItem.state === 'cited') {
+    console.log(`review-scope: head commit cites work item #${workItem.issue} (syntax only; existence is not verified here)`);
+  }
+
   // The post-merge runner state, checked HERE because this job already holds the
   // PR's own tree — `on: pull_request` checks out the merge result, so the
   // committed STATUS is on disk. That also keeps the check read-only: this job
@@ -194,7 +217,7 @@ export async function run({
     process.exitCode = 1;
   }
 
-  return { ...result, status: statusResult, clearance, tree: treeResult };
+  return { ...result, status: statusResult, clearance, tree: treeResult, workItem };
 }
 
 const DEPENDENCY_DIRECTORY = 'node_modules';
