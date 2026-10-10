@@ -453,6 +453,15 @@ export function inspectionsSettledForLinks(s: AppState): boolean {
     && !(inspectionsReadMode() === 'moduleQuery' && (s.inspectionsLoad === 'idle' || s.inspectionsLoad === 'loading'));
 }
 
+/** Top 10 #3c (#774) — the activity spine may name a record only once it has landed (the #775 root cause, for
+ *  activities): no command reconcile owed, the project loaded, and under module read-ownership a read that has
+ *  succeeded. A retained row never becomes a link into the schedule's live controls. */
+export function activitiesSettledForLinks(s: AppState): boolean {
+  return !s.commandReconcileOwed.activities
+    && (s.projectLoadState === 'ready' || s.projectLoadState === 'idle')
+    && (activitiesReadMode() === 'snapshot' || s.activitiesLoad === 'ready');
+}
+
 /** Top 10 #3 (#774) — where ONE inspection opens for this viewer, or null when no inspection screen the role
  *  holds resolves it (the bell's rule: the review screen opens a queued review or an outstanding checklist;
  *  the checklist screen opens an outstanding checklist, or the one in the slot while it is unsubmitted). */
@@ -554,7 +563,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
     const otherChanges = changes.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
     const otherPending = pending.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
     if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), screen: 'decision-log', cta: 'Open', tone: 'red', count: otherChanges.length, item: only(otherChanges) });
-    if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red' });
+    if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red', item: activitiesSettledForLinks(s) ? only(blocked) : undefined });
     if (otherPending.length) {
       const allClientHeld = otherPending.every((d) => (d.deciderKind ?? 'client') === 'client');
       const who = allClientHeld ? 'the client' : otherPending.length === 1 ? 'its decider' : 'their deciders';
@@ -566,13 +575,13 @@ export function selectActionItems(s: AppState): ActionItem[] {
       const dr = readinessFor(s, a).drawing;
       return dr.v === 'wait' || dr.v === 'fail';
     });
-    if (drawingBlocked.length) items.push({ key: 'pmc-drawing-gate', title: `Blocked: drawing unacknowledged on ${drawingBlocked.length} activit${drawingBlocked.length === 1 ? 'y' : 'ies'}`, detail: names(drawingBlocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'amber' });
+    if (drawingBlocked.length) items.push({ key: 'pmc-drawing-gate', title: `Blocked: drawing unacknowledged on ${drawingBlocked.length} activit${drawingBlocked.length === 1 ? 'y' : 'ies'}`, detail: names(drawingBlocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'amber', item: activitiesSettledForLinks(s) ? only(drawingBlocked) : undefined });
     // Task 6: overrides lapsing within a week — the exception is about to end
     const soon = Date.now() + 7 * 24 * 3600 * 1000;
     const expiring = s.activities.flatMap((a) => (a.overrides ?? []).filter((o) => new Date(o.expiresAt).getTime() <= soon).map((o) => ({ a, o })));
     if (expiring.length) {
       const first = expiring[0];
-      items.push({ key: 'pmc-override-expiry', title: `Override expiring ${new Date(first.o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} — ${first.a.name}`, detail: expiring.length > 1 ? `${expiring.length} overrides lapse within a week` : first.o.reason, screen: 'site-schedule', cta: 'Review overrides', tone: 'amber' });
+      items.push({ key: 'pmc-override-expiry', title: `Override expiring ${new Date(first.o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} — ${first.a.name}`, detail: expiring.length > 1 ? `${expiring.length} overrides lapse within a week` : first.o.reason, screen: 'site-schedule', cta: 'Review overrides', tone: 'amber', item: expiring.length === 1 && activitiesSettledForLinks(s) ? first.a.id : undefined });
     }
   }
 

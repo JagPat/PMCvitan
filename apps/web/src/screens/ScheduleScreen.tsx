@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { gatesFor, activityReady, scheduleStatusCounts, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions, type GateVM } from '@/store/selectors';
-import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext, EditState, ConfirmDialog } from '@/components';
+import { gatesFor, activityReady, activitiesSettledForLinks, scheduleStatusCounts, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions, type GateVM } from '@/store/selectors';
+import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext, EditState, ConfirmDialog, ItemNotFound } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
 import { gateColor, can, diffCivilDays, type Activity, type Phase, type Gate } from '@vitan/shared';
@@ -408,6 +408,22 @@ export function ScheduleScreen() {
     }
     clearActivityFocus();
   }, [activityFocus, clearActivityFocus, activities, reading]);
+  // Top 10 #3c (#774) — `/schedule/<activityId>`: a link (a card, a notice, a shared URL, a reload) names ONE
+  // activity. It is brought into view like a Site Map hand-off; one this viewer's settled schedule does not
+  // hold says so, rather than leaving them on the whole schedule wondering which row was meant.
+  const routeItem = useStore((s) => s.routeItem);
+  const setRouteItem = useStore((s) => s.setRouteItem);
+  const activitiesSettled = useStore(activitiesSettledForLinks); // the For You link rule: never "not found" mid-reconcile
+  const missingActivity = routeItem !== null && activitiesSettled && !unavailable && !activities.some((a) => a.id === routeItem)
+    ? routeItem
+    : null;
+  useEffect(() => {
+    if (routeItem === null || activityFocus !== null) return; // a hand-off in flight is handled above
+    const row = document.getElementById(`sched-${routeItem}`);
+    if (!row) return;
+    row.scrollIntoView?.({ block: 'center' });
+    setHighlight(routeItem);
+  }, [routeItem, activityFocus, activities]);
   useEffect(() => {
     if (highlight === null) return;
     const t = setTimeout(() => setHighlight(null), 2500);
@@ -429,6 +445,14 @@ export function ScheduleScreen() {
       <div className={`${styles.screen} ${styles.wide}`} data-testid="activities-loading">
         <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the schedule…</div>
+      </div>
+    );
+  }
+  if (missingActivity) {
+    return (
+      <div className={`${styles.screen} ${styles.wide}`}>
+        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
+        <ItemNotFound what="Activity" id={missingActivity} onShowAll={() => setRouteItem(null)} showAllLabel="Show the whole schedule" />
       </div>
     );
   }

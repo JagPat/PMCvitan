@@ -214,3 +214,53 @@ describe('#775 root-cause audit — every record link waits for its slice', () =
   });
 });
 
+describe('Top 10 #3c — an activity is a record: /schedule/<activityId>', () => {
+  it('the schedule is an item screen: the URL names the activity and parses back', async () => {
+    const { pathForScreen, parseLocation } = await import('@/lib/screens');
+    expect(pathForScreen('site-schedule', 'ambli', 'ACT-28')).toBe('/projects/ambli/schedule/ACT-28');
+    expect(parseLocation('/projects/ambli/schedule/ACT-28')).toEqual({ projectId: 'ambli', screen: 'site-schedule', item: 'ACT-28' });
+  });
+
+  it('"View in schedule" and a single blocked / override item open the activity at its URL', async () => {
+    const { useStore } = await demo({ role: 'pmc' });
+    const sel = await import('@/store/selectors');
+    const [a, b] = useStore.getState().activities;
+    useStore.getState().openActivity(a.id);
+    expect(where(useStore)).toEqual({ screen: 'site-schedule', item: a.id });
+    useStore.setState({ activities: [{ ...a, status: 'blocked' }, { ...b, status: 'not-started' }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-blocked')?.item).toBe(a.id);
+    const soon = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+    useStore.setState({ activities: [{ ...a, overrides: [{ ...(a.overrides?.[0] ?? {}), expiresAt: soon, reason: 'r' } as never] }, { ...b, overrides: [] }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-override-expiry')?.item).toBe(a.id);
+  });
+
+  it('an activity the settled schedule does not hold says so, and "Show the whole schedule" clears the link', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule', routeItem: 'ACT-GONE' });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.getByText(/ACT-GONE/)).toBeInTheDocument();
+    fireEvent.click(r.getByText('Show the whole schedule'));
+    expect(useStore.getState().routeItem).toBeNull();
+  });
+});
+
+describe('Top 10 #3c — activity links wait for the activity spine', () => {
+  it('a single blocked activity names no record while an activity reconcile is owed', async () => {
+    const { useStore } = await demo({ role: 'pmc' });
+    const sel = await import('@/store/selectors');
+    const [a, b] = useStore.getState().activities;
+    useStore.setState({ activities: [{ ...a, status: 'blocked' }, { ...b, status: 'not-started' }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-blocked')?.item).toBe(a.id);
+    useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: true } });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-blocked')?.item).toBeUndefined();
+  });
+
+  it('a linked activity is not called missing while an activity reconcile is owed', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule', routeItem: 'ACT-NEW' });
+    useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: true } });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.queryByText('Show the whole schedule')).toBeNull();
+  });
+});
+
