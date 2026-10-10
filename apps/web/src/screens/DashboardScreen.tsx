@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectDecisionsAwaitingAction, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
+import { selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
 import { Eyebrow, Button, ProgressBar } from '@/components';
@@ -24,7 +24,11 @@ export function DashboardScreen() {
   const inspectionsFailed = useStore((s) => s.inspectionsLoad === 'error');
   const reviewPending = useStore(selectReviewPending);
   const activeReview = useStore(selectActiveReview);
-  const failedCount = useStore(selectFailedCount);
+  // Top 10 #2b (#771) — live: the failed items in re-inspections not yet decided (the old count read the
+  // review queue, which a rejection leaves, so it was always 0 once re-inspection was sent)
+  const reinspections = useStore(useShallow(selectOpenReinspections));
+  const demoFailedCount = useStore(selectFailedCount);
+  const failedCount = API_BASE ? reinspections.items : demoFailedCount;
   const workers = useStore(selectTotalWorkers);
   const materialsCount = useStore((s) => s.dailyLog?.materials.length ?? 0);
   const progress = useStore((s) => s.dailyLog?.progress ?? 0);
@@ -70,7 +74,7 @@ export function DashboardScreen() {
     // API mode never claims WHICH items failed beyond the recorded count — the seeded
     // "Drain slope · Terrace" copy is demo-only prototype fidelity
     inspectionsKnown
-      ? { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `${failedCount} to re-inspect` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') }
+      ? { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `In ${reinspections.count} open re-inspection${reinspections.count === 1 ? '' : 's'}` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') }
       : { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: UNKNOWN, accent: 'var(--red-solid)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
     // B7 (F-13): COMPUTED from the placed photos in every mode — the demo's fixed "24 this week ·
     // 6 zones" contradicted the strip above. The strip shows the daily log's reported count; this,

@@ -141,3 +141,48 @@ describe('the live Dashboard tiles', () => {
     expect(failed.r.getByTestId('tile-pending-value').textContent).toBe('5');
   });
 });
+
+describe('Top 10 #2b — the live failed-items tile reads the open re-inspections', () => {
+  async function liveFailed(over: Record<string, unknown>) {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const { useStore, getInitialState } = (await import('@/store/store')) as Store;
+    const scope = await import('@/store/projectScope');
+    const seed = getInitialState();
+    useStore.setState(seed);
+    useStore.setState({ ...scope.emptyProjectData(), activeProjectId: 'villa-b', projectLoadState: 'ready', role: 'pmc', name: 'Villa', ...over });
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    return { seed, r: render(<DashboardScreen />) };
+  }
+  const item = (id: string) => ({ id, name: id, state: null, photos: 0, note: '', evidence: [] });
+
+  it('counts the failed items in re-inspections not yet decided — open or awaiting review — and nothing else', async () => {
+    const seedReview = (await demo()).getInitialState().reviews[0];
+    cleanup();
+    const { r } = await liveFailed({
+      openChecklists: [
+        { id: 'RE-1', title: 'Re-inspection: Terrace', zone: 'Terrace', date: 'today', submitted: false, reinspectionOfId: 'INSP-1', items: [item('a'), item('b')] },
+        { id: 'CK-9', title: 'Ordinary checklist', zone: 'GF', date: 'today', submitted: false, items: [item('c')] },
+      ],
+      reviews: [
+        { ...seedReview, id: 'RE-2', decided: false, reinspectionOfId: 'INSP-5', items: seedReview.items.slice(0, 1) },
+        { ...seedReview, id: 'RE-3', decided: true, reinspectionOfId: 'INSP-6' },
+        { ...seedReview, id: 'INSP-7', decided: false, reinspectionOfId: undefined },
+      ],
+    });
+    expect(r.getByTestId('tile-failed-value').textContent).toBe('3');
+    expect(r.getByText('In 2 open re-inspections')).toBeInTheDocument();
+  });
+
+  it('after a rejection the tile is no longer structurally 0: the decided original is gone, its re-inspection counts', async () => {
+    const seedReview = (await demo()).getInitialState().reviews[0];
+    cleanup();
+    const { r } = await liveFailed({
+      reinspectionCreated: true,
+      reviews: [{ ...seedReview, id: 'INSP-1', decided: true, items: seedReview.items.map((it) => ({ ...it, rejected: true })) }],
+      openChecklists: [{ id: 'RE-1', title: 'Re-inspection', zone: 'Terrace', date: 'today', submitted: false, reinspectionOfId: 'INSP-1', items: [item('a')] }],
+    });
+    expect(r.getByTestId('tile-failed-value').textContent).toBe('1');
+  });
+});
+

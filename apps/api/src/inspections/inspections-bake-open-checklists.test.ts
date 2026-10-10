@@ -224,3 +224,15 @@ describe('assigned corrective work stays with its assignee', () => {
     expect(bake(rows, 'engineer', 'eng-z').openChecklists.map((c) => c.id)).toEqual(['INSP-1', 'INSP-2']);
   });
 });
+
+describe('Top 10 #2b (#771) — a re-inspection says what it re-checks', () => {
+  it('carries reinspectionOfId on the open re-inspection, and no such key on an ordinary checklist', () => {
+    const slices = bake([
+      entry({ id: 'INSP-1' }),
+      entry({ id: 'INSP-2', reinspectionOfId: 'INSP-0', assigneeId: 'u-eng' }),
+    ], 'pmc');
+    const [plain, reinspection] = slices.openChecklists;
+    expect(reinspection).toMatchObject({ id: 'INSP-2', reinspectionOfId: 'INSP-0' });
+    expect(plain).not.toHaveProperty('reinspectionOfId');
+  });
+});

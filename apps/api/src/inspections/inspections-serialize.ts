@@ -199,6 +199,10 @@ export function bakeInspections(
     nodeId: row.nodeId ?? undefined, // location spine
     date: row.date,
     submitted: row.submitted,
+    // Top 10 #2b (#771) — a re-inspection says so: it is how the Dashboard counts the failed items still
+    // awaiting re-inspection (the rejected original is decided and has left the review queue). Already in
+    // the stored base, so the live read and the projection read serve it identically.
+    ...(row.reinspectionOfId ? { reinspectionOfId: row.reinspectionOfId } : {}),
     items: row.items.map(
       (it): ChecklistItem => ({
         id: it.id, // the capture flow links evidence uploads to THIS item (Task 4)
