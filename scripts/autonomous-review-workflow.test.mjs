@@ -3687,7 +3687,7 @@ test('M3c — the approval token module formats, parses and bounds the token, an
   assert.throws(() => m.approvalToken({ state: 'invalid' }));
   const long = m.withApprovalToken('x'.repeat(300), '[wi:#750 open]');
   assert.equal(long.length, 140);
-  assert.deepEqual(m.parseApprovalToken(long), { state: 'cited', issue: 750, issueState: 'open' });
+  assert.deepEqual(m.parseApprovalToken(long), { state: 'cited', issue: 750, issueState: 'open', runId: null });
   assert.deepEqual(m.parseApprovalToken('review: clean [wi:none]'), { state: 'none' });
   for (const legacy of ['review: Codex found no blocking issue on this exact head', '[wi:#0 open]', '[wi:#7 open] trailing', null]) {
     assert.equal(m.parseApprovalToken(legacy), null, String(legacy));
@@ -3757,22 +3757,44 @@ test('M3c — only a COMPLETED approval on the same SHA is historical proof; an 
   const head = 'c'.repeat(40);
   const deleted = () => ({ status: 404, payload: null });
   // accepted limitation (6091212460): approved with #750 verified, then deleted — recovery reuses that approval
-  const approved = m3cClient({ message: CITED, issue: deleted, statuses: [
+  // C1: the token names its writing run, and that run uploaded the receipt for this exact head and issue
+  const receipts = new Set([`123|wi-approval-${head}-750-open`]);
+  const withReceipts = (run) => {
+    run.client.verifyApprovalReceipt = async (runId, name) => { run.log.push(`read:receipt:${runId}`); return receipts.has(`${runId}|${name}`); };
+    return run;
+  };
+  const approved = withReceipts(m3cClient({ message: CITED, issue: deleted, statuses: [
     { sha: head, context: 'codex-current-head', state: 'pending', description: 'review: settling' },
-    { sha: head, context: 'codex-current-head', state: 'success', description: 'review: clean [wi:#750 open]' },
-  ] });
+    { sha: head, context: 'codex-current-head', state: 'success', description: 'review: clean [wi:#750 open r123]' },
+  ] }));
   await reviewGate.publishSettledSuccess(approved.client, approved.pr, head, 'review: recovered prior clean Codex result on this exact head');
-  assert.match(approved.writes.at(-1).description, /\[wi:#750 open\]$/u);
+  assert.match(approved.writes.at(-1).description, /\[wi:#750 open(?: r\d+)?\]$/u);
+  assert.ok(approved.log.includes('read:receipt:123'));
   assert.ok(!approved.log.includes('read:issue:750'), 'the historical approval is not re-checked');
+  // C1: a token with no run id (pre-C1), a run without the receipt, a receipt for another state, or an unreadable
+  // run is not proof — the issue is read afresh, and the deleted issue is refused
+  for (const [description, verify] of [
+    ['review: clean [wi:#750 open]', undefined],
+    ['review: clean [wi:#750 open r999]', undefined],
+    ['review: clean [wi:#750 closed r123]', undefined],
+    ['review: clean [wi:#750 open r123]', async () => { throw new Error('GitHub 502'); }],
+  ]) {
+    const unproven = withReceipts(m3cClient({ message: CITED, issue: deleted, statuses: [
+      { sha: head, context: 'codex-current-head', state: 'success', description },
+    ] }));
+    if (verify) unproven.client.verifyApprovalReceipt = verify;
+    await assert.rejects(reviewGate.publishSettledSuccess(unproven.client, unproven.pr, head, 'review: clean'), /does not exist/u);
+    assert.ok(unproven.log.includes('read:issue:750'), description);
+  }
   // v3 gap 3: a verification whose run failed before its success write left nothing durable; a token on a
   // non-success status, for another #N, or on another SHA is never reused, so the deleted issue is refused
   for (const statuses of [
-    [{ sha: head, context: 'codex-current-head', state: 'failure', description: 'review: x [wi:#750 open]' }],
-    [{ sha: head, context: 'codex-current-head', state: 'success', description: 'review: x [wi:#751 open]' }],
-    [{ sha: 'd'.repeat(40), context: 'codex-current-head', state: 'success', description: 'review: x [wi:#750 open]' }],
-    [{ sha: head, context: 'claude-current-head', state: 'success', description: 'review: x [wi:#750 open]' }],
+    [{ sha: head, context: 'codex-current-head', state: 'failure', description: 'review: x [wi:#750 open r123]' }],
+    [{ sha: head, context: 'codex-current-head', state: 'success', description: 'review: x [wi:#751 open r123]' }],
+    [{ sha: 'd'.repeat(40), context: 'codex-current-head', state: 'success', description: 'review: x [wi:#750 open r123]' }],
+    [{ sha: head, context: 'claude-current-head', state: 'success', description: 'review: x [wi:#750 open r123]' }],
   ]) {
-    const orphan = m3cClient({ message: CITED, issue: deleted, statuses });
+    const orphan = withReceipts(m3cClient({ message: CITED, issue: deleted, statuses }));
     await assert.rejects(reviewGate.publishSettledSuccess(orphan.client, orphan.pr, head, 'review: clean'), /does not exist/u);
     assert.ok(orphan.log.includes('read:issue:750'));
     assert.ok(!orphan.writes.some((write) => write.state === 'success'));
@@ -3816,6 +3838,107 @@ test('M3c — the merge guard refuses a green whose approval token is missing or
   const run = m3cClient({ message: CITED, statuses: [{ sha: 'd'.repeat(40), context: 'codex-current-head', state: 'success', description: 'review: clean [wi:#750 open]' }] });
   run.client.pullRequest = async () => ({ ...run.pr, head: { ...run.pr.head, sha: head } });
   assert.equal((await reviewGate.authorizeExactHeadMerge(run.client, run.pr, head, { mergeEligible: true, outcome: 'eligible' })).state, 'gates_not_green');
+});
+
+test('M3c C1 — the token carries the writing run, the receipt is recorded only for a cited approval, and provenance is checked', async () => {
+  const m = await import('./work-item-approval.mjs');
+  const head = 'c'.repeat(40);
+  assert.equal(m.approvalToken({ state: 'valid', issue: 750, issueState: 'open' }, { runId: '4567' }), '[wi:#750 open r4567]');
+  assert.equal(m.approvalToken({ state: 'none' }, { runId: '4567' }), '[wi:none]');
+  assert.equal(m.approvalToken({ state: 'valid', issue: 750, issueState: 'open' }, { runId: 'x1' }), '[wi:#750 open]');
+  assert.deepEqual(m.parseApprovalToken('ok [wi:#750 closed r4567]'), { state: 'cited', issue: 750, issueState: 'closed', runId: '4567' });
+  assert.equal(m.parseApprovalToken('ok [wi:none r4567]'), null);
+  assert.equal(m.parseApprovalToken('ok [wi:#750 open r0]'), null);
+  assert.equal(m.receiptArtifactName(head, 750, 'open'), `wi-approval-${head}-750-open`);
+  // the merge guard accepts the run-stamped token: it compares the issue, not the run
+  assert.ok(m.tokenMatchesTrailer(m.parseApprovalToken('ok [wi:#750 open r4567]'), { state: 'cited', issue: 750 }));
+
+  // recordApprovalReceipt: a receipt file plus WI_APPROVAL_ARTIFACT, only for a valid citation inside Actions
+  const { mkdtemp, readFile: read, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'wi-receipt-'));
+  try {
+    const env = { GITHUB_ENV: join(dir, 'env'), RUNNER_TEMP: dir, GITHUB_RUN_ID: '4567', GITHUB_REPOSITORY: M3C_REPO };
+    assert.equal(reviewGate.recordApprovalReceipt(head, { state: 'none' }, env), null);
+    assert.equal(reviewGate.recordApprovalReceipt(head, { state: 'valid', issue: 750, issueState: 'open' }, { ...env, GITHUB_RUN_ID: '' }), null);
+    assert.equal(reviewGate.recordApprovalReceipt(head, { state: 'valid', issue: 750, issueState: 'open' }, env), `wi-approval-${head}-750-open`);
+    assert.equal(await read(env.GITHUB_ENV, 'utf8'), `WI_APPROVAL_ARTIFACT=wi-approval-${head}-750-open\n`);
+    const receipt = JSON.parse(await read(join(dir, 'wi-approval', 'receipt.json'), 'utf8'));
+    assert.deepEqual([receipt.head, receipt.issue, receipt.issueState, receipt.runId], [head, 750, 'open', '4567']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+
+  // GitHubClient.verifyApprovalReceipt: a default-branch auto-merge.yml run that uploaded this exact receipt
+  const name = `wi-approval-${head}-750-open`;
+  const trusted = { id: 4567, path: '.github/workflows/auto-merge.yml', event: 'workflow_run', head_branch: 'main', repository: { full_name: 'JagPat/PMCvitan' } };
+  const verify = async (run, artifacts = [{ name }]) => {
+    const client = new reviewGate.GitHubClient({ repository: 'JagPat/PMCvitan', token: 't' });
+    client.request = async () => run;
+    client.actionRunItems = async () => artifacts;
+    return client.verifyApprovalReceipt('4567', name);
+  };
+  assert.equal(await verify(trusted), true);
+  assert.equal(await verify({ ...trusted, event: 'workflow_dispatch' }), true);
+  assert.equal(await verify(trusted, [{ name: `wi-approval-${head}-750-closed` }]), false, 'another state');
+  assert.equal(await verify(trusted, []), false, 'no receipt');
+  assert.equal(await verify({ ...trusted, event: 'pull_request' }), false, 'a PR-event run');
+  assert.equal(await verify({ ...trusted, path: '.github/workflows/ci.yml' }), false, 'another workflow');
+  assert.equal(await verify({ ...trusted, head_branch: 'claude/x' }), false, 'a non-default branch');
+  assert.equal(await verify({ ...trusted, repository: { full_name: 'fork/PMCvitan' } }), false, 'another repository');
+  assert.equal(await verify({ ...trusted, id: 1 }), false, 'another run');
+});
+
+test('M3c C1 — the orchestrate job uploads the receipt its run recorded, with no new permission or trigger', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const orchestrate = workflow.slice(workflow.indexOf('\n  orchestrate:'));
+  const run = orchestrate.indexOf('run: node scripts/autonomous-review-gate.mjs');
+  const upload = orchestrate.indexOf('- name: Upload work-item approval receipt (M3c C1)');
+  assert.ok(run > 0 && upload > run, 'the upload follows the controller step in the same job');
+  const step = orchestrate.slice(upload);
+  assert.match(step, /if: always\(\) && env\.WI_APPROVAL_ARTIFACT != ''/u);
+  assert.match(step, /uses: actions\/upload-artifact@[0-9a-f]{40} # v4/u);
+  assert.match(step, /name: \$\{\{ env\.WI_APPROVAL_ARTIFACT \}\}/u);
+  assert.match(step, /path: \$\{\{ runner\.temp \}\}\/wi-approval\//u);
+  assert.match(step, /if-no-files-found: error/u);
+  assert.equal((workflow.match(/upload-artifact@/gu) ?? []).length, 1);
+});
+
+test('M3c C2 — every codex-current-head write is mirrored to codex-current-head/wi, never greener than the original', async () => {
+  assert.deepEqual(reviewGate.mirroredStatusContexts('codex-current-head', 'success'), ['codex-current-head', 'codex-current-head/wi']);
+  for (const state of ['pending', 'failure', 'error']) {
+    assert.deepEqual(reviewGate.mirroredStatusContexts('codex-current-head', state), ['codex-current-head/wi', 'codex-current-head']);
+  }
+  assert.deepEqual(reviewGate.mirroredStatusContexts('claude-current-head', 'success'), ['claude-current-head']);
+  const client = new reviewGate.GitHubClient({ repository: 'JagPat/PMCvitan', token: 't' });
+  const posted = [];
+  client.request = async (path, { method, body }) => { posted.push([method, path, body.context, body.state, body.description]); return { context: body.context }; };
+  const head = 'c'.repeat(40);
+  await client.setStatus(head, 'pending', 'review: settling', 'u');
+  await client.setStatus(head, 'success', 'review: clean [wi:none]', 'u');
+  await client.setStatus(head, 'success', 'x', 'u', 'claude-current-head');
+  assert.deepEqual(posted.map(([, , context, state]) => `${state}:${context}`), [
+    'pending:codex-current-head/wi', 'pending:codex-current-head',
+    'success:codex-current-head', 'success:codex-current-head/wi',
+    'success:claude-current-head',
+  ]);
+  assert.ok(posted.every(([method, path]) => method === 'POST' && path === `/repos/JagPat/PMCvitan/statuses/${head}`));
+  assert.equal(posted[2][4], posted[3][4], 'the mirror carries the same description, token included');
+  // a failed mirror write still lets a withdrawal reach the original, and the call fails
+  const failing = (broken) => {
+    const run = new reviewGate.GitHubClient({ repository: 'JagPat/PMCvitan', token: 't' });
+    run.seen = [];
+    run.request = async (path, { body }) => { run.seen.push(body.context); if (body.context === broken) throw new Error('GitHub 502'); return {}; };
+    return run;
+  };
+  const withdraw = failing('codex-current-head/wi');
+  await assert.rejects(withdraw.setStatus(head, 'failure', 'review: blocked', 'u'), /502/u);
+  assert.deepEqual(withdraw.seen, ['codex-current-head/wi', 'codex-current-head']);
+  // a success whose original write fails never reaches the mirror
+  const approve = failing('codex-current-head');
+  await assert.rejects(approve.setStatus(head, 'success', 'review: clean [wi:none]', 'u'), /502/u);
+  assert.deepEqual(approve.seen, ['codex-current-head']);
 });
 
 test('M3c / #764 Codex 4237161956 — run() withdraws a token-less green before any scope, commit or issue read', async () => {

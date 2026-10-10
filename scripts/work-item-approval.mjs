@@ -9,15 +9,18 @@
 //
 // This module is pure: it formats and parses tokens and classifies one issue read. The controller does the I/O.
 
-const TOKEN = /\[wi:(?:none|#([1-9]\d{0,9}) (open|closed))\]$/u;
+// A cited token may name the controller run that wrote it (` r<run id>`, M3c C1): that run uploads the receipt artifact
+// `receiptArtifactName(...)`, which is what lets a later run reuse the approval as historical proof.
+const TOKEN = /\[wi:(?:none|#([1-9]\d{0,9}) (open|closed)(?: r([1-9]\d{0,19}))?)\]$/u;
 const DESCRIPTION_LIMIT = 140;
 
 /** The approval token for a verification result: `{ state: 'none' }` or `{ state: 'valid', issue, issueState }`. */
-export function approvalToken(verification) {
+export function approvalToken(verification, { runId = null } = {}) {
   if (verification?.state === 'none') return '[wi:none]';
   if (verification?.state === 'valid' && Number.isInteger(verification.issue) && verification.issue > 0
     && (verification.issueState === 'open' || verification.issueState === 'closed')) {
-    return `[wi:#${verification.issue} ${verification.issueState}]`;
+    const run = /^[1-9]\d{0,19}$/u.test(String(runId ?? '')) ? ` r${runId}` : '';
+    return `[wi:#${verification.issue} ${verification.issueState}${run}]`;
   }
   throw new Error('an approval token needs a verified work item or none');
 }
@@ -36,7 +39,7 @@ export function parseApprovalToken(description) {
   const match = TOKEN.exec(String(description ?? ''));
   if (!match) return null;
   if (match[1] === undefined) return { state: 'none' };
-  return { state: 'cited', issue: Number(match[1]), issueState: match[2] };
+  return { state: 'cited', issue: Number(match[1]), issueState: match[2], runId: match[3] ?? null };
 }
 
 /** Does an approval token agree with the head's parsed `Work-Item` trailer (`parseWorkItemTrailer`)? */
@@ -72,4 +75,13 @@ export function classifyIssueRead({ status, payload, repository, number }) {
     return { state: 'unreadable', detail: `cited #${number} has an unexpected state` };
   }
   return { state: 'valid', issue: number, issueState: payload.state, detail: null };
+}
+
+/**
+ * M3c C1 — the name of the receipt artifact a controller run uploads after it completes a cited approval of `sha`.
+ * Only that run can attach an artifact to itself, so a genuine run's artifact list naming this exact head, issue and
+ * state is run-level provenance that a copied run id cannot fake.
+ */
+export function receiptArtifactName(sha, issue, issueState) {
+  return `wi-approval-${sha}-${issue}-${issueState}`;
 }

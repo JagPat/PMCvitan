@@ -15,6 +15,7 @@ import {
   CI_SCOPE_ADMITTED,
   WORK_ITEM_TRAILER_SCOPE,
   WORK_ITEM_APPROVAL_WITHDRAWN,
+  APPROVAL_STATUS_CONTEXT,
   ownershipInconsistentScopeDetail,
   isOwnershipInconsistentScopeDetail,
   isBodyOnlyOwnershipRecoveryDetail,
@@ -57,7 +58,9 @@ import {
   REPLACEMENT_REQUIRED_LABEL,
 } from './review-efficiency.mjs';
 import { parseWorkItemTrailer } from './work-item-trailer.mjs';
-import { approvalToken, classifyIssueRead, parseApprovalToken, tokenMatchesTrailer, withApprovalToken } from './work-item-approval.mjs';
+import { approvalToken, classifyIssueRead, parseApprovalToken, receiptArtifactName, tokenMatchesTrailer, withApprovalToken } from './work-item-approval.mjs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join as joinPath } from 'node:path';
 import { assessCommittedDirectiveClearance, githubProvenanceReader, headCommitFromGitHub } from './autonomous-drain-clearance.mjs';
 import {
   PRODUCT_CHECKS,
@@ -645,6 +648,23 @@ export class GitHubClient {
       && artifact?.expired === false);
   }
 
+  // M3c C1 — run-level provenance of a reused approval: the run a token names must be a trusted default-branch
+  // controller run (`auto-merge.yml`, never a pull_request event), and that run itself must have uploaded the receipt
+  // artifact naming this exact head, issue and state. Only the run can attach an artifact to itself, so a copied run
+  // id cannot satisfy this. An artifact past its retention still lists by name, so the proof outlives the file.
+  async verifyApprovalReceipt(runId, artifactName) {
+    const run = await this.request(`/repos/${this.repository}/actions/runs/${runId}`);
+    if (
+      String(run?.id) !== String(runId)
+      || run?.path !== '.github/workflows/auto-merge.yml'
+      || !['workflow_run', 'workflow_dispatch'].includes(run?.event)
+      || run?.head_branch !== 'main'
+      || run?.repository?.full_name !== this.repository
+    ) return false;
+    const artifacts = await this.actionRunItems(run.id, 'artifacts', 'artifacts');
+    return artifacts.some((artifact) => artifact?.name === artifactName);
+  }
+
   async actionRunItems(runId, endpoint, property, query = '') {
     const items = [];
     for (let page = 1; ; page += 1) {
@@ -868,22 +888,40 @@ export class GitHubClient {
     );
   }
 
-  setStatus(
+  async setStatus(
     head,
     state,
     description,
     targetUrl,
     context = STATUS_CONTEXT,
   ) {
-    return this.request(`/repos/${this.repository}/statuses/${head}`, {
+    const write = (name) => this.request(`/repos/${this.repository}/statuses/${head}`, {
       method: 'POST',
       body: {
         state,
-        context,
+        context: name,
         description: description.slice(0, 140),
         target_url: targetUrl,
       },
     });
+    // M3c C2 — every `codex-current-head` write is mirrored to `codex-current-head/wi`, which only this (M3c)
+    // controller writes. Once the owner makes `/wi` the required context, old-controller runs, legacy greens, reused
+    // SHAs and retargeted PRs no longer satisfy protection. Order keeps the mirror never greener than the original:
+    // a success lands on the original first (and stops if that fails); anything else lands on the mirror first and is
+    // still attempted on the original when the mirror write fails, so a withdrawal reaches every context it can.
+    const contexts = mirroredStatusContexts(context, state);
+    let result;
+    let failure = null;
+    for (const name of contexts) {
+      try {
+        result = await write(name);
+      } catch (error) {
+        if (state === 'success') throw error;
+        failure ??= error;
+      }
+    }
+    if (failure) throw failure;
+    return result;
   }
 
   // Returns the LIVE pull request after ensuring the requested draft state — never the object
@@ -1696,12 +1734,19 @@ export async function enforceReviewConvergence(
   return reviewHistoryPolicy(findingHeads);
 }
 
+/** M3c C2 — the contexts one status write lands on, in order (see `GitHubClient.setStatus`). */
+export function mirroredStatusContexts(context, state) {
+  if (context !== STATUS_CONTEXT) return [context];
+  return state === 'success' ? [STATUS_CONTEXT, APPROVAL_STATUS_CONTEXT] : [APPROVAL_STATUS_CONTEXT, STATUS_CONTEXT];
+}
+
 /**
  * M3c (v3 §A4) — verify a cited work item for approval. A prior `codex-current-head` SUCCESS on this exact SHA
  * whose approval token names the same #N is the historical proof: that approval completed with #N verified, so
  * it is reused and the issue is not read again (a later deletion or transfer is the accepted limitation,
- * 6091212460). Only a completed approval is reused — there are no separate receipts, so an observation from a run
- * that failed before its success write cannot be (v3 gap 3). Otherwise the issue is read now.
+ * 6091212460). Only a completed approval is reused, and only with C1 run provenance (the receipt artifact its
+ * writing run uploaded), so an observation from a run that failed before its success write cannot be (v3 gap 3).
+ * Otherwise the issue is read now.
  * `{ state: 'valid', issue, issueState, reused } | { state: 'invalid' | 'unreadable', detail }`
  */
 export async function verifyCitedWorkItem(client, pullRequest, expectedHead, issue) {
@@ -1711,11 +1756,23 @@ export async function verifyCitedWorkItem(client, pullRequest, expectedHead, iss
   } catch {
     return { state: 'unreadable', detail: `the statuses of ${expectedHead.slice(0, 12)} could not be read` };
   }
-  const prior = (statuses ?? [])
+  // M3c C1 — a prior approval is reused only with run-level provenance: its token names the controller run that
+  // wrote it, and that run uploaded the receipt for this exact head and issue. Anything less (a pre-C1 token, a
+  // copied run id, an unreadable run) is not proof, and the issue is read afresh instead.
+  const candidates = (statuses ?? [])
     .filter((status) => status.context === STATUS_CONTEXT && status.state === 'success')
     .map((status) => parseApprovalToken(status.description))
-    .find((token) => token?.state === 'cited' && token.issue === issue);
-  if (prior) return { state: 'valid', issue, issueState: prior.issueState, reused: true };
+    .filter((token) => token?.state === 'cited' && token.issue === issue && token.runId);
+  for (const prior of candidates) {
+    let proven = false;
+    try {
+      proven = typeof client.verifyApprovalReceipt === 'function'
+        && await client.verifyApprovalReceipt(prior.runId, receiptArtifactName(expectedHead, issue, prior.issueState));
+    } catch {
+      proven = false;
+    }
+    if (proven) return { state: 'valid', issue, issueState: prior.issueState, reused: true };
+  }
   const repository = client.repository ?? pullRequest.base?.repo?.full_name;
   try {
     const read = await client.workItemIssue(issue);
@@ -1746,7 +1803,26 @@ export async function approvalTokenForHead(client, pullRequest, expectedHead) {
     const retryable = verification.state === 'unreadable';
     return { refused: `${WORK_ITEM_TRAILER_SCOPE} ${verification.detail}`, retryable, readRetry: retryable ? WORK_ITEM_READ_RETRY : null };
   }
-  return { token: approvalToken(verification) };
+  return { token: approvalToken(verification, { runId: process.env.GITHUB_RUN_ID }), verification };
+}
+
+/**
+ * M3c C1 — after a cited approval is WRITTEN, schedule its receipt: a small JSON file under the runner's temp dir
+ * and `WI_APPROVAL_ARTIFACT` in the job environment, which `auto-merge.yml` uploads as a run artifact of that name.
+ * Only completed approvals get a receipt. Outside Actions (no runner env) it does nothing.
+ */
+export function recordApprovalReceipt(expectedHead, verification, env = process.env) {
+  if (verification?.state !== 'valid' || !env.GITHUB_ENV || !env.RUNNER_TEMP || !env.GITHUB_RUN_ID) return null;
+  const name = receiptArtifactName(expectedHead, verification.issue, verification.issueState);
+  const dir = joinPath(env.RUNNER_TEMP, 'wi-approval');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(joinPath(dir, 'receipt.json'), `${JSON.stringify({
+    repository: env.GITHUB_REPOSITORY ?? null, head: expectedHead, issue: verification.issue,
+    issueState: verification.issueState, runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT ?? null,
+    workflowSha: env.GITHUB_WORKFLOW_SHA ?? null, recordedAt: new Date().toISOString(),
+  })}\n`);
+  appendFileSync(env.GITHUB_ENV, `WI_APPROVAL_ARTIFACT=${name}\n`);
+  return name;
 }
 
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
@@ -2582,7 +2658,9 @@ export function publishSettledSuccess(client, pullRequest, expectedHead, descrip
       // (work item or ownership) rather than the follow-up filing retry the wrapper otherwise publishes.
       throw Object.assign(new Error(`success withheld: ${approval.refused}`), { readRetry: approval.readRetry ?? null });
     }
-    return client.setStatus(expectedHead, 'success', withApprovalToken(description, approval.token), pullRequest.html_url);
+    const written = await client.setStatus(expectedHead, 'success', withApprovalToken(description, approval.token), pullRequest.html_url);
+    recordApprovalReceipt(expectedHead, approval.verification);
+    return written;
   });
 }
 
