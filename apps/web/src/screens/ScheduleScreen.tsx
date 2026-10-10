@@ -438,23 +438,33 @@ export function ScheduleScreen() {
   };
   // #777 Codex 4239476426 — a routed activity this schedule does not hold, while the slice is unsettled (a
   // reconcile owed, a read loading or failed), shows that boundary, never the whole schedule under its URL
-  const unsettledItem = routeItem !== null && !routed && !released && !activitiesSettled;
+  // #777 Codex 4239523475 — EVERY routed item waits for a settled slice: a row the retained (or seeded) slice
+  // still holds is not authoritative either, so its live Start / Complete / Edit / Override stay hidden until then
+  const unsettledItem = routeItem !== null && !released && !activitiesSettled;
   const missingActivity = routeItem !== null && !routed && !released && activitiesSettled ? routeItem : null;
   // #777 Codex 4239476431 — the link reveals its row ONCE: retried only until the row arrives, then a schedule
   // refresh or mutation never pulls the viewer back to it; a new route item reveals afresh
-  const revealed = useRef<string | null>(null);
+  // #777 Codex 4239523470 — the marker names the route item AND the row element it revealed: a new route item
+  // (A → unknown B → Back to A) or a re-rendered row (a boundary replaced the schedule meanwhile) reveals afresh
+  const revealed = useRef<{ id: string; row: HTMLElement } | null>(null);
   useEffect(() => {
-    if (routed === null) {
-      if (routeItem === null) revealed.current = null;
+    revealed.current = null;
+  }, [routeItem]);
+  useEffect(() => {
+    if (routed === null || activityFocus !== null) return; // a hand-off in flight is handled above
+    if (revealed.current?.id === routed && revealed.current.row.isConnected) return;
+    // #777 Codex 4239523467 — a place filter that excludes the routed activity is cleared, so the row the URL
+    // names is shown rather than unrelated filtered rows under its URL
+    if (!shown.some((a) => a.id === routed)) {
+      setPlaceFilter('');
       return;
     }
-    if (activityFocus !== null || revealed.current === routed) return; // a hand-off in flight is handled above
     const row = document.getElementById(`sched-${routed}`);
     if (!row) return;
-    revealed.current = routed;
+    revealed.current = { id: routed, row };
     row.scrollIntoView?.({ block: 'center' });
     setHighlight(routed);
-  }, [routed, routeItem, activityFocus, activities]);
+  }, [routed, activityFocus, activities, shown]);
   useEffect(() => {
     if (highlight === null) return;
     const t = setTimeout(() => setHighlight(null), 2500);
@@ -496,7 +506,9 @@ export function ScheduleScreen() {
     );
   }
   if (unsettledItem) {
-    const failed = moduleOwned ? unavailable : projectLoadState === 'error';
+    // #777 Codex 4239523461 — a failed project snapshot (or reconcile) is a failure too, with its Retry, even
+    // while a module read retained a last-good slice
+    const failed = unavailable || projectLoadState === 'error';
     return (
       <div className={`${styles.screen} ${styles.wide}`} data-testid={failed ? 'activities-unavailable' : 'activities-loading'}>
         <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>

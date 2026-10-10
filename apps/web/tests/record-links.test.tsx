@@ -330,3 +330,53 @@ describe('Top 10 #3c — the routed activity, through navigation and edits (#777
   });
 });
 
+describe('Top 10 #3c — round 2 (#777 Codex on 2461392)', () => {
+  it('4239523475 — a routed row the unsettled slice still holds is not actionable until the slice settles', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a] = useStore.getState().activities;
+    useStore.setState({ routeItem: a.id, commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: true } });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.getByTestId('activities-loading')).toBeInTheDocument();
+    expect(r.queryByTestId(`edit-${a.id}`)).toBeNull();
+    act(() => useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: false } }));
+    expect(r.getByTestId(`edit-${a.id}`)).toBeInTheDocument();
+  });
+
+  it('4239523461 — a failed project snapshot shows the failure and Retry, not an endless "Loading"', async () => {
+    // module read-ownership: the activities read retained a last-good slice ('ready') while the snapshot failed
+    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
+    await demo({ role: 'pmc', screen: 'site-schedule', routeItem: 'ACT-ABSENT', projectLoadState: 'error', activitiesLoad: 'ready' });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.getByTestId('activities-unavailable')).toBeInTheDocument();
+    expect(r.getByTestId('activities-retry')).toBeInTheDocument();
+  });
+
+  it('4239523467 — a place filter that hides the routed activity is cleared, and the row revealed', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule', routeItem: null });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    fireEvent.change(r.getByTestId('sched-place-filter'), { target: { value: 'z-terrace' } });
+    expect(r.queryByTestId('edit-ACT-31')).toBeNull(); // Living Room Flooring is outside the Terrace
+    act(() => useStore.setState({ routeItem: 'ACT-31' }));
+    expect((r.getByTestId('sched-place-filter') as HTMLSelectElement).value).toBe('');
+    expect(r.getByTestId('edit-ACT-31')).toBeInTheDocument();
+  });
+
+  it('4239523470 — A → unknown B → Back to A reveals A again', async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a] = useStore.getState().activities;
+    useStore.setState({ routeItem: a.id });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(scroll).toHaveBeenCalledTimes(1);
+    act(() => useStore.setState({ routeItem: 'ACT-UNKNOWN' }));
+    expect(r.getByText('Show the whole schedule')).toBeInTheDocument();
+    act(() => useStore.setState({ routeItem: a.id }));
+    expect(scroll).toHaveBeenCalledTimes(2);
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  });
+});
