@@ -18,7 +18,7 @@ task: 4
 task_state: in_progress
 work_item: maint-m3c-work-item-approval
 reviewed_merge: ad742de
-open_pr: null
+open_pr: 764
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-10
