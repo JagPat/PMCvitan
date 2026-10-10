@@ -1857,6 +1857,10 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     // 4235923856: any text between the name and the attempted value, such as a link target
     ['a linked name', `fix\n\n[Work-Item](https://github.com/JagPat/PMCvitan/issues/750): #750\n\n${owner}\n`],
     ['a linked name beside a valid trailer', `fix\n\n[Work-Item](https://example.test/x): #1\n\nWork-Item: #750\n${owner}\n`],
+    // 4235950157: alphabetic wrappers or words before the name
+    ['an HTML wrapper', `fix\n\n<strong>Work-Item</strong>: #750\n\n${owner}\n`],
+    ['a word before the name', `fix\n\n*label* Work-Item: #750\n\n${owner}\n`],
+    ['a mention in prose with a value', `fix\n\nThis closes work item #750.\n\n${owner}\n`],
   ]) {
     const result = parse(message);
     assert.equal(result.state, 'malformed', label);
