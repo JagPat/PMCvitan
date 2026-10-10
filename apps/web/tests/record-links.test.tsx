@@ -135,3 +135,41 @@ describe('screens that name one record open it', () => {
     expect(where(useStore)).toEqual({ screen: 'decision-log', item: log.materials[idx].decisionId });
   });
 });
+
+describe('#775 Codex findings', () => {
+  it('4239168287 — a contractor\'s single open change request opens at its record', async () => {
+    const { useStore } = await demo({ role: 'contractor' });
+    const sel = await import('@/store/selectors');
+    const d = useStore.getState().decisions[0];
+    useStore.setState({ decisions: [{ ...d, id: 'C-1', status: 'change', draft: false }], drawings: [] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'con-change')?.item).toBe('C-1');
+  });
+
+  it('4239168284 — an unsettled decision slice never opens live approval controls', async () => {
+    const { useStore } = await demo({ role: 'client' });
+    const sel = await import('@/store/selectors');
+    const d = { ...useStore.getState().decisions[0], status: 'pending' as const, deciderKind: 'client' as const, draft: false };
+    expect(sel.decisionRecordLink(useStore.getState(), d).screen).toBe('client-decisions');
+    useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, decisions: true } });
+    expect(sel.decisionRecordLink(useStore.getState(), d).screen).toBe('decision-log');
+    useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, decisions: false }, decisionsLoad: 'error' });
+    expect(sel.decisionRecordLink(useStore.getState(), d).screen).toBe('decision-log');
+    useStore.setState({ decisions: [d] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'client-pending')?.item).toBeUndefined();
+  });
+
+  it('4239168292 — the Daily Log\'s decision link opens where the viewer decides it', async () => {
+    const { useStore } = await demo({ role: 'engineer', sessionUserId: 'u-eng' });
+    const log = useStore.getState().dailyLog!;
+    const idx = log.materials.findIndex((m) => m.decisionId);
+    const id = log.materials[idx].decisionId!;
+    useStore.setState({
+      decisions: useStore.getState().decisions.map((d) => (d.id === id ? { ...d, status: 'pending', draft: false, deciderKind: 'member', deciderUserId: 'u-eng' } : d)),
+    });
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+    fireEvent.click(r.getByTestId(`material-decision-${idx}`));
+    expect(where(useStore)).toEqual({ screen: 'client-decisions', item: id });
+  });
+});
+

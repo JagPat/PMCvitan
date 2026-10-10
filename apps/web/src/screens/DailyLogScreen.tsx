@@ -2,7 +2,7 @@ import { useRef, useState, type ChangeEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { API_BASE, CONNECTIVITY_SIMULATOR, dailyLogReadMode } from '@/data/apiGateway';
-import { selectTotalWorkers } from '@/store/selectors';
+import { decisionRecordLink, selectTotalWorkers, selectVisibleDecisions } from '@/store/selectors';
 import { EmptyState, Eyebrow, Swatch, PhotoViewer, Button } from '@/components';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { LocationPicker } from '@/components/LocationPicker';
@@ -11,7 +11,7 @@ import { projectScopeOf } from '@/store/projectScope';
 import { dailyLogCommandInFlight, dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
-import { can, labourLabels } from '@vitan/shared';
+import { can, labourLabels, type ScreenKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
@@ -27,6 +27,13 @@ export function DailyLogScreen() {
   const crewStep = useStore((s) => s.crewStep);
   const openQr = useStore((s) => s.openQr);
   const openItem = useStore((s) => s.openItem);
+  // #775 Codex 4239168292 — the referenced decision opens where THIS viewer acts on it (the decider-aware
+  // rule every decision link shares); one the viewer is not served opens the Decision Log, which says so
+  const linkFor = (decisionId: string): { screen: ScreenKey; item: string } => {
+    const s = useStore.getState();
+    const d = selectVisibleDecisions(s).find((x) => x.id === decisionId);
+    return d ? decisionRecordLink(s, d) : { screen: 'decision-log', item: decisionId };
+  };
   const flagMismatch = useStore((s) => s.flagMismatch);
   const addProgressPhoto = useStore((s) => s.addProgressPhoto);
   const submitDailyLog = useStore((s) => s.submitDailyLog);
@@ -287,7 +294,7 @@ export function DailyLogScreen() {
                   {m.matched ? '✓ Matches locked decision ' : '⚠ MISMATCH — not the approved '}
                   {/* Top 10 #3 (#774) — the decision it is checked against opens at its own record */}
                   {m.decisionId ? (
-                    <button type="button" onClick={() => openItem('decision-log', m.decisionId!)} data-testid={`material-decision-${i}`} style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}>
+                    <button type="button" onClick={() => { const link = linkFor(m.decisionId!); openItem(link.screen, link.item); }} data-testid={`material-decision-${i}`} style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}>
                       {m.decisionId}
                     </button>
                   ) : null}

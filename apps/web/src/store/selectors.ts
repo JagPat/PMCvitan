@@ -11,6 +11,7 @@
 import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
+import { decisionsSliceSettled } from '@/lib/notifications';
 import { activitiesReadMode } from '@/data/apiGateway';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -435,9 +436,12 @@ export interface ActionItem {
 const only = (xs: readonly { id: string }[]): string | undefined => (xs.length === 1 ? xs[0].id : undefined);
 
 /** Top 10 #3 (#774) — where ONE decision opens for this viewer, the bell's rule (`notificationLink`): the
- *  approval screen when it awaits them as its decider, else the Decision Log, which every role holds. */
+ *  approval screen when a SETTLED slice shows it awaiting them as its decider, else the Decision Log, which
+ *  every role holds and which is right in every state. A row retained after a failed read, or while a
+ *  command's reconcile is owed, never opens live approval controls (#775 Codex 4239168284). */
 export function decisionRecordLink(s: AppState, d: Decision): { screen: ScreenKey; item: string } {
-  const awaits = (d.status === 'pending' || d.status === 'change') && !d.draft && viewerIsDecider(d, s.role, s.sessionUserId);
+  const awaits = decisionsSliceSettled(s)
+    && (d.status === 'pending' || d.status === 'change') && !d.draft && viewerIsDecider(d, s.role, s.sessionUserId);
   return { screen: awaits ? 'client-decisions' : 'decision-log', item: d.id };
 }
 
@@ -483,13 +487,15 @@ export function selectActionItems(s: AppState): ActionItem[] {
   // other decider gets the decider-keyed item pointing at the same approval surface (reachable
   // via the decider route arm).
   const myPending = pending.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
+  // #775 Codex 4239168284 — an approval card opens ONE decision's live controls only from a settled slice
+  const settledDecisions = decisionsSliceSettled(s);
   const myChanges = changes.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
   if (myPending.length) {
-    items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber', count: myPending.length, item: only(myPending) });
+    items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber', count: myPending.length, item: settledDecisions ? only(myPending) : undefined });
   }
   if (myChanges.length) {
     // a reopened decision BLOCKS the work driven by it until the decider re-approves
-    items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red', count: myChanges.length, item: only(myChanges) });
+    items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red', count: myChanges.length, item: settledDecisions ? only(myChanges) : undefined });
   }
 
   // Phase 6 task 4d-ii-b / B3 (the plan's §A.2 Inbox arm) — the AWAITING branch. The architect's item is
@@ -517,7 +523,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
 
   if (s.role === 'contractor') {
     if (unacked.length) items.push({ key: 'con-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: only(unacked) });
-    if (changes.length) items.push({ key: 'con-change', title: `${changes.length} change request${plural(changes.length)} open`, detail: 'Awaiting the PMC', screen: 'decision-log', cta: 'View', tone: 'ink' });
+    if (changes.length) items.push({ key: 'con-change', title: `${changes.length} change request${plural(changes.length)} open`, detail: 'Awaiting the PMC', screen: 'decision-log', cta: 'View', tone: 'ink', item: only(changes) });
   }
 
   if (s.role === 'pmc') {
