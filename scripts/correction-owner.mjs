@@ -1,7 +1,4 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { asciiTrim, gitParsedTrailers } from './git-trailers.mjs';
 import {
   CORRECTION_OWNERS,
   CANDIDATE_CORRECTION_OWNERS,
@@ -10,6 +7,7 @@ import {
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
   CI_SCOPE_ADMITTED,
+  WORK_ITEM_TRAILER_SCOPE,
   ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 export {
@@ -173,75 +171,7 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
 // CLOSED: a missing or erroring git yields `unreadable` and never an owner, which a later consumer must
 // treat as no merge authority.
 const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
-// Strip only git's ASCII horizontal padding (never Unicode whitespace, which git preserves in the value).
-export const asciiTrim = (value) => value.replace(/^[ \t]+|[ \t]+$/gu, '');
-
-// The terminal trailers of a commit message, exactly as `git interpret-trailers --parse --unfold` emits
-// them: `Key: value` lines with folded continuations already joined. The message is fed on STDIN, never as
-// an argument, so no content can be read as a flag. Returns null when git cannot be run at all (binary
-// missing or non-zero exit), so the caller fails closed rather than reading an unreadable commit as owning
-// nothing. Exported so other terminal-trailer readers (the `Codex-Fix-Probe` binding) share git's reading.
-// A single empty directory pointed at by `GIT_DIR`, so git uses it AS the repository and never discovers
-// the ambient one from the working directory. It stays empty (`--parse` reads config, writes nothing), so
-// it holds no local config; created lazily and reused. Discovery matters because a repository's local
-// config — including a `trailer.<name>.key` that changes block recognition — would otherwise be read, and
-// `GIT_DIR`/`GIT_WORK_TREE`/a repo-inside-`TMPDIR` are all repository-selection inputs that no
-// `GIT_CEILING_DIRECTORIES` reliably fences once the cwd is inside a repo.
-let cleanGitDir;
-function isolatedGitDir() {
-  if (!cleanGitDir) cleanGitDir = mkdtempSync(join(tmpdir(), 'owner-trailer-gitdir-'));
-  return cleanGitDir;
-}
-
-// The environment that ISOLATES git from every external config source, so `--parse` depends only on the
-// config this module pins and never on the runner. Every inherited `GIT_*` variable is dropped (config
-// sources AND repository-selection inputs — `GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG*`, …); global
-// (`~/.gitconfig`) and system (`/etc/gitconfig`) are redirected to `/dev/null` with `GIT_CONFIG_NOSYSTEM`;
-// and `GIT_DIR` is set to the empty directory above so git reads no local repository config. The remaining
-// config comes only from the command-line `-c` flags this module passes.
-function isolatedGitEnv() {
-  const env = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith('GIT_')) continue;
-    env[key] = value;
-  }
-  env.GIT_DIR = isolatedGitDir();
-  env.GIT_CONFIG_GLOBAL = '/dev/null';
-  env.GIT_CONFIG_SYSTEM = '/dev/null';
-  env.GIT_CONFIG_NOSYSTEM = '1';
-  return env;
-}
-
-export function gitParsedTrailers(commitMessage) {
-  let out;
-  try {
-    // Pin the two config keys that still shape `--parse` output under the isolated environment above:
-    // `trailer.separators` decides the accepted AND output separator (its first character), and
-    // `core.commentChar` decides which comment lines `--parse` strips.
-    out = execFileSync('git', [
-      '-c', 'trailer.separators=:',
-      '-c', 'core.commentChar=#',
-      'interpret-trailers', '--parse', '--unfold',
-    ], {
-      input: String(commitMessage ?? ''),
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-      maxBuffer: 8 * 1024 * 1024,
-      cwd: isolatedGitDir(),
-      env: isolatedGitEnv(),
-    });
-  } catch {
-    return null;
-  }
-  const trailers = [];
-  for (const line of out.split('\n')) {
-    if (line.length === 0) continue;
-    const separator = line.indexOf(':');
-    if (separator < 0) continue;
-    trailers.push({ key: asciiTrim(line.slice(0, separator)), value: line.slice(separator + 1) });
-  }
-  return trailers;
-}
+// The trailer primitives (`asciiTrim`, `gitParsedTrailers`) live in the `git-trailers.mjs` leaf.
 
 /**
  * The HEAD-bound owner from the exact commit message's terminal trailer block, read AS
@@ -572,6 +502,12 @@ function ownerLabel(owner) {
 
 // What the loop asks the declared owner to do, per reason. The OWNER decision is
 // made once, above; these only phrase it.
+// A malformed `Work-Item` trailer lives in the immutable head commit, so only a new head clears it — never a body
+// edit or a marker change (#761 Codex 4235659451, and 4235863448 for the candidate route).
+const WORK_ITEM_HEAD_REMEDY = 'The trailer is part of the head commit, so editing the PR body cannot clear it: push '
+  + 'one new head whose commit message ends with a single valid `Work-Item: #N` trailer, or with none.';
+const isWorkItemTrailerDetail = (detail) => String(detail ?? '').trimStart().startsWith(WORK_ITEM_TRAILER_SCOPE);
+
 function declaredInstruction(owner, { reason, detail }) {
   const who = ownerLabel(owner);
   // An owner GitHub cannot wake gets the same instruction plus the truth about
@@ -608,6 +544,11 @@ function declaredInstruction(owner, { reason, detail }) {
       ? ' Here that means: split the review unit, or complete every justified-large '
         + 'invariant row with concrete risk and verification evidence.'
       : '';
+    // A malformed `Work-Item` trailer is in the immutable head commit: no body edit clears it (#761 Codex 4235659451).
+    if (isWorkItemTrailerDetail(detail)) {
+      return `${who} owns this correction: resolve the scope verdict this head is failing on — ${verdict}. `
+        + `${WORK_ITEM_HEAD_REMEDY}${start}`;
+    }
     return `${who} owns this correction: resolve the scope verdict this head is failing on — `
       + `${verdict}.${size} Editing the PR body reruns the scope gate, so most scope verdicts `
       + `clear with no new head.${start}`;
@@ -621,6 +562,11 @@ function declaredInstruction(owner, { reason, detail }) {
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
 function undeclaredInstruction(declaration, { reason = null, detail = null } = {}) {
+  if (declaration.state === 'candidate' && reason === 'scope' && isWorkItemTrailerDetail(detail)) {
+    return `Scope refused this head: ${detail}. ${WORK_ITEM_HEAD_REMEDY} Keep the "${declaration.owner}" `
+      + `candidate marker, and keep \`Correction-Owner: ${declaration.owner}\` on that new head. This loop routes `
+      + 'no agent and cannot observe whether one is already running.';
+  }
   // A CANDIDATE body is admitted only over a head whose own trailer declares it, and the PR must meet every
   // other scope rule. When scope refused this head, the body alone proves nothing, so the notice names the
   // refusal and its remedy instead of calling the candidate admitted (Codex finding 4101018333 on #630).

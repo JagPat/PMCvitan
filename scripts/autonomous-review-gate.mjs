@@ -11,6 +11,7 @@ import {
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
   CI_SCOPE_ADMITTED,
+  WORK_ITEM_TRAILER_SCOPE,
   ownershipInconsistentScopeDetail,
   isOwnershipInconsistentScopeDetail,
   isBodyOnlyOwnershipRecoveryDetail,
@@ -52,6 +53,7 @@ import {
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
 } from './review-efficiency.mjs';
+import { parseWorkItemTrailer } from './work-item-trailer.mjs';
 import { assessCommittedDirectiveClearance, githubProvenanceReader, headCommitFromGitHub } from './autonomous-drain-clearance.mjs';
 import {
   PRODUCT_CHECKS,
@@ -346,6 +348,9 @@ export function immutableOwnershipHoldIsNewestReview(statuses) {
   const latest = (statuses ?? []).find((status) => status.context === STATUS_CONTEXT);
   if (latest?.state !== 'failure') return false;
   const detail = String(latest?.description ?? '').replace(/^\s*scope:\s*/u, '');
+  // A malformed `Work-Item` trailer is in the immutable head commit: only a new head clears it, so an older
+  // retryable status beneath it must not be recovered or re-reviewed either (#761 Codex 4235923859).
+  if (detail.startsWith(WORK_ITEM_TRAILER_SCOPE)) return true;
   return isOwnershipInconsistentScopeDetail('scope', detail)
     && !isBodyOnlyOwnershipRecoveryDetail('scope', detail);
 }
@@ -1683,6 +1688,23 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
     });
     if (clearance?.applies && !clearance.allowed) {
       result = { ...result, allowed: false, state: 'drain_clearance_refused', detail: `drain clearance: ${clearance.detail}`, clearance };
+    }
+  }
+  // The cited work item (M3b, #761 Codex 4235631755; owner choice A, #482 6091714064): the exact head commit's
+  // `Work-Item` trailer, re-parsed HERE from trusted default-branch code, because the PR-side `review-scope` job
+  // runs from the PR's own checkout. Syntax only — no issue is read (M3c). A malformed trailer is a `scope:`
+  // refusal that only a new head clears; an unreadable head commit, or one git cannot parse, is the existing
+  // retryable same-SHA hold (no draft, no correction owed; #761 Codex 4235659448), never a pass.
+  if (result.allowed) {
+    const message = headCommitMessage ?? await readHeadCommitMessage(
+      async () => (await client.commit(expectedHead))?.commit?.message,
+      typeof client.pause === 'function' ? { sleep: client.pause.bind(client) } : {},
+    );
+    const workItem = parseWorkItemTrailer(message);
+    if (workItem.state === 'unreadable') {
+      result = { ...result, allowed: false, retryable: true, state: 'work_item_unreadable', detail: `${WORK_ITEM_TRAILER_SCOPE} ${workItem.detail}` };
+    } else if (workItem.state === 'malformed') {
+      result = { ...result, allowed: false, state: 'work_item_malformed', detail: `${WORK_ITEM_TRAILER_SCOPE} ${workItem.detail}` };
     }
   }
   if (result.allowed) return result;

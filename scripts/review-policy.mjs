@@ -63,6 +63,9 @@ export const CORRECTION_STALLED = 'correction_stalled';
 // A retryable INFRASTRUCTURE failure, not an ownership fault: the exact HEAD commit could not be read (or
 // the git-faithful trailer primitive could not run), so the trailer's validity is unknown and no correction
 // is owed. A later unit adds it to the retryable set and teaches the recovery authorizer to consume it.
+// M3b (#761, owner choice A on #482 6091714064): the scope-refusal signature for a malformed `Work-Item` trailer on
+// the exact head commit. The trailer lives in the immutable commit, so only a new head clears it, never a body edit.
+export const WORK_ITEM_TRAILER_SCOPE = 'Work-Item trailer:';
 export const OWNERSHIP_READ_RETRY = 'validation: head commit ownership temporarily unreadable — retrying';
 // A consistent CANDIDATE head (e.g. codex) is held pending independent reviewer activation, never merged.
 export const OWNERSHIP_CANDIDATE_HELD = 'validation: candidate owner held for independent reviewer activation';

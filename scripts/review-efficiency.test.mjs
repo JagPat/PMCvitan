@@ -22,6 +22,7 @@ import {
   parseTrackedTree,
   run as runScope,
 } from './review-scope.mjs';
+import { parseWorkItemTrailer } from './work-item-trailer.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 
@@ -947,20 +948,31 @@ test('agent guidance and the PR template share the executable policy vocabulary'
   );
 });
 
+// A readable head commit with no Work-Item trailer, for CLI tests whose subject is something else: the CLI now
+// reads the exact head commit (M3b) and fails closed when it cannot (#761 Codex 4235631752), so a fixture must
+// supply it instead of reaching the real network.
+const plainHead = {
+  token: 'test-token',
+  repository: 'JagPat/PMCvitan',
+  sleep: async () => {},
+  fetchImpl: async () => new Response(JSON.stringify({ commit: { message: 'fix\n\nCorrection-Owner: claude\n' } })),
+};
+const withHead = (overrides = {}) => pullRequest({ head: { ref: 'claude/x', sha: 'c'.repeat(40) }, ...overrides });
+
 test('the dependency-free scope CLI returns success or failure from the PR event', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-scope-'));
   const eventPath = join(directory, 'event.json');
   const previousExitCode = process.exitCode;
   try {
-    await writeFile(eventPath, JSON.stringify({ pull_request: pullRequest() }));
-    const standard = await runScope({ eventPath });
+    await writeFile(eventPath, JSON.stringify({ pull_request: withHead() }));
+    const standard = await runScope({ eventPath, ...plainHead });
     assert.equal(standard.allowed, true);
     assert.equal(process.exitCode, previousExitCode);
 
     await writeFile(eventPath, JSON.stringify({
-      pull_request: pullRequest({ additions: 2_000, changed_files: 30 }),
+      pull_request: withHead({ additions: 2_000, changed_files: 30 }),
     }));
-    const blocked = await runScope({ eventPath });
+    const blocked = await runScope({ eventPath, ...plainHead });
     assert.equal(blocked.allowed, false);
     assert.equal(process.exitCode, 1);
   } finally {
@@ -1745,9 +1757,10 @@ test('the scope CLI refuses a tracked dependency path independently of the scope
   const eventPath = join(directory, 'event.json');
   const previousExitCode = process.exitCode;
   try {
-    await writeFile(eventPath, JSON.stringify({ pull_request: pullRequest() }));
+    await writeFile(eventPath, JSON.stringify({ pull_request: withHead() }));
     const clean = await runScope({
       eventPath,
+      ...plainHead,
       listTreeImpl: async () => [{ mode: '100644', path: 'package.json' }],
     });
     assert.equal(clean.allowed, true);
@@ -1756,6 +1769,7 @@ test('the scope CLI refuses a tracked dependency path independently of the scope
 
     const refused = await runScope({
       eventPath,
+      ...plainHead,
       listTreeImpl: async () => [
         { mode: '100644', path: 'package.json' },
         { mode: '120000', path: 'node_modules' },
@@ -1800,4 +1814,135 @@ test('M3a — no gate, CI-selection or review module reads the trivial marker: n
   }
   const policy = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
   assert.match(policy, /review-size: trivial -->` only classifies a unit and never skips CI or Codex review/u);
+});
+
+// ── M3b (owner, #482 6090833573 / 6091212460): the cited work item is an immutable head-commit trailer ──
+
+test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer block, failing closed', () => {
+  const owner = 'Correction-Owner: claude';
+  const parse = (message) => parseWorkItemTrailer(message);
+  assert.deepEqual(parse(`fix\n\nWork-Item: #750\n${owner}\n`), { state: 'cited', issue: 750, detail: null });
+  assert.equal(parse(`fix\n\nwork-item: #750\n${owner}\n`).issue, 750, 'git trailer keys are case-insensitive');
+  assert.deepEqual(parse(`fix\n\n${owner}\n`), { state: 'none', issue: null, detail: null }, 'a citation stays optional');
+  assert.equal(parse(undefined).state, 'unreadable');
+  assert.equal(parseWorkItemTrailer('fix\n\nWork-Item: #750\n', { parse: () => null }).state, 'unreadable');
+  for (const [label, message] of [
+    ['a duplicate trailer', `fix\n\nWork-Item: #750\nWork-Item: #751\n${owner}\n`],
+    ['a URL value', `fix\n\nWork-Item: https://github.com/JagPat/PMCvitan/issues/750\n${owner}\n`],
+    ['a second number', `fix\n\nWork-Item: #750, #9999\n${owner}\n`],
+    ['a folded continuation adding a number', `fix\n\nWork-Item: #750\n  #9999\n${owner}\n`],
+    ['a value without #', `fix\n\nWork-Item: 750\n${owner}\n`],
+    ['issue zero', `fix\n\nWork-Item: #0\n${owner}\n`],
+    ['a field line in the body, not the trailer block', `fix\n\nWork-Item: #750\n\nmore prose\n\n${owner}\n`],
+    ['a body line beside a valid trailer', `fix\n\nWork-Item: #9999 was the old one\n\nWork-Item: #750\n${owner}\n`],
+    ['a spelling git does not parse as a trailer', `fix\n\nWork Item: #750\n${owner}\n`],
+    ['an underscore spelling', `fix\n\nWORK_ITEM: #750\n${owner}\n`],
+    // #761 Codex 4235863454: repeated or other separators between the words are still an attempted citation
+    ['a doubled space', `fix\n\nWork  Item: #750\n${owner}\n`],
+    ['a tab', `fix\n\nWork\tItem: #750\n${owner}\n`],
+    ['a dotted spelling', `fix\n\nWork.Item: #750\n${owner}\n`],
+    ['mixed separators', `fix\n\nwork -_ item: #750\n${owner}\n`],
+    // 4235885068: a list, quote, numbered, emphasised or code-ticked prefix is still a field line
+    ['a list bullet', `fix\n\n- Work-Item: #750\n\n${owner}\n`],
+    ['a quote', `fix\n\n> Work-Item: #750\n\n${owner}\n`],
+    ['a numbered item', `fix\n\n1. Work-Item: #750\n\n${owner}\n`],
+    ['emphasis', `fix\n\n**Work-Item**: #750\n\n${owner}\n`],
+    ['code ticks', `fix\n\n\`Work-Item: #750\`\n\n${owner}\n`],
+    // 4235903051: any joiner or delimiter after the name; 4235903046: a value supplied by continuation folding
+    ['a slash joiner', `fix\n\nWork/Item: #750\n${owner}\n`],
+    ['no colon', `fix\n\nWork-Item #750\n${owner}\n`],
+    ['an equals delimiter', `fix\n\nWork-Item = #750\n${owner}\n`],
+    ['a value folded onto the next line', `fix\n\nWork-Item:\n #750\n${owner}\n`],
+    ['a value folded under spaces', `fix\n\nWork-Item:   \n\t#750\n${owner}\n`],
+    // 4235923856: any text between the name and the attempted value, such as a link target
+    ['a linked name', `fix\n\n[Work-Item](https://github.com/JagPat/PMCvitan/issues/750): #750\n\n${owner}\n`],
+    ['a linked name beside a valid trailer', `fix\n\n[Work-Item](https://example.test/x): #1\n\nWork-Item: #750\n${owner}\n`],
+    // 4235950157: alphabetic wrappers or words before the name
+    ['an HTML wrapper', `fix\n\n<strong>Work-Item</strong>: #750\n\n${owner}\n`],
+    ['a word before the name', `fix\n\n*label* Work-Item: #750\n\n${owner}\n`],
+    ['a mention in prose with a value', `fix\n\nThis closes work item #750.\n\n${owner}\n`],
+  ]) {
+    const result = parse(message);
+    assert.equal(result.state, 'malformed', label);
+    assert.equal(result.issue, null, label);
+  }
+});
+
+test('M3b / #751 4232759655 (#759) — no message content can hide or invent a citation: nothing is parsed as Markdown', () => {
+  // The defect at #751 08816b7: a literal, unclosed `<!--` inside a code example made the Markdown body parser
+  // drop everything after it, so a real later field produced no citation and was never verified. Trailers are
+  // read by git from the terminal block, so preceding content of any shape leaves the trailer intact.
+  const trailer = 'Work-Item: #9999\nCorrection-Owner: claude\n';
+  for (const body of ['a `<!--` opener with no closer', '<!-- unclosed', '```\n<!--\n```', '~~~md\nx\n', '    indented <!--', '# heading']) {
+    assert.deepEqual(parseWorkItemTrailer(`fix\n\n${body}\n\n${trailer}`), { state: 'cited', issue: 9999, detail: null }, body);
+  }
+  // A field line inside an example is refused, never silently skipped: a hidden citation can neither pass as
+  // "no citation" (the optional-missing case) nor be taken for the real one.
+  for (const body of ['```\nWork-Item: #1\n```', '<!--\nWork-Item: #1\n-->', '    Work-Item: #1']) {
+    assert.equal(parseWorkItemTrailer(`fix\n\n${body}\n\n${trailer}`).state, 'malformed', body);
+    assert.equal(parseWorkItemTrailer(`fix\n\n${body}\n\nCorrection-Owner: claude\n`).state, 'malformed', `${body} (alone)`);
+  }
+});
+
+test('M3b — the required scope CLI fails a malformed head-commit Work-Item trailer and reads no issue', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-work-item-'));
+  const eventPath = join(directory, 'event.json');
+  const previousExitCode = process.exitCode;
+  const sha = 'f'.repeat(40);
+  const requested = [];
+  const options = (message) => ({
+    eventPath,
+    token: 'test-token',
+    sleep: async () => {},
+    fetchImpl: async (url) => {
+      requested.push(url);
+      if (url.includes(`/commits/${sha}`)) {
+        return message === null ? new Response('no', { status: 502 }) : new Response(JSON.stringify({ commit: { message } }));
+      }
+      return new Response(JSON.stringify([{ filename: 'scripts/review-efficiency.mjs' }]));
+    },
+  });
+  await writeFile(eventPath, JSON.stringify({
+    repository: { full_name: 'JagPat/PMCvitan' },
+    pull_request: pullRequest({
+      number: 401, changed_files: 1, additions: 40, deletions: 0, body: preReviewBody(),
+      head: { ref: 'claude/m3b', sha },
+    }),
+  }));
+  try {
+    process.exitCode = previousExitCode;
+    const cited = await runScope(options('fix\n\nWork-Item: #750\nCorrection-Owner: claude\n'));
+    assert.equal(cited.allowed, true, cited.detail ?? 'expected a cited head to pass');
+    assert.deepEqual(cited.workItem, { state: 'cited', issue: 750, detail: null });
+    assert.notEqual(process.exitCode, 1);
+    // syntax only: no issue is read, so no issues permission is needed
+    assert.ok(!requested.some((url) => /\/issues\//u.test(url)), 'the scope job reads no issue');
+
+    process.exitCode = previousExitCode;
+    const malformed = await runScope(options('fix\n\nWork-Item: #750, #9999\nCorrection-Owner: claude\n'));
+    assert.equal(malformed.workItem.state, 'malformed');
+    assert.equal(process.exitCode, 1, 'a malformed trailer fails the required check');
+
+    process.exitCode = previousExitCode;
+    const none = await runScope(options('fix\n\nCorrection-Owner: claude\n'));
+    assert.equal(none.workItem.state, 'none');
+    // #761 Codex 4235631750 — whether a citation is mandatory is the owner's open decision (#482 6081490888,
+    // kept separate in 6091212460): no trailer cites nothing and fails nothing until the owner decides
+    assert.notEqual(process.exitCode, 1, 'no trailer cites nothing and fails nothing');
+    const policy = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
+    assert.match(policy, /citing stays optional/u, 'POLICY must not state a mandatory citation the owner has not decided');
+
+    // #761 Codex 4235659448 — a transient read here only warns: the TRUSTED controller re-reads the same head and
+    // holds it retryably (never passes it, #761 Codex 4235631752), without drafting it as an owed correction
+    process.exitCode = previousExitCode;
+    const unread = await runScope(options(null));
+    assert.equal(unread.workItem.state, 'unreadable');
+    assert.notEqual(process.exitCode, 1, 'an unread message warns; the controller holds the head retryably');
+    // and so does a message git cannot parse
+    process.exitCode = previousExitCode;
+    assert.equal(parseWorkItemTrailer('fix\n\nWork-Item: #750\n', { parse: () => null }).state, 'unreadable');
+  } finally {
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
 });

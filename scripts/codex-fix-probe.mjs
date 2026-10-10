@@ -3,7 +3,8 @@ import { appendFileSync, readFileSync } from 'node:fs';
 
 import { GitHubClient } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { asciiTrim, correctionOwnerDeclaration, gitParsedTrailers } from './correction-owner.mjs';
+import { correctionOwnerDeclaration } from './correction-owner.mjs';
+import { asciiTrim, gitParsedTrailers } from './git-trailers.mjs';
 import { CODEX_LOGIN, LINEAGE_BASE_REF } from './review-policy.mjs';
 import { readZipEntry } from './zip-entry.mjs';
 

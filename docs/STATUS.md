@@ -16,26 +16,27 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: maint-m3a-trivial-classification
-reviewed_merge: 2d52a39
-open_pr: 760
+work_item: maint-m3b-work-item-trailer
+reviewed_merge: 0ce6a3c
+open_pr: 761
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-09
+updated: 2026-10-10
 ```
 
 ### Current unit
 
-**M3a, `review-size: trivial` as a classification only** (`claude/maint-m3a-trivial-classification`; owner,
-#482 6090833573; coordination 6090908355): the scope assessment reports the declared size class, and a trivial
-unit is decided, CI-gated and Codex-reviewed exactly like a standard one. M3 (#751) is stopped and open at
-`08816b7` (third reviewed head with a P1 in `autonomous-review-gate.mjs`); its successors are additive units on
-immutable evidence: M3a (this), M3b (a `Work-Item:` head-commit trailer and its syntax check), and M3c (trusted
-verification, whose design must hold the safeguard through queued merge completion before any implementation).
-#751's unresolved findings (4232759666, 4232759655 / #759, 4232521964) are carried to M3b/M3c. #744 and #742 stay
-stopped.
+**M3b, the immutable `Work-Item:` head-commit trailer and its syntax check** (`claude/maint-m3b-work-item-trailer`;
+owner, #482 6090833573 / 6091212460): a unit cites its work item as one `Work-Item: #N` trailer on its exact head
+commit, parsed by git's trailer parser (no Markdown), fail-closed, and reads no issue. `review-scope` checks the
+syntax, and (owner option A, #482 6091714064) the trusted `enforceReviewScope` re-checks it on the exact head: a
+malformed trailer is a drafted `scope: Work-Item trailer:` refusal needing a new head, and an unreadable one is a
+retryable same-SHA hold. Only the cited issue's existence is left to M3c (trusted approval-time verification under
+the historical-validity decision 6091212460), which needs a recorded bounded proposal before any implementation. M3 (#751) is stopped and open at
+`08816b7`; this unit carries finding 4232759655 (#759), and M3c carries 4232759666 and 4232521964. #744 and #742
+stay stopped.
 
-The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
+M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
 (#748).
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign

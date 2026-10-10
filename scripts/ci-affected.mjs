@@ -34,7 +34,7 @@ const RULES = [
   // apps/ and packages/, so a new consumer cannot silently fall through to automation-only.
   { pattern: /^scripts\/build-info\.(?:mjs|d\.mts)$/u, products: ['web', 'e2e', 'api', 'api-e2e'], proofs: false },
   {
-    pattern: /^scripts\/(?:autonomous-drain-clearance|autonomous-status-state|review-efficiency|review-policy|lineage-policy|correction-owner|zip-entry)\.mjs$/u,
+    pattern: /^scripts\/(?:autonomous-drain-clearance|autonomous-status-state|review-efficiency|review-policy|lineage-policy|correction-owner|git-trailers|zip-entry)\.mjs$/u,
     products: ['api'],
     proofs: false,
   },

@@ -7,6 +7,7 @@ import * as reviewGate from './autonomous-review-gate.mjs';
 import { buildZip } from './zip-test-fixture.mjs';
 import {
   OWNERSHIP_READ_RETRY,
+  WORK_ITEM_TRAILER_SCOPE,
   OWNERSHIP_CANDIDATE_HELD,
   CI_SCOPE_ADMITTED,
   PRODUCT_CHECKS,
@@ -2316,6 +2317,14 @@ test('re-review is suppressed on an immutable ownership hold but reruns for a bo
     false,
   );
   // A retryable unreadable failure and a plain non-ownership failure are not immutable ownership holds.
+  // #761 Codex 4235923859: a malformed Work-Item trailer is in the head commit, so it is immutable too, and an
+  // older retryable status beneath it is not recovered
+  const workItem = `scope: ${WORK_ITEM_TRAILER_SCOPE} the Work-Item trailer value "x" must be exactly \`#<issue number>\``;
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review(workItem)), true);
+  assert.equal(reviewGate.recoverableTerminalReviewStatus([
+    { context: 'codex-current-head', state: 'failure', description: workItem },
+    { context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY },
+  ]), null);
   assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review(OWNERSHIP_READ_RETRY)), false);
   assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review('review: 2 findings')), false);
   assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview([{ context: 'codex-current-head', state: 'success' }]), false);
@@ -3524,12 +3533,15 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
   // 5. The directive standing on the head: not a clearance; the base is not read, and nothing is refused.
   const standing = await scenario({ files: [STATUS_CHANGE], headTree: { 'docs/STATUS.md': statusDoc('phase-6-4d-previous-release-drained') } });
   assert.equal(standing.result.allowed, true, standing.result.detail);
-  assert.deepEqual(standing.reads, [['docs/STATUS.md', head]]);
+  // M3b (#761): the trusted scope check also reads the exact head commit once, for its `Work-Item` trailer
+  const drainReads = (reads) => reads.filter(([path]) => path !== '<commit>');
+  assert.deepEqual(drainReads(standing.reads), [['docs/STATUS.md', head]]);
+  assert.deepEqual(standing.reads.filter(([path]) => path === '<commit>'), [['<commit>', head]]);
 
   // 6. A PR that does not touch STATUS reads nothing.
   const untouched = await scenario({ files: [{ filename: 'apps/api/src/thing.ts', status: 'modified' }], headTree: {} });
   assert.equal(untouched.result.allowed, true, untouched.result.detail);
-  assert.deepEqual(untouched.reads, []);
+  assert.deepEqual(drainReads(untouched.reads), []);
 
   // The real client reads one exact ref through the contents API with the raw media type, and a 404 is null.
   const requests = [];
@@ -3548,4 +3560,71 @@ test('finding 4163577352 on #686: the controller re-runs the drain clearance fro
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test('M3b / #761 Codex 4235631755, 4235659448, 4235659451: the trusted scope check re-parses the exact head\'s Work-Item trailer', async () => {
+  const head = '8'.repeat(40);
+  const pull = () => ({
+    number: 258, additions: 1, deletions: 0, changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
+    state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/258',
+    head: { sha: head, ref: 'claude/m3b', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const harness = (message) => {
+    const log = { statuses: [], drafts: [], stickies: [], reads: [] };
+    const client = {
+      async pause() {},
+      async pullRequest() { return pull(); },
+      async setDraft(pr, draft) { log.drafts.push(draft); return { ...pr, draft }; },
+      async setStatus(sha, state, description) { log.statuses.push({ sha, state, description }); },
+      async updateStickyComment(number, body) { log.stickies.push(body); },
+      async commit(sha) {
+        log.reads.push(sha);
+        if (message === undefined) throw new Error('GitHub 502');
+        return { commit: { message } };
+      },
+    };
+    return { client, log };
+  };
+
+  // a cited head and a head with no trailer are admitted; the exact head commit is what is read
+  for (const message of ['fix\n\nWork-Item: #750\nCorrection-Owner: claude\n', 'fix\n\nCorrection-Owner: claude\n']) {
+    const ok = harness(message);
+    assert.equal((await reviewGate.enforceReviewScope(ok.client, pull(), head)).allowed, true, message);
+    assert.ok(ok.log.reads.length > 0 && ok.log.reads.every((sha) => sha === head));
+    assert.deepEqual(ok.log.statuses, []);
+  }
+
+  // 4235631755 — a malformed trailer is refused by trusted code (draft + `scope:` failure), whatever the PR-side
+  // job reported; 4235659451 — its notice asks for a corrected head commit, never a body edit
+  const bad = harness('fix\n\nWork-Item: #750, #9999\nCorrection-Owner: claude\n');
+  const refused = await reviewGate.enforceReviewScope(bad.client, pull(), head);
+  assert.equal(refused.allowed, false);
+  assert.notEqual(refused.retryable, true);
+  assert.deepEqual(bad.log.drafts, [true]);
+  assert.match(bad.log.statuses.at(-1).description, new RegExp(`^scope: ${WORK_ITEM_TRAILER_SCOPE}`, 'u'));
+  assert.match(bad.log.stickies.at(-1), /editing the PR body cannot clear it: push one new head/u);
+  assert.doesNotMatch(bad.log.stickies.at(-1), /most scope verdicts clear with no new head/u);
+  const routed = correctionRouting({ declaration: parseCorrectionOwner('<!-- correction-owner: claude -->'), head, detail: refused.detail, reason: 'scope' });
+  assert.match(routed.instruction, /push one new head whose commit message ends with a single valid `Work-Item: #N` trailer/u);
+  // 4235863448 — a `codex` CANDIDATE body takes the undeclared route; it gets the same head remedy, never a
+  // marker or Correction-Owner repair that cannot clear an immutable trailer
+  const candidate = correctionRouting({
+    declaration: parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'codex/x' }),
+    head, detail: refused.detail, reason: 'scope',
+  });
+  assert.equal(candidate.declarationState, 'candidate');
+  assert.match(candidate.instruction, /push one new head whose commit message ends with a single valid `Work-Item: #N` trailer/u);
+  assert.match(candidate.instruction, /Keep the "codex" candidate marker/u);
+
+  // 4235659448 — an unreadable head commit is the existing retryable same-SHA hold: no draft, no `scope:` write,
+  // and never admitted
+  const unread = harness(undefined);
+  const held = await reviewGate.enforceReviewScope(unread.client, pull(), head);
+  assert.equal(held.allowed, false);
+  assert.equal(held.retryable, true);
+  assert.deepEqual(unread.log.drafts, []);
+  assert.ok(!unread.log.statuses.some((write) => write.description?.startsWith('scope:')));
+  assert.equal(correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY }), null);
 });
