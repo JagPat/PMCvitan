@@ -96,6 +96,17 @@ export function selectCountersignObligations(s: AppState): Decision[] {
   return [];
 }
 
+/** Top 10 #2 (#771) — the decisions AWAITING ACTION for this viewer: the web mirror of the server's
+ *  `DecisionsQuery.countPending`, the count Portfolio cards and the shell serve. The PMC manages every
+ *  published pending decision plus every STRANDED countersign (`isStrandedCountersign`: no active architect
+ *  can give it); anyone else counts the pending decisions they decide, and the architect also every
+ *  decision awaiting their countersign. A reopened (`change`) decision is not counted, as on the server. One
+ *  definition for the Dashboard tile and the Portfolio card, so the two reconcile. */
+export function selectDecisionsAwaitingAction(s: AppState): Decision[] {
+  if (s.role === 'pmc') return [...selectPending(s), ...selectAwaitingCountersign(s).filter(isStrandedCountersign)];
+  return [...selectDeciderPending(s), ...(s.role === 'architect' ? selectAwaitingCountersign(s) : [])];
+}
+
 /** Decision log is permission-filtered: a pending row is visible only to pmc and THE DECIDER
  *  (Phase 6 task 4b §A.3 — the shared `viewerIsDecider` predicate, so a named engineer-decider
  *  sees their obligation in the log while a same-role non-decider and the non-deciding client
@@ -449,12 +460,12 @@ export function selectActionItems(s: AppState): ActionItem[] {
   // actionable pending/change states (#677 review, finding 4145060024). Empty while the doors stand.
   const awaiting = selectAwaitingCountersign(s);
   if (s.role === 'architect' && awaiting.length) {
-    items.push({ key: 'arch-countersign', title: `${awaiting.length} decision${plural(awaiting.length)} awaiting your countersign`, detail: names(awaiting), screen: 'decision-log', cta: 'Review & countersign', tone: 'amber' });
+    items.push({ key: 'arch-countersign', title: `${awaiting.length} decision${plural(awaiting.length)} awaiting your countersign`, detail: names(awaiting), screen: 'decision-log', cta: 'Review & countersign', tone: 'amber', count: awaiting.length });
   }
   if (s.role === 'pmc' && awaiting.length) {
     const stranded = awaiting.filter(isStrandedCountersign);
     const held = awaiting.filter((d) => !isStrandedCountersign(d));
-    if (stranded.length) items.push({ key: 'pmc-stranded', title: `${stranded.length} decision${plural(stranded.length)} stranded — no architect to countersign`, detail: names(stranded), screen: 'decision-log', cta: 'Resolve', tone: 'red' });
+    if (stranded.length) items.push({ key: 'pmc-stranded', title: `${stranded.length} decision${plural(stranded.length)} stranded — no architect to countersign`, detail: names(stranded), screen: 'decision-log', cta: 'Resolve', tone: 'red', count: stranded.length });
     if (held.length) items.push({ key: 'pmc-countersign', title: `${held.length} decision${plural(held.length)} awaiting the architect’s countersign`, detail: names(held), screen: 'decision-log', cta: 'View', tone: 'ink' });
   }
 
@@ -473,14 +484,16 @@ export function selectActionItems(s: AppState): ActionItem[] {
     if (drafts.length) items.push({ key: 'pmc-drafts', title: `${drafts.length} draft${plural(drafts.length)} in progress`, detail: names(drafts), screen: 'drafts', cta: 'Review & publish', tone: 'ink' });
     // only the UNDECIDED reviews: an approved or rejected one stays in `s.reviews` with `decided` set
     const toReview = s.reviews.filter((r) => !r.decided);
-    if (toReview.length) items.push({ key: 'pmc-reviews', title: `${toReview.length} inspection${plural(toReview.length)} awaiting your review`, detail: names(toReview), screen: 'inspect-review', cta: 'Review', tone: 'amber' });
+    // Top 10 #2 (#771) — each review is the PMC's own decision, so the item counts every one of them: the
+    // For You badge then agrees with the Inspection Review badge and the Dashboard tile
+    if (toReview.length) items.push({ key: 'pmc-reviews', title: `${toReview.length} inspection${plural(toReview.length)} awaiting your review`, detail: names(toReview), screen: 'inspect-review', cta: 'Review', tone: 'amber', count: toReview.length });
     // round-3 Codex F1 — the PMC MANAGEMENT summaries cover only decisions held by OTHER
     // deciders: a PMC-held row is the PMC's own approval task (the decider items above), not
     // something to describe as awaiting someone else. When every other-held decision is
     // client-held (the pre-4b world), the texts are byte-identical to what they always said.
     const otherChanges = changes.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
     const otherPending = pending.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
-    if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), screen: 'decision-log', cta: 'Open', tone: 'red' });
+    if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), screen: 'decision-log', cta: 'Open', tone: 'red', count: otherChanges.length });
     if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red' });
     if (otherPending.length) {
       const allClientHeld = otherPending.every((d) => (d.deciderKind ?? 'client') === 'client');

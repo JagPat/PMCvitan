@@ -1,15 +1,27 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectPending, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
+import { selectDecisionsAwaitingAction, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
+import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
 import { swatch as swatchGradient } from '@vitan/shared';
 import styles from './responsive.module.css';
 
+/** Top 10 #2 (#771) — a count whose slice has not settled is shown as unknown, never as 0. */
+const UNKNOWN = '—';
+const unknownSub = (failed: boolean): string => (failed ? 'Could not load — try again' : 'Loading…');
+
 export function DashboardScreen() {
-  const pending = useStore(useShallow(selectPending));
+  // Top 10 #2 (#771) — the decisions awaiting action, the server's `countPending` definition (the Portfolio
+  // card's number for this project), never a second definition of "pending"
+  const pending = useStore(useShallow(selectDecisionsAwaitingAction));
+  // …and never a confident 0 from a slice that has not landed: a live tile reads "—" until its slice settles
+  const decisionsKnown = useStore((s) => decisionsSliceSettled(s) && (!API_BASE || s.projectLoadState === 'ready'));
+  const inspectionsKnown = useStore((s) => inspectionsSliceSettled(s) && (!API_BASE || s.projectLoadState === 'ready'));
+  const decisionsFailed = useStore((s) => s.decisionsLoad === 'error');
+  const inspectionsFailed = useStore((s) => s.inspectionsLoad === 'error');
   const reviewPending = useStore(selectReviewPending);
   const activeReview = useStore(selectActiveReview);
   const failedCount = useStore(selectFailedCount);
@@ -49,11 +61,17 @@ export function DashboardScreen() {
 
   // `onClick` stays optional: a tile with nowhere to go renders as a plain box (B5)
   const tiles: Array<{ key: string; label: string; value: number | string; accent: string; sub: string; onClick?: () => void }> = [
-    { key: 'pending', label: 'DECISIONS PENDING WITH CLIENT', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setScreen('decision-log') },
-    { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => setScreen('inspect-review') },
+    decisionsKnown
+      ? { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setScreen('decision-log') }
+      : { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed), onClick: () => setScreen('decision-log') },
+    inspectionsKnown
+      ? { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => setScreen('inspect-review') }
+      : { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: UNKNOWN, accent: 'var(--accent)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
     // API mode never claims WHICH items failed beyond the recorded count — the seeded
     // "Drain slope · Terrace" copy is demo-only prototype fidelity
-    { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `${failedCount} to re-inspect` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') },
+    inspectionsKnown
+      ? { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `${failedCount} to re-inspect` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') }
+      : { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: UNKNOWN, accent: 'var(--red-solid)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
     // B7 (F-13): COMPUTED from the placed photos in every mode — the demo's fixed "24 this week ·
     // 6 zones" contradicted the strip above. The strip shows the daily log's reported count; this,
     // every photo on record.

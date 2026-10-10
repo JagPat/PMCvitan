@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: top10-1-demo-controls
-reviewed_merge: 14ce2bd
-open_pr: 770
+work_item: top10-2a-counts
+reviewed_merge: 9b1d119
+open_pr: 772
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-10
@@ -26,13 +26,14 @@ updated: 2026-10-10
 
 ### Current unit
 
-**Top 10 #1, demo controls out of production** (#769, `claude/top10-1-demo-controls`; queue item 2, first
-bullet, with live-bug 6): an API-connected build no longer shows Generate Weekly Report, the simulated connectivity
-row ("Simulate offline"; kept on the Vite dev server, where the API acceptance suite drives the outbox replay
-through it), the fake QR check-in ("Simulate a scan"), or the access gate's trade in-charge and worker paths (the
-hard-coded mistri home and the jobcard with its dead Listen/Photo/Problem buttons). The API-less demo is unchanged.
+**Top 10 #2a, one source of truth for counts** (#771, `claude/top10-2a-counts`; queue item 2, second bullet,
+with live-bug 3): the Dashboard's decisions tile is the server's `countPending` (pending plus stranded
+countersigns, the Portfolio card's number), the For You badge counts per record the reviews, change requests,
+stranded decisions and countersigns the viewer acts on (so it reconciles with the nav badges), and a live tile
+reads "—" until its slice has settled. 2b follows: serve re-inspection tasks and drive the failed tile from
+them (today structurally 0 after a rejection). The bell's unread count comes with Top 10 #4.
 
-M3c C1/C2 merged at `14ce2bd` (#768, reviewed head `3f84b12`); the owner switches the required context to
+Top 10 #1 merged at `9b1d119` (#770, reviewed head `db39901`; #769 open for live validation). M3c C1/C2 merged at `14ce2bd` (#768, reviewed head `3f84b12`); the owner switches the required context to
 `codex-current-head/wi` once a head has reported it (steps on #482). #765 merged at `1814160` (#766, reviewed head `80a1c50`). M3c §A merged at `191f8a0` (#764, reviewed head `fb7d3ed`). M3b merged at `ad742de` (#761, reviewed head `cbbb533`). M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
 (#748).
 
