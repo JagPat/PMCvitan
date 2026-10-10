@@ -10,6 +10,7 @@ import {
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
   CI_SCOPE_ADMITTED,
+  WORK_ITEM_TRAILER_SCOPE,
   ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 export {
@@ -608,6 +609,12 @@ function declaredInstruction(owner, { reason, detail }) {
       ? ' Here that means: split the review unit, or complete every justified-large '
         + 'invariant row with concrete risk and verification evidence.'
       : '';
+    // A malformed `Work-Item` trailer is in the immutable head commit: no body edit clears it (#761 Codex 4235659451).
+    if (String(detail ?? '').trimStart().startsWith(WORK_ITEM_TRAILER_SCOPE)) {
+      return `${who} owns this correction: resolve the scope verdict this head is failing on — ${verdict}. `
+        + 'The trailer is part of the head commit, so editing the PR body cannot clear it: push one new head whose '
+        + 'commit message ends with a single valid `Work-Item: #N` trailer, or with none.' + start;
+    }
     return `${who} owns this correction: resolve the scope verdict this head is failing on — `
       + `${verdict}.${size} Editing the PR body reruns the scope gate, so most scope verdicts `
       + `clear with no new head.${start}`;

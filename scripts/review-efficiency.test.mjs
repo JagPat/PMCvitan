@@ -1908,11 +1908,12 @@ test('M3b — the required scope CLI fails a malformed head-commit Work-Item tra
     const policy = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
     assert.match(policy, /citing stays optional/u, 'POLICY must not state a mandatory citation the owner has not decided');
 
-    // #761 Codex 4235631752 — an uninspected head is never passed as clean: an unread message fails the check
+    // #761 Codex 4235659448 — a transient read here only warns: the TRUSTED controller re-reads the same head and
+    // holds it retryably (never passes it, #761 Codex 4235631752), without drafting it as an owed correction
     process.exitCode = previousExitCode;
     const unread = await runScope(options(null));
     assert.equal(unread.workItem.state, 'unreadable');
-    assert.equal(process.exitCode, 1, 'an unread message fails the required check (re-run on the same head)');
+    assert.notEqual(process.exitCode, 1, 'an unread message warns; the controller holds the head retryably');
     // and so does a message git cannot parse
     process.exitCode = previousExitCode;
     assert.equal(parseWorkItemTrailer('fix\n\nWork-Item: #750\n', { parse: () => null }).state, 'unreadable');
