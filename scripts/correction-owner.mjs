@@ -502,6 +502,12 @@ function ownerLabel(owner) {
 
 // What the loop asks the declared owner to do, per reason. The OWNER decision is
 // made once, above; these only phrase it.
+// A malformed `Work-Item` trailer lives in the immutable head commit, so only a new head clears it — never a body
+// edit or a marker change (#761 Codex 4235659451, and 4235863448 for the candidate route).
+const WORK_ITEM_HEAD_REMEDY = 'The trailer is part of the head commit, so editing the PR body cannot clear it: push '
+  + 'one new head whose commit message ends with a single valid `Work-Item: #N` trailer, or with none.';
+const isWorkItemTrailerDetail = (detail) => String(detail ?? '').trimStart().startsWith(WORK_ITEM_TRAILER_SCOPE);
+
 function declaredInstruction(owner, { reason, detail }) {
   const who = ownerLabel(owner);
   // An owner GitHub cannot wake gets the same instruction plus the truth about
@@ -539,10 +545,9 @@ function declaredInstruction(owner, { reason, detail }) {
         + 'invariant row with concrete risk and verification evidence.'
       : '';
     // A malformed `Work-Item` trailer is in the immutable head commit: no body edit clears it (#761 Codex 4235659451).
-    if (String(detail ?? '').trimStart().startsWith(WORK_ITEM_TRAILER_SCOPE)) {
+    if (isWorkItemTrailerDetail(detail)) {
       return `${who} owns this correction: resolve the scope verdict this head is failing on — ${verdict}. `
-        + 'The trailer is part of the head commit, so editing the PR body cannot clear it: push one new head whose '
-        + 'commit message ends with a single valid `Work-Item: #N` trailer, or with none.' + start;
+        + `${WORK_ITEM_HEAD_REMEDY}${start}`;
     }
     return `${who} owns this correction: resolve the scope verdict this head is failing on — `
       + `${verdict}.${size} Editing the PR body reruns the scope gate, so most scope verdicts `
@@ -557,6 +562,11 @@ function declaredInstruction(owner, { reason, detail }) {
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
 function undeclaredInstruction(declaration, { reason = null, detail = null } = {}) {
+  if (declaration.state === 'candidate' && reason === 'scope' && isWorkItemTrailerDetail(detail)) {
+    return `Scope refused this head: ${detail}. ${WORK_ITEM_HEAD_REMEDY} Keep the "${declaration.owner}" `
+      + `candidate marker, and keep \`Correction-Owner: ${declaration.owner}\` on that new head. This loop routes `
+      + 'no agent and cannot observe whether one is already running.';
+  }
   // A CANDIDATE body is admitted only over a head whose own trailer declares it, and the PR must meet every
   // other scope rule. When scope refused this head, the body alone proves nothing, so the notice names the
   // refusal and its remedy instead of calling the candidate admitted (Codex finding 4101018333 on #630).

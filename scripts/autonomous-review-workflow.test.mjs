@@ -3600,6 +3600,15 @@ test('M3b / #761 Codex 4235631755, 4235659448, 4235659451: the trusted scope che
   assert.doesNotMatch(bad.log.stickies.at(-1), /most scope verdicts clear with no new head/u);
   const routed = correctionRouting({ declaration: parseCorrectionOwner('<!-- correction-owner: claude -->'), head, detail: refused.detail, reason: 'scope' });
   assert.match(routed.instruction, /push one new head whose commit message ends with a single valid `Work-Item: #N` trailer/u);
+  // 4235863448 — a `codex` CANDIDATE body takes the undeclared route; it gets the same head remedy, never a
+  // marker or Correction-Owner repair that cannot clear an immutable trailer
+  const candidate = correctionRouting({
+    declaration: parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'codex/x' }),
+    head, detail: refused.detail, reason: 'scope',
+  });
+  assert.equal(candidate.declarationState, 'candidate');
+  assert.match(candidate.instruction, /push one new head whose commit message ends with a single valid `Work-Item: #N` trailer/u);
+  assert.match(candidate.instruction, /Keep the "codex" candidate marker/u);
 
   // 4235659448 — an unreadable head commit is the existing retryable same-SHA hold: no draft, no `scope:` write,
   // and never admitted

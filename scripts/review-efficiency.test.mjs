@@ -1837,6 +1837,11 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     ['a body line beside a valid trailer', `fix\n\nWork-Item: #9999 was the old one\n\nWork-Item: #750\n${owner}\n`],
     ['a spelling git does not parse as a trailer', `fix\n\nWork Item: #750\n${owner}\n`],
     ['an underscore spelling', `fix\n\nWORK_ITEM: #750\n${owner}\n`],
+    // #761 Codex 4235863454: repeated or other separators between the words are still an attempted citation
+    ['a doubled space', `fix\n\nWork  Item: #750\n${owner}\n`],
+    ['a tab', `fix\n\nWork\tItem: #750\n${owner}\n`],
+    ['a dotted spelling', `fix\n\nWork.Item: #750\n${owner}\n`],
+    ['mixed separators', `fix\n\nwork -_ item: #750\n${owner}\n`],
   ]) {
     const result = parse(message);
     assert.equal(result.state, 'malformed', label);
