@@ -300,19 +300,48 @@ describe('Top 10 #3c — the routed activity, through navigation and edits (#777
     useStore.setState({ routeItem: a.id });
     const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
     const r = render(<ScheduleScreen />);
-    const del = () => {
+    const del = async () => {
       fireEvent.click(r.getByTestId(`edit-${a.id}`));
       fireEvent.click(r.getByTestId('activity-delete'));
-      fireEvent.click(r.getByText('Delete activity'));
+      await act(async () => { fireEvent.click(r.getByText('Delete activity')); });
     };
-    del(); // no server: refused, the row stays
+    await del(); // no server: refused, the row stays
     expect(useStore.getState().routeItem).toBe(a.id);
     expect(r.queryByText('Show the whole schedule')).toBeNull();
 
-    del();
+    useStore.setState({ deleteActivity: vi.fn(async () => true) }); // the server accepts it
+    await del();
     act(() => useStore.setState({ activities: rest })); // the removal lands
     expect(useStore.getState().routeItem).toBeNull();
     expect(r.queryByText('Show the whole schedule')).toBeNull(); // never "not found" for one's own deletion
+  });
+
+  it('#780 — after a REFUSED delete, someone else removing the row reads as not found, not as one\'s own release', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a, ...rest] = useStore.getState().activities;
+    useStore.setState({ routeItem: a.id, deleteActivity: vi.fn(async () => false) });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    fireEvent.click(r.getByTestId(`edit-${a.id}`));
+    fireEvent.click(r.getByTestId('activity-delete'));
+    await act(async () => { fireEvent.click(r.getByText('Delete activity')); });
+    act(() => useStore.setState({ activities: rest })); // a later, unrelated removal
+    expect(useStore.getState().routeItem).toBe(a.id);
+    expect(r.getByText('Show the whole schedule')).toBeInTheDocument();
+  });
+
+  it('#780 — a Site Map hand-off made while activities are unsettled still moves focus once they settle', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a] = useStore.getState().activities;
+    useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: true } });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    act(() => useStore.getState().openActivity(a.id));
+    expect(r.getByTestId('activities-loading')).toBeInTheDocument();
+    expect(useStore.getState().activityFocus).toBe(a.id); // the intent is kept
+    act(() => useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: false } }));
+    expect(document.activeElement?.id).toBe(`sched-${a.id}`);
+    expect(useStore.getState().activityFocus).toBeNull();
   });
 
   it('4239476431 — the link reveals its row once; a schedule refresh does not pull the viewer back', async () => {

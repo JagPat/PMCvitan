@@ -395,6 +395,7 @@ export function ScheduleScreen() {
   // the cards count the rows shown: with a place filter on, that place and everything inside it (Codex 4180886620)
   const sch = useMemo(() => scheduleStatusCounts(shown), [shown]);
   const filterName = nodes.find((n) => n.id === placeFilter)?.name ?? '';
+  const activitiesSettled = useStore(activitiesSettledForLinks); // the For You link rule: never "not found" mid-reconcile
   useEffect(() => {
     if (activityFocus === null) return;
     const row = document.getElementById(`sched-${activityFocus}`);
@@ -402,20 +403,22 @@ export function ScheduleScreen() {
     // the intent until it lands. Once the read has settled (or failed, which shows its own boundary)
     // an absent row is not coming, so the intent is dropped.
     if (!row && reading) return;
+    // #780 — nor while the slice is unsettled: the routed boundary has taken the rows out of the DOM, and the
+    // hand-off (keyboard focus included) completes once reconciliation lands
+    if (!row && !activitiesSettled) return;
     if (row) {
       row.scrollIntoView?.({ block: 'center' });
       row.focus({ preventScroll: true });
       setHighlight(activityFocus);
     }
     clearActivityFocus();
-  }, [activityFocus, clearActivityFocus, activities, reading]);
+  }, [activityFocus, clearActivityFocus, activities, reading, activitiesSettled]);
   // Top 10 #3c (#774) — `/schedule/<activityId>`: a link (a card, a notice, a shared URL, a reload) names ONE
   // activity. It is brought into view like a Site Map hand-off; one this viewer's settled schedule does not
   // hold says so, rather than leaving them on the whole schedule wondering which row was meant.
   const routeItem = useStore((s) => s.routeItem);
   const setRouteItem = useStore((s) => s.setRouteItem);
   const projectLoadState = useStore((s) => s.projectLoadState);
-  const activitiesSettled = useStore(activitiesSettledForLinks); // the For You link rule: never "not found" mid-reconcile
   // #777 Codex 4239476418 — RouteBridge adopts the URL's item in an effect: until the store names what the URL
   // names (a cold load, Back/Forward), or has cleared it after Back to the bare schedule, nothing actionable is
   // shown under that URL
@@ -433,8 +436,14 @@ export function ScheduleScreen() {
   useEffect(() => {
     if (deletedId !== null && routeItem !== deletedId) setDeletedId(null);
   }, [routeItem, deletedId]);
-  const onDeleted = (id: string) => {
-    if (id === routeItem) setDeletedId(id);
+  // #780 — the release intent stands only while the delete can still be accepted: a refusal (terminal or
+  // unreachable) withdraws it, so a later removal by someone else reads as "not found", never as this viewer's own
+  const onDeleted = (id: string, outcome: Promise<boolean>) => {
+    if (id !== routeItem) return;
+    setDeletedId(id);
+    void Promise.resolve(outcome).then((accepted) => {
+      if (!accepted) setDeletedId((cur) => (cur === id ? null : cur));
+    });
   };
   // #777 Codex 4239476426 — a routed activity this schedule does not hold, while the slice is unsettled (a
   // reconcile owed, a read loading or failed), shows that boundary, never the whole schedule under its URL
@@ -681,7 +690,7 @@ const GATE_VALUES: Gate[] = ['na', 'wait', 'ok', 'fail'];
 
 /** PMC plans a new activity or edits an existing one (name, zone, planned window in
  *  day-offsets, phase, linked decision, and the material/team/inspection gates). */
-function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activity | null; onClose: () => void; onDeleted?: (id: string) => void }) {
+function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activity | null; onClose: () => void; onDeleted?: (id: string, outcome: Promise<boolean>) => void }) {
   const createActivity = useStore((s) => s.createActivity);
   const updateActivity = useStore((s) => s.updateActivity);
   const deleteActivity = useStore((s) => s.deleteActivity);
@@ -730,7 +739,7 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
       <ConfirmDialog
         title={`Delete ${activity.id} · ${activity.name}?`}
         confirmLabel="Delete activity"
-        onConfirm={() => { onDeleted?.(activity.id); deleteActivity(activity.id); onClose(); }}
+        onConfirm={() => { const outcome = deleteActivity(activity.id); onDeleted?.(activity.id, outcome); onClose(); }}
         onCancel={() => setConfirmingDelete(false)}
         testId="confirm-activity-delete"
       >
