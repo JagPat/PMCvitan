@@ -14,7 +14,7 @@
 // any value other than `#<digits>` is `malformed` — never silently ignored, so an unrecognised form can neither
 // carry a citation past a later verification nor read as "no citation".
 
-import { asciiTrim, gitParsedTrailers } from './correction-owner.mjs';
+import { asciiTrim, gitParsedTrailers } from './git-trailers.mjs';
 
 const FIELD_KEY = 'work-item';
 // Any line that names the field, however it is spelled or indented: `Work-Item:`, `work item:`, `WORK_ITEM :`.

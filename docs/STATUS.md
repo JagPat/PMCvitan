@@ -28,9 +28,11 @@ updated: 2026-10-10
 
 **M3b, the immutable `Work-Item:` head-commit trailer and its syntax check** (`claude/maint-m3b-work-item-trailer`;
 owner, #482 6090833573 / 6091212460): a unit cites its work item as one `Work-Item: #N` trailer on its exact head
-commit, parsed by git's trailer parser (no Markdown), fail-closed; `review-scope` checks the syntax only and reads
-no issue. No gate effect: M3c (trusted approval-time verification under the historical-validity decision
-6091212460) needs a recorded bounded proposal before any implementation. M3 (#751) is stopped and open at
+commit, parsed by git's trailer parser (no Markdown), fail-closed, and reads no issue. `review-scope` checks the
+syntax, and (owner option A, #482 6091714064) the trusted `enforceReviewScope` re-checks it on the exact head: a
+malformed trailer is a drafted `scope: Work-Item trailer:` refusal needing a new head, and an unreadable one is a
+retryable same-SHA hold. Only the cited issue's existence is left to M3c (trusted approval-time verification under
+the historical-validity decision 6091212460), which needs a recorded bounded proposal before any implementation. M3 (#751) is stopped and open at
 `08816b7`; this unit carries finding 4232759655 (#759), and M3c carries 4232759666 and 4232521964. #744 and #742
 stay stopped.
 
