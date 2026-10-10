@@ -173,3 +173,22 @@ describe('#775 Codex findings', () => {
   });
 });
 
+describe('#775 Codex 4239201827 — inspection links only from a settled slice', () => {
+  it('a retained review is no link while the inspection read failed or a reconcile is owed', async () => {
+    const { useStore } = await demo({ role: 'pmc' });
+    const sel = await import('@/store/selectors');
+    const [review] = useStore.getState().reviews;
+    useStore.setState({ reviews: [{ ...review, id: 'R-1', decided: false }], openChecklists: [] });
+    expect(sel.inspectionRecordLink(useStore.getState(), 'R-1')).not.toBeNull();
+    useStore.setState({ inspectionsLoad: 'error' });
+    expect(sel.inspectionRecordLink(useStore.getState(), 'R-1')).toBeNull();
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-reviews')?.item).toBeUndefined();
+    useStore.setState({ inspectionsLoad: 'idle', commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, inspections: true } });
+    expect(sel.inspectionRecordLink(useStore.getState(), 'R-1')).toBeNull();
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    fireEvent.click(r.getByTestId('tile-review'));
+    expect(where(useStore)).toEqual({ screen: 'inspect-review', item: null });
+  });
+});
+

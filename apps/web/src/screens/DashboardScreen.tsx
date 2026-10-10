@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
+import { inspectionsSettledForLinks, selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
 import { Eyebrow, Button, ProgressBar } from '@/components';
@@ -38,6 +38,7 @@ export function DashboardScreen() {
   const openItem = useStore((s) => s.openItem);
   // Top 10 #3 (#774) — the one review a single-review tile names opens AT that review, not the queue
   const onlyReviewId = useStore((s) => {
+    if (!inspectionsSettledForLinks(s)) return null; // #775 Codex 4239201827 — never from a stale slice
     const open = s.reviews.filter((r) => !r.decided);
     return open.length === 1 ? open[0].id : null;
   });

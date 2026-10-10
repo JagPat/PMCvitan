@@ -11,8 +11,8 @@
 import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
-import { decisionsSliceSettled } from '@/lib/notifications';
-import { activitiesReadMode } from '@/data/apiGateway';
+import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
+import { activitiesReadMode, inspectionsReadMode } from '@/data/apiGateway';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
 export const WIN = 75;
@@ -445,10 +445,21 @@ export function decisionRecordLink(s: AppState, d: Decision): { screen: ScreenKe
   return { screen: awaits ? 'client-decisions' : 'decision-log', item: d.id };
 }
 
+/** #775 Codex 4239201827 — the inspection slice may name a record only once it has landed: the shared settled
+ *  predicate, plus (under module read-ownership) a read that has not yet run or is still in flight. The same
+ *  judgement the bell makes before it routes an inspection notice. */
+export function inspectionsSettledForLinks(s: AppState): boolean {
+  return inspectionsSliceSettled(s)
+    && !(inspectionsReadMode() === 'moduleQuery' && (s.inspectionsLoad === 'idle' || s.inspectionsLoad === 'loading'));
+}
+
 /** Top 10 #3 (#774) — where ONE inspection opens for this viewer, or null when no inspection screen the role
  *  holds resolves it (the bell's rule: the review screen opens a queued review or an outstanding checklist;
  *  the checklist screen opens an outstanding checklist, or the one in the slot while it is unsubmitted). */
 export function inspectionRecordLink(s: AppState, id: string): { screen: ScreenKey; item: string } | null {
+  // #775 Codex 4239201827 — only from a SETTLED slice (the bell's judgement): rows retained by a refresh that
+  // is loading or failed, or whose command reconcile is owed, never become links into live inspection controls
+  if (!inspectionsSettledForLinks(s)) return null;
   if (s.role === 'pmc' && [...s.reviews, ...s.openChecklists].some((i) => i.id === id)) return { screen: 'inspect-review', item: id };
   if (s.role === 'engineer' && [...s.openChecklists, ...(s.checklist && !s.checklist.submitted ? [s.checklist] : [])].some((i) => i.id === id)) {
     return { screen: 'engineer-check', item: id };
@@ -516,7 +527,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
   }
 
   if (s.role === 'engineer') {
-    if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber', item: s.checklist.id });
+    if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber', item: inspectionsSettledForLinks(s) ? s.checklist.id : undefined });
     if (s.dailyLog && !s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', screen: 'daily-log', cta: 'Open daily log', tone: 'ink' });
     if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: only(unacked) });
   }
@@ -532,7 +543,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
     const toReview = s.reviews.filter((r) => !r.decided);
     // Top 10 #2 (#771) — each review is the PMC's own decision, so the item counts every one of them: the
     // For You badge then agrees with the Inspection Review badge and the Dashboard tile
-    if (toReview.length) items.push({ key: 'pmc-reviews', title: `${toReview.length} inspection${plural(toReview.length)} awaiting your review`, detail: names(toReview), screen: 'inspect-review', cta: 'Review', tone: 'amber', count: toReview.length, item: only(toReview) });
+    if (toReview.length) items.push({ key: 'pmc-reviews', title: `${toReview.length} inspection${plural(toReview.length)} awaiting your review`, detail: names(toReview), screen: 'inspect-review', cta: 'Review', tone: 'amber', count: toReview.length, item: inspectionsSettledForLinks(s) ? only(toReview) : undefined });
     // round-3 Codex F1 — the PMC MANAGEMENT summaries cover only decisions held by OTHER
     // deciders: a PMC-held row is the PMC's own approval task (the decider items above), not
     // something to describe as awaiting someone else. When every other-held decision is
