@@ -5718,6 +5718,8 @@ export const useStore = create<Store>()(
     // ---- team access / login ----
     accWho: (who) =>
       set((s) => {
+        // Top 10 #1 (#769): the trade and worker paths are prototype-only; a live build never enters them
+        if (API_BASE && who !== 'team') return;
         s.access.who = who;
         // team → phone+OTP; trade → pick trade first; worker → tap-photo badge
         s.access.step = who === 'worker' ? 'badge' : who === 'trade' ? 'trade' : 'phone';

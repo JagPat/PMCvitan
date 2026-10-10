@@ -150,8 +150,8 @@ describe('the language preference — per person, fail-closed storage', () => {
   });
 });
 
-async function loadShell(overrides: Record<string, unknown> = {}) {
-  vi.stubEnv('VITE_API_URL', 'http://api.test');
+async function loadShell(overrides: Record<string, unknown> = {}, { api = true }: { api?: boolean } = {}) {
+  if (api) vi.stubEnv('VITE_API_URL', 'http://api.test');
   vi.resetModules();
   const { useStore, getInitialState } = await import('@/store/store');
   const scope = await import('@/store/projectScope');
@@ -426,15 +426,16 @@ describe('a guest picking a language on the in-console Team Access screen', () =
 describe('the sign-in gate picker — carried only to the team member who signs in', () => {
   beforeEach(() => localStorage.clear());
 
-  // the gate: no session, LangPreference not mounted; the WHO step's picker notes the choice
-  async function loadGate() {
-    const shell = await loadShell({ role: 'client', sessionUserId: null, lang: 'en' });
+  // the gate: no session, LangPreference not mounted; the WHO step's picker notes the choice. The worker and
+  // trade in-charge paths are prototype-only (Top 10 #1, #769), so their cases run in the API-less demo
+  async function loadGate({ api = true }: { api?: boolean } = {}) {
+    const shell = await loadShell({ role: 'client', sessionUserId: null, lang: 'en' }, { api });
     const { TeamAccessScreen } = await import('@/screens/TeamAccessScreen');
     return { ...shell, TeamAccessScreen };
   }
 
   it('a worker’s pick at the gate is not saved for the next person who signs in', async () => {
-    const { useStore, LangPreference, TeamAccessScreen } = await loadGate();
+    const { useStore, LangPreference, TeamAccessScreen } = await loadGate({ api: false });
     const gate = render(<TeamAccessScreen />);
     fireEvent.click(gate.getByRole('button', { name: 'हिंदी' }));
     // the worker flow: terminal inside the gate, never takes a token
@@ -448,7 +449,7 @@ describe('the sign-in gate picker — carried only to the team member who signs 
   });
 
   it('a trade in-charge’s pick at the gate is not carried either', async () => {
-    const { useStore, LangPreference, TeamAccessScreen } = await loadGate();
+    const { useStore, LangPreference, TeamAccessScreen } = await loadGate({ api: false });
     const gate = render(<TeamAccessScreen />);
     fireEvent.click(gate.getByRole('button', { name: 'ગુજરાતી' }));
     fireEvent.click(gate.getByRole('button', { name: /મિસ્ત્રી/ }));

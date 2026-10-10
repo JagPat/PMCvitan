@@ -1,7 +1,7 @@
 import { useRef, useState, type ChangeEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { dailyLogReadMode } from '@/data/apiGateway';
+import { API_BASE, CONNECTIVITY_SIMULATOR, dailyLogReadMode } from '@/data/apiGateway';
 import { selectTotalWorkers } from '@/store/selectors';
 import { EmptyState, Eyebrow, Swatch, PhotoViewer, Button } from '@/components';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
@@ -171,14 +171,17 @@ export function DailyLogScreen() {
           )}
         </div>
 
-        {/* connectivity */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: conn.bg, border: `1px solid ${conn.border}`, borderRadius: 11, padding: '9px 12px', marginBottom: 14 }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: conn.dot, flex: 'none' }} />
-          <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: conn.color }} data-testid="conn-text">{conn.text}</span>
-          <button onClick={toggleOnline} data-testid="toggle-online" style={{ background: 'transparent', border: '1px solid rgba(35,33,28,.2)', borderRadius: 7, padding: '6px 10px', minHeight: 44, fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--ink)', cursor: 'pointer' }}>
-            {conn.toggle}
-          </button>
-        </div>
+        {/* connectivity — Top 10 #1 (#769): the state is simulated (only "Simulate offline" changes it), so a
+            production build never shows the row or its toggle (see CONNECTIVITY_SIMULATOR) */}
+        {CONNECTIVITY_SIMULATOR && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: conn.bg, border: `1px solid ${conn.border}`, borderRadius: 11, padding: '9px 12px', marginBottom: 14 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: conn.dot, flex: 'none' }} />
+            <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: conn.color }} data-testid="conn-text">{conn.text}</span>
+            <button onClick={toggleOnline} data-testid="toggle-online" style={{ background: 'transparent', border: '1px solid rgba(35,33,28,.2)', borderRadius: 7, padding: '6px 10px', minHeight: 44, fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--ink)', cursor: 'pointer' }}>
+              {conn.toggle}
+            </button>
+          </div>
+        )}
 
         {/* check-in */}
         {dailyLog.checkedIn ? (
@@ -227,9 +230,13 @@ export function DailyLogScreen() {
             </div>
           ))}
         </div>
-        <button onClick={openQr} style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-          <QrCode size={16} /> Worker self check-in (scan QR)
-        </button>
+        {/* Top 10 #1 (#769): the QR check-in is a prototype ("Simulate a scan" bumps the crew with no worker
+            record) — demo only; live attendance comes from the labour register below */}
+        {!API_BASE && (
+          <button onClick={openQr} style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            <QrCode size={16} /> Worker self check-in (scan QR)
+          </button>
+        )}
 
         {/* Phase 4 Task 6 (§E) — the pilot labour register: per-worker musters + unresolved
             mismatches from the labour-owned `labour.presence` read (identity joined server-side).

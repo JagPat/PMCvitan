@@ -90,12 +90,9 @@ export function DashboardScreen() {
             {siteCode && <span>Site Code {siteCode}</span>}
           </div>
         </div>
-        {API_BASE ? (
-          // no server export exists yet — never simulate a generated report
-          <Button variant="ink" disabled title="Report export is not available yet" style={{ opacity: 0.55 }}>
-            Generate Weekly Report <ArrowUpRight size={15} />
-          </Button>
-        ) : (
+        {/* Top 10 #1 / live-bug 6 (#769) — no server export exists, so a live project shows no report action at
+            all (never a simulated one, and no dead control); the API-less demo keeps its prototype flash */}
+        {!API_BASE && (
           <Button variant="ink" onClick={() => flash('Weekly report generated (PDF) — sent to client & contractor.')}>
             Generate Weekly Report <ArrowUpRight size={15} />
           </Button>
