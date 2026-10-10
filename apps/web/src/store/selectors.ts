@@ -578,10 +578,12 @@ export function selectActionItems(s: AppState): ActionItem[] {
     if (drawingBlocked.length) items.push({ key: 'pmc-drawing-gate', title: `Blocked: drawing unacknowledged on ${drawingBlocked.length} activit${drawingBlocked.length === 1 ? 'y' : 'ies'}`, detail: names(drawingBlocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'amber', item: activitiesSettledForLinks(s) ? only(drawingBlocked) : undefined });
     // Task 6: overrides lapsing within a week — the exception is about to end
     const soon = Date.now() + 7 * 24 * 3600 * 1000;
+    // #777 Codex 4239561636 — the card is about ONE activity when every expiring override is that activity's,
+    // however many of its overrides (or gates) lapse
     const expiring = s.activities.flatMap((a) => (a.overrides ?? []).filter((o) => new Date(o.expiresAt).getTime() <= soon).map((o) => ({ a, o })));
     if (expiring.length) {
       const first = expiring[0];
-      items.push({ key: 'pmc-override-expiry', title: `Override expiring ${new Date(first.o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} — ${first.a.name}`, detail: expiring.length > 1 ? `${expiring.length} overrides lapse within a week` : first.o.reason, screen: 'site-schedule', cta: 'Review overrides', tone: 'amber', item: expiring.length === 1 && activitiesSettledForLinks(s) ? first.a.id : undefined });
+      items.push({ key: 'pmc-override-expiry', title: `Override expiring ${new Date(first.o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} — ${first.a.name}`, detail: expiring.length > 1 ? `${expiring.length} overrides lapse within a week` : first.o.reason, screen: 'site-schedule', cta: 'Review overrides', tone: 'amber', item: new Set(expiring.map((x) => x.a.id)).size === 1 && activitiesSettledForLinks(s) ? first.a.id : undefined });
     }
   }
 

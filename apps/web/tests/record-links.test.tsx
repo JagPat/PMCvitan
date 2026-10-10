@@ -380,3 +380,17 @@ describe('Top 10 #3c — round 2 (#777 Codex on 2461392)', () => {
     delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
   });
 });
+
+describe('Top 10 #3c — round 3 (#777 Codex on 02fbc68)', () => {
+  it('4239561636 — two expiring overrides on ONE activity open that activity; on two activities, the schedule', async () => {
+    const { useStore } = await demo({ role: 'pmc' });
+    const sel = await import('@/store/selectors');
+    const [a, b] = useStore.getState().activities;
+    const soon = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+    const ov = (id: string) => ({ ...(a.overrides?.[0] ?? {}), id, expiresAt: soon, reason: 'r' }) as never;
+    useStore.setState({ activities: [{ ...a, overrides: [ov('o1'), ov('o2')] }, { ...b, overrides: [] }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-override-expiry')?.item).toBe(a.id);
+    useStore.setState({ activities: [{ ...a, overrides: [ov('o1')] }, { ...b, overrides: [ov('o2')] }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-override-expiry')?.item).toBeUndefined();
+  });
+});
