@@ -3824,10 +3824,19 @@ test('M3c / #764 Codex 4237161956 — run() withdraws a token-less green before 
   const statusesRead = body.indexOf('await client.statuses(expectedHead)');
   const withdraw = body.indexOf('await withdrawUntokenedSuccess(');
   assert.ok(statusesRead > 0 && withdraw > statusesRead, 'withdrawal follows the status read');
-  // nothing between the status read and the withdrawal reads anything else
-  assert.doesNotMatch(body.slice(statusesRead + 1, withdraw), /await /u);
-  for (const later of ['enforceReviewScope(', 'guardCandidateRelabel(', 'authorizeRecoveryDispatch(', 'client.commit(']) {
-    const at = body.indexOf(later);
+  // #764 Codex 4237235982 — only the orchestrate path withdraws: the relabel-guard and request-recovery branches,
+  // which return without re-earning an approval, come before it and each end in a return
+  const relabel = body.indexOf("if (mode === 'relabel-guard')");
+  const recovery = body.indexOf("if (mode === 'request-recovery')");
+  assert.ok(statusesRead < relabel && relabel < recovery && recovery < withdraw);
+  const recoveryBranchEnd = body.indexOf('\n  }\n', recovery);
+  assert.match(body.slice(recovery, recoveryBranchEnd), /return;\s*$/u);
+  assert.match(body.slice(relabel, recovery), /return;\s*\}\s*$/u);
+  // nothing outside those returning branches reads anything between the status read and the withdrawal
+  assert.doesNotMatch(body.slice(recoveryBranchEnd, withdraw), /await /u);
+  assert.doesNotMatch(body.slice(statusesRead + 1, relabel), /await /u);
+  for (const later of ['enforceReviewScope(', 'immutableOwnershipHoldIsNewestReview(', 'client.commit(']) {
+    const at = body.indexOf(later, recovery);
     assert.ok(at === -1 || at > withdraw, `${later} comes after the withdrawal`);
   }
   // the helper withdraws only a token-less success

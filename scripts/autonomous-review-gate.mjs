@@ -2641,11 +2641,6 @@ export async function run() {
   const existingStatus = existingStatuses.find(
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
-  // M3c (v3 §A5, #764 Codex 4237161956) — the first write of every run, before any scope, commit or issue read:
-  // the only reads before it are the pull request (to know the head) and this status list (to know a green is
-  // there). A green without an approval token is withdrawn here, so a later read that stalls until the job is
-  // cancelled can never leave it standing beneath an already-queued native auto-merge.
-  await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);
 
   if (mode === 'relabel-guard') {
     if (context.trigger !== 'relabel') throw new Error('The relabel guard runs only on a pull request body edit');
@@ -2676,6 +2671,15 @@ export async function run() {
     );
     return;
   }
+
+  // M3c (v3 §A5; #764 Codex 4237161956, 4237235982) — on the orchestrate path, the one that goes on to re-earn an
+  // approval (recovery of the terminal success, or a fresh review), the FIRST write, before any scope, commit or
+  // issue read: the only reads before it are the pull request (to know the head) and this status list (to know a
+  // green is there). A green without an approval token is withdrawn here, so a later read that stalls until the
+  // job is cancelled can never leave it standing beneath an already-queued native auto-merge. The relabel-guard
+  // and request-recovery modes above return without re-earning anything, so they never withdraw: a withdrawal
+  // there would strand the head pending with no path back to green.
+  await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);
 
   // 2B2: when the newest current-head review is a candidate ownership hold, the exact head is
   // consistently owned by an in-flight candidate whose IMMUTABLE trailer cannot become merge-eligible
