@@ -199,6 +199,8 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       expect(await notifCount()).toBe(before + 1);
       // the announcement names WHO approved on behalf of the client + the material (option A)
       expectPushMatching(/ approved Sanitary on behalf of the client — A$/, ['pmc', 'contractor', 'engineer']);
+      // Top 10 #3b (#774) — the push opens the decision's own record, not the app root
+      expect(pushCalls()[0][1].url).toBe(`/projects/${encodeURIComponent(pid)}/decisions/${encodeURIComponent(sk('p2c-dec-pub'))}`);
       expectSignal();
     });
 
@@ -402,7 +404,9 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       expect(await t.prisma.inspection.findFirst({ where: { projectId: pid, title: 'Rebar' } })).toBeTruthy();
       expect((await lastAudit('inspection.create'))?.actorId).toBe(uid);
       expect(await notifCount()).toBe(before + 1);
-      expectPush('New checklist: Rebar — GF', ['engineer']);
+      // Top 10 #3b (#774) — the push opens the issued checklist itself, not the app root
+      const created = await t.prisma.inspection.findFirst({ where: { projectId: pid, title: 'Rebar' } });
+      expectPush('New checklist: Rebar — GF', ['engineer'], `/projects/${encodeURIComponent(pid)}/site/checklist/${encodeURIComponent(created!.id)}`);
       expectSignal();
     });
 

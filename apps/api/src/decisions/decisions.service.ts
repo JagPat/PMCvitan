@@ -24,6 +24,7 @@ import { consultationOpen } from './consultation-open';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import { assertCountersignClient } from '../platform/countersign-contract';
 import { RoleStandingQuery } from '../platform/role-standing.query';
+import { decisionPath } from '../platform/record-paths';
 
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
 function requireIdempotencyKey(key: string | undefined, commandType: string): string {
@@ -702,7 +703,7 @@ export class DecisionsService {
           eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId,
           payload: facts,
           effectKey: prior === 'change' ? 'decision.reapproved' : 'decision.approved',
-          dispatch: { push: { body: announce } },
+          dispatch: { push: { url: decisionPath(projectId, decisionId), body: announce } },
         });
         await tx.notification.create({ data: { projectId, text: announce, color: APPROVED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: prior === 'change' ? 'decision.reapproved' : 'decision.approved', eventId } });
         return { resultRef: decisionId, events: [ev] };
@@ -871,7 +872,7 @@ export class DecisionsService {
           payload: { forwardId, title: cur.title, from, to, toLabel, reason, pushIntentsCancelled },
           effectKey: 'decision.forwarded',
           // the frozen-audience family: the new holder's users as they are NOW, and the catalog's body
-          dispatch: { push: { body: EXTERNAL_EFFECTS['decision.forwarded'].pushBody, targetUserIds } },
+          dispatch: { push: { url: decisionPath(projectId, decisionId), body: EXTERNAL_EFFECTS['decision.forwarded'].pushBody, targetUserIds } },
         });
         await tx.notification.create({ data: { projectId, text: forwardedDecisionNotice(cur.title, toLabel), color: FORWARDED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.forwarded', eventId } });
         // the receipt names the FACT (the provenance seal's `resultRef` arm)
@@ -998,7 +999,7 @@ export class DecisionsService {
           // TARGETED at the consultee. The ceiling in the catalog is every role a consultee can
           // hold; this site narrows it to the ONE user, so the delivery reaches their currently
           // valid links and no same-role device.
-          dispatch: { push: { body, roles: [consultee.role as 'contractor'], targetUserId: consultee.userId } },
+          dispatch: { push: { url: decisionPath(projectId, decisionId), body, roles: [consultee.role as 'contractor'], targetUserId: consultee.userId } },
         });
         return { resultRef: id, events: [ev] };
       },
@@ -1144,7 +1145,7 @@ export class DecisionsService {
           effectKey: 'decision.consultation_responded',
           // TARGETED at the person who asked. The requester may be an org-admin USER with no
           // membership row on this project, which is exactly why the target is user-keyed.
-          dispatch: { push: { body, roles: [requesterRole], targetUserId: consultation.requestedById } },
+          dispatch: { push: { url: decisionPath(projectId, decisionId), body, roles: [requesterRole], targetUserId: consultation.requestedById } },
         });
         return { resultRef: id, events: [ev] };
       },
@@ -1250,7 +1251,7 @@ export class DecisionsService {
         ...args.factRef,
       },
       effectKey: family,
-      dispatch: { push: { body: announce } },
+      dispatch: { push: { url: decisionPath(projectId, decisionId), body: announce } },
     });
     await tx.notification.create({ data: { projectId, text: announce, color: APPROVED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: family, eventId } });
     return ev;
@@ -1398,7 +1399,7 @@ export class DecisionsService {
           pushIntentsCancelled: cancelledForwards ? cancelledForwards.neutralized + cancelledForwards.marked + cancelledForwards.entombed : 0,
         },
         effectKey: 'decision.forwarded',
-        dispatch: { push: { body: EXTERNAL_EFFECTS['decision.forwarded'].pushBody, targetUserIds: forward.targetUserIds } },
+        dispatch: { push: { url: decisionPath(projectId, decisionId), body: EXTERNAL_EFFECTS['decision.forwarded'].pushBody, targetUserIds: forward.targetUserIds } },
       }));
       await tx.notification.create({ data: { projectId, text: forwardedDecisionNotice(cur.title, forward.toLabel), color: FORWARDED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.forwarded', eventId } });
     }
