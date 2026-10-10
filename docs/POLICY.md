@@ -72,7 +72,7 @@ thread with a concrete counterexample; no label or gate state reads a dispute, a
 finding blocks until a new head answers it, the cap defers it, or the owner rules. Review machinery
 is frozen: no new controller, watchdog or lease feature outside a requested maintenance PR.
 
-Keep one concern per PR; cite its issue as one `Work-Item: #N` trailer on the head commit (syntax checked fail-closed). A standard unit is at most 20 files and 1,500 changed
+Keep one concern per PR; a cited issue is one `Work-Item: #N` head-commit trailer (syntax checked fail-closed; citing stays optional). A standard unit is at most 20 files and 1,500 changed
 lines; `<!-- review-size: trivial -->` only classifies a unit and never skips CI or Codex review. Larger units need `<!-- review-size: justified-large -->` and all six invariant
 rows with concrete risk and verification evidence. Numeric limits are review aids,
 not proof of quality. Each merged PR gets a completion report (completion-report.mjs). Legacy PR-number exemptions remain solely for compatibility.

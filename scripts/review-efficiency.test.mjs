@@ -948,20 +948,31 @@ test('agent guidance and the PR template share the executable policy vocabulary'
   );
 });
 
+// A readable head commit with no Work-Item trailer, for CLI tests whose subject is something else: the CLI now
+// reads the exact head commit (M3b) and fails closed when it cannot (#761 Codex 4235631752), so a fixture must
+// supply it instead of reaching the real network.
+const plainHead = {
+  token: 'test-token',
+  repository: 'JagPat/PMCvitan',
+  sleep: async () => {},
+  fetchImpl: async () => new Response(JSON.stringify({ commit: { message: 'fix\n\nCorrection-Owner: claude\n' } })),
+};
+const withHead = (overrides = {}) => pullRequest({ head: { ref: 'claude/x', sha: 'c'.repeat(40) }, ...overrides });
+
 test('the dependency-free scope CLI returns success or failure from the PR event', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-scope-'));
   const eventPath = join(directory, 'event.json');
   const previousExitCode = process.exitCode;
   try {
-    await writeFile(eventPath, JSON.stringify({ pull_request: pullRequest() }));
-    const standard = await runScope({ eventPath });
+    await writeFile(eventPath, JSON.stringify({ pull_request: withHead() }));
+    const standard = await runScope({ eventPath, ...plainHead });
     assert.equal(standard.allowed, true);
     assert.equal(process.exitCode, previousExitCode);
 
     await writeFile(eventPath, JSON.stringify({
-      pull_request: pullRequest({ additions: 2_000, changed_files: 30 }),
+      pull_request: withHead({ additions: 2_000, changed_files: 30 }),
     }));
-    const blocked = await runScope({ eventPath });
+    const blocked = await runScope({ eventPath, ...plainHead });
     assert.equal(blocked.allowed, false);
     assert.equal(process.exitCode, 1);
   } finally {
@@ -1746,9 +1757,10 @@ test('the scope CLI refuses a tracked dependency path independently of the scope
   const eventPath = join(directory, 'event.json');
   const previousExitCode = process.exitCode;
   try {
-    await writeFile(eventPath, JSON.stringify({ pull_request: pullRequest() }));
+    await writeFile(eventPath, JSON.stringify({ pull_request: withHead() }));
     const clean = await runScope({
       eventPath,
+      ...plainHead,
       listTreeImpl: async () => [{ mode: '100644', path: 'package.json' }],
     });
     assert.equal(clean.allowed, true);
@@ -1757,6 +1769,7 @@ test('the scope CLI refuses a tracked dependency path independently of the scope
 
     const refused = await runScope({
       eventPath,
+      ...plainHead,
       listTreeImpl: async () => [
         { mode: '100644', path: 'package.json' },
         { mode: '120000', path: 'node_modules' },
@@ -1889,12 +1902,20 @@ test('M3b — the required scope CLI fails a malformed head-commit Work-Item tra
     process.exitCode = previousExitCode;
     const none = await runScope(options('fix\n\nCorrection-Owner: claude\n'));
     assert.equal(none.workItem.state, 'none');
+    // #761 Codex 4235631750 — whether a citation is mandatory is the owner's open decision (#482 6081490888,
+    // kept separate in 6091212460): no trailer cites nothing and fails nothing until the owner decides
     assert.notEqual(process.exitCode, 1, 'no trailer cites nothing and fails nothing');
+    const policy = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
+    assert.match(policy, /citing stays optional/u, 'POLICY must not state a mandatory citation the owner has not decided');
 
+    // #761 Codex 4235631752 — an uninspected head is never passed as clean: an unread message fails the check
     process.exitCode = previousExitCode;
     const unread = await runScope(options(null));
     assert.equal(unread.workItem.state, 'unreadable');
-    assert.notEqual(process.exitCode, 1, 'an unread message only warns: nothing depends on the trailer yet');
+    assert.equal(process.exitCode, 1, 'an unread message fails the required check (re-run on the same head)');
+    // and so does a message git cannot parse
+    process.exitCode = previousExitCode;
+    assert.equal(parseWorkItemTrailer('fix\n\nWork-Item: #750\n', { parse: () => null }).state, 'unreadable');
   } finally {
     process.exitCode = previousExitCode;
     await rm(directory, { recursive: true, force: true });
