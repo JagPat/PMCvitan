@@ -17,15 +17,17 @@
 import { asciiTrim, gitParsedTrailers } from './git-trailers.mjs';
 
 const FIELD_KEY = 'work-item';
-// Any line whose FIRST WORDS name the field and then attempt a value, however the name is spelled, prefixed,
-// separated or delimited: `Work-Item:`, `work item:`, `WORK_ITEM :`, `Work  Item:`, `Work.Item:` (#761 Codex
-// 4235863454); behind indentation, list bullets, a numbered-list marker, quotes, emphasis or code ticks
-// (`- Work-Item:`, `1. Work-Item:`, `**Work-Item**:`; 4235885068); and with any non-alphanumeric joiner or
-// delimiter — `Work/Item: #750`, `Work-Item #750`, `Work-Item = #750` (4235903051). After the name, a `:`, `=`,
-// `#` or digit marks an attempted value. So an attempted citation in an unrecognised form is `malformed`, never
-// `none`. Prose that mentions the field after another word, or that continues with a word (`Work items are…`),
-// is not a field line.
-const FIELD_LINE = /^[^\p{L}\p{N}\n]*(?:\d+[.)][^\p{L}\p{N}\n]*)?work[^\p{L}\p{N}\n]*item[^\p{L}\p{N}\n]*?[:=#\d]/imu;
+// Any line whose FIRST TWO WORDS are the field name and which then attempts a value anywhere on the line,
+// however the name is spelled, prefixed, wrapped, separated or delimited: `Work-Item:`, `work item:`,
+// `WORK_ITEM :`, `Work  Item:`, `Work.Item:` (#761 Codex 4235863454); behind indentation, list bullets, a
+// numbered-list marker, quotes, emphasis or code ticks (`- Work-Item:`, `1. Work-Item:`, `**Work-Item**:`;
+// 4235885068); with any joiner or delimiter (`Work/Item: #750`, `Work-Item #750`; 4235903051); and with ANY text
+// between the name and the attempted value, such as a link target (`[Work-Item](https://…/750): #750`;
+// 4235923856). An attempted value is a `:`, `=`, `#` or digit anywhere after the name. So an attempted citation
+// in an unrecognised form is `malformed`, never `none`. Prose that mentions the field after another word, or
+// whose second word is not exactly `item` (`Work items are…`), is not a field line; a line that starts with the
+// two words and then carries a colon, `#` or number anywhere is refused — reword it.
+const FIELD_LINE = /^[^\p{L}\p{N}\n]*(?:\d+[.)][^\p{L}\p{N}\n]*)?work[^\p{L}\p{N}\n]*item(?![\p{L}\p{N}])[^\n]*?[:=#\d]/imu;
 const FIELD_LINES = new RegExp(FIELD_LINE.source, 'gimu');
 // The one field line, raw, must itself be the canonical trailer: git's `--unfold` joins an indented continuation
 // into the value, so `Work-Item:` followed by an indented ` #750` would otherwise read as cited (4235903046).

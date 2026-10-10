@@ -348,6 +348,9 @@ export function immutableOwnershipHoldIsNewestReview(statuses) {
   const latest = (statuses ?? []).find((status) => status.context === STATUS_CONTEXT);
   if (latest?.state !== 'failure') return false;
   const detail = String(latest?.description ?? '').replace(/^\s*scope:\s*/u, '');
+  // A malformed `Work-Item` trailer is in the immutable head commit: only a new head clears it, so an older
+  // retryable status beneath it must not be recovered or re-reviewed either (#761 Codex 4235923859).
+  if (detail.startsWith(WORK_ITEM_TRAILER_SCOPE)) return true;
   return isOwnershipInconsistentScopeDetail('scope', detail)
     && !isBodyOnlyOwnershipRecoveryDetail('scope', detail);
 }

@@ -1854,6 +1854,9 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     ['an equals delimiter', `fix\n\nWork-Item = #750\n${owner}\n`],
     ['a value folded onto the next line', `fix\n\nWork-Item:\n #750\n${owner}\n`],
     ['a value folded under spaces', `fix\n\nWork-Item:   \n\t#750\n${owner}\n`],
+    // 4235923856: any text between the name and the attempted value, such as a link target
+    ['a linked name', `fix\n\n[Work-Item](https://github.com/JagPat/PMCvitan/issues/750): #750\n\n${owner}\n`],
+    ['a linked name beside a valid trailer', `fix\n\n[Work-Item](https://example.test/x): #1\n\nWork-Item: #750\n${owner}\n`],
   ]) {
     const result = parse(message);
     assert.equal(result.state, 'malformed', label);

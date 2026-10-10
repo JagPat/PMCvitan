@@ -2317,6 +2317,14 @@ test('re-review is suppressed on an immutable ownership hold but reruns for a bo
     false,
   );
   // A retryable unreadable failure and a plain non-ownership failure are not immutable ownership holds.
+  // #761 Codex 4235923859: a malformed Work-Item trailer is in the head commit, so it is immutable too, and an
+  // older retryable status beneath it is not recovered
+  const workItem = `scope: ${WORK_ITEM_TRAILER_SCOPE} the Work-Item trailer value "x" must be exactly \`#<issue number>\``;
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review(workItem)), true);
+  assert.equal(reviewGate.recoverableTerminalReviewStatus([
+    { context: 'codex-current-head', state: 'failure', description: workItem },
+    { context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY },
+  ]), null);
   assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review(OWNERSHIP_READ_RETRY)), false);
   assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review('review: 2 findings')), false);
   assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview([{ context: 'codex-current-head', state: 'success' }]), false);
