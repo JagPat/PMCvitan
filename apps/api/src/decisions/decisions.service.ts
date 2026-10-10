@@ -24,6 +24,7 @@ import { consultationOpen } from './consultation-open';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import { assertCountersignClient } from '../platform/countersign-contract';
 import { RoleStandingQuery } from '../platform/role-standing.query';
+import { decisionPath } from '../platform/record-paths';
 
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
 function requireIdempotencyKey(key: string | undefined, commandType: string): string {
@@ -118,16 +119,18 @@ export class DecisionsService {
     body: string,
     kind: 'client' | 'pmc' | 'member' | 'none' | 'architect',
     member: { userId: string; role: string } | null,
-  ): { body: string; roles?: readonly PushRole[]; targetUserId?: string } {
+    url: string,
+  ): { body: string; roles?: readonly PushRole[]; targetUserId?: string; url: string } {
     // Phase 6 task 4d (4d-ii-a / A7d) — an architect-designated decision pushes at the ARCHITECT
     // role, within the ceiling the catalog generation widened; the claim re-judges the role's
     // current holders through the kernel register (`deciderPushTarget`'s architect arm). The create
     // and draft edits still refuse the designation 409 while 4d-i's reservation stands.
-    if (kind === 'architect') return { body, roles: ['architect'] };
+    // Top 10 #3b (#774, #776 Codex 4239336835) — the approval demand opens the decision it names
+    if (kind === 'architect') return { body, roles: ['architect'], url };
     if (kind === 'member' && member) {
-      return { body, roles: [member.role as 'contractor'], targetUserId: member.userId };
+      return { body, roles: [member.role as 'contractor'], targetUserId: member.userId, url };
     }
-    return { body, roles: [kind === 'pmc' ? 'pmc' : 'client'] };
+    return { body, roles: [kind === 'pmc' ? 'pmc' : 'client'], url };
   }
 
   /** PMC issues a new decision (title/room + 2–4 options) → shows as pending on the
@@ -268,7 +271,7 @@ export class DecisionsService {
           // named member's USER for `member`, the role audience for `client`/`pmc`, and NOBODY
           // for a record (a false approval demand for a decision nobody can approve).
           dispatch: input.publish && !record
-            ? { push: this.deciderPush(`New decision awaiting your approval: ${input.title}`, input.deciderKind, member) }
+            ? { push: this.deciderPush(`New decision awaiting your approval: ${input.title}`, input.deciderKind, member, decisionPath(projectId, id)) }
             : {},
         });
         if (input.publish) {
@@ -389,7 +392,7 @@ export class DecisionsService {
           // is nothing to approve — the bell notice above is the announcement).
           dispatch: record
             ? {}
-            : { push: this.deciderPush(`New decision awaiting your approval: ${d.title}`, d.deciderKind as 'client', member) },
+            : { push: this.deciderPush(`New decision awaiting your approval: ${d.title}`, d.deciderKind as 'client', member, decisionPath(projectId, decisionId)) },
         });
         await tx.notification.create({ data: { projectId, text: notice, color: record ? RECORDED_DECISION_NOTICE_COLOR : PENDING_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.published', eventId } });
         return { resultRef: decisionId, events: [ev] };
@@ -702,7 +705,7 @@ export class DecisionsService {
           eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId,
           payload: facts,
           effectKey: prior === 'change' ? 'decision.reapproved' : 'decision.approved',
-          dispatch: { push: { body: announce } },
+          dispatch: { push: { url: decisionPath(projectId, decisionId), body: announce } },
         });
         await tx.notification.create({ data: { projectId, text: announce, color: APPROVED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: prior === 'change' ? 'decision.reapproved' : 'decision.approved', eventId } });
         return { resultRef: decisionId, events: [ev] };
@@ -871,7 +874,7 @@ export class DecisionsService {
           payload: { forwardId, title: cur.title, from, to, toLabel, reason, pushIntentsCancelled },
           effectKey: 'decision.forwarded',
           // the frozen-audience family: the new holder's users as they are NOW, and the catalog's body
-          dispatch: { push: { body: EXTERNAL_EFFECTS['decision.forwarded'].pushBody, targetUserIds } },
+          dispatch: { push: { url: decisionPath(projectId, decisionId), body: EXTERNAL_EFFECTS['decision.forwarded'].pushBody, targetUserIds } },
         });
         await tx.notification.create({ data: { projectId, text: forwardedDecisionNotice(cur.title, toLabel), color: FORWARDED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.forwarded', eventId } });
         // the receipt names the FACT (the provenance seal's `resultRef` arm)
@@ -998,7 +1001,7 @@ export class DecisionsService {
           // TARGETED at the consultee. The ceiling in the catalog is every role a consultee can
           // hold; this site narrows it to the ONE user, so the delivery reaches their currently
           // valid links and no same-role device.
-          dispatch: { push: { body, roles: [consultee.role as 'contractor'], targetUserId: consultee.userId } },
+          dispatch: { push: { url: decisionPath(projectId, decisionId), body, roles: [consultee.role as 'contractor'], targetUserId: consultee.userId } },
         });
         return { resultRef: id, events: [ev] };
       },
@@ -1144,7 +1147,7 @@ export class DecisionsService {
           effectKey: 'decision.consultation_responded',
           // TARGETED at the person who asked. The requester may be an org-admin USER with no
           // membership row on this project, which is exactly why the target is user-keyed.
-          dispatch: { push: { body, roles: [requesterRole], targetUserId: consultation.requestedById } },
+          dispatch: { push: { url: decisionPath(projectId, decisionId), body, roles: [requesterRole], targetUserId: consultation.requestedById } },
         });
         return { resultRef: id, events: [ev] };
       },
@@ -1250,7 +1253,7 @@ export class DecisionsService {
         ...args.factRef,
       },
       effectKey: family,
-      dispatch: { push: { body: announce } },
+      dispatch: { push: { url: decisionPath(projectId, decisionId), body: announce } },
     });
     await tx.notification.create({ data: { projectId, text: announce, color: APPROVED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: family, eventId } });
     return ev;
@@ -1398,7 +1401,7 @@ export class DecisionsService {
           pushIntentsCancelled: cancelledForwards ? cancelledForwards.neutralized + cancelledForwards.marked + cancelledForwards.entombed : 0,
         },
         effectKey: 'decision.forwarded',
-        dispatch: { push: { body: EXTERNAL_EFFECTS['decision.forwarded'].pushBody, targetUserIds: forward.targetUserIds } },
+        dispatch: { push: { url: decisionPath(projectId, decisionId), body: EXTERNAL_EFFECTS['decision.forwarded'].pushBody, targetUserIds: forward.targetUserIds } },
       }));
       await tx.notification.create({ data: { projectId, text: forwardedDecisionNotice(cur.title, forward.toLabel), color: FORWARDED_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.forwarded', eventId } });
     }

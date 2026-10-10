@@ -24,6 +24,7 @@ import {
   CORRECTIVE_ROLES, CORRECTIVE_ROLES_PHRASE, assignmentStillBinds, holdsCorrectiveRole,
 } from './assignment-eligibility';
 import { OrgsParticipant } from '../orgs/orgs.participant';
+import { checklistPath } from '../platform/record-paths';
 
 /** The corrective-assignment rule lives in ONE module ({@link assignment-eligibility}) and every site
  *  that asks about a named assignee calls it. Re-exported here because `inspections.contract.test.ts`
@@ -101,7 +102,7 @@ export class InspectionsService {
         // and zone are user text)
         await tx.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone}`, color: '#C08A2D', time: 'just now', inspectionId: id } });
         await recordAudit(tx, { projectId, actor, action: 'inspection.create', entity: 'Inspection', entityId: id });
-        const ev = await emitEvent(tx, { projectId, actor, eventType: 'inspection.created', entityType: 'Inspection', entityId: id, payload: { title: input.title, zone: input.zone }, effectKey: 'inspection.created', dispatch: { push: { body: `New checklist: ${input.title} — ${input.zone}` } } });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'inspection.created', entityType: 'Inspection', entityId: id, payload: { title: input.title, zone: input.zone }, effectKey: 'inspection.created', dispatch: { push: { url: checklistPath(projectId, id), body: `New checklist: ${input.title} — ${input.zone}` } } });
         return { resultRef: id, events: [ev] };
       },
     });
@@ -445,6 +446,10 @@ export class InspectionsService {
           // The rejection CAUSES both the linked reinspection and (for a closing) the sign-off reversal.
           const rejected = await emitEvent(tx, { projectId, actor, eventType: 'inspection.rejected', entityType: 'Inspection', entityId: inspectionId, payload: { reinspectionId: childId, assigneeId }, effectKey: 'inspection.rejected', dispatch: {} });
           const localEvents: EmittedEventMeta[] = [rejected];
+          // Top 10 #3b (#776 Codex 4239336838) — no record url: this push is an engineer-role broadcast, but the
+          // re-inspection is ASSIGNED work only its assignee's checklist screen resolves (bakeInspections' `mine`),
+          // so a url would land every other engineer on "not found". It stays the app root until delivery is
+          // assignee-targeted.
           localEvents.push(await emitEvent(tx, { projectId, actor, eventType: 'inspection.reinspection_created', entityType: 'Inspection', entityId: childId, causedByEventId: rejected.eventId, payload: { reinspectionOf: inspectionId, assigneeId }, effectKey: 'inspection.reinspection_created', dispatch: { push: { body: pushBody } } }));
           if (activity) localEvents.push(await emitEvent(tx, { projectId, actor, eventType: 'activity.signoff_rejected', entityType: 'Activity', entityId: activity.id, causedByEventId: rejected.eventId, payload: { closingInspectionId: inspectionId, reinspectionId: childId }, effectKey: 'activity.signoff_rejected', dispatch: {} }));
           return { resultRef: inspectionId, events: localEvents };

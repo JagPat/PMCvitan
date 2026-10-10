@@ -309,6 +309,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/web/src/screens/ScheduleScreen.tsx :: d.status !== 'withdrawn'": 'excludes: the withdrawn arm of the schedule’s decision list',
     "apps/web/src/screens/TeamAccessScreen.tsx :: d.status === 'approved'": 'excludes: the welcome sample of FINAL approvals',
     "apps/web/src/screens/modals/AddMaterialModal.tsx :: d.status !== 'withdrawn'": 'excludes: the withdrawn arm of the provenance picker (the server refuses a provisional head anyway, A4b)',
+    "apps/web/src/store/selectors.ts :: d.status === 'pending' || d.status === 'change'": 'excludes: decisionRecordLink (Top 10 #3, #774) — a decision opens on the approval route only in the actionable states that screen shows (the bell’s rule); an awaiting-countersign row opens in the Decision Log',
     "apps/web/src/store/selectors.ts :: d.status === 'pending'": 'excludes: selectPending — the decisions awaiting their DECIDER; an awaiting row has its decider’s approval (selectAwaitingCountersign below)',
     "apps/web/src/store/selectors.ts :: d.status === 'change'": 'excludes: selectReapproval — the reopened rows',
     "apps/web/src/store/selectors.ts :: d.status === 'awaiting_countersign'": 'answered',
