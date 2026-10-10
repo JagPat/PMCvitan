@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { gatesFor, activityReady, activitiesSettledForLinks, scheduleStatusCounts, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions, type GateVM } from '@/store/selectors';
@@ -10,6 +10,7 @@ import type { AppState } from '@/store/store';
 import { activitiesReadMode, type NewActivityInput } from '@/data/apiGateway';
 import { labelOf, plannedWindow } from '@/lib/activityDates';
 import { childrenOf, subtreeIds } from '@/lib/locationTree';
+import { useUrlItem } from '@/lib/useUrlItem';
 import styles from './responsive.module.css';
 
 function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
@@ -413,17 +414,47 @@ export function ScheduleScreen() {
   // hold says so, rather than leaving them on the whole schedule wondering which row was meant.
   const routeItem = useStore((s) => s.routeItem);
   const setRouteItem = useStore((s) => s.setRouteItem);
+  const projectLoadState = useStore((s) => s.projectLoadState);
   const activitiesSettled = useStore(activitiesSettledForLinks); // the For You link rule: never "not found" mid-reconcile
-  const missingActivity = routeItem !== null && activitiesSettled && !unavailable && !activities.some((a) => a.id === routeItem)
-    ? routeItem
-    : null;
+  // #777 Codex 4239476418 — RouteBridge adopts the URL's item in an effect: until the store names what the URL
+  // names (a cold load, Back/Forward), or has cleared it after Back to the bare schedule, nothing actionable is
+  // shown under that URL
+  const urlItem = useUrlItem('site-schedule');
+  const adopting = typeof urlItem === 'string' && urlItem !== routeItem ? urlItem : null;
+  const clearing = urlItem === null && routeItem !== null;
+  const routed = routeItem !== null && activities.some((a) => a.id === routeItem) ? routeItem : null;
+  // #777 Codex 4239476429 — deleting the routed activity ends the route's claim only once the removal LANDS (the
+  // row leaves the schedule); a refused deletion leaves the row, so the route — and a reload of it — still names it
+  const [deletedId, setDeletedId] = useState<string | null>(null);
+  const released = routeItem !== null && routeItem === deletedId && !routed;
   useEffect(() => {
-    if (routeItem === null || activityFocus !== null) return; // a hand-off in flight is handled above
-    const row = document.getElementById(`sched-${routeItem}`);
+    if (released) setRouteItem(null);
+  }, [released, setRouteItem]);
+  useEffect(() => {
+    if (deletedId !== null && routeItem !== deletedId) setDeletedId(null);
+  }, [routeItem, deletedId]);
+  const onDeleted = (id: string) => {
+    if (id === routeItem) setDeletedId(id);
+  };
+  // #777 Codex 4239476426 — a routed activity this schedule does not hold, while the slice is unsettled (a
+  // reconcile owed, a read loading or failed), shows that boundary, never the whole schedule under its URL
+  const unsettledItem = routeItem !== null && !routed && !released && !activitiesSettled;
+  const missingActivity = routeItem !== null && !routed && !released && activitiesSettled ? routeItem : null;
+  // #777 Codex 4239476431 — the link reveals its row ONCE: retried only until the row arrives, then a schedule
+  // refresh or mutation never pulls the viewer back to it; a new route item reveals afresh
+  const revealed = useRef<string | null>(null);
+  useEffect(() => {
+    if (routed === null) {
+      if (routeItem === null) revealed.current = null;
+      return;
+    }
+    if (activityFocus !== null || revealed.current === routed) return; // a hand-off in flight is handled above
+    const row = document.getElementById(`sched-${routed}`);
     if (!row) return;
+    revealed.current = routed;
     row.scrollIntoView?.({ block: 'center' });
-    setHighlight(routeItem);
-  }, [routeItem, activityFocus, activities]);
+    setHighlight(routed);
+  }, [routed, routeItem, activityFocus, activities]);
   useEffect(() => {
     if (highlight === null) return;
     const t = setTimeout(() => setHighlight(null), 2500);
@@ -445,6 +476,38 @@ export function ScheduleScreen() {
       <div className={`${styles.screen} ${styles.wide}`} data-testid="activities-loading">
         <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the schedule…</div>
+      </div>
+    );
+  }
+  if (adopting) {
+    return (
+      <div className={`${styles.screen} ${styles.wide}`} data-testid="activities-opening">
+        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Opening {adopting}…</div>
+      </div>
+    );
+  }
+  if (released || clearing) {
+    return (
+      <div className={`${styles.screen} ${styles.wide}`} data-testid="activities-returning">
+        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Returning to the whole schedule…</div>
+      </div>
+    );
+  }
+  if (unsettledItem) {
+    const failed = moduleOwned ? unavailable : projectLoadState === 'error';
+    return (
+      <div className={`${styles.screen} ${styles.wide}`} data-testid={failed ? 'activities-unavailable' : 'activities-loading'}>
+        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
+        {failed ? (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
+            <span>Couldn't load the schedule — check your connection and access.</span>
+            <Button data-testid="activities-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+          </div>
+        ) : (
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the schedule…</div>
+        )}
       </div>
     );
   }
@@ -522,7 +585,7 @@ export function ScheduleScreen() {
           </Button>
         </div>
       )}
-      {plan && <PlanActivityModal activity={plan === 'new' ? null : plan} onClose={() => setPlan(null)} />}
+      {plan && <PlanActivityModal activity={plan === 'new' ? null : plan} onClose={() => setPlan(null)} onDeleted={onDeleted} />}
       {addingPhase && <AddPhaseModal onClose={() => setAddingPhase(false)} />}
       {overrideFor && <OverrideModal activity={overrideFor} onClose={() => setOverrideFor(null)} />}
       {phaseToDelete && (
@@ -606,7 +669,7 @@ const GATE_VALUES: Gate[] = ['na', 'wait', 'ok', 'fail'];
 
 /** PMC plans a new activity or edits an existing one (name, zone, planned window in
  *  day-offsets, phase, linked decision, and the material/team/inspection gates). */
-function PlanActivityModal({ activity, onClose }: { activity: Activity | null; onClose: () => void }) {
+function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activity | null; onClose: () => void; onDeleted?: (id: string) => void }) {
   const createActivity = useStore((s) => s.createActivity);
   const updateActivity = useStore((s) => s.updateActivity);
   const deleteActivity = useStore((s) => s.deleteActivity);
@@ -655,7 +718,7 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
       <ConfirmDialog
         title={`Delete ${activity.id} · ${activity.name}?`}
         confirmLabel="Delete activity"
-        onConfirm={() => { deleteActivity(activity.id); onClose(); }}
+        onConfirm={() => { onDeleted?.(activity.id); deleteActivity(activity.id); onClose(); }}
         onCancel={() => setConfirmingDelete(false)}
         testId="confirm-activity-delete"
       >

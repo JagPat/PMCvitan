@@ -11,7 +11,7 @@
 import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
-import { decisionsSliceSettled, drawingsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
+import { decisionsSliceSettled, drawingsSliceSettled, inspectionsSliceSettled, projectSnapshotSettled } from '@/lib/notifications';
 import { activitiesReadMode, inspectionsReadMode } from '@/data/apiGateway';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -458,7 +458,7 @@ export function inspectionsSettledForLinks(s: AppState): boolean {
  *  succeeded. A retained row never becomes a link into the schedule's live controls. */
 export function activitiesSettledForLinks(s: AppState): boolean {
   return !s.commandReconcileOwed.activities
-    && (s.projectLoadState === 'ready' || s.projectLoadState === 'idle')
+    && projectSnapshotSettled(s.projectLoadState)
     && (activitiesReadMode() === 'snapshot' || s.activitiesLoad === 'ready');
 }
 

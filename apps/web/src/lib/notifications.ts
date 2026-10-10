@@ -1,5 +1,6 @@
 import type { AppNotification, Role, ScreenKey } from '@vitan/shared';
 import { screensFor } from './screens';
+import { API_BASE } from '@/data/apiGateway';
 
 /**
  * The subject a notification is about, inferred from its (templated) text. The backend and the
@@ -104,9 +105,15 @@ export interface SliceSettledState {
   inspectionsLoad: LoadState;
 }
 
+/** #777 Codex 4239476423 — the project snapshot has landed. `idle` is settled only for the API-less demo, whose
+ *  seeded store IS the project; with an API scope, `idle` is the moment before the first fetch, when the store
+ *  still holds demo seeds that no link or "not found" may be judged against. */
+export const projectSnapshotSettled = (projectLoadState: string): boolean =>
+  projectLoadState === 'ready' || (projectLoadState === 'idle' && !API_BASE);
+
 const sliceSettled = (projectLoadState: string, owed: boolean, load: LoadState): boolean =>
   !owed
-  && (projectLoadState === 'ready' || projectLoadState === 'idle')
+  && projectSnapshotSettled(projectLoadState)
   && (load === 'ready' || load === 'idle');
 
 /**
