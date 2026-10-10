@@ -3895,3 +3895,27 @@ test('#765 / #764 Codex 4237311999 — an unreadable cited work item is held und
   await reviewGate.holdUnreadableCandidateHead(commitless, pr, head, unreadHead, []);
   assert.ok(log.statuses.at(-1).description.startsWith('validation: head commit ownership temporarily unreadable'));
 });
+
+test('#766 Codex 4237403349 / 4237403345 — an approval-time read failure keeps its read-retry name; STATUS names the open PR', async () => {
+  const head = 'c'.repeat(40);
+  const writes = [];
+  const pr = { number: 281, html_url: 'u', head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } }, base: { repo: { full_name: 'JagPat/PMCvitan' } } };
+  const base = {
+    repository: 'JagPat/PMCvitan',
+    async pause() {},
+    async statuses() { return []; },
+    async setStatus(sha, state, description) { writes.push({ state, description }); },
+  };
+  // the issue read passed at scope, then fails at the success write: the work-item read retry, never the filing retry
+  const issueDown = { ...base, async commit() { return { commit: { message: 'fix\n\nCorrection-Owner: claude\nWork-Item: #765\n' } }; }, async workItemIssue() { throw new Error('GitHub 503'); } };
+  await assert.rejects(reviewGate.publishSettledSuccess(issueDown, pr, head, 'review: clean'), /success withheld/u);
+  assert.ok(writes.at(-1).description.startsWith('validation: cited work item temporarily unreadable'), writes.at(-1).description);
+  // an unreadable head commit there is the ownership read retry
+  const commitDown = { ...base, async commit() { throw new Error('GitHub 502'); } };
+  await assert.rejects(reviewGate.publishSettledSuccess(commitDown, pr, head, 'review: clean'));
+  assert.ok(writes.at(-1).description.startsWith('validation: head commit ownership temporarily unreadable'));
+  assert.ok(!writes.some((write) => write.state === 'success'));
+  // the runner's STATUS parser treats only `none`/empty as no PR, so the Now block must never say `null`
+  const status = await readFile(new URL('../docs/STATUS.md', import.meta.url), 'utf8');
+  assert.match(status, /^open_pr: (none|\d+)$/mu);
+});

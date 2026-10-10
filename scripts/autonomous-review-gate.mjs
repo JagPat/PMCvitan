@@ -1738,11 +1738,13 @@ export async function approvalTokenForHead(client, pullRequest, expectedHead) {
   const trailer = parseWorkItemTrailer(message);
   if (trailer.state === 'none') return { token: approvalToken({ state: 'none' }) };
   if (trailer.state !== 'cited') {
-    return { refused: `${WORK_ITEM_TRAILER_SCOPE} ${trailer.detail}`, retryable: trailer.state === 'unreadable' };
+    const retryable = trailer.state === 'unreadable';
+    return { refused: `${WORK_ITEM_TRAILER_SCOPE} ${trailer.detail}`, retryable, readRetry: retryable ? OWNERSHIP_READ_RETRY : null };
   }
   const verification = await verifyCitedWorkItem(client, pullRequest, expectedHead, trailer.issue);
   if (verification.state !== 'valid') {
-    return { refused: `${WORK_ITEM_TRAILER_SCOPE} ${verification.detail}`, retryable: verification.state === 'unreadable' };
+    const retryable = verification.state === 'unreadable';
+    return { refused: `${WORK_ITEM_TRAILER_SCOPE} ${verification.detail}`, retryable, readRetry: retryable ? WORK_ITEM_READ_RETRY : null };
   }
   return { token: approvalToken(verification) };
 }
@@ -2493,7 +2495,7 @@ async function withFollowUpRetry(client, pullRequest, expectedHead, work) {
   try {
     return await work();
   } catch (error) {
-    await client.setStatus(expectedHead, 'failure', FOLLOW_UP_RETRY, pullRequest.html_url).catch(() => {});
+    await client.setStatus(expectedHead, 'failure', error?.readRetry ?? FOLLOW_UP_RETRY, pullRequest.html_url).catch(() => {});
     throw error;
   }
 }
@@ -2575,7 +2577,11 @@ export function publishSettledSuccess(client, pullRequest, expectedHead, descrip
     // does not verify, or whose trailer cannot be read, never turns green (the failure left here is retryable;
     // the next run's scope check routes an invalid citation to its refusal).
     const approval = await approvalTokenForHead(client, pullRequest, expectedHead);
-    if (!approval.token) throw new Error(`success withheld: ${approval.refused}`);
+    if (!approval.token) {
+      // #766 Codex 4237403349: a read that fails here, after the scope check passed, keeps its read-retry name
+      // (work item or ownership) rather than the follow-up filing retry the wrapper otherwise publishes.
+      throw Object.assign(new Error(`success withheld: ${approval.refused}`), { readRetry: approval.readRetry ?? null });
+    }
     return client.setStatus(expectedHead, 'success', withApprovalToken(description, approval.token), pullRequest.html_url);
   });
 }

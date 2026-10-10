@@ -18,7 +18,7 @@ task: 4
 task_state: in_progress
 work_item: maint-765-work-item-read-retry
 reviewed_merge: 191f8a0
-open_pr: null
+open_pr: 766
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-10
