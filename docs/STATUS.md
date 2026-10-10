@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: maint-m2b2-cap-integration
-reviewed_merge: 8cd1315
-open_pr: 749
+work_item: maint-m3a-trivial-classification
+reviewed_merge: 2d52a39
+open_pr: 760
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-09
@@ -26,13 +26,17 @@ updated: 2026-10-09
 
 ### Current unit
 
-**M2b-2, cap and evidence-snapshot integration** (`claude/maint-m2b2-cap-integration`; owner, #482 6075561748;
-selected in 6078164776): the approved review-round cap and the reviews → comments → reviews evidence snapshot from
-#744, with every deferred-finding filing routed through the M2b-1 component. A head's settlement withdraws any
-earlier green first, completes every recorded filing on the PR and its own, and only then may success be
-published; a substantive review body is deferred beside its inline findings. #744 and #742 stay stopped.
+**M3a, `review-size: trivial` as a classification only** (`claude/maint-m3a-trivial-classification`; owner,
+#482 6090833573; coordination 6090908355): the scope assessment reports the declared size class, and a trivial
+unit is decided, CI-gated and Codex-reviewed exactly like a standard one. M3 (#751) is stopped and open at
+`08816b7` (third reviewed head with a P1 in `autonomous-review-gate.mjs`); its successors are additive units on
+immutable evidence: M3a (this), M3b (a `Work-Item:` head-commit trailer and its syntax check), and M3c (trusted
+verification, whose design must hold the safeguard through queued merge completion before any implementation).
+#751's unresolved findings (4232759666, 4232759655 / #759, 4232521964) are carried to M3b/M3c. #744 and #742 stay
+stopped.
 
-M2b-1 merged at `8cd1315` (#748); the commercial-approval deadlock correction at `1281962` (#747).
+The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
+(#748).
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign
 stop and the owner approved splitting it, each unit from `main`: M1a (#740, merged at `94d1cdb`), this file's shrink (STATUS and ROADMAP
@@ -40,9 +44,10 @@ archived); M1b (#739, merged at `f970180`), affected-only PR CI and shadow revie
 stop at `d31aaf7` (third reviewed head with a P1 in `autonomous-review-gate.mjs`); the owner approved splitting
 it in turn: M2a (merged), then M2b (#744), the review-round cap through one reviews → comments → reviews
 evidence snapshot and one failure → draft → deferred-findings publication path. #744 hit the same stop at
-`e5842f1`; the owner approved a durability-first split (#482, 6075561748): M2b-1 (merged), then M2b-2 (current
-unit), the cap and evidence snapshot. #742 stays open and stopped until M2b replaces it. M3 follows: the trivial fast lane on the ordinary merge path, the size target and one
-issue per work item. #731 stays open until they land. Maintenance runs beside the live-bug unit (rule 8).
+`e5842f1`; the owner approved a durability-first split (#482, 6075561748): M2b-1 (merged), then M2b-2 (merged),
+the cap and evidence snapshot. #742 stays open and stopped. M3 (#751) hit the same stop at `08816b7`; its
+successors are M3a, M3b and M3c (the current unit and plan are above; the size target and whether a citation is
+mandatory await the owner). #731 stays open until they land. Maintenance runs beside the live-bug unit (rule 8).
 
 ### Queue (the owner's order of 2026-10-07, recorded on #482)
 
