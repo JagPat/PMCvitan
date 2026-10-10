@@ -2,6 +2,7 @@ import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { GoogleSignInButton } from '@/components';
 import { useStore } from '@/store/store';
+import { API_BASE } from '@/data/apiGateway';
 import { useT } from '@/i18n/useT';
 import { discardLangChoice, noteLangChoice } from '@/lib/langPreference';
 import { LANGS, swatch as swatchGradient, type Lang } from '@vitan/shared';
@@ -97,10 +98,15 @@ export function TeamAccessScreen() {
 
   // ---- WHO ----
   if (step === 'who') {
+    // Top 10 #1 (#769): the trade in-charge and worker paths end on hard-coded prototype views (a fixed
+    // mistri home; a jobcard whose Listen/Photo/Problem buttons only flash), so a live build offers the team
+    // sign-in alone; the API-less demo keeps all three
     const cards = [
       { key: 'team' as const, Icon: Users, accent: '#31567F', title: t.team, sub: t.teamSub },
-      { key: 'trade' as const, Icon: Wrench, accent: '#8A6216', title: t.trade, sub: t.tradeSub },
-      { key: 'worker' as const, Icon: HardHat, accent: '#B4462E', title: t.worker, sub: t.workerSub },
+      ...(API_BASE ? [] : [
+        { key: 'trade' as const, Icon: Wrench, accent: '#8A6216', title: t.trade, sub: t.tradeSub },
+        { key: 'worker' as const, Icon: HardHat, accent: '#B4462E', title: t.worker, sub: t.workerSub },
+      ]),
     ];
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
@@ -142,9 +148,11 @@ export function TeamAccessScreen() {
             </button>
           ))}
         </div>
-        <div style={{ marginTop: 'auto', paddingTop: 20, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--faint)', textAlign: 'center', lineHeight: 1.6 }}>
-          No passwords. Team &amp; mistri use phone + OTP.<br />Workers just tap their photo.
-        </div>
+        {!API_BASE && (
+          <div style={{ marginTop: 'auto', paddingTop: 20, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--faint)', textAlign: 'center', lineHeight: 1.6 }}>
+            No passwords. Team &amp; mistri use phone + OTP.<br />Workers just tap their photo.
+          </div>
+        )}
       </div>
     );
   }

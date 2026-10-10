@@ -326,6 +326,13 @@ export const PROJECT_ID = 'ambli';
 export const DEV_AUTH: boolean = import.meta.env.VITE_ALLOW_DEV_AUTH === 'true' || !API_BASE;
 
 /**
+ * Top 10 #1 (#769) — the Daily Log's simulated connectivity row ("Simulate offline" / "Back online"). The
+ * `online` flag it flips is simulated, so a production build never shows it. The API-less demo keeps it, and so
+ * does the Vite dev server: the API acceptance suite drives the real outbox replay through this toggle.
+ */
+export const CONNECTIVITY_SIMULATOR: boolean = !API_BASE || import.meta.env.MODE === 'development';
+
+/**
  * Phase 2 Task 9 — the decisions read mode (capability-versioned XOR cutover). `'snapshot'` (the
  * DEFAULT) keeps decisions owned by the full-snapshot slice — old behaviour, unchanged. `'moduleQuery'`
  * flips ownership to the module-owned `GET …/decisions` read (served from the rebuildable projection):

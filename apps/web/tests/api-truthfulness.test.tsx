@@ -75,14 +75,12 @@ describe('API mode shows only live project facts (blank Project B)', () => {
     expect(r.getByText('No progress photos recorded')).toBeInTheDocument();
   });
 
-  it('DashboardScreen: report generation never fakes success', async () => {
+  it('DashboardScreen: no report action — never a faked success, never a dead control (live-bug 6, #769)', async () => {
     const { useStore } = await loadApiMode();
     const { DashboardScreen } = await import('@/screens/DashboardScreen');
     const r = render(<DashboardScreen />);
-    const btn = r.getByRole('button', { name: /weekly report/i });
-    expect(btn).toBeDisabled();
-    expect(btn).toHaveAttribute('title', 'Report export is not available yet');
-    fireEvent.click(btn);
+    expect(r.queryByRole('button', { name: /weekly report/i })).not.toBeInTheDocument();
+    expect(r.queryByText(/Generate Weekly Report/i)).not.toBeInTheDocument();
     expect(useStore.getState().toast ?? '').not.toMatch(/report generated/i);
   });
 
