@@ -5,8 +5,9 @@
  *
  * - a decision opens in the Decision Log (`/decisions/<id>`), which every role holds; the record screen shows
  *   it, or says it is not available to this viewer.
- * - an issued checklist or a re-inspection opens on the field checklist screen (`/site/checklist/<id>`), the
- *   screen its recipients (the engineers it is issued to) fill it on.
+ * - an issued (unassigned) checklist opens on the field checklist screen (`/site/checklist/<id>`), the screen
+ *   its recipients (every engineer) fill it on. A re-inspection is assigned work its role-wide push cannot
+ *   address, so it carries no url (#776 Codex 4239336838).
  */
 export function decisionPath(projectId: string, decisionId: string): string {
   return `/projects/${encodeURIComponent(projectId)}/decisions/${encodeURIComponent(decisionId)}`;

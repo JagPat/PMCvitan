@@ -28,8 +28,9 @@ updated: 2026-10-10
 
 **Top 10 #3b, pushes open their record** (#774, `claude/top10-3b-push-links`): decision pushes (published,
 approved/re-approved, forwarded, consultation requested/responded) carry `/decisions/<id>`, and the issued-checklist
-and re-inspection pushes (engineers only) carry `/site/checklist/<id>`, instead of opening the app root. The
-countersign demand (a sealed, frozen family; the architect role is reserved) is unchanged. 3c (an activity record
+push (every engineer) carries `/site/checklist/<id>`, instead of opening the app root. The re-inspection push stays
+url-less (an engineer-role broadcast of assigned work only its assignee can open), and the countersign demand (a
+sealed, frozen family; the architect role is reserved) is unchanged. 3c (an activity record
 route) follows.
 
 Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head

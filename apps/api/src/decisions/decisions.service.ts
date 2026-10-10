@@ -119,16 +119,18 @@ export class DecisionsService {
     body: string,
     kind: 'client' | 'pmc' | 'member' | 'none' | 'architect',
     member: { userId: string; role: string } | null,
-  ): { body: string; roles?: readonly PushRole[]; targetUserId?: string } {
+    url: string,
+  ): { body: string; roles?: readonly PushRole[]; targetUserId?: string; url: string } {
     // Phase 6 task 4d (4d-ii-a / A7d) — an architect-designated decision pushes at the ARCHITECT
     // role, within the ceiling the catalog generation widened; the claim re-judges the role's
     // current holders through the kernel register (`deciderPushTarget`'s architect arm). The create
     // and draft edits still refuse the designation 409 while 4d-i's reservation stands.
-    if (kind === 'architect') return { body, roles: ['architect'] };
+    // Top 10 #3b (#774, #776 Codex 4239336835) — the approval demand opens the decision it names
+    if (kind === 'architect') return { body, roles: ['architect'], url };
     if (kind === 'member' && member) {
-      return { body, roles: [member.role as 'contractor'], targetUserId: member.userId };
+      return { body, roles: [member.role as 'contractor'], targetUserId: member.userId, url };
     }
-    return { body, roles: [kind === 'pmc' ? 'pmc' : 'client'] };
+    return { body, roles: [kind === 'pmc' ? 'pmc' : 'client'], url };
   }
 
   /** PMC issues a new decision (title/room + 2–4 options) → shows as pending on the
@@ -269,7 +271,7 @@ export class DecisionsService {
           // named member's USER for `member`, the role audience for `client`/`pmc`, and NOBODY
           // for a record (a false approval demand for a decision nobody can approve).
           dispatch: input.publish && !record
-            ? { push: this.deciderPush(`New decision awaiting your approval: ${input.title}`, input.deciderKind, member) }
+            ? { push: this.deciderPush(`New decision awaiting your approval: ${input.title}`, input.deciderKind, member, decisionPath(projectId, id)) }
             : {},
         });
         if (input.publish) {
@@ -390,7 +392,7 @@ export class DecisionsService {
           // is nothing to approve — the bell notice above is the announcement).
           dispatch: record
             ? {}
-            : { push: this.deciderPush(`New decision awaiting your approval: ${d.title}`, d.deciderKind as 'client', member) },
+            : { push: this.deciderPush(`New decision awaiting your approval: ${d.title}`, d.deciderKind as 'client', member, decisionPath(projectId, decisionId)) },
         });
         await tx.notification.create({ data: { projectId, text: notice, color: record ? RECORDED_DECISION_NOTICE_COLOR : PENDING_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.published', eventId } });
         return { resultRef: decisionId, events: [ev] };
