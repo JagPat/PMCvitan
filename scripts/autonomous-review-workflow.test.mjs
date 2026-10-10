@@ -41,7 +41,7 @@ function automatedMergeEvidence(pullRequest, commit = ELIGIBLE_HEAD_COMMIT) {
   return {
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pullRequest; },
-    async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+    async statuses() { return [{ context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
     async commit() { return commit; },
   };
@@ -608,7 +608,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     id: 301,
     context: 'codex-current-head',
     state: 'success',
-    description: 'review: Codex found no blocking issue on this exact head',
+    description: 'review: Codex found no blocking issue on this exact head [wi:none]',
   };
   const statuses = [
     {
@@ -3572,9 +3572,16 @@ test('M3b / #761 Codex 4235631755, 4235659448, 4235659451: the trusted scope che
     base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
   });
   const harness = (message) => {
-    const log = { statuses: [], drafts: [], stickies: [], reads: [] };
+    const log = { statuses: [], drafts: [], stickies: [], reads: [], issueReads: [] };
     const client = {
+      repository: 'JagPat/PMCvitan',
       async pause() {},
+      async statuses() { return []; },
+      // M3c: a cited #N is verified as a local, non-PR issue of this repository
+      async workItemIssue(number) {
+        log.issueReads.push(number);
+        return { status: 200, payload: { number, state: 'open', repository_url: 'https://api.github.com/repos/JagPat/PMCvitan' } };
+      },
       async pullRequest() { return pull(); },
       async setDraft(pr, draft) { log.drafts.push(draft); return { ...pr, draft }; },
       async setStatus(sha, state, description) { log.statuses.push({ sha, state, description }); },
@@ -3627,4 +3634,219 @@ test('M3b / #761 Codex 4235631755, 4235659448, 4235659451: the trusted scope che
   assert.deepEqual(unread.log.drafts, []);
   assert.ok(!unread.log.statuses.some((write) => write.description?.startsWith('scope:')));
   assert.equal(correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY }), null);
+});
+
+// ── M3c (#482 proposal v3 §A, 6095505952): approval-time verification of the cited work item ────────────────────
+// The cited work item is verified when the head is approved, and the verification lives inside the approval: the
+// `codex-current-head` success ends with an approval token. Imports of the new module are dynamic so these tests
+// run (and fail on their assertions) against a base without it.
+const M3C_REPO = 'JagPat/PMCvitan';
+const m3cIssue = (number, { state = 'open', repo = M3C_REPO, pr = false } = {}) => ({
+  status: 200,
+  payload: {
+    number, state, repository_url: `https://api.github.com/repos/${repo}`, ...(pr ? { pull_request: { url: 'x' } } : {}),
+  },
+});
+function m3cClient({ message, statuses = [], issue = () => m3cIssue(750), draft = false } = {}) {
+  const log = [];
+  const writes = [];
+  const pr = {
+    number: 270, additions: 1, deletions: 0, changed_files: 1, state: 'open', draft,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->\n- Work item issue: #9999',
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/270',
+    head: { sha: 'c'.repeat(40), ref: 'claude/m3c', repo: { full_name: M3C_REPO } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: M3C_REPO } },
+  };
+  const client = {
+    repository: M3C_REPO,
+    async pause() {},
+    async pullRequest() { log.push('read:pull'); return { ...pr }; },
+    async statuses(sha) { log.push(`read:statuses:${sha.slice(0, 1)}`); return statuses.filter((status) => !status.sha || status.sha === sha); },
+    async checkRuns() { log.push('read:checks'); return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+    async commit() { log.push('read:commit'); if (message === undefined) throw new Error('GitHub 502'); return { commit: { message } }; },
+    async workItemIssue(number) { log.push(`read:issue:${number}`); return issue(number); },
+    async setStatus(sha, state, description, url, context) {
+      log.push(`write:${state}`);
+      const status = { sha, state, description, context: context ?? 'codex-current-head' };
+      writes.push(status);
+      statuses.unshift(status);
+      return status;
+    },
+    async setDraft(current, value) { log.push(`write:draft:${value}`); return { ...current, draft: value }; },
+    async updateStickyComment() {},
+  };
+  return { client, log, writes, pr };
+}
+const CITED = 'fix\n\nCorrection-Owner: claude\nWork-Item: #750\n';
+const UNCITED = 'fix\n\nCorrection-Owner: claude\n';
+
+test('M3c — the approval token module formats, parses and bounds the token, and classifies one issue read', async () => {
+  const m = await import('./work-item-approval.mjs');
+  assert.equal(m.approvalToken({ state: 'none' }), '[wi:none]');
+  assert.equal(m.approvalToken({ state: 'valid', issue: 750, issueState: 'closed' }), '[wi:#750 closed]');
+  assert.throws(() => m.approvalToken({ state: 'invalid' }));
+  const long = m.withApprovalToken('x'.repeat(300), '[wi:#750 open]');
+  assert.equal(long.length, 140);
+  assert.deepEqual(m.parseApprovalToken(long), { state: 'cited', issue: 750, issueState: 'open' });
+  assert.deepEqual(m.parseApprovalToken('review: clean [wi:none]'), { state: 'none' });
+  for (const legacy of ['review: Codex found no blocking issue on this exact head', '[wi:#0 open]', '[wi:#7 open] trailing', null]) {
+    assert.equal(m.parseApprovalToken(legacy), null, String(legacy));
+  }
+  const classify = (read) => m.classifyIssueRead({ ...read, repository: M3C_REPO, number: 750 }).state;
+  assert.equal(classify(m3cIssue(750)), 'valid');
+  assert.equal(classify(m3cIssue(750, { state: 'closed' })), 'valid', 'open or closed (6094122465)');
+  assert.equal(classify({ status: 404, payload: null }), 'invalid');
+  assert.equal(classify({ status: 410, payload: null }), 'invalid');
+  assert.equal(classify(m3cIssue(750, { pr: true })), 'invalid', 'a pull request is not a work item');
+  assert.equal(classify(m3cIssue(750, { repo: 'other/repo' })), 'invalid', 'a transferred issue answers from elsewhere');
+  assert.equal(classify(m3cIssue(751)), 'invalid', 'a redirect to another number');
+  assert.equal(classify({ status: 403, payload: {} }), 'unreadable');
+  assert.equal(classify({ status: 200, payload: null }), 'unreadable');
+});
+
+test('M3c — trusted scope refuses a cited #N that is missing, transferred or a PR, and retries an unread one', async () => {
+  const head = 'c'.repeat(40);
+  for (const [label, issue] of [
+    ['missing', () => ({ status: 404, payload: null })],
+    ['transferred', () => m3cIssue(750, { repo: 'elsewhere/repo' })],
+    ['a pull request', () => m3cIssue(750, { pr: true })],
+  ]) {
+    const run = m3cClient({ message: CITED, issue });
+    const result = await reviewGate.enforceReviewScope(run.client, run.pr, head);
+    assert.equal(result.allowed, false, label);
+    assert.notEqual(result.retryable, true, label);
+    assert.match(result.detail, new RegExp(`^${WORK_ITEM_TRAILER_SCOPE} cited #750`, 'u'), label);
+    assert.ok(run.log.includes('write:draft:true'), `${label}: drafted, only a new head clears it`);
+  }
+  const unread = m3cClient({ message: CITED, issue: () => { throw new Error('GitHub 502'); } });
+  const held = await reviewGate.enforceReviewScope(unread.client, unread.pr, head);
+  assert.equal(held.allowed, false);
+  assert.equal(held.retryable, true, 'a failed read retries the same SHA');
+  assert.ok(!unread.log.some((entry) => entry.startsWith('write:')), 'no draft, no status');
+  // 4232759666 — the citation is the immutable trailer, never the body: the body's #9999 is not read
+  const valid = m3cClient({ message: CITED });
+  assert.equal((await reviewGate.enforceReviewScope(valid.client, valid.pr, head)).allowed, true);
+  assert.ok(valid.log.includes('read:issue:750') && !valid.log.includes('read:issue:9999'));
+  // an uncited head reads no issue (citing stays optional, 6094067774)
+  const none = m3cClient({ message: UNCITED });
+  assert.equal((await reviewGate.enforceReviewScope(none.client, none.pr, head)).allowed, true);
+  assert.ok(!none.log.some((entry) => entry.startsWith('read:issue')));
+});
+
+test('M3c — the single success writer carries the approval token and writes no green without one', async () => {
+  const head = 'c'.repeat(40);
+  const cited = m3cClient({ message: CITED, issue: () => m3cIssue(750, { state: 'closed' }) });
+  await reviewGate.publishSettledSuccess(cited.client, cited.pr, head, 'review: Codex found no blocking issue on this exact head');
+  assert.match(cited.writes.at(-1).description, / \[wi:#750 closed\]$/u);
+  assert.equal(cited.writes.at(-1).state, 'success');
+  const none = m3cClient({ message: UNCITED });
+  await reviewGate.publishSettledSuccess(none.client, none.pr, head, 'review: clean');
+  assert.equal(none.writes.at(-1).description, 'review: clean [wi:none]');
+  // a cited head whose issue no longer verifies, or an unreadable head commit: no success, the retryable failure
+  for (const run of [
+    m3cClient({ message: CITED, issue: () => ({ status: 404, payload: null }) }),
+    m3cClient({ message: undefined }),
+  ]) {
+    await assert.rejects(reviewGate.publishSettledSuccess(run.client, run.pr, head, 'review: clean'), /success withheld/u);
+    assert.ok(!run.writes.some((write) => write.state === 'success'), 'never green without a token');
+    assert.equal(run.writes.at(-1).state, 'failure');
+  }
+});
+
+test('M3c — only a COMPLETED approval on the same SHA is historical proof; an orphan observation is not', async () => {
+  const head = 'c'.repeat(40);
+  const deleted = () => ({ status: 404, payload: null });
+  // accepted limitation (6091212460): approved with #750 verified, then deleted — recovery reuses that approval
+  const approved = m3cClient({ message: CITED, issue: deleted, statuses: [
+    { sha: head, context: 'codex-current-head', state: 'pending', description: 'review: settling' },
+    { sha: head, context: 'codex-current-head', state: 'success', description: 'review: clean [wi:#750 open]' },
+  ] });
+  await reviewGate.publishSettledSuccess(approved.client, approved.pr, head, 'review: recovered prior clean Codex result on this exact head');
+  assert.match(approved.writes.at(-1).description, /\[wi:#750 open\]$/u);
+  assert.ok(!approved.log.includes('read:issue:750'), 'the historical approval is not re-checked');
+  // v3 gap 3: a verification whose run failed before its success write left nothing durable; a token on a
+  // non-success status, for another #N, or on another SHA is never reused, so the deleted issue is refused
+  for (const statuses of [
+    [{ sha: head, context: 'codex-current-head', state: 'failure', description: 'review: x [wi:#750 open]' }],
+    [{ sha: head, context: 'codex-current-head', state: 'success', description: 'review: x [wi:#751 open]' }],
+    [{ sha: 'd'.repeat(40), context: 'codex-current-head', state: 'success', description: 'review: x [wi:#750 open]' }],
+    [{ sha: head, context: 'claude-current-head', state: 'success', description: 'review: x [wi:#750 open]' }],
+  ]) {
+    const orphan = m3cClient({ message: CITED, issue: deleted, statuses });
+    await assert.rejects(reviewGate.publishSettledSuccess(orphan.client, orphan.pr, head, 'review: clean'), /does not exist/u);
+    assert.ok(orphan.log.includes('read:issue:750'));
+    assert.ok(!orphan.writes.some((write) => write.state === 'success'));
+  }
+});
+
+test('M3c — a success with no approval token is withdrawn before any fallible read, even if every read then fails', async () => {
+  const head = 'c'.repeat(40);
+  const legacy = { id: 1, sha: head, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head' };
+  // v3 §A5 / review 6094939185 gap 4: older green + an already-enabled auto-merge, and every later read times out
+  const run = m3cClient({ message: CITED, statuses: [legacy] });
+  const failingRead = async () => { run.log.push('read:fail'); throw new Error('timeout'); };
+  Object.assign(run.client, { pullRequest: failingRead, statuses: failingRead, checkRuns: failingRead, commit: failingRead, workItemIssue: failingRead });
+  await assert.rejects(reviewGate.ensureTerminalReviewState(run.client, { ...run.pr, auto_merge: { enabled_at: 'x' } }, head, legacy, [legacy]));
+  assert.equal(run.log[0], 'write:pending', 'the withdrawal is the first call of the recovery');
+  assert.match(run.writes[0].description, /withdrawn/u);
+  assert.ok(!run.writes.some((write) => write.state === 'success'), 'nothing restores the old green');
+  // a green that carries a token was verified in its own write: it is not withdrawn up front
+  const tokened = { ...legacy, description: 'review: clean [wi:#750 open]' };
+  const kept = m3cClient({ message: CITED, statuses: [tokened] });
+  Object.assign(kept.client, { pullRequest: async () => { kept.log.push('read:pull'); return null; } });
+  await reviewGate.ensureTerminalReviewState(kept.client, kept.pr, head, tokened, [tokened]);
+  assert.ok(!kept.log.includes('write:pending'));
+});
+
+test('M3c — the merge guard refuses a green whose approval token is missing or disagrees with the head trailer', async () => {
+  const head = 'c'.repeat(40);
+  const guard = async (message, description) => {
+    const run = m3cClient({ message, statuses: [{ sha: head, context: 'codex-current-head', state: 'success', description }] });
+    run.client.pullRequest = async () => ({ ...run.pr, head: { ...run.pr.head, sha: head } });
+    const verdict = { outcome: 'eligible', mergeEligible: true, owner: 'claude', trailerState: 'declared' };
+    return (await reviewGate.authorizeExactHeadMerge(run.client, run.pr, head, verdict)).state;
+  };
+  assert.equal(await guard(CITED, 'review: clean'), 'work_item_unverified', 'a pre-M3c green');
+  assert.equal(await guard(CITED, 'review: clean [wi:#751 open]'), 'work_item_unverified', 'the wrong issue');
+  assert.equal(await guard(CITED, 'review: clean [wi:none]'), 'work_item_unverified', 'a cited head approved as uncited');
+  assert.equal(await guard(UNCITED, 'review: clean [wi:#750 open]'), 'work_item_unverified', 'an uncited head approved as cited');
+  assert.equal(await guard(CITED, 'review: clean [wi:#750 closed]'), 'authorized');
+  assert.equal(await guard(UNCITED, 'review: clean [wi:none]'), 'authorized');
+  // a new head inherits nothing: statuses are read for the exact SHA, so a prior head's green does not count
+  const run = m3cClient({ message: CITED, statuses: [{ sha: 'd'.repeat(40), context: 'codex-current-head', state: 'success', description: 'review: clean [wi:#750 open]' }] });
+  run.client.pullRequest = async () => ({ ...run.pr, head: { ...run.pr.head, sha: head } });
+  assert.equal((await reviewGate.authorizeExactHeadMerge(run.client, run.pr, head, { mergeEligible: true, outcome: 'eligible' })).state, 'gates_not_green');
+});
+
+test('M3c / #764 Codex 4237161956 — run() withdraws a token-less green before any scope, commit or issue read', async () => {
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const body = gate.slice(gate.indexOf('export async function run()'));
+  const statusesRead = body.indexOf('await client.statuses(expectedHead)');
+  const withdraw = body.indexOf('await withdrawUntokenedSuccess(');
+  assert.ok(statusesRead > 0 && withdraw > statusesRead, 'withdrawal follows the status read');
+  // #764 Codex 4237235982 — only the orchestrate path withdraws: the relabel-guard and request-recovery branches,
+  // which return without re-earning an approval, come before it and each end in a return
+  const relabel = body.indexOf("if (mode === 'relabel-guard')");
+  const recovery = body.indexOf("if (mode === 'request-recovery')");
+  assert.ok(statusesRead < relabel && relabel < recovery && recovery < withdraw);
+  const recoveryBranchEnd = body.indexOf('\n  }\n', recovery);
+  assert.match(body.slice(recovery, recoveryBranchEnd), /return;\s*$/u);
+  assert.match(body.slice(relabel, recovery), /return;\s*\}\s*$/u);
+  // nothing outside those returning branches reads anything between the status read and the withdrawal
+  assert.doesNotMatch(body.slice(recoveryBranchEnd, withdraw), /await /u);
+  assert.doesNotMatch(body.slice(statusesRead + 1, relabel), /await /u);
+  for (const later of ['enforceReviewScope(', 'immutableOwnershipHoldIsNewestReview(', 'client.commit(']) {
+    const at = body.indexOf(later, recovery);
+    assert.ok(at === -1 || at > withdraw, `${later} comes after the withdrawal`);
+  }
+  // the helper withdraws only a token-less success
+  const writes = [];
+  const client = { async setStatus(head, state, description) { writes.push({ state, description }); } };
+  const pr = { html_url: 'u' };
+  assert.equal(await reviewGate.withdrawUntokenedSuccess(client, pr, 'c'.repeat(40), { state: 'success', description: 'review: clean' }), true);
+  assert.equal(writes.at(-1).state, 'pending');
+  for (const status of [{ state: 'success', description: 'review: clean [wi:none]' }, { state: 'failure', description: 'x' }, { state: 'pending', description: 'y' }, null]) {
+    assert.equal(await reviewGate.withdrawUntokenedSuccess(client, pr, 'c'.repeat(40), status), false);
+  }
+  assert.equal(writes.length, 1);
 });

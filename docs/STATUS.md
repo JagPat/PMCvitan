@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: maint-m3b-work-item-trailer
-reviewed_merge: 0ce6a3c
-open_pr: 761
+work_item: maint-m3c-work-item-approval
+reviewed_merge: ad742de
+open_pr: 764
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-10
@@ -26,17 +26,16 @@ updated: 2026-10-10
 
 ### Current unit
 
-**M3b, the immutable `Work-Item:` head-commit trailer and its syntax check** (`claude/maint-m3b-work-item-trailer`;
-owner, #482 6090833573 / 6091212460): a unit cites its work item as one `Work-Item: #N` trailer on its exact head
-commit, parsed by git's trailer parser (no Markdown), fail-closed, and reads no issue. `review-scope` checks the
-syntax, and (owner option A, #482 6091714064) the trusted `enforceReviewScope` re-checks it on the exact head: a
-malformed trailer is a drafted `scope: Work-Item trailer:` refusal needing a new head, and an unreadable one is a
-retryable same-SHA hold. Only the cited issue's existence is left to M3c (trusted approval-time verification under
-the historical-validity decision 6091212460), which needs a recorded bounded proposal before any implementation. M3 (#751) is stopped and open at
-`08816b7`; this unit carries finding 4232759655 (#759), and M3c carries 4232759666 and 4232521964. #744 and #742
-stay stopped.
+**M3c §A, approval-time verification of the cited work item** (`claude/maint-m3c-work-item-approval`; proposal v3
+§A, #482 6095505952, under the owner's standing rule 6095837408): when a head is approved, a cited `Work-Item: #N`
+must be a local, non-PR issue of this repository (open or closed). The verification lives inside the approval: the
+single writer of a `codex-current-head` success appends an approval token (`[wi:none]` or `[wi:#N open|closed]`)
+and writes no green without one; only a completed approval on the same SHA is reused as historical proof (later
+deletion or transfer is the accepted limitation, 6091212460); a success without a token is withdrawn first on
+recovery; the merge guard checks the token against the head trailer. Blockers C1 (run-level provenance) and C2
+(activation boundary) stay open for the owner. M3 (#751), #744 and #742 stay stopped; #759, #762 and #763 stay open.
 
-M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
+M3b merged at `ad742de` (#761, reviewed head `cbbb533`). M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
 (#748).
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign

@@ -12,6 +12,7 @@ import {
   OWNERSHIP_CANDIDATE_HELD,
   CI_SCOPE_ADMITTED,
   WORK_ITEM_TRAILER_SCOPE,
+  WORK_ITEM_APPROVAL_WITHDRAWN,
   ownershipInconsistentScopeDetail,
   isOwnershipInconsistentScopeDetail,
   isBodyOnlyOwnershipRecoveryDetail,
@@ -54,6 +55,7 @@ import {
   REPLACEMENT_REQUIRED_LABEL,
 } from './review-efficiency.mjs';
 import { parseWorkItemTrailer } from './work-item-trailer.mjs';
+import { approvalToken, classifyIssueRead, parseApprovalToken, tokenMatchesTrailer, withApprovalToken } from './work-item-approval.mjs';
 import { assessCommittedDirectiveClearance, githubProvenanceReader, headCommitFromGitHub } from './autonomous-drain-clearance.mjs';
 import {
   PRODUCT_CHECKS,
@@ -770,6 +772,23 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/issues/${number}`);
   }
 
+  // M3c: one read of a cited work item for approval-time verification. 404/410 are ANSWERS (the issue does not
+  // exist), so they are returned, not thrown; redirects are followed, so a transferred issue answers from its new
+  // repository and `classifyIssueRead` refuses it. Anything else that fails throws and is classified unreadable.
+  async workItemIssue(number) {
+    const response = await fetch(`${API_ROOT}/repos/${this.repository}/issues/${number}`, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${this.token}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    const text = await response.text();
+    if (response.status === 404 || response.status === 410) return { status: response.status, payload: null };
+    if (!response.ok) throw new Error(`GitHub GET issue #${number} failed (${response.status})`);
+    return { status: response.status, payload: text ? JSON.parse(text) : null };
+  }
+
   createIssue({ title, body, labels }) {
     return this.request(`/repos/${this.repository}/issues`, { method: 'POST', body: { title, body, labels } });
   }
@@ -1337,7 +1356,9 @@ export async function readShaMergeVerdict(client, head) {
     // unreadable. `shaMergeAuthority('')` returns the readable `invalid`/`missing` outcome, which opens
     // the canonical scope hold — never `OWNERSHIP_READ_RETRY`, which would retry a head forever when
     // only a new commit can repair it.
-    return shaMergeAuthority(message);
+    // M3c: the same one read also yields the head's `Work-Item` trailer, which the merge guard checks the
+    // approval token against — no second commit read.
+    return { ...shaMergeAuthority(message), workItem: parseWorkItemTrailer(message) };
   } catch {
     return { outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: 'unreadable' };
   }
@@ -1439,6 +1460,16 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   if (!mergeVerdict?.mergeEligible || candidateBodyHold(live, mergeVerdict)) {
     return { allowed: false, state: 'ownership_not_eligible' };
   }
+  // M3c (v3 §A6) — second line only (native auto-merge never consults this guard): the green this merge acts on
+  // must carry an approval token that agrees with the exact head's immutable `Work-Item` trailer, taken from the
+  // same one SHA read as the merge verdict (read here only when a caller's verdict does not carry it).
+  const trailer = mergeVerdict.workItem ?? parseWorkItemTrailer(await readHeadCommitMessage(
+    async () => (await client.commit(expectedHead))?.commit?.message,
+    typeof client.pause === 'function' ? { sleep: client.pause.bind(client) } : {},
+  ));
+  if (!tokenMatchesTrailer(parseApprovalToken(latestReview.description), trailer)) {
+    return { allowed: false, state: 'work_item_unverified' };
+  }
   // Re-read after remote evidence. A push, base update, retarget or draft
   // transition during validation fails closed.
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
@@ -1472,6 +1503,17 @@ export async function capDefersStoredFailure(client, pullRequest, expectedHead, 
   }
 }
 
+/**
+ * M3c (v3 §A5) — withdraw a `codex-current-head` success that carries no approval token: it was written before
+ * work-item verification existed, so it is not an approval this controller can stand behind. Returns whether it
+ * withdrew. The pending status it writes is then re-earned through the single success writer.
+ */
+export async function withdrawUntokenedSuccess(client, pullRequest, expectedHead, newestStatus) {
+  if (newestStatus?.state !== 'success' || parseApprovalToken(newestStatus.description)) return false;
+  await client.setStatus(expectedHead, 'pending', WORK_ITEM_APPROVAL_WITHDRAWN, pullRequest.html_url);
+  return true;
+}
+
 export async function ensureTerminalReviewState(
   client,
   pullRequest,
@@ -1481,6 +1523,10 @@ export async function ensureTerminalReviewState(
 ) {
   if (!isTerminalReviewStatus(status)) return false;
   if (status.state === 'success') {
+    // M3c (v3 §A5) — a success without an approval token was written before work-item verification existed. It
+    // is withdrawn FIRST, before any fallible read, so a crash or timeout below can never leave it green beneath
+    // an already-enabled native auto-merge; the rest of recovery then re-earns it through the single writer.
+    await withdrawUntokenedSuccess(client, pullRequest, expectedHead, status);
     const latched = persistentReviewFailure(statuses);
     if (latched && !(await capDefersStoredFailure(client, pullRequest, expectedHead, latched))) {
       await client.setStatus(
@@ -1634,6 +1680,57 @@ export async function enforceReviewConvergence(
   return reviewHistoryPolicy(findingHeads);
 }
 
+/**
+ * M3c (v3 §A4) — verify a cited work item for approval. A prior `codex-current-head` SUCCESS on this exact SHA
+ * whose approval token names the same #N is the historical proof: that approval completed with #N verified, so
+ * it is reused and the issue is not read again (a later deletion or transfer is the accepted limitation,
+ * 6091212460). Only a completed approval is reused — there are no separate receipts, so an observation from a run
+ * that failed before its success write cannot be (v3 gap 3). Otherwise the issue is read now.
+ * `{ state: 'valid', issue, issueState, reused } | { state: 'invalid' | 'unreadable', detail }`
+ */
+export async function verifyCitedWorkItem(client, pullRequest, expectedHead, issue) {
+  let statuses;
+  try {
+    statuses = await client.statuses(expectedHead);
+  } catch {
+    return { state: 'unreadable', detail: `the statuses of ${expectedHead.slice(0, 12)} could not be read` };
+  }
+  const prior = (statuses ?? [])
+    .filter((status) => status.context === STATUS_CONTEXT && status.state === 'success')
+    .map((status) => parseApprovalToken(status.description))
+    .find((token) => token?.state === 'cited' && token.issue === issue);
+  if (prior) return { state: 'valid', issue, issueState: prior.issueState, reused: true };
+  const repository = client.repository ?? pullRequest.base?.repo?.full_name;
+  try {
+    const read = await client.workItemIssue(issue);
+    return { ...classifyIssueRead({ ...read, repository, number: issue }), reused: false };
+  } catch {
+    return { state: 'unreadable', detail: `cited #${issue} could not be read` };
+  }
+}
+
+/**
+ * M3c (v3 §A2) — the approval token the exact head earns NOW, or why it earns none. Reads the head's immutable
+ * `Work-Item` trailer: `none` earns `[wi:none]`; `cited #N` earns `[wi:#N open|closed]` only when #N verifies.
+ * `{ token } | { refused: detail, retryable }`
+ */
+export async function approvalTokenForHead(client, pullRequest, expectedHead) {
+  const message = await readHeadCommitMessage(
+    async () => (await client.commit(expectedHead))?.commit?.message,
+    typeof client.pause === 'function' ? { sleep: client.pause.bind(client) } : {},
+  );
+  const trailer = parseWorkItemTrailer(message);
+  if (trailer.state === 'none') return { token: approvalToken({ state: 'none' }) };
+  if (trailer.state !== 'cited') {
+    return { refused: `${WORK_ITEM_TRAILER_SCOPE} ${trailer.detail}`, retryable: trailer.state === 'unreadable' };
+  }
+  const verification = await verifyCitedWorkItem(client, pullRequest, expectedHead, trailer.issue);
+  if (verification.state !== 'valid') {
+    return { refused: `${WORK_ITEM_TRAILER_SCOPE} ${verification.detail}`, retryable: verification.state === 'unreadable' };
+  }
+  return { token: approvalToken(verification) };
+}
+
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
   let changedFiles;
   let lineage;
@@ -1705,6 +1802,15 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       result = { ...result, allowed: false, retryable: true, state: 'work_item_unreadable', detail: `${WORK_ITEM_TRAILER_SCOPE} ${workItem.detail}` };
     } else if (workItem.state === 'malformed') {
       result = { ...result, allowed: false, state: 'work_item_malformed', detail: `${WORK_ITEM_TRAILER_SCOPE} ${workItem.detail}` };
+    } else if (workItem.state === 'cited') {
+      // M3c (v3 §A): a cited work item must be a local, non-PR issue of this repository when the head is approved.
+      // Missing, transferred or a PR is a `scope:` refusal only a new head clears; a failed read retries this SHA.
+      const verification = await verifyCitedWorkItem(client, pullRequest, expectedHead, workItem.issue);
+      if (verification.state === 'unreadable') {
+        result = { ...result, allowed: false, retryable: true, state: 'work_item_unreadable', detail: `${WORK_ITEM_TRAILER_SCOPE} ${verification.detail}` };
+      } else if (verification.state === 'invalid') {
+        result = { ...result, allowed: false, state: 'work_item_invalid', detail: `${WORK_ITEM_TRAILER_SCOPE} ${verification.detail}` };
+      }
     }
   }
   if (result.allowed) return result;
@@ -2445,7 +2551,15 @@ function blockingSettlement(evidence, deferred) {
  * is guarded like the rest (Codex 4229880987): a failed write leaves the retryable follow-up failure.
  */
 export function publishSettledSuccess(client, pullRequest, expectedHead, description) {
-  return withFollowUpRetry(client, pullRequest, expectedHead, () => client.setStatus(expectedHead, 'success', description, pullRequest.html_url));
+  return withFollowUpRetry(client, pullRequest, expectedHead, async () => {
+    // M3c (v3 §A2) — the ONLY writer of a `codex-current-head` success. It earns the approval token itself, in this
+    // run, after the settlement that precedes it, and writes nothing without one: a cited head whose work item
+    // does not verify, or whose trailer cannot be read, never turns green (the failure left here is retryable;
+    // the next run's scope check routes an invalid citation to its refusal).
+    const approval = await approvalTokenForHead(client, pullRequest, expectedHead);
+    if (!approval.token) throw new Error(`success withheld: ${approval.refused}`);
+    return client.setStatus(expectedHead, 'success', withApprovalToken(description, approval.token), pullRequest.html_url);
+  });
 }
 
 export function contextForEvent(eventName, event, dispatchNumber) {
@@ -2557,6 +2671,15 @@ export async function run() {
     );
     return;
   }
+
+  // M3c (v3 §A5; #764 Codex 4237161956, 4237235982) — on the orchestrate path, the one that goes on to re-earn an
+  // approval (recovery of the terminal success, or a fresh review), the FIRST write, before any scope, commit or
+  // issue read: the only reads before it are the pull request (to know the head) and this status list (to know a
+  // green is there). A green without an approval token is withdrawn here, so a later read that stalls until the
+  // job is cancelled can never leave it standing beneath an already-queued native auto-merge. The relabel-guard
+  // and request-recovery modes above return without re-earning anything, so they never withdraw: a withdrawal
+  // there would strand the head pending with no path back to green.
+  await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);
 
   // 2B2: when the newest current-head review is a candidate ownership hold, the exact head is
   // consistently owned by an in-flight candidate whose IMMUTABLE trailer cannot become merge-eligible

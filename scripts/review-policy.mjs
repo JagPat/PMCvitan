@@ -66,6 +66,9 @@ export const CORRECTION_STALLED = 'correction_stalled';
 // M3b (#761, owner choice A on #482 6091714064): the scope-refusal signature for a malformed `Work-Item` trailer on
 // the exact head commit. The trailer lives in the immutable commit, so only a new head clears it, never a body edit.
 export const WORK_ITEM_TRAILER_SCOPE = 'Work-Item trailer:';
+// M3c (v3 §A5): the first write on a terminal-success recovery whose success carries no approval token — an
+// approval written before work-item verification existed is withdrawn before any fallible read, then re-earned.
+export const WORK_ITEM_APPROVAL_WITHDRAWN = 'review: withdrawn — approval predates work-item verification; re-approving';
 export const OWNERSHIP_READ_RETRY = 'validation: head commit ownership temporarily unreadable — retrying';
 // A consistent CANDIDATE head (e.g. codex) is held pending independent reviewer activation, never merged.
 export const OWNERSHIP_CANDIDATE_HELD = 'validation: candidate owner held for independent reviewer activation';
