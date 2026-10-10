@@ -3850,3 +3850,72 @@ test('M3c / #764 Codex 4237161956 — run() withdraws a token-less green before 
   }
   assert.equal(writes.length, 1);
 });
+
+test('#765 / #764 Codex 4237311999 — an unreadable cited work item is held under its own retryable name, not as ownership', async () => {
+  const policy = await import('./review-policy.mjs');
+  const name = 'validation: cited work item temporarily unreadable';
+  const head = 'c'.repeat(40);
+  const log = { statuses: [], stickies: [], drafts: [] };
+  const pr = {
+    number: 280, additions: 1, deletions: 0, changed_files: 1, state: 'open', draft: false,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/280',
+    head: { sha: head, ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+  };
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async pause() {},
+    async pullRequest() { return { ...pr }; },
+    async statuses() { return []; },
+    async commit() { return { commit: { message: 'fix\n\nCorrection-Owner: claude\nWork-Item: #750\n' } }; },
+    async workItemIssue() { throw new Error('GitHub 503'); },
+    async setStatus(sha, state, description) { log.statuses.push({ state, description }); },
+    async setDraft(current, draft) { log.drafts.push(draft); return { ...current, draft }; },
+    async updateStickyComment(number, body) { log.stickies.push(body); },
+  };
+  const scope = await reviewGate.enforceReviewScope(client, pr, head);
+  assert.equal(scope.retryable, true);
+  await reviewGate.holdUnreadableCandidateHead(client, pr, head, scope, []);
+  const published = log.statuses.at(-1).description;
+  assert.ok(published.startsWith(name), `published: ${published}`);
+  assert.doesNotMatch(published, /ownership/u);
+  assert.doesNotMatch(log.stickies.at(-1), /could not be read; the required status stays red until a later run re-reads the commit/u);
+  assert.match(log.stickies.at(-1), /cited work item could not be read/u);
+  assert.deepEqual(log.drafts, [], 'no draft');
+  // retryable and no correction owed, like the ownership read retry
+  const status = { context: 'codex-current-head', state: 'failure', description: published };
+  assert.equal(correctionReasonFor(status), null);
+  assert.equal(reviewGate.isTerminalReviewStatus(status), true);
+  assert.equal(policy.isRetryableReviewFailureDescription(published), true);
+  // an unreadable head COMMIT is still the ownership read retry
+  const commitless = { ...client, async commit() { throw new Error('GitHub 502'); } };
+  const unreadHead = await reviewGate.enforceReviewScope(commitless, pr, head);
+  log.statuses.length = 0;
+  await reviewGate.holdUnreadableCandidateHead(commitless, pr, head, unreadHead, []);
+  assert.ok(log.statuses.at(-1).description.startsWith('validation: head commit ownership temporarily unreadable'));
+});
+
+test('#766 Codex 4237403349 / 4237403345 — an approval-time read failure keeps its read-retry name; STATUS names the open PR', async () => {
+  const head = 'c'.repeat(40);
+  const writes = [];
+  const pr = { number: 281, html_url: 'u', head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } }, base: { repo: { full_name: 'JagPat/PMCvitan' } } };
+  const base = {
+    repository: 'JagPat/PMCvitan',
+    async pause() {},
+    async statuses() { return []; },
+    async setStatus(sha, state, description) { writes.push({ state, description }); },
+  };
+  // the issue read passed at scope, then fails at the success write: the work-item read retry, never the filing retry
+  const issueDown = { ...base, async commit() { return { commit: { message: 'fix\n\nCorrection-Owner: claude\nWork-Item: #765\n' } }; }, async workItemIssue() { throw new Error('GitHub 503'); } };
+  await assert.rejects(reviewGate.publishSettledSuccess(issueDown, pr, head, 'review: clean'), /success withheld/u);
+  assert.ok(writes.at(-1).description.startsWith('validation: cited work item temporarily unreadable'), writes.at(-1).description);
+  // an unreadable head commit there is the ownership read retry
+  const commitDown = { ...base, async commit() { throw new Error('GitHub 502'); } };
+  await assert.rejects(reviewGate.publishSettledSuccess(commitDown, pr, head, 'review: clean'));
+  assert.ok(writes.at(-1).description.startsWith('validation: head commit ownership temporarily unreadable'));
+  assert.ok(!writes.some((write) => write.state === 'success'));
+  // the runner's STATUS parser treats only `none`/empty as no PR, so the Now block must never say `null`
+  const status = await readFile(new URL('../docs/STATUS.md', import.meta.url), 'utf8');
+  assert.match(status, /^open_pr: (none|\d+)$/mu);
+});
