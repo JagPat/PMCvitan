@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: maint-m3c-work-item-approval
-reviewed_merge: ad742de
-open_pr: 764
+work_item: maint-765-work-item-read-retry
+reviewed_merge: 191f8a0
+open_pr: null
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-10
@@ -26,16 +26,13 @@ updated: 2026-10-10
 
 ### Current unit
 
-**M3c §A, approval-time verification of the cited work item** (`claude/maint-m3c-work-item-approval`; proposal v3
-§A, #482 6095505952, under the owner's standing rule 6095837408): when a head is approved, a cited `Work-Item: #N`
-must be a local, non-PR issue of this repository (open or closed). The verification lives inside the approval: the
-single writer of a `codex-current-head` success appends an approval token (`[wi:none]` or `[wi:#N open|closed]`)
-and writes no green without one; only a completed approval on the same SHA is reused as historical proof (later
-deletion or transfer is the accepted limitation, 6091212460); a success without a token is withdrawn first on
-recovery; the merge guard checks the token against the head trailer. Blockers C1 (run-level provenance) and C2
-(activation boundary) stay open for the owner. M3 (#751), #744 and #742 stay stopped; #759, #762 and #763 stay open.
+**#765, a distinct retryable hold for an unreadable cited work item** (`claude/maint-765-work-item-read-retry`;
+#764 Codex 4237311999, under the standing rule 6095837408): when a cited issue cannot be read after the head commit
+was, the gate publishes `validation: cited work item temporarily unreadable — retrying` — retryable, no draft, no
+correction owed — instead of the ownership read retry. Blockers C1 and C2 of M3c stay open for the owner; #751, #744
+and #742 stay stopped; #759, #762, #763 and #765 stay open.
 
-M3b merged at `ad742de` (#761, reviewed head `cbbb533`). M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
+M3c §A merged at `191f8a0` (#764, reviewed head `fb7d3ed`). M3b merged at `ad742de` (#761, reviewed head `cbbb533`). M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
 (#748).
 
 **Delivery-speed maintenance** (owner decisions 2026-10-08 on #482). #731 hit the review-continuity redesign

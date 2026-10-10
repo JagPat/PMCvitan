@@ -70,6 +70,15 @@ export const WORK_ITEM_TRAILER_SCOPE = 'Work-Item trailer:';
 // approval written before work-item verification existed is withdrawn before any fallible read, then re-earned.
 export const WORK_ITEM_APPROVAL_WITHDRAWN = 'review: withdrawn — approval predates work-item verification; re-approving';
 export const OWNERSHIP_READ_RETRY = 'validation: head commit ownership temporarily unreadable — retrying';
+// M3c follow-up (#765, #764 Codex 4237311999): a cited work item whose issue could not be read (403, 5xx, network)
+// after the head commit WAS read. The same retryable, no-draft, no-correction hold as OWNERSHIP_READ_RETRY, under its
+// own name, so a work-item API outage is never reported as an ownership fault.
+export const WORK_ITEM_READ_RETRY = 'validation: cited work item temporarily unreadable — retrying';
+/** Is `description` one of the gate's retryable same-SHA read holds (ownership or work item)? */
+export function isReadRetryDescription(description) {
+  const text = String(description ?? '');
+  return text.startsWith(OWNERSHIP_READ_RETRY) || text.startsWith(WORK_ITEM_READ_RETRY);
+}
 // A consistent CANDIDATE head (e.g. codex) is held pending independent reviewer activation, never merged.
 export const OWNERSHIP_CANDIDATE_HELD = 'validation: candidate owner held for independent reviewer activation';
 // Leads a `ci:` failure whose failed `review-scope` job the controller's own scope check of the same exact
@@ -223,6 +232,7 @@ const RETRYABLE_REVIEW_FAILURES = [
   // correction is owed. Classifying it retryable is what teaches the recovery authorizer to retry and the
   // watchdog to open no correction lease. A later unit publishes this status; here the consumers recognise it.
   OWNERSHIP_READ_RETRY,
+  WORK_ITEM_READ_RETRY,
 ];
 
 export function isRetryableReviewFailureDescription(description) {

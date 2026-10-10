@@ -9,6 +9,8 @@ import {
   STATUS_CONTEXT,
   FOLLOW_UP_RETRY,
   OWNERSHIP_READ_RETRY,
+  WORK_ITEM_READ_RETRY,
+  isReadRetryDescription,
   OWNERSHIP_CANDIDATE_HELD,
   CI_SCOPE_ADMITTED,
   WORK_ITEM_TRAILER_SCOPE,
@@ -235,7 +237,7 @@ export function isTerminalReviewStatus(status) {
     // Ownership-verdict lifecycle (unit 2A2-i): an `unreadable` head is published as this `validation:`-prefixed
     // status. It is a TERMINAL review failure so the recovery authorizer can classify it — and it is in the
     // shared retryable set, so it resolves as retryable (gate recovers) rather than persistent (owed).
-    || description.startsWith(OWNERSHIP_READ_RETRY)
+    || isReadRetryDescription(description)
     || description.includes('current-head Codex finding')
     || description.includes('Codex submitted a current-head review')
     || description.includes('Codex review timed out')
@@ -1137,6 +1139,15 @@ function ownershipHoldNotice(verdict) {
           + 'red until a reviewer activates the candidate owner or a new head supersedes it.',
       };
     case 'unreadable':
+      if (verdict.workItemUnreadable) {
+        // #765: the commit was read; only its cited work item was not. No owner is asserted either way.
+        return {
+          owner: null,
+          correctionState: null,
+          next: 'The cited work item could not be read; the required status stays red until a later run '
+            + 're-reads it and recovers. No correction is owed.',
+        };
+      }
       // Transient: a later run re-reads the head and recovers. Assert no owner.
       return {
         owner: 'undeclared',
@@ -1313,7 +1324,7 @@ async function refreshCurrentHead(client, number, expectedHead) {
 export function ownershipStatusWithholdsAutoMerge(status) {
   if (status?.context !== STATUS_CONTEXT || status?.state !== 'failure') return false;
   const description = String(status?.description ?? '');
-  return description.startsWith(OWNERSHIP_READ_RETRY)
+  return isReadRetryDescription(description)
     || description.startsWith(OWNERSHIP_CANDIDATE_HELD)
     || isOwnershipInconsistentScopeDetail('scope', description.replace(/^\s*scope:\s*/u, ''));
 }
@@ -1336,6 +1347,11 @@ export async function setDraftForCurrentHead(
 // The verdict an exact head that could not be read carries: retryable, never an owner.
 const UNREADABLE_VERDICT = Object.freeze({
   outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: 'unreadable',
+});
+// #765: the head commit WAS read but its cited work item could not be. Still `unreadable` (retryable, no draft, never
+// merge-eligible), marked so the hold names the work item rather than the commit's ownership.
+const WORK_ITEM_UNREADABLE_VERDICT = Object.freeze({
+  outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: 'unreadable', workItemUnreadable: true,
 });
 
 // 2B2: the single SHA-scoped merge-authority read for one run. The controller reads the exact head
@@ -1640,7 +1656,7 @@ export async function ensureTerminalReviewState(
     // 2B2: a retryable `OWNERSHIP_READ_RETRY` failure must not flip readiness here either — the exact
     // head could not be read, so a later run re-reads and recovers. Drafting on a transient read
     // failure would strand the PR draft until a manual re-ready; every other recovered failure drafts.
-    if (!String(status.description ?? '').startsWith(OWNERSHIP_READ_RETRY)) {
+    if (!isReadRetryDescription(status.description)) {
       await setDraftForCurrentHead(
         client,
         pullRequest.number,
@@ -1807,7 +1823,7 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       // Missing, transferred or a PR is a `scope:` refusal only a new head clears; a failed read retries this SHA.
       const verification = await verifyCitedWorkItem(client, pullRequest, expectedHead, workItem.issue);
       if (verification.state === 'unreadable') {
-        result = { ...result, allowed: false, retryable: true, state: 'work_item_unreadable', detail: `${WORK_ITEM_TRAILER_SCOPE} ${verification.detail}` };
+        result = { ...result, allowed: false, retryable: true, readRetry: WORK_ITEM_READ_RETRY, state: 'work_item_unreadable', detail: `${WORK_ITEM_TRAILER_SCOPE} ${verification.detail}` };
       } else if (verification.state === 'invalid') {
         result = { ...result, allowed: false, state: 'work_item_invalid', detail: `${WORK_ITEM_TRAILER_SCOPE} ${verification.detail}` };
       }
@@ -1817,7 +1833,7 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
   // An unread candidate head is RETRYABLE on this same SHA (Codex finding 4101926931 on #630): no draft, no
   // `scope:` hold, no correction notice. The caller publishes the retryable `OWNERSHIP_READ_RETRY` (or, on a
   // failed CI run, re-runs it), so a later read of the same head and body recovers.
-  if (result.retryable) return { ...result, verdict: UNREADABLE_VERDICT };
+  if (result.retryable) return { ...result, verdict: result.readRetry === WORK_ITEM_READ_RETRY ? WORK_ITEM_UNREADABLE_VERDICT : UNREADABLE_VERDICT };
 
   const live = await setDraftForCurrentHead(
     client,
@@ -1952,14 +1968,16 @@ export async function handleCiFailure(
 // so the watchdog can request a fresh same-SHA recovery of this newer status (Codex findings 4101926931
 // and 4103259698 on #630).
 export async function holdUnreadableCandidateHead(client, pullRequest, expectedHead, scope, existingStatuses = []) {
-  await client.setStatus(expectedHead, 'failure', OWNERSHIP_READ_RETRY, pullRequest.html_url);
+  // #765: a cited work item that could not be read is held under its own retryable name, not as ownership.
+  const readRetry = scope?.readRetry ?? OWNERSHIP_READ_RETRY;
+  await client.setStatus(expectedHead, 'failure', readRetry, pullRequest.html_url);
   await settleRecoveryRequest(
     client, expectedHead, pullRequest, pendingRecoveryRequest(existingStatuses), 'unreadable candidate head',
   );
   const stillCurrent = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (stillCurrent) {
     await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
-      ownershipReason: OWNERSHIP_READ_RETRY,
+      ownershipReason: readRetry,
       verdict: scope?.verdict ?? UNREADABLE_VERDICT,
     });
   }
@@ -2088,7 +2106,7 @@ export async function revalidateFinalReviewPolicy(
   // An unread candidate head keeps its retryable meaning here, never `scope_required`: callers publish
   // `OWNERSHIP_READ_RETRY` without drafting, so a later read of the same SHA recovers.
   if (scope.retryable) {
-    return { state: 'ownership_withheld', allowed: false, ownershipReason: OWNERSHIP_READ_RETRY, verdict: scope.verdict, pullRequest };
+    return { state: 'ownership_withheld', allowed: false, ownershipReason: scope.readRetry ?? OWNERSHIP_READ_RETRY, verdict: scope.verdict, pullRequest };
   }
   if (!scope.allowed) return { ...scope, state: 'scope_required' };
 
