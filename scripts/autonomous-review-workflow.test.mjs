@@ -16,6 +16,10 @@ import {
 import { correctionReasonFor } from './correction-lease.mjs';
 import { correctionRouting, parseCorrectionOwner } from './correction-owner.mjs';
 
+// M3c C1 — the gate stamps the run id and records a receipt from the Actions env; in CI that env is the test
+// runner's own, so clear it to keep the suite hermetic and the runner's GITHUB_ENV untouched.
+for (const name of ['GITHUB_RUN_ID', 'GITHUB_ENV', 'RUNNER_TEMP']) delete process.env[name];
+
 const {
   hasTerminalReviewFailureAfterPending,
   MAX_REVIEW_ATTEMPTS,

@@ -17,6 +17,10 @@ import { capDefersStoredFailure, capFiles, cappedSuccessDetail, EVIDENCE_SNAPSHO
 import { pendingFollowUpHeads } from './review-follow-up.mjs';
 import { FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
+// M3c C1 — the gate stamps the run id and records a receipt from the Actions env; in CI that env is the test
+// runner's own, so clear it to keep the suite hermetic and the runner's GITHUB_ENV untouched.
+for (const name of ['GITHUB_RUN_ID', 'GITHUB_ENV', 'RUNNER_TEMP']) delete process.env[name];
+
 const CODEX = 'chatgpt-codex-connector[bot]';
 const HEAD = 'c'.repeat(40);
 const FILES = [
