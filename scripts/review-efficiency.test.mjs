@@ -1842,6 +1842,12 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     ['a tab', `fix\n\nWork\tItem: #750\n${owner}\n`],
     ['a dotted spelling', `fix\n\nWork.Item: #750\n${owner}\n`],
     ['mixed separators', `fix\n\nwork -_ item: #750\n${owner}\n`],
+    // 4235885068: a list, quote, numbered, emphasised or code-ticked prefix is still a field line
+    ['a list bullet', `fix\n\n- Work-Item: #750\n\n${owner}\n`],
+    ['a quote', `fix\n\n> Work-Item: #750\n\n${owner}\n`],
+    ['a numbered item', `fix\n\n1. Work-Item: #750\n\n${owner}\n`],
+    ['emphasis', `fix\n\n**Work-Item**: #750\n\n${owner}\n`],
+    ['code ticks', `fix\n\n\`Work-Item: #750\`\n\n${owner}\n`],
   ]) {
     const result = parse(message);
     assert.equal(result.state, 'malformed', label);

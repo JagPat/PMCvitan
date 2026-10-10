@@ -17,10 +17,13 @@
 import { asciiTrim, gitParsedTrailers } from './git-trailers.mjs';
 
 const FIELD_KEY = 'work-item';
-// Any line that names the field, however it is spelled or indented: `Work-Item:`, `work item:`, `WORK_ITEM :`,
-// `Work  Item:`, `Work\tItem:`, `Work.Item:` — any run of horizontal whitespace or punctuation between the words
-// (#761 Codex 4235863454), so an attempted citation in an unrecognised spelling is `malformed`, never `none`.
-const FIELD_LINE = /^[^\S\n]*work(?:[^\S\n]|[-_.])*item[^\S\n]*:/imu;
+// Any line whose FIRST WORD names the field, however it is spelled, prefixed or decorated: `Work-Item:`,
+// `work item:`, `WORK_ITEM :`, `Work  Item:`, `Work.Item:` (#761 Codex 4235863454), and behind any run of
+// non-alphanumeric prefix — indentation, list bullets, a numbered-list marker, quotes, emphasis or code ticks
+// (`- Work-Item:`, `> Work-Item:`, `1. Work-Item:`, `**Work-Item**:`; 4235885068). So an attempted citation in an
+// unrecognised form is `malformed`, never `none`. Prose that merely mentions the field after another word is
+// not a field line.
+const FIELD_LINE = /^[^\p{L}\p{N}\n]*(?:\d+[.)][^\p{L}\p{N}\n]*)?work(?:[^\S\n]|[-_.])*item[^\p{L}\p{N}\n:]*:/imu;
 const FIELD_LINES = new RegExp(FIELD_LINE.source, 'gimu');
 const VALUE = /^#([1-9]\d{0,9})$/u;
 
