@@ -83,3 +83,13 @@ jobs:
           STATUS_CONTEXT: codex-current-head
           CLAUDE_REVIEW_APP_SLUG: ${{ vars.CLAUDE_REVIEW_APP_SLUG }}
         run: node scripts/autonomous-review-gate.mjs
+      # M3c C1 — the orchestrate step names a receipt artifact only after it WROTE a cited approval; uploading it
+      # makes this run the provenance a later run checks before it reuses that approval without re-reading the issue.
+      - name: Upload work-item approval receipt (M3c C1)
+        if: always() && env.WI_APPROVAL_ARTIFACT != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ env.WI_APPROVAL_ARTIFACT }}
+          path: ${{ runner.temp }}/wi-approval/
+          retention-days: 90
+          if-no-files-found: error

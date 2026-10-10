@@ -170,6 +170,8 @@ export function isCodexReplyOnlyReview(review, comments) {
 }
 export const REQUIRED_CHECKS = [...GATE_CHECKS, ...PRODUCT_CHECKS];
 export const STATUS_CONTEXT = 'codex-current-head';
+// M3c C2: the mirror of STATUS_CONTEXT that only the M3c controller writes; the owner switches branch protection to it.
+export const APPROVAL_STATUS_CONTEXT = 'codex-current-head/wi';
 export const CLAUDE_SHADOW_CONTEXT = 'claude-independent-review';
 // The trusted-controller status that WOULD replace `codex-current-head` when the role transfer activates.
 // Like `codex-current-head`, it is published only by the trusted controller from ADAPTER-VERIFIED shadow
