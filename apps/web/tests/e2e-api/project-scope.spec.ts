@@ -253,10 +253,8 @@ test('empty project is truthful', async ({ page, browser }) => {
   await expect(page.getByText(/Ambli/)).toHaveCount(0);
   await expect(page.getByTestId('tile-photos-value')).toHaveText('0');
   await expect(page.getByText('No progress photos recorded')).toBeVisible();
-  const report = page.getByRole('button', { name: /weekly report/i });
-  await expect(report).toBeDisabled();
-  await expect(report).toHaveAttribute('title', 'Report export is not available yet');
-  await report.click({ force: true }); // even a forced click must not fake success
+  // live-bug 6 / Top 10 #1 (#769): no export exists, so there is no report action at all — never a fake success
+  await expect(page.getByRole('button', { name: /weekly report/i })).toHaveCount(0);
   await expect(page.getByText(/report generated/i)).toHaveCount(0);
 
   // the portfolio stays truthful: B's card reports its real (zero) rollup
