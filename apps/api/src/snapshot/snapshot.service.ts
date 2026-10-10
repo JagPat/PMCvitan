@@ -234,7 +234,7 @@ export class SnapshotService {
           const event = n.eventId ? noticeEvents.get(n.eventId) : undefined;
           if (!event || !n.decisionId) return [];
           const rendered = this.decisionsQuery.renderKindedNotice(n.kind, event, visibleById.get(n.decisionId), role, userId, noticeRevisions);
-          return rendered ? [{ text: rendered.text, time: n.time, color: rendered.color, ...noticeSubject(n.decisionId) }] : [];
+          return rendered ? [{ id: n.id, at: n.at.toISOString(), text: rendered.text, time: n.time, color: rendered.color, ...noticeSubject(n.decisionId) }] : [];
         }
         // KIND-LESS rows (every notice written today): the delivered text-prefix filters, unchanged.
         if (stripPendingNotice(n)) return [];
@@ -244,7 +244,7 @@ export class SnapshotService {
         if (role !== 'pmc' && isWithdrawnDecisionNotice(n.text)) return [];
         // live bug 1b-3 — a kindless inspection notice carries the inspection its writer stamped; the
         // inspection screen judges it against the viewer's own slice
-        return [{ text: n.text, time: n.time, color: n.color, ...noticeSubject(n.decisionId), ...(n.inspectionId ? { inspectionId: n.inspectionId } : {}) }];
+        return [{ id: n.id, at: n.at.toISOString(), text: n.text, time: n.time, color: n.color, ...noticeSubject(n.decisionId), ...(n.inspectionId ? { inspectionId: n.inspectionId } : {}) }];
       }),
       companies: companies.map((c) => ({
         id: c.id,

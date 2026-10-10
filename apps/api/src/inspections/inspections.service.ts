@@ -306,7 +306,10 @@ export class InspectionsService {
           // the body the notification + push carry — for a closing sign-off it is rebuilt from the
           // TX-CURRENT activity name the participant returns (R2-F2 pattern: never a stale
           // pre-transaction read)
-          let body = 'Inspection approved. Contractor and client notified.';
+          // Top 10 #4a (#778) — the notice names WHICH inspection was approved: two approvals were two
+          // identical lines in the bell (live-bug 2). Named by id, never by its title (user text the bell's
+          // keyword classifier would read).
+          let body = `Inspection ${inspectionId} approved. Contractor and client notified.`;
           if (activity) {
             // approving the closing inspection IS the completion (edge 2): awaiting_signoff
             // → done, stamping the sign-off civil day, via the activities participant so the

@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import { viewerIsDecider } from '@vitan/shared';
-import { notificationLink, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
+import { notificationLink, noticeTime, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
 import { inspectionsReadMode } from '@/data/apiGateway';
 import { SCREEN_META } from '@/lib/screens';
 import { ChevronRight } from '@/lib/icons';
@@ -76,6 +76,15 @@ export function NotificationPanel() {
       <div className={styles.panel} role="dialog" aria-label="Notifications">
         <div className={styles.label}>NOTIFICATIONS</div>
         <div className={styles.list}>
+          {/* Top 10 #4a (#778) — an empty bell says so, rather than opening onto a blank panel */}
+          {notifications.length === 0 && (
+            <div className={styles.item} data-testid="notif-empty" role="status">
+              <div style={{ flex: 1 }}>
+                <div className={styles.text}>You're all caught up</div>
+                <div className={styles.time}>Approvals, inspections and drawings you need to know about will appear here.</div>
+              </div>
+            </div>
+          )}
           {notifications.map((n, i) => {
             const link = notificationLink(n, role, records);
             const body = (
@@ -83,16 +92,16 @@ export function NotificationPanel() {
                 <span className={styles.dot} style={{ background: n.color }} />
                 <div style={{ flex: 1 }}>
                   <div className={styles.text}>{n.text}</div>
-                  <div className={styles.time}>{n.time}</div>
+                  <div className={styles.time}>{noticeTime(n)}</div>
                 </div>
                 {link && <ChevronRight size={15} style={{ alignSelf: 'center', opacity: 0.5, flex: 'none' }} />}
               </>
             );
             // A notification about a record opens THAT record (live bug 1); one about a screen the
             // role can reach opens the screen. Others render as plain, non-interactive rows.
-            if (!link) return <div className={styles.item} key={i}>{body}</div>;
+            if (!link) return <div className={styles.item} key={n.id ?? i}>{body}</div>;
             return (
-              <div key={i}>
+              <div key={n.id ?? i}>
                 <button
                   className={styles.item}
                   data-testid="notif-item"

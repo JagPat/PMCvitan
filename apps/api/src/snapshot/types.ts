@@ -430,7 +430,9 @@ export interface SnapshotDto {
   dailyLog: DailyLogDto | null;
   /** `decisionId` (live bug 1) names the decision a notice is about, present only when that decision
    *  is in the viewer's own decision slice, so the bell can open the record itself. */
-  notifications: { text: string; time: string; color: string; decisionId?: string; inspectionId?: string }[];
+  /** Top 10 #4a (#778) — `id` is the stored row's identity and `at` its write instant (ISO): the bell keys rows
+   *  by id and renders the time from `at`; `time` is the legacy stored label, kept for older clients. */
+  notifications: { id: string; at: string; text: string; time: string; color: string; decisionId?: string; inspectionId?: string }[];
   /** Firms & consultants attached to the project (client company, contractor, MEP/structural consultants, …). */
   companies: CompanyDto[];
   /** The project location tree (zones → rooms → elements) the decision register groups by. */

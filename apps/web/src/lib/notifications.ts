@@ -216,3 +216,19 @@ export function notificationLink(n: AppNotification, role: Role, records: Notifi
   if (!records.inspections[screen].some((i) => i.id === id)) return { screen, item: null, missing: true, loading: false };
   return { screen, item: id, missing: false, loading: false };
 }
+
+/** Top 10 #4a (#778, live-bug 2) — when a notice happened, from its write instant. The stored label is frozen
+ *  at "just now" on every server row, so two notices hours apart both read "just now" and look like one
+ *  duplicated event; the label is the fallback only for a notice that carries no instant (demo, older server). */
+export function noticeTime(n: Pick<AppNotification, 'at' | 'time'>, now: number = Date.now()): string {
+  const at = n.at ? Date.parse(n.at) : NaN;
+  if (Number.isNaN(at)) return n.time;
+  const mins = Math.floor(Math.max(0, now - at) / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}

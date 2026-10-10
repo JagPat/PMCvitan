@@ -135,6 +135,68 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     expect(after.decided).toBe(true);
   });
 
+  /**
+   * Top 10 #4a (#778, live-bug 2) — ONE logical event writes ONE notice, at its source. The owner saw "Inspection
+   * approved…" twice, both "just now". A keyed retry, an unkeyed double-tap after commit and two concurrent
+   * decides each leave exactly one approval notice; and the notice names WHICH inspection, so two approvals of
+   * different inspections are two distinguishable lines, each served with its row id and write instant.
+   */
+  it('decide (approve): one approval writes ONE notice — keyed retry, unkeyed double-tap and a concurrent decide add none', async () => {
+    const { p, pmcA, pmcB } = await freshProject();
+    const approveNotices = () => t.prisma.notification.findMany({ where: { projectId: p, text: { contains: ' approved. Contractor and client notified.' } } });
+    const submitted = async (title: string) => {
+      await svc.create(p, createInput({ title, items: ['Rebar'] }), asPmc(pmcA, p), `k-once-c-${title}`);
+      const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title }, include: { items: true } });
+      await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, asPmc(pmcA, p), `k-once-s-${title}`);
+      return insp.id;
+    };
+
+    const first = await submitted('Once A');
+    await svc.decide(p, first, { approve: true, rejectedItemIds: [] }, asPmc(pmcA, p), 'k-once-1');
+    await svc.decide(p, first, { approve: true, rejectedItemIds: [] }, asPmc(pmcA, p), 'k-once-1'); // keyed retry → replay
+    await expect(svc.decide(p, first, { approve: true, rejectedItemIds: [] }, asPmc(pmcA, p), undefined)).rejects.toThrow(); // unkeyed double-tap
+    expect((await approveNotices()).map((n) => n.text)).toEqual([`Inspection ${first} approved. Contractor and client notified.`]);
+
+    // two PMCs decide the same inspection at once: one wins, the other is refused, one notice
+    const second = await submitted('Once B');
+    const raced = await Promise.allSettled([
+      svc.decide(p, second, { approve: true, rejectedItemIds: [] }, asPmc(pmcA, p), 'k-once-race-a'),
+      svc.decide(p, second, { approve: true, rejectedItemIds: [] }, asPmc(pmcB, p), 'k-once-race-b'),
+    ]);
+    expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const notices = await approveNotices();
+    expect(notices.filter((n) => n.text.includes(second))).toHaveLength(1);
+
+    // two approvals of two inspections are two DISTINGUISHABLE notices, served with identity and instant
+    expect(new Set(notices.map((n) => n.text)).size).toBe(2);
+    const winnerA = raced[0].status === 'fulfilled';
+    const snap = await svc.decide(p, second, { approve: true, rejectedItemIds: [] }, asPmc(winnerA ? pmcA : pmcB, p), winnerA ? 'k-once-race-a' : 'k-once-race-b'); // the winner's keyed replay
+    const served = snap.notifications.filter((n) => n.text.endsWith(' approved. Contractor and client notified.'));
+    expect(served.map((n) => n.id).sort()).toEqual(notices.map((n) => n.id).sort());
+    for (const n of served) expect(new Date(n.at).toISOString()).toBe(n.at);
+  });
+
+  it('decide (reject): one rejection writes ONE re-inspection notice under a keyed retry', async () => {
+    const { p, pmcA } = await freshProject();
+    const eng = `it-inidem-u-engO-${projSeq}`;
+    await t.prisma.user.create({ data: { id: eng, projectId: p, role: 'engineer', name: 'Eng O', email: `${eng}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: eng, role: 'engineer', status: 'active' } });
+    await svc.create(p, createInput({ title: 'Once R' }), asPmc(pmcA, p), 'k-oncer-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p }, include: { items: true } });
+    await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, { sub: eng, role: 'engineer', projectId: p } as AuthUser, 'k-oncer-2');
+    const reject = { approve: false, rejectedItemIds: [insp.items[0].id], assigneeId: eng };
+    await svc.decide(p, insp.id, reject, asPmc(pmcA, p), 'k-oncer-3');
+    await svc.decide(p, insp.id, reject, asPmc(pmcA, p), 'k-oncer-3'); // keyed retry → replay
+    expect(await t.prisma.notification.count({ where: { projectId: p, text: { startsWith: 'Re-inspection ' } } })).toBe(1);
+  });
+
+  it('create: a keyed retry of an issued checklist writes ONE notice', async () => {
+    const { p, pmcA } = await freshProject();
+    await svc.create(p, createInput({ title: 'Once C' }), asPmc(pmcA, p), 'k-oncec-1');
+    await svc.create(p, createInput({ title: 'Once C' }), asPmc(pmcA, p), 'k-oncec-1');
+    expect(await t.prisma.notification.count({ where: { projectId: p, text: { startsWith: 'New checklist issued: ' } } })).toBe(1);
+  });
+
   it('legacy: an UNKEYED create still works (additive rollout — unkeyed clients keep functioning)', async () => {
     const { p, pmcA } = await freshProject();
     await svc.create(p, createInput(), asPmc(pmcA, p), undefined);

@@ -138,6 +138,8 @@ describe('Phase 2 Task 10 (Module 4) — activity/phase commands are idempotent 
     expect(await t.prisma.domainEvent.count({ where: { projectId: p, eventType: 'activity.completion_requested' } })).toBe(1);
     expect(await t.prisma.auditLog.count({ where: { projectId: p, action: 'activity.complete_requested' } })).toBe(1);
     expect(await t.prisma.inspection.count({ where: { projectId: p, activityId: id, closing: true } })).toBe(1); // exactly ONE closing
+    // Top 10 #4a (#778) — and exactly ONE sign-off notice: one logical event, one notice at its source
+    expect(await t.prisma.notification.count({ where: { projectId: p, text: { startsWith: 'Sign-off requested: ' } } })).toBe(1);
     expect((await t.prisma.activity.findUniqueOrThrow({ where: { id } })).status).toBe('awaiting_signoff');
   });
 
