@@ -26,6 +26,7 @@ export function DailyLogScreen() {
   const checkOut = useStore((s) => s.checkOut);
   const crewStep = useStore((s) => s.crewStep);
   const openQr = useStore((s) => s.openQr);
+  const openItem = useStore((s) => s.openItem);
   const flagMismatch = useStore((s) => s.flagMismatch);
   const addProgressPhoto = useStore((s) => s.addProgressPhoto);
   const submitDailyLog = useStore((s) => s.submitDailyLog);
@@ -283,7 +284,13 @@ export function DailyLogScreen() {
                     that changes what a user must DO, and it keeps the weight it already carried
                     on the mismatch arm. */}
                 <div style={{ fontSize: 13, marginTop: 2, color: m.matched ? 'var(--green-text)' : 'var(--red-solid)', fontWeight: m.matched ? 400 : 600 }}>
-                  {m.matched ? `✓ Matches locked decision ${m.decisionId}` : `⚠ MISMATCH — not the approved ${m.decisionId}`}
+                  {m.matched ? '✓ Matches locked decision ' : '⚠ MISMATCH — not the approved '}
+                  {/* Top 10 #3 (#774) — the decision it is checked against opens at its own record */}
+                  {m.decisionId ? (
+                    <button type="button" onClick={() => openItem('decision-log', m.decisionId!)} data-testid={`material-decision-${i}`} style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}>
+                      {m.decisionId}
+                    </button>
+                  ) : null}
                 </div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)', marginTop: 3 }}>{m.qty} · {m.zone}</div>
                 {/* Wave 0 / F-1b — THE MISMATCH CONTROL, at a real touch target.

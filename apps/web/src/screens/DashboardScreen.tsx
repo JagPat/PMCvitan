@@ -35,6 +35,12 @@ export function DashboardScreen() {
   const checkedIn = useStore((s) => s.dailyLog?.checkedIn ?? false);
   const submitted = useStore((s) => s.dailyLog?.submitted ?? false);
   const setScreen = useStore((s) => s.setScreen);
+  const openItem = useStore((s) => s.openItem);
+  // Top 10 #3 (#774) — the one review a single-review tile names opens AT that review, not the queue
+  const onlyReviewId = useStore((s) => {
+    const open = s.reviews.filter((r) => !r.decided);
+    return open.length === 1 ? open[0].id : null;
+  });
   const flash = useStore((s) => s.flash);
   // live project identity — never the PROJECT seed, so switching projects re-labels this screen
   const name = useStore((s) => s.name);
@@ -69,7 +75,7 @@ export function DashboardScreen() {
       ? { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setScreen('decision-log') }
       : { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed), onClick: () => setScreen('decision-log') },
     inspectionsKnown
-      ? { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => setScreen('inspect-review') }
+      ? { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => (onlyReviewId ? openItem('inspect-review', onlyReviewId) : setScreen('inspect-review')) }
       : { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: UNKNOWN, accent: 'var(--accent)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
     // API mode never claims WHICH items failed beyond the recorded count — the seeded
     // "Drain slope · Terrace" copy is demo-only prototype fidelity

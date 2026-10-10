@@ -426,6 +426,30 @@ export interface ActionItem {
   tone: 'amber' | 'red' | 'green' | 'ink';
   /** how many things the item stands for, when it groups several the viewer acts on one by one */
   count?: number;
+  /** Top 10 #3 (#774) — the ONE record the item is about, opened on `screen` (`openItem`) instead of the list.
+   *  Set only when the item names exactly one record that `screen` resolves. */
+  item?: string;
+}
+
+/** Top 10 #3 (#774) — the record a list of exactly one names, else nothing (the item opens its list). */
+const only = (xs: readonly { id: string }[]): string | undefined => (xs.length === 1 ? xs[0].id : undefined);
+
+/** Top 10 #3 (#774) — where ONE decision opens for this viewer, the bell's rule (`notificationLink`): the
+ *  approval screen when it awaits them as its decider, else the Decision Log, which every role holds. */
+export function decisionRecordLink(s: AppState, d: Decision): { screen: ScreenKey; item: string } {
+  const awaits = (d.status === 'pending' || d.status === 'change') && !d.draft && viewerIsDecider(d, s.role, s.sessionUserId);
+  return { screen: awaits ? 'client-decisions' : 'decision-log', item: d.id };
+}
+
+/** Top 10 #3 (#774) — where ONE inspection opens for this viewer, or null when no inspection screen the role
+ *  holds resolves it (the bell's rule: the review screen opens a queued review or an outstanding checklist;
+ *  the checklist screen opens an outstanding checklist, or the one in the slot while it is unsubmitted). */
+export function inspectionRecordLink(s: AppState, id: string): { screen: ScreenKey; item: string } | null {
+  if (s.role === 'pmc' && [...s.reviews, ...s.openChecklists].some((i) => i.id === id)) return { screen: 'inspect-review', item: id };
+  if (s.role === 'engineer' && [...s.openChecklists, ...(s.checklist && !s.checklist.submitted ? [s.checklist] : [])].some((i) => i.id === id)) {
+    return { screen: 'engineer-check', item: id };
+  }
+  return null;
 }
 
 const plural = (n: number, s = 's') => (n === 1 ? '' : s);
@@ -461,11 +485,11 @@ export function selectActionItems(s: AppState): ActionItem[] {
   const myPending = pending.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
   const myChanges = changes.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
   if (myPending.length) {
-    items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber', count: myPending.length });
+    items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber', count: myPending.length, item: only(myPending) });
   }
   if (myChanges.length) {
     // a reopened decision BLOCKS the work driven by it until the decider re-approves
-    items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red', count: myChanges.length });
+    items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red', count: myChanges.length, item: only(myChanges) });
   }
 
   // Phase 6 task 4d-ii-b / B3 (the plan's §A.2 Inbox arm) — the AWAITING branch. The architect's item is
@@ -476,23 +500,23 @@ export function selectActionItems(s: AppState): ActionItem[] {
   // actionable pending/change states (#677 review, finding 4145060024). Empty while the doors stand.
   const awaiting = selectAwaitingCountersign(s);
   if (s.role === 'architect' && awaiting.length) {
-    items.push({ key: 'arch-countersign', title: `${awaiting.length} decision${plural(awaiting.length)} awaiting your countersign`, detail: names(awaiting), screen: 'decision-log', cta: 'Review & countersign', tone: 'amber', count: awaiting.length });
+    items.push({ key: 'arch-countersign', title: `${awaiting.length} decision${plural(awaiting.length)} awaiting your countersign`, detail: names(awaiting), screen: 'decision-log', cta: 'Review & countersign', tone: 'amber', count: awaiting.length, item: only(awaiting) });
   }
   if (s.role === 'pmc' && awaiting.length) {
     const stranded = awaiting.filter(isStrandedCountersign);
     const held = awaiting.filter((d) => !isStrandedCountersign(d));
-    if (stranded.length) items.push({ key: 'pmc-stranded', title: `${stranded.length} decision${plural(stranded.length)} stranded — no architect to countersign`, detail: names(stranded), screen: 'decision-log', cta: 'Resolve', tone: 'red', count: stranded.length });
-    if (held.length) items.push({ key: 'pmc-countersign', title: `${held.length} decision${plural(held.length)} awaiting the architect’s countersign`, detail: names(held), screen: 'decision-log', cta: 'View', tone: 'ink' });
+    if (stranded.length) items.push({ key: 'pmc-stranded', title: `${stranded.length} decision${plural(stranded.length)} stranded — no architect to countersign`, detail: names(stranded), screen: 'decision-log', cta: 'Resolve', tone: 'red', count: stranded.length, item: only(stranded) });
+    if (held.length) items.push({ key: 'pmc-countersign', title: `${held.length} decision${plural(held.length)} awaiting the architect’s countersign`, detail: names(held), screen: 'decision-log', cta: 'View', tone: 'ink', item: only(held) });
   }
 
   if (s.role === 'engineer') {
-    if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber' });
+    if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber', item: s.checklist.id });
     if (s.dailyLog && !s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', screen: 'daily-log', cta: 'Open daily log', tone: 'ink' });
-    if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber' });
+    if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: only(unacked) });
   }
 
   if (s.role === 'contractor') {
-    if (unacked.length) items.push({ key: 'con-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber' });
+    if (unacked.length) items.push({ key: 'con-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: only(unacked) });
     if (changes.length) items.push({ key: 'con-change', title: `${changes.length} change request${plural(changes.length)} open`, detail: 'Awaiting the PMC', screen: 'decision-log', cta: 'View', tone: 'ink' });
   }
 
@@ -502,19 +526,19 @@ export function selectActionItems(s: AppState): ActionItem[] {
     const toReview = s.reviews.filter((r) => !r.decided);
     // Top 10 #2 (#771) — each review is the PMC's own decision, so the item counts every one of them: the
     // For You badge then agrees with the Inspection Review badge and the Dashboard tile
-    if (toReview.length) items.push({ key: 'pmc-reviews', title: `${toReview.length} inspection${plural(toReview.length)} awaiting your review`, detail: names(toReview), screen: 'inspect-review', cta: 'Review', tone: 'amber', count: toReview.length });
+    if (toReview.length) items.push({ key: 'pmc-reviews', title: `${toReview.length} inspection${plural(toReview.length)} awaiting your review`, detail: names(toReview), screen: 'inspect-review', cta: 'Review', tone: 'amber', count: toReview.length, item: only(toReview) });
     // round-3 Codex F1 — the PMC MANAGEMENT summaries cover only decisions held by OTHER
     // deciders: a PMC-held row is the PMC's own approval task (the decider items above), not
     // something to describe as awaiting someone else. When every other-held decision is
     // client-held (the pre-4b world), the texts are byte-identical to what they always said.
     const otherChanges = changes.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
     const otherPending = pending.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
-    if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), screen: 'decision-log', cta: 'Open', tone: 'red', count: otherChanges.length });
+    if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), screen: 'decision-log', cta: 'Open', tone: 'red', count: otherChanges.length, item: only(otherChanges) });
     if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red' });
     if (otherPending.length) {
       const allClientHeld = otherPending.every((d) => (d.deciderKind ?? 'client') === 'client');
       const who = allClientHeld ? 'the client' : otherPending.length === 1 ? 'its decider' : 'their deciders';
-      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', screen: 'decision-log', cta: 'View', tone: 'ink' });
+      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', screen: 'decision-log', cta: 'View', tone: 'ink', item: only(otherPending) });
     }
     // Task 6: unstarted work whose DRAWING gate blocks it — the derived conclusion, surfaced
     const drawingBlocked = s.activities.filter((a) => {

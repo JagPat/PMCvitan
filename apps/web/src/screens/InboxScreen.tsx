@@ -136,6 +136,8 @@ export function InboxScreen() {
 
 /** The For You cards: one row per item, each a one-tap jump to where the thing is done. */
 function ActionList({ items, onOpen }: { items: ActionItem[]; onOpen: (screen: ActionItem['screen']) => void }) {
+  // Top 10 #3 (#774) — an item about ONE record opens that record, at its reload-safe URL, not the list
+  const openItem = useStore((s) => s.openItem);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
       {items.map((it) => {
@@ -153,7 +155,7 @@ function ActionList({ items, onOpen }: { items: ActionItem[]; onOpen: (screen: A
             </div>
             <Button
               variant={it.tone === 'red' ? 'danger' : it.tone === 'amber' ? 'accent' : 'ink'}
-              onClick={() => onOpen(it.screen)}
+              onClick={() => (it.item ? openItem(it.screen, it.item) : onOpen(it.screen))}
               data-testid={`inbox-cta-${it.key}`}
               style={{ flex: 'none', padding: '9px 13px', fontSize: 13 }}
             >

@@ -15,6 +15,7 @@ export function ClientHealthScreen() {
   const workers = useStore(selectTotalWorkers);
   const checkedIn = useStore((s) => s.dailyLog?.checkedIn ?? false);
   const setScreen = useStore((s) => s.setScreen);
+  const openItem = useStore((s) => s.openItem);
   const short = useStore((s) => s.short); // live project identity, not the seed
   const stage = useStore((s) => s.stage);
   // B7 (F-12): the same derived progress the Dashboard shows
@@ -91,7 +92,8 @@ export function ClientHealthScreen() {
       {/* CTA */}
       {pending.length > 0 && (
         <button
-          onClick={() => setScreen('client-decisions')}
+          // Top 10 #3 (#774) — one waiting decision opens AT that decision
+          onClick={() => (pending.length === 1 ? openItem('client-decisions', pending[0].id) : setScreen('client-decisions'))}
           style={{ width: '100%', marginTop: 16, background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', borderRadius: 16, padding: 18, textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
         >
           <div>
@@ -106,14 +108,15 @@ export function ClientHealthScreen() {
       <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.2em', color: 'var(--faint)', margin: '22px 0 10px' }}>RECENTLY APPROVED</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {approved.map((a) => (
-          <div key={a.id} style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: '12px 14px', display: 'flex', gap: 12, alignItems: 'center' }}>
+          // Top 10 #3 (#774) — an approved decision opens its record in the Decision Log, which every role holds
+          <button key={a.id} onClick={() => openItem('decision-log', a.id)} data-testid={`health-approved-${a.id}`} aria-label={`Open decision ${a.title}`} style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: '12px 14px', display: 'flex', gap: 12, alignItems: 'center', width: '100%', textAlign: 'left', cursor: 'pointer', font: 'inherit', color: 'inherit' }}>
             <Swatch swatch={a.photoSwatch ?? ''} size={42} radius={9} lock />
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: 13.5 }}>{a.title}</div>
               <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>By {a.approver} · {a.date}</div>
             </div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--muted)' }}>{signed(a.cost ?? 0)}</div>
-          </div>
+          </button>
         ))}
       </div>
     </div>

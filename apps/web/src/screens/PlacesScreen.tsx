@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectVisibleDecisions } from '@/store/selectors';
+import { decisionRecordLink, inspectionRecordLink, selectVisibleDecisions } from '@/store/selectors';
 import { activitiesReadMode, resolveDrawingUrl } from '@/data/apiGateway';
 import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer, Button, CreateMenu } from '@/components';
 import { createOptionsFor, type CreateKind } from '@/lib/createOptions';
@@ -10,13 +10,12 @@ import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { captureAtPlace } from '@/lib/captureContext';
 import { stampText } from '@/lib/captureStamp';
-import { DrawingViewer } from '@/screens/DrawingsScreen';
 import { PlaceStructure } from '@/screens/PlaceStructure';
 import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
 import { childrenOf, subtreeIds, trailOf, placeContents, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
-import { can, SNAPSHOT_SITE_PHOTO_LIMIT, type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
+import { can, SNAPSHOT_SITE_PHOTO_LIMIT, type Photo, type PlacedInspection, type ScreenKey, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 const KIND_LABEL: Record<string, string> = { zone: 'ZONE', room: 'ROOM', element: 'OBJECT' };
@@ -76,14 +75,21 @@ export function PlacesScreen() {
   const clearPlaceFocus = useStore((s) => s.clearPlaceFocus);
   useEffect(() => {
     if (placeFocus === null) return;
-    // A crumb tapped INSIDE the drawing viewer requests a place while this screen is already
-    // on stage: without closing the overlay the destination changes behind it and the crumb
-    // looks inert. The viewer is the only overlay carrying crumbs, so it is the only one closed.
-    setOpenDrawing(null);
     clearPlaceFocus();
   }, [placeFocus, clearPlaceFocus]);
   const [zoom, setZoom] = useState<string | null>(null);
-  const [openDrawing, setOpenDrawing] = useState<Drawing | null>(null);
+  // Top 10 #3 (#774) — a place's records open AT THEIR OWN URL (reload-safe, shareable, Back returns here):
+  // a drawing on the Drawings screen, a decision where this viewer reads it, an inspection on the inspection
+  // screen the role holds — never a local overlay, and never a row that goes nowhere
+  const openDrawing = useStore((s) => s.openDrawing);
+  const openItem = useStore((s) => s.openItem);
+  // id → the screen that opens it for this viewer (plain strings, so the shallow compare holds)
+  const inspectionScreens = useStore(useShallow((s) => Object.fromEntries(
+    s.placedInspections.flatMap((i) => { const l = inspectionRecordLink(s, i.id); return l ? [[i.id, l.screen]] : []; }),
+  ) as Record<string, ScreenKey>));
+  const decisionScreens = useStore(useShallow((s) => Object.fromEntries(
+    selectVisibleDecisions(s).map((d) => [d.id, decisionRecordLink(s, d).screen]),
+  ) as Record<string, ScreenKey>));
   // Creating FROM a place: the Site Map was read-only, so the one screen that knows exactly
   // where a record belongs was also the one screen that could not create one. `creating` is
   // the menu; `creatingKind` is the form it chose. Both carry the place with them.
@@ -240,7 +246,7 @@ export function PlacesScreen() {
             <IntentReality
               placed={contents.drawings[0]}
               photos={contents.photos}
-              onOpenDrawing={() => setOpenDrawing(contents.drawings[0].drawing)}
+              onOpenDrawing={() => openDrawing(contents.drawings[0].drawing.id)}
               onZoom={setZoom}
             />
           )}
@@ -292,8 +298,10 @@ export function PlacesScreen() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                   {contents.inspections.map((i) => {
                     const st = inspectionStatus(i);
+                    const screen = inspectionScreens[i.id];
+                    const RowTag = screen ? 'button' : 'div';
                     return (
-                      <div key={i.id} data-testid={`place-inspection-${i.id}`} style={{ ...rowCard, cursor: 'default' }}>
+                      <RowTag key={i.id} data-testid={`place-inspection-${i.id}`} style={screen ? rowCard : { ...rowCard, cursor: 'default' }} {...(screen ? { onClick: () => openItem(screen, i.id), 'aria-label': `Open inspection ${i.id}` } : {})}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{i.id}</span>
@@ -301,7 +309,7 @@ export function PlacesScreen() {
                           </div>
                         </div>
                         <span style={{ ...relChip, color: st.color, borderColor: st.color }}>{st.label}</span>
-                      </div>
+                      </RowTag>
                     );
                   })}
                 </div>
@@ -334,7 +342,7 @@ export function PlacesScreen() {
                   const cur = drawing.current;
                   const rm = RELATION_META[relation];
                   return (
-                    <button key={drawing.id} onClick={() => setOpenDrawing(drawing)} data-testid={`place-drawing-${drawing.number}`} style={rowCard}>
+                    <button key={drawing.id} onClick={() => openDrawing(drawing.id)} data-testid={`place-drawing-${drawing.number}`} style={rowCard}>
                       <div style={{ width: 38, height: 48, flex: 'none', borderRadius: 5, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         {!cur && <FileText size={15} color="#b8b2a6" />}
                       </div>
@@ -381,7 +389,7 @@ export function PlacesScreen() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                 {contents.decisions.map((d) => (
-                  <div key={d.id} data-testid={`place-decision-${d.id}`} style={{ ...rowCard, cursor: 'default' }}>
+                  <button key={d.id} data-testid={`place-decision-${d.id}`} style={rowCard} onClick={() => openItem(decisionScreens[d.id] ?? 'decision-log', d.id)} aria-label={`Open decision ${d.id}`}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{d.id}</span>
@@ -390,7 +398,7 @@ export function PlacesScreen() {
                       {d.approvedOption && <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{d.approvedOption}{d.material ? ` — ${d.material}` : ''}</div>}
                     </div>
                     <DecisionChip status={d.status} />
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -399,7 +407,6 @@ export function PlacesScreen() {
       )}
 
       {zoom && <PhotoViewer url={zoom} onClose={() => setZoom(null)} />}
-      {openDrawing && <DrawingViewer drawing={openDrawing} onClose={() => setOpenDrawing(null)} />}
       {creating && (
         <CreateMenu
           title="Add here"

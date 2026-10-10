@@ -144,11 +144,10 @@ describe('the Site Map adopts the requested place, once', () => {
   });
 });
 
-describe('following a crumb from inside an open overlay actually shows the destination', () => {
-  it('closes the drawing viewer when a place request is consumed in place (Codex P2)', async () => {
-    // A drawing opened from the Site Map renders its own location block, whose crumbs call
-    // `openPlace`. The screen is ALREADY 'places', so the focus effect moves `sel` behind the
-    // still-open modal and the crumb appears to do nothing until the viewer is closed by hand.
+describe('a Site Map drawing opens at its own URL, and its crumbs lead back (Top 10 #3, #774)', () => {
+  it('opens the drawing on the Drawings screen at /drawings/<id>, not a local overlay; a crumb returns to the place', async () => {
+    // It used to open a viewer overlay over the Site Map: not reload-safe, not shareable, and a crumb inside it
+    // had to close the overlay by hand (Codex P2). Now it is the drawing's own route, and Back returns here.
     const drawingRev = {
       id: 'r1', rev: 'A', status: 'for_construction', mime: 'application/pdf',
       url: '/drawings/rev/r1', sizeBytes: 10, note: '', issuedBy: 'PMC', issuedAt: 'now', acks: [],
@@ -165,12 +164,14 @@ describe('following a crumb from inside an open overlay actually shows the desti
     const r = render(<PlacesScreen />);
 
     fireEvent.click(r.getByTestId('place-drawing-A-101'));
-    expect(r.getByTestId('drawing-place-DWG-1')).toBeInTheDocument(); // the viewer is open
+    expect(useStore.getState().screen).toBe('drawings');
+    expect(useStore.getState().routeItem).toBe('DWG-1');
+    expect(r.queryByTestId('drawing-place-DWG-1')).not.toBeInTheDocument(); // no overlay on the Site Map
 
-    // follow a crumb from inside the viewer — the destination must become visible
+    // the drawing's location crumb (on the Drawings screen) leads back to the place
     act(() => { useStore.getState().openPlace('site'); });
-    expect(r.queryByTestId('drawing-place-DWG-1')).not.toBeInTheDocument();
-    expect(r.getByTestId('place-breadcrumb').textContent).toContain('Site');
+    expect(useStore.getState().screen).toBe('places');
+    expect(useStore.getState().routeItem).toBe('site');
   });
 });
 
