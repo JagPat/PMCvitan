@@ -192,3 +192,25 @@ describe('#775 Codex 4239201827 — inspection links only from a settled slice',
   });
 });
 
+describe('#775 root-cause audit — every record link waits for its slice', () => {
+  it('a drawing card and the client Health CTA never open live controls from an unsettled slice', async () => {
+    const { useStore } = await demo({ role: 'contractor' });
+    const sel = await import('@/store/selectors');
+    const d = useStore.getState().drawings.find((x) => !x.draft && x.current?.status === 'for_construction');
+    if (d) {
+      useStore.setState({ drawings: [{ ...d, ackedByMe: false, recipientOfCurrent: true }] });
+      expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'con-ack')?.item).toBe(d.id);
+      useStore.setState({ drawingsLoad: 'error' });
+      expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'con-ack')?.item).toBeUndefined();
+    }
+    cleanup();
+    const client = await demo({ role: 'client' });
+    const waiting = sel.selectDecisionsNeedingViewer(client.useStore.getState());
+    client.useStore.setState({ decisions: client.useStore.getState().decisions.filter((x) => x.id === waiting[0].id), decisionsLoad: 'error' });
+    const { ClientHealthScreen } = await import('@/screens/ClientHealthScreen');
+    const r = render(<ClientHealthScreen />);
+    fireEvent.click(r.getByText(/1 decision waiting for you/));
+    expect(where(client.useStore)).toEqual({ screen: 'decision-log', item: waiting[0].id });
+  });
+});
+

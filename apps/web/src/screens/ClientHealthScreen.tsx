@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectApprovedDecisions, selectDecisionsNeedingViewer, selectTotalWorkers, selectProjectProgress } from '@/store/selectors';
+import { decisionRecordLink, selectApprovedDecisions, selectDecisionsNeedingViewer, selectTotalWorkers, selectProjectProgress } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, ProgressBar, Swatch } from '@/components';
 import { ArrowRight } from '@/lib/icons';
@@ -93,7 +93,12 @@ export function ClientHealthScreen() {
       {pending.length > 0 && (
         <button
           // Top 10 #3 (#774) — one waiting decision opens AT that decision
-          onClick={() => (pending.length === 1 ? openItem('client-decisions', pending[0].id) : setScreen('client-decisions'))}
+          // #775 root-cause audit — through the shared rule, so an unsettled slice opens the read-only Log
+          onClick={() => {
+            if (pending.length !== 1) return setScreen('client-decisions');
+            const link = decisionRecordLink(useStore.getState(), pending[0]);
+            openItem(link.screen, link.item);
+          }}
           style={{ width: '100%', marginTop: 16, background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', borderRadius: 16, padding: 18, textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
         >
           <div>

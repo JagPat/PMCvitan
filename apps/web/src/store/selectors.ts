@@ -11,7 +11,7 @@
 import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
-import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
+import { decisionsSliceSettled, drawingsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
 import { activitiesReadMode, inspectionsReadMode } from '@/data/apiGateway';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -485,6 +485,9 @@ export function selectActionItems(s: AppState): ActionItem[] {
   // The unacked nudge is RECIPIENT-aware (Phase 1 Task 3): only someone on the
   // governing revision's frozen distribution is asked to acknowledge. Absent
   // recipientOfCurrent (legacy/demo data) keeps the old everyone-builds behavior.
+  // #775 root-cause audit — a drawing card names its drawing only from a settled register (the bell's rule), so
+  // a retained row never opens acknowledgement controls on a stale revision
+  const unackedItem = (xs: readonly { id: string }[]): string | undefined => (drawingsSliceSettled(s) ? only(xs) : undefined);
   const unacked = s.drawings.filter((d) => !d.draft && d.current && d.current.status === 'for_construction' && !d.ackedByMe && (d.recipientOfCurrent ?? true));
   const blocked = s.activities.filter((a) => a.status === 'blocked');
   const names = (xs: { title?: string; name?: string; number?: string }[], n = 3) =>
@@ -529,11 +532,11 @@ export function selectActionItems(s: AppState): ActionItem[] {
   if (s.role === 'engineer') {
     if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber', item: inspectionsSettledForLinks(s) ? s.checklist.id : undefined });
     if (s.dailyLog && !s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', screen: 'daily-log', cta: 'Open daily log', tone: 'ink' });
-    if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: only(unacked) });
+    if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: unackedItem(unacked) });
   }
 
   if (s.role === 'contractor') {
-    if (unacked.length) items.push({ key: 'con-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: only(unacked) });
+    if (unacked.length) items.push({ key: 'con-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: unackedItem(unacked) });
     if (changes.length) items.push({ key: 'con-change', title: `${changes.length} change request${plural(changes.length)} open`, detail: 'Awaiting the PMC', screen: 'decision-log', cta: 'View', tone: 'ink', item: only(changes) });
   }
 
