@@ -479,3 +479,26 @@ describe('Top 10 #3c follow-up — #781 Codex on f3bfe37', () => {
   });
 });
 
+describe('Top 10 #3c follow-up — #781 Codex on 1dd46d5', () => {
+  it('4240078396 — a NEWER attempt refused first leaves the older one pending (reverse settlement order)', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a, ...rest] = useStore.getState().activities;
+    const settles: Array<(ok: boolean) => void> = [];
+    useStore.setState({ routeItem: a.id, deleteActivity: vi.fn(() => new Promise<boolean>((r) => { settles.push(r); })) });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    const confirm = () => {
+      fireEvent.click(r.getByTestId(`edit-${a.id}`));
+      fireEvent.click(r.getByTestId('activity-delete'));
+      fireEvent.click(r.getByText('Delete activity'));
+    };
+    confirm(); confirm();
+    await act(async () => { settles[1](false); }); // the newer attempt is refused first
+    act(() => useStore.setState({ activities: rest })); // the row leaves while the older one is outstanding
+    expect(r.getByTestId('activities-loading')).toBeInTheDocument();
+    await act(async () => { settles[0](false); }); // the older is refused too: now someone else's removal
+    expect(useStore.getState().routeItem).toBe(a.id);
+    expect(r.getByText('Show the whole schedule')).toBeInTheDocument();
+  });
+});
+

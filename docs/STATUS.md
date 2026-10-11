@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: top10-3c-followup-780
-reviewed_merge: 3f021f6
-open_pr: 781
+work_item: top10-3c-followup-782
+reviewed_merge: 223f42d
+open_pr: 783
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-11
@@ -26,12 +26,11 @@ updated: 2026-10-11
 
 ### Current unit
 
-**Top 10 #3c follow-up** (#780, `claude/top10-3c-followup-780`): the two findings the review gate deferred from #777.
-A refused or unreachable delete of the routed activity withdraws its release intent (`deleteActivity` resolves
-whether the server accepted it), so a later removal by someone else reads as not found. A Site Map hand-off made
-while the activity slice is unsettled keeps its focus intent until reconciliation lands. Top 10 #4a (#778) follows.
+**Top 10 #3c follow-up 2** (#782, `claude/top10-3c-followup-782`): every outstanding delete attempt on the routed
+activity is held, and each settlement removes only its own, so the route stays pending while any attempt is in flight
+(the reverse settlement order the gate deferred from #781). Top 10 #4a (#778) follows.
 
-Top 10 #3c merged at `3f021f6` (#777, reviewed head `43c5fcc`; #779 fixed in it). Top 10 #3b merged at `24c19cd` (#776, reviewed head `16da8f6`). Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head
+The #780 follow-up merged at `223f42d` (#781, reviewed head `1dd46d5`). Top 10 #3c merged at `3f021f6` (#777, reviewed head `43c5fcc`; #779 fixed in it). Top 10 #3b merged at `24c19cd` (#776, reviewed head `16da8f6`). Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head
 `cdd4e33`); #771 stays open for live validation. Top 10 #2a merged at `3e2cba6` (#772, reviewed head `293ded6`). Top 10 #1 merged at `9b1d119` (#770, reviewed head `db39901`; #769 open for live validation). M3c C1/C2 merged at `14ce2bd` (#768, reviewed head `3f84b12`); the owner switches the required context to
 `codex-current-head/wi` once a head has reported it (steps on #482). #765 merged at `1814160` (#766, reviewed head `80a1c50`). M3c §A merged at `191f8a0` (#764, reviewed head `fb7d3ed`). M3b merged at `ad742de` (#761, reviewed head `cbbb533`). M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
 (#748).

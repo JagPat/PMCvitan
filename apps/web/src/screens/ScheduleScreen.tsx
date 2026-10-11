@@ -432,27 +432,27 @@ export function ScheduleScreen() {
   // #781 Codex 4240026311 — the attempt in flight is tracked apart from an ACCEPTED one: while it is pending, the
   // routed activity leaving the schedule (a refresh, someone else's delete) neither releases the route nor reads as
   // not found; only this same attempt's acceptance releases it, and a refusal leaves the route standing
-  // #781 Codex 4240054970 — keyed by ATTEMPT: a second confirm on a slow connection is its own attempt, so an
-  // earlier attempt's refusal never clears the marker of one still outstanding
+  // #781 Codex 4240054970 / 4240078396 — EVERY outstanding attempt is held: a second confirm on a slow connection
+  // is its own attempt, and an attempt's settlement (in whichever order they settle) removes only itself, so the
+  // route stays pending while any attempt for it is still in flight
   const deleteAttempt = useRef(0);
-  const [pendingDelete, setPendingDelete] = useState<{ id: string; attempt: number } | null>(null);
-  const pendingDeleteId = pendingDelete?.id ?? null;
+  const [pendingDeletes, setPendingDeletes] = useState<ReadonlyArray<{ id: string; attempt: number }>>([]);
   const released = routeItem !== null && routeItem === deletedId && !routed;
-  const deleting = routeItem !== null && routeItem === pendingDeleteId && !routed;
+  const deleting = routeItem !== null && !routed && pendingDeletes.some((p) => p.id === routeItem);
   useEffect(() => {
     if (released) setRouteItem(null);
   }, [released, setRouteItem]);
   useEffect(() => {
     if (deletedId !== null && routeItem !== deletedId) setDeletedId(null);
-    if (pendingDeleteId !== null && routeItem !== pendingDeleteId) setPendingDelete(null);
-  }, [routeItem, deletedId, pendingDeleteId]);
+    if (pendingDeletes.some((p) => p.id !== routeItem)) setPendingDeletes((cur) => cur.filter((p) => p.id === routeItem));
+  }, [routeItem, deletedId, pendingDeletes]);
   // #780 — a refused or unreachable delete releases nothing, so a later removal by someone else reads as not found
   const onDeleted = (id: string, outcome: Promise<boolean>) => {
     if (id !== routeItem) return;
     const attempt = ++deleteAttempt.current;
-    setPendingDelete({ id, attempt });
+    setPendingDeletes((cur) => [...cur, { id, attempt }]);
     void Promise.resolve(outcome).then((accepted) => {
-      setPendingDelete((cur) => (cur?.attempt === attempt ? null : cur));
+      setPendingDeletes((cur) => cur.filter((p) => p.attempt !== attempt));
       if (accepted) setDeletedId(id);
     });
   };
