@@ -29,6 +29,8 @@ import { CompaniesController } from '../orgs/companies.controller';
 import { OrgsController } from '../orgs/orgs.controller';
 import { PushController } from '../push/push.controller';
 import { ProjectController } from '../snapshot/project.controller';
+import { NotificationsSeenController } from '../snapshot/notifications-seen.controller';
+import { AppModule } from '../app.module';
 import { NodesController } from '../nodes/nodes.controller';
 
 /**
@@ -68,6 +70,8 @@ const CONTROLLERS = [
   OrgsController,
   PushController,
   ProjectController,
+  // Top 10 #4b unit C (#778) — the bell's seen mark
+  NotificationsSeenController,
   NodesController,
 ];
 
@@ -123,6 +127,14 @@ function collectRoutes(): RouteInfo[] {
 const routes = collectRoutes();
 
 describe('route authorization policy', () => {
+  it('registers exactly the controllers app.module mounts, so none is invisible to this check (#788 review)', () => {
+    const mounted = (Reflect.getMetadata('controllers', AppModule) as Array<{ name: string }> | undefined) ?? [];
+    expect(mounted.length).toBeGreaterThan(0);
+    // the health probe is public infrastructure with no project route; every other mounted controller is listed
+    const unlisted = mounted.filter((c) => !(CONTROLLERS as Array<{ name: string }>).includes(c) && c.name !== 'HealthController').map((c) => c.name);
+    expect(unlisted).toEqual([]);
+  });
+
   it('discovers the controllers routes (guards against a vacuous pass)', () => {
     // If reflection silently found nothing, every assertion below would pass for free.
     expect(routes.length).toBeGreaterThan(25);
