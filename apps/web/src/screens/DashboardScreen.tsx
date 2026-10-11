@@ -80,7 +80,10 @@ export function DashboardScreen() {
       : { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: UNKNOWN, accent: 'var(--accent)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
     // API mode never claims WHICH items failed beyond the recorded count — the seeded
     // "Drain slope · Terrace" copy is demo-only prototype fidelity
-    inspectionsKnown
+    // #771 — a live server that did not report open-checklist lineage leaves the count unknown, not 0
+    inspectionsKnown && API_BASE && !reinspections.known
+      ? { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: UNKNOWN, accent: 'var(--red-solid)', sub: 'Re-inspection status not reported', onClick: () => setScreen('inspect-review') }
+      : inspectionsKnown
       ? { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `In ${reinspections.count} open re-inspection${reinspections.count === 1 ? '' : 's'}` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') }
       : { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: UNKNOWN, accent: 'var(--red-solid)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
     // B7 (F-13): COMPUTED from the placed photos in every mode — the demo's fixed "24 this week ·

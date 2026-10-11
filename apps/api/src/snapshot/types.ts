@@ -249,6 +249,9 @@ export interface ChecklistDto {
   nodeId?: string;
   date: string;
   submitted: boolean;
+  /** #771 — the rejected inspection this re-inspection re-checks; `null` on an ordinary checklist. Always
+   *  present: an absent key tells a client the server predates it (#482 6114668018). */
+  reinspectionOfId: string | null;
   /** `id` links evidence uploads to the item; `evidence` = signed serve paths (Task 4).
    *  `photos` is a DEPRECATED display counter — linked evidence rows are the proof. */
   items: { id: string; name: string; state: string | null; photos: number; note: string; evidence: string[] }[];

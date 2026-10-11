@@ -370,8 +370,9 @@ export interface Checklist {
   date: string;
   submitted: boolean;
   /** Top 10 #2b (#771) — set on a RE-INSPECTION: the rejected inspection whose failed items it re-checks.
-   *  Absent on an ordinary issued checklist (and from an API older than this field). */
-  reinspectionOfId?: string;
+   *  `null` on an ordinary issued checklist. ABSENT only from an API older than the field, which cannot say
+   *  either way — the count that depends on it is then unknown, never 0 (#482 6114668018). */
+  reinspectionOfId?: string | null;
   items: ChecklistItem[];
 }
 
