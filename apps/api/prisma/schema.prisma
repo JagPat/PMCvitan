@@ -75,7 +75,7 @@ enum InspectionResult {
 }
 
 model Project {
-  notificationReadMarks           NotificationReadMark[]
+  notificationReceipts            NotificationReceipt[]
   billVerifications               BillVerification[]
   billCertificates                BillCertificate[]
   sodExceptions                   SodException[]
@@ -1307,7 +1307,7 @@ model DrawingAck {
 // dev auth (the "Viewing as" persona switch) is separate and gated by
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
-  notificationReadMarks     NotificationReadMark[]
+  notificationReceipts      NotificationReceipt[]
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
   pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")
   billVerificationsVerified BillVerification[]     @relation("billVerificationsVerified")
@@ -3153,10 +3153,6 @@ model Notification {
   // Live bug 1b-3a — the inspection an inspection notice announces, stamped by its writer (never read
   // back out of the display text). Nullable: other notices and legacy rows carry none. Not a relation.
   inspectionId String?
-  /// Top 10 #4b (#778) — the transaction that wrote this notice (`pg_current_xact_id()`): a SQL trigger stamps it on
-  /// every insert, whatever the insert supplies, and refuses any later change. The read position is a feed SNAPSHOT,
-  /// and a notice is seen when its writer is visible in it. NULL on rows written before the column existed.
-  writerXid BigInt? @default(dbgenerated("((pg_current_xact_id())::text)::bigint"))
 
   /// Phase 6 task 4d unit 4d-i — the EVENT this notice announces, and what kind of notice it is.
   /// A notice is a derived communication artifact and the event is the fact, so binding the two
@@ -3168,23 +3164,28 @@ model Notification {
 
   @@index([decisionId])
   @@index([projectId, eventId])
+  /// Top 10 #4b (#778) — the key a receipt's composite foreign key references, so a receipt and its notice share
+  /// one project at every committed state (trivially unique: `id` is the primary key).
+  @@unique([id, projectId])
+  receipts NotificationReceipt[]
 }
 
-/// Top 10 #4b (#778) — a viewer's read position on a project's notification feed: the snapshot their feed was
-/// read under. A notice is seen when its writer (`Notification.writerXid`) is visible in that snapshot — commit
-/// order, not a timestamp. One row per (project, user). The position only moves forward (a SQL BEFORE UPDATE
-/// trigger keeps the later snapshot), so a late or replayed "mark seen" never un-reads a notice. Derived
-/// per-viewer state: both references cascade.
-model NotificationReadMark {
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId    String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId       String
-  /// the `pg_snapshot` text form of the feed snapshot the viewer last marked seen; forward-only (trigger)
-  seenSnapshot String
-  updatedAt    DateTime @default(now()) @updatedAt
+/// Top 10 #4b (#778) — a per-notice read receipt: this viewer has seen this notice. A notice is unread for a viewer
+/// exactly when they hold no receipt for it. SQL guards (migration 20280109000000): the composite key binds the
+/// receipt to its notice's project at every committed state; a BEFORE INSERT trigger requires the viewer's standing
+/// on the project by the existing windowed contract; receipts are immutable and go only with their notice, viewer or
+/// project. No backfill (#778).
+model NotificationReceipt {
+  notification   Notification @relation(fields: [notificationId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: NoAction)
+  notificationId String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  userId         String
+  project        Project      @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId      String
+  seenAt         DateTime     @default(now())
 
-  @@id([projectId, userId])
+  @@id([notificationId, userId])
+  @@index([projectId, userId])
 }
 
 // Phase 6 task 4d unit 4d-i (§A.3 obligation 7) — the external-effect catalog, as DATA. It is
