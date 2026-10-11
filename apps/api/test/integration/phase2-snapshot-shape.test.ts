@@ -170,7 +170,7 @@ const EXPECT: Record<string, Spec> = {
 
 // Inline (non-interface) element shapes — pinned literally + verified at runtime.
 const INLINE = {
-  notification: ['at', 'color', 'id', 'text', 'time'], // Top 10 #4a (#778) — the row's identity and write instant
+  notification: ['at', 'color', 'id', 'text', 'time', 'unread'], // Top 10 #4a (#778) — the row's identity and write instant; #4b unit C — `unread`
   checklistItem: ['evidence', 'id', 'name', 'note', 'photos', 'state'],
   reviewItem: ['evidence', 'id', 'name', 'note', 'rejected', 'result', 'swatch'],
   crew: ['count', 'trade'],

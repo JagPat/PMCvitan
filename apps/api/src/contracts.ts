@@ -274,6 +274,15 @@ export const pushUnlinkSchema = z.object({
 });
 export type PushUnlinkInput = z.infer<typeof pushUnlinkSchema>;
 
+// Top 10 #4b unit C (#778) — the bell's "seen" mark: the notice ids the viewer was shown, at most
+// 200 per request. The viewer is the verified token, never the body, so the body carries ids only
+// and any other field is refused.
+export const NOTIFICATIONS_SEEN_MAX_IDS = 200;
+export const notificationsSeenSchema = z.object({
+  ids: z.array(z.string().min(1).max(64)).max(NOTIFICATIONS_SEEN_MAX_IDS),
+}).strict();
+export type NotificationsSeenInput = z.infer<typeof notificationsSeenSchema>;
+
 // ── Drawings register (Slice 1) ──────────────────────────────────────────────
 // Issue a drawing. If `number` already exists in the project a new revision is
 // added and the prior ones are superseded; otherwise a new register entry is

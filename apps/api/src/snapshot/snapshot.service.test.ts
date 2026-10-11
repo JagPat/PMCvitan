@@ -17,6 +17,8 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
         { id: 'n1', text: 'x', color: '#000000', time: 'now', at: new Date('2026-10-10T08:00:00.000Z'), decisionId: 'd1', kind: 'decision.published', eventId: 'e1', projectId: 'p1' },
       ]) },
       domainEvent: { findMany: vi.fn(async () => [{ eventId: 'e1', eventType: 'decision.published', payload: { title: 'T' }, dispatchIntent: { effectKey: 'decision.published' }, actorRole: 'pmc', actorName: 'P' }]) },
+      // Top 10 #4b unit C — the viewer's receipts, read on the same transaction
+      notificationReceipt: { findMany: vi.fn(async () => []) },
     };
     const transaction = vi.fn(async (fn: (client: typeof tx) => Promise<unknown>, _opts?: unknown) => fn(tx));
     const prisma = {
@@ -50,6 +52,7 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
     expect(decisionsQuery.snapshotSlice).toHaveBeenCalledWith('p1', 'pmc', 'u1', tx);
     expect(tx.notification.findMany).toHaveBeenCalledTimes(1);
     expect(tx.domainEvent.findMany).toHaveBeenCalledTimes(1);
+    expect(tx.notificationReceipt.findMany).toHaveBeenCalledWith({ where: { projectId: 'p1', userId: 'u1' }, select: { notificationId: true } });
     // A7a — the revision read runs on the SAME transaction, with the events just read
     expect(decisionsQuery.kindedNoticeRevisions).toHaveBeenCalledTimes(1);
     expect(decisionsQuery.kindedNoticeRevisions.mock.calls[0]![0]).toBe(tx);
@@ -63,7 +66,8 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
     );
     expect((decisionsQuery.renderKindedNotice.mock.calls[0]![5] as Map<string, unknown>).get('dar-d1-v1')).toEqual({ decisionId: 'd1', material: 'Granite', onBehalfOf: null });
     // live bug 1 — the notice names its decision, which is in this viewer's slice
-    // Top 10 #4a (#778) — and carries its row identity and write instant
-    expect(out.notifications).toEqual([{ id: 'n1', at: '2026-10-10T08:00:00.000Z', text: 'rendered', time: 'now', color: '#C08A2D', decisionId: 'd1' }]);
+    // Top 10 #4a (#778) — and carries its row identity and write instant; unit C — and is unread
+    // (this viewer holds no receipt for it)
+    expect(out.notifications).toEqual([{ id: 'n1', at: '2026-10-10T08:00:00.000Z', text: 'rendered', time: 'now', color: '#C08A2D', decisionId: 'd1', unread: true }]);
   });
 });

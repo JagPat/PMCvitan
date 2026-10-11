@@ -234,8 +234,10 @@ describe('Top 10 #4b unit B — the notices each role is served (live PG)', () =
       expect(row, `served id ${n.id} is a stored notice`).toBeDefined();
       expect(n.at, 'served at is the stored instant').toBe(row!.at.toISOString());
       expect(n.time).toBe(row!.time);
-      const { id, at: _at, time: _time, text, color, decisionId, inspectionId, ...unexpected } = n;
+      // unit C adds `unread`; this suite writes no receipt, so every served notice is unread
+      const { id, at: _at, time: _time, text, color, decisionId, inspectionId, unread, ...unexpected } = n;
       expect(unexpected, 'no key beyond the delivered shape').toStrictEqual({});
+      expect(unread).toBe(true);
       return {
         notice: noticeLabel.get(id)!,
         text: unrun(text),

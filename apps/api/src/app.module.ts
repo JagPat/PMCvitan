@@ -17,6 +17,8 @@ import { GoogleAuthService } from './auth/google.service';
 import { PasswordCredentialsService } from './auth/password-credentials.service';
 import { SnapshotService } from './snapshot/snapshot.service';
 import { ProjectController } from './snapshot/project.controller';
+import { NotificationsSeenController } from './snapshot/notifications-seen.controller';
+import { NotificationsSeenService } from './snapshot/notifications-seen.service';
 import { DecisionsService } from './decisions/decisions.service';
 import { DecisionsQueryService } from './decisions/decisions.query';
 import { DecisionsParticipant } from './decisions/decisions.participant';
@@ -129,6 +131,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     HealthController,
     AuthController,
     ProjectController,
+    NotificationsSeenController,
     DecisionsController,
     ActivitiesController,
     PhasesController,
@@ -202,6 +205,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     GoogleAuthService,
     PasswordCredentialsService,
     SnapshotService,
+    NotificationsSeenService,
     DecisionsService,
     // Task 8 — the decisions module's public READ boundary; every other module's decision read goes
     // through this query provider, never `prisma.decision` directly (the module owns its repository).

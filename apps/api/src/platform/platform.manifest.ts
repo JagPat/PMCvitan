@@ -79,8 +79,9 @@ export const platformManifest: ModuleManifest = {
   consumesEvents: [],
   // Phase 6 task 4b (§A.3 round 13) — `push.unlink` severs a browser subscription's user
   // attribution at sign-out (targeted content stops; role-level pushes continue).
-  commands: ['push.subscribe', 'push.unlink'],
+  // Top 10 #4b unit C (#778) — `notifications.seen` records the viewer's receipts for served notices.
+  commands: ['push.subscribe', 'push.unlink', 'notifications.seen'],
   queries: ['snapshot.project'],
-  routes: ['POST /projects/:projectId/push/subscribe', 'POST /projects/:projectId/push/unlink'],
+  routes: ['POST /projects/:projectId/push/subscribe', 'POST /projects/:projectId/push/unlink', 'POST /projects/:projectId/notifications/seen'],
   permissions: [],
 };
