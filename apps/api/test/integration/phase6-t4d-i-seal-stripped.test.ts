@@ -4240,6 +4240,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
         projectId: "phase6 4d-i: notice notification-probe may not change project",
         text: "phase6 4d-i: notice notification-probe is KINDED",
         time: "phase6 4d-i: notice notification-probe is KINDED",
+        // Top 10 #4b (#778) — the writer stamp every viewer's read position is judged against
+        writerXid: "top10 4b: notice notification-probe's writer is fixed at insert",
       },
       writable: {
         inspectionId:
@@ -5084,6 +5086,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       refused: {
         eventId: "phase6 4d-i: notice notification-probe is bound to event <null> and ma",
         kind: "phase6 4d-i: notice notification-probe's kind",
+        // Top 10 #4b (#778) — a pre-migration notice keeps no writer; filling one would move it across read positions
+        writerXid: "top10 4b: notice notification-probe's writer is fixed at insert",
       },
       fillable: {
         inspectionId:

@@ -6,7 +6,8 @@ import { createTestApp, type TestApp } from './test-app';
 /**
  * Top 10 #4b (#778) — the read position's storage contract, as the database enforces it.
  *
- * - Every notice records the transaction that wrote it (`writerXid`), defaulted, so no writer can forget it.
+ * - Every notice records the transaction that wrote it (`writerXid`), defaulted, so no writer can forget it, and
+ *   fixed at insert, so no UPDATE can move a notice across read positions.
  * - The position is the feed's SNAPSHOT, so it is commit-ordered: a notice whose transaction began BEFORE the
  *   feed was read but committed AFTER it is not visible in that snapshot, so it stays unread, whatever its `at`
  *   (#785 review round 1).
@@ -55,6 +56,15 @@ describe('Top 10 #4b — NotificationReadMark and Notification.writerXid (live P
     expect(typeof row.writerXid).toBe('bigint');
     // committed before this snapshot, so it is seen by it
     expect(await visible(row.writerXid!, await feedSnapshot())).toBe(true);
+  });
+
+  it('fixes the writer at insert: an UPDATE cannot rewrite it, nor fill it on a row without one', async () => {
+    const n = await t.prisma.notification.create({ data: notice('frozen') });
+    await expect(t.prisma.$executeRaw`UPDATE "Notification" SET "writerXid" = 1 WHERE "id" = ${n.id}`).rejects.toThrow(/writer is fixed at insert/);
+    // a row written before the column existed carries none; filling it later is refused too
+    await expect(t.prisma.$executeRaw`UPDATE "Notification" SET "writerXid" = NULL WHERE "id" = ${n.id}`).rejects.toThrow(/writer is fixed at insert/);
+    // other columns stay as writable as they were
+    await t.prisma.notification.update({ where: { id: n.id }, data: { inspectionId: 'INSP-1' } });
   });
 
   it('a notice whose transaction began before the feed snapshot but committed after it is not seen by it', async () => {

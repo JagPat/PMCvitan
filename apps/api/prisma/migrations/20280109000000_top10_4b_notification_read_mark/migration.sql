@@ -31,6 +31,22 @@
 ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS "writerXid" BIGINT;
 ALTER TABLE "Notification" ALTER COLUMN "writerXid" SET DEFAULT ((pg_current_xact_id())::text)::bigint;
 
+-- The writer stamp is fixed at insert: rewriting it (or filling it on a pre-migration row) would silently move a
+-- notice across every viewer's read position.
+CREATE OR REPLACE FUNCTION "Notification_writerXid_frozen"() RETURNS trigger AS $$
+BEGIN
+  IF NEW."writerXid" IS DISTINCT FROM OLD."writerXid" THEN
+    RAISE EXCEPTION 'top10 4b: notice %''s writer is fixed at insert', OLD."id";
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "Notification_writerXid_frozen" ON "Notification";
+CREATE TRIGGER "Notification_writerXid_frozen"
+  BEFORE UPDATE OF "writerXid" ON "Notification"
+  FOR EACH ROW EXECUTE FUNCTION "Notification_writerXid_frozen"();
+
 CREATE TABLE IF NOT EXISTS "NotificationReadMark" (
     "projectId" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
