@@ -75,6 +75,7 @@ enum InspectionResult {
 }
 
 model Project {
+  notificationReadMarks           NotificationReadMark[]
   billVerifications               BillVerification[]
   billCertificates                BillCertificate[]
   sodExceptions                   SodException[]
@@ -1306,6 +1307,7 @@ model DrawingAck {
 // dev auth (the "Viewing as" persona switch) is separate and gated by
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
+  notificationReadMarks     NotificationReadMark[]
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
   pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")
   billVerificationsVerified BillVerification[]     @relation("billVerificationsVerified")
@@ -3162,6 +3164,21 @@ model Notification {
 
   @@index([decisionId])
   @@index([projectId, eventId])
+}
+
+/// Top 10 #4b (#778) — a viewer's read watermark on a project's notification feed: a notice written after
+/// `seenAt` is unread for that viewer. One row per (project, user). The watermark only moves forward (a SQL
+/// BEFORE UPDATE trigger keeps the greater instant), so a late or replayed "mark seen" never un-reads a notice.
+/// Derived per-viewer state: both references cascade.
+model NotificationReadMark {
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  seenAt    DateTime
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@id([projectId, userId])
 }
 
 // Phase 6 task 4d unit 4d-i (§A.3 obligation 7) — the external-effect catalog, as DATA. It is

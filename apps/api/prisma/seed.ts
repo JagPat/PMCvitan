@@ -140,6 +140,7 @@ async function main(): Promise<void> {
   await prisma.securityAuditEvent.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.notification.deleteMany();
+  await prisma.notificationReadMark.deleteMany(); // Top 10 #4b — per-viewer read watermarks (cascade anyway)
   await prisma.changeRequest.deleteMany();
   await prisma.media.deleteMany();
   await prisma.inspectionItem.deleteMany();

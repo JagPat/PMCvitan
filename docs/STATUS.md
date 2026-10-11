@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: top10-4a-notice-identity
-reviewed_merge: 549063b
-open_pr: 784
+work_item: top10-4b-read-mark
+reviewed_merge: f331ba9
+open_pr: 785
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-11
@@ -26,16 +26,15 @@ updated: 2026-10-11
 
 ### Current unit
 
-**Top 10 #4a, each notice names itself** (#778, `claude/top10-4a-notice-identity`), which takes live-bug 2:
-- The snapshot serves each notice's row `id` and write instant `at`. The bell keys rows by `id` and renders the time
-  from `at`; every server row's stored label is frozen at "just now".
-- An approval notice names its inspection by id, and an empty bell says "You're all caught up".
-- Integration proof that one logical event writes one notice under keyed retry, unkeyed double-tap and concurrent
-  decides.
+**Top 10 #4b, a per-viewer read watermark** (#778, `claude/top10-4b-read-mark`), migration only:
+- `NotificationReadMark` holds one `seenAt` per (project, user), and both foreign keys cascade.
+- A `BEFORE UPDATE` trigger keeps `seenAt` forward-only, so a late or replayed "mark seen" never makes a seen notice
+  unread again.
+- Live-PG proof covers the unique pair, forward-only updates (client and raw SQL) and the cascade.
 
-4b (the read-mark migration) and 4c (the unread count) follow.
+4c (the mark-seen endpoint and the unread count) follows.
 
-The #782 follow-up merged at `549063b` (#783, reviewed head `639f784`). The #780 follow-up merged at `223f42d` (#781, reviewed head `1dd46d5`). Top 10 #3c merged at `3f021f6` (#777, reviewed head `43c5fcc`; #779 fixed in it). Top 10 #3b merged at `24c19cd` (#776, reviewed head `16da8f6`). Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head
+Top 10 #4a merged at `f331ba9` (#784, reviewed head `48c3726`). The #782 follow-up merged at `549063b` (#783, reviewed head `639f784`). The #780 follow-up merged at `223f42d` (#781, reviewed head `1dd46d5`). Top 10 #3c merged at `3f021f6` (#777, reviewed head `43c5fcc`; #779 fixed in it). Top 10 #3b merged at `24c19cd` (#776, reviewed head `16da8f6`). Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head
 `cdd4e33`); #771 stays open for live validation. Top 10 #2a merged at `3e2cba6` (#772, reviewed head `293ded6`). Top 10 #1 merged at `9b1d119` (#770, reviewed head `db39901`; #769 open for live validation). M3c C1/C2 merged at `14ce2bd` (#768, reviewed head `3f84b12`); the owner switches the required context to
 `codex-current-head/wi` once a head has reported it (steps on #482). #765 merged at `1814160` (#766, reviewed head `80a1c50`). M3c §A merged at `191f8a0` (#764, reviewed head `fb7d3ed`). M3b merged at `ad742de` (#761, reviewed head `cbbb533`). M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
 (#748).
