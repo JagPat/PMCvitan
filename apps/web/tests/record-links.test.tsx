@@ -423,3 +423,37 @@ describe('Top 10 #3c — round 3 (#777 Codex on 02fbc68)', () => {
     expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-override-expiry')?.item).toBeUndefined();
   });
 });
+
+describe('Top 10 #3c follow-up — #781 Codex on 4a15d38', () => {
+  it('4240026311 — the row leaving while a delete is in flight releases nothing; the refusal then shows not found', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a, ...rest] = useStore.getState().activities;
+    let settle: (ok: boolean) => void = () => {};
+    useStore.setState({ routeItem: a.id, deleteActivity: vi.fn(() => new Promise<boolean>((r) => { settle = r; })) });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    fireEvent.click(r.getByTestId(`edit-${a.id}`));
+    fireEvent.click(r.getByTestId('activity-delete'));
+    fireEvent.click(r.getByText('Delete activity'));
+    act(() => useStore.setState({ activities: rest })); // a refresh removes it while the request is pending
+    expect(useStore.getState().routeItem).toBe(a.id); // not released
+    expect(r.getByTestId('activities-loading')).toBeInTheDocument(); // nor called missing yet
+    await act(async () => { settle(false); }); // the server refuses this attempt
+    expect(useStore.getState().routeItem).toBe(a.id);
+    expect(r.getByText('Show the whole schedule')).toBeInTheDocument(); // someone else's removal: not found
+  });
+
+  it('4240026312 — a hand-off waiting on an unsettled schedule is abandoned when the viewer navigates away', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'places' });
+    const [a] = useStore.getState().activities;
+    useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: true } });
+    useStore.getState().openActivity(a.id);
+    expect(useStore.getState().activityFocus).toBe(a.id);
+    useStore.getState().setScreen('inbox');
+    expect(useStore.getState().activityFocus).toBeNull();
+    useStore.getState().openActivity(a.id);
+    useStore.getState().openItem('decision-log', 'DL-014');
+    expect(useStore.getState().activityFocus).toBeNull();
+  });
+});
+

@@ -2639,6 +2639,9 @@ export const useStore = create<Store>()(
         // a screen opened from the nav starts at its list, never at a decision left open earlier
         s.decisionFocus = null;
         s.routeItem = null;
+        // #781 Codex 4240026312 — a Site Map hand-off still waiting for the schedule to settle is abandoned with
+        // the visit: a later visit opens at the top, never at that activity
+        s.activityFocus = null;
       }),
     openDecision: (decisionId) =>
       set((s) => {
@@ -2669,6 +2672,7 @@ export const useStore = create<Store>()(
         s.notifOpen = false;
         s.decisionFocus = screen === 'client-decisions' ? item : null;
         s.routeItem = screen === 'client-decisions' ? null : item;
+        s.activityFocus = null; // #781 Codex 4240026312 — a new record link supersedes a pending hand-off
       }),
     openPlace: (nodeId) =>
       set((s) => {

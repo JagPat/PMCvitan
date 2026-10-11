@@ -429,28 +429,34 @@ export function ScheduleScreen() {
   // #777 Codex 4239476429 — deleting the routed activity ends the route's claim only once the removal LANDS (the
   // row leaves the schedule); a refused deletion leaves the row, so the route — and a reload of it — still names it
   const [deletedId, setDeletedId] = useState<string | null>(null);
+  // #781 Codex 4240026311 — the attempt in flight is tracked apart from an ACCEPTED one: while it is pending, the
+  // routed activity leaving the schedule (a refresh, someone else's delete) neither releases the route nor reads as
+  // not found; only this same attempt's acceptance releases it, and a refusal leaves the route standing
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const released = routeItem !== null && routeItem === deletedId && !routed;
+  const deleting = routeItem !== null && routeItem === pendingDeleteId && !routed;
   useEffect(() => {
     if (released) setRouteItem(null);
   }, [released, setRouteItem]);
   useEffect(() => {
     if (deletedId !== null && routeItem !== deletedId) setDeletedId(null);
-  }, [routeItem, deletedId]);
-  // #780 — the release intent stands only while the delete can still be accepted: a refusal (terminal or
-  // unreachable) withdraws it, so a later removal by someone else reads as "not found", never as this viewer's own
+    if (pendingDeleteId !== null && routeItem !== pendingDeleteId) setPendingDeleteId(null);
+  }, [routeItem, deletedId, pendingDeleteId]);
+  // #780 — a refused or unreachable delete releases nothing, so a later removal by someone else reads as not found
   const onDeleted = (id: string, outcome: Promise<boolean>) => {
     if (id !== routeItem) return;
-    setDeletedId(id);
+    setPendingDeleteId(id);
     void Promise.resolve(outcome).then((accepted) => {
-      if (!accepted) setDeletedId((cur) => (cur === id ? null : cur));
+      setPendingDeleteId((cur) => (cur === id ? null : cur));
+      if (accepted) setDeletedId(id);
     });
   };
   // #777 Codex 4239476426 — a routed activity this schedule does not hold, while the slice is unsettled (a
   // reconcile owed, a read loading or failed), shows that boundary, never the whole schedule under its URL
   // #777 Codex 4239523475 — EVERY routed item waits for a settled slice: a row the retained (or seeded) slice
   // still holds is not authoritative either, so its live Start / Complete / Edit / Override stay hidden until then
-  const unsettledItem = routeItem !== null && !released && !activitiesSettled;
-  const missingActivity = routeItem !== null && !routed && !released && activitiesSettled ? routeItem : null;
+  const unsettledItem = routeItem !== null && !released && (!activitiesSettled || deleting);
+  const missingActivity = routeItem !== null && !routed && !released && !deleting && activitiesSettled ? routeItem : null;
   // #777 Codex 4239476431 — the link reveals its row ONCE: retried only until the row arrives, then a schedule
   // refresh or mutation never pulls the viewer back to it; a new route item reveals afresh
   // #777 Codex 4239523470 — the marker names the route item AND the row element it revealed: a new route item
