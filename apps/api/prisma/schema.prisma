@@ -3153,9 +3153,9 @@ model Notification {
   // Live bug 1b-3a — the inspection an inspection notice announces, stamped by its writer (never read
   // back out of the display text). Nullable: other notices and legacy rows carry none. Not a relation.
   inspectionId String?
-  /// Top 10 #4b (#778) — the transaction that wrote this notice (`pg_current_xact_id()`, defaulted; a writer
-  /// never sets it). The read position is a feed SNAPSHOT, and a notice is seen when its writer is visible in it.
-  /// NULL on rows written before the column existed.
+  /// Top 10 #4b (#778) — the transaction that wrote this notice (`pg_current_xact_id()`): a SQL trigger stamps it on
+  /// every insert, whatever the insert supplies, and refuses any later change. The read position is a feed SNAPSHOT,
+  /// and a notice is seen when its writer is visible in it. NULL on rows written before the column existed.
   writerXid BigInt? @default(dbgenerated("((pg_current_xact_id())::text)::bigint"))
 
   /// Phase 6 task 4d unit 4d-i — the EVENT this notice announces, and what kind of notice it is.

@@ -27,14 +27,17 @@ updated: 2026-10-11
 ### Current unit
 
 **Top 10 #4b, a per-viewer read position** (#778, `claude/top10-4b-read-mark`), migration only:
-- Each notice records the transaction that wrote it (`Notification.writerXid`, defaulted).
+- Each notice records the transaction that wrote it (`Notification.writerXid`): stamped on every insert whatever the
+  insert supplies, and frozen after.
 - `NotificationReadMark` holds one `seenSnapshot` per (project, user): the snapshot the viewer's feed was read under.
   A notice is seen when its writer is visible in it, which is commit order, not a timestamp (#785 review round 1).
   Both foreign keys cascade.
-- A `BEFORE UPDATE` trigger keeps the later snapshot, so a late or replayed "mark seen" never makes a seen notice
-  unread again.
-- Live-PG proof covers a notice whose transaction began before the feed read but committed after it, the unique
-  pair, forward-only updates (client and raw SQL) and the cascade.
+- A `BEFORE UPDATE` trigger accepts only a snapshot that sees everything the stored one saw, so a late, replayed or
+  incomparable "mark seen" never makes a seen notice unread again; a position from another cluster is void.
+- The migration is on `migrate.sh`'s ALWAYS_EXECUTE and fully guarded, so a db-push baseline gets every raw guard
+  (#785 review round 2).
+- Live-PG proof covers the late-commit case, the insert stamp, the freeze, forward-only and incomparable updates,
+  the void position, the baseline re-run and the cascade.
 
 4c (the mark-seen endpoint and the unread count) follows.
 
