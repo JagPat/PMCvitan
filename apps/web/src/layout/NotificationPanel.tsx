@@ -15,6 +15,15 @@ export function NotificationPanel() {
   // flight, a project or identity switch, or a failed snapshot resets it to [] while the bell stays reachable
   const projectLoadState = useStore((s) => s.projectLoadState);
   const feedSettled = projectSnapshotSettled(projectLoadState);
+  // #784 Codex 4240346214 — the relative times re-read the clock while the panel is open (a backgrounded tab, a
+  // panel left open), so "just now" does not freeze again; the clock is reset each time the panel opens
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!open) return;
+    setNow(Date.now());
+    const tick = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(tick);
+  }, [open]);
   const notifications = useStore((s) => s.notifications);
   const toggleNotif = useStore((s) => s.toggleNotif);
   const role = useStore((s) => s.role);
@@ -104,7 +113,7 @@ export function NotificationPanel() {
                 <span className={styles.dot} style={{ background: n.color }} />
                 <div style={{ flex: 1 }}>
                   <div className={styles.text}>{n.text}</div>
-                  <div className={styles.time}>{noticeTime(n)}</div>
+                  <div className={styles.time}>{noticeTime(n, now)}</div>
                 </div>
                 {link && <ChevronRight size={15} style={{ alignSelf: 'center', opacity: 0.5, flex: 'none' }} />}
               </>

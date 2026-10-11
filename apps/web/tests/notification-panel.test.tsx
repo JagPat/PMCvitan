@@ -331,6 +331,18 @@ describe('Top 10 #4a (#778) — an empty bell, and when each notice happened', (
     expect(failed.queryByTestId('notif-empty')).toBeNull();
   });
 
+  it('#784 Codex 4240346214 — an open panel keeps its relative times current', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    try {
+      const { getByText } = await mount([{ id: 'n-1', at: new Date().toISOString(), text: 'Inspection INSP-20 approved. Contractor and client notified.', time: 'just now', color: '#000' }]);
+      expect(getByText('just now')).toBeTruthy();
+      await act(async () => { vi.advanceTimersByTime(5 * 60_000); });
+      expect(getByText('5m ago')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('#784 Codex 4240225580 — with an API scope, the idle store before the first fetch is not "all caught up"', async () => {
     vi.stubEnv('VITE_API_URL', 'http://api.test');
     const { getByTestId, queryByTestId } = await mount([], { projectLoadState: 'idle' });

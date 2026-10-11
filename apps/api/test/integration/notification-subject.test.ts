@@ -92,6 +92,19 @@ describe('live bug 1 — a notice names the decision it is about, to viewers who
     expect(contractor).toEqual({ ...self, text, time: 'just now', color: '#000' });
   });
 
+  // #784 Codex 4240346219 — `at` is the INSERT instant, not the transaction start: Prisma's engine fills
+  // `@default(now())` when the row is written, so a writer whose transaction waited (a lock) still serves its notice
+  // as new. Pinned here so a raw-SQL writer relying on the column's CURRENT_TIMESTAMP default is caught.
+  it('a notice written late in a long transaction carries its insert instant, not the transaction start', async () => {
+    const r = await t.prisma.$transaction(async (tx) => {
+      const [{ start }] = await tx.$queryRaw<{ start: Date }[]>`SELECT now() AS start`;
+      await tx.$executeRaw`SELECT pg_sleep(1.5)`;
+      const n = await tx.notification.create({ data: { projectId: f.projectA.id, text: `LB1 late ${run}`, color: '#000', time: 'just now' } });
+      return { start, at: n.at };
+    }, { timeout: 20_000 });
+    expect(r.at.getTime() - r.start.getTime()).toBeGreaterThanOrEqual(1400);
+  });
+
   it('a notice about no decision keeps the delivered three-key shape, plus its own id and instant', async () => {
     const text = `LB1 plain ${run}`;
     const row = await t.prisma.notification.create({ data: { projectId: f.projectA.id, text, color: '#111', time: '1h ago' } });
