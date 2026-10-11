@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 
 /**
  * Top 10 #3a (#774) — every card about ONE record opens that record at its own URL (`openItem` → screen +
@@ -214,3 +214,183 @@ describe('#775 root-cause audit — every record link waits for its slice', () =
   });
 });
 
+describe('Top 10 #3c — an activity is a record: /schedule/<activityId>', () => {
+  it('the schedule is an item screen: the URL names the activity and parses back', async () => {
+    const { pathForScreen, parseLocation } = await import('@/lib/screens');
+    expect(pathForScreen('site-schedule', 'ambli', 'ACT-28')).toBe('/projects/ambli/schedule/ACT-28');
+    expect(parseLocation('/projects/ambli/schedule/ACT-28')).toEqual({ projectId: 'ambli', screen: 'site-schedule', item: 'ACT-28' });
+  });
+
+  it('"View in schedule" and a single blocked / override item open the activity at its URL', async () => {
+    const { useStore } = await demo({ role: 'pmc' });
+    const sel = await import('@/store/selectors');
+    const [a, b] = useStore.getState().activities;
+    useStore.getState().openActivity(a.id);
+    expect(where(useStore)).toEqual({ screen: 'site-schedule', item: a.id });
+    useStore.setState({ activities: [{ ...a, status: 'blocked' }, { ...b, status: 'not-started' }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-blocked')?.item).toBe(a.id);
+    const soon = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+    useStore.setState({ activities: [{ ...a, overrides: [{ ...(a.overrides?.[0] ?? {}), expiresAt: soon, reason: 'r' } as never] }, { ...b, overrides: [] }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-override-expiry')?.item).toBe(a.id);
+  });
+
+  it('an activity the settled schedule does not hold says so, and "Show the whole schedule" clears the link', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule', routeItem: 'ACT-GONE' });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.getByText(/ACT-GONE/)).toBeInTheDocument();
+    fireEvent.click(r.getByText('Show the whole schedule'));
+    expect(useStore.getState().routeItem).toBeNull();
+  });
+});
+
+describe('Top 10 #3c — activity links wait for the activity spine', () => {
+  it('a single blocked activity names no record while an activity reconcile is owed', async () => {
+    const { useStore } = await demo({ role: 'pmc' });
+    const sel = await import('@/store/selectors');
+    const [a, b] = useStore.getState().activities;
+    useStore.setState({ activities: [{ ...a, status: 'blocked' }, { ...b, status: 'not-started' }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-blocked')?.item).toBe(a.id);
+    useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: true } });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-blocked')?.item).toBeUndefined();
+  });
+
+  it('a linked activity is not called missing while an activity reconcile is owed', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule', routeItem: 'ACT-NEW' });
+    useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: true } });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.queryByText('Show the whole schedule')).toBeNull();
+    // #777 Codex 4239476426 — nor is the whole schedule (its live controls) shown under the activity's URL
+    expect(r.getByTestId('activities-loading')).toBeInTheDocument();
+    expect(r.queryByTestId(/^edit-/)).toBeNull();
+  });
+
+  it('#777 Codex 4239476423 — with an API scope, the idle store (demo seeds before the first fetch) names no activity', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    const { useStore } = await demo({ role: 'pmc', projectLoadState: 'idle' });
+    const sel = await import('@/store/selectors');
+    const [a, b] = useStore.getState().activities;
+    useStore.setState({ activities: [{ ...a, status: 'blocked' }, { ...b, status: 'not-started' }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-blocked')?.item).toBeUndefined();
+    useStore.setState({ projectLoadState: 'ready' });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-blocked')?.item).toBe(a.id);
+  });
+});
+
+describe('Top 10 #3c — the routed activity, through navigation and edits (#777 Codex)', () => {
+  it('4239476418 — until the store adopts the URL item (or clears it after Back), nothing actionable is shown', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule', routeItem: null });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const { MemoryRouter } = await import('react-router-dom');
+    const [a] = useStore.getState().activities;
+    const cold = render(<MemoryRouter initialEntries={[`/projects/ambli/schedule/${a.id}`]}><ScheduleScreen /></MemoryRouter>);
+    expect(cold.getByTestId('activities-opening').textContent).toContain(a.id);
+    expect(cold.queryByTestId(/^edit-/)).toBeNull();
+    cold.unmount();
+
+    useStore.setState({ routeItem: a.id });
+    const back = render(<MemoryRouter initialEntries={['/projects/ambli/schedule']}><ScheduleScreen /></MemoryRouter>);
+    expect(back.getByTestId('activities-returning')).toBeInTheDocument();
+  });
+
+  it('4239476429 — deleting the routed activity releases the route once the removal lands; a refused deletion keeps it', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a, ...rest] = useStore.getState().activities;
+    useStore.setState({ routeItem: a.id });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    const del = () => {
+      fireEvent.click(r.getByTestId(`edit-${a.id}`));
+      fireEvent.click(r.getByTestId('activity-delete'));
+      fireEvent.click(r.getByText('Delete activity'));
+    };
+    del(); // no server: refused, the row stays
+    expect(useStore.getState().routeItem).toBe(a.id);
+    expect(r.queryByText('Show the whole schedule')).toBeNull();
+
+    del();
+    act(() => useStore.setState({ activities: rest })); // the removal lands
+    expect(useStore.getState().routeItem).toBeNull();
+    expect(r.queryByText('Show the whole schedule')).toBeNull(); // never "not found" for one's own deletion
+  });
+
+  it('4239476431 — the link reveals its row once; a schedule refresh does not pull the viewer back', async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a] = useStore.getState().activities;
+    useStore.setState({ routeItem: a.id });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    render(<ScheduleScreen />);
+    expect(scroll).toHaveBeenCalledTimes(1);
+    act(() => useStore.setState({ activities: useStore.getState().activities.map((x) => ({ ...x })) }));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  });
+});
+
+describe('Top 10 #3c — round 2 (#777 Codex on 2461392)', () => {
+  it('4239523475 — a routed row the unsettled slice still holds is not actionable until the slice settles', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a] = useStore.getState().activities;
+    useStore.setState({ routeItem: a.id, commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: true } });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.getByTestId('activities-loading')).toBeInTheDocument();
+    expect(r.queryByTestId(`edit-${a.id}`)).toBeNull();
+    act(() => useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: false } }));
+    expect(r.getByTestId(`edit-${a.id}`)).toBeInTheDocument();
+  });
+
+  it('4239523461 — a failed project snapshot shows the failure and Retry, not an endless "Loading"', async () => {
+    // module read-ownership: the activities read retained a last-good slice ('ready') while the snapshot failed
+    vi.stubEnv('VITE_ACTIVITIES_READ', 'moduleQuery');
+    await demo({ role: 'pmc', screen: 'site-schedule', routeItem: 'ACT-ABSENT', projectLoadState: 'error', activitiesLoad: 'ready' });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.getByTestId('activities-unavailable')).toBeInTheDocument();
+    expect(r.getByTestId('activities-retry')).toBeInTheDocument();
+  });
+
+  it('4239523467 — a place filter that hides the routed activity is cleared, and the row revealed', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule', routeItem: null });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    fireEvent.change(r.getByTestId('sched-place-filter'), { target: { value: 'z-terrace' } });
+    expect(r.queryByTestId('edit-ACT-31')).toBeNull(); // Living Room Flooring is outside the Terrace
+    act(() => useStore.setState({ routeItem: 'ACT-31' }));
+    expect((r.getByTestId('sched-place-filter') as HTMLSelectElement).value).toBe('');
+    expect(r.getByTestId('edit-ACT-31')).toBeInTheDocument();
+  });
+
+  it('4239523470 — A → unknown B → Back to A reveals A again', async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a] = useStore.getState().activities;
+    useStore.setState({ routeItem: a.id });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(scroll).toHaveBeenCalledTimes(1);
+    act(() => useStore.setState({ routeItem: 'ACT-UNKNOWN' }));
+    expect(r.getByText('Show the whole schedule')).toBeInTheDocument();
+    act(() => useStore.setState({ routeItem: a.id }));
+    expect(scroll).toHaveBeenCalledTimes(2);
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  });
+});
+
+describe('Top 10 #3c — round 3 (#777 Codex on 02fbc68)', () => {
+  it('4239561636 — two expiring overrides on ONE activity open that activity; on two activities, the schedule', async () => {
+    const { useStore } = await demo({ role: 'pmc' });
+    const sel = await import('@/store/selectors');
+    const [a, b] = useStore.getState().activities;
+    const soon = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+    const ov = (id: string) => ({ ...(a.overrides?.[0] ?? {}), id, expiresAt: soon, reason: 'r' }) as never;
+    useStore.setState({ activities: [{ ...a, overrides: [ov('o1'), ov('o2')] }, { ...b, overrides: [] }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-override-expiry')?.item).toBe(a.id);
+    useStore.setState({ activities: [{ ...a, overrides: [ov('o1')] }, { ...b, overrides: [ov('o2')] }] });
+    expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-override-expiry')?.item).toBeUndefined();
+  });
+});

@@ -2684,7 +2684,8 @@ export const useStore = create<Store>()(
     openActivity: (activityId) =>
       set((s) => {
         s.activityFocus = activityId;
-        s.routeItem = null;
+        // Top 10 #3c (#774) — the activity is the URL's item (`/schedule/<id>`): reload-safe and shareable
+        s.routeItem = activityId;
         s.screen = 'site-schedule';
         s.notifOpen = false;
       }),

@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: top10-3b-push-links
-reviewed_merge: 8de4f92
-open_pr: 776
+work_item: top10-3c-activity-route
+reviewed_merge: 24c19cd
+open_pr: 777
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-10
@@ -26,14 +26,13 @@ updated: 2026-10-10
 
 ### Current unit
 
-**Top 10 #3b, pushes open their record** (#774, `claude/top10-3b-push-links`): decision pushes (published,
-approved/re-approved, forwarded, consultation requested/responded) carry `/decisions/<id>`, and the issued-checklist
-push (every engineer) carries `/site/checklist/<id>`, instead of opening the app root. The re-inspection push stays
-url-less (an engineer-role broadcast of assigned work only its assignee can open), and the countersign demand (a
-sealed, frozen family; the architect role is reserved) is unchanged. 3c (an activity record
-route) follows.
+**Top 10 #3c, an activity is a record** (#774, `claude/top10-3c-activity-route`): `site-schedule` becomes an item
+screen at `/schedule/<activityId>` (reload-safe, shareable; Back/Forward walk it). Site Map "View in schedule" names
+the activity in the URL, a cold link scrolls to and outlines its row, and an activity the settled schedule does not hold
+shows not-found with "Show the whole schedule". For You's single blocked, drawing-gated and expiring-override items
+open that activity once the activities slice has settled. #774 gaps 5, 6, 12 and 13 follow as their own units.
 
-Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head
+Top 10 #3b merged at `24c19cd` (#776, reviewed head `16da8f6`). Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head
 `cdd4e33`); #771 stays open for live validation. Top 10 #2a merged at `3e2cba6` (#772, reviewed head `293ded6`). Top 10 #1 merged at `9b1d119` (#770, reviewed head `db39901`; #769 open for live validation). M3c C1/C2 merged at `14ce2bd` (#768, reviewed head `3f84b12`); the owner switches the required context to
 `codex-current-head/wi` once a head has reported it (steps on #482). #765 merged at `1814160` (#766, reviewed head `80a1c50`). M3c §A merged at `191f8a0` (#764, reviewed head `fb7d3ed`). M3b merged at `ad742de` (#761, reviewed head `cbbb533`). M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
 (#748).

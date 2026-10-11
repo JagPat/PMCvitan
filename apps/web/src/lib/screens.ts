@@ -179,9 +179,10 @@ export function pathForScreen(screen: ScreenKey, projectId: string, item?: strin
  *  decision can be bookmarked, shared and reached with back/forward: `/places/<nodeId>`,
  *  `/drawings/<drawingId>`, `/decisions/<decisionId>` and `/client/decisions/<decisionId>`. Live bug 1b
  *  adds `/review/<inspectionId>` and `/site/checklist/<inspectionId>`, so a notice about an inspection
- *  opens that inspection on whichever inspection screen the role holds. */
+ *  opens that inspection on whichever inspection screen the role holds. Top 10 #3c (#774) adds
+ *  `/schedule/<activityId>`, so an activity is a record a card or a link can open. */
 export const ITEM_SCREENS: ReadonlySet<ScreenKey> = new Set<ScreenKey>([
-  'places', 'drawings', 'decision-log', 'client-decisions', 'inspect-review', 'engineer-check',
+  'places', 'drawings', 'decision-log', 'client-decisions', 'inspect-review', 'engineer-check', 'site-schedule',
 ]);
 
 /** Match a bare screen path (`/decisions`, `/client/decisions`) to its screen key. */
