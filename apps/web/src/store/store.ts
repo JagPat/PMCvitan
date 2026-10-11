@@ -725,7 +725,8 @@ export interface AppActions {
   /** Task 6: record / revoke a manual readiness exception (PMC, server-recorded) */
   overrideGate: (activityId: string, input: OverrideGateInput) => void;
   revokeOverride: (activityId: string, overrideId: string) => void;
-  deleteActivity: (activityId: string) => void;
+  /** Resolves whether the server accepted the deletion (#780: a refused delete releases no route). */
+  deleteActivity: (activityId: string) => Promise<boolean>;
   createPhase: (name: string) => void;
   deletePhase: (phaseId: string) => void;
   issueChecklist: (input: { title: string; zone: string; items: string[]; nodeId?: string }) => void;
@@ -2638,6 +2639,9 @@ export const useStore = create<Store>()(
         // a screen opened from the nav starts at its list, never at a decision left open earlier
         s.decisionFocus = null;
         s.routeItem = null;
+        // #781 Codex 4240026312 — a Site Map hand-off still waiting for the schedule to settle is abandoned with
+        // the visit: a later visit opens at the top, never at that activity
+        s.activityFocus = null;
       }),
     openDecision: (decisionId) =>
       set((s) => {
@@ -2668,6 +2672,7 @@ export const useStore = create<Store>()(
         s.notifOpen = false;
         s.decisionFocus = screen === 'client-decisions' ? item : null;
         s.routeItem = screen === 'client-decisions' ? null : item;
+        s.activityFocus = null; // #781 Codex 4240026312 — a new record link supersedes a pending hand-off
       }),
     openPlace: (nodeId) =>
       set((s) => {
@@ -4820,9 +4825,9 @@ export const useStore = create<Store>()(
     deleteActivity: (activityId) => {
       if (!gateway) {
         get().flash('Planning needs the server.');
-        return;
+        return Promise.resolve(false);
       }
-      runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), 'Activity removed from the plan.', (why) => `Couldn't delete this activity — ${why}`);
+      return runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), 'Activity removed from the plan.', (why) => `Couldn't delete this activity — ${why}`);
     },
     // Task 6: a manual readiness exception — attributable, reasoned, expiring (server records it)
     overrideGate: (activityId, input) => {

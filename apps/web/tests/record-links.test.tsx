@@ -300,19 +300,48 @@ describe('Top 10 #3c — the routed activity, through navigation and edits (#777
     useStore.setState({ routeItem: a.id });
     const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
     const r = render(<ScheduleScreen />);
-    const del = () => {
+    const del = async () => {
       fireEvent.click(r.getByTestId(`edit-${a.id}`));
       fireEvent.click(r.getByTestId('activity-delete'));
-      fireEvent.click(r.getByText('Delete activity'));
+      await act(async () => { fireEvent.click(r.getByText('Delete activity')); });
     };
-    del(); // no server: refused, the row stays
+    await del(); // no server: refused, the row stays
     expect(useStore.getState().routeItem).toBe(a.id);
     expect(r.queryByText('Show the whole schedule')).toBeNull();
 
-    del();
+    useStore.setState({ deleteActivity: vi.fn(async () => true) }); // the server accepts it
+    await del();
     act(() => useStore.setState({ activities: rest })); // the removal lands
     expect(useStore.getState().routeItem).toBeNull();
     expect(r.queryByText('Show the whole schedule')).toBeNull(); // never "not found" for one's own deletion
+  });
+
+  it('#780 — after a REFUSED delete, someone else removing the row reads as not found, not as one\'s own release', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a, ...rest] = useStore.getState().activities;
+    useStore.setState({ routeItem: a.id, deleteActivity: vi.fn(async () => false) });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    fireEvent.click(r.getByTestId(`edit-${a.id}`));
+    fireEvent.click(r.getByTestId('activity-delete'));
+    await act(async () => { fireEvent.click(r.getByText('Delete activity')); });
+    act(() => useStore.setState({ activities: rest })); // a later, unrelated removal
+    expect(useStore.getState().routeItem).toBe(a.id);
+    expect(r.getByText('Show the whole schedule')).toBeInTheDocument();
+  });
+
+  it('#780 — a Site Map hand-off made while activities are unsettled still moves focus once they settle', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a] = useStore.getState().activities;
+    useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: true } });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    act(() => useStore.getState().openActivity(a.id));
+    expect(r.getByTestId('activities-loading')).toBeInTheDocument();
+    expect(useStore.getState().activityFocus).toBe(a.id); // the intent is kept
+    act(() => useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: false } }));
+    expect(document.activeElement?.id).toBe(`sched-${a.id}`);
+    expect(useStore.getState().activityFocus).toBeNull();
   });
 
   it('4239476431 — the link reveals its row once; a schedule refresh does not pull the viewer back', async () => {
@@ -394,3 +423,59 @@ describe('Top 10 #3c — round 3 (#777 Codex on 02fbc68)', () => {
     expect(sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-override-expiry')?.item).toBeUndefined();
   });
 });
+
+describe('Top 10 #3c follow-up — #781 Codex on 4a15d38', () => {
+  it('4240026311 — the row leaving while a delete is in flight releases nothing; the refusal then shows not found', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a, ...rest] = useStore.getState().activities;
+    let settle: (ok: boolean) => void = () => {};
+    useStore.setState({ routeItem: a.id, deleteActivity: vi.fn(() => new Promise<boolean>((r) => { settle = r; })) });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    fireEvent.click(r.getByTestId(`edit-${a.id}`));
+    fireEvent.click(r.getByTestId('activity-delete'));
+    fireEvent.click(r.getByText('Delete activity'));
+    act(() => useStore.setState({ activities: rest })); // a refresh removes it while the request is pending
+    expect(useStore.getState().routeItem).toBe(a.id); // not released
+    expect(r.getByTestId('activities-loading')).toBeInTheDocument(); // nor called missing yet
+    await act(async () => { settle(false); }); // the server refuses this attempt
+    expect(useStore.getState().routeItem).toBe(a.id);
+    expect(r.getByText('Show the whole schedule')).toBeInTheDocument(); // someone else's removal: not found
+  });
+
+  it('4240026312 — a hand-off waiting on an unsettled schedule is abandoned when the viewer navigates away', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'places' });
+    const [a] = useStore.getState().activities;
+    useStore.setState({ commandReconcileOwed: { ...useStore.getState().commandReconcileOwed, activities: true } });
+    useStore.getState().openActivity(a.id);
+    expect(useStore.getState().activityFocus).toBe(a.id);
+    useStore.getState().setScreen('inbox');
+    expect(useStore.getState().activityFocus).toBeNull();
+    useStore.getState().openActivity(a.id);
+    useStore.getState().openItem('decision-log', 'DL-014');
+    expect(useStore.getState().activityFocus).toBeNull();
+  });
+});
+
+describe('Top 10 #3c follow-up — #781 Codex on f3bfe37', () => {
+  it('4240054970 — an earlier attempt\'s refusal does not clear a later attempt still in flight', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a, ...rest] = useStore.getState().activities;
+    const settles: Array<(ok: boolean) => void> = [];
+    useStore.setState({ routeItem: a.id, deleteActivity: vi.fn(() => new Promise<boolean>((r) => { settles.push(r); })) });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    const confirm = () => {
+      fireEvent.click(r.getByTestId(`edit-${a.id}`));
+      fireEvent.click(r.getByTestId('activity-delete'));
+      fireEvent.click(r.getByText('Delete activity'));
+    };
+    confirm(); confirm(); // two attempts on a slow connection
+    await act(async () => { settles[0](false); }); // the first is refused
+    act(() => useStore.setState({ activities: rest })); // the row leaves while the second is outstanding
+    expect(r.getByTestId('activities-loading')).toBeInTheDocument(); // not "not found" yet
+    await act(async () => { settles[1](true); }); // the second is accepted
+    expect(useStore.getState().routeItem).toBeNull();
+  });
+});
+
