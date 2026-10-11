@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import { viewerIsDecider } from '@vitan/shared';
-import { notificationLink, noticeTime, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
+import { notificationLink, noticeTime, projectSnapshotSettled, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
 import { inspectionsReadMode } from '@/data/apiGateway';
 import { SCREEN_META } from '@/lib/screens';
 import { ChevronRight } from '@/lib/icons';
@@ -11,6 +11,10 @@ import styles from './NotificationPanel.module.css';
 
 export function NotificationPanel() {
   const open = useStore((s) => s.notifOpen);
+  // #784 Codex 4240225580 — an empty list is only "all caught up" once the project's feed has landed: a load in
+  // flight, a project or identity switch, or a failed snapshot resets it to [] while the bell stays reachable
+  const projectLoadState = useStore((s) => s.projectLoadState);
+  const feedSettled = projectSnapshotSettled(projectLoadState);
   const notifications = useStore((s) => s.notifications);
   const toggleNotif = useStore((s) => s.toggleNotif);
   const role = useStore((s) => s.role);
@@ -77,7 +81,15 @@ export function NotificationPanel() {
         <div className={styles.label}>NOTIFICATIONS</div>
         <div className={styles.list}>
           {/* Top 10 #4a (#778) — an empty bell says so, rather than opening onto a blank panel */}
-          {notifications.length === 0 && (
+          {notifications.length === 0 && !feedSettled && (
+            <div className={styles.item} data-testid={projectLoadState === 'error' ? 'notif-unavailable' : 'notif-loading-feed'} role="status">
+              <div style={{ flex: 1 }}>
+                <div className={styles.text}>{projectLoadState === 'error' ? "Couldn't load notifications" : 'Loading notifications…'}</div>
+                {projectLoadState === 'error' && <div className={styles.time}>Check your connection and try again.</div>}
+              </div>
+            </div>
+          )}
+          {notifications.length === 0 && feedSettled && (
             <div className={styles.item} data-testid="notif-empty" role="status">
               <div style={{ flex: 1 }}>
                 <div className={styles.text}>You're all caught up</div>

@@ -321,6 +321,23 @@ describe('Top 10 #4a (#778) — an empty bell, and when each notice happened', (
     expect(getByTestId('notif-empty').textContent).toContain("You're all caught up");
   });
 
+  it('#784 Codex 4240225580 — an empty feed that has not landed is loading, and a failed one says so — never "all caught up"', async () => {
+    const loading = await mount([], { projectLoadState: 'loading' });
+    expect(loading.getByTestId('notif-loading-feed')).toBeTruthy();
+    expect(loading.queryByTestId('notif-empty')).toBeNull();
+    cleanup();
+    const failed = await mount([], { projectLoadState: 'error' });
+    expect(failed.getByTestId('notif-unavailable').textContent).toContain("Couldn't load notifications");
+    expect(failed.queryByTestId('notif-empty')).toBeNull();
+  });
+
+  it('#784 Codex 4240225580 — with an API scope, the idle store before the first fetch is not "all caught up"', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    const { getByTestId, queryByTestId } = await mount([], { projectLoadState: 'idle' });
+    expect(getByTestId('notif-loading-feed')).toBeTruthy();
+    expect(queryByTestId('notif-empty')).toBeNull();
+  });
+
   it('a server notice reads its time from its write instant, never the frozen "just now" label', async () => {
     const twoHoursAgo = new Date(Date.now() - 2 * 3600_000).toISOString();
     const { getByText, queryByTestId } = await mount([

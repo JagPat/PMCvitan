@@ -157,13 +157,37 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     await expect(svc.decide(p, first, { approve: true, rejectedItemIds: [] }, asPmc(pmcA, p), undefined)).rejects.toThrow(); // unkeyed double-tap
     expect((await approveNotices()).map((n) => n.text)).toEqual([`Inspection ${first} approved. Contractor and client notified.`]);
 
-    // two PMCs decide the same inspection at once: one wins, the other is refused, one notice
+    // two PMCs decide the same inspection at once: one wins, the other is refused, one notice.
+    // #784 Codex 4240225578 — a BARRIER holds both decides after their pre-transaction read of the undecided
+    // inspection, so both truly reach the decision transaction together (a sequential double-submit would be
+    // refused by the "already decided" guard instead, and prove nothing about the CAS)
     const second = await submitted('Once B');
-    const raced = await Promise.allSettled([
-      svc.decide(p, second, { approve: true, rejectedItemIds: [] }, asPmc(pmcA, p), 'k-once-race-a'),
-      svc.decide(p, second, { approve: true, rejectedItemIds: [] }, asPmc(pmcB, p), 'k-once-race-b'),
-    ]);
+    const delegate = t.prisma.inspection as unknown as { findUnique: (args: { where: { id?: string } }) => Promise<unknown> };
+    const original = delegate.findUnique.bind(t.prisma.inspection);
+    let release!: () => void;
+    const both = new Promise<void>((resolve) => { release = resolve; });
+    let reads = 0;
+    delegate.findUnique = async (args: { where: { id?: string } }) => {
+      const row = await original(args);
+      if (args?.where?.id === second) {
+        reads += 1;
+        if (reads === 2) release();
+        await both;
+      }
+      return row;
+    };
+    let raced: PromiseSettledResult<unknown>[];
+    try {
+      raced = await Promise.allSettled([
+        svc.decide(p, second, { approve: true, rejectedItemIds: [] }, asPmc(pmcA, p), 'k-once-race-a'),
+        svc.decide(p, second, { approve: true, rejectedItemIds: [] }, asPmc(pmcB, p), 'k-once-race-b'),
+      ]);
+    } finally {
+      delegate.findUnique = original;
+    }
+    expect(reads).toBe(2); // both read the undecided inspection before either decided
     expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect((raced.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException); // the CAS loser
     const notices = await approveNotices();
     expect(notices.filter((n) => n.text.includes(second))).toHaveLength(1);
 
