@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: top10-4b-read-mark
-reviewed_merge: cb9386d
-open_pr: 787
+reviewed_merge: b22c33f
+open_pr: 788
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-11
@@ -26,16 +26,19 @@ updated: 2026-10-11
 
 ### Current unit
 
-**Top 10 #4b, unit B: one shared definition of the notices a viewer is served** (#778, #787 on
-`claude/top10-4b-read-mark`), refactor only. Released conditionally on #482 (2026-10-11) after unit A's merge; the
-condition (main CI passing in full on unchanged `cb9386d`) was met. `SnapshotService.build`'s inline bell filter and the
-REPEATABLE READ read it judges against move to `snapshot/served-notifications.ts` (`readViewerFeed`,
-`servedNotifications`), verbatim. Characterization for all seven roles, captured before the move, pins every served
-feed; the shared function serves each role exactly the snapshot feed. No endpoint, unread state, UI, permission or
-migration change.
+**Top 10 #4b, unit C: mark notices seen with per-id confirmation; serve unread** (#778, #788 on
+`claude/top10-4b-read-mark`), API only. Released conditionally on #482 (2026-10-11) after unit B's merge; both conditions
+(main CI passing in full on unchanged `b22c33f`, and the owner-verified API deployment of that SHA) were met.
+`POST /projects/:projectId/notifications/seen { ids }` (at most 200, `project.read`): eligibility is the submitted ids
+unit B's shared definition serves at one named REPEATABLE READ read; receipts are written in a READ COMMITTED transaction
+under the actor envelope's lock order, windowed token-role standing and operability; `200 { confirmed }` after commit
+lists only the eligible ids with durable receipts (hidden, foreign, unknown and deleted ids are absent identically).
+The snapshot serves per-notice `unread`. No migration, permission, UI or backfill.
 
-Units C and D (the mark endpoint with per-id confirmation, the badge) are held.
+Unit D (the badge and the bell's per-id client state) is held.
 
+Top 10 #4b unit B merged at `b22c33f` (#787, reviewed head `994f632`): one shared definition of the notices a viewer is
+served, refactor only, characterized for all seven roles.
 Top 10 #4b unit A merged at `cb9386d` (#785, reviewed head `6ed2f66`): per-notice read receipts (`NotificationReceipt`),
 migration only, with tenant binding, standing at insert and immutability including a TRUNCATE seal; #786 stays open.
 Top 10 #4a merged at `f331ba9` (#784, reviewed head `48c3726`). The #782 follow-up merged at `549063b` (#783, reviewed head `639f784`). The #780 follow-up merged at `223f42d` (#781, reviewed head `1dd46d5`). Top 10 #3c merged at `3f021f6` (#777, reviewed head `43c5fcc`; #779 fixed in it). Top 10 #3b merged at `24c19cd` (#776, reviewed head `16da8f6`). Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head
