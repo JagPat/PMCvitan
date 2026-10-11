@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia } from './fixtures';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
+import { DecisionsQueryService } from '../../src/decisions/decisions.query';
+import { readViewerFeed, servedNotifications } from '../../src/snapshot/served-notifications';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import type { Role } from '../../src/common/auth';
 
@@ -246,5 +248,13 @@ describe('Top 10 #4b unit B — the notices each role is served (live PG)', () =
 
   it.each(viewers)('%s is served exactly the pinned feed', async (role, userId) => {
     expect(await served(role, userId())).toStrictEqual(PINNED[role]);
+  });
+
+  // unit B — the snapshot's feed IS the shared definition: called on its own, it serves each role
+  // exactly what the snapshot does (the definition unit C will judge confirmed ids against)
+  it.each(viewers)('the shared definition serves %s exactly the snapshot feed', async (role, userId) => {
+    const decisionsQuery = t.app.get(DecisionsQueryService);
+    const shared = servedNotifications(await readViewerFeed(t.prisma, decisionsQuery, f.projectA.id, role, userId()), role, userId(), decisionsQuery);
+    expect(shared).toStrictEqual((await snapshot.build(f.projectA.id, role, userId())).notifications);
   });
 });
