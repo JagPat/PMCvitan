@@ -101,6 +101,15 @@ describe('Top 10 #4b unit C — the seen mark and per-notice unread (live PG)', 
       'SELECT COUNT(*)::bigint AS n FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))', holder);
     return Number(rows[0]?.n ?? 0) > 0;
   }, what);
+  /** The backends waiting on a lock `holder` holds (to name exactly which request is held). */
+  const waitersOn = async (holder: number): Promise<number[]> =>
+    (await t.prisma.$queryRawUnsafe<Array<{ pid: number }>>(
+      'SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))', holder)).map((r) => Number(r.pid));
+  /** The backends blocking the statement tagged with `tag`. */
+  const blockersOfTag = async (tag: string): Promise<number[]> =>
+    (await t.prisma.$queryRawUnsafe<Array<{ blockers: number[] }>>(
+      `SELECT pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE query LIKE $1 AND pid <> pg_backend_pid()`, `%${tag}%`))
+      .flatMap((r) => r.blockers.map(Number));
   /** A statement tagged with `tag` is waiting on a lock. */
   const tagWaits = (tag: string, what: string) => until(async () => {
     const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
@@ -351,12 +360,30 @@ describe('Top 10 #4b unit C — the seen mark and per-notice unread (live PG)', 
   });
 
   it('a phantom grant: a membership granted to an org admin serializes with their mark — mark first stands, grant first refuses', async () => {
-    const grantSql = `INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ($1, $2, $3, 'client', 'active')`;
-    // mark first: committed while the admin held no membership-granted row — a valid serial position
+    const grantSql = (tag = '') => `INSERT ${tag ? `/* ${tag} */ ` : ''}INTO "Membership" ("id","projectId","userId","role","status") VALUES ($1, $2, $3, 'client', 'active')`;
+
+    // mark first, OVERLAPPING the grant (#482 6112010410): the mark is held at a deterministic point — a notice
+    // row it takes only after its standing and project locks — and the grant, started while it is held, is
+    // observed waiting on THAT mark's backend. Released, the mark commits its receipt while the admin holds no
+    // membership-granted row (a valid serial position), and the grant commits after it.
     const admin = await orgAdmin('phantom');
     const n = await notice('phantom');
-    expect((await mark(tokenOf(admin, 'pmc'), { ids: [n] })).body).toEqual({ confirmed: [n] });
-    await t.prisma.$executeRawUnsafe(grantSql, `t4bc-grant1-${run}`, f.projectA.id, admin);
+    const noticeHold = await hold((tx) => tx.$queryRawUnsafe('SELECT 1 FROM "Notification" WHERE "id" = $1 FOR UPDATE', n));
+    const markFirst = settle(mark(tokenOf(admin, 'pmc'), { ids: [n] }));
+    await blockedBy(noticeHold.pid(), 'the mark holds its standing and project locks and waits on the held notice row');
+    const [markPid] = await waitersOn(noticeHold.pid());
+    expect(markPid, 'the held mark\'s backend').toBeGreaterThan(0);
+    const grantTag = `phantom-grant-${randomUUID().slice(0, 8)}`;
+    const granting = settle(t.prisma.$executeRawUnsafe(grantSql(grantTag), `t4bc-grant1-${run}`, f.projectA.id, admin));
+    await tagWaits(grantTag, 'the grant waits');
+    expect(await blockersOfTag(grantTag), 'the grant is blocked by the held mark itself').toContain(markPid);
+    expect((await t.prisma.membership.count({ where: { projectId: f.projectA.id, userId: admin } })), 'the grant has not committed').toBe(0);
+    noticeHold.release();
+    expect((await noticeHold.done).ok).toBe(true);
+    const first = await markFirst;
+    expect(first.ok && [first.v.status, first.v.body], 'mark first → recorded').toEqual([200, { confirmed: [n] }]);
+    expect((await granting).ok, 'the grant commits after the mark').toBe(true);
+    expect(await t.prisma.membership.count({ where: { projectId: f.projectA.id, userId: admin, status: 'active' } })).toBe(1);
     // the receipt stands; the next mark finds the granted row and is refused
     expect(await t.prisma.notificationReceipt.count({ where: { notificationId: n, userId: admin } })).toBe(1);
     expect((await mark(tokenOf(admin, 'pmc'), { ids: [await notice('phantom-next')] })).status).toBe(403);
@@ -365,7 +392,7 @@ describe('Top 10 #4b unit C — the seen mark and per-notice unread (live PG)', 
     // mark's operability check takes, so the mark is observed WAITING and, once the grant commits, refused
     const admin2 = await orgAdmin('phantom2');
     const m = await notice('phantom-held');
-    const grant = await hold((tx) => tx.$executeRawUnsafe(grantSql, `t4bc-grant2-${run}`, f.projectA.id, admin2));
+    const grant = await hold((tx) => tx.$executeRawUnsafe(grantSql(), `t4bc-grant2-${run}`, f.projectA.id, admin2));
     const marking = settle(mark(tokenOf(admin2, 'pmc'), { ids: [m] }));
     await blockedBy(grant.pid(), 'the mark waits on the held grant');
     grant.release();
