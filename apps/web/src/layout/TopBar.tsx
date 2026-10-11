@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '@/store/store';
+import { unreadCount } from '@/lib/notificationSeen';
 import { Bell, Power, ChevronDown } from '@/lib/icons';
 import { ROLE_LABEL } from '@/lib/screens';
 import { selectRoles } from '@/store/selectors';
@@ -24,7 +25,9 @@ export function TopBar() {
   const setRole = useStore((s) => s.setRole);
   const signOut = useStore((s) => s.signOut);
   const toggleNotif = useStore((s) => s.toggleNotif);
-  const notifCount = useStore((s) => s.notifications.length);
+  // Top 10 #4b unit D (#778) — the badge counts UNREAD notices (server `unread`, less this device's in-flight
+  // and confirmed marks), not every notice
+  const notifCount = useStore((s) => unreadCount(s.notifications, s.notifSeen));
   const { label, canSwitch } = useProjectSwitch();
   const [switching, setSwitching] = useState(false);
   const lang = useStore((s) => s.lang);

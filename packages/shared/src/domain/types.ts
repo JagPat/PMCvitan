@@ -655,6 +655,9 @@ export interface AppNotification {
   /** The inspection this notice is about, stamped by its writer (live bug 1b-3) — never read back out of
    *  the display text, whose title and zone are user text. Absent on every legacy notice. */
   inspectionId?: string;
+  /** Top 10 #4b (#778) — the server's per-viewer read state: true while this viewer holds no receipt for the
+   *  notice. Absent on a demo/local notice and from a server that predates it. */
+  unread?: boolean;
 }
 
 export interface ModalState {

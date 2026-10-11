@@ -71,6 +71,7 @@ import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
 import { type DailyLogDraft, adoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type NodeCreatePending, type ProjectLoadState, type ProjectScope } from './projectScope';
+import { applySeenConfirmed, applySeenFailure, beginSeenAttempt, emptyNotifSeen, planSeenChunks, reconcileSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
@@ -421,6 +422,8 @@ export interface AppState {
   // to this log (same unsent civil day only) or discards it.
   legacyDailyLogDraft: DailyLogDraft | null;
   notifications: AppNotification[];
+  /** Top 10 #4b unit D (#778) — the bell's per-notice read marks (project-owned; see lib/notificationSeen.ts). */
+  notifSeen: NotifSeenState;
   // real session (set by a phone-OTP sign-in; null = passwordless dev auth)
   /** Legacy-copy recovery — the create hold the new-project dialog shows, DERIVED for the signed-in
    *  identity from its durable record and this document's own reservations (`./projectCreateHold`). It is
@@ -496,6 +499,9 @@ export interface AppActions {
   openItem: (screen: ScreenKey, item: string | null) => void;
   setLang: (l: Lang) => void;
   toggleNotif: () => void;
+  /** Top 10 #4b unit D (#778) — opening the bell marks the displayed unread notices seen, in sequential
+   *  chunks of at most 200, suppressing an id only while its mark is in flight or once the server confirms it. */
+  markShownNotificationsSeen: () => Promise<void>;
   openCreate: () => void;
   closeCreate: () => void;
   flash: (msg: string) => void;
@@ -1240,6 +1246,7 @@ export function getInitialState(): AppState {
     dailyLogDraft: null,
     legacyDailyLogDraft: null,
     notifications: structuredClone(SEED_NOTIFICATIONS),
+    notifSeen: emptyNotifSeen(),
     projectCreateHold: null,
     sessionToken: null,
     userName: null,
@@ -1735,6 +1742,8 @@ export const useStore = create<Store>()(
           s.dailyLogLoad = 'error';
         }
         s.notifications = snap.notifications;
+        // Top 10 #4b unit D — the server's `unread` retires confirmed marks and re-arms unacknowledged ones
+        reconcileSeen(s.notifSeen, s.notifications);
         s.companies = snap.companies ?? [];
         s.name = snap.project.name;
         s.short = snap.project.short;
@@ -2699,7 +2708,32 @@ export const useStore = create<Store>()(
         s.activityFocus = null;
       }),
     setLang: (l) => set((s) => { s.lang = l; }),
-    toggleNotif: () => set((s) => { s.notifOpen = !s.notifOpen; }),
+    toggleNotif: () => {
+      set((s) => { s.notifOpen = !s.notifOpen; });
+      if (get().notifOpen) void get().markShownNotificationsSeen();
+    },
+    markShownNotificationsSeen: async () => {
+      // the API path only: a local/demo store has no receipts to write
+      const gw = gateway;
+      if (!gw) return;
+      const scope = projectScopeOf(get());
+      const inScope = () => gateway === gw && isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope);
+      // sequential chunks, each its own attempt and its own confirmation; a failed chunk does not stop the next
+      for (const ids of planSeenChunks(get().notifications, get().notifSeen)) {
+        if (!inScope()) return;
+        let attempt = 0;
+        set((s) => { attempt = beginSeenAttempt(s.notifSeen, ids); });
+        try {
+          const { confirmed } = await gw.markNotificationsSeen(ids);
+          // an answer that returns after a project switch has nothing to change
+          if (!inScope()) return;
+          set((s) => { applySeenConfirmed(s.notifSeen, attempt, ids, Array.isArray(confirmed) ? confirmed : []); });
+        } catch {
+          if (!inScope()) return;
+          set((s) => { applySeenFailure(s.notifSeen, attempt, ids); });
+        }
+      }
+    },
     openCreate: () => set((s) => { s.createOpen = true; }),
     closeCreate: () => set((s) => { s.createOpen = false; }),
     flash: (msg) => {
