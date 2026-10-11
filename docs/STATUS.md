@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: top10-4b-read-mark
-reviewed_merge: 92e585e
-open_pr: 789
+work_item: top10-4-acceptance-proofs
+reviewed_merge: 6b372aa
+open_pr: 790
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-11
@@ -26,26 +26,27 @@ updated: 2026-10-11
 
 ### Current unit
 
-**Top 10 #4b, unit D: the bell counts unread and marks displayed notices seen** (#778, #789 on
-`claude/top10-4b-read-mark`), web only. Released conditionally on #482 (2026-10-11) after unit C's merge; both conditions
-(main CI passing in full on unchanged `92e585e`, and the owner-verified API deployment of that SHA) were met. The badge
-counts server-unread notices less this device's in-flight and confirmed marks; opening the bell submits the displayed
-unread ids to unit C's endpoint in sequential chunks of at most 200, with per-project `unread → pending(attempt) →
-confirmed | unacknowledged` state (`lib/notificationSeen.ts`): only server-confirmed ids stay suppressed, unacknowledged
-ids are resent only after a later snapshot re-serves them, failures roll back only their own attempt, and a project
-switch drops in-flight answers. No API, schema, migration or permission change.
+**Top 10 #4 acceptance proofs: the existing notice writers and their recipients** (#778, #790 on
+`claude/top10-4b-read-mark`), tests only. Released conditionally on #482 (record 6113732809) after unit D's merge; main CI
+passed in full on unchanged `6b372aa`, and the owner verified the API and frontend deployments of that SHA. The unit pins
+what each existing writer does today, without inventing a dedup rule: inspection reject (unkeyed retry refused; two
+barrier-held decides leave one re-inspection notice stamped with its child), checklist issue (one notice per concurrent
+same-key create; unkeyed creates stay distinct), the sign-off request (one notice and one completion event per winning
+claim, on `closing-signoff`'s barrier), and the material mismatch flag (one notice and event per keyed act; each unkeyed
+flag is a new act). Each notice is tied to its logical event and to the feed roles it is served to; a worker device and
+another project's member are refused. No runtime, API, schema, migration, permission or workflow change.
 
-#778's acceptance stays OPEN after this unit: a merge and deployment of the UI still need separate isolated
-role-functional evidence; the automated tests here establish no production or role-live QA.
+#778 by stage, for units A–D: Specified (proposal revisions 3 and 4 on #785) — yes; Implemented — yes (merged); Reviewed —
+yes (exact-head Codex on each); Deployed — yes (API and frontend at `6b372aa`, owner-verified); Live-tested — **no**.
+#778's acceptance stays OPEN: isolated role-functional QA has not run, and these automated proofs are not live role QA.
 
-Top 10 #4b unit C merged at `92e585e` (#788, reviewed head `d53eaea`): `POST /projects/:projectId/notifications/seen`
-with per-id confirmation, and per-notice `unread` in the snapshot.
-Top 10 #4b unit B merged at `b22c33f` (#787, reviewed head `994f632`): one shared definition of the notices a viewer is
-served, refactor only, characterized for all seven roles.
-Top 10 #4b unit A merged at `cb9386d` (#785, reviewed head `6ed2f66`): per-notice read receipts (`NotificationReceipt`),
-migration only, with tenant binding, standing at insert and immutability including a TRUNCATE seal; #786 stays open.
+Top 10 #4b unit D merged at `6b372aa` (#789, reviewed head `f0fd793`): the bell counts unread notices and marks the
+displayed ones seen, web only.
+Top 10 #4b unit C merged at `92e585e` (#788, reviewed head `d53eaea`): the seen endpoint and per-notice `unread`.
+Unit B merged at `b22c33f` (#787, reviewed head `994f632`): one shared served-notice definition.
+Unit A merged at `cb9386d` (#785, reviewed head `6ed2f66`): per-notice read receipts, migration only; #786 stays open.
 Top 10 #4a merged at `f331ba9` (#784, reviewed head `48c3726`). The #782 follow-up merged at `549063b` (#783, reviewed head `639f784`). The #780 follow-up merged at `223f42d` (#781, reviewed head `1dd46d5`). Top 10 #3c merged at `3f021f6` (#777, reviewed head `43c5fcc`; #779 fixed in it). Top 10 #3b merged at `24c19cd` (#776, reviewed head `16da8f6`). Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head
-`cdd4e33`); #771 stays open for live validation. Top 10 #2a merged at `3e2cba6` (#772, reviewed head `293ded6`). Top 10 #1 merged at `9b1d119` (#770, reviewed head `db39901`; #769 open for live validation). M3c C1/C2 merged at `14ce2bd` (#768, reviewed head `3f84b12`); the owner switches the required context to
+`cdd4e33`); #771 stays open for live validation. Top 10 #1 merged at `9b1d119` (#770, reviewed head `db39901`; #769 open for live validation). M3c C1/C2 merged at `14ce2bd` (#768, reviewed head `3f84b12`); the owner switches the required context to
 `codex-current-head/wi` once a head has reported it (steps on #482). #765 merged at `1814160` (#766, reviewed head `80a1c50`). M3c §A merged at `191f8a0` (#764, reviewed head `fb7d3ed`). M3b merged at `ad742de` (#761, reviewed head `cbbb533`). M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
 (#748).
 
@@ -87,7 +88,9 @@ mandatory await the owner). #731 stays open until they land. Maintenance runs be
    exclusion from portfolio totals, counts and notifications, QA-3 an owner-only test-project option; then the
    owner or Hark creates "QA – Test Site" and invites the five qa.* aliases through the app (email + password).
 6. **4d-iii R1–R4.** R0a-1 (#715), R0a-2 (#722), R0b (#724) and R0c (#725) are merged. R1 also needs R0c's
-   deployment confirmed. `next_task` stays `phase-6-task-4d-iii` until then.
+   deployment confirmed. `next_task` stays `phase-6-task-4d-iii` until then. That pointer is the parent task's
+   continuation only; it is not authority to start 4d-iii ahead of items 2–5 above. The remaining live-bug work
+   comes before client estimates and isolated QA.
 7. **Site Visits**, after R1–R4 (the owner's direction, unchanged by the 2026-10-08 order).
 
 Each unit is a focused PR from `main`, with its own GitHub issue (rule 9). It goes through CI, exact-head
