@@ -17,7 +17,8 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
  *     and a membership-less org owner — with a fanned-out row AND in the rollout window before re-projection —
  *     are admitted; a member of another project, an owner of an unrelated org, a stranger and an archived project
  *     are refused; a concurrent demotion of the authorizing row serializes in both orders.
- * R3  Immutable: no UPDATE, no direct DELETE; the notice, viewer and project cascades remove receipts.
+ * R3  Immutable: no UPDATE, no direct DELETE, no TRUNCATE (statement seal, bypassed only by the isolated test
+ *     reset); the notice, viewer and project cascades remove receipts.
  * Plus: the reset paths, the db-push baseline replay, a dump-and-restore round trip, and previous-release shapes.
  */
 describe('Top 10 #4b — NotificationReceipt (live PG)', () => {
@@ -52,6 +53,30 @@ describe('Top 10 #4b — NotificationReceipt (live PG)', () => {
   /** A promise resolvable from outside, to hold a transaction open at a known point. */
   const gate = () => { let open!: () => void; const p = new Promise<void>((r) => { open = r; }); return { p, open }; };
   const settle = <T>(p: Promise<T>) => p.then((v) => ({ ok: true as const, v }), (e: unknown) => ({ ok: false as const, e: String(e) }));
+  /**
+   * Deterministic barrier (#785 review 5483343407): wait until a contender tagged with `marker` is BLOCKED on a
+   * database lock, as `commercial-deadlock-lockorder.test.ts` does, so a release can never merely run the two
+   * operations one after the other.
+   */
+  const reachesLockWait = async (marker: string, ms = 10_000): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT COUNT(*)::bigint AS n FROM pg_stat_activity WHERE query LIKE $1 AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,
+        `%${marker}%`,
+      );
+      if (Number(rows[0]?.n ?? 0) > 0) return true;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return false;
+  };
+  const marker = (label: string) => `rc-${label}-${randomUUID().slice(0, 8)}`;
+  /** A receipt INSERT tagged with `tag`, so `reachesLockWait` can see it waiting. */
+  const taggedReceipt = (tag: string, notificationId: string, userId: string, projectId: string) =>
+    t.prisma.$executeRawUnsafe(
+      `INSERT /* ${tag} */ INTO "NotificationReceipt" ("notificationId","userId","projectId") VALUES ($1, $2, $3)`,
+      notificationId, userId, projectId,
+    );
 
   describe('R1 — tenant binding', () => {
     it('refuses a receipt that names another project than its notice, through the client and raw SQL', async () => {
@@ -81,8 +106,9 @@ describe('Top 10 #4b — NotificationReceipt (live PG)', () => {
         await release.p;
       }, { timeout: 30_000 });
       await moved.p;
-      const insert = settle(receipt(n, f.memberUser.id, f.projectA.id));
-      await new Promise((r) => setTimeout(r, 300)); // the insert's key check waits on the moving row
+      const tag = marker('move-first');
+      const insert = settle(taggedReceipt(tag, n, f.memberUser.id, f.projectA.id));
+      expect(await reachesLockWait(tag), 'the receipt INSERT is blocked on the moving notice row').toBe(true);
       release.open();
       await move;
       const outcome = await insert;
@@ -99,8 +125,9 @@ describe('Top 10 #4b — NotificationReceipt (live PG)', () => {
         await release.p;
       }, { timeout: 30_000 });
       await inserted.p;
-      const move = settle(t.prisma.$executeRaw`UPDATE "Notification" SET "projectId" = ${f.projectB.id} WHERE "id" = ${n}`);
-      await new Promise((r) => setTimeout(r, 300));
+      const tag = marker('receipt-first');
+      const move = settle(t.prisma.$executeRawUnsafe(`UPDATE /* ${tag} */ "Notification" SET "projectId" = $1 WHERE "id" = $2`, f.projectB.id, n));
+      expect(await reachesLockWait(tag), 'the notice move is blocked on the receipted row').toBe(true);
       release.open();
       await write;
       const outcome = await move;
@@ -179,13 +206,14 @@ describe('Top 10 #4b — NotificationReceipt (live PG)', () => {
         await release.p;
       }, { timeout: 30_000 });
       await wrote.p;
-      let demoted = false;
-      const demotion = t.prisma.$transaction(async (tx) => { await demote(tx); demoted = true; }, { timeout: 30_000 });
-      await new Promise((r) => setTimeout(r, 300));
-      expect(demoted, 'the demotion waits for the receipt holding the authority row').toBe(false);
+      const demoteTag = marker('demote-waits');
+      // settle() subscribes at once: a Prisma query is lazy and is not sent until something awaits or thens it
+      const demotion = settle(t.prisma.$executeRawUnsafe(
+        `UPDATE /* ${demoteTag} */ "OrgMembership" SET "role" = 'member' WHERE "orgId" = $1 AND "userId" = $2`, f.orgA.id, f.ownerUser.id));
+      expect(await reachesLockWait(demoteTag), 'the demotion is blocked on the authority row the receipt holds').toBe(true);
       release.open();
       await write;
-      await demotion;
+      expect((await demotion).ok, 'the demotion completes once the receipt commits').toBe(true);
       expect(await receiptCount({ notificationId: first, userId: f.ownerUser.id })).toBe(1);
       await restore();
 
@@ -194,8 +222,9 @@ describe('Top 10 #4b — NotificationReceipt (live PG)', () => {
       const held = gate(); const go = gate();
       const demotion2 = t.prisma.$transaction(async (tx) => { await demote(tx); held.open(); await go.p; }, { timeout: 30_000 });
       await held.p;
-      const insert = settle(receipt(second, f.ownerUser.id, f.projectA.id));
-      await new Promise((r) => setTimeout(r, 300));
+      const insertTag = marker('receipt-waits');
+      const insert = settle(taggedReceipt(insertTag, second, f.ownerUser.id, f.projectA.id));
+      expect(await reachesLockWait(insertTag), 'the receipt is blocked on the authority row the demotion holds').toBe(true);
       go.open();
       await demotion2;
       const outcome = await insert;
@@ -215,6 +244,27 @@ describe('Top 10 #4b — NotificationReceipt (live PG)', () => {
       await expect(t.prisma.notificationReceipt.delete({ where })).rejects.toThrow(/may not be deleted directly/);
       await expect(t.prisma.$executeRaw`DELETE FROM "NotificationReceipt" WHERE "notificationId" = ${n}`).rejects.toThrow(/may not be deleted directly/);
       expect(await receiptCount({ notificationId: n })).toBe(1);
+    });
+
+    it('refuses a direct TRUNCATE, alone or reached by a CASCADE, and the isolated test reset still clears it', async () => {
+      const n = await notice(f.projectA.id);
+      await receipt(n, f.memberUser.id, f.projectA.id);
+      await expect(t.prisma.$executeRawUnsafe('TRUNCATE "NotificationReceipt"')).rejects.toThrow(/never truncated/);
+      // reached through the notice register: the receipt seal refuses even if the notice seal were bypassed
+      await expect(t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('ALTER TABLE "Notification" DISABLE TRIGGER "Notification_t4d_no_truncate"');
+        await tx.$executeRawUnsafe('TRUNCATE "Notification" CASCADE');
+      })).rejects.toThrow(/receipt register is never truncated/);
+      expect(await receiptCount({ notificationId: n })).toBe(1);
+      // the sanctioned reset is registered: it disables the seal by name inside its own transaction and clears the
+      // register (this suite's own receipts; the shared database's other suites hold none between runs)
+      const { sanctionedReset, TRUNCATE_SEALS } = await import('../../prisma/sanctioned-reset');
+      expect(TRUNCATE_SEALS).toContainEqual({ table: 'NotificationReceipt', trigger: 'NotificationReceipt_no_truncate' });
+      await sanctionedReset(t.prisma, ['NotificationReceipt']);
+      expect(await t.prisma.notificationReceipt.count()).toBe(0);
+      // and the seal is back afterwards
+      await receipt(n, f.memberUser.id, f.projectA.id);
+      await expect(t.prisma.$executeRawUnsafe('TRUNCATE "NotificationReceipt"')).rejects.toThrow(/never truncated/);
     });
 
     it('goes with its notice (the delivered kindless retirement is a row delete), its viewer and its project', async () => {
@@ -253,14 +303,14 @@ describe('Top 10 #4b — NotificationReceipt (live PG)', () => {
     const url = () => { const u = new URL(process.env.DATABASE_URL!); u.search = ''; return u; };
     const migrationFile = () => join(__dirname, '../../prisma/migrations', MIGRATION, 'migration.sql');
     const guards = async () => (await t.prisma.$queryRaw<Array<{ n: string }>>`
-      SELECT tgname AS n FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('NotificationReceipt_viewer_standing', 'NotificationReceipt_immutable')
+      SELECT tgname AS n FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('NotificationReceipt_viewer_standing', 'NotificationReceipt_immutable', 'NotificationReceipt_no_truncate')
       ORDER BY 1`).map((r) => r.n);
 
     it('is on migrate.sh\'s ALWAYS_EXECUTE and re-runs over a db-push shape, installing both triggers, twice', async () => {
       const runner = readFileSync(join(__dirname, '../../scripts/migrate.sh'), 'utf8');
       const named = /ALWAYS_EXECUTE="([^"]*)"/u.exec(runner)![1]!.split('\n').map((l) => l.trim()).filter(Boolean);
       expect(named).toContain(MIGRATION);
-      const all = ['NotificationReceipt_immutable', 'NotificationReceipt_viewer_standing'];
+      const all = ['NotificationReceipt_immutable', 'NotificationReceipt_no_truncate', 'NotificationReceipt_viewer_standing'];
       expect(await guards()).toEqual(all);
       const n = await notice(f.projectA.id);
       await receipt(n, f.memberUser.id, f.projectA.id);
@@ -270,6 +320,7 @@ describe('Top 10 #4b — NotificationReceipt (live PG)', () => {
         // the shape a db push leaves: the modeled table, keys and indexes, none of the triggers
         await t.prisma.$executeRawUnsafe('DROP TRIGGER "NotificationReceipt_viewer_standing" ON "NotificationReceipt"');
         await t.prisma.$executeRawUnsafe('DROP TRIGGER "NotificationReceipt_immutable" ON "NotificationReceipt"');
+        await t.prisma.$executeRawUnsafe('DROP TRIGGER "NotificationReceipt_no_truncate" ON "NotificationReceipt"');
         expect(await guards()).toEqual([]);
         psql();
         expect(await guards()).toEqual(all);
@@ -297,10 +348,11 @@ describe('Top 10 #4b — NotificationReceipt (live PG)', () => {
         expect(q(`SELECT string_agg("userId", ',' ORDER BY "userId") FROM "NotificationReceipt" WHERE "notificationId" = '${n}'`))
           .toBe([f.clientUser.id, f.memberUser.id].sort().join(','));
         expect(q(`SELECT string_agg(tgname, ',' ORDER BY tgname) FROM pg_trigger WHERE tgname LIKE 'NotificationReceipt_%'`))
-          .toBe('NotificationReceipt_immutable,NotificationReceipt_viewer_standing');
+          .toBe('NotificationReceipt_immutable,NotificationReceipt_no_truncate,NotificationReceipt_viewer_standing');
         // the guards stand in the restored database: a stranger is refused, and a receipt is immutable there too
         expect(() => q(`INSERT INTO "NotificationReceipt" ("notificationId","userId","projectId") VALUES ('${n}', '${f.strangerUser.id}', '${f.projectA.id}')`)).toThrow(/no standing/);
         expect(() => q(`DELETE FROM "NotificationReceipt" WHERE "notificationId" = '${n}'`)).toThrow(/may not be deleted directly/);
+        expect(() => q('TRUNCATE "NotificationReceipt"')).toThrow(/never truncated/);
       } finally {
         execFileSync('psql', ['-q', '-d', admin.toString(), '-c', `DROP DATABASE IF EXISTS "${restored}" WITH (FORCE)`], { stdio: 'pipe' });
       }

@@ -27,7 +27,10 @@
 --       FOR SHARE), so a concurrent removal or demotion of a PRESENT row waits for the insert or is seen by it.
 --       Only kernel registers and kernel functions are read; no org table, no new permission.
 --   R3  Immutable. A receipt is never updated. It is never deleted directly; it goes only with its notice, its
---       viewer or its project (the foreign keys' cascades, which run below trigger depth 1).
+--       viewer or its project (the foreign keys' cascades, which run below trigger depth 1). TRUNCATE fires no row
+--       trigger, so a statement-level seal refuses it too (#785 review 5483343407): otherwise one statement would
+--       erase every viewer's read state. Only the isolated automated-test reset (`prisma/sanctioned-reset.ts`,
+--       `TRUNCATE_SEALS`) disables it, by name, inside its own transaction.
 --
 -- Re-runnable, and on `scripts/migrate.sh`'s ALWAYS_EXECUTE: a `db push` baseline models the table, the composite
 -- key and the unique key it references, but not the triggers. Every statement is guarded.
@@ -107,3 +110,15 @@ DROP TRIGGER IF EXISTS "NotificationReceipt_immutable" ON "NotificationReceipt";
 CREATE TRIGGER "NotificationReceipt_immutable"
   BEFORE UPDATE OR DELETE ON "NotificationReceipt"
   FOR EACH ROW EXECUTE FUNCTION "NotificationReceipt_immutable"();
+
+-- R3 — TRUNCATE fires no row trigger; this statement-level seal refuses it.
+CREATE OR REPLACE FUNCTION "NotificationReceipt_no_truncate"() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'top10 4b: the receipt register is never truncated; a receipt goes only with its notice, viewer or project';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "NotificationReceipt_no_truncate" ON "NotificationReceipt";
+CREATE TRIGGER "NotificationReceipt_no_truncate"
+  BEFORE TRUNCATE ON "NotificationReceipt"
+  FOR EACH STATEMENT EXECUTE FUNCTION "NotificationReceipt_no_truncate"();

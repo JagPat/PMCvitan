@@ -34,8 +34,10 @@ stand. `NotificationReceipt` (notice, viewer, project, seenAt), no backfill:
   state (a receipted kindless notice cannot move);
 - R2 a BEFORE INSERT trigger requires the viewer's standing by the existing windowed contract on an operable project,
   under the actor envelope's lock order;
-- R3 receipts are immutable and go only with their notice, viewer or project.
-- On `migrate.sh`'s ALWAYS_EXECUTE, fully guarded. Live-PG proofs cover binding (raw and concurrent, both orders),
+- R3 receipts are immutable and go only with their notice, viewer or project; a statement-level seal refuses TRUNCATE,
+  which only the isolated test reset (`TRUNCATE_SEALS`) disables by name (review 5483343407 on `2b8b73d`).
+- On `migrate.sh`'s ALWAYS_EXECUTE, fully guarded. Live-PG proofs cover binding (raw and concurrent, both orders, each
+  contender observed in a database lock wait before its holder is released),
   standing (including the rollout window and a concurrent demotion), immutability, cascades, reset, the db-push
   replay, a dump-and-restore round trip and previous-release notice shapes.
 
