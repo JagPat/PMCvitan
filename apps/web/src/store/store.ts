@@ -3318,7 +3318,7 @@ export const useStore = create<Store>()(
       // Task 5: approving a CLOSING review is the sign-off that completes its activity
       const msg = review.closing
         ? `Signed off: ${review.activityName ?? review.title} is complete.`
-        : 'Inspection approved. Contractor and client notified.';
+        : `Inspection ${review.id} approved. Contractor and client notified.`;
       // Task 10 (Module 3) correction — one stable idempotency key for this decision: the online send
       // and any offline replay reach the server under it, so a lost-response retry decides once.
       const approveReviewKey = newIdempotencyKey();

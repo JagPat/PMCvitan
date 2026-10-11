@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import { viewerIsDecider } from '@vitan/shared';
-import { notificationLink, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
+import { notificationLink, noticeTime, projectSnapshotSettled, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
 import { inspectionsReadMode } from '@/data/apiGateway';
 import { SCREEN_META } from '@/lib/screens';
 import { ChevronRight } from '@/lib/icons';
@@ -11,6 +11,19 @@ import styles from './NotificationPanel.module.css';
 
 export function NotificationPanel() {
   const open = useStore((s) => s.notifOpen);
+  // #784 Codex 4240225580 — an empty list is only "all caught up" once the project's feed has landed: a load in
+  // flight, a project or identity switch, or a failed snapshot resets it to [] while the bell stays reachable
+  const projectLoadState = useStore((s) => s.projectLoadState);
+  const feedSettled = projectSnapshotSettled(projectLoadState);
+  // #784 Codex 4240346214 — the relative times re-read the clock while the panel is open (a backgrounded tab, a
+  // panel left open), so "just now" does not freeze again; the clock is reset each time the panel opens
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!open) return;
+    setNow(Date.now());
+    const tick = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(tick);
+  }, [open]);
   const notifications = useStore((s) => s.notifications);
   const toggleNotif = useStore((s) => s.toggleNotif);
   const role = useStore((s) => s.role);
@@ -76,6 +89,23 @@ export function NotificationPanel() {
       <div className={styles.panel} role="dialog" aria-label="Notifications">
         <div className={styles.label}>NOTIFICATIONS</div>
         <div className={styles.list}>
+          {/* Top 10 #4a (#778) — an empty bell says so, rather than opening onto a blank panel */}
+          {notifications.length === 0 && !feedSettled && (
+            <div className={styles.item} data-testid={projectLoadState === 'error' ? 'notif-unavailable' : 'notif-loading-feed'} role="status">
+              <div style={{ flex: 1 }}>
+                <div className={styles.text}>{projectLoadState === 'error' ? "Couldn't load notifications" : 'Loading notifications…'}</div>
+                {projectLoadState === 'error' && <div className={styles.time}>Check your connection and try again.</div>}
+              </div>
+            </div>
+          )}
+          {notifications.length === 0 && feedSettled && (
+            <div className={styles.item} data-testid="notif-empty" role="status">
+              <div style={{ flex: 1 }}>
+                <div className={styles.text}>You're all caught up</div>
+                <div className={styles.time}>Approvals, inspections and drawings you need to know about will appear here.</div>
+              </div>
+            </div>
+          )}
           {notifications.map((n, i) => {
             const link = notificationLink(n, role, records);
             const body = (
@@ -83,16 +113,16 @@ export function NotificationPanel() {
                 <span className={styles.dot} style={{ background: n.color }} />
                 <div style={{ flex: 1 }}>
                   <div className={styles.text}>{n.text}</div>
-                  <div className={styles.time}>{n.time}</div>
+                  <div className={styles.time}>{noticeTime(n, now)}</div>
                 </div>
                 {link && <ChevronRight size={15} style={{ alignSelf: 'center', opacity: 0.5, flex: 'none' }} />}
               </>
             );
             // A notification about a record opens THAT record (live bug 1); one about a screen the
             // role can reach opens the screen. Others render as plain, non-interactive rows.
-            if (!link) return <div className={styles.item} key={i}>{body}</div>;
+            if (!link) return <div className={styles.item} key={n.id ?? i}>{body}</div>;
             return (
-              <div key={i}>
+              <div key={n.id ?? i}>
                 <button
                   className={styles.item}
                   data-testid="notif-item"

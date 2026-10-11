@@ -14,7 +14,7 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
   it('passes ONE repeatable-read transaction to the slice, the feed read and the event read', async () => {
     const tx = {
       notification: { findMany: vi.fn(async () => [
-        { id: 'n1', text: 'x', color: '#000000', time: 'now', at: new Date(), decisionId: 'd1', kind: 'decision.published', eventId: 'e1', projectId: 'p1' },
+        { id: 'n1', text: 'x', color: '#000000', time: 'now', at: new Date('2026-10-10T08:00:00.000Z'), decisionId: 'd1', kind: 'decision.published', eventId: 'e1', projectId: 'p1' },
       ]) },
       domainEvent: { findMany: vi.fn(async () => [{ eventId: 'e1', eventType: 'decision.published', payload: { title: 'T' }, dispatchIntent: { effectKey: 'decision.published' }, actorRole: 'pmc', actorName: 'P' }]) },
     };
@@ -63,6 +63,7 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
     );
     expect((decisionsQuery.renderKindedNotice.mock.calls[0]![5] as Map<string, unknown>).get('dar-d1-v1')).toEqual({ decisionId: 'd1', material: 'Granite', onBehalfOf: null });
     // live bug 1 — the notice names its decision, which is in this viewer's slice
-    expect(out.notifications).toEqual([{ text: 'rendered', time: 'now', color: '#C08A2D', decisionId: 'd1' }]);
+    // Top 10 #4a (#778) — and carries its row identity and write instant
+    expect(out.notifications).toEqual([{ id: 'n1', at: '2026-10-10T08:00:00.000Z', text: 'rendered', time: 'now', color: '#C08A2D', decisionId: 'd1' }]);
   });
 });

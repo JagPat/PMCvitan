@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  noticeTime,
   inspectionIdOf, notificationKind, notificationLink, notificationTarget, decisionsSliceSettled, inspectionsSliceSettled, type NotificationRecords,
 } from '@/lib/notifications';
 
@@ -229,5 +230,22 @@ describe('one "settled" for every judge (Codex 4204448859)', () => {
     expect(decisionsSliceSettled({ ...base, decisionsLoad: 'error' })).toBe(false);
     expect(decisionsSliceSettled({ ...base, projectLoadState: 'loading' })).toBe(false);
     expect(decisionsSliceSettled({ ...base, projectLoadState: 'error' })).toBe(false);
+  });
+});
+
+describe('noticeTime — when a notice happened (Top 10 #4a, #778)', () => {
+  const now = Date.parse('2026-10-10T12:00:00.000Z');
+  const at = (ms: number) => ({ at: new Date(now - ms).toISOString(), time: 'just now' });
+  it('reads the write instant, not the stored label', () => {
+    expect(noticeTime(at(20_000), now)).toBe('just now');
+    expect(noticeTime(at(5 * 60_000), now)).toBe('5m ago');
+    expect(noticeTime(at(3 * 3600_000), now)).toBe('3h ago');
+    expect(noticeTime(at(2 * 86_400_000), now)).toBe('2d ago');
+    // a month back names the day (the locale's own month spelling)
+    expect(noticeTime(at(30 * 86_400_000), now)).toBe(new Date(now - 30 * 86_400_000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }));
+  });
+  it('falls back to the stored label for a notice with no instant (demo, an older server)', () => {
+    expect(noticeTime({ time: '2h ago' }, now)).toBe('2h ago');
+    expect(noticeTime({ at: 'not a date', time: '1d ago' }, now)).toBe('1d ago');
   });
 });

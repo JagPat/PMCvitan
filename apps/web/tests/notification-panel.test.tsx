@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 async function mount(
-  notifications: { text: string; time: string; color: string; decisionId?: string }[],
+  notifications: { id?: string; at?: string; text: string; time: string; color: string; decisionId?: string }[],
   over: Record<string, unknown> = {},
 ) {
   const { useStore, getInitialState } = await import('@/store/store');
@@ -312,5 +312,52 @@ describe('an owed reconcile is tracked per slice (Codex 4209988801)', () => {
     expect(s().commandReconcileOwed.decisions).toBe(false);
     expect(decisionsSliceSettled(s())).toBe(true);
     s()._setGateway(null);
+  });
+});
+
+describe('Top 10 #4a (#778) — an empty bell, and when each notice happened', () => {
+  it('an empty bell says so instead of opening onto a blank panel', async () => {
+    const { getByTestId } = await mount([]);
+    expect(getByTestId('notif-empty').textContent).toContain("You're all caught up");
+  });
+
+  it('#784 Codex 4240225580 — an empty feed that has not landed is loading, and a failed one says so — never "all caught up"', async () => {
+    const loading = await mount([], { projectLoadState: 'loading' });
+    expect(loading.getByTestId('notif-loading-feed')).toBeTruthy();
+    expect(loading.queryByTestId('notif-empty')).toBeNull();
+    cleanup();
+    const failed = await mount([], { projectLoadState: 'error' });
+    expect(failed.getByTestId('notif-unavailable').textContent).toContain("Couldn't load notifications");
+    expect(failed.queryByTestId('notif-empty')).toBeNull();
+  });
+
+  it('#784 Codex 4240346214 — an open panel keeps its relative times current', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    try {
+      const { getByText } = await mount([{ id: 'n-1', at: new Date().toISOString(), text: 'Inspection INSP-20 approved. Contractor and client notified.', time: 'just now', color: '#000' }]);
+      expect(getByText('just now')).toBeTruthy();
+      await act(async () => { vi.advanceTimersByTime(5 * 60_000); });
+      expect(getByText('5m ago')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('#784 Codex 4240225580 — with an API scope, the idle store before the first fetch is not "all caught up"', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    const { getByTestId, queryByTestId } = await mount([], { projectLoadState: 'idle' });
+    expect(getByTestId('notif-loading-feed')).toBeTruthy();
+    expect(queryByTestId('notif-empty')).toBeNull();
+  });
+
+  it('a server notice reads its time from its write instant, never the frozen "just now" label', async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600_000).toISOString();
+    const { getByText, queryByTestId } = await mount([
+      { id: 'n-1', at: twoHoursAgo, text: 'Inspection INSP-20 approved. Contractor and client notified.', time: 'just now', color: '#000' },
+      { id: 'n-2', at: new Date().toISOString(), text: 'Inspection INSP-22 approved. Contractor and client notified.', time: 'just now', color: '#000' },
+    ]);
+    expect(queryByTestId('notif-empty')).toBeNull();
+    expect(getByText('2h ago')).toBeTruthy();
+    expect(getByText('just now')).toBeTruthy();
   });
 });

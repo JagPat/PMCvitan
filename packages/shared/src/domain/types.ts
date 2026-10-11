@@ -641,6 +641,11 @@ export interface AccessState {
 }
 
 export interface AppNotification {
+  /** Top 10 #4a (#778) — the server row's identity. Absent on a demo/local notice. */
+  id?: string;
+  /** Top 10 #4a (#778) — the instant the notice was written (ISO). The bell renders its time from this; the
+   *  stored `time` label (frozen at "just now" on every server row) is only the fallback. */
+  at?: string;
   text: string;
   time: string;
   color: string;
