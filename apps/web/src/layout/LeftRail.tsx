@@ -1,4 +1,5 @@
 import { useStore } from '@/store/store';
+import { unreadCount } from '@/lib/notificationSeen';
 import { BUILD_INFO } from '@/lib/buildInfo';
 import { useShallow } from 'zustand/react/shallow';
 import { useNavItems } from './useNavItems';
@@ -19,7 +20,9 @@ export function LeftRail() {
   const items = useNavItems();
   const setScreen = useStore((s) => s.setScreen);
   const toggleNotif = useStore((s) => s.toggleNotif);
-  const notifCount = useStore((s) => s.notifications.length);
+  // Top 10 #4b unit D (#778) — the badge counts UNREAD notices (server `unread`, less this device's in-flight
+  // and confirmed marks), not every notice
+  const notifCount = useStore((s) => unreadCount(s.notifications, s.notifSeen));
   const role = useStore((s) => s.role);
   const lang = useStore((s) => s.lang);
   const userName = useStore((s) => s.userName);

@@ -1415,6 +1415,14 @@ export class ApiGateway {
       body: JSON.stringify({ subscription }),
     });
   }
+  /** Top 10 #4b unit D (#778) — record that the viewer saw these notices (at most 200 ids). `confirmed`
+   *  lists the submitted ids the server recorded; every other id was not acknowledged. */
+  markNotificationsSeen(ids: readonly string[]): Promise<{ confirmed: string[] }> {
+    return this.req<{ confirmed: string[] }>(`/projects/${this.projectId}/notifications/seen`, {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    });
+  }
   /** Phase 6 task 4b (§A.3 round 13) — unlink this browser's subscription at sign-out. */
   pushUnlink(endpoint: string): Promise<{ ok: boolean }> {
     return this.req<{ ok: boolean }>(`/projects/${this.projectId}/push/unlink`, {

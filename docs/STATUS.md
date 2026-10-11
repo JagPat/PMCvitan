@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: top10-4b-read-mark
-reviewed_merge: b22c33f
-open_pr: 788
+reviewed_merge: 92e585e
+open_pr: 789
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-11
@@ -26,17 +26,20 @@ updated: 2026-10-11
 
 ### Current unit
 
-**Top 10 #4b, unit C: mark notices seen with per-id confirmation; serve unread** (#778, #788 on
-`claude/top10-4b-read-mark`), API only. Released conditionally on #482 (2026-10-11) after unit B's merge; both conditions
-(main CI passing in full on unchanged `b22c33f`, and the owner-verified API deployment of that SHA) were met.
-`POST /projects/:projectId/notifications/seen { ids }` (at most 200, `project.read`): eligibility is the submitted ids
-unit B's shared definition serves at one named REPEATABLE READ read; receipts are written in a READ COMMITTED transaction
-under the actor envelope's lock order, windowed token-role standing and operability; `200 { confirmed }` after commit
-lists only the eligible ids with durable receipts (hidden, foreign, unknown and deleted ids are absent identically).
-The snapshot serves per-notice `unread`. No migration, permission, UI or backfill.
+**Top 10 #4b, unit D: the bell counts unread and marks displayed notices seen** (#778, #789 on
+`claude/top10-4b-read-mark`), web only. Released conditionally on #482 (2026-10-11) after unit C's merge; both conditions
+(main CI passing in full on unchanged `92e585e`, and the owner-verified API deployment of that SHA) were met. The badge
+counts server-unread notices less this device's in-flight and confirmed marks; opening the bell submits the displayed
+unread ids to unit C's endpoint in sequential chunks of at most 200, with per-project `unread → pending(attempt) →
+confirmed | unacknowledged` state (`lib/notificationSeen.ts`): only server-confirmed ids stay suppressed, unacknowledged
+ids are resent only after a later snapshot re-serves them, failures roll back only their own attempt, and a project
+switch drops in-flight answers. No API, schema, migration or permission change.
 
-Unit D (the badge and the bell's per-id client state) is held.
+#778's acceptance stays OPEN after this unit: a merge and deployment of the UI still need separate isolated
+role-functional evidence; the automated tests here establish no production or role-live QA.
 
+Top 10 #4b unit C merged at `92e585e` (#788, reviewed head `d53eaea`): `POST /projects/:projectId/notifications/seen`
+with per-id confirmation, and per-notice `unread` in the snapshot.
 Top 10 #4b unit B merged at `b22c33f` (#787, reviewed head `994f632`): one shared definition of the notices a viewer is
 served, refactor only, characterized for all seven roles.
 Top 10 #4b unit A merged at `cb9386d` (#785, reviewed head `6ed2f66`): per-notice read receipts (`NotificationReceipt`),

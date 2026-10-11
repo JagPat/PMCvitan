@@ -17,6 +17,7 @@ import type {
   MeasurementRegisterDto,
   VendorAdvanceListDto,
 } from '@vitan/shared';
+import { emptyNotifSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { DailyLogDraft } from './dailyLogDraft';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
@@ -112,6 +113,9 @@ export interface ProjectDataState {
   // a draft written before the log carried an id, kept aside for the engineer to confirm or discard
   legacyDailyLogDraft: DailyLogDraft | null;
   notifications: AppNotification[];
+  // Top 10 #4b unit D (#778) — the bell's per-notice read marks on this device (lib/notificationSeen.ts);
+  // project-owned, so a switch starts clean and an old project's in-flight answer has nothing to change
+  notifSeen: NotifSeenState;
   companies: ProjectCompany[];
   // Phase 3 Task 7 — the PER-PROJECT pilot capabilities (`['materials']` on a pilot project) + the
   // Materials bundle. Project-owned, so they tear down on every scope change: a non-pilot / freshly
@@ -209,6 +213,7 @@ export function emptyProjectData(): ProjectDataState {
     dailyLogDraft: null,
     legacyDailyLogDraft: null,
     notifications: [],
+    notifSeen: emptyNotifSeen(),
     companies: [],
     capabilities: [],
     capabilitiesKnown: false,
