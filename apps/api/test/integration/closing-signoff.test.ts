@@ -275,6 +275,27 @@ describe('closing sign-off controls activity completion (integration)', () => {
     expect(claimed.status).toBe('awaiting_signoff');
     expect(claimed.completionRequestedById).not.toBeNull(); // exactly one recorded claimant
 
+    // Top 10 #4 (#778) acceptance — the winning claim is ONE logical sign-off request: one notice, stamped with
+    // the closing inspection it announces, one completion event naming that closing, and every feed role is
+    // served that same row; an unkeyed retry after the claim committed is refused and adds nothing
+    const raceClosing = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: f.projectA.id, activityId: a.id, closing: true } });
+    const requestNotices = () => t.prisma.notification.findMany({ where: { projectId: f.projectA.id, text: { startsWith: 'Sign-off requested: Race complete ' } } });
+    const requested = await requestNotices();
+    expect(requested.map((n) => [n.text, n.inspectionId])).toEqual([[`Sign-off requested: Race complete — awaiting the PMC's closing inspection`, raceClosing.id]]);
+    const completionEvents = await t.prisma.domainEvent.findMany({ where: { projectId: f.projectA.id, eventType: 'activity.completion_requested', entityId: a.id } });
+    expect(completionEvents).toHaveLength(1);
+    expect(completionEvents[0]!.payload).toMatchObject({ closingInspectionId: raceClosing.id });
+    expect(completionEvents[0]!.actorId).toBe(claimed.completionRequestedById); // the event is the winner's claim
+    for (const [role, token] of [['pmc', pmcToken], ['engineer', engToken], ['client', t.issueProjectToken(f.clientUser.id, f.projectA.id, 'client')]] as const) {
+      const snap = await http().get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${token}`);
+      expect(snap.status).toBe(200);
+      const served = (snap.body.notifications as Array<{ id: string; inspectionId?: string }>).filter((n) => n.id === requested[0]!.id);
+      expect(served.map((n) => n.inspectionId), `${role} is served the one request notice`).toEqual([raceClosing.id]);
+    }
+    const retry = await as(engToken)(`/projects/${f.projectA.id}/activities/${a.id}/complete`, {}); // unkeyed, after commit
+    expect(retry.status).toBeGreaterThanOrEqual(400);
+    expect((await requestNotices()).map((n) => n.id)).toEqual([requested[0]!.id]);
+
     // race 2: approve vs approve on the closing — one decision wins
     const closing = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: f.projectA.id, activityId: a.id, closing: true } });
     b = barrierOn('inspection', closing.id);
@@ -289,6 +310,9 @@ describe('closing sign-off controls activity completion (integration)', () => {
       b.restore();
     }
     expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: a.id } })).status).toBe('done');
+    // one sign-off decision: one sign-off notice and one approval event for the closing
+    expect(await t.prisma.notification.count({ where: { projectId: f.projectA.id, text: 'Signed off: Race complete is complete.' } })).toBe(1);
+    expect(await t.prisma.domainEvent.count({ where: { projectId: f.projectA.id, eventType: 'inspection.approved', entityId: closing.id } })).toBe(1);
 
     // race 3: approve vs reject on a fresh claim — ONE outcome, never both
     const two = await claimedActivity('Race mixed signoff');
@@ -310,6 +334,15 @@ describe('closing sign-off controls activity completion (integration)', () => {
     expect(
       (outcome.status === 'done' && children === 0) || (outcome.status === 'in_progress' && children === 1),
     ).toBe(true);
+    // one outcome, one notice: the sign-off line if approve won, else one re-inspection line stamped with the child
+    const signedOffNotices = await t.prisma.notification.count({ where: { projectId: f.projectA.id, text: 'Signed off: Race mixed signoff is complete.' } });
+    const child = await t.prisma.inspection.findFirst({ where: { reinspectionOfId: two.closingId } });
+    const reinspectionNotices = await t.prisma.notification.findMany({ where: { projectId: f.projectA.id, text: { startsWith: 'Re-inspection ' }, inspectionId: child?.id ?? '-' } });
+    if (outcome.status === 'done') {
+      expect([signedOffNotices, reinspectionNotices.length]).toEqual([1, 0]);
+    } else {
+      expect([signedOffNotices, reinspectionNotices.map((n) => n.inspectionId)]).toEqual([0, [child!.id]]);
+    }
   });
 
   /**
