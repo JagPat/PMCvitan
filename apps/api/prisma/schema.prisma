@@ -75,6 +75,7 @@ enum InspectionResult {
 }
 
 model Project {
+  notificationReceipts            NotificationReceipt[]
   billVerifications               BillVerification[]
   billCertificates                BillCertificate[]
   sodExceptions                   SodException[]
@@ -1306,6 +1307,7 @@ model DrawingAck {
 // dev auth (the "Viewing as" persona switch) is separate and gated by
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
+  notificationReceipts      NotificationReceipt[]
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
   pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")
   billVerificationsVerified BillVerification[]     @relation("billVerificationsVerified")
@@ -3162,6 +3164,28 @@ model Notification {
 
   @@index([decisionId])
   @@index([projectId, eventId])
+  /// Top 10 #4b (#778) — the key a receipt's composite foreign key references, so a receipt and its notice share
+  /// one project at every committed state (trivially unique: `id` is the primary key).
+  @@unique([id, projectId])
+  receipts NotificationReceipt[]
+}
+
+/// Top 10 #4b (#778) — a per-notice read receipt: this viewer has seen this notice. A notice is unread for a viewer
+/// exactly when they hold no receipt for it. SQL guards (migration 20280109000000): the composite key binds the
+/// receipt to its notice's project at every committed state; a BEFORE INSERT trigger requires the viewer's standing
+/// on the project by the existing windowed contract; receipts are immutable and go only with their notice, viewer or
+/// project. No backfill (#778).
+model NotificationReceipt {
+  notification   Notification @relation(fields: [notificationId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: NoAction)
+  notificationId String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  userId         String
+  project        Project      @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId      String
+  seenAt         DateTime     @default(now())
+
+  @@id([notificationId, userId])
+  @@index([projectId, userId])
 }
 
 // Phase 6 task 4d unit 4d-i (§A.3 obligation 7) — the external-effect catalog, as DATA. It is

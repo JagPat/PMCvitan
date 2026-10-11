@@ -1076,7 +1076,10 @@ const ARMS: Arm[] = [
   {
     seal: 'Notification_t4d_no_truncate',
     what: 'the notice register is never truncated',
-    hostile: `TRUNCATE "Notification"`,
+    // CASCADE, as the DomainEvent arm below: Top 10 #4b's receipts reference `Notification`, and PostgreSQL refuses
+    // to truncate a referenced table on its own. The cascade reaches the receipts, whose own no-truncate seal is
+    // disabled BY NAME in the same statement so that this arm measures the `Notification` seal and nothing else.
+    hostile: `ALTER TABLE "NotificationReceipt" DISABLE TRIGGER "NotificationReceipt_no_truncate"; TRUNCATE "Notification" CASCADE`,
     refusal: /never truncated|truncate/i,
   },
   {
@@ -1106,9 +1109,11 @@ const ARMS: Arm[] = [
     // CASCADE and fires THEIR seals first. Two of those three are this unit's, and they are
     // omitted alongside so the stripped run reaches the stream at all; `OutboxDelivery` carries no
     // seal. This is the same cascade reality `sanctioned-reset.ts` documents for its own registry:
-    // a truncate seal is fired by tables the caller never names.
+    // a truncate seal is fired by tables the caller never names. The cascade continues from
+    // `Notification` into Top 10 #4b's receipts, whose own seal is disabled BY NAME in the same
+    // statement, as in the `Notification` arm above, so this arm still measures the stream's seal.
     alsoStrip: ['Notification_t4d_no_truncate', 'DomainEventPairingClaim_t4d_no_truncate'],
-    hostile: `TRUNCATE "DomainEvent" CASCADE`,
+    hostile: `ALTER TABLE "NotificationReceipt" DISABLE TRIGGER "NotificationReceipt_no_truncate"; TRUNCATE "DomainEvent" CASCADE`,
     refusal: /delivery stream every 4d correspondence/,
   },
 ];

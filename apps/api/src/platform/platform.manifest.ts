@@ -18,6 +18,8 @@ export const platformManifest: ModuleManifest = {
     'projectCapability',
     'auditLog',
     'notification',
+    // Top 10 #4b (#778) — per-notice read receipts over the notification feed above
+    'notificationReceipt',
     'pushSubscription',
     'passwordCredentialChallenge',
     'securityAuditEvent',

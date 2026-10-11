@@ -153,6 +153,10 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // names it and no CASCADE can reach it (no foreign key points at it), so this entry is the registry
   // being complete, not a bypass a suite needs: the minimum is never legitimately cleared.
   { table: 'ServerGeneration', trigger: 'ServerGeneration_t4d_no_truncate' },
+  // Top 10 #4b (#778, #785 review 5483343407) — the per-notice receipt register refuses TRUNCATE; the seed and
+  // the suites reset it with `Notification` (its composite key references that table), so the seal is bypassed
+  // here by name, as every other sealed register is.
+  { table: 'NotificationReceipt', trigger: 'NotificationReceipt_no_truncate' },
 ];
 
 /**

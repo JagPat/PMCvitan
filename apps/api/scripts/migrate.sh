@@ -504,6 +504,10 @@ if echo "$out" | grep -q "P3005"; then
   # `ExternalEffectCatalog`, so a db-push baseline that models the table but ran none of 4d-i's
   # doors must still get U1 applied for the seal to stand. It is re-runnable (CREATE OR REPLACE
   # FUNCTION, DROP TRIGGER IF EXISTS) and dark until U3 seeds a pairingRequired generation.
+  #
+  # Top 10 #4b (20280109) is here for the same reason: `schema.prisma` models `NotificationReceipt`, its composite
+  # key and the `Notification` unique key it references, but a db-push baseline gets neither the receipt's standing
+  # trigger nor its immutability trigger. Every statement in it is guarded, so it re-runs cleanly.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -536,7 +540,8 @@ if echo "$out" | grep -q "P3005"; then
 20280104000000_phase6_t4d_ii_a7d_catalog_change
 20280105000000_phase6_t4d_ii_a8a_awaiting_tuple
 20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence
-20280107000000_phase6_t4d_iii_r0b_system_pair"
+20280107000000_phase6_t4d_iii_r0b_system_pair
+20280109000000_top10_4b_notification_receipt"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

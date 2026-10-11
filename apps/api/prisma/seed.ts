@@ -62,6 +62,9 @@ async function main(): Promise<void> {
     // `sanctionedReset(..., { cascade: true })`, which papered over the omission, while the SEED
     // — the path `pnpm test:e2e:api` takes — does not pass `cascade` and aborted.
     'Notification', 'DomainEventPairingClaim',
+    // Top 10 #4b (#778) — a receipt's composite key references `Notification`, so it truncates in the same statement.
+    // A TRUNCATE fires no row trigger, so the receipts' immutability seal (a row DELETE refusal) is not met here.
+    'NotificationReceipt',
     'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
     'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
     'InspectionsProjection', 'MaterialReadinessProjection', 'CashForecastProjection',
