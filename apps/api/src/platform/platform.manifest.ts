@@ -18,6 +18,8 @@ export const platformManifest: ModuleManifest = {
     'projectCapability',
     'auditLog',
     'notification',
+    // Top 10 #4b (#778) — the per-viewer read watermark over the notification feed above
+    'notificationReadMark',
     'pushSubscription',
     'passwordCredentialChallenge',
     'securityAuditEvent',
