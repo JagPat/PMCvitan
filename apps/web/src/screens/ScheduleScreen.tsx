@@ -432,7 +432,11 @@ export function ScheduleScreen() {
   // #781 Codex 4240026311 — the attempt in flight is tracked apart from an ACCEPTED one: while it is pending, the
   // routed activity leaving the schedule (a refresh, someone else's delete) neither releases the route nor reads as
   // not found; only this same attempt's acceptance releases it, and a refusal leaves the route standing
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  // #781 Codex 4240054970 — keyed by ATTEMPT: a second confirm on a slow connection is its own attempt, so an
+  // earlier attempt's refusal never clears the marker of one still outstanding
+  const deleteAttempt = useRef(0);
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; attempt: number } | null>(null);
+  const pendingDeleteId = pendingDelete?.id ?? null;
   const released = routeItem !== null && routeItem === deletedId && !routed;
   const deleting = routeItem !== null && routeItem === pendingDeleteId && !routed;
   useEffect(() => {
@@ -440,14 +444,15 @@ export function ScheduleScreen() {
   }, [released, setRouteItem]);
   useEffect(() => {
     if (deletedId !== null && routeItem !== deletedId) setDeletedId(null);
-    if (pendingDeleteId !== null && routeItem !== pendingDeleteId) setPendingDeleteId(null);
+    if (pendingDeleteId !== null && routeItem !== pendingDeleteId) setPendingDelete(null);
   }, [routeItem, deletedId, pendingDeleteId]);
   // #780 — a refused or unreachable delete releases nothing, so a later removal by someone else reads as not found
   const onDeleted = (id: string, outcome: Promise<boolean>) => {
     if (id !== routeItem) return;
-    setPendingDeleteId(id);
+    const attempt = ++deleteAttempt.current;
+    setPendingDelete({ id, attempt });
     void Promise.resolve(outcome).then((accepted) => {
-      setPendingDeleteId((cur) => (cur === id ? null : cur));
+      setPendingDelete((cur) => (cur?.attempt === attempt ? null : cur));
       if (accepted) setDeletedId(id);
     });
   };

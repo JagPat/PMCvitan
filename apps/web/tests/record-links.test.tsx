@@ -457,3 +457,25 @@ describe('Top 10 #3c follow-up — #781 Codex on 4a15d38', () => {
   });
 });
 
+describe('Top 10 #3c follow-up — #781 Codex on f3bfe37', () => {
+  it('4240054970 — an earlier attempt\'s refusal does not clear a later attempt still in flight', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'site-schedule' });
+    const [a, ...rest] = useStore.getState().activities;
+    const settles: Array<(ok: boolean) => void> = [];
+    useStore.setState({ routeItem: a.id, deleteActivity: vi.fn(() => new Promise<boolean>((r) => { settles.push(r); })) });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    const confirm = () => {
+      fireEvent.click(r.getByTestId(`edit-${a.id}`));
+      fireEvent.click(r.getByTestId('activity-delete'));
+      fireEvent.click(r.getByText('Delete activity'));
+    };
+    confirm(); confirm(); // two attempts on a slow connection
+    await act(async () => { settles[0](false); }); // the first is refused
+    act(() => useStore.setState({ activities: rest })); // the row leaves while the second is outstanding
+    expect(r.getByTestId('activities-loading')).toBeInTheDocument(); // not "not found" yet
+    await act(async () => { settles[1](true); }); // the second is accepted
+    expect(useStore.getState().routeItem).toBeNull();
+  });
+});
+
