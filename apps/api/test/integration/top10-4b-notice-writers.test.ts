@@ -19,10 +19,11 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  *
  * - inspection reject: an unkeyed retry after commit is refused, and two decides held at a barrier
  *   after their pre-transaction read leave ONE re-inspection notice, stamped with the child it announces;
- * - checklist issue: two concurrent requests under one key leave ONE checklist and ONE notice; two
- *   unkeyed requests are two checklists, so two notices, each stamped with its own checklist;
- * - material mismatch flag: a keyed replay and two concurrent same-key requests leave ONE notice and ONE
- *   event; the command has no state guard, so each unkeyed flag is a new act with its own notice and event;
+ * - checklist issue: two requests under one key, the second held at the same-key reservation while the
+ *   first is uncommitted (observed), leave ONE checklist and ONE notice; two unkeyed requests are two
+ *   checklists, so two notices, each stamped with its own checklist;
+ * - material mismatch flag: a keyed replay, and two same-key requests contending at the reservation the
+ *   same way, leave ONE notice and ONE event; the command has no state guard, so each unkeyed flag is a new act with its own notice and event;
  * - recipients: each writer's notice, by its stored id, is served to every project role whose feed
  *   carries kind-less notices (pmc, client, engineer, contractor, consultant) and is tied to the logical
  *   event that wrote it; a worker device and another project's member are refused the feed, and the other
@@ -155,6 +156,74 @@ describe('Top 10 #4 (#778) — the existing notice writers and their recipients 
     return { restore: () => { delegate.findUnique = original; }, reads: () => reads };
   };
 
+  /** A promise resolvable from outside. */
+  const gate = () => { let open!: () => void; const p = new Promise<void>((r) => { open = r; }); return { p, open }; };
+  /** Subscribe at once and never reject. */
+  const settle = <T>(p: Promise<T>) => p.then((v) => ({ ok: true as const, v }), (e: unknown) => ({ ok: false as const, e }));
+  const until = async (probe: () => Promise<boolean>, what: string, ms = 10_000): Promise<void> => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (await probe()) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`barrier not reached: ${what}`);
+  };
+  /** The backends waiting on a lock the backend `holder` holds, with the statement each is running. */
+  const waitersOn = async (holder: number) =>
+    t.prisma.$queryRawUnsafe<Array<{ pid: number; query: string }>>(
+      'SELECT pid, query FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))', holder);
+
+  /**
+   * Same-key contention at the ledger's admission boundary, made deterministic (#482 6114250767).
+   *
+   * The FIRST attempt runs until its command transaction holds this key's receipt (reserved, executed and
+   * marked succeeded, all uncommitted), and is held there, before commit. Only then is the SECOND attempt
+   * started. Nothing is committed, so its `peekReplay` and the ledger's committed-receipt fast path both find
+   * no receipt and it goes on to reserve the same key, where PostgreSQL blocks it on the holder's
+   * unique-index entry. The test observes exactly that (the contender's `CommandExecution` insert waiting on
+   * the holder's backend, with still no committed receipt) before it releases the holder. A schedule in
+   * which the two attempts ran one after the other cannot pass this.
+   */
+  const sameKeyContention = async <A, B>(projectId: string, key: string, first: () => Promise<A>, second: () => Promise<B>) => {
+    const client = t.prisma as unknown as { $transaction: (arg: unknown, opts?: Record<string, unknown>) => Promise<unknown> };
+    const original = client.$transaction.bind(t.prisma);
+    const held = gate();
+    const release = gate();
+    let armed = true;
+    let holder = 0;
+    client.$transaction = (arg: unknown, opts?: Record<string, unknown>) => {
+      if (!armed || typeof arg !== 'function') return original(arg, opts);
+      return original(async (tx: TestApp['prisma']) => {
+        const result = await (arg as (tx: TestApp['prisma']) => Promise<unknown>)(tx);
+        // hold only the one command transaction that wrote THIS key's receipt, seen through itself
+        if (armed && (await tx.commandExecution.count({ where: { projectId, idempotencyKey: key } })) > 0) {
+          armed = false;
+          holder = Number((await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid'))[0]!.pid);
+          held.open();
+          await release.p;
+        }
+        return result;
+      }, { ...opts, timeout: 60_000, maxWait: 10_000 });
+    };
+    try {
+      const a = settle(first());
+      const reached = await Promise.race([held.p.then(() => 'held' as const), a.then(() => 'ended' as const)]);
+      expect(reached, 'the first attempt is held inside its command transaction, before commit').toBe('held');
+      const b = settle(second());
+      await until(async () => (await waitersOn(holder)).length > 0, 'the contender blocks on the held first attempt');
+      const waiting = await waitersOn(holder);
+      expect(waiting, 'exactly one contender waits on the holder').toHaveLength(1);
+      expect(waiting[0]!.query, 'it waits at the same-key reservation').toMatch(/INSERT INTO "public"\."CommandExecution"/);
+      expect(await t.prisma.commandExecution.count({ where: { projectId, idempotencyKey: key } }), 'no receipt committed while it waits').toBe(0);
+      release.open();
+      const [ra, rb] = await Promise.all([a, b]);
+      return { first: ra, second: rb };
+    } finally {
+      release.open();
+      client.$transaction = original;
+    }
+  };
+
   /** A checklist issued by the pmc and submitted by the engineer, ready to decide. */
   const submittedChecklist = async (w: Fresh, title: string) => {
     await inspections.create(w.p, { title, zone: 'GF', items: ['Rebar', 'Cover'] }, as(w.p, w.users.pmc, 'pmc'), `k-${title}-c`);
@@ -208,12 +277,13 @@ describe('Top 10 #4 (#778) — the existing notice writers and their recipients 
   it('checklist issue: two concurrent same-key requests leave ONE checklist and ONE notice; two unkeyed requests are two checklists with two notices', async () => {
     const w = await fresh();
     const input = { title: 'Issued once', zone: 'GF', items: ['Rebar'] };
-    const raced = await Promise.allSettled([
-      inspections.create(w.p, input, as(w.p, w.users.pmc, 'pmc'), 'k-issue-cc'),
-      inspections.create(w.p, input, as(w.p, w.users.pmc, 'pmc'), 'k-issue-cc'),
-    ]);
-    expect(raced.filter((r) => r.status === 'fulfilled').length, 'at least the winner succeeds').toBeGreaterThanOrEqual(1);
-    for (const r of raced) if (r.status === 'rejected') expect(r.reason).toBeInstanceOf(ConflictException);
+    // the second request reaches the same-key reservation while the first is held uncommitted; once the first
+    // commits, the second's reservation fails on the key and it replays the winner's receipt (commands.ts)
+    const raced = await sameKeyContention(w.p, 'k-issue-cc',
+      () => inspections.create(w.p, input, as(w.p, w.users.pmc, 'pmc'), 'k-issue-cc'),
+      () => inspections.create(w.p, input, as(w.p, w.users.pmc, 'pmc'), 'k-issue-cc'));
+    expect(raced.first.ok, 'the held first attempt commits').toBe(true);
+    expect(raced.second.ok ? 'replayed' : raced.second.e, 'the contender replays the committed receipt').toBe('replayed');
     const issued = await t.prisma.inspection.findMany({ where: { projectId: w.p, title: input.title } });
     expect(issued, 'one checklist').toHaveLength(1);
     const notices = await t.prisma.notification.findMany({ where: { projectId: w.p, text: { startsWith: 'New checklist issued: ' } } });
@@ -257,13 +327,13 @@ describe('Top 10 #4 (#778) — the existing notice writers and their recipients 
     expect(ev.payload).toMatchObject({ decisionId });
     await expectRecipients(w, (await mismatchNotices())[0]!.id);
 
-    // concurrent under ONE key: the ledger admits one execution
-    const raced = await Promise.allSettled([
-      dailyLog.flagMismatch(w.p, { decisionId }, pmc, 'k-mm-cc'),
-      dailyLog.flagMismatch(w.p, { decisionId }, pmc, 'k-mm-cc'),
-    ]);
-    expect(raced.filter((r) => r.status === 'fulfilled').length).toBeGreaterThanOrEqual(1);
-    for (const r of raced) if (r.status === 'rejected') expect(r.reason).toBeInstanceOf(ConflictException);
+    // concurrent under ONE key: the second request reaches the same-key reservation while the first is held
+    // uncommitted; the ledger admits one execution and the contender replays it
+    const raced = await sameKeyContention(w.p, 'k-mm-cc',
+      () => dailyLog.flagMismatch(w.p, { decisionId }, pmc, 'k-mm-cc'),
+      () => dailyLog.flagMismatch(w.p, { decisionId }, pmc, 'k-mm-cc'));
+    expect(raced.first.ok, 'the held first attempt commits').toBe(true);
+    expect(raced.second.ok ? 'replayed' : raced.second.e, 'the contender replays the committed receipt').toBe('replayed');
     expect(await t.prisma.commandExecution.count({ where: { projectId: w.p, commandType: 'daily-log.flagMismatch', idempotencyKey: 'k-mm-cc' } })).toBe(1);
     expect(await mismatchNotices(), 'the second key is ONE more flag').toHaveLength(2);
     expect(await flagEvents()).toBe(2);
