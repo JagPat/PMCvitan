@@ -296,6 +296,8 @@ const NON_PILLAR_WRITERS: Record<string, string> = {
   'orgs/companies.service.ts': 'project roster — writes orgs-owned ProjectCompany; no cross-domain write, no signal',
   'orgs/invitations.service.ts': 'identity notice (Phase 7c-auth) — the post-commit invite mail for a roster write, writing only the SHARED SecurityAuditEvent trail; reads orgs-owned User fields, no domain table, no signal',
   'push/push.service.ts': 'infra — writes the SHARED PushSubscription; no domain table, no signal',
+  // Top 10 #4b unit C (#778) — the bell's seen mark
+  'snapshot/notifications-seen.service.ts': 'infra — writes the SHARED NotificationReceipt for notices served to the viewer; no domain table, no signal',
   'platform/capabilities.service.ts': 'platform infra (Phase 3 Task 1) — pilot capability activation writes the SHARED ProjectCapability record; no module domain table, no signal',
   'platform/outbox/relay.service.ts': 'platform infra (Task 6) — the outbox relay writes the SHARED OutboxDelivery/ProcessedEvent/ProjectionCursor delivery-state tables and dispatches to consumers; no module domain table',
   'platform/outbox/outbox-operations.service.ts': 'platform infra (PR B Task 4) — operator dead-letter status/retry writes the SHARED OutboxDelivery/ProjectionCursor delivery-state + the OutboxOperatorAction audit; no module domain table',
@@ -539,6 +541,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   ],
   // Phase 6 task 4b (§A.3 round 13) — sign-out unlinks the browser subscription's user attribution.
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')", "Post('projects/:projectId/push/unlink')"],
+  // Top 10 #4b unit C (#778) — the bell's seen mark (the viewer's own receipts).
+  'snapshot/notifications-seen.controller.ts': ["Post('seen')"],
 };
 
 // Controllers with NO mutating route (read-only surfaces).
@@ -616,12 +620,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('176 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded)', () => {
+    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(176);
+      expect(total).toBe(177);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(176);
+      expect(live).toBe(177);
     });
   });
 

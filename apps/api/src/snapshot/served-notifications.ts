@@ -41,13 +41,19 @@ export function readViewerFeed(
     // 4d-ii-a / A7a — and the revisions the kinded green notices' events name, through the
     // decisions module (its register), in this same snapshot
     const revisions = await decisionsQuery.kindedNoticeRevisions(tx, projectId, events);
-    return { slice, feed, events, revisions };
+    // Top 10 #4b unit C — the viewer's receipts, in this same snapshot: a served notice is unread
+    // exactly when this viewer holds no receipt for it (no backfill: every older notice starts unread)
+    const seen = userId
+      ? new Set((await tx.notificationReceipt.findMany({ where: { projectId, userId }, select: { notificationId: true } })).map((r) => r.notificationId))
+      : new Set<string>();
+    return { slice, feed, events, revisions, seen };
     // read-only, so REPEATABLE READ never fails it with a serialization error; the limits are
     // generous because these reads used to need no interactive transaction at all
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 10_000, timeout: 30_000 });
 }
 
-/** What {@link readViewerFeed} read: the viewer's slice, the feed, its events and their revisions. */
+/** What {@link readViewerFeed} read: the viewer's slice, the feed, its events and their revisions, and
+ *  the ids of the notices this viewer holds a receipt for. */
 export type ViewerFeed = Awaited<ReturnType<typeof readViewerFeed>>;
 
 /** The notices this viewer is served from one {@link readViewerFeed} read, newest first. */
@@ -57,7 +63,7 @@ export function servedNotifications(
   userId: string | undefined,
   decisionsQuery: Pick<DecisionsQueryService, 'renderKindedNotice'>,
 ): ServedNotice[] {
-  const { slice, feed, events, revisions } = read;
+  const { slice, feed, events, revisions, seen } = read;
   // Phase 6 task 4b (§A.3) — the pending-notice audience FOLLOWS the decider: a notice linked
   // to a decision (4a stamps `decisionId`) reaches pmc + THE DECIDER of that decision (the
   // shared `viewerIsDecider` predicate over the viewer's OWN visible slice) and is stripped
@@ -97,7 +103,7 @@ export function servedNotifications(
       const event = n.eventId ? events.get(n.eventId) : undefined;
       if (!event || !n.decisionId) return [];
       const rendered = decisionsQuery.renderKindedNotice(n.kind, event, visibleById.get(n.decisionId), role, userId, revisions);
-      return rendered ? [{ id: n.id, at: n.at.toISOString(), text: rendered.text, time: n.time, color: rendered.color, ...noticeSubject(n.decisionId) }] : [];
+      return rendered ? [{ id: n.id, at: n.at.toISOString(), text: rendered.text, time: n.time, color: rendered.color, ...noticeSubject(n.decisionId), unread: !seen.has(n.id) }] : [];
     }
     // KIND-LESS rows (every notice written today): the delivered text-prefix filters, unchanged.
     if (stripPendingNotice(n)) return [];
@@ -107,6 +113,6 @@ export function servedNotifications(
     if (role !== 'pmc' && isWithdrawnDecisionNotice(n.text)) return [];
     // live bug 1b-3 — a kindless inspection notice carries the inspection its writer stamped; the
     // inspection screen judges it against the viewer's own slice
-    return [{ id: n.id, at: n.at.toISOString(), text: n.text, time: n.time, color: n.color, ...noticeSubject(n.decisionId), ...(n.inspectionId ? { inspectionId: n.inspectionId } : {}) }];
+    return [{ id: n.id, at: n.at.toISOString(), text: n.text, time: n.time, color: n.color, ...noticeSubject(n.decisionId), ...(n.inspectionId ? { inspectionId: n.inspectionId } : {}), unread: !seen.has(n.id) }];
   });
 }

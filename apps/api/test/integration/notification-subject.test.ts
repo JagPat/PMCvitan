@@ -79,7 +79,8 @@ describe('live bug 1 — a notice names the decision it is about, to viewers who
     const d = await publish();
     const text = `LB1 note about ${d.id} ${run}`;
     const row = await t.prisma.notification.create({ data: { projectId: f.projectA.id, text, color: '#000', time: 'just now', decisionId: d.id } });
-    const self = { id: row.id, at: row.at.toISOString() };
+    // Top 10 #4b unit C — and `unread` (no receipt is written here)
+    const self = { id: row.id, at: row.at.toISOString(), unread: true };
 
     const pmc = (await feed('pmc', f.memberUser.id)).find((n) => n.text === text);
     expect(pmc).toEqual({ ...self, text, time: 'just now', color: '#000', decisionId: d.id });
@@ -109,7 +110,7 @@ describe('live bug 1 — a notice names the decision it is about, to viewers who
     const text = `LB1 plain ${run}`;
     const row = await t.prisma.notification.create({ data: { projectId: f.projectA.id, text, color: '#111', time: '1h ago' } });
     const n = (await feed('pmc', f.memberUser.id)).find((x) => x.text === text);
-    expect(n).toEqual({ id: row.id, at: row.at.toISOString(), text, time: '1h ago', color: '#111' });
-    expect(Object.keys(n!).sort()).toEqual(['at', 'color', 'id', 'text', 'time']);
+    expect(n).toEqual({ id: row.id, at: row.at.toISOString(), text, time: '1h ago', color: '#111', unread: true });
+    expect(Object.keys(n!).sort()).toEqual(['at', 'color', 'id', 'text', 'time', 'unread']);
   });
 });
