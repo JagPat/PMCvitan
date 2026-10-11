@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: top10-4b-read-mark
-reviewed_merge: f331ba9
-open_pr: 785
+reviewed_merge: cb9386d
+open_pr: 787
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-11
@@ -26,23 +26,18 @@ updated: 2026-10-11
 
 ### Current unit
 
-**Top 10 #4b, unit A: per-notice read receipts** (#778, #785 on `claude/top10-4b-read-mark`), migration only. This is
-the smaller redesign unit the owner authorized under the mandatory stop (#482, 2026-10-11) after three reviewed heads
-with a P1 in the earlier snapshot migration. It is not patch continuation or a waiver; that history and every finding
-stand. `NotificationReceipt` (notice, viewer, project, seenAt), no backfill:
-- R1 a composite key to `Notification(id, projectId)` keeps each receipt in its notice's project at every committed
-  state (a receipted kindless notice cannot move);
-- R2 a BEFORE INSERT trigger requires the viewer's standing by the existing windowed contract on an operable project,
-  under the actor envelope's lock order;
-- R3 receipts are immutable and go only with their notice, viewer or project; a statement-level seal refuses TRUNCATE,
-  which only the isolated test reset (`TRUNCATE_SEALS`) disables by name (review 5483343407 on `2b8b73d`).
-- On `migrate.sh`'s ALWAYS_EXECUTE, fully guarded. Live-PG proofs cover binding (raw and concurrent, both orders, each
-  contender observed in a database lock wait before its holder is released),
-  standing (including the rollout window and a concurrent demotion), immutability, cascades, reset, the db-push
-  replay, a dump-and-restore round trip and previous-release notice shapes.
+**Top 10 #4b, unit B: one shared definition of the notices a viewer is served** (#778, #787 on
+`claude/top10-4b-read-mark`), refactor only. Released conditionally on #482 (2026-10-11) after unit A's merge; the
+condition (main CI passing in full on unchanged `cb9386d`) was met. `SnapshotService.build`'s inline bell filter and the
+REPEATABLE READ read it judges against move to `snapshot/served-notifications.ts` (`readViewerFeed`,
+`servedNotifications`), verbatim. Characterization for all seven roles, captured before the move, pins every served
+feed; the shared function serves each role exactly the snapshot feed. No endpoint, unread state, UI, permission or
+migration change.
 
-Units B–D (the shared viewer filter, the mark endpoint with per-id confirmation, the badge) are held.
+Units C and D (the mark endpoint with per-id confirmation, the badge) are held.
 
+Top 10 #4b unit A merged at `cb9386d` (#785, reviewed head `6ed2f66`): per-notice read receipts (`NotificationReceipt`),
+migration only, with tenant binding, standing at insert and immutability including a TRUNCATE seal; #786 stays open.
 Top 10 #4a merged at `f331ba9` (#784, reviewed head `48c3726`). The #782 follow-up merged at `549063b` (#783, reviewed head `639f784`). The #780 follow-up merged at `223f42d` (#781, reviewed head `1dd46d5`). Top 10 #3c merged at `3f021f6` (#777, reviewed head `43c5fcc`; #779 fixed in it). Top 10 #3b merged at `24c19cd` (#776, reviewed head `16da8f6`). Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head
 `cdd4e33`); #771 stays open for live validation. Top 10 #2a merged at `3e2cba6` (#772, reviewed head `293ded6`). Top 10 #1 merged at `9b1d119` (#770, reviewed head `db39901`; #769 open for live validation). M3c C1/C2 merged at `14ce2bd` (#768, reviewed head `3f84b12`); the owner switches the required context to
 `codex-current-head/wi` once a head has reported it (steps on #482). #765 merged at `1814160` (#766, reviewed head `80a1c50`). M3c §A merged at `191f8a0` (#764, reviewed head `fb7d3ed`). M3b merged at `ad742de` (#761, reviewed head `cbbb533`). M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
