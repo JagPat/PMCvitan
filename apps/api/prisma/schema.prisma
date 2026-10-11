@@ -3153,6 +3153,10 @@ model Notification {
   // Live bug 1b-3a — the inspection an inspection notice announces, stamped by its writer (never read
   // back out of the display text). Nullable: other notices and legacy rows carry none. Not a relation.
   inspectionId String?
+  /// Top 10 #4b (#778) — the transaction that wrote this notice (`pg_current_xact_id()`, defaulted; a writer
+  /// never sets it). The read position is a feed SNAPSHOT, and a notice is seen when its writer is visible in it.
+  /// NULL on rows written before the column existed.
+  writerXid BigInt? @default(dbgenerated("((pg_current_xact_id())::text)::bigint"))
 
   /// Phase 6 task 4d unit 4d-i — the EVENT this notice announces, and what kind of notice it is.
   /// A notice is a derived communication artifact and the event is the fact, so binding the two
@@ -3166,17 +3170,19 @@ model Notification {
   @@index([projectId, eventId])
 }
 
-/// Top 10 #4b (#778) — a viewer's read watermark on a project's notification feed: a notice written after
-/// `seenAt` is unread for that viewer. One row per (project, user). The watermark only moves forward (a SQL
-/// BEFORE UPDATE trigger keeps the greater instant), so a late or replayed "mark seen" never un-reads a notice.
-/// Derived per-viewer state: both references cascade.
+/// Top 10 #4b (#778) — a viewer's read position on a project's notification feed: the snapshot their feed was
+/// read under. A notice is seen when its writer (`Notification.writerXid`) is visible in that snapshot — commit
+/// order, not a timestamp. One row per (project, user). The position only moves forward (a SQL BEFORE UPDATE
+/// trigger keeps the later snapshot), so a late or replayed "mark seen" never un-reads a notice. Derived
+/// per-viewer state: both references cascade.
 model NotificationReadMark {
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId    String
-  seenAt    DateTime
-  updatedAt DateTime @default(now()) @updatedAt
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId    String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
+  /// the `pg_snapshot` text form of the feed snapshot the viewer last marked seen; forward-only (trigger)
+  seenSnapshot String
+  updatedAt    DateTime @default(now()) @updatedAt
 
   @@id([projectId, userId])
 }

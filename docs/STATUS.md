@@ -26,11 +26,15 @@ updated: 2026-10-11
 
 ### Current unit
 
-**Top 10 #4b, a per-viewer read watermark** (#778, `claude/top10-4b-read-mark`), migration only:
-- `NotificationReadMark` holds one `seenAt` per (project, user), and both foreign keys cascade.
-- A `BEFORE UPDATE` trigger keeps `seenAt` forward-only, so a late or replayed "mark seen" never makes a seen notice
+**Top 10 #4b, a per-viewer read position** (#778, `claude/top10-4b-read-mark`), migration only:
+- Each notice records the transaction that wrote it (`Notification.writerXid`, defaulted).
+- `NotificationReadMark` holds one `seenSnapshot` per (project, user): the snapshot the viewer's feed was read under.
+  A notice is seen when its writer is visible in it, which is commit order, not a timestamp (#785 review round 1).
+  Both foreign keys cascade.
+- A `BEFORE UPDATE` trigger keeps the later snapshot, so a late or replayed "mark seen" never makes a seen notice
   unread again.
-- Live-PG proof covers the unique pair, forward-only updates (client and raw SQL) and the cascade.
+- Live-PG proof covers a notice whose transaction began before the feed read but committed after it, the unique
+  pair, forward-only updates (client and raw SQL) and the cascade.
 
 4c (the mark-seen endpoint and the unread count) follows.
 
