@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { AppNotification } from '@vitan/shared';
 import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
 import {
-  SEEN_CHUNK_SIZE, applySeenConfirmed, applySeenFailure, beginSeenAttempt, emptyNotifSeen, planSeenChunks, reconcileSeen, showsUnread, unreadCount,
+  SEEN_CHUNK_SIZE, applySeenConfirmed, applySeenFailure, beginSeenAttempt, claimSeenChunk, emptyNotifSeen, planSeenChunks, reconcileSeen, showsUnread, unreadCount,
 } from '@/lib/notificationSeen';
 
 /**
@@ -48,6 +48,25 @@ describe('notificationSeen — the per-id state machine', () => {
     expect(state.entries.a).toEqual({ kind: 'confirmed' });
     applySeenConfirmed(state, a1, ['a'], []);
     expect(state.entries.a).toEqual({ kind: 'confirmed' });
+  });
+
+  it('a chunk claims, at send time, only ids still free or re-armed: never a confirmed or another attempt\'s id (#482 6113161710)', () => {
+    const state = emptyNotifSeen();
+    applySeenConfirmed(state, beginSeenAttempt(state, ['c']), ['c'], ['c']); // confirmed
+    beginSeenAttempt(state, ['p']); // held by another attempt
+    applySeenConfirmed(state, beginSeenAttempt(state, ['r']), ['r'], []); // r unacknowledged…
+    reconcileSeen(state, [notice('c'), notice('p'), notice('r')]); // …and re-served unread since: re-armed
+    applySeenConfirmed(state, beginSeenAttempt(state, ['u']), ['u'], []); // u unacknowledged, no snapshot since
+    const claim = claimSeenChunk(state, ['c', 'p', 'u', 'r', 'f']);
+    expect(claim.ids).toEqual(['r', 'f']);
+    expect(state.entries.c).toEqual({ kind: 'confirmed' });
+    expect(state.entries.p).toMatchObject({ kind: 'pending', attempt: 2 });
+    expect(state.entries.u).toMatchObject({ kind: 'unacknowledged', resendable: false });
+    expect(state.entries.r).toEqual({ kind: 'pending', attempt: claim.attempt });
+    // nothing left to claim: no attempt is spent
+    const next = state.nextAttempt;
+    expect(claimSeenChunk(state, ['c', 'p'])).toEqual({ attempt: 0, ids: [] });
+    expect(state.nextAttempt).toBe(next);
   });
 
   it('a snapshot retires a confirmed id once it is served read or leaves the feed, and never while it is stale', () => {
@@ -213,6 +232,34 @@ describe('the bell marks displayed notices seen (store, stubbed gateway)', () =>
     expect(t.s().notifSeen.entries.C, 'the newer confirmation stands').toEqual({ kind: 'confirmed' });
     expect(t.badge(), 'only A, whose own attempt failed, is unread again').toBe(1);
   });
+
+  /**
+   * #482 6113161710 — a chunk planned by an OLDER open and sent only later must not take over an id a newer open
+   * already confirmed: 201 unread ids; open 1 sends its first 200 (held); a reopen sends the 201st (X) and is
+   * confirmed; open 1 then reaches its queued chunk [X]. Unfixed, that chunk overwrote X's confirmation with a
+   * pending claim, and its failure (or an empty confirmation) put X back in the badge.
+   */
+  for (const variant of ['fails', 'confirms nothing'] as const) {
+    it(`a queued older chunk cannot undo a newer confirmation (the redundant request ${variant})`, async () => {
+      const feed = Array.from({ length: 201 }, (_, i) => notice(`n${i}`));
+      const X = 'n200';
+      const t = await setup(feed);
+      const first = t.defer();
+      t.answers.push(first.p, { confirmed: [X] }, variant === 'fails' ? new Error('/notifications/seen 503') : { confirmed: [] });
+      t.s().toggleNotif(); // open 1: [n0..n199] in flight, [X] queued behind it
+      await new Promise((r) => setTimeout(r, 0));
+      expect(t.calls.map((c) => c.length)).toEqual([200]);
+      await t.open(); // close and reopen: open 2 sends only X, which is not yet claimed
+      expect(t.calls[1]).toEqual([X]);
+      expect(t.s().notifSeen.entries[X]).toEqual({ kind: 'confirmed' });
+      first.resolve({ confirmed: feed.slice(0, 200).map((n) => n.id!) });
+      for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0));
+      // the stale feed still serves X unread, but X's durable confirmation stands and nothing re-sends it
+      expect(t.s().notifSeen.entries[X], 'X stays confirmed').toEqual({ kind: 'confirmed' });
+      expect(t.badge(), 'nothing returns to the badge').toBe(0);
+      expect(t.calls, 'the queued chunk had nothing left to claim and sent nothing').toHaveLength(2);
+    });
+  }
 
   it('a project switch mid-flight: the old project\'s answer changes nothing in the new project', async () => {
     const t = await setup([notice('A')]);

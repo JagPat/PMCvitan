@@ -70,11 +70,28 @@ export function planSeenChunks(notifications: readonly AppNotification[], state:
     if (!n.id || n.unread !== true || seen.has(n.id)) continue;
     seen.add(n.id);
     const entry = state.entries[n.id];
-    if (!entry || (entry.kind === 'unacknowledged' && entry.resendable)) ids.push(n.id);
+    if (claimable(entry)) ids.push(n.id);
   }
   const chunks: string[][] = [];
   for (let i = 0; i < ids.length; i += SEEN_CHUNK_SIZE) chunks.push(ids.slice(i, i + SEEN_CHUNK_SIZE));
   return chunks;
+}
+
+/** Whether an id may be claimed by a new attempt: no entry, or unacknowledged and re-served unread since. */
+function claimable(entry: SeenEntry | undefined): boolean {
+  return !entry || (entry.kind === 'unacknowledged' && entry.resendable);
+}
+
+/**
+ * A planned chunk is about to be sent: claim, under a new attempt, only those of its ids that are still
+ * claimable NOW. Chunks are planned together and sent one after another, so by the time a later chunk goes
+ * another bell open may have confirmed or claimed some of its ids (#482 6113161710); those are left as they
+ * are. Returns the attempt and the ids actually claimed, which is what the request carries (none: no request).
+ */
+export function claimSeenChunk(state: NotifSeenState, planned: readonly string[]): { attempt: number; ids: string[] } {
+  const ids = planned.filter((id) => claimable(state.entries[id]));
+  if (ids.length === 0) return { attempt: 0, ids };
+  return { attempt: beginSeenAttempt(state, ids), ids };
 }
 
 /** A chunk is about to be sent: its ids become pending under a new attempt, which is returned. */

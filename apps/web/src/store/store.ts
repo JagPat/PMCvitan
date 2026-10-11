@@ -71,7 +71,7 @@ import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
 import { type DailyLogDraft, adoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type NodeCreatePending, type ProjectLoadState, type ProjectScope } from './projectScope';
-import { applySeenConfirmed, applySeenFailure, beginSeenAttempt, emptyNotifSeen, planSeenChunks, reconcileSeen, type NotifSeenState } from '@/lib/notificationSeen';
+import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, planSeenChunks, reconcileSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
@@ -2719,10 +2719,13 @@ export const useStore = create<Store>()(
       const scope = projectScopeOf(get());
       const inScope = () => gateway === gw && isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope);
       // sequential chunks, each its own attempt and its own confirmation; a failed chunk does not stop the next
-      for (const ids of planSeenChunks(get().notifications, get().notifSeen)) {
+      for (const planned of planSeenChunks(get().notifications, get().notifSeen)) {
         if (!inScope()) return;
+        // claim at SEND time, not plan time: an id another open confirmed or claimed since stays its own
         let attempt = 0;
-        set((s) => { attempt = beginSeenAttempt(s.notifSeen, ids); });
+        let ids: string[] = [];
+        set((s) => { ({ attempt, ids } = claimSeenChunk(s.notifSeen, planned)); });
+        if (ids.length === 0) continue;
         try {
           const { confirmed } = await gw.markNotificationsSeen(ids);
           // an answer that returns after a project switch has nothing to change
