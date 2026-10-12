@@ -226,13 +226,17 @@ describe('assigned corrective work stays with its assignee', () => {
 });
 
 describe('Top 10 #2b (#771) — a re-inspection says what it re-checks', () => {
-  it('carries reinspectionOfId on the open re-inspection, and no such key on an ordinary checklist', () => {
+  // #771 (#482 6114668018) — the ordinary checklist now carries an explicit `null` rather than no key: an absent
+  // key is reserved for a server older than the field, whose re-inspection count a client cannot know
+  it('carries reinspectionOfId on the open re-inspection, and an explicit null on an ordinary checklist', () => {
     const slices = bake([
       entry({ id: 'INSP-1' }),
       entry({ id: 'INSP-2', reinspectionOfId: 'INSP-0', assigneeId: 'u-eng' }),
     ], 'pmc');
     const [plain, reinspection] = slices.openChecklists;
     expect(reinspection).toMatchObject({ id: 'INSP-2', reinspectionOfId: 'INSP-0' });
-    expect(plain).not.toHaveProperty('reinspectionOfId');
+    expect(plain).toHaveProperty('reinspectionOfId', null);
+    // the single edit-slot checklist is baked by the same function, so it carries the same marker
+    expect(slices.checklist).toHaveProperty('reinspectionOfId');
   });
 });

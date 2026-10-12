@@ -200,12 +200,16 @@ export function selectFailedItems(s: AppState): number {
  * the rejected items: open while the engineer works it, then in the review queue until the PMC decides it.
  * Each item here is a failed item still awaiting re-inspection, read from the records the PMC can open.
  */
-export function selectOpenReinspections(s: AppState): { count: number; items: number } {
+export function selectOpenReinspections(s: AppState): { count: number; items: number; known: boolean } {
   const open = s.openChecklists.filter((c) => c.reinspectionOfId && !c.submitted);
   const inReview = s.reviews.filter((r) => r.reinspectionOfId && !r.decided);
   return {
     count: open.length + inReview.length,
     items: open.reduce((n, c) => n + c.items.length, 0) + inReview.reduce((n, r) => n + r.items.length, 0),
+    // #771 (#482 6114668018) — an open checklist served with NO lineage key comes from a server older than the
+    // field, which cannot say whether it is a re-inspection: the count is then not known, and is never shown as
+    // a number. A current server marks an ordinary checklist `null`. Review rows have always carried lineage.
+    known: s.openChecklists.every((c) => c.submitted || c.reinspectionOfId !== undefined),
   };
 }
 

@@ -142,7 +142,7 @@ const EXPECT: Record<string, Spec> = {
     keys: ['id', 'name', 'order', 'plannedStart', 'plannedEnd', 'plannedStartDate', 'plannedEndDate', 'activityTotal', 'done', 'inProgress', 'blocked', 'notStarted', 'donePct'].sort(),
     optional: [], nullable: ['plannedStartDate', 'plannedEndDate'].sort(),
   },
-  ChecklistDto: { keys: ['id', 'title', 'zone', 'nodeId', 'date', 'submitted', 'items'].sort(), optional: ['nodeId'], nullable: [] },
+  ChecklistDto: { keys: ['id', 'title', 'zone', 'nodeId', 'date', 'submitted', 'reinspectionOfId', 'items'].sort(), optional: ['nodeId'], nullable: ['reinspectionOfId'] },
   ReviewDto: {
     keys: ['id', 'title', 'zone', 'nodeId', 'by', 'date', 'decided', 'reinspectionOfId', 'closing', 'activityId', 'activityName', 'items'].sort(),
     optional: ['nodeId', 'reinspectionOfId', 'closing', 'activityId', 'activityName'].sort(), nullable: [],

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { InspectionsService } from '../../src/inspections/inspections.service';
@@ -219,6 +220,36 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     await svc.create(p, createInput({ title: 'Once C' }), asPmc(pmcA, p), 'k-oncec-1');
     await svc.create(p, createInput({ title: 'Once C' }), asPmc(pmcA, p), 'k-oncec-1');
     expect(await t.prisma.notification.count({ where: { projectId: p, text: { startsWith: 'New checklist issued: ' } } })).toBe(1);
+  });
+
+  /**
+   * #771 (#482 6114668018) — every open checklist the snapshot serves states its lineage: a re-inspection names
+   * what it re-checks, an ordinary checklist says `null`. A client reads an ABSENT key as a server older than the
+   * field and shows its re-inspection count as unknown, so a current server must never omit it.
+   */
+  it('snapshot: an open re-inspection carries its lineage and an ordinary open checklist an explicit null, over HTTP', async () => {
+    const { p, pmcA } = await freshProject();
+    const eng = `it-inidem-u-engL-${projSeq}`;
+    await t.prisma.user.create({ data: { id: eng, projectId: p, role: 'engineer', name: 'Eng L', email: `${eng}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: eng, role: 'engineer', status: 'active' } });
+    await svc.create(p, createInput({ title: 'Lineage original' }), asPmc(pmcA, p), 'k-lin-1');
+    const original = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Lineage original' }, include: { items: true } });
+    await svc.submit(p, original.id, { items: original.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, { sub: eng, role: 'engineer', projectId: p } as AuthUser, 'k-lin-2');
+    await svc.decide(p, original.id, { approve: false, rejectedItemIds: [original.items[0]!.id], assigneeId: eng }, asPmc(pmcA, p), 'k-lin-3');
+    await svc.create(p, createInput({ title: 'Lineage ordinary' }), asPmc(pmcA, p), 'k-lin-4');
+    const child = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: original.id } });
+    const ordinary = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Lineage ordinary' } });
+
+    const res = await request(t.app.getHttpServer()).get(`/projects/${p}/snapshot`).set('Authorization', `Bearer ${t.issueProjectToken(pmcA, p)}`);
+    expect(res.status).toBe(200);
+    const lineage = Object.fromEntries((res.body.openChecklists as Array<{ id: string }>).map((c) => [c.id, c]));
+    expect(lineage[child.id]).toHaveProperty('reinspectionOfId', original.id);
+    expect(lineage[ordinary.id]).toHaveProperty('reinspectionOfId', null);
+    // every open checklist states it — none is served without the key
+    for (const c of res.body.openChecklists as Array<Record<string, unknown>>) expect(c).toHaveProperty('reinspectionOfId');
+    // the module read path serves the same marker
+    const slice = await reads.snapshotSlice(p, 'pmc', pmcA);
+    expect(Object.fromEntries(slice.openChecklists.map((c) => [c.id, c.reinspectionOfId]))).toEqual({ [child.id]: original.id, [ordinary.id]: null });
   });
 
   it('legacy: an UNKEYED create still works (additive rollout — unkeyed clients keep functioning)', async () => {

@@ -162,7 +162,7 @@ describe('Top 10 #2b — the live failed-items tile reads the open re-inspection
     const { r } = await liveFailed({
       openChecklists: [
         { id: 'RE-1', title: 'Re-inspection: Terrace', zone: 'Terrace', date: 'today', submitted: false, reinspectionOfId: 'INSP-1', items: [item('a'), item('b')] },
-        { id: 'CK-9', title: 'Ordinary checklist', zone: 'GF', date: 'today', submitted: false, items: [item('c')] },
+        { id: 'CK-9', title: 'Ordinary checklist', zone: 'GF', date: 'today', submitted: false, reinspectionOfId: null, items: [item('c')] },
       ],
       reviews: [
         { ...seedReview, id: 'RE-2', decided: false, reinspectionOfId: 'INSP-5', items: seedReview.items.slice(0, 1) },

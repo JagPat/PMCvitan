@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: top10-4-acceptance-proofs
-reviewed_merge: 6b372aa
-open_pr: 790
+work_item: top10-2b-reinspection-truth
+reviewed_merge: ec542de
+open_pr: 791
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-11
@@ -26,19 +26,19 @@ updated: 2026-10-11
 
 ### Current unit
 
-**Top 10 #4 acceptance proofs: the existing notice writers and their recipients** (#778, #790 on
-`claude/top10-4b-read-mark`), tests only. Released conditionally on #482 (record 6113732809) after unit D's merge; main CI
-passed in full on unchanged `6b372aa`, and the owner verified the API and frontend deployments of that SHA. The unit pins
-what each existing writer does today, without inventing a dedup rule: inspection reject (unkeyed retry refused; two
-barrier-held decides leave one re-inspection notice stamped with its child), checklist issue (one notice per concurrent
-same-key create; unkeyed creates stay distinct), the sign-off request (one notice and one completion event per winning
-claim, on `closing-signoff`'s barrier), and the material mismatch flag (one notice and event per keyed act; each unkeyed
-flag is a new act). Each notice is tied to its logical event and to the feed roles it is served to; a worker device and
-another project's member are refused. No runtime, API, schema, migration, permission or workflow change.
+**#771 re-inspection count truthfulness across old and new payloads** (#791 on `claude/serene-ritchie-ip4ulz`).
+Released conditionally on #482 (record 6114668018) after #790's merge; main CI passed in full on unchanged `ec542de`.
+An open checklist from a server older than #773 carried no lineage, so the Dashboard counted its open re-inspection as
+an ordinary checklist and showed a confident "0 · None". A current server now marks an ordinary checklist
+`reinspectionOfId: null`; an open checklist with no lineage key means the server did not report it, and the failed-items
+tile shows "—" ("Re-inspection status not reported"). A known zero stays exact; per-persona sets, the loading, failure
+and stale guards, the demo path and the other tiles are unchanged. No endpoint, schema, migration or permission change.
+#771's due-date, assignee and PMC For You acceptance stay staged; #771 is not closed by this unit.
 
 #778 by stage, for units A–D: Specified (proposal revisions 3 and 4 on #785) — yes; Implemented — yes (merged); Reviewed —
 yes (exact-head Codex on each); Deployed — yes (API and frontend at `6b372aa`, owner-verified); Live-tested — **no**.
-#778's acceptance stays OPEN: isolated role-functional QA has not run, and these automated proofs are not live role QA.
+#778's acceptance stays OPEN: isolated role-functional QA has not run, and the automated proofs are not live role QA.
+The #778 acceptance proofs merged at `ec542de` (#790, reviewed head `6d15cd4`), tests and STATUS only.
 
 Top 10 #4b unit D merged at `6b372aa` (#789, reviewed head `f0fd793`): the bell counts unread notices and marks the
 displayed ones seen, web only.
