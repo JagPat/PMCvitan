@@ -601,8 +601,9 @@ export function selectActionItems(s: AppState): ActionItem[] {
     const otherChanges = changes.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
     // #771 PMC For You — the PMC's decision cards partition `selectDecisionsAwaitingAction` (the Dashboard tile and
     // the server's `countPending`, the Portfolio card): its own approvals (`decider-pending`), the stranded
-    // countersigns (`pmc-stranded`) and every other published pending decision here, each counted per record
-    const otherPending = selectDecisionsAwaitingAction(s).filter((d) => d.status === 'pending' && !viewerIsDecider(d, s.role, s.sessionUserId));
+    // countersigns (`pmc-stranded`) and every other published pending decision here (`pending` is that
+    // selector's pending arm for the PMC, `selectPending`), each counted per record
+    const otherPending = pending.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
     if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), screen: 'decision-log', cta: 'Open', tone: 'red', count: otherChanges.length, item: only(otherChanges) });
     if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red', item: activitiesSettledForLinks(s) ? only(blocked) : undefined });
     if (otherPending.length) {
