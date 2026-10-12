@@ -12,7 +12,8 @@ import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readi
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
 import { decisionsSliceSettled, drawingsSliceSettled, inspectionsSliceSettled, projectSnapshotSettled } from '@/lib/notifications';
-import { activitiesReadMode, inspectionsReadMode } from '@/data/apiGateway';
+import { activitiesReadMode, dailyLogReadMode, inspectionsReadMode } from '@/data/apiGateway';
+import { dailyLogCommandInFlight } from './dailyLogPending';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
 export const WIN = 75;
@@ -482,6 +483,16 @@ export function labourSettledForLinks(s: AppState): boolean {
   return s.labourLoad === 'ready' && s.labourView !== null;
 }
 
+/** Top 10 #3 gap 12c (#798) — the site log may be named only once its slice has landed: the project loaded, no
+ *  command reconcile owed, under module read-ownership a read that succeeded, and no start or send still on its way
+ *  (the log on screen predates it). */
+export function dailyLogSettledForLinks(s: AppState): boolean {
+  return !s.commandReconcileOwed.dailyLog
+    && projectSnapshotSettled(s.projectLoadState)
+    && (dailyLogReadMode() === 'snapshot' || s.dailyLogLoad === 'ready')
+    && !dailyLogCommandInFlight(s);
+}
+
 /** Top 10 #3 (#774) — where ONE inspection opens for this viewer, or null when no inspection screen the role
  *  holds resolves it (the bell's rule: the review screen opens a queued review or an outstanding checklist;
  *  the checklist screen opens an outstanding checklist, or the one in the slot while it is unsubmitted). */
@@ -567,7 +578,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
 
   if (s.role === 'engineer') {
     if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber', item: inspectionsSettledForLinks(s) ? s.checklist.id : undefined });
-    if (s.dailyLog && !s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', screen: 'daily-log', cta: 'Open daily log', tone: 'ink' });
+    if (s.dailyLog && !s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', screen: 'daily-log', cta: 'Open daily log', tone: 'ink', item: dailyLogSettledForLinks(s) ? s.dailyLog.id : undefined });
     if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: unackedItem(unacked) });
   }
 
