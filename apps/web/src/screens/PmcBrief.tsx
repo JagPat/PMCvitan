@@ -1,6 +1,8 @@
 import { useMemo, type ReactNode } from 'react';
 import { useStore } from '@/store/store';
 import { pmcBrief, type BriefTask } from '@/lib/pmcBrief';
+import { decisionsSliceSettled } from '@/lib/notifications';
+import { dailyLogSettledForLinks, decisionRecordLink, inspectionRecordLink, selectVisibleDecisions } from '@/store/selectors';
 import { ArrowRight, CircleCheck } from '@/lib/icons';
 import {
   pmcBriefAlsoIn,
@@ -29,6 +31,7 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
   const short = useStore((s) => s.short);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const setScreen = useStore((s) => s.setScreen);
+  const openItem = useStore((s) => s.openItem);
   const switchProject = useStore((s) => s.switchProject);
 
   const view = useMemo(() => pmcBrief(brief.projects, Date.now()), [brief]);
@@ -37,9 +40,17 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
   // either side of a midnight disagree, so the header never borrows another site's date
   const today = (brief.projects.find((p) => p.projectId === activeProjectId) ?? brief.projects[0])?.today;
 
-  // the active project opens in place; another one is switched to, landing on the task's screen
-  const go = (projectId: string, target: ScreenKey) => {
-    if (projectId === activeProjectId) setScreen(target);
+  // the active project opens in place; another one is switched to, landing on the task's screen — and on its one
+  // record when the task names one (#799)
+  const go = (projectId: string, target: ScreenKey, item?: string) => {
+    if (projectId === activeProjectId) {
+      // #803 Codex 4246569475 — the brief is read on its own clock, so it can name a record this project's
+      // settled slice does not hold yet; the record screen would then judge it "not found". In place, a record
+      // opens only once the slice holds it (each screen's own link rule); otherwise the task opens the list.
+      const link = item ? localRecordLink(target, item) : null;
+      if (link) openItem(link.screen, link.item);
+      else setScreen(target);
+    } else if (item) void switchProject(projectId, target, item);
     else void switchProject(projectId, target);
   };
 
@@ -57,7 +68,7 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
           <ol className={styles.tasks} data-testid="brief-first">
             {view.first.map((t) => (
               <li key={`${t.kind}-${t.projectId}`}>
-                <button className={styles.task} onClick={() => go(t.projectId, t.target)} data-testid={`brief-task-${t.kind}-${t.projectId}`}>
+                <button className={styles.task} onClick={() => go(t.projectId, t.target, t.item)} data-testid={`brief-task-${t.kind}-${t.projectId}`}>
                   <span className={styles.taskText}>
                     <span className={styles.taskProject}>{t.short}</span>
                     <span className={styles.taskWhat}>{taskText(t, lang)}</span>
@@ -113,6 +124,19 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
       )}
     </section>
   );
+}
+
+/** The record a brief task names, opened where the viewer's own settled slice resolves it, or null when the slice
+ *  does not hold it (yet). */
+function localRecordLink(target: ScreenKey, item: string): { screen: ScreenKey; item: string } | null {
+  const s = useStore.getState();
+  if (target === 'decision-log') {
+    const d = decisionsSliceSettled(s) ? selectVisibleDecisions(s).find((x) => x.id === item) : undefined;
+    return d ? decisionRecordLink(s, d) : null;
+  }
+  if (target === 'inspect-review') return inspectionRecordLink(s, item);
+  if (target === 'daily-log') return dailyLogSettledForLinks(s) && s.dailyLog?.id === item ? { screen: 'daily-log', item } : null;
+  return null;
 }
 
 function Figure({ n, label, testId }: { n: number; label: string; testId: string }) {

@@ -43,7 +43,8 @@ describe('U3b — pmcBrief, the ranking', () => {
     ], NOW);
     expect(b.first.map((t) => [t.kind, t.projectId])).toEqual([['reviews', 'C'], ['reviews', 'B'], ['log', 'D']]);
     expect(b.first[0]!.target).toBe('inspect-review');
-    expect(b.first[2]!.target).toBe('dashboard');
+    expect(b.first[2]!.target).toBe('daily-log');
+    expect(b.first[2]!.item).toBeUndefined(); // D's log is not started: the bare log screen, where it is started
     expect(b.total).toBe(4); // A's started log is still counted, just not named
   });
 
@@ -57,6 +58,25 @@ describe('U3b — pmcBrief, the ranking', () => {
 
   it('nothing waiting: nothing named', () => {
     expect(pmcBrief([proj('A')], NOW)).toMatchObject({ first: [], total: 0 });
+  });
+
+  it('#799 — a task about exactly one record names it; several, or an older server without ids, name none', () => {
+    const clients = pmcBrief([
+      proj('A', { waitingOnClient: 1, oldestWaitingSince: '2026-10-01T00:00:00Z', waitingDecisionId: 'DL-7' }),
+      proj('D', { waitingOnClient: 1, oldestWaitingSince: '2026-10-02T00:00:00Z' }), // an older server: no id
+    ], NOW).first;
+    expect(clients.find((t) => t.projectId === 'A')).toMatchObject({ target: 'decision-log', item: 'DL-7' });
+    expect(clients.find((t) => t.projectId === 'D')?.item).toBeUndefined();
+    const reviews = pmcBrief([
+      proj('B', { reviewsWaiting: 1, waitingReviewId: 'INS-3' }),
+      proj('C', { reviewsWaiting: 2, waitingReviewId: 'INS-9' }), // a stray id under a count of two names nothing
+    ], NOW).first;
+    expect(reviews.find((t) => t.projectId === 'B')).toMatchObject({ target: 'inspect-review', item: 'INS-3' });
+    expect(reviews.find((t) => t.projectId === 'C')?.item).toBeUndefined();
+    const logs = pmcBrief([proj('E', { logToday: 'open', logTodayId: 'LOG-5' }), proj('F', { logToday: 'open' })], NOW).first;
+    expect(logs.find((t) => t.projectId === 'E')).toMatchObject({ kind: 'log', target: 'daily-log', item: 'LOG-5' });
+    expect(logs.find((t) => t.projectId === 'F')).toMatchObject({ target: 'daily-log' }); // an older server: the log screen
+    expect(logs.find((t) => t.projectId === 'F')?.item).toBeUndefined();
   });
 });
 
@@ -117,6 +137,40 @@ describe('U3b — the brief on the PMC\'s home', () => {
     fireEvent.click(r.getByTestId('brief-project-bopal'));
     expect(switchProject).toHaveBeenLastCalledWith('bopal', 'dashboard');
     expect(r.getByTestId('brief-project-bopal').querySelector('[data-log]')?.textContent).toBe('No site log yet today');
+  });
+
+  it('#799 — a task naming one record opens it: in place in the active project, after the switch in another', async () => {
+    const named = {
+      projects: [
+        proj('ambli', { short: 'Ambli', reviewsWaiting: 1, waitingReviewId: 'INS-3' }),
+        proj('bopal', { short: 'Bopal', waitingOnClient: 1, oldestWaitingSince: '2026-09-28T06:00:00Z', waitingDecisionId: 'DL-7' }),
+      ],
+    };
+    const { useStore, switchProject, r } = await loadInbox({ brief: named, reviews: [{ id: 'INS-3', title: 'Slab', zone: 'GF' }] });
+    fireEvent.click(r.getByTestId('brief-task-reviews-ambli'));
+    expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'inspect-review', item: 'INS-3' });
+    expect(switchProject).not.toHaveBeenCalled();
+    useStore.setState({ screen: 'inbox', routeItem: null });
+    fireEvent.click(r.getByTestId('brief-task-client-bopal'));
+    expect(switchProject).toHaveBeenCalledWith('bopal', 'decision-log', 'DL-7');
+  });
+
+  it('#799 — the log task opens the site log itself, never the dashboard', async () => {
+    const logs = { projects: [proj('ambli', { short: 'Ambli', logToday: 'open', logTodayId: 'LOG-5' })] };
+    const dailyLog = { id: 'LOG-5', date: '3 Oct 2026', logDate: '2026-10-03', checkedIn: false, checkinTime: null, submitted: false, crew: [], materials: [], progress: 0, photos: [] };
+    const { useStore, r } = await loadInbox({ brief: logs, dailyLog });
+    fireEvent.click(r.getByTestId('brief-task-log-ambli'));
+    expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'daily-log', item: 'LOG-5' });
+  });
+
+  it('#803 Codex 4246569475 — a record the brief names before this project\'s slice holds it opens the list, never "not found"', async () => {
+    const ahead = { projects: [proj('ambli', { short: 'Ambli', reviewsWaiting: 1, waitingReviewId: 'INS-NEW', logToday: 'open', logTodayId: 'LOG-NEW' })] };
+    const { useStore, r } = await loadInbox({ brief: ahead, reviews: [] });
+    fireEvent.click(r.getByTestId('brief-task-reviews-ambli'));
+    expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'inspect-review', item: null });
+    useStore.setState({ screen: 'inbox' });
+    fireEvent.click(r.getByTestId('brief-task-log-ambli'));
+    expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'daily-log', item: null });
   });
 
   it('the active project\'s other cards follow; its inspection card only while the brief names it', async () => {
@@ -433,6 +487,30 @@ vi.mock('socket.io-client', () => ({
   })),
 }));
 vi.mock('@/data/push', () => ({ subscribeToPush: vi.fn().mockResolvedValue(undefined) }));
+
+describe('#799 — a switch asked to open one record lands on it', () => {
+  async function switchWith(role: string, targetScreen: string, targetItem?: string) {
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    useStore.setState({ activeProjectId: 'ambli', role: 'pmc', screen: 'inbox', routeItem: null, memberships: [{ projectId: 'bopal', short: 'Bopal', name: 'Villa at Bopal', role } as never] });
+    const gateway = { switchProject: vi.fn().mockResolvedValue({ role, token: token('u-1'), projectId: 'bopal' }) };
+    useStore.getState()._setGateway(gateway as never);
+    await useStore.getState().switchProject('bopal', targetScreen as never, targetItem);
+    return useStore.getState();
+  }
+
+  it('the record is the route item on the asked screen; a switch without one opens the screen bare', async () => {
+    expect(await switchWith('pmc', 'decision-log', 'DL-7')).toMatchObject({ activeProjectId: 'bopal', screen: 'decision-log', routeItem: 'DL-7' });
+    expect(await switchWith('pmc', 'decision-log')).toMatchObject({ screen: 'decision-log', routeItem: null });
+  });
+
+  it('a role that lands elsewhere never carries the record onto another screen', async () => {
+    const landed = await switchWith('client', 'inspect-review', 'INS-3');
+    expect(landed.screen).not.toBe('inspect-review');
+    expect(landed.routeItem).toBeNull();
+  });
+});
 
 describe('U3b — the brief is read once the signed-in gateway is installed (#697 review round 1)', () => {
   const flushAll = async () => { for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0)); };

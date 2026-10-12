@@ -40,9 +40,9 @@ export class BriefService {
   private async projectBrief(project: { id: string; name: string; short: string; timeZone: string; org: { name: string } | null }): Promise<PmcBriefProject> {
     const today = this.clock.today(project.timeZone);
     const since = civilDayStartInstant(addCivilDays(today, -1), project.timeZone);
-    const [logToday, reviewsWaiting, waiting, approvals, photos, rejectedInspections] = await Promise.all([
-      this.dailyLog.logStatusOn(project.id, today),
-      this.inspections.openInspectionCount(project.id),
+    const [log, reviews, waiting, approvals, photos, rejectedInspections] = await Promise.all([
+      this.dailyLog.logOn(project.id, today),
+      this.inspections.openInspections(project.id),
       this.decisions.waitingOnClient(project.id),
       this.decisions.clientApprovalsSince(project.id, since),
       this.media.progressPhotoCountSince(project.id, since),
@@ -54,10 +54,13 @@ export class BriefService {
       short: project.short,
       orgName: project.org?.name ?? null,
       today,
-      logToday,
-      reviewsWaiting,
+      logToday: log.status,
+      logTodayId: log.id,
+      reviewsWaiting: reviews.count,
+      waitingReviewId: reviews.onlyId,
       waitingOnClient: waiting.count,
       oldestWaitingSince: waiting.oldestPublishedAt?.toISOString() ?? null,
+      waitingDecisionId: waiting.count === 1 ? waiting.onlyId : null,
       sinceYesterday: { approvals, photos, rejectedInspections },
     };
   }
