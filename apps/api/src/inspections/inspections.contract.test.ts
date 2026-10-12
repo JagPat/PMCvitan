@@ -158,6 +158,7 @@ describe('Task 10 — the inspections module implements its shared command/query
       'allIds',
       'checklistStructures',
       'openInspectionCount',
+      'onlyOpenInspectionId',
       'assertEvidenceTarget',
       'existsInProject',
       'resolveRefInProject',

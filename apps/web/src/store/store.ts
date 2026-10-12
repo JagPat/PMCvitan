@@ -688,8 +688,9 @@ export interface AppActions {
   /** Atomically re-scope to another project. Empties project data BEFORE the auth
    *  request; adopts the SERVER-returned project on success. Resolves true only when
    *  the switch was authenticated. `targetScreen` survives the switch when the new
-   *  role is allowed to see it (deep links). */
-  switchProject: (projectId: string, targetScreen?: ScreenKey) => Promise<boolean>;
+   *  role is allowed to see it (deep links); `targetItem`, when given, is the one record it opens there
+   *  (Top 10 #3 gap 13, #799 — a brief task about one record in another project). */
+  switchProject: (projectId: string, targetScreen?: ScreenKey, targetItem?: string) => Promise<boolean>;
   /** Resolves to what happened, so the new-project dialog closes only on a confirmed create and
    *  keeps its inputs with the reason otherwise (see `CreateProjectOutcome`). */
   createProject: (orgId: string, input: NewProjectInput) => Promise<CreateProjectOutcome>;
@@ -2423,7 +2424,7 @@ export const useStore = create<Store>()(
      *  call, stranding stale data on screen under the wrong identity. */
     const applyAuthResult = (
       res: { role: Role; token: string; name?: string; projectId?: string },
-      opts?: { msg?: string; targetScreen?: ScreenKey },
+      opts?: { msg?: string; targetScreen?: ScreenKey; targetItem?: string },
     ): void => {
       set((s) => {
         const changedProject = !!res.projectId && res.projectId !== s.activeProjectId;
@@ -2434,6 +2435,12 @@ export const useStore = create<Store>()(
         // else lands on the role's home
         // B2 — never land on an undefined screen: a role whose list were ever empty falls back to the home
         s.screen = opts?.targetScreen && allowed.includes(opts.targetScreen) ? opts.targetScreen : (allowed[0] ?? 'inbox');
+        // #799 — the record a switch was asked to open, only on the screen it was asked for (the openItem rule)
+        if (opts?.targetItem !== undefined) {
+          const item = s.screen === opts.targetScreen ? opts.targetItem : null;
+          s.decisionFocus = s.screen === 'client-decisions' ? item : null;
+          s.routeItem = s.screen === 'client-decisions' ? null : item;
+        }
         s.sessionToken = res.token;
         s.userName = res.name ?? null;
         // the brief spans this person's projects, so a switch keeps it; another identity never sees it
@@ -4454,7 +4461,7 @@ export const useStore = create<Store>()(
           },
         );
     },
-    switchProject: (projectId, targetScreen) => {
+    switchProject: (projectId, targetScreen, targetItem) => {
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);
       const membership = get().memberships.find((m) => m.projectId === projectId);
       const short = membership?.short ?? 'project';
@@ -4487,7 +4494,7 @@ export const useStore = create<Store>()(
         .then((res) => {
           // adopt the SERVER-returned project/role/token (never the requested id);
           // useApiSync re-inits the gateway for the new scope and refetches.
-          applyAuthResult(res, { msg: 'Switched to ' + short + '.', targetScreen });
+          applyAuthResult(res, { msg: 'Switched to ' + short + '.', targetScreen, targetItem });
           return true;
         })
         .catch(() => {

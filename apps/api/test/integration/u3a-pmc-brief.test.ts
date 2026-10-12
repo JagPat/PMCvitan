@@ -44,6 +44,7 @@ describe('U3a — the PMC brief (GET /me/brief, live PG)', () => {
     await t.prisma.auditLog.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.media.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.dailyLog.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
+    await t.prisma.inspection.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] }, id: { startsWith: 'it-u3a-insp-' } } });
     await t.prisma.project.updateMany({ where: { id: { in: [f.projectA.id, f.projectB.id] } }, data: { archivedAt: null } });
     await t.prisma.membership.updateMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } }, data: { status: 'active' } });
   });
@@ -91,10 +92,12 @@ describe('U3a — the PMC brief (GET /me/brief, live PG)', () => {
     it("today's log: missing, then open, then sent", async () => {
       const today = clock.today('Asia/Kolkata');
       expect(await rowA()).toMatchObject({ today, logToday: 'missing' });
+      expect((await rowA()).logTodayId).toBeNull();
       const log = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: today, logDate: fromIsoCivilDate(today) } });
-      expect((await rowA()).logToday).toBe('open');
+      // #799 — the brief names the very log it judged
+      expect(await rowA()).toMatchObject({ logToday: 'open', logTodayId: log.id });
       await t.prisma.dailyLog.update({ where: { id: log.id }, data: { submitted: true } });
-      expect((await rowA()).logToday).toBe('sent');
+      expect(await rowA()).toMatchObject({ logToday: 'sent', logTodayId: log.id });
       // yesterday's sent log is not today's
       await t.prisma.dailyLog.deleteMany({ where: { projectId: f.projectA.id } });
       await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: 'y', logDate: fromIsoCivilDate(addCivilDays(today, -1)), submitted: true } });
@@ -135,13 +138,27 @@ describe('U3a — the PMC brief (GET /me/brief, live PG)', () => {
         });
         await tx.decision.update({ where: { id: `it-u3a-dec-${f.projectA.id}` }, data: { publishedAt } });
       });
-      expect(await rowA()).toMatchObject({ waitingOnClient: 1, oldestWaitingSince: publishedAt.toISOString(), sinceYesterday: { approvals: 0 } });
+      expect(await rowA()).toMatchObject({ waitingOnClient: 1, oldestWaitingSince: publishedAt.toISOString(), waitingDecisionId: `it-u3a-dec-${f.projectA.id}`, sinceYesterday: { approvals: 0 } });
 
       const client = { sub: f.clientUser.id, role: 'client', projectId: f.projectA.id } as AuthUser;
       await t.app.get(DecisionsService).approve(f.projectA.id, `it-u3a-dec-${f.projectA.id}`, { optionIndex: 0 }, client, 'it-u3a-approve-1');
-      expect(await rowA()).toMatchObject({ waitingOnClient: 0, oldestWaitingSince: null, sinceYesterday: { approvals: 1 } });
+      expect(await rowA()).toMatchObject({ waitingOnClient: 0, oldestWaitingSince: null, waitingDecisionId: null, sinceYesterday: { approvals: 1 } });
       // the other org's PMC sees none of it
       expect((await brief(f.otherUser.id, f.projectB.id)).projects[0]).toMatchObject({ waitingOnClient: 0, sinceYesterday: { approvals: 0, photos: 0, rejectedInspections: 0 } });
+    });
+
+    it('#799 — one review waiting is named; two, or none, name nothing; another project\'s never counts', async () => {
+      const inspection = (id: string, projectId = f.projectA.id, over: { submitted?: boolean; decided?: boolean } = {}) => t.prisma.inspection.create({
+        data: { id: `it-u3a-insp-${id}`, projectId, kind: 'review', title: 'Slab', zone: 'GF', date: '01 Oct 2026', submitted: true, decided: false, ...over },
+      });
+      await inspection('draft', f.projectA.id, { submitted: false });
+      await inspection('done', f.projectA.id, { decided: true });
+      await inspection('b', f.projectB.id);
+      expect(await rowA()).toMatchObject({ reviewsWaiting: 0, waitingReviewId: null });
+      await inspection('one');
+      expect(await rowA()).toMatchObject({ reviewsWaiting: 1, waitingReviewId: 'it-u3a-insp-one' });
+      await inspection('two');
+      expect(await rowA()).toMatchObject({ reviewsWaiting: 2, waitingReviewId: null });
     });
   });
 });

@@ -226,6 +226,13 @@ export class InspectionsQueryService {
     return this.prisma.inspection.count({ where: { projectId, submitted: true, decided: false } });
   }
 
+  /** Top 10 #3 gap 13 (#799) — the one inspection waiting for review, or null when none or several wait (the
+   *  PMC brief's "reviews waiting" task then opens the review list). */
+  async onlyOpenInspectionId(projectId: string): Promise<string | null> {
+    const firstTwo = await this.prisma.inspection.findMany({ where: { projectId, submitted: true, decided: false }, orderBy: { id: 'asc' }, take: 2, select: { id: true } });
+    return firstTwo.length === 1 ? firstTwo[0].id : null;
+  }
+
   /** U3a — how many inspections were REJECTED at or after `since` (the PMC brief's "checks failed").
    *  An inspection row keeps no decision instant, so this asks the platform's audit read
    *  (`AuditQuery`) for the reject this module records (`inspection.reject`), one per inspection

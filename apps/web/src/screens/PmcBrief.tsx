@@ -29,6 +29,7 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
   const short = useStore((s) => s.short);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const setScreen = useStore((s) => s.setScreen);
+  const openItem = useStore((s) => s.openItem);
   const switchProject = useStore((s) => s.switchProject);
 
   const view = useMemo(() => pmcBrief(brief.projects, Date.now()), [brief]);
@@ -37,9 +38,13 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
   // either side of a midnight disagree, so the header never borrows another site's date
   const today = (brief.projects.find((p) => p.projectId === activeProjectId) ?? brief.projects[0])?.today;
 
-  // the active project opens in place; another one is switched to, landing on the task's screen
-  const go = (projectId: string, target: ScreenKey) => {
-    if (projectId === activeProjectId) setScreen(target);
+  // the active project opens in place; another one is switched to, landing on the task's screen — and on its one
+  // record when the task names one (#799)
+  const go = (projectId: string, target: ScreenKey, item?: string) => {
+    if (projectId === activeProjectId) {
+      if (item) openItem(target, item);
+      else setScreen(target);
+    } else if (item) void switchProject(projectId, target, item);
     else void switchProject(projectId, target);
   };
 
@@ -57,7 +62,7 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
           <ol className={styles.tasks} data-testid="brief-first">
             {view.first.map((t) => (
               <li key={`${t.kind}-${t.projectId}`}>
-                <button className={styles.task} onClick={() => go(t.projectId, t.target)} data-testid={`brief-task-${t.kind}-${t.projectId}`}>
+                <button className={styles.task} onClick={() => go(t.projectId, t.target, t.item)} data-testid={`brief-task-${t.kind}-${t.projectId}`}>
                   <span className={styles.taskText}>
                     <span className={styles.taskProject}>{t.short}</span>
                     <span className={styles.taskWhat}>{taskText(t, lang)}</span>

@@ -96,13 +96,19 @@ export class DailyLogQueryService {
    *  `sent` when that day's latest log was sent, `open` when it was started and not sent, `missing`
    *  when no log was started for that day. */
   async logStatusOn(projectId: string, civilDate: string): Promise<'sent' | 'open' | 'missing'> {
+    return (await this.logOn(projectId, civilDate)).status;
+  }
+
+  /** Top 10 #3 gap 13 (#799) — `logStatusOn` together with the log it judged (null when `missing`), from one
+   *  read, so the PMC brief's log task names the very log whose state it reports. */
+  async logOn(projectId: string, civilDate: string): Promise<{ status: 'sent' | 'open' | 'missing'; id: string | null }> {
     const log = await this.prisma.dailyLog.findFirst({
       where: { projectId, logDate: fromIsoCivilDate(civilDate) },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      select: { submitted: true },
+      select: { id: true, submitted: true },
     });
-    if (!log) return 'missing';
-    return log.submitted ? 'sent' : 'open';
+    if (!log) return { status: 'missing', id: null };
+    return { status: log.submitted ? 'sent' : 'open', id: log.id };
   }
 
   async existsInProject(projectId: string, dailyLogId: string): Promise<boolean> {

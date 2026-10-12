@@ -645,13 +645,15 @@ export class DecisionsQueryService {
   /** U3a — the PMC brief's view of what waits on the CLIENT: the published decisions the client holds
    *  that are open (pending, or reopened for re-approval), and when the longest-waiting one was
    *  published. A draft is weightless, as everywhere. */
-  async waitingOnClient(projectId: string): Promise<{ count: number; oldestPublishedAt: Date | null }> {
+  async waitingOnClient(projectId: string): Promise<{ count: number; oldestPublishedAt: Date | null; onlyId: string | null }> {
     const where: Prisma.DecisionWhereInput = { projectId, publishedAt: { not: null }, deciderKind: 'client', status: { in: ['pending', 'change'] } };
-    const [count, oldest] = await Promise.all([
+    // Top 10 #3 gap 13 (#799) — the first two waiting, oldest first: the oldest dates the wait, and when it is the
+    // only one the brief names it. One read, so the name and the instant always describe the same decision.
+    const [count, firstTwo] = await Promise.all([
       this.prisma.decision.count({ where }),
-      this.prisma.decision.findFirst({ where, orderBy: [{ publishedAt: 'asc' }, { id: 'asc' }], select: { publishedAt: true } }),
+      this.prisma.decision.findMany({ where, orderBy: [{ publishedAt: 'asc' }, { id: 'asc' }], take: 2, select: { id: true, publishedAt: true } }),
     ]);
-    return { count, oldestPublishedAt: oldest?.publishedAt ?? null };
+    return { count, oldestPublishedAt: firstTwo[0]?.publishedAt ?? null, onlyId: firstTwo.length === 1 ? firstTwo[0].id : null };
   }
 
   /** U3a — the client approvals recorded at or after `since` (the PMC brief's "client approvals"):

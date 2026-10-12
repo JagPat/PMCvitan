@@ -17,11 +17,15 @@ export function briefIsFresh(at: number | null, now: number): boolean {
 
 const DAY_MS = 86_400_000;
 
-/** One thing for the PMC to do, in one project, and the screen where it is done. */
+/** One thing for the PMC to do, in one project, and the screen where it is done — with, when the task is about
+ *  exactly one record the brief names (Top 10 #3 gap 13, #799), that record (`item`), opened on that screen. */
 export type BriefTask =
-  | { kind: 'client'; projectId: string; short: string; count: number; days: number; target: ScreenKey }
-  | { kind: 'reviews'; projectId: string; short: string; count: number; target: ScreenKey }
-  | { kind: 'log'; projectId: string; short: string; log: 'open' | 'missing'; target: ScreenKey };
+  | { kind: 'client'; projectId: string; short: string; count: number; days: number; target: ScreenKey; item?: string }
+  | { kind: 'reviews'; projectId: string; short: string; count: number; target: ScreenKey; item?: string }
+  | { kind: 'log'; projectId: string; short: string; log: 'open' | 'missing'; target: ScreenKey; item?: string };
+
+/** The record a count of exactly one names; an older server sends no id, and a count of several opens the list. */
+const onlyOne = (count: number, id: string | null | undefined): { item?: string } => (count === 1 && id ? { item: id } : {});
 
 export interface PmcBrief {
   /** the first tasks, most pressing first (at most `FIRST_COUNT`) */
@@ -52,11 +56,12 @@ export function pmcBrief(projects: readonly PmcBriefProject[], now: number): Pmc
       count: p.waitingOnClient,
       days: Number.isNaN(since) ? 0 : Math.max(0, Math.floor((now - since) / DAY_MS)),
       target: 'decision-log',
+      ...onlyOne(p.waitingOnClient, p.waitingDecisionId),
     }));
   const reviews = projects
     .filter((p) => p.reviewsWaiting > 0)
     .sort((a, b) => b.reviewsWaiting - a.reviewsWaiting || byShort(a, b))
-    .map((p): BriefTask => ({ kind: 'reviews', projectId: p.projectId, short: p.short, count: p.reviewsWaiting, target: 'inspect-review' }));
+    .map((p): BriefTask => ({ kind: 'reviews', projectId: p.projectId, short: p.short, count: p.reviewsWaiting, target: 'inspect-review', ...onlyOne(p.reviewsWaiting, p.waitingReviewId) }));
   const logs = projects
     .filter((p) => p.logToday !== 'sent')
     .sort((a, b) => (a.logToday === 'missing' ? 0 : 1) - (b.logToday === 'missing' ? 0 : 1) || byShort(a, b))

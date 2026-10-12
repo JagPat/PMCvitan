@@ -58,6 +58,21 @@ describe('U3b — pmcBrief, the ranking', () => {
   it('nothing waiting: nothing named', () => {
     expect(pmcBrief([proj('A')], NOW)).toMatchObject({ first: [], total: 0 });
   });
+
+  it('#799 — a task about exactly one record names it; several, or an older server without ids, name none', () => {
+    const clients = pmcBrief([
+      proj('A', { waitingOnClient: 1, oldestWaitingSince: '2026-10-01T00:00:00Z', waitingDecisionId: 'DL-7' }),
+      proj('D', { waitingOnClient: 1, oldestWaitingSince: '2026-10-02T00:00:00Z' }), // an older server: no id
+    ], NOW).first;
+    expect(clients.find((t) => t.projectId === 'A')).toMatchObject({ target: 'decision-log', item: 'DL-7' });
+    expect(clients.find((t) => t.projectId === 'D')?.item).toBeUndefined();
+    const reviews = pmcBrief([
+      proj('B', { reviewsWaiting: 1, waitingReviewId: 'INS-3' }),
+      proj('C', { reviewsWaiting: 2, waitingReviewId: 'INS-9' }), // a stray id under a count of two names nothing
+    ], NOW).first;
+    expect(reviews.find((t) => t.projectId === 'B')).toMatchObject({ target: 'inspect-review', item: 'INS-3' });
+    expect(reviews.find((t) => t.projectId === 'C')?.item).toBeUndefined();
+  });
 });
 
 async function loadInbox(overrides: Record<string, unknown> = {}) {
@@ -117,6 +132,22 @@ describe('U3b — the brief on the PMC\'s home', () => {
     fireEvent.click(r.getByTestId('brief-project-bopal'));
     expect(switchProject).toHaveBeenLastCalledWith('bopal', 'dashboard');
     expect(r.getByTestId('brief-project-bopal').querySelector('[data-log]')?.textContent).toBe('No site log yet today');
+  });
+
+  it('#799 — a task naming one record opens it: in place in the active project, after the switch in another', async () => {
+    const named = {
+      projects: [
+        proj('ambli', { short: 'Ambli', reviewsWaiting: 1, waitingReviewId: 'INS-3' }),
+        proj('bopal', { short: 'Bopal', waitingOnClient: 1, oldestWaitingSince: '2026-09-28T06:00:00Z', waitingDecisionId: 'DL-7' }),
+      ],
+    };
+    const { useStore, switchProject, r } = await loadInbox({ brief: named });
+    fireEvent.click(r.getByTestId('brief-task-reviews-ambli'));
+    expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'inspect-review', item: 'INS-3' });
+    expect(switchProject).not.toHaveBeenCalled();
+    useStore.setState({ screen: 'inbox', routeItem: null });
+    fireEvent.click(r.getByTestId('brief-task-client-bopal'));
+    expect(switchProject).toHaveBeenCalledWith('bopal', 'decision-log', 'DL-7');
   });
 
   it('the active project\'s other cards follow; its inspection card only while the brief names it', async () => {
@@ -433,6 +464,30 @@ vi.mock('socket.io-client', () => ({
   })),
 }));
 vi.mock('@/data/push', () => ({ subscribeToPush: vi.fn().mockResolvedValue(undefined) }));
+
+describe('#799 — a switch asked to open one record lands on it', () => {
+  async function switchWith(role: string, targetScreen: string, targetItem?: string) {
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    useStore.setState({ activeProjectId: 'ambli', role: 'pmc', screen: 'inbox', routeItem: null, memberships: [{ projectId: 'bopal', short: 'Bopal', name: 'Villa at Bopal', role } as never] });
+    const gateway = { switchProject: vi.fn().mockResolvedValue({ role, token: token('u-1'), projectId: 'bopal' }) };
+    useStore.getState()._setGateway(gateway as never);
+    await useStore.getState().switchProject('bopal', targetScreen as never, targetItem);
+    return useStore.getState();
+  }
+
+  it('the record is the route item on the asked screen; a switch without one opens the screen bare', async () => {
+    expect(await switchWith('pmc', 'decision-log', 'DL-7')).toMatchObject({ activeProjectId: 'bopal', screen: 'decision-log', routeItem: 'DL-7' });
+    expect(await switchWith('pmc', 'decision-log')).toMatchObject({ screen: 'decision-log', routeItem: null });
+  });
+
+  it('a role that lands elsewhere never carries the record onto another screen', async () => {
+    const landed = await switchWith('client', 'inspect-review', 'INS-3');
+    expect(landed.screen).not.toBe('inspect-review');
+    expect(landed.routeItem).toBeNull();
+  });
+});
 
 describe('U3b — the brief is read once the signed-in gateway is installed (#697 review round 1)', () => {
   const flushAll = async () => { for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0)); };
