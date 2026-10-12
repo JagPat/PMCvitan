@@ -119,6 +119,15 @@ describe('/commercial/<billId>', () => {
     }
   });
 
+  it('a failed shell read is the routed claim\'s failure too, and Retry re-drives the shell (#804 Codex 4246105374)', () => {
+    const loadShell = vi.fn();
+    useStore.setState({ routeItem: 'b-1', capabilities: [], commercialLoad: 'error', commercialBills: null, commercialBillsLoad: 'idle', loadShell });
+    const r = render(<CommercialScreen />);
+    expect(r.getByTestId('commercial-record-unavailable')).toBeTruthy();
+    fireEvent.click(r.getByTestId('commercial-record-retry'));
+    expect(loadShell).toHaveBeenCalled();
+  });
+
   it('a cold link waits for its claim to be adopted before showing the workflow', () => {
     const r = render(<MemoryRouter initialEntries={['/projects/ambli/commercial/b-1']}><CommercialScreen /></MemoryRouter>);
     expect(r.getByTestId('commercial-record-opening')).toBeTruthy();

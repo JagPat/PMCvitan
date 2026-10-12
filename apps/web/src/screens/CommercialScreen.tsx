@@ -257,9 +257,13 @@ export function CommercialScreen() {
   // loading or failed. A claim the list already holds stays open while it re-reads or after a failed re-read (a
   // refresh, a write's reconcile): the claim panel wears its own read's states, and blanking it would hide the
   // lifecycle being acted on.
+  // #804 Codex 4246105374 — a failed shell read leaves the claim list `idle` for good (its loader is capability-gated
+  // and never runs) while `loadShell` marks the money bundle `error`: that is this record's failure too, and its
+  // Retry re-drives the shell
+  const shellFailed = !capabilities.includes('commercial') && commercialLoad === 'error';
   const record = useRoutedRecord('commercial', {
     settled: billsLoad === 'ready' || (routeItem !== null && billHeld(routeItem)),
-    failed: billsLoad === 'error',
+    failed: billsLoad === 'error' || (billsLoad === 'idle' && shellFailed),
     holds: billHeld,
   });
   const selectedBillId = record.state === 'record' ? record.id : null;
@@ -801,7 +805,7 @@ export function CommercialScreen() {
         unavailableText="Couldn't load the claims — check your connection and access."
         showAllLabel="Show all claims"
         onShowAll={() => setRouteItem(null)}
-        onRetry={() => void loadCommercialBills()}
+        onRetry={() => { if (shellFailed) loadShell(); else void loadCommercialBills(); }}
       />
 
       {bodyTab === 'position' && commercial && (
