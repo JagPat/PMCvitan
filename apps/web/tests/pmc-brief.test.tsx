@@ -43,7 +43,8 @@ describe('U3b — pmcBrief, the ranking', () => {
     ], NOW);
     expect(b.first.map((t) => [t.kind, t.projectId])).toEqual([['reviews', 'C'], ['reviews', 'B'], ['log', 'D']]);
     expect(b.first[0]!.target).toBe('inspect-review');
-    expect(b.first[2]!.target).toBe('dashboard');
+    expect(b.first[2]!.target).toBe('daily-log');
+    expect(b.first[2]!.item).toBeUndefined(); // D's log is not started: the bare log screen, where it is started
     expect(b.total).toBe(4); // A's started log is still counted, just not named
   });
 
@@ -72,6 +73,10 @@ describe('U3b — pmcBrief, the ranking', () => {
     ], NOW).first;
     expect(reviews.find((t) => t.projectId === 'B')).toMatchObject({ target: 'inspect-review', item: 'INS-3' });
     expect(reviews.find((t) => t.projectId === 'C')?.item).toBeUndefined();
+    const logs = pmcBrief([proj('E', { logToday: 'open', logTodayId: 'LOG-5' }), proj('F', { logToday: 'open' })], NOW).first;
+    expect(logs.find((t) => t.projectId === 'E')).toMatchObject({ kind: 'log', target: 'daily-log', item: 'LOG-5' });
+    expect(logs.find((t) => t.projectId === 'F')).toMatchObject({ target: 'daily-log' }); // an older server: the log screen
+    expect(logs.find((t) => t.projectId === 'F')?.item).toBeUndefined();
   });
 });
 
@@ -148,6 +153,13 @@ describe('U3b — the brief on the PMC\'s home', () => {
     useStore.setState({ screen: 'inbox', routeItem: null });
     fireEvent.click(r.getByTestId('brief-task-client-bopal'));
     expect(switchProject).toHaveBeenCalledWith('bopal', 'decision-log', 'DL-7');
+  });
+
+  it('#799 — the log task opens the site log itself, never the dashboard', async () => {
+    const logs = { projects: [proj('ambli', { short: 'Ambli', logToday: 'open', logTodayId: 'LOG-5' })] };
+    const { useStore, r } = await loadInbox({ brief: logs });
+    fireEvent.click(r.getByTestId('brief-task-log-ambli'));
+    expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'daily-log', item: 'LOG-5' });
   });
 
   it('the active project\'s other cards follow; its inspection card only while the brief names it', async () => {

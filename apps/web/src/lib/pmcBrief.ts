@@ -65,7 +65,9 @@ export function pmcBrief(projects: readonly PmcBriefProject[], now: number): Pmc
   const logs = projects
     .filter((p) => p.logToday !== 'sent')
     .sort((a, b) => (a.logToday === 'missing' ? 0 : 1) - (b.logToday === 'missing' ? 0 : 1) || byShort(a, b))
-    .map((p): BriefTask => ({ kind: 'log', projectId: p.projectId, short: p.short, log: p.logToday as 'open' | 'missing', target: 'dashboard' }));
+    // #799 / #798 12c — the site log itself (the PMC reaches the Daily Log by link): the started log by its id, or
+    // the bare log screen, where today's log is started, when none is
+    .map((p): BriefTask => ({ kind: 'log', projectId: p.projectId, short: p.short, log: p.logToday as 'open' | 'missing', target: 'daily-log', ...(p.logToday === 'open' && p.logTodayId ? { item: p.logTodayId } : {}) }));
 
   const all = [...client, ...reviews, ...logs];
   return {
