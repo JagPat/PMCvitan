@@ -181,11 +181,11 @@ export function pathForScreen(screen: ScreenKey, projectId: string, item?: strin
  *  adds `/review/<inspectionId>` and `/site/checklist/<inspectionId>`, so a notice about an inspection
  *  opens that inspection on whichever inspection screen the role holds. Top 10 #3c (#774) adds
  *  `/schedule/<activityId>`, so an activity is a record a card or a link can open. Gap 12 (#798) adds the pilot
- *  hubs' activity records, `/materials/<activityId>` and `/labour/<activityId>`, and the site log,
- *  `/site/log/<dailyLogId>`. */
+ *  hubs' activity records, `/materials/<activityId>` and `/labour/<activityId>`, the site log,
+ *  `/site/log/<dailyLogId>`, and a vendor claim, `/commercial/<billId>`. */
 export const ITEM_SCREENS: ReadonlySet<ScreenKey> = new Set<ScreenKey>([
   'places', 'drawings', 'decision-log', 'client-decisions', 'inspect-review', 'engineer-check', 'site-schedule',
-  'materials', 'labour', 'daily-log',
+  'materials', 'labour', 'daily-log', 'commercial',
 ]);
 
 /** Top 10 #3 gap 12 (#798, owner decision 2026-10-12) — screens a role reaches by a LINK only (a brief task, a
