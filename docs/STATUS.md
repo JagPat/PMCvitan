@@ -16,24 +16,25 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: top10-2b-reinspection-truth
-reviewed_merge: ec542de
-open_pr: 791
+work_item: site-visits-plan
+reviewed_merge: ec3f20b
+open_pr: 793
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-11
+updated: 2026-10-12
 ```
 
 ### Current unit
 
-**#771 re-inspection count truthfulness across old and new payloads** (#791 on `claude/serene-ritchie-ip4ulz`).
-Released conditionally on #482 (record 6114668018) after #790's merge; main CI passed in full on unchanged `ec542de`.
-An open checklist from a server older than #773 carried no lineage, so the Dashboard counted its open re-inspection as
-an ordinary checklist and showed a confident "0 · None". A current server now marks an ordinary checklist
-`reinspectionOfId: null`; an open checklist with no lineage key means the server did not report it, and the failed-items
-tile shows "—" ("Re-inspection status not reported"). A known zero stays exact; per-persona sets, the loading, failure
-and stale guards, the demo path and the other tiles are unchanged. No endpoint, schema, migration or permission change.
-#771's due-date, assignee and PMC For You acceptance stay staged; #771 is not closed by this unit.
+**Site Visits plan (SV0, docs only)** (#793 on `claude/serene-ritchie-ip4ulz`, issue #792). The owner asked on
+12 Oct 2026 for the plan to be written now; it is planning only and starts no building. The owner decided that an
+architect, a consultant or the PMC may start a visit. The plan is
+[docs/superpowers/plans/2026-10-12-site-visits.md](superpowers/plans/2026-10-12-site-visits.md): SV1 visit record, SV2
+observations, SV3 actions, SV4 report, SV5 sharing, with open questions Q1–Q8 (Q8 is the queue placement, which the
+plan asks the owner to settle). The queue below is unchanged until the owner decides Q8.
+
+#771 count truthfulness merged at `ec3f20b` (#791, reviewed head `574a6e0`); its due-date, assignee and PMC For You
+acceptance stay staged, so #771 stays open.
 
 #778 by stage, for units A–D: Specified (proposal revisions 3 and 4 on #785) — yes; Implemented — yes (merged); Reviewed —
 yes (exact-head Codex on each); Deployed — yes (API and frontend at `6b372aa`, owner-verified); Live-tested — **no**.
@@ -91,7 +92,8 @@ mandatory await the owner). #731 stays open until they land. Maintenance runs be
    deployment confirmed. `next_task` stays `phase-6-task-4d-iii` until then. That pointer is the parent task's
    continuation only; it is not authority to start 4d-iii ahead of items 2–5 above. The remaining live-bug work
    comes before client estimates and isolated QA.
-7. **Site Visits**, after R1–R4 (the owner's direction, unchanged by the 2026-10-08 order).
+7. **Site Visits**, after R1–R4 (the owner's direction, unchanged by the 2026-10-08 order). Plan written (#792); its
+   placement is open question Q8 there, because the Board's and owner's 7 Oct orders differ from this line.
 
 Each unit is a focused PR from `main`, with its own GitHub issue (rule 9). It goes through CI, exact-head
 Codex review (capped at two rounds once M2 lands), merge, deployment evidence and live validation. Nothing
