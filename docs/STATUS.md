@@ -28,9 +28,9 @@ updated: 2026-10-12
 
 **Site Visits plan (SV0, docs only)** (#793 on `claude/serene-ritchie-ip4ulz`, issue #792). Planning only, no
 building. Owner, 12 Oct: an architect, a consultant or the PMC may start a visit. The third-head stop (`664c6c8`,
-`b985832`, `e83ed57`) stands; the owner ruled a smaller split: [the product plan](superpowers/plans/2026-10-12-site-visits.md)
-(the Board's SV1–SV5 scope, staging proposals S1–S8 not approved, open Q1–Q13, R1–R17, and all 40 findings open in
-§6 per #482 6116163100), one technical design per step later.
+`b985832`, `e83ed57`) stands; per the owner's rulings, [the plan](superpowers/plans/2026-10-12-site-visits.md) holds only
+the product decisions (the Board's SV1–SV5 scope, D1–D6, S1–S8 not approved, open Q1–Q13). R1–R17 and all 44
+findings stay open on #792 (#482 6116163100); one technical design per step later.
 
 **Next unit, after this docs checkpoint:** the approved #771 read contract (#482 6115700782): stored re-inspection due
 date and assignee on the existing inspection read, no new authority. Gates: main CI 38188640844 green on unchanged
