@@ -20,3 +20,4 @@ export { MoreDetails } from './MoreDetails';
 export { ConsultationThread } from './ConsultationThread';
 export { CountersignControls } from './CountersignControls';
 export { ItemNotFound } from './ItemNotFound';
+export { RecordBoundary } from './RecordBoundary';

@@ -472,6 +472,16 @@ export function activitiesSettledForLinks(s: AppState): boolean {
     && (activitiesReadMode() === 'snapshot' || s.activitiesLoad === 'ready');
 }
 
+/** Top 10 #3 gap 12 (#798) — a pilot hub may name one of its records only once its bundle has landed: `ready` is
+ *  set only by a successful read (a refresh keeps it while it revalidates), and a failed read leaves `error` over
+ *  the last-good bundle, which no link or "not found" may be judged against. */
+export function materialsSettledForLinks(s: AppState): boolean {
+  return s.materialsLoad === 'ready' && s.materialsView !== null;
+}
+export function labourSettledForLinks(s: AppState): boolean {
+  return s.labourLoad === 'ready' && s.labourView !== null;
+}
+
 /** Top 10 #3 (#774) — where ONE inspection opens for this viewer, or null when no inspection screen the role
  *  holds resolves it (the bell's rule: the review screen opens a queued review or an outstanding checklist;
  *  the checklist screen opens an outstanding checklist, or the one in the slot while it is unsubmitted). */
@@ -635,6 +645,8 @@ export function selectActionItems(s: AppState): ActionItem[] {
         screen: 'materials',
         cta: 'Open materials',
         tone: hardImpact ? 'red' : 'amber',
+        // gap 12 (#798) — one short activity opens its record (shortages are one per activity)
+        item: materialsSettledForLinks(s) && shortages.length === 1 ? shortages[0].activityId : undefined,
       });
     }
   }
@@ -676,7 +688,8 @@ export function selectActionItems(s: AppState): ActionItem[] {
   // shortfall has committed supplier capacity inbound. Jumps to the Labour hub to resolve.
   // Absent on a non-labour-pilot project (no bundle).
   if ((s.role === 'pmc' || s.role === 'engineer') && s.labourView) {
-    const shortfalls = Object.values(s.labourView.readiness.forecast).filter((f) => f.verdict !== 'ready');
+    const shortfallEntries = Object.entries(s.labourView.readiness.forecast).filter(([, f]) => f.verdict !== 'ready');
+    const shortfalls = shortfallEntries.map(([, f]) => f);
     if (shortfalls.length) {
       const blockedN = shortfalls.filter((f) => f.verdict === 'blocked').length;
       const atRiskN = shortfalls.length - blockedN;
@@ -691,6 +704,8 @@ export function selectActionItems(s: AppState): ActionItem[] {
         screen: 'labour',
         cta: 'Open labour',
         tone: blockedN > 0 ? 'red' : 'amber',
+        // gap 12 (#798) — one short activity opens its record (the forecast is keyed by activity)
+        item: labourSettledForLinks(s) && shortfallEntries.length === 1 ? shortfallEntries[0][0] : undefined,
       });
     }
   }

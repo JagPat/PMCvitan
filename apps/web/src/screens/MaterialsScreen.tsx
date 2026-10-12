@@ -1,11 +1,14 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { Eyebrow, Button } from '@/components';
+import { Eyebrow, Button, RecordBoundary } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
 import type { MaterialCoverageVerdict, StockLotDto } from '@vitan/shared';
 import { decAdd, decSum, decIsPositive } from '@/lib/decimal';
 import { foldActivityReservations } from '@/lib/reservations';
+import { useRoutedRecord } from '@/lib/useRoutedRecord';
+import { materialsSettledForLinks } from '@/store/selectors';
+import type { ActivityReadinessRow } from '@vitan/shared';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey } from '@/lib/materialsKeys';
 import styles from './responsive.module.css';
 
@@ -75,6 +78,16 @@ export function MaterialsScreen() {
   // (which reloads the bundle on a pilot, or lets RouteBridge bounce a non-pilot deep link).
   const retryMaterials = (): void => { if (capabilitiesKnown) { loadMaterials(); } else { loadShell(); } };
   const pending = (key: string): boolean => materialsPending.includes(key);
+  // Top 10 #3 gap 12 (#798) — `/materials/<activityId>`: a link (a For You card, a shared URL, a reload) names ONE
+  // activity's material readiness, shown on its own from a settled bundle
+  const setRouteItem = useStore((s) => s.setRouteItem);
+  const settled = useStore(materialsSettledForLinks);
+  const record = useRoutedRecord('materials', {
+    settled,
+    failed: materialsLoad === 'error',
+    holds: (id) => !!materials?.readiness.activities.some((a) => a.activityId === id),
+  });
+  const recordRow = record.state === 'record' ? materials?.readiness.activities.find((a) => a.activityId === record.id) ?? null : null;
 
   // Reservations: each activity's ACTIVE reserved pool per store location, folded from the §C ledger's
   // bucket movements (reversals + issues included) with exact decimal arithmetic (finding 5).
@@ -88,6 +101,42 @@ export function MaterialsScreen() {
       loadReservationPlan(activityId);
       return activityId;
     });
+  };
+
+  const readinessRow = (a: ActivityReadinessRow) => {
+    const m = verdictChip(a.verdict);
+    const reqs = (materials?.readiness.requirements ?? []).filter((r) => r.activityId === a.activityId);
+    return (
+      <div key={a.activityId} data-testid={`materials-activity-${a.activityId}`} style={rowCard}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
+          <div style={{ fontWeight: 600, fontSize: 13.5 }}>{a.activityName}</div>
+          <span style={chip(m)} data-testid={`materials-verdict-${a.activityId}`}>{m.label}</span>
+        </div>
+        <div style={{ ...muted, marginTop: 4 }}>{a.reason}</div>
+        {reqs.map((r) => (
+          <div key={r.requirementId} data-testid={`materials-reqdetail-${r.requirementId}`} style={{ ...mono, marginTop: 4 }}>
+            {r.material} · covered {r.coveredQty} / {r.requiredQty} {r.baseUom}{decIsPositive(r.shortfall) ? ` · short ${r.shortfall}` : ''}
+          </div>
+        ))}
+        {a.verdict !== 'ready' && (
+          <div style={{ marginTop: 9 }}>
+            <Button variant="outline" data-testid={`materials-cover-${a.activityId}`} onClick={() => toggleCover(a.activityId)} style={{ fontSize: 12 }}>
+              {openCover === a.activityId ? 'Close' : 'Cover shortage'}
+            </Button>
+            {openCover === a.activityId && (
+              <CoverPanel
+                activityId={a.activityId}
+                activityName={a.activityName}
+                plan={reservationPlans[a.activityId]}
+                pending={pending}
+                onReserve={reserveCandidate}
+                onRequisition={raiseRequisition}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -104,7 +153,26 @@ export function MaterialsScreen() {
         </Button>
       </div>
 
-      {stale && (
+      <RecordBoundary
+        record={record}
+        prefix="materials"
+        what="Activity"
+        loadingText="Loading this activity's materials…"
+        unavailableText="Couldn't load the materials — check your connection and access."
+        showAllLabel="Show all materials"
+        onShowAll={() => setRouteItem(null)}
+        onRetry={retryMaterials}
+      />
+      {recordRow && (
+        <div data-testid="materials-record" style={{ marginTop: 16 }}>
+          <Button variant="outline" data-testid="materials-record-show-all" onClick={() => setRouteItem(null)} style={{ fontSize: 12 }}>
+            Show all materials
+          </Button>
+          {readinessRow(recordRow)}
+        </div>
+      )}
+
+      {record.state === 'list' && stale && (
         <div data-testid="materials-stale-warning" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px', marginTop: 14 }}>
           <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
           <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>Showing the last-known materials — the latest couldn't load.</span>
@@ -114,10 +182,10 @@ export function MaterialsScreen() {
         </div>
       )}
 
-      {reading && (
+      {record.state === 'list' && reading && (
         <div data-testid="materials-loading" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the materials pipeline…</div>
       )}
-      {unavailable && (
+      {record.state === 'list' && unavailable && (
         <div data-testid="materials-unavailable" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><WifiOff size={18} /> Materials unavailable.</div>
           <div style={{ fontSize: 12.5, marginTop: 6 }}>Check your connection and access, then retry.</div>
@@ -129,7 +197,7 @@ export function MaterialsScreen() {
         </div>
       )}
 
-      {materials && (
+      {record.state === 'list' && materials && (
         <>
           {/* readiness summary — counted per ACTIVITY (finding 3) */}
           <div data-testid="materials-summary" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16 }}>
@@ -151,41 +219,7 @@ export function MaterialsScreen() {
           <div style={{ marginTop: 8 }}>
             {tab === 'readiness' && (
               <Panel empty={!materials.readiness.activities.length} emptyKey="readiness" emptyText="No material requirements yet.">
-                {materials.readiness.activities.map((a) => {
-                  const m = verdictChip(a.verdict);
-                  const reqs = materials.readiness.requirements.filter((r) => r.activityId === a.activityId);
-                  return (
-                    <div key={a.activityId} data-testid={`materials-activity-${a.activityId}`} style={rowCard}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
-                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>{a.activityName}</div>
-                        <span style={chip(m)} data-testid={`materials-verdict-${a.activityId}`}>{m.label}</span>
-                      </div>
-                      <div style={{ ...muted, marginTop: 4 }}>{a.reason}</div>
-                      {reqs.map((r) => (
-                        <div key={r.requirementId} data-testid={`materials-reqdetail-${r.requirementId}`} style={{ ...mono, marginTop: 4 }}>
-                          {r.material} · covered {r.coveredQty} / {r.requiredQty} {r.baseUom}{decIsPositive(r.shortfall) ? ` · short ${r.shortfall}` : ''}
-                        </div>
-                      ))}
-                      {a.verdict !== 'ready' && (
-                        <div style={{ marginTop: 9 }}>
-                          <Button variant="outline" data-testid={`materials-cover-${a.activityId}`} onClick={() => toggleCover(a.activityId)} style={{ fontSize: 12 }}>
-                            {openCover === a.activityId ? 'Close' : 'Cover shortage'}
-                          </Button>
-                          {openCover === a.activityId && (
-                            <CoverPanel
-                              activityId={a.activityId}
-                              activityName={a.activityName}
-                              plan={reservationPlans[a.activityId]}
-                              pending={pending}
-                              onReserve={reserveCandidate}
-                              onRequisition={raiseRequisition}
-                            />
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                {materials.readiness.activities.map(readinessRow)}
               </Panel>
             )}
 
