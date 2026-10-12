@@ -30,7 +30,7 @@ updated: 2026-10-12
 12 Oct 2026 for the plan to be written now; it is planning only and starts no building. The owner decided that an
 architect, a consultant or the PMC may start a visit. The plan is
 [docs/superpowers/plans/2026-10-12-site-visits.md](superpowers/plans/2026-10-12-site-visits.md): SV1 visit record, SV2
-observations, SV3 actions, SV4 report, SV5 sharing, with open questions Q1–Q8 (Q8 is the queue placement, which the
+observations, SV3 actions, SV4 report, SV5 sharing, with open questions Q1–Q12 (Q8 is the queue placement, which the
 plan asks the owner to settle). The queue below is unchanged until the owner decides Q8.
 
 #771 count truthfulness merged at `ec3f20b` (#791, reviewed head `574a6e0`); its due-date, assignee and PMC For You
