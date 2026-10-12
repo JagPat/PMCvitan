@@ -844,15 +844,17 @@ export class ApiGateway {
     });
     if (!res.ok) {
       // Surface the HTTP status so callers can react (e.g. 429 throttle vs 503 send-failure).
-      const err = new Error(`${path} ${res.status}`) as Error & { status?: number; serverMessage?: string };
+      const err = new Error(`${path} ${res.status}`) as Error & { status?: number; serverMessage?: string; retryAfter?: number };
       err.status = res.status;
       // Phase 6 task 4d-ii-b / B5a — and the server's OWN refusal message (Nest's `{ message }`, a string or
       // a list), so a command the server refuses (a 409 while the doors stand, an ineligible state) can be
       // surfaced as what the server said rather than masked behind a generic line. Read defensively: a body
       // that is not JSON, or carries no message, leaves the field absent.
       try {
-        const body = (await res.json()) as { message?: unknown } | null;
+        const body = (await res.json()) as { message?: unknown; retryAfter?: unknown } | null;
         const m = body?.message;
+        // A throttle (429) says how many seconds remain in its window (common/throttle.ts).
+        if (typeof body?.retryAfter === 'number' && body.retryAfter > 0) err.retryAfter = body.retryAfter;
         if (typeof m === 'string' && m.trim()) err.serverMessage = m;
         else if (Array.isArray(m) && m.length) err.serverMessage = m.filter((x): x is string => typeof x === 'string').join('; ');
       } catch { /* no readable body — the status alone is the fact */ }
