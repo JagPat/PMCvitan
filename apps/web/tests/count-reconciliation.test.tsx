@@ -64,7 +64,7 @@ describe('selectDecisionsAwaitingAction mirrors the server countPending, arm by 
 });
 
 describe('For You counts the records the viewer acts on one by one', () => {
-  it('pmc: reviews, change requests and stranded decisions count per record; informational cards count once', async () => {
+  it('pmc: reviews, change requests and every decision awaiting action count per record; informational cards count once', async () => {
     const { useStore } = await demo();
     const sel = await import('@/store/selectors');
     const [review] = useStore.getState().reviews;
@@ -79,8 +79,9 @@ describe('For You counts the records the viewer acts on one by one', () => {
     expect(count('pmc-change')).toBe(1);
     expect(count('pmc-stranded')).toBe(1);
     expect(count('decider-pending')).toBe(1); // the PMC-held P-PMC
-    // "awaiting someone else" is information, not the PMC's own work: one card, counted once
-    expect(count('pmc-pending')).toBeUndefined();
+    // #771 PMC slice: the PMC manages every pending decision (countPending), so the other-held ones count per
+    // record too; a countersign the architect holds is outside countPending and stays one informational card
+    expect(count('pmc-pending')).toBe(3);
     expect(count('pmc-countersign')).toBeUndefined();
     // the review part of the badge equals the Inspection Review badge
     expect(count('pmc-reviews')).toBe(sel.selectReviewPending(useStore.getState()));

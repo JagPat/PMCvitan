@@ -305,7 +305,6 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'withdrawn' #2": 'excludes: the withdrawal reason',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'change'": 'excludes: the open change request’s panel, shown only while reopened',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'change' #2": 'excludes: the change-request affordances, only on a reopened row',
-    "apps/web/src/screens/PortfolioScreen.tsx :: d.status === 'pending'": 'excludes: the DEMO-mode tile’s pending count (the live tile is the server’s countPending); the countersign arms are the Decision Log badge’s (selectCountersignObligations)',
     "apps/web/src/screens/ScheduleScreen.tsx :: d.status !== 'withdrawn'": 'excludes: the withdrawn arm of the schedule’s decision list',
     "apps/web/src/screens/TeamAccessScreen.tsx :: d.status === 'approved'": 'excludes: the welcome sample of FINAL approvals',
     "apps/web/src/screens/modals/AddMaterialModal.tsx :: d.status !== 'withdrawn'": 'excludes: the withdrawn arm of the provenance picker (the server refuses a provisional head anyway, A4b)',

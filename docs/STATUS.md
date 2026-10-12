@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 771-read-contract
-reviewed_merge: 0470efd
-open_pr: 796
+work_item: 771-pmc-for-you
+reviewed_merge: d5bba1c
+open_pr: 801
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-12
@@ -26,10 +26,11 @@ updated: 2026-10-12
 
 ### Current unit
 
-**#771 read contract** (`claude/serene-ritchie-ip4ulz`, #482 6115700782): the stored re-inspection due date (civil
-`YYYY-MM-DD`) and assignee on the existing inspection read, live and projection, for rows the viewer already
-receives; an older projection row without the field is refused (live fallback). No new authority, endpoint, schema
-or UI. #771 stays open: PMC For You acceptance is the next slice. #771 count truthfulness merged at `ec3f20b` (#791).
+**#771 PMC For You** (`claude/determined-cori-kmy0ae`, #801): the PMC's For You decision cards partition
+`selectDecisionsAwaitingAction` (the Dashboard tile, the server's `countPending` on the Portfolio card), each per
+record; a per-record card for the re-inspections still with the engineer, from the served lineage and due date; the
+Portfolio demo row reads the same selector. Web only. #771 closes on a signed-in PMC's live check (PR body).
+#771 read contract merged at `d5bba1c` (#796); count truthfulness at `ec3f20b` (#791).
 
 Site Visits plan (SV0) merged at `0470efd` (#793, reviewed head `61ba419`): product decisions only. The third-head
 stop (`664c6c8`, `b985832`, `e83ed57`) stands; R1–R17 and all 44 findings stay open on #792; Q8 places Site Visits
