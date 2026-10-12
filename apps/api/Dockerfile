@@ -26,7 +26,12 @@ RUN node scripts/build-info.mjs > apps/api/dist/build-info.json && cat apps/api/
 
 # ---- run ----
 FROM node:22-slim AS run
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+# Coolify probes from inside the container: GET http://localhost:3000/health
+# with curl, then wget. node:22-slim has neither, so a listening API is rolled
+# back (`/bin/sh: 1: curl: not found`). That is what happened to 0470efd on
+# 2026-10-12. curl is the command Coolify tries first; once it is installed
+# and /health returns 200, the probe succeeds.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates curl && rm -rf /var/lib/apt/lists/*
 RUN npm install -g pnpm@10.33.0
 WORKDIR /app
 COPY --from=build /app ./
@@ -38,6 +43,13 @@ ENV PORT=3000
 # before deploying, or boot fails fast. See docs/AUTH_LOCKDOWN.md.
 ENV NODE_ENV=production
 EXPOSE 3000
+# Image probe for `docker run` and any platform that uses the Dockerfile
+# HEALTHCHECK. Coolify's own check is a separate in-container curl of the same
+# URL, which is why curl is installed above. The start period covers
+# scripts/migrate.sh plus Nest boot: nothing listens on :3000 until both
+# finish. The web image uses 5s because nginx is up immediately.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=60s \
+  CMD curl -fsS http://localhost:3000/health >/dev/null || exit 1
 # On start: apply Prisma migrations via scripts/migrate.sh — `migrate deploy`,
 # FAIL CLOSED (DEP-02). A pre-baseline database (P3005) is baselined once and
 # retried; any other migration failure exits non-zero so the deploy fails
