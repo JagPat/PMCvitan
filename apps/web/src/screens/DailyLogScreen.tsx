@@ -2,8 +2,9 @@ import { useRef, useState, type ChangeEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { API_BASE, CONNECTIVITY_SIMULATOR, dailyLogReadMode } from '@/data/apiGateway';
-import { decisionRecordLink, selectTotalWorkers, selectVisibleDecisions } from '@/store/selectors';
-import { EmptyState, Eyebrow, Swatch, PhotoViewer, Button } from '@/components';
+import { dailyLogSettledForLinks, decisionRecordLink, selectTotalWorkers, selectVisibleDecisions } from '@/store/selectors';
+import { EmptyState, Eyebrow, Swatch, PhotoViewer, Button, RecordBoundary } from '@/components';
+import { useRoutedRecord } from '@/lib/useRoutedRecord';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { LocationPicker } from '@/components/LocationPicker';
 import { captureStamp } from '@/lib/captureStamp';
@@ -56,6 +57,17 @@ export function DailyLogScreen() {
   const reading = moduleOwned && (dailyLogLoad === 'idle' || dailyLogLoad === 'loading');
   const unavailable = moduleOwned && dailyLogLoad === 'error';
   const actionsLocked = reading || unavailable; // don't mutate a log whose read hasn't settled
+  // Top 10 #3 gap 12c (#798) — `/site/log/<dailyLogId>`: a link (a For You card, a brief task, a shared URL) names
+  // ONE log. The slice holds the project's latest log only, so a link to another log is "not found" — never the
+  // latest log shown under the wrong log's URL.
+  const setRouteItem = useStore((s) => s.setRouteItem);
+  const projectLoadState = useStore((s) => s.projectLoadState);
+  const logSettled = useStore(dailyLogSettledForLinks);
+  const record = useRoutedRecord('daily-log', {
+    settled: logSettled,
+    failed: unavailable || projectLoadState === 'error',
+    holds: (id) => dailyLog?.id === id,
+  });
   // a start / send already on its way (queued, or committed and not yet read back): the log on
   // screen predates it, so the same command is never offered twice — the rule the store enforces
   const starting = useStore(dailyLogStartPending);
@@ -102,6 +114,31 @@ export function DailyLogScreen() {
 
   const sectionLabel: React.CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.2em', color: 'var(--faint)', margin: '22px 0 10px' };
 
+  // starting a new day leaves the log the URL names: the route is released first, so the viewer's own start is
+  // never shown as that log being "not found"
+  const startNewDay = () => {
+    setRouteItem(null);
+    startDailyLog();
+  };
+
+  if (record.state !== 'list' && record.state !== 'record') {
+    return (
+      <div className={styles.mobileScreen}>
+        <Eyebrow size={9}>DAILY SITE LOG</Eyebrow>
+        <RecordBoundary
+          record={record}
+          prefix="daily-log"
+          what="Daily log"
+          loadingText="Loading the site log…"
+          unavailableText="Couldn't load the site log — check your connection and access."
+          showAllLabel="Open the current log"
+          onShowAll={() => setRouteItem(null)}
+          onRetry={requestFreshSnapshot}
+        />
+      </div>
+    );
+  }
+
   // finding 4 — under module ownership, the module read's honest state gates the screen so a
   // still-loading or failed read is NEVER shown as an empty "No daily log started". These only
   // fire when there is no last-good log to show; a failed refresh that RETAINS last-good data
@@ -139,7 +176,7 @@ export function DailyLogScreen() {
         detail="Start today's log when site work begins — attendance, crew, materials and progress photos all record onto it."
         action={
           can('dailyLog.start', role) ? (
-            <Button variant="ink" onClick={startDailyLog} disabled={inFlight} data-testid="start-new-day">
+            <Button variant="ink" onClick={startNewDay} disabled={inFlight} data-testid="start-new-day">
               <Plus size={15} /> {starting ? 'Starting today\u2019s log\u2026' : "Start today's log"}
             </Button>
           ) : undefined
@@ -173,7 +210,7 @@ export function DailyLogScreen() {
             <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{dailyLog.date}</div>
           </div>
           {dailyLog.submitted && can('dailyLog.start', role) && (
-            <Button variant="outline" onClick={startDailyLog} disabled={actionsLocked || inFlight} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
+            <Button variant="outline" onClick={startNewDay} disabled={actionsLocked || inFlight} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
               <Plus size={15} /> Start new day
             </Button>
           )}

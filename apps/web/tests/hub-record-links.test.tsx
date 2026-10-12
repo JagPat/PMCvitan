@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { ActivityReadinessRow, ActivityShortageRow, LabourActivityForecastDto, MaterialReadinessResult } from '@vitan/shared';
 import type { MaterialsView } from '@/store/materials';
 import type { LabourView } from '@/store/labour';
@@ -180,5 +180,74 @@ describe('the Labour hub shows a routed activity on its own', () => {
     const failed = render(<LabourScreen />);
     expect(failed.getByTestId('labour-record-unavailable')).toBeTruthy();
     expect(failed.queryByTestId('labour-activity-ACT-1')).toBeNull();
+  });
+});
+
+describe('the site log is a record at /site/log/<dailyLogId> (12c)', () => {
+  const log = (over: Record<string, unknown> = {}) => ({
+    id: 'LOG-1', date: '12 Oct 2026', logDate: '2026-10-12', checkedIn: true, checkinTime: '08:10', submitted: false,
+    crew: [], materials: [], progress: 0, photos: [], ...over,
+  });
+
+  it('the route parses, and the PMC reaches it by link while their nav still carries no Daily Log', async () => {
+    const screens = await import('@/lib/screens');
+    expect(parseLocation('/projects/ambli/site/log/LOG-1')).toEqual({ projectId: 'ambli', screen: 'daily-log', item: 'LOG-1' });
+    expect(screens.screensFor('pmc').map((m) => m.key)).not.toContain('daily-log');
+    expect(screens.routableScreensFor('pmc')).toContain('daily-log');
+    expect(screens.routableScreensFor('pmc')[0]).toBe(screens.screensFor('pmc')[0].key); // home unchanged
+    expect(screens.routableScreensFor('client')).not.toContain('daily-log');
+  });
+
+  it('RouteBridge keeps a PMC on a log link; a client is still sent home', async () => {
+    const { useStore } = await demo({ role: 'pmc', screen: 'inbox', dailyLog: log() });
+    const { RouteBridge } = await import('@/layout/RouteBridge');
+    const { MemoryRouter } = await import('react-router-dom');
+    render(<MemoryRouter initialEntries={['/projects/ambli/site/log/LOG-1']}><RouteBridge /></MemoryRouter>);
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'daily-log', item: 'LOG-1' });
+    cleanup();
+    useStore.setState({ role: 'client', screen: 'inbox', routeItem: null });
+    render(<MemoryRouter initialEntries={['/projects/ambli/site/log/LOG-1']}><RouteBridge /></MemoryRouter>);
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(useStore.getState().screen).not.toBe('daily-log');
+  });
+
+  it('the engineer\'s "site log isn\'t submitted" card names the log, only from a settled slice', async () => {
+    const { useStore } = await demo({ role: 'engineer', dailyLog: log() });
+    const sel = await import('@/store/selectors');
+    const item = () => sel.selectActionItems(useStore.getState()).find((i) => i.key === 'eng-log')?.item;
+    expect(item()).toBe('LOG-1');
+    useStore.setState({ projectLoadState: 'loading' });
+    expect(item()).toBeUndefined();
+  });
+
+  it('shows the log it names; another log is "not found", with a way to the current one', async () => {
+    const { useStore } = await demo({ role: 'engineer', screen: 'daily-log', routeItem: 'LOG-1', dailyLog: log() });
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+    expect(r.queryByTestId('item-not-found')).toBeNull();
+    expect(r.getByText('DAILY SITE LOG')).toBeTruthy();
+    cleanup();
+    useStore.setState({ routeItem: 'LOG-OLD' });
+    const other = render(<DailyLogScreen />);
+    expect(other.getByTestId('item-not-found').textContent).toContain('LOG-OLD');
+    fireEvent.click(other.getByTestId('item-not-found-show-all'));
+    expect(useStore.getState().routeItem).toBeNull();
+  });
+
+  it('an unsettled slice waits rather than judging the log missing', async () => {
+    await demo({ role: 'engineer', screen: 'daily-log', routeItem: 'LOG-2', dailyLog: log(), projectLoadState: 'loading' });
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+    expect(r.getByTestId('daily-log-record-loading')).toBeTruthy();
+    expect(r.queryByTestId('item-not-found')).toBeNull();
+  });
+
+  it('starting a new day from a sent log\'s URL releases the route, so the viewer\'s own start never reads as "not found"', async () => {
+    const { useStore } = await demo({ role: 'engineer', screen: 'daily-log', routeItem: 'LOG-1', dailyLog: log({ submitted: true }) });
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+    fireEvent.click(r.getByTestId('start-new-day'));
+    expect(useStore.getState().routeItem).toBeNull();
   });
 });

@@ -66,7 +66,7 @@ import {
   ROLE_POLICY,
   deciderNoun,
 } from '@vitan/shared';
-import { screensFor } from '@/lib/screens';
+import { routableScreensFor, screensFor } from '@/lib/screens';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
 import { type DailyLogDraft, adoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
@@ -2430,7 +2430,8 @@ export const useStore = create<Store>()(
         const changedProject = !!res.projectId && res.projectId !== s.activeProjectId;
         const wasPending = s.pendingProjectId !== null;
         s.role = res.role;
-        const allowed = screensFor(res.role).map((m) => m.key);
+        // #798 — a link-only screen (the PMC's Daily Log) is a target a switch may land on too
+        const allowed = routableScreensFor(res.role);
         // a role-allowed target screen survives the transition (deep links); anything
         // else lands on the role's home
         // B2 — never land on an undefined screen: a role whose list were ever empty falls back to the home
