@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type CSSProperties, type JSX, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { Eyebrow, Button } from '@/components';
+import { Eyebrow, Button, RecordBoundary } from '@/components';
+import { useRoutedRecord } from '@/lib/useRoutedRecord';
 import { RefreshCw, WifiOff } from '@/lib/icons';
 import { advanceCoalesceKey, isClaimMoneyPending, isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
@@ -241,14 +242,31 @@ export function CommercialScreen() {
   const recordBill = useStore((s) => s.recordVendorBill);
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
-  const [tab, setTab] = useState<Tab>('position');
+  const [tabState, setTab] = useState<Tab>('position');
+  // Top 10 #3 gap 12b (#798) — `/commercial/<billId>`: the open claim IS the URL's item, so a claim is reload-safe,
+  // shareable and walked by Back/Forward. A routed claim opens on the claim workflow: from a money tab it lands on
+  // Claims, and choosing a money tab releases it.
+  const routeItem = useStore((s) => s.routeItem);
+  const setRouteItem = useStore((s) => s.setRouteItem);
+  const tab: Tab = routeItem !== null && MONEY_TABS.includes(tabState) ? 'claims' : tabState;
+  const billHeld = (id: string): boolean => !!bills?.some((b) => b.id === id);
+  // A claim is judged against the claim LIST: "not found" only from a list that has just landed, never one still
+  // loading or failed. While the list re-reads (a refresh, a write's reconcile) a claim it already held stays open:
+  // the claim panel wears its own read's states, and blanking it on every refresh would hide the lifecycle being
+  // acted on.
+  const record = useRoutedRecord('commercial', {
+    settled: billsLoad === 'ready' || (billsLoad === 'loading' && routeItem !== null && billHeld(routeItem)),
+    failed: billsLoad === 'error',
+    holds: billHeld,
+  });
+  const selectedBillId = record.state === 'record' ? record.id : null;
+  const bodyTab: Tab | null = record.state === 'list' || record.state === 'record' ? tab : null;
   // The scope a selection belongs to. A project switch (or a re-auth) bumps this, and the selection
   // below is only honoured while its recorded scope still matches — see the comment at `claim`.
   const scopeKey = useStore((s) => `${s.activeProjectId}:${s.projectScopeGeneration}`);
   // 7B-vi — which tab the advances effect last saw, so a retry fires on ENTERING the tab rather
   // than on the error state that a retry recreates.
   const lastAdvanceTab = useRef<string>('');
-  const [selection, setSelection] = useState<{ scope: string; billId: string | null }>({ scope: '', billId: null });
   // Form state is SCOPED the same way the claim selection is: a project switch bumps `scopeKey`,
   // so a half-typed budget for one site can never be submitted against another. Derived, not
   // reset in an effect — an effect runs after the offending render.
@@ -437,7 +455,6 @@ export function CommercialScreen() {
   const attrFormFor = (id: string): { head: string; reason: string } => attrScoped[id] ?? { head: '', reason: '' };
   const setAttrForm = (id: string, next: Partial<{ head: string; reason: string }>): void =>
     setAttrDrafts({ scope: scopeKey, byId: { ...attrScoped, [id]: { ...attrFormFor(id), ...next } } });
-  const selectedBillId = selection.scope === scopeKey ? selection.billId : null;
 
   // Declared here because THREE things now depend on it: the money view below, the claim-list
   // load condition, and Refresh — every one of them gating on the capability the loaders
@@ -486,7 +503,7 @@ export function CommercialScreen() {
   // Expressed as a condition instead, the load re-fires whenever the condition becomes true again,
   // whatever made it true. The one-shot trigger is deleted rather than supplemented — a second
   // trigger beside the first would leave the same class of gap for the next state change.
-  const inClaimWorkflow = tab === 'claims' || CLAIM_TABS.includes(tab);
+  const inClaimWorkflow = tab === 'claims' || CLAIM_TABS.includes(tab) || routeItem !== null;
   const onMoneyTab = MONEY_TABS.includes(tab);
   // Codex H3 — the condition must name EVERY term it depends on. `loadCommercialBills()` is itself
   // capability-gated, and a project switch resets capabilities to `[]` at the same moment it resets
@@ -555,14 +572,25 @@ export function CommercialScreen() {
     for (const id of measurableLineIds) void loadLineRegister(id);
   };
 
-  const openTab = (next: Tab): void => { setTab(next); };
+  const openTab = (next: Tab): void => {
+    setTab(next);
+    if (MONEY_TABS.includes(next)) setRouteItem(null);
+  };
   const selectClaim = (billId: string): void => {
-    setSelection({ scope: scopeKey, billId });
-    // Always re-read on selection. The lifecycle is what someone is about to ACT on — a certified
-    // amount or an approvable balance held from an earlier visit is the one number that must not be
-    // stale here, and the per-claim token makes a slow earlier read unable to overwrite this one.
+    // #798 — choosing another claim routes to it; the effect below reads it once it is the open claim
+    if (billId !== selectedBillId) {
+      setRouteItem(billId);
+      return;
+    }
     void loadCommercialClaim(billId);
   };
+  // Always re-read on selection. The lifecycle is what someone is about to ACT on — a certified
+  // amount or an approvable balance held from an earlier visit is the one number that must not be
+  // stale here, and the per-claim token makes a slow earlier read unable to overwrite this one.
+  // #798 — keyed on the OPEN claim, so a claim reached by its URL (a cold link, Back/Forward) is read too.
+  useEffect(() => {
+    if (selectedBillId) void loadCommercialClaim(selectedBillId);
+  }, [selectedBillId, loadCommercialClaim]);
   // Codex F3 — the SELECTION IS SCOPED. `selectedBillId` is component state and the claim map is
   // store state, so a project switch tore one down and left the other pointing at a claim that
   // belongs to a site the user is no longer on. The guard then rendered "Loading the claim…"
@@ -765,7 +793,18 @@ export function CommercialScreen() {
             ))}
           </div>
 
-      {tab === 'position' && commercial && (
+      <RecordBoundary
+        record={record}
+        prefix="commercial"
+        what="Claim"
+        loadingText="Loading the claim…"
+        unavailableText="Couldn't load the claims — check your connection and access."
+        showAllLabel="Show all claims"
+        onShowAll={() => setRouteItem(null)}
+        onRetry={() => void loadCommercialBills()}
+      />
+
+      {bodyTab === 'position' && commercial && (
             <div data-testid="commercial-position">
               {/* Task 7B-iii-a — the §B budget write. ONE command for v1 and every revision: the
                   server supersedes the live row and inserts the next version atomically, so the
@@ -886,7 +925,7 @@ export function CommercialScreen() {
             </div>
           )}
 
-      {tab === 'commitments' && commercial && (
+      {bodyTab === 'commitments' && commercial && (
             <div data-testid="commercial-commitments">
               {liveAttributions.length === 0 && (
                 <div data-testid="commercial-commitments-empty" style={{ ...rowCard, ...muted }}>
@@ -951,7 +990,7 @@ export function CommercialScreen() {
             </div>
           )}
 
-      {tab === 'forecast' && commercial && (
+      {bodyTab === 'forecast' && commercial && (
             <div data-testid="commercial-forecast">
               {/* The projection's freshness, reported rather than implied. `refreshedAt: null` is the
                   LIVE fallback path — an honest "computed just now", never a stamped timestamp. */}
@@ -983,7 +1022,7 @@ export function CommercialScreen() {
             </div>
           )}
 
-          {tab === 'claims' && (() => {
+          {bodyTab === 'claims' && (() => {
             // Codex I3 — the list's state is DECIDED, not enumerated. `willLoad` is exactly the
             // effect's own condition above, so "idle" is a spinner only while something is actually
             // going to fetch; after a shell failure `onPilot` is false, nothing will, and the panel
@@ -1185,7 +1224,7 @@ export function CommercialScreen() {
             );
           })()}
 
-          {tab === 'certification' && (
+          {bodyTab === 'certification' && (
             <div data-testid="commercial-certification">
               {claimPanel((claim) => (
                 <>
@@ -1590,7 +1629,7 @@ export function CommercialScreen() {
             </div>
           )}
 
-          {tab === 'payments' && (
+          {bodyTab === 'payments' && (
             <div data-testid="commercial-payments">
               {/* ── 7B-vi (§H) — ADVANCE TO A COUNTERPARTY ─────────────────────────────────
                   The one §M command that names no claim. It settles cash paid BEFORE any claim
@@ -2040,7 +2079,7 @@ export function CommercialScreen() {
             </div>
           )}
 
-          {tab === 'measurements' && (
+          {bodyTab === 'measurements' && (
             <div data-testid="commercial-measurements">
               {/* Round 3 — NOT `claimPanel`: a measurement is a fact about a labour PO line, and
                   requiring a claim to reach it made the workflow's first step depend on its last. */}
