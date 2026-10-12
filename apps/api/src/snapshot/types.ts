@@ -252,6 +252,11 @@ export interface ChecklistDto {
   /** #771 — the rejected inspection this re-inspection re-checks; `null` on an ordinary checklist. Always
    *  present: an absent key tells a client the server predates it (#482 6114668018). */
   reinspectionOfId: string | null;
+  /** #771 read contract — the STORED assignee (`null` = none); a historical fact, not an authority. Always
+   *  present, like the lineage: an absent key tells a client the server predates it. */
+  assigneeId: string | null;
+  /** #771 read contract — the stored due date as a civil `YYYY-MM-DD` (`null` = none). Always present. */
+  dueDate: string | null;
   /** `id` links evidence uploads to the item; `evidence` = signed serve paths (Task 4).
    *  `photos` is a DEPRECATED display counter — linked evidence rows are the proof. */
   items: { id: string; name: string; state: string | null; photos: number; note: string; evidence: string[] }[];
@@ -268,6 +273,9 @@ export interface ReviewDto {
   decided: boolean;
   /** set when this review IS a reinspection — the predecessor it re-checks (Task 4) */
   reinspectionOfId?: string;
+  /** #771 read contract — the stored assignee and civil due date (`null` = none stored). Always present. */
+  assigneeId: string | null;
+  dueDate: string | null;
   /** set when this review is a CLOSING sign-off (Task 5): approving it completes
    *  the named activity; rejecting it returns that activity to execution */
   closing?: boolean;

@@ -142,10 +142,11 @@ const EXPECT: Record<string, Spec> = {
     keys: ['id', 'name', 'order', 'plannedStart', 'plannedEnd', 'plannedStartDate', 'plannedEndDate', 'activityTotal', 'done', 'inProgress', 'blocked', 'notStarted', 'donePct'].sort(),
     optional: [], nullable: ['plannedStartDate', 'plannedEndDate'].sort(),
   },
-  ChecklistDto: { keys: ['id', 'title', 'zone', 'nodeId', 'date', 'submitted', 'reinspectionOfId', 'items'].sort(), optional: ['nodeId'], nullable: ['reinspectionOfId'] },
+  // #771 read contract: the stored assignee and civil due date are always present (`null` = none stored).
+  ChecklistDto: { keys: ['id', 'title', 'zone', 'nodeId', 'date', 'submitted', 'reinspectionOfId', 'assigneeId', 'dueDate', 'items'].sort(), optional: ['nodeId'], nullable: ['reinspectionOfId', 'assigneeId', 'dueDate'].sort() },
   ReviewDto: {
-    keys: ['id', 'title', 'zone', 'nodeId', 'by', 'date', 'decided', 'reinspectionOfId', 'closing', 'activityId', 'activityName', 'items'].sort(),
-    optional: ['nodeId', 'reinspectionOfId', 'closing', 'activityId', 'activityName'].sort(), nullable: [],
+    keys: ['id', 'title', 'zone', 'nodeId', 'by', 'date', 'decided', 'reinspectionOfId', 'assigneeId', 'dueDate', 'closing', 'activityId', 'activityName', 'items'].sort(),
+    optional: ['nodeId', 'reinspectionOfId', 'closing', 'activityId', 'activityName'].sort(), nullable: ['assigneeId', 'dueDate'].sort(),
   },
   MaterialDto: { keys: ['id', 'name', 'qty', 'zone', 'matched', 'swatch', 'decisionId', 'nodeId'].sort(), optional: ['decisionId', 'nodeId'].sort(), nullable: [] },
   DrawingAckDto: { keys: ['userName', 'role', 'at'].sort(), optional: [], nullable: [] },
