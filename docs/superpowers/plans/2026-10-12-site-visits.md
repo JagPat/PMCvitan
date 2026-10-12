@@ -36,7 +36,7 @@ nobody knows who promised what, and the client hears about it late. After this w
 - the visitor can prove what they saw, when and where;
 - engineers get a clear list of what to fix, with photos, an owner and a deadline;
 - the client gets a plain summary;
-- nothing closes until someone shows a photo of it fixed.
+- nothing is marked fixed until someone shows a photo of it fixed.
 
 **What it is not.** Not a new app or a new menu. It lives inside screens people already use: the PMC Brief, the Site
 Map, For You and the client Pulse. A problem found on a visit becomes one of the app's existing records (an
@@ -49,10 +49,10 @@ consultant too). Everyone else takes part, as an attendee, a fix owner or a read
 
 | Step | What people get |
 | --- | --- |
-| **SV1 Visit record** | "Start visit": who, when, GPS check-in (if available), who else attended, where it started. Shows in the project's history. Works with no signal. |
+| **SV1 Visit record** | "Start visit" and "End visit": who, when, GPS check-in (if available), who else attended, where it started, when it ended. Shows in the project's history. Works with no signal. |
 | **SV2 Observations** | During the visit: photo + place + note, marked **Fine**, **Concern** or **Action needed**. Each carries the visitor's name and role. Works offline. |
-| **SV3 Actions** | "Action needed" becomes a real task with an owner and a due date. The **PMC** turns it into the right record. It closes only with a photo proving the fix. Overdue items show on the PMC Brief. |
-| **SV4 Visit report** | "End visit": a one-page report the visitor reviews and signs, in English, Hindi or Gujarati, delivered to members and summarised in the client's Pulse. |
+| **SV3 Actions** | "Action needed" becomes a real task with an owner and a due date. The **PMC** turns it into the right record, or declines it with a reason. It is fixed only with a photo proving the fix. Overdue items show on the PMC Brief. |
+| **SV4 Visit report** | "End visit" now also produces a one-page report the visitor reviews and signs, in English, Hindi or Gujarati, delivered to members and summarised in the client's Pulse. |
 | **SV5 Sharing** | A **Share** button on a visit photo or report that creates a tracked, expiring, members-only link (7 days by default), whichever way it is sent. Every share and open is logged. |
 
 ---
@@ -71,7 +71,8 @@ consultant too). Everyone else takes part, as an attendee, a fix owner or a read
 | D6 | **This plan is the product plan; each step gets its own technical design.** | **Owner, 12 Oct 2026** |
 
 D5 replaces the brief's "Start visit" on the engineer's Today and the client's Pulse. The engineer and client still
-see visits; they don't start them.
+see visits; they don't start them. D3's fix photo applies to every action that is fixed; an action the PMC declines
+ends as **Declined** (R12), never as fixed.
 
 **Open (decided before the step that needs it)**
 
@@ -105,12 +106,13 @@ see visits; they don't start them.
 3. **Walk:** **Add observation** → photo → place → note → **Fine / Concern / Action needed**.
 4. **Act:** for "Action needed", a suggested kind (quality / design / change), owner and due date. It goes to the PMC
    to turn into the real record.
-5. **End and sign:** the visitor reviews the report and signs exactly what they reviewed.
+5. **End:** from SV1, **End visit** closes the visit and frees the visitor to start another. From SV4, ending also
+   shows the report, and the visitor signs exactly what they reviewed.
 
 It works without signal on the phone that started the visit, and the report shows when things really happened.
 
 **The PMC:** sees **Awaiting PMC** items on the Brief, completes the normal form for the chosen record (or declines
-with a reason), and sees overdue items.
+with a reason, which ends the item as **Declined**, see R12), and sees overdue items.
 
 **Engineer:** For You shows the tasks from a visit; a quality fix is recorded with a photo proving the fix, and the
 PMC reviews it as today.
@@ -158,7 +160,7 @@ PMC reviews it as today.
 ## 5. Requirements every step's design must meet
 
 These are binding on the technical designs. Each requirement names the step whose design must define *how*, and
-prove it with tests. They collect every point raised in the three reviews of the first version.
+prove it with tests. They collect every point raised in the three reviews of the first version and the first review of this one.
 
 **Who did what, and when**
 - R1. Every record carries the person and role from their login, never from what the screen sends.
@@ -167,7 +169,9 @@ prove it with tests. They collect every point raised in the three reviews of the
   not held to the visit's window.
 - R3 (SV1). At most one open visit per visitor. A start from a second phone, or a delayed offline start, must never
   lose recorded observations or silently merge visits. Overlap is judged only when both ends of a visit are known.
-- R4 (SV1). A visit left open by someone who loses access can be closed by the PMC, with a reason, marked unsigned.
+- R4 (SV1). The visitor ends their own visit from SV1 on; until SV4 an ended visit has no signed report and is
+  shown as ended, not signed. A visit left open by someone who loses access can be closed by the PMC, with a
+  reason, marked unsigned.
 
 **Evidence**
 - R5 (SV2). Each photo is durably tied to its visit and to the exact observation (or action) it belongs to, within
@@ -177,7 +181,8 @@ prove it with tests. They collect every point raised in the three reviews of the
 - R7 (SV4). The signed report stores **the exact content the visitor signed**, not only a fingerprint, and signing a
   preview that has since changed is refused.
 - R8 (SV4). A signed report is never edited. Corrections are append-only, attributed, and allowed only to the signer
-  or the PMC.
+  or the PMC. Every place the report is read or shared shows its corrections with it, and the report's original
+  member recipients are told of each correction.
 
 **Actions**
 - R9 (SV3). The PMC creates every linked record through the existing command, with that command's own inputs; any
@@ -185,7 +190,10 @@ prove it with tests. They collect every point raised in the three reviews of the
 - R10 (SV3). Confirming is atomic: two PMCs or two retries cannot create two records.
 - R11 (SV3). "Fixed" means **a photo that proves the fix**, captured after the action, for every record type. A
   defect photo never closes an action, and approving the linked record alone never closes it.
-- R12 (SV3). Who may close an action is defined, with wrong-role tests.
+- R12 (SV3). An action ends in one of two ways: **Fixed** (R11) or **Declined** by the PMC with a reason, before any
+  record is created. Declined is its own end state: it is never shown or counted as fixed, needs no fix photo,
+  leaves Awaiting PMC and the overdue list, stays on the visit and its report, and tells the visitor why. Who may
+  close or decline is defined, with wrong-role tests.
 - R13 (SV2/SV3). "Action needed" observations made before SV3 is live are either not offered until SV3, or are
   turned into actions when SV3 starts, so none is silently left without a task.
 
