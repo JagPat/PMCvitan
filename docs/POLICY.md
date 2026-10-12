@@ -64,7 +64,7 @@ A replacement is exceptional: record a concrete scope or approach benefit, prese
 every unresolved finding and reproduce-first proof, and link both PRs.
 The declared correction owner continues fixing the current PR. Scope (owner, 2026-10-08): changed lines and direct callers;
 whole-file, family-wide audits (REVIEW_RUBRIC.md) only for justified-large or migration PRs. At the THIRD distinct
-reviewed head with a P1 in the same file, ordinary patching stops for an additive
+reviewed head with a P1 in the same file (the SECOND when that P1 targets code the previous correction added; owner, 2026-10-12), ordinary patching stops for an additive
 redesign in smaller units; the findings stay open. This stop binds the correction owner,
 who records it on the PR; the controller counts finding heads as a signal and mints no
 obligation from the count (review-lifecycle.mjs). A disputed finding is argued on its
@@ -86,7 +86,7 @@ for review, never substitutes for their evidence. Explain genuine non-applicabil
 
 Keep migration changes separate from service/UI work where a viable compatibility
 seam exists; justify the rare inseparable unit with the template marker and the
-concrete boundary using `<!-- migration-scope: inseparable -->`. Do not add unrelated refactoring to a focused correction.
+concrete boundary using `<!-- migration-scope: inseparable -->`. Do not add unrelated refactoring to a focused correction. A plan, or a change to review or CI automation, records its hard choices (ordering, tenancy, failure modes) on its issue before its first reviewed head (owner, 2026-10-12).
 
 ## Review and merge evidence
 
