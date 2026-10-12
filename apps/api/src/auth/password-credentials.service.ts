@@ -90,7 +90,7 @@ export class PasswordCredentialsService {
     const email = input.email.trim().toLowerCase();
     const publicRequestId = randomUUID();
     const user = await this.userByEmail(this.prisma, email);
-    if (!this.eligible(user)) return { accepted: true, requestId: publicRequestId };
+    if (!this.eligible(user)) return this.notSent(publicRequestId);
 
     const now = new Date();
     const code = String(randomInt(100000, 1000000));
@@ -128,17 +128,40 @@ export class PasswordCredentialsService {
       });
       return true;
     });
-    if (!created) return { accepted: true, requestId: publicRequestId };
+    if (!created) return this.notSent(publicRequestId);
 
+    // #482 (12 Oct 2026) — answer NOW and deliver behind it. Awaiting the mail provider here held the caller for
+    // as long as SMTP took: a stalled provider kept the owner's "Send verification code" on "Sending…" for
+    // minutes, and an eligible address answered measurably slower than an unknown one. The stored challenge is
+    // usable the moment the mail lands; a failed delivery cancels it and says so in the log.
+    void this.deliver(publicRequestId, email, code);
+    return { accepted: true, requestId: publicRequestId };
+  }
+
+  /** Hand the code to the mail provider, detached from the request that created the challenge. Never throws. */
+  private async deliver(publicRequestId: string, email: string, code: string): Promise<void> {
     try {
       await this.email.sendPasswordCredentialCode(email, code);
+      this.log.log(`Password credential request ${publicRequestId}: code handed to the mail provider`);
     } catch (error) {
-      await this.prisma.passwordCredentialChallenge.updateMany({
-        where: { id: publicRequestId, consumedAt: null },
-        data: { consumedAt: new Date() },
-      });
+      try {
+        await this.prisma.passwordCredentialChallenge.updateMany({
+          where: { id: publicRequestId, consumedAt: null },
+          data: { consumedAt: new Date() },
+        });
+      } catch { /* the challenge still expires on its own */ }
       this.log.error(`Password credential delivery failed for challenge ${publicRequestId}: ${(error as Error).constructor.name}`);
     }
+  }
+
+  /**
+   * The public answer for a request that sends nothing (no account, or no active project membership and no org
+   * owner/admin role). It is identical to a sent one, so the endpoint cannot enumerate accounts — which also made
+   * it impossible to tell from outside why a code "did not arrive" (#482, 12 Oct 2026). The server log says so,
+   * keyed by the public requestId the caller holds and never by the email address.
+   */
+  private notSent(publicRequestId: string): { accepted: true; requestId: string } {
+    this.log.log(`Password credential request ${publicRequestId}: no eligible account; nothing sent`);
     return { accepted: true, requestId: publicRequestId };
   }
 

@@ -127,6 +127,11 @@ function activeUser(overrides: Partial<UserRow> = {}): UserRow {
   };
 }
 
+/** Let background work (the detached delivery) run to completion between assertions. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 50; i++) await Promise.resolve();
+}
+
 function make(seed: UserRow[]) {
   const prisma = fakePrisma(seed);
   const delivered: Array<{ email: string; code: string }> = [];
@@ -168,6 +173,71 @@ describe('PasswordCredentialsService', () => {
     expect(delivered[0]?.email).toBe('member@example.com');
     expect(prisma.challenges).toHaveLength(1);
     expect(prisma.challenges[0]?.otpHash).not.toContain(delivered[0]!.code);
+  });
+
+  /**
+   * #482 (12 Oct 2026): the owner's reset "did not arrive" and nothing on the server said why. The public response is
+   * the same for every path (no account enumeration), so the SERVER log is the only place to tell them apart. Each
+   * path now logs once, keyed by the public requestId, and never by the email address.
+   */
+  it('logs which path a request took, keyed by requestId and never by email, with the same public response', async () => {
+    const { service, delivered } = make([
+      activeUser(),
+      activeUser({ id: 'u-removed', email: 'removed@example.com', memberships: [{ status: 'removed' }] }),
+    ]);
+    const logs: string[] = [];
+    const logger = (service as unknown as { log: { log: (m: string) => void; error: (m: string) => void } }).log;
+    vi.spyOn(logger, 'log').mockImplementation((m: string) => { logs.push(m); });
+    vi.spyOn(logger, 'error').mockImplementation((m: string) => { logs.push(m); });
+
+    const sent = await service.request({ email: 'member@example.com' });
+    await settle();
+    const unknown = await service.request({ email: 'unknown@example.com' });
+    const removed = await service.request({ email: 'removed@example.com' });
+
+    expect(delivered).toHaveLength(1);
+    expect(logs).toEqual([
+      expect.stringContaining(`${sent.requestId}: code handed to the mail provider`),
+      expect.stringContaining(`${unknown.requestId}: no eligible account; nothing sent`),
+      expect.stringContaining(`${removed.requestId}: no eligible account; nothing sent`),
+    ]);
+    for (const line of logs) expect(line).not.toMatch(/@/);
+  });
+
+  /**
+   * #482 (12 Oct 2026, reproduced with a stalled SMTP server): the request used to WAIT for the mail provider, so a
+   * slow or stalled provider held the owner's "Send verification code" on "Sending…" for minutes (nodemailer's
+   * defaults are 2 min to connect, 30 s for the greeting, 10 min on a silent socket) and an eligible address
+   * answered measurably slower than an unknown one. The answer now comes once the challenge is stored; delivery
+   * runs behind it and reports its own outcome in the log.
+   */
+  it('answers as soon as the challenge is stored, without waiting for a stalled mail provider', async () => {
+    const { service, prisma } = make([activeUser()]);
+    const email = (service as unknown as { email: { sendPasswordCredentialCode: ReturnType<typeof vi.fn> } }).email;
+    email.sendPasswordCredentialCode.mockImplementationOnce(() => new Promise(() => {})); // never settles
+    let answered: { accepted: true; requestId: string } | null = null;
+    void service.request({ email: 'member@example.com' }).then((r) => { answered = r; });
+    await settle();
+    expect(answered).toEqual({ accepted: true, requestId: expect.any(String) });
+    expect(prisma.challenges).toHaveLength(1);
+    expect(prisma.challenges[0]?.consumedAt).toBeNull(); // still usable when the mail does arrive
+    expect(email.sendPasswordCredentialCode).toHaveBeenCalledTimes(1);
+  });
+
+  it('a delivery failure logs its own path and cancels the challenge, with the same public response', async () => {
+    const { service, prisma } = make([activeUser()]);
+    const email = (service as unknown as { email: { sendPasswordCredentialCode: ReturnType<typeof vi.fn> } }).email;
+    email.sendPasswordCredentialCode.mockRejectedValueOnce(new Error('smtp down'));
+    const logs: string[] = [];
+    const logger = (service as unknown as { log: { log: (m: string) => void; error: (m: string) => void } }).log;
+    vi.spyOn(logger, 'log').mockImplementation((m: string) => { logs.push(m); });
+    vi.spyOn(logger, 'error').mockImplementation((m: string) => { logs.push(m); });
+
+    const res = await service.request({ email: 'member@example.com' });
+    expect(res).toEqual({ accepted: true, requestId: expect.any(String) });
+    await settle();
+    expect(logs).toEqual([expect.stringContaining(`delivery failed for challenge ${res.requestId}`)]);
+    expect(prisma.challenges[0]?.consumedAt).not.toBeNull();
   });
 
   it('limits wrong OTP attempts, expires challenges, and never returns an application session', async () => {

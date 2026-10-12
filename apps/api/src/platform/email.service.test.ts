@@ -4,8 +4,12 @@ import { EmailService } from './email.service';
 /** Every mail this file's configured-path tests hand to the transport. `vi.mock` is hoisted,
  *  so the unconfigured-path suites above never reach it. */
 const sent: Array<Record<string, string>> = [];
+const transportOptions: Array<Record<string, unknown>> = [];
 vi.mock('nodemailer', () => ({
-  createTransport: () => ({ sendMail: async (mail: Record<string, string>) => { sent.push(mail); return {}; } }),
+  createTransport: (options: Record<string, unknown>) => {
+    transportOptions.push(options);
+    return { sendMail: async (mail: Record<string, string>) => { sent.push(mail); return {}; } };
+  },
 }));
 
 describe('EmailService (dev stub — no SMTP)', () => {
@@ -101,6 +105,21 @@ describe('EmailService.sendMemberInvite', () => {
       delete process.env.SMTP_HOST;
       delete process.env.SMTP_USER;
       delete process.env.SMTP_PASS;
+    });
+
+    /**
+     * #482 (12 Oct 2026): a stalled provider held sends for minutes under nodemailer's defaults (2 min connect, 30 s
+     * greeting, 10 min socket). Every send now gives up within seconds, so a stall fails fast and is logged.
+     */
+    it('bounds every SMTP wait so a stalled provider fails within seconds, not minutes', async () => {
+      transportOptions.length = 0;
+      await new EmailService().sendPasswordCredentialCode('new@example.com', '123456');
+      const opts = transportOptions[0];
+      expect(opts).toBeDefined();
+      for (const key of ['connectionTimeout', 'greetingTimeout', 'socketTimeout'] as const) {
+        expect(typeof opts?.[key]).toBe('number');
+        expect(opts?.[key] as number).toBeLessThanOrEqual(20_000);
+      }
     });
 
     it('addresses the invitee, names where they were added, and links the app', async () => {
