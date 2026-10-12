@@ -27,13 +27,16 @@ updated: 2026-10-12
 ### Current unit
 
 **Site Visits plan (SV0, docs only)** (#793 on `claude/serene-ritchie-ip4ulz`, issue #792). Planning only, no
-building. Owner, 12 Oct 2026: an architect, a consultant or the PMC may start a visit. After the third-head review stop the owner ruled (12 Oct) to
-split it: [the product plan](superpowers/plans/2026-10-12-site-visits.md) (SV1 visit record, SV2 observations, SV3
-actions, SV4 report, SV5 sharing; open questions Q1–Q13; requirements R1–R17), with one technical design per step
-written when that step is next. The queue below is unchanged until the owner decides Q8 (placement).
+building. Owner, 12 Oct: an architect, a consultant or the PMC may start a visit. The third-head stop (`664c6c8`,
+`b985832`, `e83ed57`) stands; the owner ruled a smaller split: [the product plan](superpowers/plans/2026-10-12-site-visits.md)
+(the Board's SV1–SV5 scope, staging proposals S1–S8 not approved, open Q1–Q13, R1–R17, and all 40 findings open in
+§6 per #482 6116163100), one technical design per step later.
 
-#771 count truthfulness merged at `ec3f20b` (#791, reviewed head `574a6e0`); its due-date, assignee and PMC For You
-acceptance stay staged, so #771 stays open.
+**Next unit, after this docs checkpoint:** the approved #771 read contract (#482 6115700782): stored re-inspection due
+date and assignee on the existing inspection read, no new authority. Gates: main CI 38188640844 green on unchanged
+`ec3f20b`, and both deployments verified (done 00:39 UTC); a changed main is reconciled first. Q8 only places Site
+Visits and blocks neither this nor the queue below. #771 count truthfulness merged at `ec3f20b` (#791, reviewed head
+`574a6e0`); #771 stays open (PMC For You acceptance is the next slice).
 
 #778 by stage, for units A–D: Specified (proposal revisions 3 and 4 on #785) — yes; Implemented — yes (merged); Reviewed —
 yes (exact-head Codex on each); Deployed — yes (API and frontend at `6b372aa`, owner-verified); Live-tested — **no**.
@@ -45,8 +48,7 @@ displayed ones seen, web only.
 Top 10 #4b unit C merged at `92e585e` (#788, reviewed head `d53eaea`): the seen endpoint and per-notice `unread`.
 Unit B merged at `b22c33f` (#787, reviewed head `994f632`): one shared served-notice definition.
 Unit A merged at `cb9386d` (#785, reviewed head `6ed2f66`): per-notice read receipts, migration only; #786 stays open.
-Top 10 #4a merged at `f331ba9` (#784, reviewed head `48c3726`). The #782 follow-up merged at `549063b` (#783, reviewed head `639f784`). The #780 follow-up merged at `223f42d` (#781, reviewed head `1dd46d5`). Top 10 #3c merged at `3f021f6` (#777, reviewed head `43c5fcc`; #779 fixed in it). Top 10 #3b merged at `24c19cd` (#776, reviewed head `16da8f6`). Top 10 #3a merged at `8de4f92` (#775, reviewed head `dd2fc22`). Top 10 #2 merged: 2a at `3e2cba6` (#772, reviewed head `293ded6`), 2b at `d43af28` (#773, reviewed head
-`cdd4e33`); #771 stays open for live validation. Top 10 #1 merged at `9b1d119` (#770, reviewed head `db39901`; #769 open for live validation). M3c C1/C2 merged at `14ce2bd` (#768, reviewed head `3f84b12`); the owner switches the required context to
+Top 10 #4a merged at `f331ba9` (#784); follow-ups at `549063b` (#783) and `223f42d` (#781). Top 10 #3c at `3f021f6` (#777), #3b at `24c19cd` (#776), #3a at `8de4f92` (#775). Top 10 #2: 2a at `3e2cba6` (#772), 2b at `d43af28` (#773); #771 stays open for live validation. Top 10 #1 merged at `9b1d119` (#770, reviewed head `db39901`; #769 open for live validation). M3c C1/C2 merged at `14ce2bd` (#768, reviewed head `3f84b12`); the owner switches the required context to
 `codex-current-head/wi` once a head has reported it (steps on #482). #765 merged at `1814160` (#766, reviewed head `80a1c50`). M3c §A merged at `191f8a0` (#764, reviewed head `fb7d3ed`). M3b merged at `ad742de` (#761, reviewed head `cbbb533`). M3a merged at `0ce6a3c` (#760, reviewed head `27eb10c`). The reliable follow-up filing repair merged at `2d52a39` (#758); M2b-2 at `163c4c1` (#749); M2b-1 at `8cd1315`
 (#748).
 
@@ -91,7 +93,7 @@ mandatory await the owner). #731 stays open until they land. Maintenance runs be
    deployment confirmed. `next_task` stays `phase-6-task-4d-iii` until then. That pointer is the parent task's
    continuation only; it is not authority to start 4d-iii ahead of items 2–5 above. The remaining live-bug work
    comes before client estimates and isolated QA.
-7. **Site Visits**, after R1–R4 (the owner's direction, unchanged by the 2026-10-08 order). Plan written (#792); its
+7. **Site Visits**, after R1–R4 (the owner's direction, unchanged by the 2026-10-08 order). Plan in #793 (#792); its
    placement is open question Q8 there, because the Board's and owner's 7 Oct orders differ from this line.
 
 Each unit is a focused PR from `main`, with its own GitHub issue (rule 9). It goes through CI, exact-head
