@@ -26,12 +26,11 @@ updated: 2026-10-12
 
 ### Current unit
 
-**Site Visits plan (SV0, docs only)** (#793 on `claude/serene-ritchie-ip4ulz`, issue #792). The owner asked on
-12 Oct 2026 for the plan to be written now; it is planning only and starts no building. The owner decided that an
-architect, a consultant or the PMC may start a visit. The plan is
-[docs/superpowers/plans/2026-10-12-site-visits.md](superpowers/plans/2026-10-12-site-visits.md): SV1 visit record, SV2
-observations, SV3 actions, SV4 report, SV5 sharing, with open questions Q1–Q12 (Q8 is the queue placement, which the
-plan asks the owner to settle). The queue below is unchanged until the owner decides Q8.
+**Site Visits plan (SV0, docs only)** (#793 on `claude/serene-ritchie-ip4ulz`, issue #792). Planning only, no
+building. Owner, 12 Oct 2026: an architect, a consultant or the PMC may start a visit. After the third-head review stop the owner ruled (12 Oct) to
+split it: [the product plan](superpowers/plans/2026-10-12-site-visits.md) (SV1 visit record, SV2 observations, SV3
+actions, SV4 report, SV5 sharing; open questions Q1–Q13; requirements R1–R17), with one technical design per step
+written when that step is next. The queue below is unchanged until the owner decides Q8 (placement).
 
 #771 count truthfulness merged at `ec3f20b` (#791, reviewed head `574a6e0`); its due-date, assignee and PMC For You
 acceptance stay staged, so #771 stays open.
