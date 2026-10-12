@@ -1,6 +1,8 @@
 import { useMemo, type ReactNode } from 'react';
 import { useStore } from '@/store/store';
 import { pmcBrief, type BriefTask } from '@/lib/pmcBrief';
+import { decisionsSliceSettled } from '@/lib/notifications';
+import { dailyLogSettledForLinks, decisionRecordLink, inspectionRecordLink, selectVisibleDecisions } from '@/store/selectors';
 import { ArrowRight, CircleCheck } from '@/lib/icons';
 import {
   pmcBriefAlsoIn,
@@ -42,7 +44,11 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
   // record when the task names one (#799)
   const go = (projectId: string, target: ScreenKey, item?: string) => {
     if (projectId === activeProjectId) {
-      if (item) openItem(target, item);
+      // #803 Codex 4246569475 — the brief is read on its own clock, so it can name a record this project's
+      // settled slice does not hold yet; the record screen would then judge it "not found". In place, a record
+      // opens only once the slice holds it (each screen's own link rule); otherwise the task opens the list.
+      const link = item ? localRecordLink(target, item) : null;
+      if (link) openItem(link.screen, link.item);
       else setScreen(target);
     } else if (item) void switchProject(projectId, target, item);
     else void switchProject(projectId, target);
@@ -118,6 +124,19 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
       )}
     </section>
   );
+}
+
+/** The record a brief task names, opened where the viewer's own settled slice resolves it, or null when the slice
+ *  does not hold it (yet). */
+function localRecordLink(target: ScreenKey, item: string): { screen: ScreenKey; item: string } | null {
+  const s = useStore.getState();
+  if (target === 'decision-log') {
+    const d = decisionsSliceSettled(s) ? selectVisibleDecisions(s).find((x) => x.id === item) : undefined;
+    return d ? decisionRecordLink(s, d) : null;
+  }
+  if (target === 'inspect-review') return inspectionRecordLink(s, item);
+  if (target === 'daily-log') return dailyLogSettledForLinks(s) && s.dailyLog?.id === item ? { screen: 'daily-log', item } : null;
+  return null;
 }
 
 function Figure({ n, label, testId }: { n: number; label: string; testId: string }) {

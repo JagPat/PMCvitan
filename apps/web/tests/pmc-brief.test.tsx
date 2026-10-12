@@ -146,7 +146,7 @@ describe('U3b — the brief on the PMC\'s home', () => {
         proj('bopal', { short: 'Bopal', waitingOnClient: 1, oldestWaitingSince: '2026-09-28T06:00:00Z', waitingDecisionId: 'DL-7' }),
       ],
     };
-    const { useStore, switchProject, r } = await loadInbox({ brief: named });
+    const { useStore, switchProject, r } = await loadInbox({ brief: named, reviews: [{ id: 'INS-3', title: 'Slab', zone: 'GF' }] });
     fireEvent.click(r.getByTestId('brief-task-reviews-ambli'));
     expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'inspect-review', item: 'INS-3' });
     expect(switchProject).not.toHaveBeenCalled();
@@ -157,9 +157,20 @@ describe('U3b — the brief on the PMC\'s home', () => {
 
   it('#799 — the log task opens the site log itself, never the dashboard', async () => {
     const logs = { projects: [proj('ambli', { short: 'Ambli', logToday: 'open', logTodayId: 'LOG-5' })] };
-    const { useStore, r } = await loadInbox({ brief: logs });
+    const dailyLog = { id: 'LOG-5', date: '3 Oct 2026', logDate: '2026-10-03', checkedIn: false, checkinTime: null, submitted: false, crew: [], materials: [], progress: 0, photos: [] };
+    const { useStore, r } = await loadInbox({ brief: logs, dailyLog });
     fireEvent.click(r.getByTestId('brief-task-log-ambli'));
     expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'daily-log', item: 'LOG-5' });
+  });
+
+  it('#803 Codex 4246569475 — a record the brief names before this project\'s slice holds it opens the list, never "not found"', async () => {
+    const ahead = { projects: [proj('ambli', { short: 'Ambli', reviewsWaiting: 1, waitingReviewId: 'INS-NEW', logToday: 'open', logTodayId: 'LOG-NEW' })] };
+    const { useStore, r } = await loadInbox({ brief: ahead, reviews: [] });
+    fireEvent.click(r.getByTestId('brief-task-reviews-ambli'));
+    expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'inspect-review', item: null });
+    useStore.setState({ screen: 'inbox' });
+    fireEvent.click(r.getByTestId('brief-task-log-ambli'));
+    expect({ screen: useStore.getState().screen, item: useStore.getState().routeItem }).toEqual({ screen: 'daily-log', item: null });
   });
 
   it('the active project\'s other cards follow; its inspection card only while the brief names it', async () => {

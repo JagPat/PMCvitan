@@ -226,11 +226,16 @@ export class InspectionsQueryService {
     return this.prisma.inspection.count({ where: { projectId, submitted: true, decided: false } });
   }
 
-  /** Top 10 #3 gap 13 (#799) — the one inspection waiting for review, or null when none or several wait (the
-   *  PMC brief's "reviews waiting" task then opens the review list). */
-  async onlyOpenInspectionId(projectId: string): Promise<string | null> {
-    const firstTwo = await this.prisma.inspection.findMany({ where: { projectId, submitted: true, decided: false }, orderBy: { id: 'asc' }, take: 2, select: { id: true } });
-    return firstTwo.length === 1 ? firstTwo[0].id : null;
+  /** Top 10 #3 gap 13 (#799) — the inspections waiting for review, and the one waiting when exactly one does (null
+   *  otherwise: the PMC brief's "reviews waiting" task then opens the review list). #803 Codex 4246569466 — the
+   *  count and the id are ONE snapshot (REPEATABLE READ, read-only), so the id always names the inspection counted. */
+  async openInspections(projectId: string): Promise<{ count: number; onlyId: string | null }> {
+    const where = { projectId, submitted: true, decided: false };
+    const [count, firstTwo] = await this.prisma.$transaction([
+      this.prisma.inspection.count({ where }),
+      this.prisma.inspection.findMany({ where, orderBy: { id: 'asc' }, take: 2, select: { id: true } }),
+    ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    return { count, onlyId: count === 1 && firstTwo.length === 1 ? firstTwo[0].id : null };
   }
 
   /** U3a — how many inspections were REJECTED at or after `since` (the PMC brief's "checks failed").

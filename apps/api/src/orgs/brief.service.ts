@@ -40,10 +40,9 @@ export class BriefService {
   private async projectBrief(project: { id: string; name: string; short: string; timeZone: string; org: { name: string } | null }): Promise<PmcBriefProject> {
     const today = this.clock.today(project.timeZone);
     const since = civilDayStartInstant(addCivilDays(today, -1), project.timeZone);
-    const [log, reviewsWaiting, reviewId, waiting, approvals, photos, rejectedInspections] = await Promise.all([
+    const [log, reviews, waiting, approvals, photos, rejectedInspections] = await Promise.all([
       this.dailyLog.logOn(project.id, today),
-      this.inspections.openInspectionCount(project.id),
-      this.inspections.onlyOpenInspectionId(project.id),
+      this.inspections.openInspections(project.id),
       this.decisions.waitingOnClient(project.id),
       this.decisions.clientApprovalsSince(project.id, since),
       this.media.progressPhotoCountSince(project.id, since),
@@ -57,10 +56,8 @@ export class BriefService {
       today,
       logToday: log.status,
       logTodayId: log.id,
-      reviewsWaiting,
-      // a count and an id are two reads: a review submitted or decided between them names nothing, never a
-      // record the count does not describe
-      waitingReviewId: reviewsWaiting === 1 ? reviewId : null,
+      reviewsWaiting: reviews.count,
+      waitingReviewId: reviews.onlyId,
       waitingOnClient: waiting.count,
       oldestWaitingSince: waiting.oldestPublishedAt?.toISOString() ?? null,
       waitingDecisionId: waiting.count === 1 ? waiting.onlyId : null,
