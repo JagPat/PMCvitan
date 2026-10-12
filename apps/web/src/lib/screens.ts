@@ -181,11 +181,23 @@ export function pathForScreen(screen: ScreenKey, projectId: string, item?: strin
  *  adds `/review/<inspectionId>` and `/site/checklist/<inspectionId>`, so a notice about an inspection
  *  opens that inspection on whichever inspection screen the role holds. Top 10 #3c (#774) adds
  *  `/schedule/<activityId>`, so an activity is a record a card or a link can open. Gap 12 (#798) adds the pilot
- *  hubs' activity records, `/materials/<activityId>` and `/labour/<activityId>`. */
+ *  hubs' activity records, `/materials/<activityId>` and `/labour/<activityId>`, and the site log,
+ *  `/site/log/<dailyLogId>`. */
 export const ITEM_SCREENS: ReadonlySet<ScreenKey> = new Set<ScreenKey>([
   'places', 'drawings', 'decision-log', 'client-decisions', 'inspect-review', 'engineer-check', 'site-schedule',
-  'materials', 'labour',
+  'materials', 'labour', 'daily-log',
 ]);
+
+/** Top 10 #3 gap 12 (#798, owner decision 2026-10-12) — screens a role reaches by a LINK only (a brief task, a
+ *  notice, a shared URL), never from its nav. The PMC holds every `dailyLog.*` command but its nav carries no Daily
+ *  Log; a link to the site's log opens it rather than bouncing them home. */
+export const ROUTE_ONLY_SCREENS: Partial<Record<Role, readonly ScreenKey[]>> = { pmc: ['daily-log'] };
+
+/** Every screen a role may be routed to: its nav, then its link-only screens (`ROUTE_ONLY_SCREENS`). The first is
+ *  still the role's home. */
+export function routableScreensFor(role: Role): ScreenKey[] {
+  return [...screensFor(role).map((m) => m.key), ...(ROUTE_ONLY_SCREENS[role] ?? [])];
+}
 
 /** Match a bare screen path (`/decisions`, `/client/decisions`) to its screen key. */
 export function screenForPath(path: string): ScreenKey | null {
