@@ -68,6 +68,11 @@ export class EmailService {
       port: Number(process.env.SMTP_PORT) || 587,
       secure: (process.env.SMTP_SECURE ?? '') === 'true' || Number(process.env.SMTP_PORT) === 465,
       auth: { user: process.env.SMTP_USER!, pass: process.env.SMTP_PASS! },
+      // #482 (12 Oct 2026) — bound every wait. nodemailer's defaults (2 min to connect, 30 s for the greeting,
+      // 10 min on a silent socket) let a stalled provider hold a send, and anything awaiting it, for minutes.
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
     });
     return this.transporter;
   }
@@ -138,7 +143,10 @@ export class EmailService {
         html: `<p>Your Vitan PMC password verification code is <b style="font-size:20px;letter-spacing:2px">${code}</b>.</p><p>It expires in 10 minutes. If you did not request this, ignore this email.</p>`,
       });
     } catch (error) {
-      this.log.error(`Password credential email failed: ${(error as Error).constructor.name}`);
+      // The transport's own failure class (ETIMEDOUT, ECONNECTION, EAUTH, …) — what an operator needs to see why
+      // mail is not leaving (#482, 12 Oct 2026). It carries no recipient, code or credential.
+      const smtpCode = (error as { code?: unknown }).code;
+      this.log.error(`Password credential email failed: ${(error as Error).constructor.name}${typeof smtpCode === 'string' ? ` (${smtpCode})` : ''}`);
       throw new ServiceUnavailableException('Could not send the password setup email.');
     }
     return { live: true };

@@ -170,6 +170,48 @@ describe('PasswordCredentialsService', () => {
     expect(prisma.challenges[0]?.otpHash).not.toContain(delivered[0]!.code);
   });
 
+  /**
+   * #482 (12 Oct 2026): the owner's reset "did not arrive" and nothing on the server said why. The public response is
+   * the same for every path (no account enumeration), so the SERVER log is the only place to tell them apart. Each
+   * path now logs once, keyed by the public requestId, and never by the email address.
+   */
+  it('logs which path a request took, keyed by requestId and never by email, with the same public response', async () => {
+    const { service, delivered } = make([
+      activeUser(),
+      activeUser({ id: 'u-removed', email: 'removed@example.com', memberships: [{ status: 'removed' }] }),
+    ]);
+    const logs: string[] = [];
+    const logger = (service as unknown as { log: { log: (m: string) => void; error: (m: string) => void } }).log;
+    vi.spyOn(logger, 'log').mockImplementation((m: string) => { logs.push(m); });
+    vi.spyOn(logger, 'error').mockImplementation((m: string) => { logs.push(m); });
+
+    const sent = await service.request({ email: 'member@example.com' });
+    const unknown = await service.request({ email: 'unknown@example.com' });
+    const removed = await service.request({ email: 'removed@example.com' });
+
+    expect(delivered).toHaveLength(1);
+    expect(logs).toEqual([
+      expect.stringContaining(`${sent.requestId}: code handed to the mail provider`),
+      expect.stringContaining(`${unknown.requestId}: no eligible account; nothing sent`),
+      expect.stringContaining(`${removed.requestId}: no eligible account; nothing sent`),
+    ]);
+    for (const line of logs) expect(line).not.toMatch(/@/);
+  });
+
+  it('a delivery failure logs its own path and keeps the same public response', async () => {
+    const { service } = make([activeUser()]);
+    const email = (service as unknown as { email: { sendPasswordCredentialCode: ReturnType<typeof vi.fn> } }).email;
+    email.sendPasswordCredentialCode.mockRejectedValueOnce(new Error('smtp down'));
+    const logs: string[] = [];
+    const logger = (service as unknown as { log: { log: (m: string) => void; error: (m: string) => void } }).log;
+    vi.spyOn(logger, 'log').mockImplementation((m: string) => { logs.push(m); });
+    vi.spyOn(logger, 'error').mockImplementation((m: string) => { logs.push(m); });
+
+    const res = await service.request({ email: 'member@example.com' });
+    expect(res).toEqual({ accepted: true, requestId: expect.any(String) });
+    expect(logs).toEqual([expect.stringContaining(`delivery failed for challenge ${res.requestId}`)]);
+  });
+
   it('limits wrong OTP attempts, expires challenges, and never returns an application session', async () => {
     const { service, prisma, delivered } = make([activeUser()]);
     const { requestId } = await service.request({ email: 'member@example.com' });

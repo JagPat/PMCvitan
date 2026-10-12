@@ -317,7 +317,9 @@ export function TeamAccessScreen() {
         <BackBtn onClick={accGoPasswordSetup} label={t.back} />
         <div style={{ textAlign: 'center', marginTop: 14 }}>
           <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Verify your email</h1>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>Enter the 6-digit code sent to {otpEmail}</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>
+            If {otpEmail} is an invited Vitan PMC account, a 6-digit code is on its way. It can take a minute; check your spam folder too.
+          </div>
         </div>
         <input
           inputMode="numeric"

@@ -847,6 +847,39 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined;
  *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
 let briefRequestSeq = 0;
 
+/** The HTTP status the gateway attached to a failed request (`req` sets `status`); undefined for a
+ *  failure with no response at all (offline, DNS, CORS). */
+function httpStatusOf(err: unknown): number | undefined {
+  const status = (err as { status?: unknown } | null)?.status;
+  return typeof status === 'number' ? status : undefined;
+}
+
+/** How long a throttled (429) caller should wait, from the seconds the server says remain in its window
+ *  (#808: a fixed "10 minutes" overstated a window that may be seconds from resetting). */
+function throttleWait(err: unknown): string {
+  const seconds = (err as { retryAfter?: unknown } | null)?.retryAfter;
+  if (typeof seconds !== 'number' || !(seconds > 0)) return 'Wait a few minutes';
+  if (seconds < 60) return `Wait ${Math.ceil(seconds)} seconds`;
+  const minutes = Math.ceil(seconds / 60);
+  return `Wait ${minutes} minute${minutes === 1 ? '' : 's'}`;
+}
+
+/**
+ * What a failed email + password sign-in tells the person. It used to be "Wrong email or password." for EVERY
+ * failure (#482, 12 Oct 2026), so a throttle, a removed project access, or a server or network fault read as a
+ * bad password. Each now says what happened. A plain 401 still reveals nothing about whether the account
+ * exists, and points an account that never set a password at the setup flow.
+ */
+function signInFailureMessage(err: unknown): string {
+  const status = httpStatusOf(err);
+  const serverMessage = (err as { serverMessage?: unknown } | null)?.serverMessage;
+  if (status === 429) return `Too many sign-in attempts. ${throttleWait(err)}, then try again.`;
+  if (status === 401 && typeof serverMessage === 'string' && /access has been removed/i.test(serverMessage)) return serverMessage;
+  if (status === undefined) return 'Could not reach the server. Check your connection and try again.';
+  if (status >= 500) return 'The server could not sign you in right now. Try again in a minute.';
+  return 'Wrong email or password. Never set a password? Use “Set up or forgot password”.';
+}
+
 /** A pristine access-flow state (used to init and to reset after sign-out). */
 function freshAccess(generation = 0): AccessState {
   return {
@@ -5811,7 +5844,7 @@ export const useStore = create<Store>()(
         gateway
           .login(em, password)
           .then((res) => applyAuthResult(res))
-          .catch(() => set((s) => { s.access.sending = false; s.access.error = 'Wrong email or password.'; }));
+          .catch((err: unknown) => set((s) => { s.access.sending = false; s.access.error = signInFailureMessage(err); }));
         return;
       }
       // local demo: map the seeded demo emails to their role (any password)
@@ -5869,9 +5902,14 @@ export const useStore = create<Store>()(
             s.access.passwordRequestId = result.requestId;
           });
         })
-        .catch(() => {
+        .catch((err: unknown) => {
           if (get().access.generation !== generation) return;
-          set((s) => { s.access.sending = false; s.access.error = 'Could not send the code. Please try again.'; });
+          set((s) => {
+            s.access.sending = false;
+            s.access.error = httpStatusOf(err) === 429
+              ? `Too many code requests. ${throttleWait(err)}, then try again.`
+              : 'Could not send the code. Please try again.';
+          });
         });
     },
     verifyPasswordSetup: () => {

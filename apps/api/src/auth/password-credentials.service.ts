@@ -90,7 +90,7 @@ export class PasswordCredentialsService {
     const email = input.email.trim().toLowerCase();
     const publicRequestId = randomUUID();
     const user = await this.userByEmail(this.prisma, email);
-    if (!this.eligible(user)) return { accepted: true, requestId: publicRequestId };
+    if (!this.eligible(user)) return this.notSent(publicRequestId);
 
     const now = new Date();
     const code = String(randomInt(100000, 1000000));
@@ -128,10 +128,13 @@ export class PasswordCredentialsService {
       });
       return true;
     });
-    if (!created) return { accepted: true, requestId: publicRequestId };
+    if (!created) return this.notSent(publicRequestId);
 
+    // #806 — the send is bounded by the mail transport's own timeouts (EmailService), not nodemailer's
+    // minute-long defaults that held the owner's "Send verification code" on "Sending…" (#482, 12 Oct 2026).
     try {
       await this.email.sendPasswordCredentialCode(email, code);
+      this.log.log(`Password credential request ${publicRequestId}: code handed to the mail provider`);
     } catch (error) {
       await this.prisma.passwordCredentialChallenge.updateMany({
         where: { id: publicRequestId, consumedAt: null },
@@ -139,6 +142,17 @@ export class PasswordCredentialsService {
       });
       this.log.error(`Password credential delivery failed for challenge ${publicRequestId}: ${(error as Error).constructor.name}`);
     }
+    return { accepted: true, requestId: publicRequestId };
+  }
+
+  /**
+   * The public answer for a request that sends nothing (no account, or no active project membership and no org
+   * owner/admin role). It is identical to a sent one, so the endpoint cannot enumerate accounts — which also made
+   * it impossible to tell from outside why a code "did not arrive" (#482, 12 Oct 2026). The server log says so,
+   * keyed by the public requestId the caller holds and never by the email address.
+   */
+  private notSent(publicRequestId: string): { accepted: true; requestId: string } {
+    this.log.log(`Password credential request ${publicRequestId}: no eligible account; nothing sent`);
     return { accepted: true, requestId: publicRequestId };
   }
 
