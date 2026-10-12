@@ -32,14 +32,19 @@ export interface InspectionChecklistStructure {
  * are baked at read time ({@link bakeInspections}); the boundary CI check enforces the encapsulation.
  */
 /**
- * Is this stored projection base the shape THIS release's serializer produces? Every entry of a v2
- * base carries `assigneeId` (a string or an explicit `null`); a v1 entry has no such key. Checked by
- * key presence rather than truthiness, because `null` is a legitimate v2 value meaning unassigned.
+ * Is this stored projection base the shape THIS release's serializer produces? Every entry of a current
+ * base carries `assigneeId` and `dueDate` (each a value or an explicit `null`); a v1 entry has neither key,
+ * and an entry written before the #771 read contract has no `dueDate`. Checked by key presence rather than
+ * truthiness, because `null` is a legitimate current value (unassigned / no due date). An older row is
+ * refused and the read falls back to the canonical live slice, so a re-inspection that HAS a due date is
+ * never served as having none; the row becomes servable again the next time an `inspection.*` event
+ * refreshes it, or on a rebuild.
  */
+const CURRENT_BASE_KEYS = ['assigneeId', 'dueDate'] as const;
 function isCurrentInspectionsBase(base: InspectionsBase): boolean {
   const entries = (base as unknown as { inspections?: unknown[] }).inspections;
   if (!Array.isArray(entries)) return false;
-  return entries.every((e) => e !== null && typeof e === 'object' && 'assigneeId' in (e as object));
+  return entries.every((e) => e !== null && typeof e === 'object' && CURRENT_BASE_KEYS.every((k) => k in (e as object)));
 }
 
 @Injectable()

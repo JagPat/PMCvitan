@@ -28,6 +28,7 @@ const entry = (over: Partial<InspectionBaseEntry> & { id: string }): InspectionB
   activityName: null,
   reinspectionOfId: null,
   assigneeId: null,
+  dueDate: null,
   items: [{ id: `${over.id}-i1`, name: 'Verify', order: 0, state: null, photos: 0, note: '', result: null, swatch: null, rejected: false, mediaIds: [] }],
   ...over,
 });
@@ -238,5 +239,34 @@ describe('Top 10 #2b (#771) — a re-inspection says what it re-checks', () => {
     expect(plain).toHaveProperty('reinspectionOfId', null);
     // the single edit-slot checklist is baked by the same function, so it carries the same marker
     expect(slices.checklist).toHaveProperty('reinspectionOfId');
+  });
+});
+
+describe('#771 read contract — the stored due date and assignee ride the rows the viewer already receives', () => {
+  // #482 6115700782 — additive metadata on the existing read. `null` means none is stored; the key is never
+  // omitted by a current server (an absent key is how a client recognises an older one).
+  const reinspection = entry({ id: 'INSP-2', reinspectionOfId: 'INSP-0', assigneeId: 'u-eng', dueDate: '2026-10-15' });
+
+  it('the open re-inspection carries its stored assignee and civil due date; an ordinary checklist carries explicit nulls', () => {
+    const slices = bake([entry({ id: 'INSP-1' }), reinspection], 'pmc');
+    const [plain, re] = slices.openChecklists;
+    expect(re).toMatchObject({ id: 'INSP-2', assigneeId: 'u-eng', dueDate: '2026-10-15' });
+    expect(plain).toHaveProperty('assigneeId', null);
+    expect(plain).toHaveProperty('dueDate', null);
+    expect(slices.checklist).toHaveProperty('dueDate');
+  });
+
+  it('the review queue row carries the same facts', () => {
+    const submitted = { ...reinspection, submitted: true };
+    const slices = bake([submitted], 'pmc');
+    expect(slices.reviews[0]).toMatchObject({ id: 'INSP-2', assigneeId: 'u-eng', dueDate: '2026-10-15' });
+    expect(bake([{ ...entry({ id: 'INSP-3' }), submitted: true }], 'pmc').reviews[0]).toMatchObject({ assigneeId: null, dueDate: null });
+  });
+
+  it('adds no visibility: a bound assignment still keeps the row from another engineer; a non-binding one reaches them with the STORED id', () => {
+    expect(bake([reinspection], 'engineer', 'u-other').openChecklists).toEqual([]);
+    const reached = bake([reinspection], 'engineer', 'u-other', new Set()).openChecklists;
+    expect(reached).toHaveLength(1);
+    expect(reached[0]).toMatchObject({ assigneeId: 'u-eng', dueDate: '2026-10-15' }); // historical fact, not authority
   });
 });
