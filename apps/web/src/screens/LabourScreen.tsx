@@ -1,9 +1,11 @@
 import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { Eyebrow, Button } from '@/components';
+import { Eyebrow, Button, RecordBoundary } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import type { LabourForecastVerdict, WorkerDto } from '@vitan/shared';
+import type { LabourActivityForecastDto, LabourForecastVerdict, WorkerDto } from '@vitan/shared';
+import { useRoutedRecord } from '@/lib/useRoutedRecord';
+import { labourSettledForLinks } from '@/store/selectors';
 import { decAdd } from '@/lib/decimal';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, pendingAllocationsFromKeys, pendingWorkAllocationIdsFromKeys } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
@@ -89,6 +91,16 @@ export function LabourScreen() {
   // (which reloads the bundle on a pilot, or lets RouteBridge bounce a non-pilot deep link).
   const retryLabour = (): void => { if (capabilitiesKnown) { void loadLabour(); } else { loadShell(); } };
   const pending = (key: string): boolean => labourPending.includes(key);
+  // Top 10 #3 gap 12 (#798) — `/labour/<activityId>`: a link (a For You card, a shared URL, a reload) names ONE
+  // activity's labour forecast, shown on its own from a settled bundle
+  const setRouteItem = useStore((s) => s.setRouteItem);
+  const settled = useStore(labourSettledForLinks);
+  const record = useRoutedRecord('labour', {
+    settled,
+    failed: labourLoad === 'error',
+    holds: (id) => !!labour && Object.prototype.hasOwnProperty.call(labour.readiness.forecast, id),
+  });
+  const recordForecast = record.state === 'record' && labour ? labour.readiness.forecast[record.id] ?? null : null;
 
   const activityName = (id: string): string => activities.find((a) => a.id === id)?.name ?? id;
   // Codex round 7 — the queued allocate ops RESERVE their worker for the (date, shift)
@@ -141,6 +153,19 @@ export function LabourScreen() {
   const today = todayCivil(timeZone);
   const substitutions = labour ? labour.capacity.skillSubstitutions : [];
 
+  const forecastRow = (activityId: string, f: LabourActivityForecastDto) => {
+    const m = verdictChip(f.verdict);
+    return (
+      <div key={activityId} data-testid={`labour-activity-${activityId}`} style={rowCard}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
+          <div style={{ fontWeight: 600, fontSize: 13.5 }}>{activityName(activityId)}</div>
+          <span style={chip(m)} data-testid={`labour-verdict-${activityId}`}>{m.label}</span>
+        </div>
+        <div style={{ ...muted, marginTop: 4 }}>{f.reason}{f.verdict === 'at-risk' && f.coveringDate ? ` · supplier arrival promised ${f.coveringDate}` : ''}</div>
+      </div>
+    );
+  };
+
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
@@ -155,7 +180,26 @@ export function LabourScreen() {
         </Button>
       </div>
 
-      {stale && (
+      <RecordBoundary
+        record={record}
+        prefix="labour"
+        what="Activity"
+        loadingText="Loading this activity's labour…"
+        unavailableText="Couldn't load the labour picture — check your connection and access."
+        showAllLabel="Show all labour"
+        onShowAll={() => setRouteItem(null)}
+        onRetry={retryLabour}
+      />
+      {record.state === 'record' && recordForecast && (
+        <div data-testid="labour-record" style={{ marginTop: 16 }}>
+          <Button variant="outline" data-testid="labour-record-show-all" onClick={() => setRouteItem(null)} style={{ fontSize: 12 }}>
+            Show all labour
+          </Button>
+          {forecastRow(record.id, recordForecast)}
+        </div>
+      )}
+
+      {record.state === 'list' && stale && (
         <div data-testid="labour-stale-warning" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px', marginTop: 14 }}>
           <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
           <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>Showing the last-known labour picture — the latest couldn't load.</span>
@@ -165,10 +209,10 @@ export function LabourScreen() {
         </div>
       )}
 
-      {reading && (
+      {record.state === 'list' && reading && (
         <div data-testid="labour-loading" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the labour pipeline…</div>
       )}
-      {unavailable && (
+      {record.state === 'list' && unavailable && (
         <div data-testid="labour-unavailable" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><WifiOff size={18} /> Labour unavailable.</div>
           <div style={{ fontSize: 12.5, marginTop: 6 }}>Check your connection and access, then retry.</div>
@@ -180,7 +224,7 @@ export function LabourScreen() {
         </div>
       )}
 
-      {labour && (
+      {record.state === 'list' && labour && (
         <>
           {/* forecast summary — one verdict per activity with a live labour requirement */}
           <div data-testid="labour-summary" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16 }}>
@@ -202,18 +246,7 @@ export function LabourScreen() {
           <div style={{ marginTop: 8 }}>
             {tab === 'readiness' && (
               <Panel empty={!forecastEntries.length} emptyKey="readiness" emptyText="No labour requirements yet.">
-                {forecastEntries.map(([activityId, f]) => {
-                  const m = verdictChip(f.verdict);
-                  return (
-                    <div key={activityId} data-testid={`labour-activity-${activityId}`} style={rowCard}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
-                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>{activityName(activityId)}</div>
-                        <span style={chip(m)} data-testid={`labour-verdict-${activityId}`}>{m.label}</span>
-                      </div>
-                      <div style={{ ...muted, marginTop: 4 }}>{f.reason}{f.verdict === 'at-risk' && f.coveringDate ? ` · supplier arrival promised ${f.coveringDate}` : ''}</div>
-                    </div>
-                  );
-                })}
+                {forecastEntries.map(([activityId, f]) => forecastRow(activityId, f))}
               </Panel>
             )}
 
