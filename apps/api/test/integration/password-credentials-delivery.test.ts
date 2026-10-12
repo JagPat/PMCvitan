@@ -9,8 +9,9 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
  * - **Order.** Two requests for one person (two tabs, or "Send a new code" while a send is slow) are serialized on the
  *   per-user credential lock THROUGH the send, so the code mailed last is the code that works. A request whose send
  *   was detached could mail its consumed code after the newer one.
- * - **No orphaned challenge.** A send that fails rolls its challenge back: no stored code exists that never left. A
- *   detached send lost to a restart left exactly that.
+ * - **Commit before send.** A code leaves only after the challenge that verifies it has committed. A send inside the
+ *   issuing transaction could be followed by that transaction failing, stranding a delivered code.
+ * - **A failed send** keeps the public answer; its code reached nobody and the next request replaces it.
  *
  * The provider is the test app's capture hook, held open or failed on purpose. Isolated automated test only.
  */
@@ -88,13 +89,34 @@ describe('#806 — reset-code delivery stays inside its request (live PostgreSQL
     await http().post('/auth/password/verify').send({ requestId: b.body.requestId, code: sends[1]!.code }).expect(201);
   });
 
-  it('a failed send leaves no stored code behind, and the public answer is unchanged', async () => {
+  it('a code is mailed only once the challenge that verifies it has committed', async () => {
     const email = f.memberUser.email!;
     await t.prisma.passwordCredentialChallenge.deleteMany({ where: { userId: f.memberUser.id } });
+    sends.length = 0;
+    const hold = { started: deferred(), release: deferred() };
+    holdNext = hold;
+
+    const pending = http().post('/auth/password/request').send({ email }).then((r) => r);
+    await hold.started.promise; // the provider has the code
+    // read from another connection: the challenge is already committed, so nothing can roll it back after the send
+    const visible = await t.prisma.passwordCredentialChallenge.findMany({ where: { userId: f.memberUser.id, consumedAt: null } });
+    hold.release.resolve();
+    const res = await pending;
+    expect(visible.map((row) => row.id)).toEqual([res.body.requestId]);
+    await http().post('/auth/password/verify').send({ requestId: res.body.requestId, code: sends[0]!.code }).expect(201);
+  });
+
+  it('a failed send keeps the public answer; the next request replaces the unsent code with one that works', async () => {
+    const email = f.memberUser.email!;
+    await t.prisma.passwordCredentialChallenge.deleteMany({ where: { userId: f.memberUser.id } });
+    sends.length = 0;
     failNext = true;
-    const res = await http().post('/auth/password/request').send({ email }).expect(201);
-    expect(res.body).toEqual({ accepted: true, requestId: expect.any(String) });
-    expect(await t.prisma.passwordCredentialChallenge.findUnique({ where: { id: res.body.requestId } })).toBeNull();
-    expect(await t.prisma.passwordCredentialChallenge.count({ where: { userId: f.memberUser.id } })).toBe(0);
+    const failed = await http().post('/auth/password/request').send({ email }).expect(201);
+    expect(failed.body).toEqual({ accepted: true, requestId: expect.any(String) });
+
+    const retry = await http().post('/auth/password/request').send({ email }).expect(201);
+    const old = await t.prisma.passwordCredentialChallenge.findUnique({ where: { id: failed.body.requestId } });
+    expect(old?.consumedAt).not.toBeNull();
+    await http().post('/auth/password/verify').send({ requestId: retry.body.requestId, code: sends[1]!.code }).expect(201);
   });
 });

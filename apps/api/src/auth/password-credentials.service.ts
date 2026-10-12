@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { createHash, createHmac, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { resolveJwtSecret } from '../config';
 import type {
   PasswordCredentialCompleteInput,
@@ -15,9 +15,14 @@ import { EmailService } from '../platform/email.service';
 const PURPOSE = 'password_setup_or_reset';
 const LIFETIME_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 5;
-/** Covers the mail transport's bounded waits (EmailService: 10 s connect + 10 s greeting + 20 s socket) and the
- *  wait for a concurrent request for the same person to finish its own send. */
-const DELIVERY_TX_TIMEOUT_MS = 90_000;
+/** How long one request waits on the per-user credential lock while another request for the same person sends:
+ *  longer than one bounded send (EmailService: 10 s connect + 10 s greeting + 20 s idle socket). */
+const LOCK_WAIT_MS = 45_000;
+/** Issuing is a lock wait plus a few writes. */
+const ISSUE_TX_TIMEOUT_MS = LOCK_WAIT_MS + 30_000;
+/** Delivery is a lock wait plus one send. It writes nothing; the margin keeps the lock held for the whole send,
+ *  so no newer code is issued and mailed while this one is still in flight. */
+const DELIVERY_TX_TIMEOUT_MS = LOCK_WAIT_MS + 5 * 60_000;
 const BCRYPT_COST = 12;
 const GENERIC_ERROR = 'Password setup code or link is invalid or expired.';
 
@@ -97,16 +102,19 @@ export class PasswordCredentialsService {
 
     const now = new Date();
     const code = String(randomInt(100000, 1000000));
-    // #806 — the code is mailed INSIDE the transaction that issues it, under the per-user credential lock:
-    //  - a failed send rolls the challenge back, so no stored code exists that never left (a send detached from
-    //    the request could be lost to a restart and leave exactly that);
-    //  - a second request for the same person waits on the lock until this send is done, so the code mailed
-    //    last is the one that works (a detached send could land after a newer one, carrying a consumed code).
-    // The wait is bounded by the mail transport's own timeouts (EmailService), not nodemailer's minute-long
+    // #806 — two steps, both under the per-user credential lock, both inside this request (nothing runs behind
+    // the response, so nothing is lost to a restart):
+    //  1. ISSUE: store the challenge and COMMIT it. A code is never mailed before it can verify, so no rollback
+    //     can strand a delivered code.
+    //  2. DELIVER: take the lock again, re-check this challenge is still the current one, and mail it while
+    //     holding the lock. A newer request waits until this send is done, so the code mailed last is the one
+    //     that works; a request superseded meanwhile mails nothing. Delivery writes nothing.
+    // The send is bounded by the mail transport's own timeouts (EmailService), not nodemailer's minute-long
     // defaults that held the owner's "Send verification code" on "Sending…" (#482, 12 Oct 2026).
-    let sent: boolean;
+    let issued: boolean;
     try {
-      sent = await this.prisma.$transaction(async (tx) => {
+      issued = await this.prisma.$transaction(async (tx) => {
+        await this.boundLockWait(tx);
         await lockUserCredential(tx, user!.id);
         const eligible = await this.userById(tx, user!.id);
         if (!this.eligible(eligible) || eligible?.email !== email) return false;
@@ -138,17 +146,52 @@ export class PasswordCredentialsService {
             correlationId: publicRequestId,
           },
         });
-        await this.email.sendPasswordCredentialCode(email, code);
         return true;
-      }, { timeout: DELIVERY_TX_TIMEOUT_MS });
+      }, { timeout: ISSUE_TX_TIMEOUT_MS });
     } catch (error) {
-      // Rolled back: nothing was issued. The public answer stays identical (no account enumeration).
-      this.log.error(`Password credential delivery failed for challenge ${publicRequestId}: ${(error as Error).constructor.name}`);
+      // Rolled back: nothing was issued or sent. The public answer stays identical (no account enumeration).
+      this.log.error(`Password credential request ${publicRequestId}: could not issue a code: ${(error as Error).constructor.name}`);
       return { accepted: true, requestId: publicRequestId };
     }
-    if (!sent) return this.notSent(publicRequestId);
-    this.log.log(`Password credential request ${publicRequestId}: code handed to the mail provider`);
+    if (!issued) return this.notSent(publicRequestId);
+    await this.deliver(user!.id, publicRequestId, email, code);
     return { accepted: true, requestId: publicRequestId };
+  }
+
+  /**
+   * Step 2 of request(): mail a COMMITTED challenge's code under the per-user credential lock. It writes nothing, so
+   * its own transaction ending in an error cannot undo a code that already left. A failed send leaves the challenge
+   * as committed: its code reached nobody, it expires in 10 minutes and the next request consumes it; cancelling it
+   * would void a code a provider accepted but did not acknowledge. Never throws; each outcome logs once.
+   */
+  private async deliver(userId: string, publicRequestId: string, email: string, code: string): Promise<void> {
+    let handedOver = false;
+    try {
+      const current = await this.prisma.$transaction(async (tx) => {
+        await this.boundLockWait(tx);
+        await lockUserCredential(tx, userId);
+        const challenge = await tx.passwordCredentialChallenge.findUnique({ where: { id: publicRequestId } });
+        if (!challenge || challenge.consumedAt) return false;
+        await this.email.sendPasswordCredentialCode(email, code);
+        handedOver = true;
+        return true;
+      }, { timeout: DELIVERY_TX_TIMEOUT_MS });
+      if (!current) {
+        this.log.log(`Password credential request ${publicRequestId}: superseded by a newer request; nothing sent`);
+        return;
+      }
+    } catch (error) {
+      if (!handedOver) {
+        this.log.error(`Password credential delivery failed for challenge ${publicRequestId}: ${(error as Error).constructor.name}`);
+        return;
+      }
+    }
+    this.log.log(`Password credential request ${publicRequestId}: code handed to the mail provider`);
+  }
+
+  /** A request waits for another request's send at most this long, then gives up instead of hanging the caller. */
+  private async boundLockWait(tx: Prisma.TransactionClient): Promise<void> {
+    await tx.$executeRaw(Prisma.sql`SELECT set_config('lock_timeout', ${`${LOCK_WAIT_MS}ms`}, true)`);
   }
 
   /**

@@ -227,8 +227,8 @@ describe('PasswordCredentialsService', () => {
     expect(prisma.challenges[0]?.consumedAt).toBeNull();
   });
 
-  it('a delivery failure logs its own path and issues nothing, with the same public response', async () => {
-    const { service, prisma } = make([activeUser()]);
+  it('a delivery failure logs its own path with the same public response; the next request replaces its code', async () => {
+    const { service, prisma, delivered } = make([activeUser()]);
     const email = (service as unknown as { email: { sendPasswordCredentialCode: ReturnType<typeof vi.fn> } }).email;
     email.sendPasswordCredentialCode.mockRejectedValueOnce(new Error('smtp down'));
     const logs: string[] = [];
@@ -239,7 +239,67 @@ describe('PasswordCredentialsService', () => {
     const res = await service.request({ email: 'member@example.com' });
     expect(res).toEqual({ accepted: true, requestId: expect.any(String) });
     expect(logs).toEqual([expect.stringContaining(`delivery failed for challenge ${res.requestId}`)]);
-    expect(prisma.challenges).toHaveLength(0); // rolled back: no stored code that never left
+
+    // the failed challenge reached nobody; a retry consumes it and mails a code that works
+    const retry = await service.request({ email: 'member@example.com' });
+    expect(prisma.challenges.find((row) => row.id === res.requestId)?.consumedAt).not.toBeNull();
+    await expect(service.verify({ requestId: retry.requestId, code: delivered.at(-1)!.code })).resolves.toMatchObject({ setupToken: expect.any(String) });
+  });
+
+  /**
+   * #806 (Codex on #807 at 3a15c5d): a code is mailed only AFTER the challenge that verifies it has committed. When
+   * the send sat inside the issuing transaction, a transaction that failed after the provider accepted the mail
+   * (its deadline passed, or the commit failed) rolled the challenge back: the person held a code that could never
+   * verify. Here every transaction that performs a send fails on its way out; the delivered code must still work.
+   */
+  it('a code that was handed to the provider still verifies when the transaction around the send then fails', async () => {
+    const { service, prisma, delivered } = make([activeUser()]);
+    const logs: string[] = [];
+    const logger = (service as unknown as { log: { log: (m: string) => void; error: (m: string) => void } }).log;
+    vi.spyOn(logger, 'log').mockImplementation((m: string) => { logs.push(m); });
+    vi.spyOn(logger, 'error').mockImplementation((m: string) => { logs.push(m); });
+    const transact = prisma.$transaction.getMockImplementation()!;
+    prisma.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => {
+      const sentBefore = delivered.length;
+      return transact(async (tx: unknown) => {
+        const result = await work(tx);
+        if (delivered.length > sentBefore) throw new Error('transaction failed after the send');
+        return result;
+      });
+    });
+
+    const res = await service.request({ email: 'member@example.com' });
+    expect(res).toEqual({ accepted: true, requestId: expect.any(String) });
+    expect(delivered).toHaveLength(1);
+    expect(logs).toEqual([expect.stringContaining(`${res.requestId}: code handed to the mail provider`)]);
+    prisma.$transaction.mockImplementation(transact);
+    await expect(service.verify({ requestId: res.requestId, code: delivered[0]!.code })).resolves.toMatchObject({ setupToken: expect.any(String) });
+  });
+
+  it('a request superseded before its send mails nothing, so no consumed code is mailed after a newer one', async () => {
+    const { service, prisma, delivered } = make([activeUser()]);
+    const logs: string[] = [];
+    const logger = (service as unknown as { log: { log: (m: string) => void; error: (m: string) => void } }).log;
+    vi.spyOn(logger, 'log').mockImplementation((m: string) => { logs.push(m); });
+    const transact = prisma.$transaction.getMockImplementation()!;
+    let calls = 0;
+    let older: string | undefined;
+    // between the older request's issue and its delivery, a newer request runs to completion
+    prisma.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => {
+      calls += 1;
+      if (calls === 2) {
+        older = prisma.challenges[0]!.id;
+        prisma.$transaction.mockImplementation(transact);
+        await service.request({ email: 'member@example.com' });
+      }
+      return transact(work);
+    });
+
+    await service.request({ email: 'member@example.com' });
+    expect(delivered).toHaveLength(1);
+    expect(logs).toContainEqual(expect.stringContaining(`${older}: superseded by a newer request; nothing sent`));
+    const newer = prisma.challenges.find((row) => row.consumedAt === null)!;
+    await expect(service.verify({ requestId: newer.id, code: delivered[0]!.code })).resolves.toMatchObject({ setupToken: expect.any(String) });
   });
 
   it('limits wrong OTP attempts, expires challenges, and never returns an application session', async () => {
