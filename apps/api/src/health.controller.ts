@@ -41,6 +41,17 @@ const BUILD = readBuildInfo();
 export class HealthController {
   constructor(private readonly ops: OutboxOperationsService) {}
 
+  /**
+   * Process liveness for the container probe. `/health` waits on outbox aggregate
+   * queries; a slow or locked database holds that response past the probe timeout
+   * and the orchestrator treats a live process as dead. This route does not touch
+   * the database.
+   */
+  @Get('live')
+  live(): { ok: true; uptime: number } {
+    return { ok: true, uptime: process.uptime() };
+  }
+
   @Get()
   async health(): Promise<{
     ok: true; uptime: number; features: readonly string[]; outboxAvailable: boolean;

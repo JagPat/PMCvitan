@@ -6,6 +6,25 @@ import { HealthController, readBuildInfo } from './health.controller';
 import type { OutboxOperationsService } from './platform/outbox/outbox-operations.service';
 
 /** PR B Task 4 — /health surfaces aggregate outbox diagnostics and NEVER fails liveness. */
+describe('HealthController — process liveness', () => {
+  it('GET /health/live answers without calling outbox metrics, even when that query never settles', async () => {
+    const ops = { metrics: vi.fn(() => new Promise(() => {})) } as unknown as OutboxOperationsService;
+    const r = await new HealthController(ops).live();
+    expect(r.ok).toBe(true);
+    expect(typeof r.uptime).toBe('number');
+    expect(ops.metrics).not.toHaveBeenCalled();
+  });
+
+  it('GET /health stays pending while the metrics query has not settled', async () => {
+    const ops = { metrics: vi.fn(() => new Promise(() => {})) } as unknown as OutboxOperationsService;
+    let settled = false;
+    void new HealthController(ops).health().then(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(settled).toBe(false);
+    expect(ops.metrics).toHaveBeenCalledOnce();
+  });
+});
+
 describe('HealthController — fail-soft outbox diagnostics', () => {
   it('reports aggregate outbox metrics when the diagnostic query succeeds', async () => {
     const ops = { metrics: vi.fn().mockResolvedValue({ pending: 2, leased: 0, dead: 1, blocked: 1, oldestPendingSeconds: 42 }) } as unknown as OutboxOperationsService;
