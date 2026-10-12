@@ -244,18 +244,21 @@ export function CommercialScreen() {
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
   const [tabState, setTab] = useState<Tab>('position');
   // Top 10 #3 gap 12b (#798) — `/commercial/<billId>`: the open claim IS the URL's item, so a claim is reload-safe,
-  // shareable and walked by Back/Forward. A routed claim opens on the claim workflow: from a money tab it lands on
-  // Claims, and choosing a money tab releases it.
+  // shareable and walked by Back/Forward. It stays open across every tab, as the selection always did; a claim
+  // routed in (a cold link, Back/Forward) while a money tab is showing opens the Claims tab.
   const routeItem = useStore((s) => s.routeItem);
   const setRouteItem = useStore((s) => s.setRouteItem);
-  const tab: Tab = routeItem !== null && MONEY_TABS.includes(tabState) ? 'claims' : tabState;
+  const tab: Tab = tabState;
+  useEffect(() => {
+    if (routeItem !== null) setTab((cur) => (MONEY_TABS.includes(cur) ? 'claims' : cur));
+  }, [routeItem]);
   const billHeld = (id: string): boolean => !!bills?.some((b) => b.id === id);
   // A claim is judged against the claim LIST: "not found" only from a list that has just landed, never one still
-  // loading or failed. While the list re-reads (a refresh, a write's reconcile) a claim it already held stays open:
-  // the claim panel wears its own read's states, and blanking it on every refresh would hide the lifecycle being
-  // acted on.
+  // loading or failed. A claim the list already holds stays open while it re-reads or after a failed re-read (a
+  // refresh, a write's reconcile): the claim panel wears its own read's states, and blanking it would hide the
+  // lifecycle being acted on.
   const record = useRoutedRecord('commercial', {
-    settled: billsLoad === 'ready' || (billsLoad === 'loading' && routeItem !== null && billHeld(routeItem)),
+    settled: billsLoad === 'ready' || (routeItem !== null && billHeld(routeItem)),
     failed: billsLoad === 'error',
     holds: billHeld,
   });
@@ -572,10 +575,7 @@ export function CommercialScreen() {
     for (const id of measurableLineIds) void loadLineRegister(id);
   };
 
-  const openTab = (next: Tab): void => {
-    setTab(next);
-    if (MONEY_TABS.includes(next)) setRouteItem(null);
-  };
+  const openTab = (next: Tab): void => { setTab(next); };
   const selectClaim = (billId: string): void => {
     // #798 — choosing another claim routes to it; the effect below reads it once it is the open claim
     if (billId !== selectedBillId) {

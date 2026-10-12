@@ -74,15 +74,17 @@ describe('/commercial/<billId>', () => {
     expect(loadClaim).toHaveBeenCalledWith('b-2');
   });
 
-  it('a routed claim opens on the claim workflow, is read, and a money tab releases it', () => {
+  it('a routed claim opens on the claim workflow, is read, and stays open across tabs', () => {
     useStore.setState({ routeItem: 'b-1' });
     const r = render(<CommercialScreen />);
     expect(r.getByTestId('commercial-claims')).toBeTruthy();
     expect(r.queryByTestId('commercial-position')).toBeNull();
     expect(loadClaim).toHaveBeenCalledWith('b-1');
     fireEvent.click(r.getByTestId('commercial-tab-position'));
-    expect(useStore.getState().routeItem).toBeNull();
     expect(r.getByTestId('commercial-position')).toBeTruthy();
+    expect(useStore.getState().routeItem).toBe('b-1');
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    expect(r.queryByTestId('commercial-claim-none')).toBeNull();
   });
 
   it('a claim the landed list does not hold is "not found"; a list still loading or failed is not judged', () => {
@@ -105,12 +107,16 @@ describe('/commercial/<billId>', () => {
     expect(failed.getByTestId('commercial-record-unavailable')).toBeTruthy();
   });
 
-  it('a claim the list already holds stays open while the list re-reads', () => {
-    useStore.setState({ routeItem: 'b-1', commercialBillsLoad: 'loading' });
-    const r = render(<CommercialScreen />);
-    expect(r.queryByTestId('commercial-record-loading')).toBeNull();
-    expect(r.getByTestId('commercial-claims')).toBeTruthy();
-    expect(loadClaim).toHaveBeenCalledWith('b-1');
+  it('a claim the list already holds stays open while the list re-reads, or after a failed re-read', () => {
+    for (const commercialBillsLoad of ['loading', 'error'] as const) {
+      useStore.setState({ routeItem: 'b-1', commercialBillsLoad });
+      const r = render(<CommercialScreen />);
+      expect(r.queryByTestId('commercial-record-loading')).toBeNull();
+      expect(r.queryByTestId('commercial-record-unavailable')).toBeNull();
+      expect(r.getByTestId('commercial-claims')).toBeTruthy();
+      expect(loadClaim).toHaveBeenCalledWith('b-1');
+      cleanup();
+    }
   });
 
   it('a cold link waits for its claim to be adopted before showing the workflow', () => {
