@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: 771-pmc-for-you
-reviewed_merge: d5bba1c
-open_pr: 801
+work_item: live-bug-806
+reviewed_merge: 8b11976
+open_pr: 807
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-12
@@ -26,11 +26,10 @@ updated: 2026-10-12
 
 ### Current unit
 
-**#771 PMC For You** (`claude/determined-cori-kmy0ae`, #801): the PMC's For You decision cards partition
-`selectDecisionsAwaitingAction` (the Dashboard tile, the server's `countPending` on the Portfolio card), each per
-record; a per-record card for the re-inspections still with the engineer, from the served lineage and due date; the
-Portfolio demo row reads the same selector. Web only. #771 closes on a signed-in PMC's live check (PR body).
-#771 read contract merged at `d5bba1c` (#796); count truthfulness at `ec3f20b` (#791).
+**Live bug #806** (#807 on `claude/serene-ritchie-ip4ulz`, Board 12 Oct): password setup stuck on "Sending…" and
+no code. The reset request awaited SMTP under nodemailer's minute-long defaults; it now answers once the challenge is
+stored, delivers behind it with bounded SMTP timeouts and logs each path by requestId. Sign-in failures name their
+cause. No account or schema change. #771 PMC For You merged at `8df87e4` (#801); #771 closes on a PMC's live check.
 
 Site Visits plan (SV0) merged at `0470efd` (#793, reviewed head `61ba419`): product decisions only. The third-head
 stop (`664c6c8`, `b985832`, `e83ed57`) stands; R1–R17 and all 44 findings stay open on #792; Q8 places Site Visits
