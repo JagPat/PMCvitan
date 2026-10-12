@@ -71,8 +71,8 @@ consultant too). Everyone else takes part, as an attendee, a fix owner or a read
 | D6 | **This plan is the product plan; each step gets its own technical design.** | **Owner, 12 Oct 2026** |
 
 D5 replaces the brief's "Start visit" on the engineer's Today and the client's Pulse. The engineer and client still
-see visits; they don't start them. D3's fix photo applies to every action that is fixed; an action the PMC declines
-ends as **Declined** (R12), never as fixed.
+see visits; they don't start them. D3's fix photo applies to every action that is fixed; an action that is declined, or
+whose linked record is withdrawn, ends in its own non-fixed state (R12), never as fixed.
 
 **Open (decided before the step that needs it)**
 
@@ -89,7 +89,7 @@ ends as **Declined** (R12), never as fixed.
 | Q9 | Should contractors add the "fixed" photo themselves? | Not at first (it needs new contractor rights); the engineer records the fix. | SV3 |
 | Q10 | Should guests (attendees typed as names, not app members) receive the report? | No automatic delivery; members only. | SV4 |
 | Q11 | Should a **contractor firm** be told about actions that concern it? | Not at first: the app has no link from a firm to its people. | SV3 |
-| Q12 | **One phone per visit?** | Yes: a visit is added to and ended from the phone that started it. | SV1 |
+| Q12 | **One phone per visit?** | Yes: a visit is added to and ended from the phone that started it. If that phone is lost or broken, it is closed from another device (R4). | SV1 |
 | Q13 | The worker job card's **Photo** button. | Its own later unit: it needs a live worker screen and a narrowly scoped upload, which workers do not have today. Not part of SV5's sharing. | after SV5 |
 
 ---
@@ -169,9 +169,17 @@ prove it with tests. They collect every point raised in the three reviews of the
   not held to the visit's window.
 - R3 (SV1). At most one open visit per visitor. A start from a second phone, or a delayed offline start, must never
   lose recorded observations or silently merge visits. Overlap is judged only when both ends of a visit are known.
-- R4 (SV1). The visitor ends their own visit from SV1 on; until SV4 an ended visit has no signed report and is
-  shown as ended, not signed. A visit left open by someone who loses access can be closed by the PMC, with a
-  reason, marked unsigned.
+- R4 (SV1, SV4). **No visit is ever stranded open or left in an undefined state.** Each step's design lists every
+  way a visit can end and gives each its end state, with tests:
+  - the visitor ends it on the phone that started it;
+  - the starting phone is lost, reset or broken: the visitor (after signing in again) or the PMC closes it from
+    another device, with a reason, marked unsigned. Anything the old phone later sends is kept and flagged as late,
+    never dropped;
+  - the visitor loses access: the PMC closes it, with a reason, marked unsigned.
+
+  Visits ended before SV4 ships stay as they are: **ended before reports existed**, shown as unsigned and never
+  presented as signed or delivered. SV4 does not backfill them; its design may offer the visitor an explicit
+  "create report" for one, signed only by them.
 
 **Evidence**
 - R5 (SV2). Each photo is durably tied to its visit and to the exact observation (or action) it belongs to, within
@@ -190,10 +198,15 @@ prove it with tests. They collect every point raised in the three reviews of the
 - R10 (SV3). Confirming is atomic: two PMCs or two retries cannot create two records.
 - R11 (SV3). "Fixed" means **a photo that proves the fix**, captured after the action, for every record type. A
   defect photo never closes an action, and approving the linked record alone never closes it.
-- R12 (SV3). An action ends in one of two ways: **Fixed** (R11) or **Declined** by the PMC with a reason, before any
-  record is created. Declined is its own end state: it is never shown or counted as fixed, needs no fix photo,
-  leaves Awaiting PMC and the overdue list, stays on the visit and its report, and tells the visitor why. Who may
-  close or decline is defined, with wrong-role tests.
+- R12 (SV3). **No action is ever stranded open.** The SV3 design maps every way an action, or the record linked to
+  it, can end to an action end state, with tests:
+  - **Fixed** (R11), the only state shown or counted as fixed;
+  - **Declined** by the PMC with a reason, before any record is created;
+  - **Closed, not fixed** when the linked record ends without a fix, for example a decision or change request
+    **withdrawn**. The record's own reason is carried.
+
+  Every state but Fixed needs no fix photo, leaves Awaiting PMC and the overdue list, stays on the visit and its
+  report, and tells the visitor why. Who may close or decline is defined, with wrong-role tests.
 - R13 (SV2/SV3). "Action needed" observations made before SV3 is live are either not offered until SV3, or are
   turned into actions when SV3 starts, so none is silently left without a task.
 
