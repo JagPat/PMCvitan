@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { DEV_AUTH, API_BASE } from '@/data/apiGateway';
 import { viewerIsDecider } from '@vitan/shared';
-import { parseLocation, pathForScreen, screensFor, withDeciderRoute, SCREEN_CAPABILITY, ITEM_SCREENS } from '@/lib/screens';
+import { parseLocation, pathForScreen, routableScreensFor, withDeciderRoute, SCREEN_CAPABILITY, ITEM_SCREENS } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 
 /** B6 — the item the current screen's URL names. The client's decisions screen keeps its own
@@ -151,13 +151,12 @@ export function RouteBridge() {
       && !identityPending
       && (projectLoadState === 'ready'
         || (projectLoadState === 'idle' && (!authed || hasDecisions)));
+    // #798 — a role's link-only screens (`ROUTE_ONLY_SCREENS`) are reachable here, never listed in its nav
     const allowed = withDeciderRoute(
-      screensFor(role)
-        .filter((m) => {
-          const cap = SCREEN_CAPABILITY[m.key];
-          return cap === undefined || !capabilitiesKnown || caps.has(cap);
-        })
-        .map((m) => m.key),
+      routableScreensFor(role).filter((key) => {
+        const cap = SCREEN_CAPABILITY[key];
+        return cap === undefined || !capabilitiesKnown || caps.has(cap);
+      }),
       isOpenDecider || !decisionsSettled,
     );
     if (!fromPath || !allowed.includes(fromPath)) {
