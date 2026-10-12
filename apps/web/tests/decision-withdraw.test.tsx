@@ -7,7 +7,7 @@ import addMaterialSrc from '@/screens/modals/AddMaterialModal.tsx?raw';
 import portfolioSrc from '@/screens/PortfolioScreen.tsx?raw';
 import { render, cleanup } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
-import { selectPending, selectReapproval, selectLogDecisions, selectActionItems, selectVisibleDecisions, readinessFor } from '@/store/selectors';
+import { selectPending, selectReapproval, selectLogDecisions, selectActionItems, selectVisibleDecisions, selectDecisionsAwaitingAction, readinessFor } from '@/store/selectors';
 import type { Activity } from '@vitan/shared';
 import { replayOutboxOp, type ApiGateway, type ApiSnapshot, type OutboxOp } from '@/data/apiGateway';
 import { DecisionLogScreen } from '@/screens/DecisionLogScreen';
@@ -103,6 +103,11 @@ describe('P10 (web half): a withdrawn decision is pmc-only on every selector sur
     expect(items.find((i) => i.key === 'client-pending')?.detail).not.toContain('DL-W');
     seed('pmc');
     expect(selectActionItems(s()).some((i) => i.title.includes('withdrawn'))).toBe(false);
+    // #771 — the count the Dashboard and the Portfolio demo row read never carries a withdrawn row, for any role
+    for (const role of ['pmc', 'client', 'architect', 'engineer', 'contractor', 'consultant'] as Role[]) {
+      seed(role);
+      expect(selectDecisionsAwaitingAction(s()).map((d) => d.id), `role=${role}`).not.toContain('DL-W');
+    }
   });
 
   it('the nav pending badge counts only pending rows — a withdrawal clears it', () => {
@@ -212,8 +217,11 @@ describe('P10 (web half): a withdrawn decision is pmc-only on every selector sur
       ['AddMaterialModal', addMaterialSrc],
       ['PortfolioScreen', portfolioSrc],
     ];
+    // #771 — the Portfolio's demo row reads only its pending count, through `selectDecisionsAwaitingAction`: pending
+    // and awaiting rows within the same audience (decider-scoped off the PMC), never a withdrawn one
+    const shared = (screen: string) => (screen === 'PortfolioScreen' ? /selectVisibleDecisions|selectDecisionsAwaitingAction/ : /selectVisibleDecisions/);
     for (const [screen, src] of screens) {
-      expect(src, `${screen} routes through selectVisibleDecisions`).toContain('selectVisibleDecisions');
+      expect(src, `${screen} routes through the shared audience rule`).toMatch(shared(screen));
       expect(src, `${screen} keeps no ad-hoc decision-row filter`).not.toContain('s.decisions.filter((d) => !d.draft)');
     }
   });

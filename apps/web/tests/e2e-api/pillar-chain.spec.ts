@@ -320,6 +320,9 @@ test('the ENGINEER fails an item with a REAL photo; the PMC rejects; the linked 
   await page.getByRole('button', { name: 'Dashboard' }).click();
   await expect(page.getByTestId('tile-failed-value')).toHaveText('1');
   await expect(page.getByText('In 1 open re-inspection')).toBeVisible();
+  // #771 PMC For You — the same open re-inspection is the PMC's follow-up card, counted once
+  await page.getByRole('button', { name: 'For You' }).click();
+  await expect(page.getByTestId('inbox-item-pmc-reinspections')).toContainText('1 re-inspection with the engineer');
 
   // the correction chain is OPEN — the gate reads FAIL until the fix is accepted
   await pollGate(request, 'inspection', 'fail');

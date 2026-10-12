@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
+import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Checklist, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
 import { decisionsSliceSettled, drawingsSliceSettled, inspectionsSliceSettled, projectSnapshotSettled } from '@/lib/notifications';
@@ -202,7 +202,7 @@ export function selectFailedItems(s: AppState): number {
  * Each item here is a failed item still awaiting re-inspection, read from the records the PMC can open.
  */
 export function selectOpenReinspections(s: AppState): { count: number; items: number; known: boolean } {
-  const open = s.openChecklists.filter((c) => c.reinspectionOfId && !c.submitted);
+  const open = selectReinspectionsAwaitingSubmission(s);
   const inReview = s.reviews.filter((r) => r.reinspectionOfId && !r.decided);
   return {
     count: open.length + inReview.length,
@@ -212,6 +212,12 @@ export function selectOpenReinspections(s: AppState): { count: number; items: nu
     // a number. A current server marks an ordinary checklist `null`. Review rows have always carried lineage.
     known: s.openChecklists.every((c) => c.submitted || c.reinspectionOfId !== undefined),
   };
+}
+
+/** #771 PMC For You — the re-inspections still with the engineer (open, not yet submitted): the open half of
+ *  `selectOpenReinspections`. The other half, those awaiting review, is already in the review queue. */
+export function selectReinspectionsAwaitingSubmission(s: AppState): Checklist[] {
+  return s.openChecklists.filter((c) => c.reinspectionOfId && !c.submitted);
 }
 
 /**
@@ -503,6 +509,13 @@ export function inspectionRecordLink(s: AppState, id: string): { screen: ScreenK
 
 const plural = (n: number, s = 's') => (n === 1 ? '' : s);
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** A civil `YYYY-MM-DD` as "14 Oct", read from its parts so no time zone moves the day. */
+function civilDayLabel(day: string): string {
+  const [, m, d] = day.split('-').map(Number);
+  return m >= 1 && m <= 12 && d ? `${d} ${MONTHS[m - 1]}` : day;
+}
+
 /**
  * The cross-cutting to-do list for whoever is signed in — aggregated across decisions,
  * drawings, inspections, the daily log and the schedule so each role sees exactly what
@@ -586,13 +599,27 @@ export function selectActionItems(s: AppState): ActionItem[] {
     // something to describe as awaiting someone else. When every other-held decision is
     // client-held (the pre-4b world), the texts are byte-identical to what they always said.
     const otherChanges = changes.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
+    // #771 PMC For You — the PMC's decision cards partition `selectDecisionsAwaitingAction` (the Dashboard tile and
+    // the server's `countPending`, the Portfolio card): its own approvals (`decider-pending`), the stranded
+    // countersigns (`pmc-stranded`) and every other published pending decision here (`pending` is that
+    // selector's pending arm for the PMC, `selectPending`), each counted per record
     const otherPending = pending.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
     if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), screen: 'decision-log', cta: 'Open', tone: 'red', count: otherChanges.length, item: only(otherChanges) });
     if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red', item: activitiesSettledForLinks(s) ? only(blocked) : undefined });
     if (otherPending.length) {
       const allClientHeld = otherPending.every((d) => (d.deciderKind ?? 'client') === 'client');
       const who = allClientHeld ? 'the client' : otherPending.length === 1 ? 'its decider' : 'their deciders';
-      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', screen: 'decision-log', cta: 'View', tone: 'ink', item: only(otherPending) });
+      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', screen: 'decision-log', cta: 'View', tone: 'ink', count: otherPending.length, item: only(otherPending) });
+    }
+    // #771 PMC For You — the re-inspections a rejection sent back, still with the engineer (from the served lineage,
+    // assignee and due date). With the re-inspections awaiting review, already counted in `pmc-reviews`, they make
+    // up the Dashboard's open re-inspections (`selectOpenReinspections`), each counted once.
+    // A partial count is not the count: while any open checklist's lineage is unreported, the Dashboard reads the
+    // total as unknown, so no card claims a number either
+    const reinspecting = selectOpenReinspections(s).known ? selectReinspectionsAwaitingSubmission(s) : [];
+    if (reinspecting.length) {
+      const due = reinspecting.map((c) => c.dueDate).filter((d): d is string => typeof d === 'string').sort()[0];
+      items.push({ key: 'pmc-reinspections', title: `${reinspecting.length} re-inspection${plural(reinspecting.length)} with the engineer`, detail: [names(reinspecting), due ? `next due ${civilDayLabel(due)}` : ''].filter(Boolean).join(' · '), screen: 'inspect-review', cta: 'Follow up', tone: 'amber', count: reinspecting.length, item: inspectionsSettledForLinks(s) ? only(reinspecting) : undefined });
     }
     // Task 6: unstarted work whose DRAWING gate blocks it — the derived conclusion, surfaced
     const drawingBlocked = s.activities.filter((a) => {

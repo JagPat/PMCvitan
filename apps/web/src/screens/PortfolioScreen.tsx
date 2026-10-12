@@ -1,7 +1,7 @@
 import { useEffect, useMemo, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectVisibleDecisions } from '@/store/selectors';
+import { selectDecisionsAwaitingAction } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, Button, EmptyState } from '@/components';
 import { ArrowRight } from '@/lib/icons';
@@ -34,9 +34,9 @@ export function PortfolioScreen() {
   // build one row from the seeded local state (keeps the screen meaningful).
   const activities = useStore(useShallow((s) => s.activities));
   const phases = useStore(useShallow((s) => s.phases));
-  // exclude private drafts from the cross-project pending-decision rollup
-  // Phase 6 task 4a round 6 (Codex): the shared audience rule (withdrawn is pmc-only)
-  const decisions = useStore(useShallow(selectVisibleDecisions));
+  // #771 — the demo row's pending count is the Dashboard tile's selector, the web mirror of the server's
+  // `countPending` that a live Portfolio card serves: never a second definition of "pending"
+  const awaitingAction = useStore(useShallow(selectDecisionsAwaitingAction));
   const reviews = useStore(useShallow((s) => s.reviews));
   const role = useStore((s) => s.role);
 
@@ -49,7 +49,6 @@ export function PortfolioScreen() {
     const inProgress = activities.filter((a) => a.status === 'in-progress').length;
     const blocked = activities.filter((a) => a.status === 'blocked').length;
     const notStarted = activities.filter((a) => a.status === 'not-started').length;
-    const canSeePending = role === 'pmc' || role === 'client';
     return [
       {
         projectId: activeProjectId,
@@ -65,12 +64,12 @@ export function PortfolioScreen() {
         notStarted,
         donePct: activities.length ? Math.round((done / activities.length) * 100) : 0,
         openReviews: reviews.filter((r) => !r.decided).length,
-        pendingDecisions: canSeePending ? decisions.filter((d) => d.status === 'pending').length : 0,
+        pendingDecisions: awaitingAction.length,
         phaseCount: phases.length,
         milestonePct: activities.length ? Math.round((done / activities.length) * 100) : 0, // B7: derived, never a fixed 72
       },
     ];
-  }, [portfolio, activities, phases, decisions, reviews, role, activeProjectId]);
+  }, [portfolio, activities, phases, awaitingAction, reviews, role, activeProjectId]);
 
   useEffect(() => { loadPortfolio(); }, [loadPortfolio, activeProjectId]);
   useEffect(() => { if (adminOrg) loadArchivedProjects(adminOrg.id); }, [loadArchivedProjects, adminOrg]);
