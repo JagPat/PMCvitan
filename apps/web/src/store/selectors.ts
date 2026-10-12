@@ -614,7 +614,9 @@ export function selectActionItems(s: AppState): ActionItem[] {
     // #771 PMC For You — the re-inspections a rejection sent back, still with the engineer (from the served lineage,
     // assignee and due date). With the re-inspections awaiting review, already counted in `pmc-reviews`, they make
     // up the Dashboard's open re-inspections (`selectOpenReinspections`), each counted once.
-    const reinspecting = selectReinspectionsAwaitingSubmission(s);
+    // A partial count is not the count: while any open checklist's lineage is unreported, the Dashboard reads the
+    // total as unknown, so no card claims a number either
+    const reinspecting = selectOpenReinspections(s).known ? selectReinspectionsAwaitingSubmission(s) : [];
     if (reinspecting.length) {
       const due = reinspecting.map((c) => c.dueDate).filter((d): d is string => typeof d === 'string').sort()[0];
       items.push({ key: 'pmc-reinspections', title: `${reinspecting.length} re-inspection${plural(reinspecting.length)} with the engineer`, detail: [names(reinspecting), due ? `next due ${civilDayLabel(due)}` : ''].filter(Boolean).join(' · '), screen: 'inspect-review', cta: 'Follow up', tone: 'amber', count: reinspecting.length, item: inspectionsSettledForLinks(s) ? only(reinspecting) : undefined });

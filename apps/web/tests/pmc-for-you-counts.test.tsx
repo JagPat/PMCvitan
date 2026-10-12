@@ -143,6 +143,12 @@ describe('the re-inspections a rejection sent back reach the PMC’s For You', (
     expect(keys()).not.toContain('pmc-reinspections');
     useStore.setState({ openChecklists: [checklist('RE-1', { reinspectionOfId: 'INSP-1' })] });
     expect(keys()).toContain('pmc-reinspections');
+    // a reported re-inspection beside an open checklist with unreported lineage: the total is unknown, so no
+    // card claims a partial count (the Dashboard reads "—")
+    useStore.setState({ openChecklists: [checklist('RE-1', { reinspectionOfId: 'INSP-1' }), checklist('CK-OLD', { reinspectionOfId: undefined })] });
+    expect(sel.selectOpenReinspections(useStore.getState()).known).toBe(false);
+    expect(keys()).not.toContain('pmc-reinspections');
+    useStore.setState({ openChecklists: [checklist('RE-1', { reinspectionOfId: 'INSP-1' })] });
     for (const role of ['engineer', 'contractor', 'client', 'architect'] as const) {
       useStore.setState({ role });
       expect(keys()).not.toContain('pmc-reinspections');
