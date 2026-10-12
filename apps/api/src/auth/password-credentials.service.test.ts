@@ -205,26 +205,29 @@ describe('PasswordCredentialsService', () => {
   });
 
   /**
-   * #482 (12 Oct 2026, reproduced with a stalled SMTP server): the request used to WAIT for the mail provider, so a
-   * slow or stalled provider held the owner's "Send verification code" on "Sending…" for minutes (nodemailer's
-   * defaults are 2 min to connect, 30 s for the greeting, 10 min on a silent socket) and an eligible address
-   * answered measurably slower than an unknown one. The answer now comes once the challenge is stored; delivery
-   * runs behind it and reports its own outcome in the log.
+   * #806 (Codex on #807): delivery stays INSIDE the request that issues the code. A send detached from it could be
+   * lost to a restart (a stored code that never left) or land after a newer send (a consumed code mailed last). The
+   * request now waits for its own send, bounded by the mail transport's timeouts (EmailService), and a failed send
+   * leaves nothing issued. Ordering across requests is proven against real Postgres locks in
+   * test/integration/password-credentials-delivery.test.ts.
    */
-  it('answers as soon as the challenge is stored, without waiting for a stalled mail provider', async () => {
+  it('answers only once its own send has settled — nothing is left running behind the response', async () => {
     const { service, prisma } = make([activeUser()]);
     const email = (service as unknown as { email: { sendPasswordCredentialCode: ReturnType<typeof vi.fn> } }).email;
-    email.sendPasswordCredentialCode.mockImplementationOnce(() => new Promise(() => {})); // never settles
-    let answered: { accepted: true; requestId: string } | null = null;
-    void service.request({ email: 'member@example.com' }).then((r) => { answered = r; });
+    let finish!: () => void;
+    email.sendPasswordCredentialCode.mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve({ live: true }); }));
+    let answered = false;
+    const pending = service.request({ email: 'member@example.com' }).then((r) => { answered = true; return r; });
     await settle();
-    expect(answered).toEqual({ accepted: true, requestId: expect.any(String) });
-    expect(prisma.challenges).toHaveLength(1);
-    expect(prisma.challenges[0]?.consumedAt).toBeNull(); // still usable when the mail does arrive
     expect(email.sendPasswordCredentialCode).toHaveBeenCalledTimes(1);
+    expect(answered).toBe(false);
+    finish();
+    expect(await pending).toEqual({ accepted: true, requestId: expect.any(String) });
+    expect(prisma.challenges).toHaveLength(1);
+    expect(prisma.challenges[0]?.consumedAt).toBeNull();
   });
 
-  it('a delivery failure logs its own path and cancels the challenge, with the same public response', async () => {
+  it('a delivery failure logs its own path and issues nothing, with the same public response', async () => {
     const { service, prisma } = make([activeUser()]);
     const email = (service as unknown as { email: { sendPasswordCredentialCode: ReturnType<typeof vi.fn> } }).email;
     email.sendPasswordCredentialCode.mockRejectedValueOnce(new Error('smtp down'));
@@ -235,9 +238,8 @@ describe('PasswordCredentialsService', () => {
 
     const res = await service.request({ email: 'member@example.com' });
     expect(res).toEqual({ accepted: true, requestId: expect.any(String) });
-    await settle();
     expect(logs).toEqual([expect.stringContaining(`delivery failed for challenge ${res.requestId}`)]);
-    expect(prisma.challenges[0]?.consumedAt).not.toBeNull();
+    expect(prisma.challenges).toHaveLength(0); // rolled back: no stored code that never left
   });
 
   it('limits wrong OTP attempts, expires challenges, and never returns an application session', async () => {

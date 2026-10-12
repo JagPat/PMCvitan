@@ -25,7 +25,8 @@ export interface TestApp {
  * production via the shared configureApp(). Nothing is mocked.
  */
 export interface TestAppOptions {
-  capturePasswordCode?: (email: string, code: string) => void;
+  /** Stands in for the mail provider. It may be async: a proof can hold a send open, or make it fail (#806). */
+  capturePasswordCode?: (email: string, code: string) => void | Promise<void>;
 }
 
 export async function createTestApp(options: TestAppOptions = {}): Promise<TestApp> {
@@ -36,7 +37,7 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
   if (options.capturePasswordCode) {
     const email = new EmailService();
     email.sendPasswordCredentialCode = async (address, code) => {
-      options.capturePasswordCode!(address, code);
+      await options.capturePasswordCode!(address, code);
       return { live: true };
     };
     builder.overrideProvider(EmailService).useValue(email);

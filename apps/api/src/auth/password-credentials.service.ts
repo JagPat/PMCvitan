@@ -15,6 +15,9 @@ import { EmailService } from '../platform/email.service';
 const PURPOSE = 'password_setup_or_reset';
 const LIFETIME_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 5;
+/** Covers the mail transport's bounded waits (EmailService: 10 s connect + 10 s greeting + 20 s socket) and the
+ *  wait for a concurrent request for the same person to finish its own send. */
+const DELIVERY_TX_TIMEOUT_MS = 90_000;
 const BCRYPT_COST = 12;
 const GENERIC_ERROR = 'Password setup code or link is invalid or expired.';
 
@@ -94,64 +97,58 @@ export class PasswordCredentialsService {
 
     const now = new Date();
     const code = String(randomInt(100000, 1000000));
-    const created = await this.prisma.$transaction(async (tx) => {
-      await lockUserCredential(tx, user!.id);
-      const eligible = await this.userById(tx, user!.id);
-      if (!this.eligible(eligible) || eligible?.email !== email) return false;
-      await tx.passwordCredentialChallenge.updateMany({
-        where: { userId: user!.id, purpose: PURPOSE, consumedAt: null },
-        data: { consumedAt: now },
-      });
-      await tx.passwordCredentialChallenge.create({
-        data: {
-          id: publicRequestId,
-          userId: user!.id,
-          purpose: PURPOSE,
-          otpHash: this.otpHash(publicRequestId, code),
-          attempts: 0,
-          expiresAt: new Date(now.getTime() + LIFETIME_MS),
-          verifiedAt: null,
-          setupTokenHash: null,
-          setupTokenExpiresAt: null,
-          consumedAt: null,
-          createdAt: now,
-        },
-      });
-      await tx.securityAuditEvent.create({
-        data: {
-          action: 'auth.password_requested',
-          targetUserId: user!.id,
-          actorUserId: user!.id,
-          actorKind: 'self',
-          correlationId: publicRequestId,
-        },
-      });
-      return true;
-    });
-    if (!created) return this.notSent(publicRequestId);
-
-    // #482 (12 Oct 2026) — answer NOW and deliver behind it. Awaiting the mail provider here held the caller for
-    // as long as SMTP took: a stalled provider kept the owner's "Send verification code" on "Sending…" for
-    // minutes, and an eligible address answered measurably slower than an unknown one. The stored challenge is
-    // usable the moment the mail lands; a failed delivery cancels it and says so in the log.
-    void this.deliver(publicRequestId, email, code);
-    return { accepted: true, requestId: publicRequestId };
-  }
-
-  /** Hand the code to the mail provider, detached from the request that created the challenge. Never throws. */
-  private async deliver(publicRequestId: string, email: string, code: string): Promise<void> {
+    // #806 — the code is mailed INSIDE the transaction that issues it, under the per-user credential lock:
+    //  - a failed send rolls the challenge back, so no stored code exists that never left (a send detached from
+    //    the request could be lost to a restart and leave exactly that);
+    //  - a second request for the same person waits on the lock until this send is done, so the code mailed
+    //    last is the one that works (a detached send could land after a newer one, carrying a consumed code).
+    // The wait is bounded by the mail transport's own timeouts (EmailService), not nodemailer's minute-long
+    // defaults that held the owner's "Send verification code" on "Sending…" (#482, 12 Oct 2026).
+    let sent: boolean;
     try {
-      await this.email.sendPasswordCredentialCode(email, code);
-      this.log.log(`Password credential request ${publicRequestId}: code handed to the mail provider`);
-    } catch (error) {
-      try {
-        await this.prisma.passwordCredentialChallenge.updateMany({
-          where: { id: publicRequestId, consumedAt: null },
-          data: { consumedAt: new Date() },
+      sent = await this.prisma.$transaction(async (tx) => {
+        await lockUserCredential(tx, user!.id);
+        const eligible = await this.userById(tx, user!.id);
+        if (!this.eligible(eligible) || eligible?.email !== email) return false;
+        await tx.passwordCredentialChallenge.updateMany({
+          where: { userId: user!.id, purpose: PURPOSE, consumedAt: null },
+          data: { consumedAt: now },
         });
-      } catch { /* the challenge still expires on its own */ }
+        await tx.passwordCredentialChallenge.create({
+          data: {
+            id: publicRequestId,
+            userId: user!.id,
+            purpose: PURPOSE,
+            otpHash: this.otpHash(publicRequestId, code),
+            attempts: 0,
+            expiresAt: new Date(now.getTime() + LIFETIME_MS),
+            verifiedAt: null,
+            setupTokenHash: null,
+            setupTokenExpiresAt: null,
+            consumedAt: null,
+            createdAt: now,
+          },
+        });
+        await tx.securityAuditEvent.create({
+          data: {
+            action: 'auth.password_requested',
+            targetUserId: user!.id,
+            actorUserId: user!.id,
+            actorKind: 'self',
+            correlationId: publicRequestId,
+          },
+        });
+        await this.email.sendPasswordCredentialCode(email, code);
+        return true;
+      }, { timeout: DELIVERY_TX_TIMEOUT_MS });
+    } catch (error) {
+      // Rolled back: nothing was issued. The public answer stays identical (no account enumeration).
       this.log.error(`Password credential delivery failed for challenge ${publicRequestId}: ${(error as Error).constructor.name}`);
+      return { accepted: true, requestId: publicRequestId };
     }
+    if (!sent) return this.notSent(publicRequestId);
+    this.log.log(`Password credential request ${publicRequestId}: code handed to the mail provider`);
+    return { accepted: true, requestId: publicRequestId };
   }
 
   /**
