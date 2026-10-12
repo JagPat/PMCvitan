@@ -373,6 +373,14 @@ export interface Checklist {
    *  `null` on an ordinary issued checklist. ABSENT only from an API older than the field, which cannot say
    *  either way — the count that depends on it is then unknown, never 0 (#482 6114668018). */
   reinspectionOfId?: string | null;
+  /** #771 read contract — the STORED assignee of this work (a re-inspection's, by default the submitter of
+   *  what it re-checks). A historical fact, NOT an authority: whether the assignment still binds is the
+   *  server's question, and it already decided this row reaches the viewer. `null` = none stored; ABSENT =
+   *  an API older than the field (unknown, never "unassigned"). */
+  assigneeId?: string | null;
+  /** #771 read contract — when the work is due, as a civil date `YYYY-MM-DD` (no time, no zone). `null` =
+   *  none stored; ABSENT = an API older than the field (unknown, never "no due date"). */
+  dueDate?: string | null;
   items: ChecklistItem[];
 }
 
@@ -399,6 +407,10 @@ export interface Review {
   decided: boolean;
   /** set when this review IS a reinspection — the predecessor it re-checks (Task 4) */
   reinspectionOfId?: string;
+  /** #771 read contract — as {@link Checklist.assigneeId}: stored, not an authority; `null` none, ABSENT unknown. */
+  assigneeId?: string | null;
+  /** #771 read contract — as {@link Checklist.dueDate}: civil `YYYY-MM-DD`; `null` none, ABSENT unknown. */
+  dueDate?: string | null;
   /** set when this review is a CLOSING sign-off (Task 5): approving it completes
    *  the named activity; rejecting it returns that activity to execution */
   closing?: boolean;

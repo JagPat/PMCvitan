@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: site-visits-plan
-reviewed_merge: ec3f20b
-open_pr: 793
+work_item: 771-read-contract
+reviewed_merge: 0470efd
+open_pr: 796
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-12
@@ -26,17 +26,14 @@ updated: 2026-10-12
 
 ### Current unit
 
-**Site Visits plan (SV0, docs only)** (#793 on `claude/serene-ritchie-ip4ulz`, issue #792). Planning only, no
-building. Owner, 12 Oct: an architect, a consultant or the PMC may start a visit. The third-head stop (`664c6c8`,
-`b985832`, `e83ed57`) stands; per the owner's rulings, [the plan](superpowers/plans/2026-10-12-site-visits.md) holds only
-the product decisions (the Board's SV1–SV5 scope, D1–D6, S1–S8 not approved, open Q1–Q13). R1–R17 and all 44
-findings stay open on #792 (#482 6116163100); one technical design per step later.
+**#771 read contract** (`claude/serene-ritchie-ip4ulz`, #482 6115700782): the stored re-inspection due date (civil
+`YYYY-MM-DD`) and assignee on the existing inspection read, live and projection, for rows the viewer already
+receives; an older projection row without the field is refused (live fallback). No new authority, endpoint, schema
+or UI. #771 stays open: PMC For You acceptance is the next slice. #771 count truthfulness merged at `ec3f20b` (#791).
 
-**Next unit, after this docs checkpoint:** the approved #771 read contract (#482 6115700782): stored re-inspection due
-date and assignee on the existing inspection read, no new authority. Gates: main CI 38188640844 green on unchanged
-`ec3f20b`, and both deployments verified (done 00:39 UTC); a changed main is reconciled first. Q8 only places Site
-Visits and blocks neither this nor the queue below. #771 count truthfulness merged at `ec3f20b` (#791, reviewed head
-`574a6e0`); #771 stays open (PMC For You acceptance is the next slice).
+Site Visits plan (SV0) merged at `0470efd` (#793, reviewed head `61ba419`): product decisions only. The third-head
+stop (`664c6c8`, `b985832`, `e83ed57`) stands; R1–R17 and all 44 findings stay open on #792; Q8 places Site Visits
+and blocks nothing else.
 
 #778 by stage, for units A–D: Specified (proposal revisions 3 and 4 on #785) — yes; Implemented — yes (merged); Reviewed —
 yes (exact-head Codex on each); Deployed — yes (API and frontend at `6b372aa`, owner-verified); Live-tested — **no**.

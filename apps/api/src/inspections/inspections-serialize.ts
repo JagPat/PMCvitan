@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import type {
   Checklist, ChecklistItem, InspectionResult, ItemState, PlacedInspection, Review, ReviewItem, SwatchKey,
 } from '@vitan/shared';
+import { toIsoCivilDate } from '../common/civil-date';
 
 /**
  * Phase 2 Task 10 (Module 3) — the ONE canonical inspections read serializer, shared by the live snapshot
@@ -41,6 +42,11 @@ export interface InspectionBaseEntry {
    *  one (it defaults to whoever submitted the rejected inspection); an issued checklist may not.
    *  Carried so the read boundary can keep one engineer's assigned work off another's field view. */
   assigneeId: string | null;
+  /** #771 read contract — when the corrective work is due, as the stored CIVIL date (`YYYY-MM-DD`, the
+   *  `@db.Date` column read in UTC, so no time zone shifts the day). Set on a re-inspection; `null` when none
+   *  is stored. A base written before this field existed has no such key, and the projection read refuses it
+   *  (`isCurrentInspectionsBase`) rather than serve "no due date" for a re-inspection that has one. */
+  dueDate: string | null;
   items: {
     id: string;
     name: string;
@@ -122,6 +128,7 @@ export async function computeInspectionsBase(
       activityName: i.activityName, // inspection-owned label (Task 10 Module 3 correction)
       reinspectionOfId: i.reinspectionOfId,
       assigneeId: i.assigneeId,
+      dueDate: toIsoCivilDate(i.dueDate),
       items: i.items.map((it) => ({
         id: it.id,
         name: it.name,
@@ -205,6 +212,12 @@ export function bakeInspections(
     // says so too, as `null`: an ABSENT key is how a client recognises a server older than the field, whose
     // count it cannot know (#482 6114668018).
     reinspectionOfId: row.reinspectionOfId ?? null,
+    // #771 read contract (#482 6115700782) — the STORED assignee and due date, on a row this viewer already
+    // receives (the `mine` filter below decides that, unchanged). Like the lineage above, `null` means none is
+    // stored and an absent key means an older server. The stored assignee is a historical fact, not an
+    // authority: whether the assignment still binds is `bindingAssignees`' question, answered at read time.
+    assigneeId: row.assigneeId,
+    dueDate: row.dueDate,
     items: row.items.map(
       (it): ChecklistItem => ({
         id: it.id, // the capture flow links evidence uploads to THIS item (Task 4)
@@ -276,6 +289,9 @@ export function bakeInspections(
         decided: i.decided,
         // Task 4: a reinspection is labelled by its predecessor in the review queue.
         reinspectionOfId: i.reinspectionOfId ?? undefined,
+        // #771 read contract — the same stored facts as the field view's rows (`null` when none is stored).
+        assigneeId: i.assigneeId,
+        dueDate: i.dueDate,
         // Task 5: a CLOSING inspection is labelled with the activity it signs off.
         ...(i.closing ? { closing: true, activityId: i.activityId ?? undefined, activityName: i.activityName ?? undefined } : {}),
         items: i.items.map(
