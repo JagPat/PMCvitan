@@ -15,7 +15,9 @@ export const siteVisitsManifest: ModuleManifest = {
   kind: 'domain',
   ownsModels: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace'],
   readEncapsulated: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace'],
-  dependsOn: [],
+  // A visit freezes the label of a published node through the nodes module's database contract
+  // (`nodes_published_name_locked`), never by reading its table.
+  dependsOn: ['nodes'],
   workflowParticipants: [],
   producesEvents: [
     'sitevisit.started',

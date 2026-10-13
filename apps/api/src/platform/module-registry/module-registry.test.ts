@@ -98,6 +98,9 @@ describe('Phase 2 Task 7 — module registry', () => {
       // graph is still acyclic — the §G-style acceptance test below runs Kahn's algorithm over the
       // LIVE manifests and is RED against any cycle a future edge would introduce.
       commercial: ['procurement', 'inventory', 'labour', 'activities'],
+      // Site Visits SV1-a — a visit freezes a published node's label through the nodes module's
+      // database contract (`nodes_published_name_locked`); nodes never depends back on site-visits.
+      'site-visits': ['nodes'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.dependsOn, `${m.id} dependsOn`).toEqual(expectedDependsOn[m.id] ?? []);

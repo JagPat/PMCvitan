@@ -7,10 +7,12 @@
 -- WHAT THE DATABASE OWNS, so no command, alternate writer or raw SQL can weaken it:
 --   V1  Tenancy. Every row carries `projectId`; children reach their visit, and every row its node, through composite
 --       (projectId, id) keys. Project deletion cascades project → visit → child (F60).
---   V2  Who. The visitor, a member attendee and the closer must hold the stated role on the project when the row (or
---       the close) is written, judged by `platform_user_holds_role_windowed` after the registers it reads are locked
+--   V2  Who. The visitor (at the start and at every later act of theirs: end, late end, child add or retire), a member
+--       attendee and the closer must hold the stated role on the project when the row (or the change) is written, judged by `platform_user_holds_role_windowed` after the registers it reads are locked
 --       in the actor envelope's order: OrgUserAuthority, then ProjectUserStanding, then UserIdentity, then the
---       project row (F55). A frozen name is COPIED from the locked `UserIdentity`, never taken from the caller (F57).
+--       project row (F55); the identity row FOR UPDATE, as the event's envelope seal takes it. A frozen name is COPIED
+--       from the locked `UserIdentity`, never taken from the caller (F57). A node's label comes from the nodes module's
+--       own function, `nodes_published_name_locked`, never from a read of its table here.
 --       Only the visitor adds or retires a child row (`addedById` / `retiredById` = the locked visit's visitor, F46).
 --   V3  Time. The caller sends only CLAIMED times; the database stamps each receipt (`site_visits_now()`, read after
 --       the visit row is locked) and derives the ACCEPTED time: the claim when it lies in its window, else the
@@ -18,12 +20,13 @@
 --       in the future of its receipt and never before the start (F47), and an end is never before a place walked
 --       while the visit was open.
 --   V4  Lifecycle. open → ended | closed, once; a late end only on a closed visit, once. A closed visit takes no
---       child edit, and a place added to an ended visit is `addedAfterEnd`, set from the locked visit (F49).
+--       child edit, and a place added to an ended visit is `addedAfterEnd`, set from the locked visit (F49). A visitor
+--       removed after a close records no late end: the close stands (F48).
 --   V5  Immutable. Nothing is deleted or truncated except by a project cascade or the sanctioned test reset; every
 --       column outside the lifecycle and retire arms is frozen. A node reference is cleared ONLY by its foreign key's
 --       own `ON DELETE SET NULL (col)` action when the node is removed (F58) — never by a direct UPDATE.
 --   V6  Paired. Each change commits with exactly one same-transaction `sitevisit.*` event from the attributed human,
---       naming its row; start, end and close also with exactly one notice whose kind is that event (F45, F59). The
+--       carrying their actor envelope in the role the row attributes, naming its row; start, end and close also with exactly one notice whose kind is that event (F45, F59). The
 --       event is then CLAIMED, so the kernel's `pairingRequired` seal refuses any site-visit event with no change.
 --       The site-visit rows are themselves the audit register (append-only, attributed, timed), as `DecisionEvent`
 --       is for decisions; the generic `AuditLog` row a command writes stays a convention and is not paired (F56).
@@ -131,6 +134,13 @@ DO $sv1a_fk$ BEGIN
     ALTER TABLE "SiteVisit" ADD CONSTRAINT "SiteVisit_closedById_fkey"
       FOREIGN KEY ("closedById") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE NO ACTION;
   END IF;
+  -- A `db push` baseline (the P3005 path) already holds this key under the same name with Prisma's NO ACTION, which
+  -- cannot express the column-list form; a name check would keep it, so the key is judged by its delete action and
+  -- replaced when that is not SET NULL of the node column alone.
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SiteVisit_projectId_startNodeId_fkey'
+                AND NOT (confdeltype = 'n' AND confdelsetcols IS NOT NULL)) THEN
+    ALTER TABLE "SiteVisit" DROP CONSTRAINT "SiteVisit_projectId_startNodeId_fkey";
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SiteVisit_projectId_startNodeId_fkey') THEN
     ALTER TABLE "SiteVisit" ADD CONSTRAINT "SiteVisit_projectId_startNodeId_fkey"
       FOREIGN KEY ("projectId", "startNodeId") REFERENCES "ProjectNode"("projectId", "id")
@@ -157,6 +167,10 @@ DO $sv1a_fk$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SiteVisitPlace_projectId_visitId_fkey') THEN
     ALTER TABLE "SiteVisitPlace" ADD CONSTRAINT "SiteVisitPlace_projectId_visitId_fkey"
       FOREIGN KEY ("projectId", "visitId") REFERENCES "SiteVisit"("projectId", "id") ON DELETE CASCADE ON UPDATE NO ACTION;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SiteVisitPlace_projectId_nodeId_fkey'
+                AND NOT (confdeltype = 'n' AND confdelsetcols IS NOT NULL)) THEN
+    ALTER TABLE "SiteVisitPlace" DROP CONSTRAINT "SiteVisitPlace_projectId_nodeId_fkey";
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SiteVisitPlace_projectId_nodeId_fkey') THEN
     ALTER TABLE "SiteVisitPlace" ADD CONSTRAINT "SiteVisitPlace_projectId_nodeId_fkey"
@@ -187,7 +201,9 @@ DO $sv1a_check$ BEGIN
       -- location: all four for a device fix, none for 'none' (Q6, Q12)
       AND (("locationKind" = 'device'
               AND "locLat" IS NOT NULL AND "locLng" IS NOT NULL AND "locAccuracyM" IS NOT NULL AND "locAt" IS NOT NULL
-              AND "locLat" BETWEEN -90 AND 90 AND "locLng" BETWEEN -180 AND 180 AND "locAccuracyM" >= 0)
+              AND "locLat" BETWEEN -90 AND 90 AND "locLng" BETWEEN -180 AND 180
+              -- finite: PostgreSQL orders Infinity and NaN above every number, so `>= 0` alone admits both
+              AND "locAccuracyM" >= 0 AND "locAccuracyM" < 'Infinity'::float8)
         OR ("locationKind" = 'none'
               AND "locLat" IS NULL AND "locLng" IS NULL AND "locAccuracyM" IS NULL AND "locAt" IS NULL))
       -- V3 / F54: accepted is the claim exactly when not adjusted, else the receipt; never after the receipt
@@ -273,7 +289,9 @@ BEGIN
   PERFORM 1 FROM "ProjectUserStanding"
    WHERE "projectId" = p_project AND "userId" = p_user
      FOR SHARE;
-  SELECT "displayName" INTO v_name FROM "UserIdentity" WHERE "userId" = p_user FOR SHARE;
+  -- FOR UPDATE, the strength the event's envelope seal takes on this row: two share holders would each wait to
+  -- upgrade at their event and deadlock (two starts by one visitor on two projects, two closes by one PMC).
+  SELECT "displayName" INTO v_name FROM "UserIdentity" WHERE "userId" = p_user FOR UPDATE;
   IF NOT phase6_project_operable(p_project) THEN
     RAISE EXCEPTION 'site-visits: project % is not operable (archived or absent), so no % may be written on it', p_project, p_what;
   END IF;
@@ -287,20 +305,23 @@ BEGIN
   RETURN v_name;
 END $$;
 
--- A node a visit names must be PUBLISHED (a draft is private to its author) and in the visit's project; its label is
--- COPIED from the locked node, never taken from the caller. The node row is locked FOR KEY SHARE (what the foreign
--- key itself takes), so a concurrent rename waits and the frozen label is the name at the act.
-CREATE OR REPLACE FUNCTION site_visits_node_label(p_project TEXT, p_node TEXT)
+-- THE NODES MODULE'S DATABASE CONTRACT (site-visits declares `dependsOn: ['nodes']`). Site Visits never reads
+-- "ProjectNode" itself: it asks this nodes-owned function, which answers for a node of the given project that is
+-- PUBLISHED (a draft is private to its author) and returns its current name, raising otherwise. The row is locked
+-- FOR SHARE, which conflicts with the FOR NO KEY UPDATE lock any UPDATE of the row takes, so a concurrent rename
+-- either commits first (and this reads the new name) or waits for the caller's transaction (and the old name was
+-- the name at the act). A later change to how nodes store names or publication changes this function, in one place.
+CREATE OR REPLACE FUNCTION nodes_published_name_locked(p_project TEXT, p_node TEXT)
 RETURNS TEXT LANGUAGE plpgsql VOLATILE AS $$
 DECLARE v_name TEXT; v_published TIMESTAMP(3);
 BEGIN
   SELECT "name", "publishedAt" INTO v_name, v_published
     FROM "ProjectNode" WHERE "projectId" = p_project AND "id" = p_node FOR SHARE;
   IF NOT FOUND THEN
-    RAISE EXCEPTION 'site-visits: node % is not a place of project %', p_node, p_project;
+    RAISE EXCEPTION 'nodes: node % is not a place of project %', p_node, p_project;
   END IF;
   IF v_published IS NULL THEN
-    RAISE EXCEPTION 'site-visits: node % is an unpublished draft; a visit records only published places', p_node;
+    RAISE EXCEPTION 'nodes: node % is an unpublished draft; only a published place may be recorded', p_node;
   END IF;
   RETURN v_name;
 END $$;
@@ -325,7 +346,7 @@ BEGIN
   END IF;
   NEW."visitorName" := site_visits_standing_name(NEW."projectId", NEW."visitorId", NEW."visitorRole", 'visitor');
   IF NEW."startNodeId" IS NOT NULL THEN
-    NEW."startPlaceName" := site_visits_node_label(NEW."projectId", NEW."startNodeId");
+    NEW."startPlaceName" := nodes_published_name_locked(NEW."projectId", NEW."startNodeId");
   ELSE
     NEW."startPlaceName" := NULL;
   END IF;
@@ -372,6 +393,8 @@ BEGIN
        OR NEW."lateEndClaimedAt" IS NOT NULL THEN
       RAISE EXCEPTION 'site-visits: ending visit % takes an end claim and nothing else', OLD."id";
     END IF;
+    -- V2: the visitor still holds their visit role when they end it (the same standing every visitor act needs).
+    PERFORM site_visits_standing_name(OLD."projectId", OLD."visitorId", OLD."visitorRole", 'visitor');
     -- V3 / F47: never before the start, nor before any place walked while the visit was open. The UPDATE holds the
     -- visit row, and every place insert locks it first, so no open-time place can commit after this read.
     SELECT GREATEST(OLD."startedAt", COALESCE(max(p."addedAt"), OLD."startedAt")) INTO v_lower
@@ -401,6 +424,9 @@ BEGIN
      AND OLD."lateEndClaimedAt" IS NULL AND NEW."lateEndClaimedAt" IS NOT NULL
      AND ROW(NEW."closedAt", NEW."closedById", NEW."closeReason")
          IS NOT DISTINCT FROM ROW(OLD."closedAt", OLD."closedById", OLD."closeReason") THEN
+    -- F48: a late end is the visitor's act, so it needs their standing now. A visitor removed from the project
+    -- after the close can no longer record one: the PMC's close stands (the kernel refuses their event too).
+    PERFORM site_visits_standing_name(OLD."projectId", OLD."visitorId", OLD."visitorRole", 'visitor');
     NEW."lateEndReceivedAt" := site_visits_now();
     RETURN NEW;
   END IF;
@@ -418,12 +444,13 @@ CREATE TRIGGER "SiteVisit_update"
 -- Children — the visit row is the lock for every child write (F49)
 -- ════════════════════════════════════════════════════════════════════════════════════════════
 
+DROP FUNCTION IF EXISTS site_visits_lock_visit(TEXT, TEXT);
 -- Locks the child's visit and returns its state. Every child insert or retire runs this FIRST, so a child write and
 -- the visit's end or close serialise on one row.
-CREATE OR REPLACE FUNCTION site_visits_lock_visit(p_project TEXT, p_visit TEXT, OUT o_status TEXT, OUT o_visitor TEXT, OUT o_started TIMESTAMP(3))
+CREATE OR REPLACE FUNCTION site_visits_lock_visit(p_project TEXT, p_visit TEXT, OUT o_status TEXT, OUT o_visitor TEXT, OUT o_started TIMESTAMP(3), OUT o_role TEXT)
 LANGUAGE plpgsql VOLATILE AS $$
 BEGIN
-  SELECT "status", "visitorId", "startedAt" INTO o_status, o_visitor, o_started
+  SELECT "status", "visitorId", "startedAt", "visitorRole" INTO o_status, o_visitor, o_started, o_role
     FROM "SiteVisit" WHERE "projectId" = p_project AND "id" = p_visit FOR UPDATE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'site-visits: visit % is not a visit of project %', p_visit, p_project;
@@ -440,6 +467,7 @@ BEGIN
   IF NEW."addedById" IS DISTINCT FROM v.o_visitor THEN
     RAISE EXCEPTION 'site-visits: only the visitor adds attendees to visit % (added by %)', NEW."visitId", NEW."addedById";
   END IF;
+  PERFORM site_visits_standing_name(NEW."projectId", v.o_visitor, v.o_role, 'visitor');
   IF NEW."retiredAt" IS NOT NULL OR NEW."retiredById" IS NOT NULL THEN
     RAISE EXCEPTION 'site-visits: attendee % is inserted standing, not retired', NEW."id";
   END IF;
@@ -467,6 +495,7 @@ BEGIN
   IF NEW."addedById" IS DISTINCT FROM v.o_visitor THEN
     RAISE EXCEPTION 'site-visits: only the visitor adds places to visit % (added by %)', NEW."visitId", NEW."addedById";
   END IF;
+  PERFORM site_visits_standing_name(NEW."projectId", v.o_visitor, v.o_role, 'visitor');
   IF NEW."retiredAt" IS NOT NULL OR NEW."retiredById" IS NOT NULL THEN
     RAISE EXCEPTION 'site-visits: place % is inserted standing, not retired', NEW."id";
   END IF;
@@ -474,7 +503,7 @@ BEGIN
   IF NEW."nodeId" IS NULL THEN
     RAISE EXCEPTION 'site-visits: place % must name the node it records', NEW."id";
   END IF;
-  NEW."placeName" := site_visits_node_label(NEW."projectId", NEW."nodeId");
+  NEW."placeName" := nodes_published_name_locked(NEW."projectId", NEW."nodeId");
   IF NOT phase6_project_operable(NEW."projectId") THEN
     RAISE EXCEPTION 'site-visits: project % is not operable, so no place may be added', NEW."projectId";
   END IF;
@@ -522,6 +551,7 @@ BEGIN
   IF NEW."retiredById" IS DISTINCT FROM v.o_visitor THEN
     RAISE EXCEPTION 'site-visits: only the visitor retires % % (retired by %)', TG_TABLE_NAME, OLD."id", NEW."retiredById";
   END IF;
+  PERFORM site_visits_standing_name(OLD."projectId", v.o_visitor, v.o_role, 'visitor');
   IF NOT phase6_project_operable(OLD."projectId") THEN
     RAISE EXCEPTION 'site-visits: project % is not operable, so % % cannot be retired', OLD."projectId", TG_TABLE_NAME, OLD."id";
   END IF;
@@ -587,22 +617,23 @@ CREATE TRIGGER "SiteVisitPlace_no_truncate" BEFORE TRUNCATE ON "SiteVisitPlace"
 -- site-visit event that no change claimed; the register's per-event key makes a second claimant impossible.
 --
 -- A match is: same project, the visit's stream (`SiteVisit` / visit id), the change's type, a HUMAN actor who is the
--- person the row attributes the change to, written in this transaction, and — for a child change — `payload.rowId`
+-- person the row attributes the change to, carrying the actor envelope in the role it attributes (the visit role for
+-- the visitor's acts, `pmc` for a close), written in this transaction, and — for a child change — `payload.rowId`
 -- naming this row (a start that names three attendees writes three `attendee_added` events on one stream).
 CREATE OR REPLACE FUNCTION site_visits_claim() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
-  v_type TEXT; v_actor TEXT; v_visit TEXT; v_row TEXT; v_table TEXT;
+  v_type TEXT; v_actor TEXT; v_role TEXT; v_visit TEXT; v_row TEXT; v_table TEXT;
   v_count BIGINT; v_event TEXT; v_notices BIGINT; v_needs_notice BOOLEAN := FALSE;
 BEGIN
   v_table := TG_TABLE_NAME;
   IF TG_TABLE_NAME = 'SiteVisit' THEN
-    v_visit := NEW."id"; v_row := NULL;
+    v_visit := NEW."id"; v_row := NULL; v_role := NEW."visitorRole";
     IF TG_OP = 'INSERT' THEN
       v_type := 'sitevisit.started'; v_actor := NEW."visitorId"; v_needs_notice := TRUE;
     ELSIF OLD."status" = 'open' AND NEW."status" = 'ended' THEN
       v_type := 'sitevisit.ended'; v_actor := NEW."visitorId"; v_needs_notice := TRUE;
     ELSIF OLD."status" = 'open' AND NEW."status" = 'closed' THEN
-      v_type := 'sitevisit.closed'; v_actor := NEW."closedById"; v_needs_notice := TRUE;
+      v_type := 'sitevisit.closed'; v_actor := NEW."closedById"; v_role := 'pmc'; v_needs_notice := TRUE;
     ELSIF OLD."lateEndClaimedAt" IS NULL AND NEW."lateEndClaimedAt" IS NOT NULL THEN
       v_type := 'sitevisit.late_end_recorded'; v_actor := NEW."visitorId";
     ELSE
@@ -610,6 +641,7 @@ BEGIN
     END IF;
   ELSE
     v_visit := NEW."visitId"; v_row := NEW."id";
+    SELECT "visitorRole" INTO v_role FROM "SiteVisit" WHERE "projectId" = NEW."projectId" AND "id" = NEW."visitId";
     IF TG_OP = 'INSERT' THEN
       v_type := CASE TG_TABLE_NAME WHEN 'SiteVisitAttendee' THEN 'sitevisit.attendee_added' ELSE 'sitevisit.place_added' END;
       v_actor := NEW."addedById";
@@ -627,14 +659,17 @@ BEGIN
      AND e."entityType" = 'SiteVisit' AND e."entityId" = v_visit
      AND e."eventType" = v_type
      AND e."actorKind" = 'human' AND e."actorId" = v_actor
+     -- the frozen envelope, in the role the row attributes the act to; the kernel's envelope seal has already
+     -- proved the pair true of `actorId` (role held, name the account's), so a pair-less event cannot carry it
+     AND e."actorRole" = v_role AND e."actorName" IS NOT NULL
      AND e."xmin" = txid_current()::text::xid
      AND (v_row IS NULL OR e."payload" ->> 'rowId' = v_row);
 
   IF TG_NAME LIKE '%\_deferred' THEN
     IF v_count <> 1 THEN
       RAISE EXCEPTION
-        'site-visits: % % changed (%) in this transaction with % matching `%` event(s) from % — each change is announced exactly once, by the person it is attributed to, on the visit''s stream%',
-        v_table, NEW."id", TG_OP, v_count, v_type, v_actor,
+        'site-visits: % % changed (%) in this transaction with % matching `%` event(s) from % as % — each change is announced exactly once, by the person it is attributed to with their role and name, on the visit''s stream%',
+        v_table, NEW."id", TG_OP, v_count, v_type, v_actor, v_role,
         CASE WHEN v_row IS NULL THEN '' ELSE ', naming this row as payload.rowId' END;
     END IF;
     IF v_needs_notice THEN

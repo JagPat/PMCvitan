@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, insertRawEventVia, type TwoProjectFixture } from './fixtures';
+import { alwaysExecuteReplay, createTwoProjectFixture, insertRawEventVia, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import type { PrismaService } from '../../src/prisma.service';
 
@@ -20,7 +22,7 @@ import type { PrismaService } from '../../src/prisma.service';
  *       close with exactly one notice of that kind (F45, F59)
  */
 type Tx = Parameters<Parameters<PrismaService['$transaction']>[0]>[0];
-type Pair = { type: string; actor: string; role: string; rowId?: string; notice?: boolean };
+type Pair = { type: string; actor: string; role: string; rowId?: string; notice?: boolean; noEnvelope?: boolean };
 
 describe('Site Visits SV1-a — the visit record (live PG)', () => {
   let t: TestApp;
@@ -106,7 +108,7 @@ describe('Site Visits SV1-a — the visit record (live PG)', () => {
       projectId, organizationId: orgOf(projectId), eventId, eventType: p.type, effectKey: p.type,
       entityType: 'SiteVisit', entityId: visitId, actor: { actorKind: 'human', actorId: p.actor },
       columns: ['"actorRole"', '"actorName"', '"payload"'],
-      values: [`'${p.role}'`, `'${name}'`, p.rowId ? `'${JSON.stringify({ rowId: p.rowId })}'::jsonb` : 'NULL'],
+      values: [p.noEnvelope ? 'NULL' : `'${p.role}'`, p.noEnvelope ? 'NULL' : `'${name}'`, p.rowId ? `'${JSON.stringify({ rowId: p.rowId })}'::jsonb` : 'NULL'],
     });
     if (p.notice) {
       await q.$executeRawUnsafe(
@@ -126,19 +128,19 @@ describe('Site Visits SV1-a — the visit record (live PG)', () => {
       if (eventFirst) await write(q);
     }, { timeout: 30_000 });
 
-  type StartOpts = { id?: string; projectId?: string; visitor?: string; role?: string; node?: string | null; claimed?: string; device?: boolean; tagged?: string };
+  type StartOpts = { id?: string; projectId?: string; visitor?: string; role?: string; node?: string | null; claimed?: string; device?: boolean; accuracy?: string; tagged?: string };
   /** The raw start: FORGED name, label and accepted/received times, all of which the database must overwrite. */
   const startRow = (q: Tx, o: Required<Omit<StartOpts, 'tagged'>> & { tagged?: string }) =>
     q.$executeRawUnsafe(
       `INSERT /* ${o.tagged ?? ''} */ INTO "SiteVisit" ("id","projectId","visitorId","visitorRole","visitorName","startClaimedAt","startedAt",
          "startTimeAdjusted","startReceivedAt","startNodeId","startPlaceName","locationKind","locLat","locLng","locAccuracyM","locAt")
        VALUES ($1,$2,$3,$4,'Forged Name',${UTC(5)},'2001-01-01',false,'2001-01-01',$6,'Forged Place',$7,
-         ${o.device ? `23.02, 72.57, 12.5, ${UTC(5)}` : 'NULL,NULL,NULL,NULL'})`,
+         ${o.device ? `23.02, 72.57, ${o.accuracy}, ${UTC(5)}` : 'NULL,NULL,NULL,NULL'})`,
       o.id, o.projectId, o.visitor, o.role, o.claimed, o.node, o.device ? 'device' : 'none',
     );
   const startOpts = (o: StartOpts) => ({
     id: o.id ?? randomUUID(), projectId: o.projectId ?? f.projectA.id, visitor: o.visitor ?? f.memberUser.id,
-    role: o.role ?? 'pmc', node: o.node === undefined ? n1.id : o.node, claimed: o.claimed ?? ago(10), device: o.device ?? true, tagged: o.tagged,
+    role: o.role ?? 'pmc', node: o.node === undefined ? n1.id : o.node, claimed: o.claimed ?? ago(10), device: o.device ?? true, accuracy: o.accuracy ?? '12.5', tagged: o.tagged,
   });
   const start = async (o: StartOpts = {}, eventFirst = false): Promise<string> => {
     const s = startOpts(o);
@@ -154,8 +156,8 @@ describe('Site Visits SV1-a — the visit record (live PG)', () => {
     paired(await projectOf(t.prisma as unknown as Tx, id), id, (q) => endRow(q, id, claimed),
       [{ type: 'sitevisit.ended', actor: by, role, notice: true }], eventFirst);
 
-  const closeRow = (q: Tx, id: string, closer: string, reason: string) =>
-    q.$executeRawUnsafe(`UPDATE "SiteVisit" SET "status" = 'closed', "closedById" = $2, "closeReason" = $3, "closedAt" = '2001-01-01' WHERE "id" = $1`, id, closer, reason);
+  const closeRow = (q: Tx, id: string, closer: string, reason: string, tagged = '') =>
+    q.$executeRawUnsafe(`UPDATE /* ${tagged} */ "SiteVisit" SET "status" = 'closed', "closedById" = $2, "closeReason" = $3, "closedAt" = '2001-01-01' WHERE "id" = $1`, id, closer, reason);
   const close = async (id: string, closer = f.memberUser.id, reason = 'Visitor forgot to end it') =>
     paired(await projectOf(t.prisma as unknown as Tx, id), id, (q) => closeRow(q, id, closer, reason),
       [{ type: 'sitevisit.closed', actor: closer, role: 'pmc', notice: true }]);
@@ -419,6 +421,58 @@ describe('Site Visits SV1-a — the visit record (live PG)', () => {
       await restore();
     });
 
+    it('takes the identity row at the envelope’s strength, so two closes by one PMC serialize instead of deadlocking', async () => {
+      await endOpen(consultant, f.projectA.id, 'consultant');
+      await endOpen(f.ownerUser.id);
+      const v1 = await start({ visitor: consultant, role: 'consultant', node: null });
+      const v2 = await start({ visitor: f.ownerUser.id, node: null });
+      // the first close holds the closer's identity row from its row write until it commits
+      const wrote = gate(); const release = gate();
+      const first = t.prisma.$transaction(async (q) => {
+        await closeRow(q, v1, f.memberUser.id, 'left open');
+        wrote.open();
+        await release.p;
+        await plant(q, f.projectA.id, v1, { type: 'sitevisit.closed', actor: f.memberUser.id, role: 'pmc', notice: true });
+      }, { timeout: 30_000 });
+      await wrote.p;
+      const secondTag = tag('second-close');
+      const second = settle(t.prisma.$transaction(async (q) => {
+        await closeRow(q, v2, f.memberUser.id, 'left open', secondTag);
+        await plant(q, f.projectA.id, v2, { type: 'sitevisit.closed', actor: f.memberUser.id, role: 'pmc', notice: true });
+      }, { timeout: 30_000 }));
+      // a share lock would let the second through to its event, where both would wait to upgrade: a deadlock
+      expect(await reachesLockWait(secondTag), 'the second close waits on the identity row the first holds').toBe(true);
+      release.open();
+      await first;
+      expect(await second).toMatchObject({ ok: true });
+      expect((await visit(v1)).status).toBe('closed');
+      expect((await visit(v2)).status).toBe('closed');
+    });
+
+    it('every later act of the visitor needs their standing; a removed visitor’s late end is refused and the close stands (F48)', async () => {
+      const gone = `sv-cons-gone-${run}`;
+      extraUsers.push(gone);
+      await t.prisma.user.create({ data: { id: gone, projectId: f.projectA.id, role: 'consultant', name: 'Ravi (Consultant)', email: `${gone}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: gone, role: 'consultant', status: 'active' } });
+      const [row] = await t.prisma.$queryRaw<Array<{ displayName: string }>>`SELECT "displayName" FROM "UserIdentity" WHERE "userId" = ${gone}`;
+      names.set(gone, row!.displayName);
+      const remove = (status: 'removed' | 'active') =>
+        t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: gone } }, data: { status } });
+
+      const id = await start({ visitor: gone, role: 'consultant' });
+      const p = await addPlace(id, n2.id, { by: gone, role: 'consultant' });
+      await remove('removed');
+      await expect(addPlace(id, n1.id, { by: gone, role: 'consultant' })).rejects.toThrow(/does not hold role/);
+      await expect(addAttendee(id, { guest: 'G' }, { by: gone, role: 'consultant' })).rejects.toThrow(/does not hold role/);
+      await expect(retire('SiteVisitPlace', id, p, gone, 'consultant')).rejects.toThrow(/does not hold role/);
+      await expect(end(id, ago(0), gone, 'consultant')).rejects.toThrow(/does not hold role/);
+      await close(id, f.memberUser.id, 'Visitor left the project');
+      await expect(lateEnd(id, gone, 'consultant')).rejects.toThrow(/does not hold role/);
+      expect(await visit(id)).toMatchObject({ status: 'closed', lateEndClaimedAt: null, lateEndReceivedAt: null });
+      expect((await place(p)).retiredAt).toBeNull();
+      await remove('active');
+    });
+
     it('only the visitor adds or retires a child row, and the row records the visitor (F46)', async () => {
       await endOpen(f.memberUser.id);
       const id = await start();
@@ -547,6 +601,63 @@ describe('Site Visits SV1-a — the visit record (live PG)', () => {
       await end(id);
     });
 
+    it('a node rename and a place serialize on the node row in both orders, so the frozen label is the name at the act', async () => {
+      const node = await t.prisma.projectNode.create({ data: { projectId: f.projectA.id, name: `Lift core ${run}`, kind: 'zone', order: 0, authorId: f.memberUser.id, publishedAt: new Date() } });
+      await endOpen(f.memberUser.id);
+      const id = await start({ node: null });
+      const rename = (to: string, tagged: string) => raw(`UPDATE /* ${tagged} */ "ProjectNode" SET "name" = $2 WHERE "id" = $1`, node.id, to);
+
+      // the place first: the rename waits for it, and the place keeps the name it was added under
+      const a = randomUUID();
+      const wrote = gate(); const release = gate();
+      const write = t.prisma.$transaction(async (q) => {
+        await placeRow(q, { id: a, projectId: f.projectA.id, visitId: id, nodeId: node.id, by: f.memberUser.id, claimed: ago(1) });
+        await plant(q, f.projectA.id, id, { type: 'sitevisit.place_added', actor: f.memberUser.id, role: 'pmc', rowId: a });
+        wrote.open();
+        await release.p;
+      }, { timeout: 30_000 });
+      await wrote.p;
+      const renameTag = tag('rename-waits');
+      const renamed = settle(rename(`Lift core (east) ${run}`, renameTag));
+      expect(await reachesLockWait(renameTag), 'the rename is blocked on the node row the place holds').toBe(true);
+      release.open();
+      await write;
+      expect((await renamed).ok).toBe(true);
+      expect((await place(a)).placeName).toBe(`Lift core ${run}`);
+      await retire('SiteVisitPlace', id, a);   // one standing place per node per visit
+
+      // the rename first: the place waits for it, then freezes the new name
+      const held = gate(); const go = gate();
+      const renaming = t.prisma.$transaction(async (q) => {
+        await q.$executeRawUnsafe(`UPDATE "ProjectNode" SET "name" = $2 WHERE "id" = $1`, node.id, `Lift core (west) ${run}`);
+        held.open();
+        await go.p;
+      }, { timeout: 30_000 });
+      await held.p;
+      const placeTag = tag('place-waits-rename');
+      const b = randomUUID();
+      const second = settle(t.prisma.$transaction(async (q) => {
+        await placeRow(q, { id: b, projectId: f.projectA.id, visitId: id, nodeId: node.id, by: f.memberUser.id, claimed: ago(1), tagged: placeTag });
+        await plant(q, f.projectA.id, id, { type: 'sitevisit.place_added', actor: f.memberUser.id, role: 'pmc', rowId: b });
+      }, { timeout: 30_000 }));
+      expect(await reachesLockWait(placeTag), 'the place is blocked on the node row the rename holds').toBe(true);
+      go.open();
+      await renaming;
+      expect(await second).toMatchObject({ ok: true });
+      expect((await place(b)).placeName).toBe(`Lift core (west) ${run}`);
+      await end(id);
+    });
+
+    it('a device fix carries a finite accuracy: Infinity and NaN are refused', async () => {
+      await endOpen(f.memberUser.id);
+      for (const accuracy of [`'Infinity'::float8`, `'NaN'::float8`, `-1`]) {
+        await expect(start({ accuracy }), accuracy).rejects.toThrow(/SiteVisit_shape_check/);
+      }
+      const id = await start({ accuracy: '1500' });
+      expect((await visit(id)).locAccuracyM).toBe(1500);
+      await end(id);
+    });
+
     it('refuses a blank or overlong guest name under the full whitespace set (F61)', async () => {
       await endOpen(f.memberUser.id);
       const id = await start();
@@ -619,6 +730,19 @@ describe('Site Visits SV1-a — the visit record (live PG)', () => {
         .toEqual([{ n: 0n }]);
     });
 
+    it('the event carries the actor envelope in the role the row attributes, or it does not count', async () => {
+      await endOpen(f.memberUser.id);
+      await expect(startWith(() => [{ type: 'sitevisit.started', actor: f.memberUser.id, role: 'pmc', notice: true, noEnvelope: true }]))
+        .rejects.toThrow(/0 matching `sitevisit.started` event\(s\) from .* as pmc/);
+      const id = await start();
+      const pid = randomUUID();
+      await expect(paired(f.projectA.id, id, (q) => placeRow(q, { id: pid, projectId: f.projectA.id, visitId: id, nodeId: n2.id, by: f.memberUser.id, claimed: ago(1) }),
+        [{ type: 'sitevisit.place_added', actor: f.memberUser.id, role: 'pmc', rowId: pid, noEnvelope: true }])).rejects.toThrow(/0 matching `sitevisit.place_added`/);
+      await expect(paired(f.projectA.id, id, (q) => closeRow(q, id, f.memberUser.id, 'x'),
+        [{ type: 'sitevisit.closed', actor: f.memberUser.id, role: 'pmc', notice: true, noEnvelope: true }])).rejects.toThrow(/0 matching `sitevisit.closed`/);
+      await end(id);
+    });
+
     it('a kind-less notice cannot carry the event, and one that names nothing does not count (F59)', async () => {
       await expect(t.prisma.$transaction(async (q) => {
         const s = startOpts({});
@@ -658,6 +782,32 @@ describe('Site Visits SV1-a — the visit record (live PG)', () => {
   });
 
   // ── V1 — the project cascade (F60) ─────────────────────────────────────────────────────────
+
+  it('a replay over a `db push` baseline replaces the NO ACTION node keys with the column-list SET NULL', async () => {
+    const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
+    const def = async (name: string) => (await t.prisma.$queryRawUnsafe<Array<{ d: string }>>(
+      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conname = $1`, name))[0]?.d;
+    // what Prisma's `db push` creates for `onDelete: NoAction` under the same names
+    await raw(`ALTER TABLE "SiteVisit" DROP CONSTRAINT "SiteVisit_projectId_startNodeId_fkey",
+      ADD CONSTRAINT "SiteVisit_projectId_startNodeId_fkey" FOREIGN KEY ("projectId","startNodeId") REFERENCES "ProjectNode"("projectId","id") ON DELETE NO ACTION ON UPDATE NO ACTION`);
+    await raw(`ALTER TABLE "SiteVisitPlace" DROP CONSTRAINT "SiteVisitPlace_projectId_nodeId_fkey",
+      ADD CONSTRAINT "SiteVisitPlace_projectId_nodeId_fkey" FOREIGN KEY ("projectId","nodeId") REFERENCES "ProjectNode"("projectId","id") ON DELETE NO ACTION ON UPDATE NO ACTION`);
+    expect(await def('SiteVisitPlace_projectId_nodeId_fkey')).not.toMatch(/SET NULL/);
+    for (const m of alwaysExecuteReplay('20280112000000_site_visits_sv1a_record')) {
+      execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', join(__dirname, '..', '..', 'prisma', 'migrations', m, 'migration.sql')], { stdio: 'pipe' });
+    }
+    expect(await def('SiteVisit_projectId_startNodeId_fkey')).toMatch(/ON DELETE SET NULL \("startNodeId"\)$/);
+    expect(await def('SiteVisitPlace_projectId_nodeId_fkey')).toMatch(/ON DELETE SET NULL \("nodeId"\)$/);
+    // and the node's removal then clears only the reference, as on a migrated database
+    const gone = await t.prisma.projectNode.create({ data: { projectId: f.projectA.id, name: `Hoarding ${run}`, kind: 'zone', order: 0, authorId: f.memberUser.id, publishedAt: new Date() } });
+    await endOpen(f.memberUser.id);
+    const id = await start({ node: gone.id });
+    const p = await addPlace(id, gone.id);
+    await t.prisma.projectNode.delete({ where: { id: gone.id } });
+    expect(await visit(id)).toMatchObject({ startNodeId: null, startPlaceName: `Hoarding ${run}` });
+    expect(await place(p)).toMatchObject({ nodeId: null, placeName: `Hoarding ${run}` });
+    await end(id);
+  });
 
   it('a project’s deletion removes its visits and their children, and only it (F60)', async () => {
     const pc = `sv-proj-${run}`;

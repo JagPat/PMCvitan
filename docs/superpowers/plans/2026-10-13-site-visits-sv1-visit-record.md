@@ -31,11 +31,11 @@ Each line is proved in `apps/api/test/integration/site-visits-sv1a.test.ts` besi
 | Rule | How | Findings |
 | --- | --- | --- |
 | **V1 Tenancy.** Every row carries `projectId`; children reach their visit, and rows their node, by composite keys. Deleting a project removes its visits and their children. | Composite FKs, `ON DELETE CASCADE` | F60 |
-| **V2 Who.** The visitor, a member attendee and the closer (pmc) hold that role on the project when written, judged after locking the registers in the actor envelope's order. Names and place labels are copied from the locked identity and node; the caller's values are overwritten. Only the visitor adds or retires a child row. | `site_visits_standing_name`, `site_visits_node_label`, insert triggers | F46, F55, F57, F61 |
+| **V2 Who.** The visitor (at the start and at each later act: end, late end, child add or retire), a member attendee and the closer (pmc) hold that role on the project when written, judged after locking the registers in the actor envelope's order, the identity row FOR UPDATE as the envelope seal takes it. Names are copied from the locked identity; a place label comes from the nodes module's own function, which locks the node so a rename and a visit serialize. Only the visitor adds or retires a child row. A visitor removed after a close records no late end: the close stands. | `site_visits_standing_name`, `nodes_published_name_locked`, insert and lifecycle triggers | F46, F48, F55, F57, F61 |
 | **V3 Time.** The caller sends only claimed times. The database stamps each receipt and accepts the claim only inside its window (start: the last 7 days and not before the project; place: after the start; end: after the start and after every place walked while open), else the receipt. `adjusted` is exactly "accepted differs from claimed". | `site_visits_accept`, CHECKs | F47, F54 |
 | **V4 Lifecycle.** open → ended or closed, once; a late end only on a closed visit, once. A closed visit takes no child edit. A place added after the end is marked `addedAfterEnd` and accepted at its receipt. Every child write locks the visit row first, so it and the end or close serialize. A place always names a published node of its project. | `SiteVisit_update`, `site_visits_lock_visit` | F49, F51 |
-| **V5 Immutable.** No direct delete or truncate; frozen columns stay frozen; a child is retired once. A node reference is cleared only by the node's own `ON DELETE SET NULL (col)` action, never by a direct update, and the frozen label stays. | no-delete/no-truncate triggers, depth check | F58 |
-| **V6 Paired.** Each change commits with exactly one same-transaction `sitevisit.*` event from the human it is attributed to, on the visit's stream, naming the child row for child changes. Start, end and close also need exactly one notice whose `kind` is that event's type. The event is then claimed, so the kernel's `pairingRequired` seal refuses a site-visit event with no change. | claimant triggers (immediate + deferred), `platform_claim_event_pairing_once` | F45, F59 |
+| **V5 Immutable.** No direct delete or truncate; frozen columns stay frozen; a child is retired once. A node reference is cleared only by the node's own `ON DELETE SET NULL (col)` action, never by a direct update, and the frozen label stays. A `db push` baseline's NO ACTION node keys are replaced by that action on replay. A device fix's accuracy is finite. | no-delete/no-truncate triggers, depth check, FK audit, CHECKs | F58 |
+| **V6 Paired.** Each change commits with exactly one same-transaction `sitevisit.*` event from the human it is attributed to, carrying their actor envelope in the role the row attributes (the visit role, or `pmc` for a close), on the visit's stream, naming the child row for child changes. Start, end and close also need exactly one notice whose `kind` is that event's type. The event is then claimed, so the kernel's `pairingRequired` seal refuses a site-visit event with no change. | claimant triggers (immediate + deferred), `platform_claim_event_pairing_once` | F45, F59 |
 
 **Correction to the previous design (F59).** It said a site-visit notice could carry an `eventId` without a `kind`.
 It cannot: `Notification_event_binding_pair_check` requires both or neither, and a kinded notice must match its
@@ -54,12 +54,12 @@ columns are classified `exempt` in `set-null-coverage.test.ts`.
 - Both migrations are on `migrate.sh`'s `ALWAYS_EXECUTE`. On a database restored without its migration ledger that
   carries SV1-a's generation, `migrate.sh` resolves A7d (and U1, A7a, whose replays only A7d repairs) as applied,
   because A7d's catalog audit refuses any generation newer than itself. `upgrade-proof.sh` mirrors this.
-- The `site-visits` module manifest, the truncate seals in `sanctioned-reset.ts`, and the seed reset list.
+- The `site-visits` module manifest (`dependsOn: ['nodes']`, for the node-label function), the truncate seals in
+  `sanctioned-reset.ts`, and the seed reset list.
 
 ## Left for later units
 
 | Finding | Where |
 | --- | --- |
-| F48 late end after the visitor's removal | SV1-b (command authority); the database admits the late-end pair |
 | F50 notice wording and the feed renderer | SV1-b |
 | F53 queued offline actions survive a start conflict | SV1-c |
