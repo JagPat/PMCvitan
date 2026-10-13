@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { DailyLog, Lang } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
 
@@ -117,5 +117,98 @@ describe('English is unchanged', () => {
     cleanup();
     const demo = await screen('en', { dailyLog: log(), online: false, syncQueue: [{}] }, { demo: true });
     expect(demo.getByTestId('conn-text').textContent).toBe('Offline · 1 update queued');
+  });
+});
+
+// #833 review: the places the daily log leads into speak the same language
+const words = (text: string, allowed: readonly string[] = DATA) => {
+  const el = document.createElement('div');
+  el.textContent = text;
+  return leftoverEnglish(el, allowed);
+};
+
+describe('what the daily log leads into, in Hindi and Gujarati', () => {
+  for (const lang of ['hi', 'gu'] as const) {
+    it(`${lang}: the material-delivery form, with its details open`, async () => {
+      const r = await screen(lang, { dailyLog: log() });
+      fireEvent.click(r.getByTestId('add-material'));
+      fireEvent.click(r.getByTestId('mat-more-toggle'));
+      expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+    });
+
+    it(`${lang}: the photo viewer`, async () => {
+      const r = await screen(lang, { dailyLog: log() });
+      fireEvent.click(r.getByTestId('progress-thumb'));
+      expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+    });
+
+    it(`${lang}: a log opened by link, in every state the link can be in`, async () => {
+      const { RecordBoundary } = await import('@/components/RecordBoundary');
+      const states = [
+        { state: 'opening', id: 'log-7' }, { state: 'returning' }, { state: 'loading', id: 'log-7' },
+        { state: 'unavailable', id: 'log-7' }, { state: 'missing', id: 'log-7' },
+      ] as const;
+      const { useStore } = await import('@/store/store');
+      useStore.setState({ lang });
+      const { dailyLogLabels: L } = await import('@vitan/shared');
+      for (const record of states) {
+        const r = render(
+          <RecordBoundary record={record} prefix="daily-log" what={L.what[lang]} loadingText={L.boundaryLoading[lang]}
+            unavailableText={L.boundaryUnavailable[lang]} showAllLabel={L.openCurrent[lang]} onShowAll={() => {}} onRetry={() => {}} />,
+        );
+        expect(leftoverEnglish(r.container, [...DATA, 'log-7'])).toEqual([]);
+        r.unmount();
+      }
+    });
+
+    it(`${lang}: what every daily-log action says back`, async () => {
+      await screen(lang, { dailyLog: log({ checkedIn: false, checkinTime: null, crew: [] }) }, { demo: true });
+      const { useStore } = await import('@/store/store');
+      const s = () => useStore.getState();
+      const said: string[] = [];
+      const run = (act: () => void) => { act(); said.push(s().toast ?? ''); };
+      run(() => s().submitDailyLog()); // refused: not checked in
+      run(() => s().checkIn());
+      run(() => s().scanWorker()); // refused: no crew rows
+      run(() => s().addProgressPhoto('not-a-photo'));
+      run(() => s().addProgressPhoto('data:image/png;base64,AA=='));
+      run(() => s().flagMismatch(0));
+      run(() => s().submitDailyLog());
+      run(() => s().submitDailyLog()); // refused: already sent
+      run(() => s().checkOut());
+      run(() => s().startDailyLog()); // needs the server
+      run(() => s().addSiteMaterial({ name: 'Cement', qty: '1' })); // needs the server
+      run(() => s().toggleOnline()); // signal lost
+      run(() => s().toggleOnline()); // back: the queued updates sync
+      expect(said.filter((t) => !t)).toEqual([]);
+      for (const t of said) expect(words(t)).toEqual([]);
+    });
+
+    it(`${lang}: the check-in time the app records reads without AM/PM`, async () => {
+      const r = await screen(lang, { dailyLog: log({ checkedIn: false, checkinTime: null }) }, { demo: true });
+      const { useStore } = await import('@/store/store');
+      act(() => useStore.getState().checkIn());
+      expect(r.container.textContent).toContain('08:12');
+      expect(leftoverEnglish(r.container, DATA)).toEqual([]);
+    });
+  }
+
+  it('the offline line for each queued command names it in the language', async () => {
+    const { dailyLogCommandLabels: C, dailyLogToastText: X } = await import('@vitan/shared');
+    for (const lang of ['hi', 'gu'] as const) {
+      for (const k of ['start', 'material', 'submit', 'flag'] as const) expect(words(X.savedOffline(C[k][lang], lang))).toEqual([]);
+      expect(words(X.materialRecorded('Cement', lang))).toEqual([]);
+    }
+    expect(X.savedOffline(C.submit.en, 'en')).toBe('Submit daily log — saved offline, will sync when you reconnect.');
+  });
+
+  it('English: a check-in with no time says so without "null", and the recorded time reads as before', async () => {
+    const { dailyLogText: T, clockTimeIn } = await import('@vitan/shared');
+    expect(T.checkedIn(null, 'en')).toBe('Checked in');
+    expect(T.checkedIn('8:12 AM', 'en')).toBe('Checked in · 8:12 AM');
+    expect(clockTimeIn('8:12 AM', 'hi')).toBe('08:12');
+    expect(clockTimeIn('12:05 AM', 'gu')).toBe('00:05');
+    expect(clockTimeIn('1:30 PM', 'gu')).toBe('13:30');
+    expect(clockTimeIn('09:00', 'hi')).toBe('09:00');
   });
 });

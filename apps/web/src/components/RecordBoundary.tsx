@@ -1,6 +1,8 @@
 import type { RoutedRecord } from '@/lib/useRoutedRecord';
 import { Button } from './Button';
 import { ItemNotFound } from './ItemNotFound';
+import { useStore } from '@/store/store';
+import { recordBoundaryText as T } from '@vitan/shared';
 
 const note = { marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 } as const;
 
@@ -21,21 +23,22 @@ export function RecordBoundary({ record, prefix, what, loadingText, unavailableT
   onShowAll: () => void;
   onRetry: () => void;
 }) {
+  const lang = useStore((s) => s.lang);
   switch (record.state) {
     case 'list':
     case 'record':
       return null;
     case 'opening':
-      return <div data-testid={`${prefix}-record-opening`} style={note}>Opening {record.id}…</div>;
+      return <div data-testid={`${prefix}-record-opening`} style={note}>{T.opening(record.id, lang)}</div>;
     case 'returning':
-      return <div data-testid={`${prefix}-record-returning`} style={note}>Returning…</div>;
+      return <div data-testid={`${prefix}-record-returning`} style={note}>{T.returning[lang]}</div>;
     case 'loading':
       return <div data-testid={`${prefix}-record-loading`} style={note}>{loadingText}</div>;
     case 'unavailable':
       return (
         <div data-testid={`${prefix}-record-unavailable`} style={{ ...note, display: 'grid', gap: 12, justifyItems: 'center' }}>
           <span>{unavailableText}</span>
-          <Button data-testid={`${prefix}-record-retry`} onClick={onRetry}>Retry</Button>
+          <Button data-testid={`${prefix}-record-retry`} onClick={onRetry}>{T.retry[lang]}</Button>
         </div>
       );
     case 'missing':
