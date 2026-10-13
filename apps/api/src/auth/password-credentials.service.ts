@@ -136,10 +136,8 @@ export class PasswordCredentialsService {
       await this.email.sendPasswordCredentialCode(email, code);
       this.log.log(`Password credential request ${publicRequestId}: code handed to the mail provider`);
     } catch (error) {
-      await this.prisma.passwordCredentialChallenge.updateMany({
-        where: { id: publicRequestId, consumedAt: null },
-        data: { consumedAt: new Date() },
-      });
+      // #806 unit B1: a failed send keeps its challenge. A timeout is ambiguous, and the provider may already have
+      // taken the mail, so the code that arrives must still work. It expires as usual, and a new request retires it.
       this.log.error(`Password credential delivery failed for challenge ${publicRequestId}: ${(error as Error).constructor.name}`);
     }
     return { accepted: true, requestId: publicRequestId };
