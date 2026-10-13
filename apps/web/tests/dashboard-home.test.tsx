@@ -84,6 +84,19 @@ describe('the Dashboard shows each role only what it can open', () => {
     expect(s().screen).toBe('decision-log');
   });
 
+  it('a module the project switched off offers no Dashboard way in (#822)', () => {
+    // the shell's enabledModules omit activities, inspections, decisions and nodes: the nav hides their screens,
+    // so the Dashboard shows no Schedule button, no review-queue tiles, and its decisions and photos tiles are
+    // plain boxes rather than links into a disabled module
+    useStore.setState((st) => { st.role = 'pmc'; st.enabledModules = ['daily-log', 'drawings', 'orgs']; });
+    const r = render(<DashboardScreen />);
+    expect(r.queryByText(/View Schedule/)).not.toBeInTheDocument();
+    expect(r.queryByTestId('tile-review')).not.toBeInTheDocument();
+    expect(r.queryByTestId('tile-failed')).not.toBeInTheDocument();
+    expect(r.getByTestId('tile-pending').tagName).toBe('DIV');
+    expect(r.getByTestId('tile-photos').tagName).toBe('DIV');
+  });
+
   it('the engineer keeps the Schedule button, which it holds, but not the review queue', () => {
     useStore.setState((st) => { st.role = 'engineer'; });
     const r = render(<DashboardScreen />);
