@@ -246,7 +246,7 @@ export function PlacesScreen() {
             <IntentReality
               placed={contents.drawings[0]}
               photos={contents.photos}
-              onOpenDrawing={() => openDrawing(contents.drawings[0].drawing.id)}
+              onOpenDrawing={() => openDrawing(contents.drawings[0].drawing.id, { nodeId: sel })}
               onZoom={setZoom}
             />
           )}
@@ -278,7 +278,7 @@ export function PlacesScreen() {
                       </div>
                       <ActivityChip status={a.status} />
                       {canOpenSchedule && (
-                        <Button variant="light" onClick={() => openActivity(a.id)} data-testid={`place-activity-open-${a.id}`} aria-label={`View ${a.name} in the schedule`} style={{ padding: '8px 11px', fontSize: 12 }}>
+                        <Button variant="light" onClick={() => openActivity(a.id, { nodeId: sel })} data-testid={`place-activity-open-${a.id}`} aria-label={`View ${a.name} in the schedule`} style={{ padding: '8px 11px', fontSize: 12 }}>
                           View in schedule
                         </Button>
                       )}
@@ -301,7 +301,7 @@ export function PlacesScreen() {
                     const screen = inspectionScreens[i.id];
                     const RowTag = screen ? 'button' : 'div';
                     return (
-                      <RowTag key={i.id} data-testid={`place-inspection-${i.id}`} style={screen ? rowCard : { ...rowCard, cursor: 'default' }} {...(screen ? { onClick: () => openItem(screen, i.id), 'aria-label': `Open inspection ${i.id}` } : {})}>
+                      <RowTag key={i.id} data-testid={`place-inspection-${i.id}`} style={screen ? rowCard : { ...rowCard, cursor: 'default' }} {...(screen ? { onClick: () => openItem(screen, i.id, { nodeId: sel }), 'aria-label': `Open inspection ${i.id}` } : {})}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{i.id}</span>
@@ -342,7 +342,7 @@ export function PlacesScreen() {
                   const cur = drawing.current;
                   const rm = RELATION_META[relation];
                   return (
-                    <button key={drawing.id} onClick={() => openDrawing(drawing.id)} data-testid={`place-drawing-${drawing.number}`} style={rowCard}>
+                    <button key={drawing.id} onClick={() => openDrawing(drawing.id, { nodeId: sel })} data-testid={`place-drawing-${drawing.number}`} style={rowCard}>
                       <div style={{ width: 38, height: 48, flex: 'none', borderRadius: 5, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         {!cur && <FileText size={15} color="#b8b2a6" />}
                       </div>
@@ -389,7 +389,7 @@ export function PlacesScreen() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                 {contents.decisions.map((d) => (
-                  <button key={d.id} data-testid={`place-decision-${d.id}`} style={rowCard} onClick={() => openItem(decisionScreens[d.id] ?? 'decision-log', d.id)} aria-label={`Open decision ${d.id}`}>
+                  <button key={d.id} data-testid={`place-decision-${d.id}`} style={rowCard} onClick={() => openItem(decisionScreens[d.id] ?? 'decision-log', d.id, { nodeId: sel })} aria-label={`Open decision ${d.id}`}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{d.id}</span>

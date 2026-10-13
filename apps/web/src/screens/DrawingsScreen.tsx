@@ -2,7 +2,7 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, drawingMutationsBlocked } from '@/store/store';
 import { resolveDrawingUrl, drawingsReadMode, type IssueDrawingInput } from '@/data/apiGateway';
-import { Eyebrow, Button, Modal, LocationContext, EditState, ItemNotFound } from '@/components';
+import { Eyebrow, Button, Modal, LocationContext, EditState, ItemNotFound, ReturnToPlace } from '@/components';
 import { drawingsSliceSettled } from '@/lib/notifications';
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
@@ -325,6 +325,8 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
 
   return (
     <Modal onClose={onClose} maxWidth={760} labelledBy="dwg-title">
+      {/* #633 — opened from a Site Map place: the way back, inside the viewer that covers the shell */}
+      <ReturnToPlace inViewer />
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '16px 18px', borderBottom: '1px solid var(--hairline)' }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div id="dwg-title" style={{ fontWeight: 700, fontSize: 16 }}>
