@@ -790,7 +790,7 @@ export interface AppActions {
    *  success on a clean flush instead of the batch "N synced" summary. Resolves a structured
    *  `OutboxFlushResult` so a caller can confirm ITS OWN ops by key (queue absence ≠ success — a
    *  terminal 4xx also removes the op). */
-  flushOutbox: (opts?: { okMsg?: string }) => Promise<OutboxFlushResult>;
+  flushOutbox: (opts?: { okMsg?: string | (() => string) }) => Promise<OutboxFlushResult>;
   hydrateOutbox: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
@@ -2279,7 +2279,9 @@ export const useStore = create<Store>()(
      */
     // `offlineMsg`: what the toast says when the op is queued offline (#827: the daily log says it in the
     // viewer's language); without it, the label plus the standard English line, as before
-    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string, offlineMsg?: string): boolean => {
+    // okMsg may be a function: it is then read when the result is shown, so a translated success line
+    // follows a language the viewer switched to while the command was on its way (#835)
+    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string): boolean => {
       if (!gateway) return false;
       set((s) => { s.outbox.push(op); if (!s.online) s.syncQueue.push(label); });
       persistOutbox();
@@ -4981,7 +4983,7 @@ export const useStore = create<Store>()(
       // strands the command without its key; a retry or reload replays the SAME op under the SAME key.
       const key = newIdempotencyKey();
       const lang = get().lang;
-      runWriteAhead({ t: 'startDailyLog', idempotencyKey: key }, DLC.start.en, DLT.started[lang], DLX.savedOffline(DLC.start[lang], lang));
+      runWriteAhead({ t: 'startDailyLog', idempotencyKey: key }, DLC.start.en, () => DLT.started[get().lang], DLX.savedOffline(DLC.start[lang], lang));
     },
     addSiteMaterial: (input) => {
       if (!gateway) {
@@ -4990,7 +4992,7 @@ export const useStore = create<Store>()(
       }
       const key = newIdempotencyKey();
       const lang = get().lang;
-      runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, DLC.material.en, DLX.materialRecorded(input.name, lang), DLX.savedOffline(DLC.material[lang], lang));
+      runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, DLC.material.en, () => DLX.materialRecorded(input.name, get().lang), DLX.savedOffline(DLC.material[lang], lang));
     },
     loadTeam: () => {
       if (!gateway) return Promise.resolve();
@@ -5382,7 +5384,7 @@ export const useStore = create<Store>()(
       // network call (online too), so a lost response is retried under the SAME key, submitting once.
       const submitKey = newIdempotencyKey();
       const lang = get().lang;
-      if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, DLC.submit.en, DLT.sent[lang], DLX.savedOffline(DLC.submit[lang], lang))) return;
+      if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, DLC.submit.en, () => DLT.sent[get().lang], DLX.savedOffline(DLC.submit[lang], lang))) return;
       set((s) => {
         if (!s.dailyLog) return;
         s.dailyLog.submitted = true;
@@ -5399,7 +5401,7 @@ export const useStore = create<Store>()(
       // finding 1: WRITE-AHEAD — persist the op + key before the call; a lost response replays the SAME
       // key, flagging exactly once.
       const lang = get().lang;
-      if (runWriteAhead({ t: 'flagMismatch', decisionId: mat.decisionId, idempotencyKey: flagKey }, 'Flag ' + mat.decisionId, DLT.flagged[lang], DLX.savedOffline(`${DLC.flag[lang]} ${mat.decisionId}`, lang))) return;
+      if (runWriteAhead({ t: 'flagMismatch', decisionId: mat.decisionId, idempotencyKey: flagKey }, 'Flag ' + mat.decisionId, () => DLT.flagged[get().lang], DLX.savedOffline(`${DLC.flag[lang]} ${mat.decisionId}`, lang))) return;
       set((s) => {
         const m = s.dailyLog?.materials[idx];
         if (m) m.matched = false;
@@ -5607,7 +5609,7 @@ export const useStore = create<Store>()(
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).
-      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), opts?.okMsg, flushLease.scope);
+      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg, flushLease.scope);
 
       const parts: string[] = [];
       const lang = get().lang;

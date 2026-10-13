@@ -154,7 +154,7 @@ describe('what the daily log leads into, in Hindi and Gujarati', () => {
       const { dailyLogLabels: L } = await import('@vitan/shared');
       for (const record of states) {
         const r = render(
-          <RecordBoundary record={record} prefix="daily-log" what={L.what[lang]} loadingText={L.boundaryLoading[lang]}
+          <RecordBoundary record={record} prefix="daily-log" lang={lang} what={L.what[lang]} loadingText={L.boundaryLoading[lang]}
             unavailableText={L.boundaryUnavailable[lang]} showAllLabel={L.openCurrent[lang]} onShowAll={() => {}} onRetry={() => {}} />,
         );
         expect(leftoverEnglish(r.container, [...DATA, 'log-7'])).toEqual([]);

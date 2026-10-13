@@ -128,6 +128,7 @@ export function DailyLogScreen() {
         <RecordBoundary
           record={record}
           prefix="daily-log"
+          lang={lang}
           what={L.what[lang]}
           loadingText={L.boundaryLoading[lang]}
           unavailableText={L.boundaryUnavailable[lang]}

@@ -1,14 +1,14 @@
 import { Button } from './Button';
-import { useStore } from '@/store/store';
-import { recordBoundaryText as T } from '@vitan/shared';
+import { recordBoundaryText as T, type Lang } from '@vitan/shared';
 
 /**
  * Live bug 1 (deep-link target fidelity) — a link named one record and this screen cannot show it:
  * it was completed or removed, or the viewer cannot open it. Said plainly, with the way on, rather
  * than leaving the viewer on the parent list as though that were what the link meant.
  */
-export function ItemNotFound({ what, id, onShowAll, showAllLabel }: { what: string; id: string; onShowAll: () => void; showAllLabel: string }) {
-  const lang = useStore((s) => s.lang);
+/** `lang` is the caller's: it passes `what` and `showAllLabel`, so it says which language they are in (English
+ *  unless it says otherwise), and this card's own words follow it. */
+export function ItemNotFound({ what, id, onShowAll, showAllLabel, lang = 'en' }: { what: string; id: string; onShowAll: () => void; showAllLabel: string; lang?: Lang }) {
   return (
     <div
       role="status"

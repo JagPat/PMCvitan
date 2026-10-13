@@ -1,5 +1,6 @@
 import { Modal, Button } from '@/components';
 import { useStore } from '@/store/store';
+import { qrModalLabels as L } from '@vitan/shared';
 
 const finderMask =
   'radial-gradient(circle at 18px 18px,transparent 12px,#000 0),radial-gradient(circle at calc(100% - 18px) 18px,transparent 12px,#000 0),radial-gradient(circle at 18px calc(100% - 18px),transparent 12px,#000 0),linear-gradient(#000,#000)';
@@ -8,15 +9,16 @@ const finderMask =
 export function QrModal() {
   const closeModal = useStore((s) => s.closeModal);
   const scanWorker = useStore((s) => s.scanWorker);
+  const lang = useStore((s) => s.lang);
 
   return (
     <Modal onClose={closeModal} labelledBy="qr-title">
       <div style={{ padding: '26px 24px 24px', textAlign: 'center' }}>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.18em', color: 'var(--amber-text)' }}>
-          WORKER SELF CHECK-IN
+          {L.eyebrow[lang]}
         </div>
         <div id="qr-title" style={{ fontSize: 19, fontWeight: 700, marginTop: 8 }}>
-          Ask the worker to scan this
+          {L.title[lang]}
         </div>
         <div
           style={{
@@ -65,17 +67,17 @@ export function QrModal() {
           </div>
         </div>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--faint)' }}>
-          SITE: AMBLI · VALID FOR TODAY ONLY
+          {L.site[lang]}: AMBLI · {L.validToday[lang]}
         </div>
         <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12, lineHeight: 1.5 }}>
-          Each worker scans once at the gate. Their trade, time and a face photo are stamped — no paper muster, no proxy attendance.
+          {L.explain[lang]}
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <Button variant="outline" style={{ flex: 1 }} onClick={closeModal}>
-            Done
+            {L.done[lang]}
           </Button>
           <Button variant="ink" style={{ flex: 1.3 }} onClick={scanWorker}>
-            Simulate a scan
+            {L.simulate[lang]}
           </Button>
         </div>
       </div>
