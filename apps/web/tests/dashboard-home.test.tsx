@@ -124,6 +124,24 @@ describe('the Dashboard shows each role only what it can open', () => {
     expect(r.getByText(/View Schedule/)).toBeInTheDocument();
   });
 
+  it('a failed project switch keeps the old project’s module set (#824)', async () => {
+    // #823 Codex 4257419886 — the switch empties the module set up front; when the server refuses it, the old
+    // project stays active and its shell is not reloaded, so its own module set must come back with its identity
+    const gw = { switchProject: vi.fn().mockRejectedValue(new Error('forbidden')) };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.role = 'pmc';
+      st.activeProjectId = 'project-a';
+      st.enabledModules = ['daily-log', 'drawings', 'orgs'];
+      st.memberships = [{ projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' }];
+    });
+    expect(await s().switchProject('project-b')).toBe(false);
+    expect(s().activeProjectId).toBe('project-a');
+    expect(s().enabledModules).toEqual(['daily-log', 'drawings', 'orgs']);
+    const r = render(<DashboardScreen />);
+    expect(r.queryByText(/View Schedule/)).not.toBeInTheDocument();
+  });
+
   it('the engineer keeps the Schedule button, which it holds, but not the review queue', () => {
     useStore.setState((st) => { st.role = 'engineer'; });
     const r = render(<DashboardScreen />);

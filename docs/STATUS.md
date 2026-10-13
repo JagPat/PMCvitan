@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: dashboard-822
-reviewed_merge: 91a6e93
-open_pr: 823
+work_item: switch-modules-824
+reviewed_merge: 93d70a3
+open_pr: 825
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-13
@@ -26,11 +26,11 @@ updated: 2026-10-13
 
 ### Current unit
 
-**Dashboard follows the project's modules (#822)** (on `claude/project-thread-cm4aq9`): the follow-up Codex
-deferred from #818. #811 is complete: units A (#812), B (#813) and C (#818, merged at `91a6e93`) made the Dashboard
-every role's home. This unit gates the Dashboard's tiles and buttons by the nav's own screen set, so a module the
-project switched off offers no Dashboard way in. Lane 1 of the Board's three-lane plan (13 Oct); next in the lane is
-the UX redesign, then #633.
+**A failed project switch keeps its modules (#824)** (on `claude/project-thread-cm4aq9`): the follow-up Codex
+deferred from #823. #822 merged at `93d70a3` (#823): the Dashboard's tiles and buttons follow the nav's screen set,
+and the shell's enabled modules reset on every project scope change. This unit restores the old project's module set
+when a switch is refused, so its switched-off modules stay hidden. Lane 1 of the Board's three-lane plan (13 Oct);
+next in the lane is the UX redesign, then #633.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.
