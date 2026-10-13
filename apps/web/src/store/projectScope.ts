@@ -87,10 +87,10 @@ export interface ProjectDataState {
    *  (an activity id is project-contained, so it tears down with the scope like `placeFocus`) */
   activityFocus: string | null;
   /** #633 — the Site Map place a record was opened FROM (`nodeId: null` = the whole project), so the record's
-   *  screen can offer the way back to it, on that screen only. Set only by an open that names its place; any
-   *  other navigation clears it. A node id is project-contained, so it tears down with the scope like
-   *  `placeFocus`. */
-  returnPlace: { nodeId: string | null; screen: ScreenKey } | null;
+   *  screen can offer the way back to it, on that screen and that record only. Set only by an open that names
+   *  its place; any other navigation clears it. A node id is project-contained, so it tears down with the
+   *  scope like `placeFocus`. */
+  returnPlace: { nodeId: string | null; screen: ScreenKey; item: string | null } | null;
   /** B6 — the one item the current screen's URL names: the Site Map's place, the open drawing, or
    *  the Decision Log's highlighted decision (`client-decisions` keeps `decisionFocus`). Every
    *  such id is project-contained, so it tears down with the scope like `placeFocus`. */

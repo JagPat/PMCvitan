@@ -26,12 +26,8 @@ updated: 2026-10-13
 
 ### Current unit
 
-**Site Map as the project workspace (#633), unit 1: the way back to a place** (on `claude/project-thread-cm4aq9`):
-a record opened from the Site Map (drawing, decision, inspection, activity) shows "Back to <place>" on its screen,
-returning to the place it was opened from. #822 and its follow-up #824 merged at `93d70a3` (#823) and `b085fe7`
-(#825). Lane 1 of the Board's three-lane plan (13 Oct); the "UX redesign" item awaits the owner's description, so
-#633 runs first. Later #633 units: where a project switch lands (an owner decision, given #811), mobile tab placement, the hierarchy,
-lock explanations and inspection issue counts.
+**#633 unit 1a: the way back to a place** (on `claude/project-thread-cm4aq9`): a record opened from the Site Map
+shows "Back to <place>". #822 and #824 merged (`93d70a3`, `b085fe7`). Lane 1 (13 Oct); later #633 units are on #633.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.

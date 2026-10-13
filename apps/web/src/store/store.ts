@@ -349,7 +349,7 @@ export interface AppState {
   /** Audit F-02 — the activity the schedule brings into view when opened from a place (project-owned) */
   activityFocus: string | null;
   /** #633 — the Site Map place a record was opened from, offered as the way back on that screen (project-owned) */
-  returnPlace: { nodeId: string | null; screen: ScreenKey } | null;
+  returnPlace: { nodeId: string | null; screen: ScreenKey; item: string | null } | null;
   /** B6 — the one item the current screen's URL names (place, open drawing, highlighted decision; project-owned) */
   routeItem: string | null;
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
@@ -2711,7 +2711,7 @@ export const useStore = create<Store>()(
       }),
     openDrawing: (drawingId, fromPlace) =>
       set((s) => {
-        s.returnPlace = fromPlace ? { nodeId: fromPlace.nodeId, screen: 'drawings' } : null;
+        s.returnPlace = fromPlace ? { nodeId: fromPlace.nodeId, screen: 'drawings', item: drawingId } : null;
         s.routeItem = drawingId;
         s.decisionFocus = null;
         s.screen = 'drawings';
@@ -2724,7 +2724,7 @@ export const useStore = create<Store>()(
       }),
     openItem: (screen, item, fromPlace) =>
       set((s) => {
-        s.returnPlace = fromPlace ? { nodeId: fromPlace.nodeId, screen } : null;
+        s.returnPlace = fromPlace ? { nodeId: fromPlace.nodeId, screen, item } : null;
         s.screen = screen;
         s.notifOpen = false;
         s.decisionFocus = screen === 'client-decisions' ? item : null;
@@ -2746,7 +2746,7 @@ export const useStore = create<Store>()(
       }),
     openActivity: (activityId, fromPlace) =>
       set((s) => {
-        s.returnPlace = fromPlace ? { nodeId: fromPlace.nodeId, screen: 'site-schedule' } : null;
+        s.returnPlace = fromPlace ? { nodeId: fromPlace.nodeId, screen: 'site-schedule', item: activityId } : null;
         s.activityFocus = activityId;
         // Top 10 #3c (#774) — the activity is the URL's item (`/schedule/<id>`): reload-safe and shareable
         s.routeItem = activityId;

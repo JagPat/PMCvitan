@@ -7,15 +7,19 @@ import { useStore } from '@/store/store';
  * A place's records open at their own URL, so browser Back already returns; this makes that
  * return visible and one tap on a phone, naming the place the reader came from (which, for a
  * drawing inherited from a parent zone, is not the drawing's own filed place). It shows only on
- * the screen the record was opened on; any other navigation clears it in the store.
+ * the screen the record was opened on, while that record is still the one on show (closing it or
+ * moving to another record on the same screen leaves the way back behind); any other navigation
+ * clears it in the store.
  */
 export function ReturnToPlace() {
   const returnPlace = useStore((s) => s.returnPlace);
   const screen = useStore((s) => s.screen);
+  // the record on show: the client's approval screen names it by `decisionFocus`, every other by `routeItem`
+  const item = useStore((s) => (s.screen === 'client-decisions' ? s.decisionFocus : s.routeItem));
   const placeName = useStore((s) =>
     s.returnPlace?.nodeId ? s.nodes.find((n) => n.id === s.returnPlace?.nodeId)?.name ?? null : null);
   const openPlace = useStore((s) => s.openPlace);
-  if (!returnPlace || returnPlace.screen !== screen || screen === 'places') return null;
+  if (!returnPlace || returnPlace.screen !== screen || returnPlace.item !== item || screen === 'places') return null;
   // a place removed meanwhile: return to the Site Map itself rather than to a node it can't open
   const target = placeName ? returnPlace.nodeId : null;
   return (
