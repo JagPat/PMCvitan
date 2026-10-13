@@ -16,21 +16,24 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: live-bug-806
-reviewed_merge: 8b11976
-open_pr: 809
+work_item: landing-811
+reviewed_merge: 9b68c3c
+open_pr: 812
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-12
+updated: 2026-10-13
 ```
 
 ### Current unit
 
-**Live bug #806, unit A** (#809 on `claude/project-thread-r8r4zn`, Board 12 Oct): password setup stuck on "Sending…"
-and no code. The SMTP transport now bounds every wait (10 s connect, 10 s greeting, 20 s socket); the reset request's
-flow is unchanged from `main` (commit, then a bounded send) and logs each path by requestId; sign-in failures name
-their cause and the throttle's real wait. #807 stays open and stopped at `104fa41` (third-head stop; owner chose the
-split); unit B (code ordering across ambiguous sends, pre-existing) is a separate proposal on #806.
+**Landing after login (#811), unit A** (#812 on `claude/project-thread-cm4aq9`, Board 13 Oct): everyone lands on the
+Dashboard; a project-scoped user opens in the last project they used. Unit A is the migration only: the nullable
+`User.lastProjectId`, a plain stamp validated where it is read. Unit B (API: the switch records it, sign-in lands there
+while access holds) and unit C (web: the Dashboard is every role's home) follow, each from `main`. Design and hard
+choices on #811; schema record on #482.
+
+Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
+stopped at `104fa41`; unit B of #806 is a separate proposal there.
 #771 PMC For You merged at `8df87e4` (#801); #771 closes on a signed-in PMC's live check.
 
 Site Visits plan (SV0) merged at `0470efd` (#793, reviewed head `61ba419`): product decisions only. The third-head

@@ -1,0 +1,14 @@
+-- Landing after login (#811, Board decision 2026-10-13) — the project a user last switched into.
+--
+-- A project-scoped user (a contractor on two sites) opens in the last project they used. Today sign-in lands
+-- on the account's home project ("projectId", fixed at creation) and a switch records nothing, so they are
+-- put back in their first project at every sign-in.
+--
+-- A PLAIN stamp, the standing "Notification"."inspectionId" has: validated where it is READ. Sign-in honours it
+-- only when the project is not archived and the one access rule (an active membership, or org-admin reach)
+-- still grants a role there; the role always comes from that rule, never from this column. A removed,
+-- archived, deleted or foreign project grants nothing and falls back to the existing chain. NOT a relation,
+-- so deleting a project never has to visit its users. Nullable: every existing account carries none.
+--
+-- Additive and previous-release safe: an old release neither reads nor writes the column.
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "lastProjectId" TEXT;

@@ -1328,6 +1328,9 @@ model User {
   passwordHash              String?
   emailVerifiedAt           DateTime?
   credentialVersion         Int                    @default(0)
+  // #811 — the project this user last switched into; sign-in lands there while access holds. A plain stamp
+  // (not a relation), validated where it is read: it never grants a role (migration 20280110000000).
+  lastProjectId             String?
   createdAt                 DateTime               @default(now())
 
   orgMemberships               OrgMembership[]
