@@ -29,15 +29,23 @@ const FIELD_KEY = 'work-item';
 const FIELD_LINE = /(?<![\p{L}\p{N}])work[^\p{L}\p{N}\n]*item(?![\p{L}\p{N}])[^\n]*?[:=#\d]/iu;
 const FIELD_LINES = new RegExp(FIELD_LINE.source, 'gimu');
 // Markup that renders as nothing, or only as its text, may also sit BETWEEN the two words
-// (`<strong>Work</strong>-<em>Item</em>: #750`, `[Work](url)-[Item](url): #750`, `Work&#45;Item: #750`; #763,
-// #761 Codex 4235968337). A line is also checked as rendered: HTML tags (quoted attribute values may hold `>`),
-// link targets (with balanced parentheses) and reference labels removed, numeric entities decoded (`Wo&#114;k`),
-// and named ones removed, since none renders as an ASCII letter (#814 Codex 4254561958, 4254561977, 4254561968).
-// That view only ADDS field lines: a line counts as often as the larger of its raw and rendered matches, so
-// nothing the raw rule refuses can become `none`.
-const MARKUP = /<(?:[^<>"'\n]|"[^"\n]*"|'[^'\n]*')*>|(?<=\])\[[^[\]\n]*\]/gu;
+// (`<strong>Work</strong>-<em>Item</em>: #750`, `[Work](url)-[Item](url): #750`; #763, #761 Codex 4235968337)
+// or inside one (`Wo&#114;k`, `Wo*r*k`, `Wo<b></b>rk`). Rendering Markdown and HTML exactly is open-ended (#814's
+// reviews found comments, quoted titles, escaped labels, ...), so a line that holds ANY markup character gets a
+// broader rule instead: the words `work` and `item` anywhere on it, in that order, then an attempted value. Whatever
+// sits between the words no longer matters. Inside a word, the rendered view removes HTML comments and tags,
+// inline link targets and reference labels, named entities and emphasis delimiters, and decodes numeric entities.
+// Both views only ADD field lines: a line counts as often as the most any view matches, so nothing the raw rule
+// refuses can become `none`. The cost: a markup-bearing line may not mention work, then item, then a `:`, `=`,
+// `#` or digit.
+const MARKUP_CHARACTER = /[<>&[\]()*_~`\\]/u;
+const WORD_EDGE = String.raw`(?<![\p{L}\p{N}])`;
+const MARKED_FIELD_LINES = new RegExp(
+  String.raw`${WORD_EDGE}work(?![\p{L}\p{N}])[^\n]*?${WORD_EDGE}item(?![\p{L}\p{N}])[^\n]*?[:=#\d]`, 'gimu');
+const MARKUP = /<!--[^\n]*?-->|<(?:[^<>"'\n]|"[^"\n]*"|'[^'\n]*')*>|(?<=\])\[(?:[^[\]\\\n]|\\.)*\]/gu;
 const NUMERIC_ENTITY = /&#(?:(\d{1,7})|x([\da-f]{1,6}));/giu;
 const NAMED_ENTITY = /&[a-z][a-z\d]*;/giu;
+const EMPHASIS = /[*_~`]/gu;
 const decoded = (code) => (code > 0x10ffff || code === 10 || code === 13 ? ' ' : String.fromCodePoint(code));
 /** Removes each inline link target `](…)`; its destination may hold balanced or escaped parentheses. */
 const withoutLinkTargets = (line) => {
@@ -59,9 +67,15 @@ const withoutLinkTargets = (line) => {
 };
 const rendered = (line) => withoutLinkTargets(line.replace(MARKUP, ''))
   .replace(NUMERIC_ENTITY, (_, dec, hex) => decoded(dec === undefined ? Number.parseInt(hex, 16) : Number(dec)))
-  .replace(NAMED_ENTITY, '');
-const fieldMatches = (line) =>
-  Math.max(line.match(FIELD_LINES)?.length ?? 0, rendered(line).match(FIELD_LINES)?.length ?? 0);
+  .replace(NAMED_ENTITY, '')
+  .replace(EMPHASIS, '');
+const count = (text, pattern) => text.match(pattern)?.length ?? 0;
+const fieldMatches = (line) => {
+  const raw = count(line, FIELD_LINES);
+  if (!MARKUP_CHARACTER.test(line)) return raw;
+  const view = rendered(line);
+  return Math.max(raw, count(view, FIELD_LINES), count(line, MARKED_FIELD_LINES), count(view, MARKED_FIELD_LINES));
+};
 // The one field line, raw, must itself be the canonical trailer: git's `--unfold` joins an indented continuation
 // into the value, so `Work-Item:` followed by an indented ` #750` would otherwise read as cited (4235903046).
 const CANONICAL_LINE = /^work-item:[ \t]*#[1-9]\d{0,9}[ \t]*$/iu;

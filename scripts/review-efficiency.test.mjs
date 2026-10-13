@@ -1877,6 +1877,13 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     // 4254561968: a link destination with balanced or escaped parentheses
     ['balanced parentheses in a link target', `fix\n\n[Work](https://example.test/a_(b))-[Item](https://example.test/b): #750\n\n${owner}\n`],
     ['nested and escaped parentheses in a link target', `fix\n\n[Work](https://example.test/a_((b)c)\\))-[Item](x): #750\n\n${owner}\n`],
+    // 4254627794 / 4254627815 / 4254627798 / 4254627803: a comment holding `>`, intraword emphasis, a quoted
+    // title holding `)`, an escaped `]` in a reference label
+    ['an HTML comment holding >', `fix\n\nWork<!-- a > b -->-Item: #750\n${owner}\n`],
+    ['intraword emphasis', `fix\n\nWo*r*k-Item: #750\n${owner}\n`],
+    ['a link title holding )', `fix\n\n[Work](x "a)b")-[Item](x): #750\n\n${owner}\n`],
+    ['an escaped ] in a reference label', `fix\n\n[Work][a\\]b]-[Item][c]: #750\n\n${owner}\n`],
+    ['a markup line naming both words before a value', `fix\n\n\`x\` work moves to the item list: done\n\n${owner}\n`],
     ['wrapped words beside a valid trailer', `fix\n\n<b>Work</b>-<i>Item</i>: #1\n\nWork-Item: #750\n${owner}\n`],
   ]) {
     const result = parse(message);
