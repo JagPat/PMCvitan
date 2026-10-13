@@ -1888,6 +1888,9 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     ['an empty link inside a word', `fix\n\nWo[](x)rk-Item: #750\n${owner}\n`],
     ['a comment spanning lines inside a word', `fix\n\nWo<!--\ncomment\n-->rk-Item: #750\n\n${owner}\n`],
     ['an angle-bracket destination holding )', `fix\n\nWo[](<foo)bar>)rk-Item: #750\n${owner}\n`],
+    // #819 Codex: a link after an unterminated target, and a disguise inside a word on a very long line
+    ['a link after an unterminated target', `fix\n\nx](unterminated Wo[](x)rk-Item: #750\n${owner}\n`],
+    ['a tag inside a word on a long line', `fix\n\n${'a'.repeat(5000)} Wo<b></b>rk-Item: #750\n${owner}\n`],
     ['wrapped words beside a valid trailer', `fix\n\n<b>Work</b>-<i>Item</i>: #1\n\nWork-Item: #750\n${owner}\n`],
   ]) {
     const result = parse(message);
@@ -1907,6 +1910,8 @@ test('#816 / #817 — the field check stays linear on long hostile lines', () =>
   for (const line of [
     `<${' work item abc'.repeat(8000)}`, // Codex 4254874278: cubic on the broad rule
     `x${'](a'.repeat(32000)}`, // 4254668172: an unterminated target rescanned the rest
+    `${'](<'.repeat(40000)}`, // 4255076079: every unterminated target is skipped once, not rescanned
+    `${'](('.repeat(40000)}`,
     ' work-item'.repeat(20000),
     ...['<a "', '<!--', '](a', '<"<', '&#'].map((unit) => Array(50).fill(unit.repeat(1000)).join('\n')),
   ]) {

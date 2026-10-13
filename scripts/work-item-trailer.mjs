@@ -38,11 +38,10 @@ const ATTEMPTED_VALUE = /[:=#\d]/gu;
 // Both views only ADD field lines: a line counts as often as the most any view matches, so nothing the raw rule
 // refuses can become `none`. The cost: a markup-bearing line may not mention work, then item, then a `:`, `=`,
 // `#` or digit.
-// Every line is counted in one forward pass (#816, #817: the lazy patterns made long lines quadratic or worse),
-// and the rendered view only runs on lines up to RENDER_LIMIT characters; a longer line still gets the raw and
-// broad rules. Comments that span lines are removed across the whole message first, as a further view.
+// Every line is counted in one forward pass (#816, #817: the lazy patterns made long lines quadratic or worse), and
+// every step of the rendered view is linear too, so it runs on lines of any length (4255076074). Comments that span
+// lines are removed across the whole message first, as a further view.
 const MARKUP_CHARACTER = /[<>&[\]()*_~`\\]/u;
-const RENDER_LIMIT = 4096;
 const WORK = /(?<![\p{L}\p{N}])work(?![\p{L}\p{N}])/giu;
 const ITEM = /(?<![\p{L}\p{N}])item(?![\p{L}\p{N}])/giu;
 /** The end of the first match of `pattern` in `text` at or after `from`, or -1. */
@@ -86,28 +85,52 @@ const withoutComments = (message) => {
   return out + message.slice(at);
 };
 /**
+ * For each position, where the first `)` at or after it closes depth 1 (a link target opened just before it), or -1.
+ * One forward pass pairs parentheses (a backslash escapes the next character) and one backward pass follows each
+ * pair, so every target is found in linear time however many there are or however many never close (4255076079).
+ */
+const targetEnds = (line) => {
+  const partner = new Int32Array(line.length).fill(-1);
+  const escaped = new Uint8Array(line.length);
+  const open = [];
+  for (let i = 0; i < line.length; i += 1) {
+    if (line[i] === '\\' && i + 1 < line.length) {
+      escaped[i + 1] = 1;
+      i += 1;
+    } else if (line[i] === '(') open.push(i);
+    else if (line[i] === ')' && open.length > 0) partner[open.pop()] = i;
+  }
+  const end = new Int32Array(line.length + 1).fill(-1);
+  for (let i = line.length - 1; i >= 0; i -= 1) {
+    if (escaped[i]) end[i] = end[i + 1];
+    else if (line[i] === ')') end[i] = i;
+    else if (line[i] === '(') end[i] = partner[i] < 0 ? -1 : end[partner[i] + 1];
+    else end[i] = end[i + 1];
+  }
+  return end;
+};
+/**
  * Removes each inline link target `](…)`: balanced or escaped parentheses, and a `<…>` destination that may hold
- * `)` (4254874273). After the first unterminated target the rest is left as is, so the scan stays linear.
+ * `)` (4254874273). An unterminated target is left as text and the scan goes on past it.
  */
 const withoutLinkTargets = (line) => {
+  if (!line.includes('](')) return line;
+  const end = targetEnds(line);
   let out = '';
+  let gt = -2;
   for (let i = 0; i < line.length; i += 1) {
     if (line[i] === '(' && line[i - 1] === ']') {
       let j = i + 1;
       while (line[j] === ' ' || line[j] === '\t') j += 1;
       if (line[j] === '<') {
-        const close = line.indexOf('>', j);
-        j = close < 0 ? line.length : close + 1;
+        if (gt !== -1 && gt < j) gt = line.indexOf('>', j);
+        j = gt < 0 ? -1 : gt + 1;
       }
-      let depth = 1;
-      for (; j < line.length && depth > 0; j += 1) {
-        if (line[j] === '\\') j += 1;
-        else if (line[j] === '(') depth += 1;
-        else if (line[j] === ')') depth -= 1;
+      const close = j < 0 ? -1 : end[j];
+      if (close >= 0) {
+        i = close;
+        continue;
       }
-      if (depth > 0) return out + line.slice(i);
-      i = j - 1;
-      continue;
     }
     out += line[i];
   }
@@ -120,12 +143,8 @@ const rendered = (line) => withoutLinkTargets(withoutComments(line).replace(AUTO
 const fieldMatches = (line) => {
   const raw = countFields(line, RAW);
   if (!MARKUP_CHARACTER.test(line)) return raw;
-  const counts = [raw, countFields(line, MARKED)];
-  if (line.length <= RENDER_LIMIT) {
-    const view = rendered(line);
-    counts.push(countFields(view, RAW), countFields(view, MARKED));
-  }
-  return Math.max(...counts);
+  const view = rendered(line);
+  return Math.max(raw, countFields(line, MARKED), countFields(view, RAW), countFields(view, MARKED));
 };
 const fieldCount = (lines) => lines.reduce((sum, line) => sum + fieldMatches(line), 0);
 // The one field line, raw, must itself be the canonical trailer: git's `--unfold` joins an indented continuation
