@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
-import { viewerIsDecider } from '@vitan/shared';
+import { viewerIsDecider, noticeText, notificationPanelLabels as L, navLabels } from '@vitan/shared';
 import { notificationLink, noticeTime, projectSnapshotSettled, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
 import { inspectionsReadMode } from '@/data/apiGateway';
 import { SCREEN_META } from '@/lib/screens';
@@ -25,6 +25,7 @@ export function NotificationPanel() {
     return () => clearInterval(tick);
   }, [open]);
   const notifications = useStore((s) => s.notifications);
+  const lang = useStore((s) => s.lang);
   const toggleNotif = useStore((s) => s.toggleNotif);
   const role = useStore((s) => s.role);
   // openItem also closes the panel (it clears notifOpen), so a notification tap is one call.
@@ -86,23 +87,23 @@ export function NotificationPanel() {
   return (
     <>
       <div className={styles.scrim} onClick={toggleNotif} />
-      <div className={styles.panel} role="dialog" aria-label="Notifications">
-        <div className={styles.label}>NOTIFICATIONS</div>
+      <div className={styles.panel} role="dialog" aria-label={L.dialog[lang]}>
+        <div className={styles.label}>{L.title[lang]}</div>
         <div className={styles.list}>
           {/* Top 10 #4a (#778) — an empty bell says so, rather than opening onto a blank panel */}
           {notifications.length === 0 && !feedSettled && (
             <div className={styles.item} data-testid={projectLoadState === 'error' ? 'notif-unavailable' : 'notif-loading-feed'} role="status">
               <div style={{ flex: 1 }}>
-                <div className={styles.text}>{projectLoadState === 'error' ? "Couldn't load notifications" : 'Loading notifications…'}</div>
-                {projectLoadState === 'error' && <div className={styles.time}>Check your connection and try again.</div>}
+                <div className={styles.text}>{projectLoadState === 'error' ? L.loadFailed[lang] : L.loading[lang]}</div>
+                {projectLoadState === 'error' && <div className={styles.time}>{L.checkConnection[lang]}</div>}
               </div>
             </div>
           )}
           {notifications.length === 0 && feedSettled && (
             <div className={styles.item} data-testid="notif-empty" role="status">
               <div style={{ flex: 1 }}>
-                <div className={styles.text}>You're all caught up</div>
-                <div className={styles.time}>Approvals, inspections and drawings you need to know about will appear here.</div>
+                <div className={styles.text}>{L.caughtUp[lang]}</div>
+                <div className={styles.time}>{L.caughtUpDetail[lang]}</div>
               </div>
             </div>
           )}
@@ -112,8 +113,8 @@ export function NotificationPanel() {
               <>
                 <span className={styles.dot} style={{ background: n.color }} />
                 <div style={{ flex: 1 }}>
-                  <div className={styles.text}>{n.text}</div>
-                  <div className={styles.time}>{noticeTime(n, now)}</div>
+                  <div className={styles.text}>{noticeText(n.text, lang)}</div>
+                  <div className={styles.time}>{noticeTime(n, now, lang)}</div>
                 </div>
                 {link && <ChevronRight size={15} style={{ alignSelf: 'center', opacity: 0.5, flex: 'none' }} />}
               </>
@@ -137,16 +138,14 @@ export function NotificationPanel() {
                   // the screen it lives on
                   <div role="status" data-testid={link.missing ? 'notif-missing' : 'notif-loading'} className={styles.time} style={{ display: 'grid', gap: 8, padding: '0 14px 12px 32px' }}>
                     <span>
-                      {link.missing
-                        ? "The record this notification refers to isn't available. It may have been completed or removed."
-                        : "This notification's record can't be checked yet — its list hasn't loaded. Try again in a moment."}
+                      {link.missing ? L.missing[lang] : L.notLoaded[lang]}
                     </span>
                     <button
                       data-testid="notif-missing-open"
                       onClick={() => openItem(link.screen, null)}
                       style={{ justifySelf: 'start', minHeight: 44, padding: '0 12px', borderRadius: 8, border: '1px solid currentColor', background: 'transparent', color: 'inherit', font: 'inherit', fontWeight: 600, cursor: 'pointer' }}
                     >
-                      Open {SCREEN_META[link.screen].label}
+                      {lang === 'en' ? `Open ${SCREEN_META[link.screen].label}` : `${navLabels[link.screen][lang]} ${L.open[lang]}`}
                     </button>
                   </div>
                 )}
