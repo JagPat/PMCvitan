@@ -3,7 +3,7 @@ import { useStore } from '@/store/store';
 import { decisionRecordLink, inspectionsSettledForLinks, selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
 import { API_BASE, dailyLogReadMode } from '@/data/apiGateway';
 import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
-import { routableScreensFor } from '@/lib/screens';
+import { useNavItems } from '@/layout/useNavItems';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
@@ -17,10 +17,13 @@ const unknownSub = (failed: boolean): string => (failed ? 'Could not load — tr
 
 export function DashboardScreen() {
   // #811 — every role lands here, so a part shows only to a role that holds where it leads: the review queue is
-  // served to the PMC alone, and a tile or button never opens a screen the viewer would be bounced from
+  // served to the PMC alone, and a tile or button never opens a screen the viewer would be bounced from.
+  // #822 — "holds" is the nav's own screen set (`useNavItems`: the role's screens, filtered by the project's
+  // enabled modules and capabilities, plus the decider's approval route), so a module the project switched off
+  // offers no Dashboard way in either
   const role = useStore((s) => s.role);
-  const routable = routableScreensFor(role);
-  const canOpen = (screen: ScreenKey): boolean => routable.includes(screen);
+  const navScreens = new Set<ScreenKey>(useNavItems().map((n) => n.key));
+  const canOpen = (screen: ScreenKey): boolean => navScreens.has(screen);
   // Top 10 #2 (#771) — the decisions awaiting action, the server's `countPending` definition (the Portfolio
   // card's number for this project), never a second definition of "pending"
   const pending = useStore(useShallow(selectDecisionsAwaitingAction));
@@ -92,7 +95,7 @@ export function DashboardScreen() {
     return mine.length > 0 && mine.every((d) => decisionRecordLink(s, d).screen === 'client-decisions') ? 'client-decisions' : 'decision-log';
   });
   // `onClick` stays optional: a tile with nowhere to go renders as a plain box (B5)
-  const openApprovals = approvalsScreen === 'client-decisions' || canOpen('decision-log') ? () => setScreen(approvalsScreen) : undefined;
+  const openApprovals = canOpen(approvalsScreen) ? () => setScreen(approvalsScreen) : undefined;
   const tiles: Array<{ key: string; label: string; value: number | string; accent: string; sub: string; onClick?: () => void }> = [
     decisionsKnown
       ? { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: openApprovals }
