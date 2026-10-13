@@ -1,4 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { loginTo, openProject } from './landing';
 
 /**
  * #669 — the engineer's Today flow over the REAL stack (Field Lab QA 2026-09-30 regression). The server
@@ -34,11 +35,6 @@ async function signIn(page: Page, email: string): Promise<void> {
   await page.getByTestId('login-password').fill(PASSWORD);
   await page.getByTestId('login-submit').click();
 }
-async function apiLogin(request: APIRequestContext, email: string): Promise<{ token: string }> {
-  const res = await request.post(`${API}/auth/login`, { data: { email, password: PASSWORD } });
-  expect(res.ok(), `login ${email} → ${res.status()}`).toBeTruthy();
-  return res.json();
-}
 type ServerLog = { checkedIn: boolean; submitted: boolean; progress: number; crew: { trade: string; count: number }[]; photos: unknown[] };
 type Snapshot = { dailyLog: ServerLog | null; materials: { name: string }[] };
 async function serverSnapshot(request: APIRequestContext, token: string): Promise<Snapshot> {
@@ -49,14 +45,14 @@ async function serverSnapshot(request: APIRequestContext, token: string): Promis
 
 test('Today reaches Send: check-in, crew and photos survive the material and photo reconciles and a reload', async ({ page, request }) => {
   const MAT = `TodayFlow-${test.info().workerIndex}-${test.info().retry}`;
-  const eng = await apiLogin(request, ENG);
+  const eng = await loginTo(request, ENG, A);
   const seeded = await serverSnapshot(request, eng.token);
   expect(seeded.dailyLog, 'the seeded ambli log').toMatchObject({ checkedIn: false, submitted: false });
   const seededPhotos = seeded.dailyLog!.photos.length;
 
   await page.goto('/');
   await signIn(page, ENG);
-  await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+  await openProject(page, 'Residence at Ambli');
 
   // For You is the engineer's home: Today reads the seeded unsent log — the first step is to check in
   const now = page.getByTestId('today-now');
@@ -112,7 +108,7 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   //    left it: the deep link brings the Site screen back, with the morning on it, and Today agrees
   await page.reload();
   await signIn(page, ENG);
-  await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+  await openProject(page, 'Residence at Ambli');
   await expect(page.getByTestId('check-out')).toBeVisible();
   await expect(page.getByTestId('crew-total')).toHaveText('11 workers');
   await expect(page.getByText('3 progress photos')).toBeVisible();

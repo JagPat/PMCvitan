@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: landing-811
-reviewed_merge: 9b68c3c
-open_pr: 812
+reviewed_merge: e027ab1
+open_pr: 813
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-13
@@ -26,11 +26,11 @@ updated: 2026-10-13
 
 ### Current unit
 
-**Landing after login (#811), unit A** (#812 on `claude/project-thread-cm4aq9`, Board 13 Oct): everyone lands on the
-Dashboard; a project-scoped user opens in the last project they used. Unit A is the migration only: the nullable
-`User.lastProjectId`, a plain stamp validated where it is read. Unit B (API: the switch records it, sign-in lands there
-while access holds) and unit C (web: the Dashboard is every role's home) follow, each from `main`. Design and hard
-choices on #811; schema record on #482.
+**Landing after login (#811), unit B** (#813 on `claude/project-thread-cm4aq9`, Board 13 Oct): everyone lands on the
+Dashboard; a project-scoped user opens in the last project they used. Unit A merged at `e027ab1` (#812, clean first
+round): the nullable `User.lastProjectId`. Unit B is the API: a successful switch stamps it, and sign-in lands there
+while the project is live and the access rule still grants a role there, else on the existing chain. Unit C (web: the
+Dashboard is every role's home) follows from `main`. Design and hard choices on #811; schema record on #482.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.

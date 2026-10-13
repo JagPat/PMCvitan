@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
+import { loginTo } from './landing';
 
 /**
  * PR C Task 5 — the mode-invariant SYNCHRONOUS-consequence assertions, run in BOTH sender modes
@@ -24,7 +25,6 @@ import { test, expect, type APIRequestContext } from '@playwright/test';
  */
 
 const API = 'http://localhost:3000';
-const PASSWORD = 'vitan123';
 const PID = 'ambli';
 const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
 
@@ -33,11 +33,6 @@ const OPTIONS = [
   { label: 'B', material: 'B', delta: 1, swatch: 's2', recommended: false },
 ];
 
-async function login(request: APIRequestContext, email: string): Promise<string> {
-  const res = await request.post(`${API}/auth/login`, { data: { email, password: PASSWORD } });
-  expect(res.ok(), `login ${email} → ${res.status()}`).toBeTruthy();
-  return (await res.json()).token;
-}
 async function snapshot(request: APIRequestContext, token: string): Promise<{
   decisions: Array<{ title: string }>;
   notifications: Array<{ text: string }>;
@@ -53,8 +48,9 @@ test.describe('PR C dual-mode: exactly-one external consequence (mode-agnostic)'
   let client = '';
 
   test.beforeAll(async ({ request }) => {
-    pmc = await login(request, 'pmc@vitan.in'); // author, home = ambli
-    client = await login(request, 'client@vitan.in'); // the decision audience, home = ambli
+    // sign-in opens the last project used (#811), so each token is scoped to ambli explicitly
+    pmc = (await loginTo(request, 'pmc@vitan.in', PID)).token; // the author
+    client = (await loginTo(request, 'client@vitan.in', PID)).token; // the decision audience
   });
 
   test('a DRAFT decision stays private to its author and notifies no one', async ({ request }) => {

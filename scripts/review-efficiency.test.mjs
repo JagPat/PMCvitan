@@ -1861,11 +1861,66 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     ['an HTML wrapper', `fix\n\n<strong>Work-Item</strong>: #750\n\n${owner}\n`],
     ['a word before the name', `fix\n\n*label* Work-Item: #750\n\n${owner}\n`],
     ['a mention in prose with a value', `fix\n\nThis closes work item #750.\n\n${owner}\n`],
+    // #763 (4235968337): markup between the two words, or inside one, renders as the field name too
+    ['HTML wrappers around each word', `fix\n\n<strong>Work</strong>-<em>Item</em>: #750\n\n${owner}\n`],
+    ['each word linked', `fix\n\n[Work](https://example.test/a)-[Item](https://example.test/b): #750\n\n${owner}\n`],
+    ['each word a reference link', `fix\n\n[Work][a]-[Item][b]: #750\n\n${owner}\n`],
+    ['an entity joiner', `fix\n\nWork&#45;Item: #750\n${owner}\n`],
+    ['a named-entity space', `fix\n\nWork&nbsp;Item: #750\n${owner}\n`],
+    ['an empty tag inside a word', `fix\n\nWo<b></b>rk-Item: #750\n${owner}\n`],
+    ['an HTML comment between the words', `fix\n\nWork<!-- x -->-Item: #750\n${owner}\n`],
+    // #814 Codex 4254561958 / 4254561977: an entity that renders a letter, and a quoted `>` inside a tag
+    ['a decimal entity letter', `fix\n\nWo&#114;k-Item: #750\n${owner}\n`],
+    ['a hex entity letter', `fix\n\nWork-&#x49;tem: #750\n${owner}\n`],
+    ['a quoted > in an attribute', `fix\n\n<strong>Work</strong>-<em title="a>b">Item</em>: #750\n\n${owner}\n`],
+    ["a single-quoted > in an attribute", `fix\n\nWork<span data-x='>'>-</span>Item: #750\n${owner}\n`],
+    // 4254561968: a link destination with balanced or escaped parentheses
+    ['balanced parentheses in a link target', `fix\n\n[Work](https://example.test/a_(b))-[Item](https://example.test/b): #750\n\n${owner}\n`],
+    ['nested and escaped parentheses in a link target', `fix\n\n[Work](https://example.test/a_((b)c)\\))-[Item](x): #750\n\n${owner}\n`],
+    // 4254627794 / 4254627815 / 4254627798 / 4254627803: a comment holding `>`, intraword emphasis, a quoted
+    // title holding `)`, an escaped `]` in a reference label
+    ['an HTML comment holding >', `fix\n\nWork<!-- a > b -->-Item: #750\n${owner}\n`],
+    ['intraword emphasis', `fix\n\nWo*r*k-Item: #750\n${owner}\n`],
+    ['a link title holding )', `fix\n\n[Work](x "a)b")-[Item](x): #750\n\n${owner}\n`],
+    ['an escaped ] in a reference label', `fix\n\n[Work][a\\]b]-[Item][c]: #750\n\n${owner}\n`],
+    ['a markup line naming both words before a value', `fix\n\n\`x\` work moves to the item list: done\n\n${owner}\n`],
+    // #816 / #817: an empty link inside a word, a comment spanning lines, a `<…>` link destination holding `)`
+    ['an empty link inside a word', `fix\n\nWo[](x)rk-Item: #750\n${owner}\n`],
+    ['a comment spanning lines inside a word', `fix\n\nWo<!--\ncomment\n-->rk-Item: #750\n\n${owner}\n`],
+    ['an angle-bracket destination holding )', `fix\n\nWo[](<foo)bar>)rk-Item: #750\n${owner}\n`],
+    // #819 Codex: a link after an unterminated target, and a disguise inside a word on a very long line
+    ['a link after an unterminated target', `fix\n\nx](unterminated Wo[](x)rk-Item: #750\n${owner}\n`],
+    ['a tag inside a word on a long line', `fix\n\n${'a'.repeat(5000)} Wo<b></b>rk-Item: #750\n${owner}\n`],
+    // #819 Codex 4255131567: a `]` that no `[` opens renders literally, so it keeps the words around it apart
+    ['a literal ]( before a tag inside a word', `fix\n\nx](<foo)bar>)Wo<b></b>rk-Item: #750\n${owner}\n`],
+    ['a literal ]( before an empty link inside a word', `fix\n\nx](y)Wo[](z)rk-Item: #750\n${owner}\n`],
+    ['wrapped words beside a valid trailer', `fix\n\n<b>Work</b>-<i>Item</i>: #1\n\nWork-Item: #750\n${owner}\n`],
   ]) {
     const result = parse(message);
     assert.equal(result.state, 'malformed', label);
     assert.equal(result.issue, null, label);
   }
+  // the stripped view only adds field lines: markup in prose without an attempted value, or beside the one
+  // canonical trailer, changes nothing
+  assert.deepEqual(parse(`fix\n\n<b>work</b> items are now read from commits\n\n${owner}\n`), { state: 'none', issue: null, detail: null });
+  assert.deepEqual(parse(`fix <b>bold</b> [x](y)\n\nWork-Item: #750\n${owner}\n`), { state: 'cited', issue: 750, detail: null });
+  // an autolink shows its address, so it does not join the words it sits between (#817, 4254874280)
+  assert.equal(parse(`fix\n\nWo<https://example.test>rk-Item: note\n\n${owner}\n`).state, 'none');
+});
+
+test('#816 / #817 — the field check stays linear on long hostile lines', () => {
+  const started = Date.now();
+  for (const line of [
+    `<${' work item abc'.repeat(8000)}`, // Codex 4254874278: cubic on the broad rule
+    `x${'](a'.repeat(32000)}`, // 4254668172: an unterminated target rescanned the rest
+    `${'](<'.repeat(40000)}`, // 4255076079: every unterminated target is skipped once, not rescanned
+    `${'](('.repeat(40000)}`,
+    ' work-item'.repeat(20000),
+    ...['<a "', '<!--', '](a', '<"<', '&#'].map((unit) => Array(50).fill(unit.repeat(1000)).join('\n')),
+  ]) {
+    assert.equal(parseWorkItemTrailer(`fix\n\n${line}\n`).state, 'none');
+  }
+  assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
 });
 
 test('M3b / #751 4232759655 (#759) — no message content can hide or invent a citation: nothing is parsed as Markdown', () => {
