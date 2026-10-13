@@ -3201,7 +3201,7 @@ export const useStore = create<Store>()(
         // the snapshot is actually `applied` (never on a superseded / wrong-project one).
         const lease = beginSnapshotLease(scope);
         const snap = await gateway.snapshot();
-        consumeSnapshotResult(acceptSnapshot(snap, lease), 'Evidence photo uploaded and linked to the item.', lease.scope);
+        consumeSnapshotResult(acceptSnapshot(snap, lease), CHT.uploaded[get().lang], lease.scope);
       } catch {
         // the failure belongs to the scope the capture was made in — a moved
         // scope (gate round-4 finding 3) hears nothing

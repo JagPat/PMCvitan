@@ -107,3 +107,29 @@ describe('the inspection checklist in English is unchanged', () => {
     expect(useStore.getState().toast).toBe('Please mark all 3 items before submitting.');
   });
 });
+
+describe('an online photo upload says so in the chosen language (Codex 4262573038)', () => {
+  const PX = `data:image/png;base64,${btoa('PNG')}`;
+  for (const [lang, line] of [
+    ['en', 'Evidence photo uploaded and linked to the item.'],
+    ['hi', 'फ़ोटो सबूत अपलोड हुआ और आइटम से जुड़ गया।'],
+    ['gu', 'ફોટો પુરાવો અપલોડ થયો અને આઇટમ સાથે જોડાયો.'],
+  ] as const) {
+    it(`${lang}`, async () => {
+      vi.resetModules();
+      const { useStore, getInitialState } = await import('@/store/store');
+      const snap = {
+        project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+        decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null,
+        reinspectionCreated: false, drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+      };
+      useStore.setState(getInitialState());
+      const gw = { uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }), snapshot: vi.fn().mockResolvedValue(snap) };
+      useStore.getState()._setGateway(gw as never);
+      useStore.setState({ online: true, lang, checklist: { ...ONE, items: ONE.items.map((it) => ({ ...it })) } });
+      await useStore.getState().addChecklistEvidence(1, PX);
+      expect(gw.uploadMedia).toHaveBeenCalledTimes(1);
+      expect(useStore.getState().toast).toBe(line);
+    });
+  }
+});
