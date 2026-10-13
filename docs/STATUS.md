@@ -18,7 +18,7 @@ task: 4
 task_state: in_progress
 work_item: landing-811
 reviewed_merge: 53b5f18
-open_pr: 816
+open_pr: 818
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-13
@@ -26,7 +26,7 @@ updated: 2026-10-13
 
 ### Current unit
 
-**Landing after login (#811), unit C** (#816 on `claude/project-thread-cm4aq9`, Board 13 Oct): everyone lands on the
+**Landing after login (#811), unit C** (#818 on `claude/project-thread-cm4aq9`, Board 13 Oct): everyone lands on the
 Dashboard; a project-scoped user opens in the last project they used. Unit A merged at `e027ab1` (#812): the nullable
 `User.lastProjectId`. Unit B merged at `53b5f18` (#813, clean first round): a switch stamps it and sign-in opens it
 while access holds. Unit C is the web: the Dashboard is every role's home, and each Dashboard tile opens only what
