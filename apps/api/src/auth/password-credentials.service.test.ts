@@ -198,10 +198,14 @@ describe('PasswordCredentialsService', () => {
     for (const line of logs) expect(line).not.toMatch(/@/);
   });
 
-  it('a delivery failure logs its own path and keeps the same public response', async () => {
-    const { service } = make([activeUser()]);
+  it('a delivery failure logs its own path, keeps the same public response, and keeps its code working', async () => {
+    const { service, delivered } = make([activeUser()]);
     const email = (service as unknown as { email: { sendPasswordCredentialCode: ReturnType<typeof vi.fn> } }).email;
-    email.sendPasswordCredentialCode.mockRejectedValueOnce(new Error('smtp down'));
+    // #806 unit B1: an SMTP timeout after the provider took the mail. The code arrives although the send threw.
+    email.sendPasswordCredentialCode.mockImplementationOnce(async (address: string, code: string) => {
+      delivered.push({ email: address, code });
+      throw new Error('smtp timeout');
+    });
     const logs: string[] = [];
     const logger = (service as unknown as { log: { log: (m: string) => void; error: (m: string) => void } }).log;
     vi.spyOn(logger, 'log').mockImplementation((m: string) => { logs.push(m); });
@@ -210,6 +214,8 @@ describe('PasswordCredentialsService', () => {
     const res = await service.request({ email: 'member@example.com' });
     expect(res).toEqual({ accepted: true, requestId: expect.any(String) });
     expect(logs).toEqual([expect.stringContaining(`delivery failed for challenge ${res.requestId}`)]);
+    await expect(service.verify({ requestId: res.requestId, code: delivered[0]!.code }))
+      .resolves.toEqual({ setupToken: expect.any(String), expiresInSeconds: 600 });
   });
 
   it('limits wrong OTP attempts, expires challenges, and never returns an application session', async () => {
