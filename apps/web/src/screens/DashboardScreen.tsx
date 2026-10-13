@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { inspectionsSettledForLinks, selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
+import { decisionRecordLink, inspectionsSettledForLinks, selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
 import { routableScreensFor } from '@/lib/screens';
@@ -77,12 +77,19 @@ export function DashboardScreen() {
   const siteStatus = submitted ? 'Daily log submitted' : checkedIn ? 'Engineer on site · logging' : 'Awaiting check-in';
   const siteDot = checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)';
 
+  // #818 Codex 4255468689 — the approvals tile opens where the viewer acts on them, the action queue's rule: the
+  // approval screen when every decision it counts awaits THIS viewer as decider (`decisionRecordLink`, the bell's
+  // rule, so a retained row never opens live controls), else the Decision Log, which reads every state
+  const approvalsScreen = useStore((s) => {
+    const mine = selectDecisionsAwaitingAction(s);
+    return mine.length > 0 && mine.every((d) => decisionRecordLink(s, d).screen === 'client-decisions') ? 'client-decisions' : 'decision-log';
+  });
   // `onClick` stays optional: a tile with nowhere to go renders as a plain box (B5)
-  const openDecisionLog = canOpen('decision-log') ? () => setScreen('decision-log') : undefined;
+  const openApprovals = approvalsScreen === 'client-decisions' || canOpen('decision-log') ? () => setScreen(approvalsScreen) : undefined;
   const tiles: Array<{ key: string; label: string; value: number | string; accent: string; sub: string; onClick?: () => void }> = [
     decisionsKnown
-      ? { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: openDecisionLog }
-      : { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed), onClick: openDecisionLog },
+      ? { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: openApprovals }
+      : { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed), onClick: openApprovals },
   ];
   if (canOpen('inspect-review')) tiles.push(
     inspectionsKnown

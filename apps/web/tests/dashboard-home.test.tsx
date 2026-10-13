@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
+import { selectDecisionsAwaitingAction } from '@/store/selectors';
 import { screensFor } from '@/lib/screens';
 import { DashboardScreen } from '@/screens/DashboardScreen';
 
@@ -66,6 +67,21 @@ describe('the Dashboard shows each role only what it can open', () => {
         expect(allowed.has(s().screen), `${role} → ${tile.getAttribute('data-testid')} → ${s().screen}`).toBe(true);
       }
     }
+  });
+
+  it('the approvals tile opens the approval screen for a decider, and the Decision Log for the PMC', () => {
+    // #818 Codex 4255468689 — the client's count is decisions awaiting the client, so its tile opens the screen
+    // with the approval controls, as the action queue does; the PMC's count includes other deciders' decisions
+    useStore.setState((st) => { st.role = 'client'; });
+    expect(selectDecisionsAwaitingAction(s()).length).toBeGreaterThan(0);
+    let r = render(<DashboardScreen />);
+    fireEvent.click(r.getByTestId('tile-pending'));
+    expect(s().screen).toBe('client-decisions');
+    cleanup();
+    useStore.setState((st) => { st.role = 'pmc'; st.screen = 'dashboard'; });
+    r = render(<DashboardScreen />);
+    fireEvent.click(r.getByTestId('tile-pending'));
+    expect(s().screen).toBe('decision-log');
   });
 
   it('the engineer keeps the Schedule button, which it holds, but not the review queue', () => {
