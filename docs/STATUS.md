@@ -95,8 +95,9 @@ mandatory await the owner). #731 stays open until they land. Maintenance runs be
    deployment confirmed. `next_task` stays `phase-6-task-4d-iii` until then. That pointer is the parent task's
    continuation only; it is not authority to start 4d-iii ahead of items 2–5 above. The remaining live-bug work
    comes before client estimates and isolated QA.
-7. **Site Visits**, after R1–R4 (the owner's direction, unchanged by the 2026-10-08 order). Plan in #793 (#792); its
-   placement is open question Q8 there, because the Board's and owner's 7 Oct orders differ from this line.
+7. **Site Visits** runs now as its own lane (Board, 13 Oct 2026, on #482 and #792: the #792 plan is approved as
+   written and Q8 is answered). SV1 to SV5 in order, each with its own reviewed technical design first; SV1's is
+   `docs/superpowers/plans/2026-10-13-site-visits-sv1-visit-record.md`. This lane does not move the Now block.
 
 Each unit is a focused PR from `main`, with its own GitHub issue (rule 9). It goes through CI, exact-head
 Codex review (capped at two rounds once M2 lands), merge, deployment evidence and live validation. Nothing
