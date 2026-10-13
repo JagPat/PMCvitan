@@ -64,7 +64,6 @@ import {
   type DisagreeDecisionInput,
   type ResolveStrandedCountersignInput,
   ROLE_POLICY,
-  deciderNoun,
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { readImpact } from '@/lib/impactInput';
@@ -75,7 +74,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, changeSubmittedToast } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -2115,7 +2114,7 @@ export const useStore = create<Store>()(
           // a terminal refusal is never reported as a network failure, even when its body carried no
           // readable reason (a proxy's error page): retrying it would fail the same way (#699 shadow review)
           if (refused && isTerminalOutboxError(err)) get().flash(refused(refusalMessage(err) ?? 'the server refused it'));
-          else get().flash('Could not reach the server — please try again.');
+          else get().flash(DTX.unreachable[get().lang]);
           return false;
         });
     };
@@ -2240,6 +2239,8 @@ export const useStore = create<Store>()(
       label: string,
       call: () => Promise<ApiSnapshot>,
       okMsg: OkMsg,
+      // #827: the queued line in the viewer's language; without it, the label plus the standard English line
+      offlineMsg?: string,
     ): boolean => {
       if (!gateway) return false;
       if (get().online) {
@@ -2251,7 +2252,7 @@ export const useStore = create<Store>()(
         s.syncQueue.push(label);
       });
       persistOutbox();
-      get().flash(label + ' — saved offline, will sync when you reconnect.');
+      get().flash(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.');
       return true;
     };
 
@@ -2261,8 +2262,11 @@ export const useStore = create<Store>()(
      *  and for a row the returned slice does not carry (nothing is invented from its absence). */
     const approveOutcomeCopy = (decId: string) => (snap: ApiSnapshot): string =>
       snap.decisions.find((d) => d.id === decId)?.status === 'awaiting_countersign'
-        ? 'Approved — awaiting the architect’s countersign.'
-        : 'Approved & locked — saved to the server.';
+        ? DTX.approvedAwaiting[get().lang]
+        : DTX.approvedSaved[get().lang];
+
+    /** #827 — "Approve DL-009 — saved offline, …" in the viewer's language; the decision id is data. */
+    const queuedLine = (verb: Record<Lang, string>, decId: string): string => DLX.savedOffline(`${verb[get().lang]} ${decId}`, get().lang);
 
     /**
      * WRITE-AHEAD command path (Task 10 correction round 2, finding 1). Unlike `runRemoteOrQueue`
@@ -2831,7 +2835,7 @@ export const useStore = create<Store>()(
       // one stable idempotency key for this approval — the online send and any offline replay
       // reach the server under it, so a lost-response retry re-locks once (Phase 2 Task 5).
       const approveKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx, idempotencyKey: approveKey }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx, approveKey), approveOutcomeCopy(decId))) return;
+      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx, idempotencyKey: approveKey }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx, approveKey), approveOutcomeCopy(decId), queuedLine(DTX.approveLabel, decId))) return;
       const src = get().decisions.find((x) => x.id === decId);
       const material = src ? src.options[optIdx].material : '';
       const title = src ? src.title : '';
@@ -2851,7 +2855,7 @@ export const useStore = create<Store>()(
         s.notifications.unshift({ text: 'Client approved ' + title + ' — ' + material, time: 'just now', color: '#3F7A54', decisionId: decId });
         s.modal = { type: null };
       });
-      get().flash('Approved & locked — the Decision Log and PMC dashboard are updated.');
+      get().flash(DTX.approvedDemo[get().lang]);
     },
     // Both consultation commands take the WRITE-AHEAD path (review finding F4), not
     // `runRemoteOrQueue`. The distinction matters here precisely because a consultation is an
@@ -2871,7 +2875,8 @@ export const useStore = create<Store>()(
         runWriteAhead(
           { t: 'consultationRequest', decisionId: decId, consulteeMembershipId, question: text, idempotencyKey: key },
           'Consult ' + decId,
-          'Asked — they will see this decision and your question.',
+          () => DTX.asked[get().lang],
+          queuedLine(DTX.consultLabel, decId),
         )
       ) {
         set((s) => { s.modal = { type: null }; });
@@ -2880,7 +2885,7 @@ export const useStore = create<Store>()(
       // demo/offline-only fallback: the server is the authority on the thread, so nothing is
       // fabricated locally beyond closing the sheet.
       set((s) => { s.modal = { type: null }; });
-      get().flash('Asked — they will see this decision and your question.');
+      get().flash(DTX.asked[get().lang]);
     },
     respondToConsultation: (decId, consultationId, response, recommendedOptionIndex) => {
       const text = response.trim();
@@ -2890,14 +2895,15 @@ export const useStore = create<Store>()(
         runWriteAhead(
           { t: 'consultationRespond', decisionId: decId, consultationId, response: text, ...(recommendedOptionIndex !== undefined ? { recommendedOptionIndex } : {}), idempotencyKey: key },
           'Advise ' + decId,
-          'Advice recorded — the person who asked has been told.',
+          () => DTX.advised[get().lang],
+          queuedLine(DTX.adviseLabel, decId),
         )
       ) {
         set((s) => { s.modal = { type: null }; });
         return;
       }
       set((s) => { s.modal = { type: null }; });
-      get().flash('Advice recorded — the person who asked has been told.');
+      get().flash(DTX.advised[get().lang]);
     },
     // ── Phase 6 task 4d-ii-b / B5a — the four countersign-chain commands. Each is one write-ahead act
     //    under ONE fresh key (`dispatchChainAct`): coalesced while an equivalent act on the same decision
@@ -2952,12 +2958,10 @@ export const useStore = create<Store>()(
       // round-11 Codex F2 — the confirmation names the ACTUAL decider whose re-approval the
       // request now awaits; the client-held text stays byte-identical (the legacy default)
       const changeKind = get().decisions.find((x) => x.id === decId)?.deciderKind ?? 'client';
-      const changeToast = changeKind === 'client'
-        ? 'Change Request submitted for client re-approval.'
-        : `Change Request submitted for ${deciderNoun(changeKind)}’s re-approval.`;
+      const changeToast = (): string => changeSubmittedToast(changeKind, get().lang);
       set((s) => { s.modal = { type: null }; });
       const changeKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'change', decisionId: decId, reason, costImpact, timeImpactDays, idempotencyKey: changeKey }, 'Change ' + decId, () => gateway!.requestChange(decId, reason, costImpact, timeImpactDays, changeKey), changeToast)) return;
+      if (runRemoteOrQueue({ t: 'change', decisionId: decId, reason, costImpact, timeImpactDays, idempotencyKey: changeKey }, 'Change ' + decId, () => gateway!.requestChange(decId, reason, costImpact, timeImpactDays, changeKey), changeToast, queuedLine(DTX.changeLabel, decId))) return;
       set((s) => {
         const d = s.decisions.find((x) => x.id === decId);
         if (d) {
@@ -2966,11 +2970,11 @@ export const useStore = create<Store>()(
         }
         s.modal = { type: null };
       });
-      get().flash('Change Request submitted for client re-approval.');
+      get().flash(changeSubmittedToast('client', get().lang));
     },
     withdrawChange: (decId) => {
       const withdrawKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'changeWithdraw', decisionId: decId, idempotencyKey: withdrawKey }, 'Withdraw change ' + decId, () => gateway!.withdrawChange(decId, withdrawKey), 'Change request withdrawn — the decision is locked again.')) return;
+      if (runRemoteOrQueue({ t: 'changeWithdraw', decisionId: decId, idempotencyKey: withdrawKey }, 'Withdraw change ' + decId, () => gateway!.withdrawChange(decId, withdrawKey), () => DTX.changeWithdrawn[get().lang], queuedLine(DTX.withdrawLabel, decId))) return;
       set((s) => {
         const d = s.decisions.find((x) => x.id === decId);
         if (d && d.status === 'change') {
@@ -2978,7 +2982,7 @@ export const useStore = create<Store>()(
           delete d.changeRequest;
         }
       });
-      get().flash('Change request withdrawn — the decision is locked again.');
+      get().flash(DTX.changeWithdrawn[get().lang]);
     },
     openWithdraw: (decId) => {
       const d = get().decisions.find((x) => x.id === decId);
@@ -4459,7 +4463,7 @@ export const useStore = create<Store>()(
         .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), 'Worker onboarded to the project roster.', lease.scope))
         .catch(() => {
           // failure (including a LOST committed response) RETAINS the key for the retry
-          if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
+          if (scopeStillCurrent(lease.scope)) get().flash(DTX.unreachable[get().lang]);
         });
     },
     bindLabourDevice: (deviceId, workerId) => {
@@ -4491,7 +4495,7 @@ export const useStore = create<Store>()(
               }
             } catch {
               // the bind COMMITTED but the reconcile failed — RETAIN the key (round 10)
-              if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
+              if (scopeStillCurrent(lease.scope)) get().flash(DTX.unreachable[get().lang]);
             }
           },
           (e: unknown) => {
@@ -4508,7 +4512,7 @@ export const useStore = create<Store>()(
               set((s) => { if (s.labourBindPending[sig] === key) delete s.labourBindPending[sig]; });
               get().flash('Device binding was refused — check the device id and worker.');
             } else {
-              get().flash('Could not reach the server — please try again.');
+              get().flash(DTX.unreachable[get().lang]);
             }
           },
         );

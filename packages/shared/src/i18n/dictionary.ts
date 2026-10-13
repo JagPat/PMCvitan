@@ -493,6 +493,46 @@ export function changeModalExplainer(kind: DeciderKind, lang: Lang): string {
   return `This decision is locked. A change must be re-approved by ${who} with cost & time impact.`;
 }
 
+/** #827 (Top 10 #5, error messages and confirmations) — what the approve, change and consultation paths say
+ *  once they land, and the shared "server unreachable" line. English is byte-identical to the store's copy. */
+export const decisionToastText = {
+  approvedSaved: { en: 'Approved & locked — saved to the server.', hi: 'मंज़ूर और लॉक — सर्वर पर सेव हो गया।', gu: 'મંજૂર અને લૉક — સર્વર પર સેવ થયું.' },
+  approvedAwaiting: { en: 'Approved — awaiting the architect’s countersign.', hi: 'मंज़ूर — आर्किटेक्ट के प्रति-हस्ताक्षर की राह।', gu: 'મંજૂર — આર્કિટેક્ટની પ્રતિ-સહીની રાહ.' },
+  approvedDemo: { en: 'Approved & locked — the Decision Log and PMC dashboard are updated.', hi: 'मंज़ूर और लॉक — निर्णय रजिस्टर और PMC डैशबोर्ड अपडेट हो गए।', gu: 'મંજૂર અને લૉક — નિર્ણય રજિસ્ટર અને PMC ડેશબોર્ડ અપડેટ થયાં.' },
+  asked: { en: 'Asked — they will see this decision and your question.', hi: 'पूछ लिया — वे यह निर्णय और आपका सवाल देखेंगे।', gu: 'પૂછી લીધું — તેઓ આ નિર્ણય અને તમારો સવાલ જોશે.' },
+  advised: { en: 'Advice recorded — the person who asked has been told.', hi: 'सलाह दर्ज हुई — पूछने वाले को बता दिया गया।', gu: 'સલાહ નોંધાઈ — પૂછનારને જાણ કરી.' },
+  changeWithdrawn: { en: 'Change request withdrawn — the decision is locked again.', hi: 'बदलाव का अनुरोध वापस लिया — निर्णय फिर से लॉक है।', gu: 'ફેરફારની વિનંતી પાછી ખેંચી — નિર્ણય ફરી લૉક છે.' },
+  unreachable: { en: 'Could not reach the server — please try again.', hi: 'सर्वर से संपर्क नहीं हो सका — कृपया फिर कोशिश करें।', gu: 'સર્વર સુધી પહોંચી શકાયું નહીં — કૃપા કરી ફરી પ્રયાસ કરો.' },
+  // the label an offline-queued act carries ("Approve DL-009 — saved offline, …"); the decision id is data
+  approveLabel: { en: 'Approve', hi: 'मंज़ूरी', gu: 'મંજૂરી' },
+  changeLabel: { en: 'Change', hi: 'बदलाव', gu: 'ફેરફાર' },
+  withdrawLabel: { en: 'Withdraw change', hi: 'बदलाव वापस', gu: 'ફેરફાર પાછો' },
+  consultLabel: { en: 'Consult', hi: 'सलाह माँगी', gu: 'સલાહ માગી' },
+  adviseLabel: { en: 'Advise', hi: 'सलाह दी', gu: 'સલાહ આપી' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** "Change Request submitted for client re-approval." — naming who re-approves, in the viewer's language. */
+export function changeSubmittedToast(kind: DeciderKind, lang: Lang): string {
+  if (lang === 'en') return kind === 'client' ? 'Change Request submitted for client re-approval.' : `Change Request submitted for ${(DECIDER_NOUN[kind] ?? DECIDER_NOUN.client).en}’s re-approval.`;
+  const who = (DECIDER_NOUN[kind] ?? DECIDER_NOUN.client)[lang];
+  return lang === 'hi' ? `बदलाव का अनुरोध ${who} की दोबारा मंज़ूरी के लिए भेजा गया।` : `ફેરફારની વિનંતી ${who}ની ફરી મંજૂરી માટે મોકલી.`;
+}
+
+/** The screen shown while a project loads, or when it could not load. */
+export const projectLoadLabels = {
+  failed: { en: 'Couldn’t load this project', hi: 'यह प्रोजेक्ट नहीं खुल सका', gu: 'આ પ્રોજેક્ટ ખૂલી શક્યો નહીં' },
+  failedDetail: { en: 'Check your connection and access, then retry.', hi: 'नेटवर्क और अपनी पहुँच जाँचें, फिर दोबारा कोशिश करें।', gu: 'નેટવર્ક અને તમારી પહોંચ તપાસો, પછી ફરી પ્રયાસ કરો.' },
+  retry: { en: 'Retry', hi: 'फिर कोशिश करें', gu: 'ફરી પ્રયાસ કરો' },
+  loadingDetail: { en: 'Fetching this project’s decisions, schedule and site data.', hi: 'इस प्रोजेक्ट के निर्णय, शेड्यूल और साइट की जानकारी आ रही है।', gu: 'આ પ્રોજેક્ટના નિર્ણય, શેડ્યૂલ અને સાઇટની માહિતી આવી રહી છે.' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** "Loading Ambli…" — the project's short name is data. */
+export function projectLoadingTitle(project: string, lang: Lang): string {
+  if (lang === 'hi') return `${project} खुल रहा है…`;
+  if (lang === 'gu') return `${project} ખૂલી રહ્યો છે…`;
+  return `Loading ${project}…`;
+}
+
 /** #827 (Top 10 #5) — the engineer's daily site log, a Board-named path. English is byte-identical to the
  *  screen's original copy. Crew trades, dates, material names and places are project data, shown as recorded. */
 export const dailyLogLabels = {
