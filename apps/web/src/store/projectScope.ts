@@ -16,6 +16,7 @@ import type {
   ReservationPlan,
   MeasurementRegisterDto,
   VendorAdvanceListDto,
+  ScreenKey,
 } from '@vitan/shared';
 import { emptyNotifSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { DailyLogDraft } from './dailyLogDraft';
@@ -85,6 +86,11 @@ export interface ProjectDataState {
   /** Audit F-02 — the activity the schedule should bring into view when it is opened from a place
    *  (an activity id is project-contained, so it tears down with the scope like `placeFocus`) */
   activityFocus: string | null;
+  /** #633 — the Site Map place a record was opened FROM (`nodeId: null` = the whole project), so the record's
+   *  screen can offer the way back to it, on that screen and that record only. Set only by an open that names
+   *  its place; any other navigation clears it. A node id is project-contained, so it tears down with the
+   *  scope like `placeFocus`. */
+  returnPlace: { nodeId: string | null; screen: ScreenKey; item: string | null } | null;
   /** B6 — the one item the current screen's URL names: the Site Map's place, the open drawing, or
    *  the Decision Log's highlighted decision (`client-decisions` keeps `decisionFocus`). Every
    *  such id is project-contained, so it tears down with the scope like `placeFocus`. */
@@ -199,6 +205,7 @@ export function emptyProjectData(): ProjectDataState {
     placeFocus: null,
     decisionFocus: null,
     activityFocus: null,
+    returnPlace: null,
     routeItem: null,
     checklist: null,
     openChecklists: [],
