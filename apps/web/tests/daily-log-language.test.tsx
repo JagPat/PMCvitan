@@ -21,8 +21,9 @@ const log = (over: Partial<DailyLog> = {}): DailyLog => ({
   ...over,
 } as DailyLog);
 
-// project data the people on the project typed, and the acronyms Indian sites use as they are
-const DATA = ['Villa Bodakdev', '01 Jun 2026', 'Mason', 'Cement', 'Granite', 'DL-1', 'DL-2', '10 bags', '4 slabs', 'GF', 'PMC', 'GPS', 'QR'];
+// project data the people on the project typed, and the acronyms Indian sites use as they are; the
+// log's date is not here: it is formatted in the viewer's language
+const DATA = ['Villa Bodakdev', 'Mason', 'Cement', 'Granite', 'DL-1', 'DL-2', '10 bags', '4 slabs', 'GF', 'PMC', 'GPS', 'QR'];
 
 async function screen(lang: Lang, over: Record<string, unknown>, { demo = false, mode = 'snapshot' } = {}) {
   vi.stubEnv('VITE_API_URL', demo ? '' : 'http://api.test');
@@ -192,6 +193,41 @@ describe('what the daily log leads into, in Hindi and Gujarati', () => {
       expect(leftoverEnglish(r.container, DATA)).toEqual([]);
     });
   }
+
+  it('the log date reads in the language; English keeps the server\'s string', async () => {
+    for (const [lang, month] of [['hi', 'जून'], ['gu', 'જૂન']] as const) {
+      const r = await screen(lang, { dailyLog: log() });
+      expect(r.container.textContent).toContain(month);
+      expect(r.container.textContent).not.toContain('Jun 2026');
+      cleanup();
+    }
+    const en = await screen('en', { dailyLog: log() });
+    expect(en.container.textContent).toContain('01 Jun 2026');
+    cleanup();
+    const legacy = await screen('hi', { dailyLog: log({ logDate: null }) });
+    expect(legacy.container.textContent).toContain('01 Jun 2026');
+  });
+
+  it('what a reconnect says about replayed offline work, and adding a place, in every language', async () => {
+    const { syncResultText: S, locationResultText: P } = await import('@vitan/shared');
+    for (const lang of ['hi', 'gu'] as const) {
+      expect(words(S.join([S.synced(2, lang), S.dropped(1, lang), S.pending(3, lang)], lang))).toEqual([]);
+      expect(words(P.needsServer[lang])).toEqual([]);
+      expect(words(P.failed[lang])).toEqual([]);
+      for (const k of ['zone', 'room', 'element']) expect(words(P.added(k, 'Kitchen', lang), ['Kitchen'])).toEqual([]);
+    }
+    expect(S.join([S.synced(2, 'en'), S.dropped(1, 'en'), S.pending(1, 'en')], 'en'))
+      .toBe('2 offline updates synced; 1 could not be applied and was discarded; 1 still pending — will retry when you reconnect.');
+    expect(P.added('element', 'Main Door', 'en')).toBe('Added element: Main Door.');
+  });
+
+  it('hi: adding a place with no server says so in Hindi', async () => {
+    await screen('hi', { dailyLog: log() }, { demo: true });
+    const { useStore } = await import('@/store/store');
+    await useStore.getState().addLocationNode({ parentId: null, kind: 'zone', name: 'Terrace' } as never);
+    expect(words(useStore.getState().toast ?? '')).toEqual([]);
+    expect(useStore.getState().toast).toBeTruthy();
+  });
 
   it('the offline line for each queued command names it in the language', async () => {
     const { dailyLogCommandLabels: C, dailyLogToastText: X } = await import('@vitan/shared');

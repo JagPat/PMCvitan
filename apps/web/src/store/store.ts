@@ -75,7 +75,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -4791,7 +4791,7 @@ export const useStore = create<Store>()(
     },
     addLocationNode: async (input) => {
       if (!gateway) {
-        get().flash('Managing locations needs the server.');
+        get().flash(LOC.needsServer[get().lang]);
         return null;
       }
       const before = new Set(get().nodes.map((n) => n.id));
@@ -4863,7 +4863,7 @@ export const useStore = create<Store>()(
           else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
-        get().flash(`Added ${body.kind}: ${body.name}.`);
+        get().flash(LOC.added(body.kind, body.name, get().lang));
         // the server names the place (#703) — the one it made, or (#705) the one already holding the
         // name, which was in the tree before: never pick it by name or by what is new. A server without
         // the field: the node that was not in the tree before.
@@ -4872,7 +4872,7 @@ export const useStore = create<Store>()(
         return nodes.find((n) => !before.has(n.id) && n.name === body.name && n.kind === body.kind)?.id ?? null;
       } catch {
         // gate round 12: a failure landing after a switch (of project or of user) must not toast.
-        if (scopeStillCurrent(scope) && sentBySameUser()) get().flash('Could not add the location — check your access and try again.');
+        if (scopeStillCurrent(scope) && sentBySameUser()) get().flash(LOC.failed[get().lang]);
         return null;
       }
     },
@@ -5610,10 +5610,11 @@ export const useStore = create<Store>()(
       if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), opts?.okMsg, flushLease.scope);
 
       const parts: string[] = [];
-      if (synced > 0 && !opts?.okMsg) parts.push(`${synced} offline update${synced > 1 ? 's' : ''} synced`);
-      if (dropped > 0) parts.push(`${dropped} could not be applied and ${dropped > 1 ? 'were' : 'was'} discarded`);
-      if (remaining.length > 0) parts.push(`${remaining.length} still pending — will retry when you reconnect`);
-      if (parts.length) get().flash(parts.join('; ') + '.');
+      const lang = get().lang;
+      if (synced > 0 && !opts?.okMsg) parts.push(SYNC.synced(synced, lang));
+      if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
+      if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
+      if (parts.length) get().flash(SYNC.join(parts, lang));
       // the chain refusals carry the server's words, so they are not folded into the count above
       if (chainRefusals.length) get().flash(chainRefusals.join(' '));
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved

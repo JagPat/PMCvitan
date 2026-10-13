@@ -12,7 +12,7 @@ import { projectScopeOf } from '@/store/projectScope';
 import { dailyLogCommandInFlight, dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
-import { can, dailyLogLabels as L, dailyLogText as T, labourLabels, type ScreenKey } from '@vitan/shared';
+import { can, dailyLogLabels as L, dailyLogText as T, labourLabels, type ScreenKey, type Lang } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
@@ -207,7 +207,7 @@ export function DailyLogScreen() {
           <div>
             <Eyebrow size={9}>{L.eyebrow[lang]}</Eyebrow>
             <div style={{ fontWeight: 700, fontSize: 22, marginTop: 4 }}>{short}</div>
-            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{dailyLog.date}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{logDateIn(dailyLog, lang)}</div>
           </div>
           {dailyLog.submitted && can('dailyLog.start', role) && (
             <Button variant="outline" onClick={startNewDay} disabled={actionsLocked || inFlight} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
@@ -443,3 +443,14 @@ const stepBtn: React.CSSProperties = {
   justifyContent: 'center',
 };
 
+const LOCALE: Record<Lang, string> = { en: 'en-IN', hi: 'hi-IN', gu: 'gu-IN' };
+
+/** The log's day. English keeps the server's display string; Hindi and Gujarati format the log's
+ *  civil date (ISO) in their own month names. It is already the site's day, so it is formatted as-is
+ *  (UTC). A row with no usable civil date falls back to the display string. */
+function logDateIn(log: { date: string; logDate?: string | null }, lang: Lang): string {
+  if (lang === 'en' || !log.logDate) return log.date;
+  const at = new Date(`${log.logDate}T00:00:00Z`);
+  if (Number.isNaN(at.getTime())) return log.date;
+  return new Intl.DateTimeFormat(LOCALE[lang], { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(at);
+}

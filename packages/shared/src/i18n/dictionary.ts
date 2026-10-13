@@ -650,6 +650,28 @@ export const dailyLogToastText = {
     lang === 'hi' ? `${n} ऑफ़लाइन बदलाव सर्वर पर भेजे गए।` : lang === 'gu' ? `${n} ઓફલાઇન ફેરફારો સર્વર પર મોકલાયા.` : n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.',
 };
 
+/** What a reconnect says about the queued offline work it replayed (the outbox flush). */
+export const syncResultText = {
+  synced: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} ऑफ़लाइन बदलाव भेजे गए` : lang === 'gu' ? `${n} ઓફલાઇન ફેરફારો મોકલાયા` : `${n} offline update${n > 1 ? 's' : ''} synced`,
+  dropped: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} लागू नहीं हो सके और हटा दिए गए` : lang === 'gu' ? `${n} લાગુ ન થઈ શક્યા અને કાઢી નખાયા` : `${n} could not be applied and ${n > 1 ? 'were' : 'was'} discarded`,
+  pending: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} अभी बाकी — नेटवर्क आते ही फिर कोशिश होगी` : lang === 'gu' ? `${n} હજી બાકી — નેટવર્ક આવતાં ફરી પ્રયાસ થશે` : `${n} still pending — will retry when you reconnect`,
+  join: (parts: string[], lang: Lang): string => parts.join('; ') + (lang === 'hi' ? '।' : '.'),
+};
+
+/** What adding a place (zone, room or object) from the place picker says back. */
+export const locationResultText = {
+  needsServer: { en: 'Managing locations needs the server.', hi: 'जगहें बदलने के लिए सर्वर से जुड़ना ज़रूरी है।', gu: 'જગ્યાઓ બદલવા સર્વર સાથે જોડાણ જરૂરી છે.' },
+  failed: { en: 'Could not add the location — check your access and try again.', hi: 'जगह नहीं जुड़ सकी — अपनी अनुमति जाँचें और फिर कोशिश करें।', gu: 'જગ્યા ઉમેરી શકાઈ નહીં — તમારી પરવાનગી તપાસો અને ફરી પ્રયાસ કરો.' },
+  added: (kind: string, name: string, lang: Lang): string => {
+    if (lang === 'en') return `Added ${kind}: ${name}.`;
+    const k = (placeKindLabels as Record<string, Record<Lang, string>>)[kind]?.[lang] ?? kind;
+    return lang === 'hi' ? `${k} जोड़ा गया: ${name}।` : `${k} ઉમેરાયું: ${name}.`;
+  },
+};
+
 /** The names of the daily log's write-ahead commands, as the "saved offline" toast says them. */
 export const dailyLogCommandLabels = {
   start: { en: 'New daily log', hi: 'नया लॉग', gu: 'નવો લૉગ' },
