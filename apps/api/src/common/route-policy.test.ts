@@ -20,6 +20,7 @@ import { LabourCapacityController } from '../labour/labour-capacity.controller';
 import { WorkerDevicesController } from '../orgs/worker-devices.controller';
 import { AuthController } from '../auth/auth.controller';
 import { DailyLogController } from '../daily-log/daily-log.controller';
+import { SiteVisitsController } from '../site-visits/site-visits.controller';
 import { DecisionsController } from '../decisions/decisions.controller';
 import { DrawingsController } from '../drawings/drawings.controller';
 import { InspectionsController } from '../inspections/inspections.controller';
@@ -61,6 +62,7 @@ const CONTROLLERS = [
   WorkerDevicesController,
   AuthController,
   DailyLogController,
+  SiteVisitsController,
   DecisionsController,
   DrawingsController,
   InspectionsController,

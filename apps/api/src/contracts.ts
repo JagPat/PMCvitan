@@ -1873,3 +1873,25 @@ export const payAdvanceSchema = z
   })
   .strict();
 export type PayAdvanceInput = z.infer<typeof payAdvanceSchema>;
+
+// ── Site Visits SV1-b (#792) ───────────────────────────────────────────────
+// The caller sends only CLAIMED times; the database stamps each receipt and decides the accepted time (SV1-a, V3).
+// `id` is minted by the device so an offline end can name a visit whose start has not reached the server yet.
+const siteVisitClaim = z.string().datetime({ offset: true });
+export const startSiteVisitSchema = z.object({
+  id: z.string().uuid(),
+  claimedAt: siteVisitClaim,
+  nodeId: z.string().trim().min(1).optional(),
+  // Q6: a location is recorded when the device offers one, and its absence never blocks a start
+  location: z.object({
+    lat: z.number().finite().min(-90).max(90),
+    lng: z.number().finite().min(-180).max(180),
+    accuracyM: z.number().finite().min(0),
+    at: siteVisitClaim,
+  }).strict().optional(),
+}).strict();
+export type StartSiteVisitInput = z.infer<typeof startSiteVisitSchema>;
+export const endSiteVisitSchema = z.object({ claimedAt: siteVisitClaim }).strict();
+export type EndSiteVisitInput = z.infer<typeof endSiteVisitSchema>;
+export const closeSiteVisitSchema = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
+export type CloseSiteVisitInput = z.infer<typeof closeSiteVisitSchema>;

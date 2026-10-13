@@ -4,10 +4,11 @@ import { type ModuleManifest } from '@vitan/shared';
  * Site Visits (#792) — a PMC's or consultant's walk of the site: who visited, when, from which
  * device's location, with whom, and the places walked.
  *
- * SV1-a is the record only: the three tables, the rules PostgreSQL enforces on them, and the eight
- * event types each change is paired with. The commands, routes and read arrive with SV1-b, so this
- * manifest declares none yet. The tables are append-only and set-once (edits add or retire rows), so
- * every change is attributed and timed in the record itself.
+ * SV1-a is the record: the three tables, the rules PostgreSQL enforces on them, and the eight event
+ * types each change is paired with. SV1-b's first unit adds the commands that start, end and close a
+ * visit, and the members' read; adding and retiring places and attendees follow. The tables are
+ * append-only and set-once (edits add or retire rows), so every change is attributed and timed in the
+ * record itself.
  */
 export const siteVisitsManifest: ModuleManifest = {
   id: 'site-visits',
@@ -30,8 +31,12 @@ export const siteVisitsManifest: ModuleManifest = {
     'sitevisit.attendee_retired',
   ],
   consumesEvents: [],
-  commands: [],
-  queries: [],
-  routes: [],
+  commands: ['site-visits.start', 'site-visits.end', 'site-visits.close'],
+  queries: ['site-visits.list'],
+  routes: [
+    'POST /projects/:projectId/site-visits',
+    'POST /projects/:projectId/site-visits/:visitId/end',
+    'POST /projects/:projectId/site-visits/:visitId/close',
+  ],
   permissions: ['pmc', 'consultant', 'architect'],
 };

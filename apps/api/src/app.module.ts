@@ -82,6 +82,9 @@ import { InspectionsController } from './inspections/inspections.controller';
 import { DailyLogService } from './daily-log/daily-log.service';
 import { DailyLogQueryService } from './daily-log/daily-log.query';
 import { DailyLogController } from './daily-log/daily-log.controller';
+import { SiteVisitsService } from './site-visits/site-visits.service';
+import { SiteVisitsQueryService } from './site-visits/site-visits.query';
+import { SiteVisitsController } from './site-visits/site-visits.controller';
 import { RealtimeGateway } from './realtime/realtime.gateway';
 import { StorageService } from './media/storage.service';
 import { SignedUrlService } from './media/signed-url.service';
@@ -147,6 +150,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     WorkerDevicesController,
     InspectionsController,
     DailyLogController,
+    SiteVisitsController,
     MediaController,
     DrawingsController,
     PushController,
@@ -220,6 +224,8 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     // input + projection read + tenant-ref check).
     InspectionsQueryService,
     DailyLogService,
+    SiteVisitsService,
+    SiteVisitsQueryService,
     // Task 10 — the daily-log module's public READ boundary (snapshot slice + tenant-ref check).
     DailyLogQueryService,
     RealtimeGateway,
