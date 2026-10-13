@@ -3,9 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Button } from './Button';
 import { childrenOf, trailOf } from '@/lib/locationTree';
-import type { NodeKind } from '@vitan/shared';
-
-const KIND_LABEL: Record<NodeKind, string> = { zone: 'Zone', room: 'Room', element: 'Object' };
+import { placeKindLabels, placePickerText, type NodeKind } from '@vitan/shared';
 
 /** Locations nest to 5 levels (the server refuses deeper — the picker simply stops offering). */
 const MAX_TREE_DEPTH = 5;
@@ -128,7 +126,9 @@ function Level({
   const selectId = levelIndex === 0 ? `${idPrefix}-select-zone` : `${idPrefix}-select-d${levelIndex}`;
   const inputId = (kind: NodeKind) =>
     levelIndex === 0 ? `${idPrefix}-new-zone` : `${idPrefix}-new-${kind}-d${levelIndex}`;
-  const placeholder = parentKind === null ? KIND_LABEL.zone : `${KIND_LABEL.room} / ${KIND_LABEL.element}`;
+  const lang = useStore((s) => s.lang);
+  const kindLabel = (k: NodeKind) => placeKindLabels[k][lang];
+  const placeholder = parentKind === null ? kindLabel('zone') : `${kindLabel('room')} / ${kindLabel('element')}`;
   const add = async () => {
     const n = name.trim();
     if (!n || !creating) return;
@@ -140,9 +140,9 @@ function Level({
     <div>
       {creating ? (
         <div style={{ display: 'flex', gap: 8 }}>
-          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void add(); }} placeholder={`New ${KIND_LABEL[creating].toLowerCase()} name`} style={{ ...fld, flex: 1, minWidth: 44 }} data-testid={inputId(creating)} />
-          <Button variant="ink" onClick={() => void add()} style={{ padding: '0 14px', fontSize: 12.5 }}>Add</Button>
-          <Button variant="outline" onClick={() => { setCreating(null); setName(''); }} style={{ padding: '0 12px', fontSize: 12.5 }}>Cancel</Button>
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void add(); }} placeholder={placePickerText.newName(creating, lang)} style={{ ...fld, flex: 1, minWidth: 44 }} data-testid={inputId(creating)} />
+          <Button variant="ink" onClick={() => void add()} style={{ padding: '0 14px', fontSize: 12.5 }}>{placePickerText.add[lang]}</Button>
+          <Button variant="outline" onClick={() => { setCreating(null); setName(''); }} style={{ padding: '0 12px', fontSize: 12.5 }}>{placePickerText.cancel[lang]}</Button>
         </div>
       ) : (
         <select
@@ -161,11 +161,11 @@ function Level({
           <option value="">{placeholder}…</option>
           {opts.map((n) => (
             <option key={n.id} value={n.id}>
-              {n.kind === 'element' && parentKind !== null ? `${n.name} (${KIND_LABEL.element.toLowerCase()})` : n.name}
+              {n.kind === 'element' && parentKind !== null ? `${n.name} (${placePickerText.objectTag(lang)})` : n.name}
             </option>
           ))}
           {creatable.map((kind) => (
-            <option key={kind} value={`__new_${kind}__`}>+ New {KIND_LABEL[kind].toLowerCase()}…</option>
+            <option key={kind} value={`__new_${kind}__`}>{placePickerText.addNew(kind, lang)}</option>
           ))}
         </select>
       )}
