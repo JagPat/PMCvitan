@@ -367,8 +367,24 @@ const STANDING_WORLD = `DROP TRIGGER IF EXISTS "Membership_t4d_architect_reserve
  * installed ahead (asserted here to stand) and its executable bundle joins this matrix with the writer branch
  * that produces it. A8a delivered both of A7d's (`decisions.forward`; the approve under a chain), so the set
  * is empty until 4d-iii's next flip, if any.
+ *
+ * Site Visits #792 SV1-a — the eight `sitevisit.*` keys are claimed by the visit-record tables' own claimants
+ * (installed by `20280112000000_site_visits_sv1a_record`, each change's bundle and every missing half proved in
+ * `site-visits-sv1a.test.ts`); their WRITER is SV1-b's commands, so they are owed here until that unit lands.
  */
-const OWED_BUNDLES: Record<string, { unit: string; claimants: string[] }> = {};
+const SV_VISIT = ['SiteVisit_claim', 'SiteVisit_claim_deferred'];
+const SV_PLACE = ['SiteVisitPlace_claim', 'SiteVisitPlace_claim_deferred'];
+const SV_ATTENDEE = ['SiteVisitAttendee_claim', 'SiteVisitAttendee_claim_deferred'];
+const OWED_BUNDLES: Record<string, { unit: string; claimants: string[] }> = {
+  'sitevisit.started': { unit: 'Site Visits SV1-b', claimants: SV_VISIT },
+  'sitevisit.ended': { unit: 'Site Visits SV1-b', claimants: SV_VISIT },
+  'sitevisit.closed': { unit: 'Site Visits SV1-b', claimants: SV_VISIT },
+  'sitevisit.late_end_recorded': { unit: 'Site Visits SV1-b', claimants: SV_VISIT },
+  'sitevisit.place_added': { unit: 'Site Visits SV1-b', claimants: SV_PLACE },
+  'sitevisit.place_retired': { unit: 'Site Visits SV1-b', claimants: SV_PLACE },
+  'sitevisit.attendee_added': { unit: 'Site Visits SV1-b', claimants: SV_ATTENDEE },
+  'sitevisit.attendee_retired': { unit: 'Site Visits SV1-b', claimants: SV_ATTENDEE },
+};
 
 /**
  * 4d-ii-a / A8a — a chain event written the way `emitEvent` writes it, with the generation named LITERALLY

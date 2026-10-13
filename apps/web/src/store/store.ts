@@ -75,6 +75,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -789,7 +790,7 @@ export interface AppActions {
    *  success on a clean flush instead of the batch "N synced" summary. Resolves a structured
    *  `OutboxFlushResult` so a caller can confirm ITS OWN ops by key (queue absence ≠ success — a
    *  terminal 4xx also removes the op). */
-  flushOutbox: (opts?: { okMsg?: string }) => Promise<OutboxFlushResult>;
+  flushOutbox: (opts?: { okMsg?: string | (() => string) }) => Promise<OutboxFlushResult>;
   hydrateOutbox: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
@@ -2276,14 +2277,18 @@ export const useStore = create<Store>()(
      * So a lost/uncertain online response never strands a command without its key: the ledger applies
      * it exactly once however many times it is retried. Returns true when handled (gateway present).
      */
-    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string): boolean => {
+    // `offlineMsg`: what the toast says when the op is queued offline (#827: the daily log says it in the
+    // viewer's language); without it, the label plus the standard English line, as before
+    // okMsg may be a function: it is then read when the result is shown, so a translated success line
+    // follows a language the viewer switched to while the command was on its way (#835)
+    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string): boolean => {
       if (!gateway) return false;
       set((s) => { s.outbox.push(op); if (!s.online) s.syncQueue.push(label); });
       persistOutbox();
       if (get().online) {
         get().flushOutbox({ okMsg });
       } else {
-        get().flash(label + ' — saved offline, will sync when you reconnect.');
+        get().flash(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.');
       }
       return true;
     };
@@ -3032,7 +3037,7 @@ export const useStore = create<Store>()(
       // submission lifecycle — eleven gate rounds of it — untouched.
       const sub = get().submission;
       if (sub.status === 'submitting' && sub.generation === get().projectScopeGeneration) {
-        get().flash('Finishing the submit — you can switch checklists in a moment.');
+        get().flash(CHT.switchWait[get().lang]);
         return;
       }
       const fresh = structuredClone(target);
@@ -3079,20 +3084,20 @@ export const useStore = create<Store>()(
       if (!c || !item) {
         // The checklist the photo was taken on is no longer outstanding (submitted, decided, or the
         // project moved). Say so rather than dropping the capture in silence.
-        if (capturedOn) get().flash('That checklist is no longer open — the photo was not attached.');
+        if (capturedOn) get().flash(CHT.noLongerOpen[get().lang]);
         return;
       }
-      if (inspectionFrozen(get(), c)) { get().flash('This inspection is submitted — no more changes.'); return; } // gate round 8
+      if (inspectionFrozen(get(), c)) { get().flash(CHT.noMoreChanges[get().lang]); return; } // gate round 8
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
-        get().flash('Could not read that photo — please try again.');
+        get().flash(CHT.readFailed[get().lang]);
         return;
       }
       const [, mime, base64] = m;
       // hard size cap (the capture flow should downscale before calling this;
       // an oversize photo is REFUSED explicitly, never silently truncated)
       if (base64.length > 5_600_000) { // ~4 MB decoded
-        get().flash('That photo is too large (over 4 MB) — retake at a lower resolution.');
+        get().flash(CHT.tooLarge[get().lang]);
         return;
       }
       // ONE rule for every local thumbnail this function writes. Round 4 fixed the offline branch
@@ -3123,11 +3128,11 @@ export const useStore = create<Store>()(
         // Demo has no durable row, so these copies ARE the record — which is exactly why declining
         // to write loses the photo outright rather than merely delaying it.
         set(mirrorCapture);
-        get().flash('Photo attached (demo).');
+        get().flash(CHT.attachedDemo[get().lang]);
         return;
       }
       if (!item.id) {
-        get().flash('This checklist predates evidence capture — reload the project and retry.');
+        get().flash(CHT.predates[get().lang]);
         return;
       }
       const clientKey = (globalThis.crypto?.randomUUID?.() ?? `ev-${Math.random().toString(36).slice(2)}`);
@@ -3138,7 +3143,7 @@ export const useStore = create<Store>()(
         // shown ONLY after the IndexedDB write commits; a quota/write failure (or
         // no IndexedDB at all) surfaces as an explicit failure and queues NOTHING.
         if (!evidenceAvailable()) {
-          get().flash('Could not save this photo on the device (offline storage unavailable) — retake when you have signal.');
+          get().flash(CHT.noStorage[get().lang]);
           return;
         }
         // gate round-3: the durable row belongs to the scope the user captured
@@ -3147,7 +3152,7 @@ export const useStore = create<Store>()(
         try {
           await putEvidence({ userScope: ctx.scope, projectId: ctx.projectId, clientKey, mime, data: base64, ...meta });
         } catch {
-          if (evidenceContextStillCurrent(ctx)) get().flash('Could not save this photo on the device — free space and retake.');
+          if (evidenceContextStillCurrent(ctx)) get().flash(CHT.noSpace[get().lang]);
           return;
         }
         // gate round-4 finding 1: the context check comes FIRST — only a
@@ -3179,7 +3184,7 @@ export const useStore = create<Store>()(
           s.pendingEvidenceCount += 1;
         });
         persistOutbox();
-        get().flash('Photo saved offline — will upload when signal returns.');
+        get().flash(CHT.savedOffline[get().lang]);
         return;
       }
       // ONLINE: upload now with the idempotency key; reconcile from the snapshot.
@@ -3196,11 +3201,11 @@ export const useStore = create<Store>()(
         // the snapshot is actually `applied` (never on a superseded / wrong-project one).
         const lease = beginSnapshotLease(scope);
         const snap = await gateway.snapshot();
-        consumeSnapshotResult(acceptSnapshot(snap, lease), 'Evidence photo uploaded and linked to the item.', lease.scope);
+        consumeSnapshotResult(acceptSnapshot(snap, lease), CHT.uploaded[get().lang], lease.scope);
       } catch {
         // the failure belongs to the scope the capture was made in — a moved
         // scope (gate round-4 finding 3) hears nothing
-        if (scopeStillCurrent(scope)) get().flash('Could not upload the photo — check your signal and try again.');
+        if (scopeStillCurrent(scope)) get().flash(CHT.uploadFailed[get().lang]);
       }
     },
     retryFailedEvidence: async (clientKey) => {
@@ -3231,28 +3236,28 @@ export const useStore = create<Store>()(
         // UI must never claim success. Surface the failure only to the scope
         // the user acted in; a moved scope hears nothing.
         if (!evidenceContextStillCurrent(ctx)) return;
-        get().flash('Could not delete the photo — it is still saved on this device; try again.');
+        get().flash(CHT.deleteFailed[get().lang]);
         return;
       }
       // gate round-3: the delete honored the user's decision in ITS scope; a
       // switch that landed mid-await leaves the NEW scope's UI untouched
       if (!evidenceContextStillCurrent(ctx)) return;
       set((s) => { s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey); });
-      get().flash('Photo deleted.');
+      get().flash(CHT.deleted[get().lang]);
     },
     hydrateEvidence: async () => reconcileEvidence(),
     setNote: (idx, txt) => set((s) => { const c = s.checklist; const it = c?.items[idx]; if (c && it) { if (checklistFrozen(s)) return; it.note = txt; recordChecklistMark(s, c.id, it.id, 'note', txt); } }),
     submitInspection: () => {
       const c = get().checklist;
       if (!c || !c.items.length) {
-        get().flash('No checklist has been issued for today yet.');
+        get().flash(CHT.noneIssued[get().lang]);
         return;
       }
       // gate round 8: once the payload is frozen (submitting / queued / already
       // server-submitted) a repeat submit is a no-op — no double submission, and
       // no edit can slip in between the click and the outcome.
       if (checklistFrozen(get())) {
-        get().flash('This inspection has already been submitted.');
+        get().flash(CHT.alreadySubmitted[get().lang]);
         return;
       }
       const undone = c.items.filter((it) => !it.state).length;
@@ -3261,11 +3266,11 @@ export const useStore = create<Store>()(
       // whose photo is a real linked Media row (Task 7 acceptance finding).
       const failNoPhoto = c.items.filter((it) => it.state === 'fail' && it.photos === 0 && (it.evidence?.length ?? 0) === 0).length;
       if (undone > 0) {
-        get().flash('Please mark all ' + c.items.length + ' items before submitting.');
+        get().flash(CHX.markAll(c.items.length, get().lang));
         return;
       }
       if (failNoPhoto > 0) {
-        get().flash('A failed item needs a photo before you can submit.');
+        get().flash(CHT.failNeedsPhoto[get().lang]);
         return;
       }
       if (gateway) {
@@ -3297,7 +3302,7 @@ export const useStore = create<Store>()(
               if (!isThisAttempt()) return; // a newer submit/socket/session retired this command
               const result = acceptSnapshot(snap, lease);
               if (result === 'applied') {
-                get().flash('Inspection submitted to the architect for review.');
+                get().flash(CHT.submitted[get().lang]);
                 // Live bug 1b — the same rule as `consumeSnapshotResult`: an APPLIED snapshot carries no
                 // module slice, so under module ownership the submit still owes the read that shows it
                 // (the submitted checklist leaving the outstanding set; the slice is owed until it lands)
@@ -3329,7 +3334,7 @@ export const useStore = create<Store>()(
                   s.submission.status = 'idle';
                 }
               });
-              get().flash('Could not submit — your marks are kept. Please try again.');
+              get().flash(CHT.submitFailed[get().lang]);
             });
           return;
         }
@@ -3341,7 +3346,7 @@ export const useStore = create<Store>()(
           s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued', attempt: 0 };
         });
         persistOutbox();
-        get().flash('Submit inspection — saved offline, will sync when you reconnect.');
+        get().flash(CHT.savedOfflineSubmit[get().lang]);
         return;
       }
       // demo (no gateway): the submit succeeds locally and synchronously — the
@@ -3391,7 +3396,7 @@ export const useStore = create<Store>()(
         // `current` first: `next` is an immer draft, and a draft proxy is not a cloneable source
         if (next) { s.checklist = structuredClone(current(next)) as Checklist; s.selectedChecklistId = next.id; }
       });
-      get().flash('Inspection submitted to the architect for review.');
+      get().flash(CHT.submitted[get().lang]);
     },
 
     // ---- pmc review (queue) ----
@@ -4788,7 +4793,7 @@ export const useStore = create<Store>()(
     },
     addLocationNode: async (input) => {
       if (!gateway) {
-        get().flash('Managing locations needs the server.');
+        get().flash(LOC.needsServer[get().lang]);
         return null;
       }
       const before = new Set(get().nodes.map((n) => n.id));
@@ -4860,7 +4865,7 @@ export const useStore = create<Store>()(
           else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
-        get().flash(`Added ${body.kind}: ${body.name}.`);
+        get().flash(LOC.added(body.kind, body.name, get().lang));
         // the server names the place (#703) — the one it made, or (#705) the one already holding the
         // name, which was in the tree before: never pick it by name or by what is new. A server without
         // the field: the node that was not in the tree before.
@@ -4869,7 +4874,7 @@ export const useStore = create<Store>()(
         return nodes.find((n) => !before.has(n.id) && n.name === body.name && n.kind === body.kind)?.id ?? null;
       } catch {
         // gate round 12: a failure landing after a switch (of project or of user) must not toast.
-        if (scopeStillCurrent(scope) && sentBySameUser()) get().flash('Could not add the location — check your access and try again.');
+        if (scopeStillCurrent(scope) && sentBySameUser()) get().flash(LOC.failed[get().lang]);
         return null;
       }
     },
@@ -4965,27 +4970,29 @@ export const useStore = create<Store>()(
     },
     startDailyLog: () => {
       if (!gateway) {
-        get().flash('Starting a new log needs the server.');
+        get().flash(DLT.startNeedsServer[get().lang]);
         return;
       }
       // a start already on its way (queued, or committed but not yet read back) is never queued twice
       if (dailyLogCommandInFlight(get())) {
-        get().flash('Today\u2019s log is already being started.');
+        get().flash(DLT.startInFlight[get().lang]);
         return;
       }
       // Task 10 correction round 2 (finding 1): WRITE-AHEAD — the op + its key are persisted to the
       // durable outbox before the network call (online or offline), so a lost/uncertain response never
       // strands the command without its key; a retry or reload replays the SAME op under the SAME key.
       const key = newIdempotencyKey();
-      runWriteAhead({ t: 'startDailyLog', idempotencyKey: key }, 'New daily log', 'New daily log started — crew carried over at zero.');
+      const lang = get().lang;
+      runWriteAhead({ t: 'startDailyLog', idempotencyKey: key }, DLC.start.en, () => DLT.started[get().lang], DLX.savedOffline(DLC.start[lang], lang));
     },
     addSiteMaterial: (input) => {
       if (!gateway) {
-        get().flash('Recording materials needs the server.');
+        get().flash(DLT.materialNeedsServer[get().lang]);
         return;
       }
       const key = newIdempotencyKey();
-      runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, 'Record material', `Material recorded: ${input.name}.`);
+      const lang = get().lang;
+      runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, DLC.material.en, () => DLX.materialRecorded(input.name, get().lang), DLX.savedOffline(DLC.material[lang], lang));
     },
     loadTeam: () => {
       if (!gateway) return Promise.resolve();
@@ -5175,7 +5182,7 @@ export const useStore = create<Store>()(
     // ---- daily log (phone = attendance device) ----
     checkIn: () => {
       if (!get().dailyLog) {
-        get().flash('No daily log yet — start today\u2019s log first.');
+        get().flash(DLT.noLog[get().lang]);
         return;
       }
       set((s) => {
@@ -5187,7 +5194,7 @@ export const useStore = create<Store>()(
       persistDailyLogDraft();
       get().record('Check-in 8:12 AM');
       // the site named in the toast is the LIVE project's, never seeded copy (Phase 0 Task 7)
-      get().flash(get().online ? `Checked in at ${get().location || get().short} · within 60 m · selfie + time stamped.` : 'Checked in offline — will sync when signal returns.');
+      get().flash(get().online ? DLX.checkedIn(get().location || get().short, get().lang) : DLT.checkedInOffline[get().lang]);
     },
     checkOut: () => {
       set((s) => {
@@ -5197,13 +5204,13 @@ export const useStore = create<Store>()(
         recordDailyLogDraft(s, (d) => { d.checkIn = { checkedIn: false, checkinTime: null }; });
       });
       persistDailyLogDraft();
-      get().flash('Checked out. Shift hours logged.');
+      get().flash(DLT.checkedOut[get().lang]);
     },
     scanWorker: () => {
       // demo action tied to the seeded Helper row — a project with an empty crew has no row 4
       const helper = get().dailyLog?.crew[4];
       if (!helper) {
-        get().flash('No crew rows on this log yet — add trades on the daily log first.');
+        get().flash(DLT.noCrewRows[get().lang]);
         return;
       }
       set((s) => {
@@ -5214,7 +5221,7 @@ export const useStore = create<Store>()(
       });
       persistDailyLogDraft();
       get().record('QR check-in · Helper');
-      get().flash('Worker checked in via QR · Helper · 9:03 AM · face verified.');
+      get().flash(DLT.qrScanned[get().lang]);
     },
     confirmCrew: () => {
       set((s) => {
@@ -5267,7 +5274,7 @@ export const useStore = create<Store>()(
       if (pickedIn && !scopeStillCurrent(pickedIn)) return;
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
-        get().flash('Could not read that photo — please try again.');
+        get().flash(DLT.photoUnreadable[get().lang]);
         return;
       }
       const [, mime, base64] = m;
@@ -5297,7 +5304,7 @@ export const useStore = create<Store>()(
           });
           persistOutbox();
           persistDailyLogDraft();
-          get().flash('Photo saved offline — will upload when signal returns.');
+          get().flash(DLT.photoOffline[get().lang]);
           return;
         }
         // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
@@ -5316,12 +5323,10 @@ export const useStore = create<Store>()(
             persistDailyLogDraft();
             // say what the photo actually carried, not what the feature is called
             get().flash(
-              hasStamp(stamped)
-                ? 'Progress photo uploaded — stamped from the photo, visible to PMC.'
-                : 'Progress photo uploaded — visible to PMC.',
+              hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang],
             );
           })
-          .catch(() => get().flash('Could not upload the photo — please try again.'));
+          .catch(() => get().flash(DLT.photoUploadFailed[get().lang]));
         return;
       }
       // local demo: keep the data URL as the image source; also place it on the tree
@@ -5346,41 +5351,40 @@ export const useStore = create<Store>()(
       persistDailyLogDraft();
       get().record('Progress photo');
       if (!get().online) {
-        get().flash('Photo saved offline — will upload when signal returns.');
+        get().flash(DLT.photoOffline[get().lang]);
       } else {
         get().flash(
-          hasStamp(stamped)
-            ? 'Progress photo added — stamped from the photo.'
-            : 'Progress photo added.',
+          hasStamp(stamped) ? DLT.photoAddedStamped[get().lang] : DLT.photoAdded[get().lang],
         );
       }
     },
     submitDailyLog: () => {
       const dl = get().dailyLog;
       if (!dl) {
-        get().flash('No daily log yet — start today\u2019s log first.');
+        get().flash(DLT.noLog[get().lang]);
         return;
       }
       if (!dl.checkedIn) {
-        get().flash('Please check in at site before submitting the daily log.');
+        get().flash(DLT.submitNeedsCheckIn[get().lang]);
         return;
       }
       // a log already sent is never sent again: each send mints a fresh idempotency key, so the
       // server would take a second tap as a second, independent submission
       if (dl.submitted) {
-        get().flash('Today\u2019s log is already with PMC.');
+        get().flash(DLT.alreadySent[get().lang]);
         return;
       }
       // a send already on its way (queued, or committed but not yet read back) is never queued twice
       if (dailyLogCommandInFlight(get())) {
-        get().flash('Today\u2019s log is already on its way to PMC.');
+        get().flash(DLT.alreadyOnItsWay[get().lang]);
         return;
       }
       const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew };
       // Task 10 correction round 2 (finding 1): WRITE-AHEAD — the op + its key are persisted before the
       // network call (online too), so a lost response is retried under the SAME key, submitting once.
       const submitKey = newIdempotencyKey();
-      if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, 'Submit daily log', 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
+      const lang = get().lang;
+      if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, DLC.submit.en, () => DLT.sent[get().lang], DLX.savedOffline(DLC.submit[lang], lang))) return;
       set((s) => {
         if (!s.dailyLog) return;
         s.dailyLog.submitted = true;
@@ -5388,7 +5392,7 @@ export const useStore = create<Store>()(
       });
       persistDailyLogDraft();
       get().record('Daily log submit');
-      get().flash(get().online ? 'Daily site log sent to PMC — attendance, materials & photos attached.' : 'Saved offline — log will upload to PMC when signal returns.');
+      get().flash(get().online ? DLT.sent[lang] : DLT.sentOffline[lang]);
     },
     flagMismatch: (idx) => {
       const mat = get().dailyLog?.materials[idx];
@@ -5396,7 +5400,8 @@ export const useStore = create<Store>()(
       const flagKey = newIdempotencyKey();
       // finding 1: WRITE-AHEAD — persist the op + key before the call; a lost response replays the SAME
       // key, flagging exactly once.
-      if (runWriteAhead({ t: 'flagMismatch', decisionId: mat.decisionId, idempotencyKey: flagKey }, 'Flag ' + mat.decisionId, 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
+      const lang = get().lang;
+      if (runWriteAhead({ t: 'flagMismatch', decisionId: mat.decisionId, idempotencyKey: flagKey }, 'Flag ' + mat.decisionId, () => DLT.flagged[get().lang], DLX.savedOffline(`${DLC.flag[lang]} ${mat.decisionId}`, lang))) return;
       set((s) => {
         const m = s.dailyLog?.materials[idx];
         if (m) m.matched = false;
@@ -5410,7 +5415,7 @@ export const useStore = create<Store>()(
         s.notifications.unshift({ text: 'Material mismatch: ' + mat.name + ' ≠ approved ' + mat.decisionId, time: 'just now', color: '#B23A34' });
       });
       get().record('Material mismatch flag');
-      get().flash('Mismatch flagged — PMC alerted and the linked activity is now blocked.');
+      get().flash(DLT.flagged[lang]);
     },
     record: (label) => {
       if (!get().online) set((s) => { s.syncQueue.push(label); });
@@ -5419,7 +5424,7 @@ export const useStore = create<Store>()(
       const goingOnline = !get().online;
       set((s) => { s.online = goingOnline; });
       if (!goingOnline) {
-        get().flash('Signal lost — the app keeps working, updates will queue.');
+        get().flash(DLT.signalLost[get().lang]);
         return;
       }
       // back online: replay queued API mutations (Phase 8 outbox); else clear demo labels
@@ -5430,7 +5435,7 @@ export const useStore = create<Store>()(
       if (get().syncQueue.length) {
         const n = get().syncQueue.length;
         set((s) => { s.syncQueue = []; });
-        get().flash(n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.');
+        get().flash(DLX.synced(n, get().lang));
       }
     },
     flushOutbox: async (opts) => {
@@ -5604,13 +5609,14 @@ export const useStore = create<Store>()(
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).
-      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), opts?.okMsg, flushLease.scope);
+      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg, flushLease.scope);
 
       const parts: string[] = [];
-      if (synced > 0 && !opts?.okMsg) parts.push(`${synced} offline update${synced > 1 ? 's' : ''} synced`);
-      if (dropped > 0) parts.push(`${dropped} could not be applied and ${dropped > 1 ? 'were' : 'was'} discarded`);
-      if (remaining.length > 0) parts.push(`${remaining.length} still pending — will retry when you reconnect`);
-      if (parts.length) get().flash(parts.join('; ') + '.');
+      const lang = get().lang;
+      if (synced > 0 && !opts?.okMsg) parts.push(SYNC.synced(synced, lang));
+      if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
+      if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
+      if (parts.length) get().flash(SYNC.join(parts, lang));
       // the chain refusals carry the server's words, so they are not folded into the count above
       if (chainRefusals.length) get().flash(chainRefusals.join(' '));
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved

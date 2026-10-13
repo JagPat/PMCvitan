@@ -4,6 +4,7 @@ import { useStore } from '@/store/store';
 import { trailOf } from '@/lib/locationTree';
 import { LocationPicker } from './LocationPicker';
 import { MapPin } from '@/lib/icons';
+import { formPieceLabels as L } from '@vitan/shared';
 
 /**
  * The location a creation form INHERITED, stated rather than asked for.
@@ -34,6 +35,7 @@ export function InheritedContext({
   testId?: string;
 }) {
   const nodes = useStore(useShallow((s) => s.nodes));
+  const lang = useStore((s) => s.lang);
   // Once the user asks to change it, the picker stays: they are mid-correction, and
   // collapsing it back under them on the next render would lose their place in the tree.
   const [changing, setChanging] = useState(false);
@@ -53,7 +55,7 @@ export function InheritedContext({
     return (
       <div data-testid={testId}>
         <div style={label}>
-          <MapPin size={12} /> LOCATION
+          <MapPin size={12} /> {L.location[lang]}
         </div>
         <LocationPicker value={value} onChange={onChange} idPrefix={idPrefix} />
       </div>
@@ -72,7 +74,7 @@ export function InheritedContext({
         data-testid={testId ? `${testId}-change` : undefined}
         style={change}
       >
-        Change
+        {L.change[lang]}
       </button>
     </div>
   );

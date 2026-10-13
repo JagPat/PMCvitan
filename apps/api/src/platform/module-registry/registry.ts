@@ -13,6 +13,7 @@ import { procurementManifest } from '../../procurement/procurement.manifest';
 import { inventoryManifest } from '../../inventory/inventory.manifest';
 import { labourManifest } from '../../labour/labour.manifest';
 import { commercialManifest } from '../../commercial/commercial.manifest';
+import { siteVisitsManifest } from '../../site-visits/site-visits.manifest';
 
 /**
  * Phase 2 Task 7 — the compiled module registry.
@@ -33,6 +34,7 @@ export const MODULE_MANIFESTS: readonly ModuleManifest[] = [
   inspectionsManifest,
   drawingsManifest,
   dailyLogManifest,
+  siteVisitsManifest,
   nodesManifest,
   mediaManifest,
   orgsManifest,

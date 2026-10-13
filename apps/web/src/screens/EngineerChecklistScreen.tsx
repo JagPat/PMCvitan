@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore, checklistFrozen } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState, ItemNotFound } from '@/components';
 import { Camera } from '@/lib/icons';
-import type { ItemState } from '@vitan/shared';
+import { checklistLabels as L, checklistText as T, type ItemState } from '@vitan/shared';
 import { inspectionsReadMode } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
 import { useUrlItem } from '@/lib/useUrlItem';
@@ -31,6 +31,7 @@ function toggleStyle(active: boolean, solid: string, text: string): CSSPropertie
 
 export function EngineerChecklistScreen() {
   const checklist = useStore((s) => s.checklist);
+  const lang = useStore((s) => s.lang);
   // EVERY checklist issued to this site, so a second one is work the engineer can actually open
   // rather than a count they can only read. `checklist` is one OF these — the picker below is how
   // they move the edit slot between them.
@@ -122,9 +123,9 @@ export function EngineerChecklistScreen() {
   // Codex 4212402110 — between the linked checklist leaving the outstanding set and the route being
   // cleared (an effect), the slot already holds another checklist: it is not shown, editable, under the
   // departing URL
-  if (adopting) return <EmptyState title={`Opening ${openChecklists.find((c) => c.id === adopting)?.title ?? adopting}…`} detail="Opening the checklist this link names." />;
-  if (released) return <EmptyState title="Returning to your checklists…" detail="This checklist has been submitted." />;
-  if (clearing) return <EmptyState title="Returning to your checklists…" detail="Back to the checklist list." />;
+  if (adopting) return <EmptyState title={T.opening(openChecklists.find((c) => c.id === adopting)?.title ?? adopting, lang)} detail={L.openingDetail[lang]} />;
+  if (released) return <EmptyState title={L.returning[lang]} detail={L.returnSubmitted[lang]} />;
+  if (clearing) return <EmptyState title={L.returning[lang]} detail={L.returnList[lang]} />;
   // Codex 4207530085 — the switch to the named checklist is guarded (an online submit in flight refuses
   // it): until it happens, the checklist in the slot is NOT the one the URL names, so it is not shown
   // under that URL; the effect above completes the switch once the submit settles
@@ -132,8 +133,8 @@ export function EngineerChecklistScreen() {
     const named = openChecklists.find((c) => c.id === routeItem);
     return (
       <EmptyState
-        title={`Opening ${named?.title ?? routeItem}…`}
-        detail="Finishing the submit on the current checklist — this one opens as soon as it lands."
+        title={T.opening(named?.title ?? routeItem, lang)}
+        detail={L.openingAfterSubmit[lang]}
       />
     );
   }
@@ -142,17 +143,17 @@ export function EngineerChecklistScreen() {
       const failed = moduleOwned ? unavailable : projectFailed;
       return failed ? (
         <div data-testid="inspections-unavailable" style={{ display: 'grid', gap: 14, justifyItems: 'center', padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
-          <span>Couldn't load the checklist — check your connection and access.</span>
-          <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+          <span>{L.loadFailed[lang]}</span>
+          <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>{L.retry[lang]}</Button>
         </div>
       ) : (
-        <EmptyState title="Loading checklist…" detail="Fetching this project's current inspection checklist." />
+        <EmptyState title={L.loadingTitle[lang]} detail={L.loadingDetail[lang]} />
       );
     }
     return (
       <div className={styles.mobileScreen} style={{ paddingTop: 10 }}>
-        <Eyebrow size={9}>TODAY'S INSPECTION</Eyebrow>
-        <ItemNotFound what="Checklist" id={routeItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show my checklists" />
+        <Eyebrow size={9}>{L.eyebrow[lang]}</Eyebrow>
+        <ItemNotFound what={L.what[lang]} id={routeItem} onShowAll={() => setRouteItem(null)} showAllLabel={L.showMine[lang]} lang={lang} />
       </div>
     );
   }
@@ -161,13 +162,13 @@ export function EngineerChecklistScreen() {
   // async surface — never claim "No checklist issued" until a read has actually SUCCEEDED. While it loads
   // show a loading state; on failure show an unavailable/Retry boundary. In snapshot mode these are inert.
   if (!checklist && moduleOwned && reading) {
-    return <EmptyState title="Loading checklist…" detail="Fetching this project's current inspection checklist." />;
+    return <EmptyState title={L.loadingTitle[lang]} detail={L.loadingDetail[lang]} />;
   }
   if (!checklist && moduleOwned && unavailable) {
     return (
       <div data-testid="inspections-unavailable" style={{ display: 'grid', gap: 14, justifyItems: 'center', padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
-        <span>Couldn't load the checklist — check your connection and access.</span>
-        <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+        <span>{L.loadFailed[lang]}</span>
+        <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>{L.retry[lang]}</Button>
       </div>
     );
   }
@@ -175,8 +176,8 @@ export function EngineerChecklistScreen() {
   if (!checklist) {
     return (
       <EmptyState
-        title="No checklist issued"
-        detail="The PMC has not issued an inspection checklist for this project yet. It will appear here the moment one is assigned to you."
+        title={L.noneTitle[lang]}
+        detail={L.noneDetail[lang]}
       />
     );
   }
@@ -194,9 +195,9 @@ export function EngineerChecklistScreen() {
   const evidenceOrigin = (inspectionId: string, itemId: string): string => {
     const owner = openChecklists.find((c) => c.id === inspectionId);
     const itemName = owner?.items.find((it) => it.id === itemId)?.name;
-    const where = itemName ?? `item ${itemId}`;
-    if (inspectionId === checklist.id) return `on this checklist — ${where}`;
-    return `on ${owner?.title ?? inspectionId} — ${where}`;
+    const where = itemName ?? T.item(itemId, lang);
+    if (inspectionId === checklist.id) return T.onThis(where, lang);
+    return T.onOther(owner?.title ?? inspectionId, where, lang);
   };
 
   const set = (i: number, v: Exclude<ItemState, null>) => () => setItem(i, v);
@@ -205,11 +206,11 @@ export function EngineerChecklistScreen() {
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       <div className={styles.mobileScreen} style={{ flex: 1, paddingBottom: 20 }}>
         <div style={{ padding: '10px 0 14px' }}>
-          <Eyebrow size={9}>TODAY'S INSPECTION</Eyebrow>
+          <Eyebrow size={9}>{L.eyebrow[lang]}</Eyebrow>
           <div data-testid="checklist-title" style={{ fontWeight: 700, fontSize: 21, marginTop: 4, lineHeight: 1.2 }}>{checklist.title}</div>
           {/* WHERE this check is carried out — the filed trail, tappable back to the Site Map. */}
           <div style={{ marginTop: 4 }}>
-            <LocationContext nodeId={checklist.nodeId} fallback={checklist.zone} compact testId="checklist-place" />
+            <LocationContext nodeId={checklist.nodeId} fallback={checklist.zone} compact testId="checklist-place" lang={lang} />
           </div>
           <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{checklist.date}</div>
           {/* More than one checklist is out on this site. Before this, the engineer saw only the
@@ -218,7 +219,7 @@ export function EngineerChecklistScreen() {
               between them costs nothing. */}
           {openChecklists.length > 1 && (
             <div data-testid="checklist-picker" style={{ marginTop: 12 }}>
-              <Eyebrow size={9}>{openChecklists.length} CHECKLISTS OUT — TAP TO SWITCH</Eyebrow>
+              <Eyebrow size={9}>{T.out(openChecklists.length, lang)}</Eyebrow>
               <div style={{ display: 'flex', gap: 7, marginTop: 7, flexWrap: 'wrap' }}>
                 {openChecklists.map((c) => {
                   const active = c.id === checklist.id;
@@ -255,15 +256,15 @@ export function EngineerChecklistScreen() {
             </div>
           )}
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <StatTile label="DONE" value={`${doneCount}/${checklist.items.length}`} />
-            <StatTile label="PHOTOS" value={photoCount} />
+            <StatTile label={L.done[lang]} value={`${doneCount}/${checklist.items.length}`} />
+            <StatTile label={L.photos[lang]} value={photoCount} />
           </div>
           {/* Codex 4207530065 — a failed module read with a retained checklist must still offer recovery:
               a submit whose reconcile failed would otherwise sit frozen with nothing to press */}
           {moduleOwned && unavailable && (
             <div data-testid="inspections-stale" role="status" style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5, color: 'var(--muted)' }}>
-              <span>Couldn't refresh the checklist — what you see may be out of date.</span>
-              <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+              <span>{L.stale[lang]}</span>
+              <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>{L.retry[lang]}</Button>
             </div>
           )}
           {/* Every item control below is read-only once a submit is dispatched. The submit
@@ -277,10 +278,10 @@ export function EngineerChecklistScreen() {
                 // still come back as the engineer's current one — so the lock says what is
                 // certain (it was submitted, it is now a record) without claiming a pending review.
                 reason={checklist.submitted
-                  ? 'Submitted — this checklist is now a submitted record, so it can no longer be edited.'
+                  ? L.lockedSubmitted[lang]
                   : submissionStatus === 'queued'
-                    ? 'Queued offline — editing is paused until it reaches the architect. It sends when you reconnect.'
-                    : 'Submitting — editing is paused until it reaches the architect.'}
+                    ? L.pausedQueued[lang]
+                    : L.pausedSubmitting[lang]}
                 testId="checklist-frozen-reason"
               />
             </div>
@@ -294,14 +295,14 @@ export function EngineerChecklistScreen() {
               <div key={it.name} style={{ background: '#fff', border: `1px solid ${border}`, borderRadius: 14, padding: '13px 14px' }}>
                 <div style={{ fontWeight: 600, fontSize: 14.5, lineHeight: 1.3 }}>{it.name}</div>
                 <div style={{ display: 'flex', gap: 7, marginTop: 11, opacity: frozen ? 0.55 : 1 }}>
-                  <button onClick={set(i, 'pass')} disabled={frozen} style={toggleStyle(it.state === 'pass', 'var(--green-solid)', 'var(--green-solid)')}>Pass</button>
-                  <button onClick={set(i, 'fail')} disabled={frozen} style={toggleStyle(it.state === 'fail', 'var(--red-solid)', 'var(--red-solid)')}>Fail</button>
-                  <button onClick={set(i, 'na')} disabled={frozen} style={toggleStyle(it.state === 'na', '#6b665c', '#6b665c')}>N.A.</button>
+                  <button onClick={set(i, 'pass')} disabled={frozen} style={toggleStyle(it.state === 'pass', 'var(--green-solid)', 'var(--green-solid)')}>{L.pass[lang]}</button>
+                  <button onClick={set(i, 'fail')} disabled={frozen} style={toggleStyle(it.state === 'fail', 'var(--red-solid)', 'var(--red-solid)')}>{L.fail[lang]}</button>
+                  <button onClick={set(i, 'na')} disabled={frozen} style={toggleStyle(it.state === 'na', '#6b665c', '#6b665c')}>{L.na[lang]}</button>
                   <button
                     onClick={() => pickEvidence(i)}
                     disabled={frozen}
                     data-testid={`evidence-${i}`}
-                    aria-label="Add photo"
+                    aria-label={L.addPhoto[lang]}
                     style={{
                       flex: 1,
                       // Wave 0 / F-1b round 7 — 35px tall before this; see `toggleBase`.
@@ -325,7 +326,7 @@ export function EngineerChecklistScreen() {
                 {(it.evidence?.length ?? 0) > 0 && (
                   <div style={{ display: 'flex', gap: 6, marginTop: 9, flexWrap: 'wrap' }}>
                     {it.evidence!.map((url, k) => (
-                      <img key={k} src={url} alt={`Evidence ${k + 1} — ${it.name}`} style={{ width: 52, height: 52, objectFit: 'cover', borderRadius: 8, border: '1px solid rgba(35,33,28,.15)' }} />
+                      <img key={k} src={url} alt={T.evidenceAlt(k + 1, it.name, lang)} style={{ width: 52, height: 52, objectFit: 'cover', borderRadius: 8, border: '1px solid rgba(35,33,28,.15)' }} />
                     ))}
                   </div>
                 )}
@@ -334,12 +335,12 @@ export function EngineerChecklistScreen() {
                     {/* #584 review round 1, finding 3 — the fail-evidence REQUIREMENT is what the engineer must
                         do before this checklist can be submitted, so it leaves metadata type for F-1b's 13px
                         floor with real weight. The letter-spacing goes with the mono face. */}
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>Fail requires a note + photo evidence</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>{L.failNeeds[lang]}</div>
                     <input
                       value={it.note}
                       onChange={(e) => setNote(i, e.target.value)}
                       disabled={frozen}
-                      placeholder="Describe the issue…"
+                      placeholder={L.describe[lang]}
                       style={{ width: '100%', marginTop: 7, border: 'none', background: 'transparent', fontFamily: 'var(--font-sans)', fontSize: 13, outline: 'none', color: 'var(--ink)' }}
                     />
                   </div>
@@ -351,7 +352,7 @@ export function EngineerChecklistScreen() {
 
         {pendingEvidenceCount > 0 && (
           <div style={{ marginTop: 12, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--amber-text)' }} data-testid="evidence-pending">
-            {pendingEvidenceCount} photo{pendingEvidenceCount === 1 ? '' : 's'} saved offline — will upload when signal returns
+            {T.pending(pendingEvidenceCount, lang)}
           </div>
         )}
         {/* The refused-photo list is PROJECT-WIDE and the checklist picker above is not, so a row on
@@ -365,11 +366,12 @@ export function EngineerChecklistScreen() {
           <div style={{ marginTop: 12, background: '#FBF0EF', border: '1px solid #E7CBC7', borderRadius: 12, padding: '11px 13px' }} data-testid="evidence-failed">
             {/* #584 review round 1, finding 3 — a refused photo is evidence that did not land, and this
                 line is the instruction to deal with each one; 13px with weight, not an eyebrow. */}
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>Photos the server refused — choose for each</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>{L.refusedTitle[lang]}</div>
             {failedEvidence.map((f) => (
               <div key={f.clientKey} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
                 <span style={{ flex: 1, fontSize: 12.5 }} data-testid={`evidence-failed-${f.clientKey}`}>
-                  {f.reason}
+                  {/* the stored reason is the server's English; Hindi/Gujarati say it plainly instead */}
+                  {lang === 'en' ? f.reason : L.refusedReason[lang]}
                   <span
                     style={{ display: 'block', fontSize: 11, color: 'var(--muted)' }}
                     data-testid={`evidence-failed-where-${f.clientKey}`}
@@ -377,8 +379,8 @@ export function EngineerChecklistScreen() {
                     {evidenceOrigin(f.inspectionId, f.inspectionItemId)}
                   </span>
                 </span>
-                <button onClick={() => void retryFailedEvidence(f.clientKey)} data-testid={`evidence-retry-${f.clientKey}`} style={{ minHeight: 44, padding: '6px 12px', borderRadius: 8, border: '1px solid var(--ink)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Retry</button>
-                <button onClick={() => void deleteFailedEvidence(f.clientKey)} data-testid={`evidence-delete-${f.clientKey}`} style={{ minHeight: 44, padding: '6px 12px', borderRadius: 8, border: '1px solid var(--red-solid)', color: 'var(--red-solid)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Delete</button>
+                <button onClick={() => void retryFailedEvidence(f.clientKey)} data-testid={`evidence-retry-${f.clientKey}`} style={{ minHeight: 44, padding: '6px 12px', borderRadius: 8, border: '1px solid var(--ink)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>{L.retry[lang]}</button>
+                <button onClick={() => void deleteFailedEvidence(f.clientKey)} data-testid={`evidence-delete-${f.clientKey}`} style={{ minHeight: 44, padding: '6px 12px', borderRadius: 8, border: '1px solid var(--red-solid)', color: 'var(--red-solid)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>{L.delete[lang]}</button>
               </div>
             ))}
           </div>
@@ -410,12 +412,12 @@ export function EngineerChecklistScreen() {
           }}
         >
           {checklist.submitted
-            ? 'Submitted ✓ — awaiting architect'
+            ? L.submitted[lang]
             : submissionStatus === 'submitting'
-            ? 'Submitting…'
+            ? L.submitting[lang]
             : submissionStatus === 'queued'
-            ? 'Queued — will submit when you reconnect'
-            : 'Submit Inspection'}
+            ? L.queued[lang]
+            : L.submit[lang]}
         </button>
       </div>
     </div>

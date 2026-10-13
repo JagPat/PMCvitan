@@ -1,7 +1,7 @@
 import { Modal, Button } from '@/components';
 import { useStore } from '@/store/store';
-import { readImpact } from '@/lib/impactInput';
-import { deciderNoun } from '@vitan/shared';
+import { readImpact, impactReasonIn } from '@/lib/impactInput';
+import { changeModalLabels as L, changeModalExplainer } from '@vitan/shared';
 
 // Wave 0 / F-1b round 8 — `minHeight: 44`. 12px of padding around a 13.5px line lands at 43,
 // one pixel under the floor, which is exactly the kind of miss a rounded comparison hides and
@@ -31,12 +31,13 @@ const fieldError: React.CSSProperties = { fontSize: 11.5, lineHeight: 1.35, colo
 export function ChangeModal() {
   const modal = useStore((s) => s.modal);
   const closeModal = useStore((s) => s.closeModal);
+  const lang = useStore((s) => s.lang);
   const submitChange = useStore((s) => s.submitChange);
   const setChangeText = useStore((s) => s.setChangeText);
   const setChangeCost = useStore((s) => s.setChangeCost);
   const setChangeTime = useStore((s) => s.setChangeTime);
   // round-11 Codex F2 — the re-approval instruction names the ACTUAL decider (the client-held
-  // text stays byte-identical: deciderNoun('client') === 'the client')
+  // text stays byte-identical: its English noun is `deciderNoun`'s)
   const kind = useStore((s) => s.decisions.find((x) => x.id === s.modal.decId)?.deciderKind ?? 'client');
   // #482 comment 5923291892 (family-wide): the impacts are read exactly or refused with a reason, and
   // Submit stays disabled while either is refused — nothing altered is ever sent
@@ -47,59 +48,59 @@ export function ChangeModal() {
     <Modal onClose={closeModal} labelledBy="change-title">
       <div style={{ padding: 24 }}>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.18em', color: 'var(--amber-text)' }}>
-          CHANGE REQUEST
+          {L.eyebrow[lang]}
         </div>
         <div id="change-title" style={{ fontSize: 20, fontWeight: 700, marginTop: 8, lineHeight: 1.25 }}>
           {modal.title}
         </div>
         <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 5 }}>
-          This decision is locked. A change must be re-approved by {deciderNoun(kind)} with cost &amp; time impact.
+          {changeModalExplainer(kind, lang)}
         </div>
         <div style={{ marginTop: 16 }}>
-          <div style={fieldLabel}>REASON FOR CHANGE</div>
+          <div style={fieldLabel}>{L.reason[lang]}</div>
           <input
             value={modal.changeText ?? ''}
             onChange={(e) => setChangeText(e.target.value)}
-            placeholder="e.g. Client prefers a lighter tone…"
+            placeholder={L.reasonHint[lang]}
             style={{ ...inputStyle, fontFamily: 'var(--font-sans)' }}
           />
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
           <div style={{ flex: 1 }}>
-            <div style={fieldLabel}>COST IMPACT (₹)</div>
+            <div style={fieldLabel}>{L.cost[lang]}</div>
             <input
               value={modal.changeCost ?? ''}
               onChange={(e) => setChangeCost(e.target.value)}
               placeholder="+45000"
-              aria-label="Cost impact (₹)"
+              aria-label={L.costAria[lang]}
               aria-invalid={!cost.ok}
               aria-describedby={!cost.ok ? 'change-cost-error' : undefined}
               data-testid="change-cost"
               style={{ ...inputStyle, fontFamily: 'var(--font-mono)', ...(cost.ok ? null : { borderColor: 'var(--red-solid)' }) }}
             />
-            {!cost.ok && <div id="change-cost-error" role="alert" data-testid="change-cost-error" style={fieldError}>{cost.reason}</div>}
+            {!cost.ok && <div id="change-cost-error" role="alert" data-testid="change-cost-error" style={fieldError}>{impactReasonIn(cost.reason, lang)}</div>}
           </div>
           <div style={{ flex: 1 }}>
-            <div style={fieldLabel}>TIME IMPACT (DAYS)</div>
+            <div style={fieldLabel}>{L.time[lang]}</div>
             <input
               value={modal.changeTime ?? ''}
               onChange={(e) => setChangeTime(e.target.value)}
               placeholder="+4"
-              aria-label="Time impact (days)"
+              aria-label={L.timeAria[lang]}
               aria-invalid={!time.ok}
               aria-describedby={!time.ok ? 'change-time-error' : undefined}
               data-testid="change-time"
               style={{ ...inputStyle, fontFamily: 'var(--font-mono)', ...(time.ok ? null : { borderColor: 'var(--red-solid)' }) }}
             />
-            {!time.ok && <div id="change-time-error" role="alert" data-testid="change-time-error" style={fieldError}>{time.reason}</div>}
+            {!time.ok && <div id="change-time-error" role="alert" data-testid="change-time-error" style={fieldError}>{impactReasonIn(time.reason, lang)}</div>}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
           <Button variant="outline" style={{ flex: 1 }} onClick={closeModal}>
-            Cancel
+            {L.cancel[lang]}
           </Button>
           <Button variant="accent" style={{ flex: 1.4 }} onClick={submitChange} disabled={!cost.ok || !time.ok} data-testid="change-submit">
-            Submit for Re-approval
+            {L.submit[lang]}
           </Button>
         </div>
       </div>

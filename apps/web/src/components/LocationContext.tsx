@@ -2,6 +2,7 @@ import { type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { trailOf } from '@/lib/locationTree';
+import { locationContextLabels, type Lang } from '@vitan/shared';
 
 /**
  * Where a location-bound record BELONGS, shown wherever that record is read.
@@ -19,6 +20,7 @@ export function LocationContext({
   fallback,
   compact = false,
   testId,
+  lang = 'en',
 }: {
   nodeId: string | null | undefined;
   /** free-text location for legacy records with no node (e.g. a decision's `room`) */
@@ -26,6 +28,8 @@ export function LocationContext({
   /** drop the project crumb — for a list already scoped to one project (rows, cards) */
   compact?: boolean;
   testId?: string;
+  /** the caller's language, for the "not filed" line (English when not given, like `ItemNotFound`) */
+  lang?: Lang;
 }) {
   const nodes = useStore(useShallow((s) => s.nodes));
   const projectShort = useStore((s) => s.short);
@@ -37,7 +41,7 @@ export function LocationContext({
   if (trail.length === 0) {
     return (
       <span style={{ ...wrap, color: 'var(--faint)' }} data-testid={testId}>
-        {fallback?.trim() ? fallback : 'Not filed to a location'}
+        {fallback?.trim() ? fallback : locationContextLabels.unfiled[lang]}
       </span>
     );
   }

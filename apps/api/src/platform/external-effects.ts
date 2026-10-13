@@ -355,6 +355,21 @@ export const EXTERNAL_EFFECTS = {
   // by the `MembershipTransition` fact of the flipping write, so a standalone event of this type
   // (one no fact records) is refused at commit.
   'membership.standing_changed': { eventType: 'membership.standing_changed', invalidate: true, push: null, pairingRequired: true },
+  // ── site visits (Site Visits #792 SV1-a) ─────────────────────────────────────────────────────
+  // Every event records an ACT, and each is PAIRED in PostgreSQL by the site-visits claimant
+  // triggers (the visit, place and attendee facts claim their event), so `pairingRequired` — a
+  // standalone event of one of these types is refused at commit. `invalidate: true` refreshes the
+  // visitor's other devices (and any open visit surface); no push — a site visit announces
+  // nothing. Adding these keys compiles a NEW coverage generation, seeded by
+  // `20280111000000_site_visits_sv1a_catalog`.
+  'sitevisit.started': { eventType: 'sitevisit.started', invalidate: true, push: null, pairingRequired: true },
+  'sitevisit.ended': { eventType: 'sitevisit.ended', invalidate: true, push: null, pairingRequired: true },
+  'sitevisit.closed': { eventType: 'sitevisit.closed', invalidate: true, push: null, pairingRequired: true },
+  'sitevisit.late_end_recorded': { eventType: 'sitevisit.late_end_recorded', invalidate: true, push: null, pairingRequired: true },
+  'sitevisit.place_added': { eventType: 'sitevisit.place_added', invalidate: true, push: null, pairingRequired: true },
+  'sitevisit.place_retired': { eventType: 'sitevisit.place_retired', invalidate: true, push: null, pairingRequired: true },
+  'sitevisit.attendee_added': { eventType: 'sitevisit.attendee_added', invalidate: true, push: null, pairingRequired: true },
+  'sitevisit.attendee_retired': { eventType: 'sitevisit.attendee_retired', invalidate: true, push: null, pairingRequired: true },
 } as const satisfies Record<string, ExternalEffectDef>;
 
 export type ExternalEffectKey = keyof typeof EXTERNAL_EFFECTS;

@@ -1,4 +1,4 @@
-import type { AppNotification, Role, ScreenKey } from '@vitan/shared';
+import { noticeTimeText, type AppNotification, type Lang, type Role, type ScreenKey } from '@vitan/shared';
 import { screensFor } from './screens';
 import { API_BASE } from '@/data/apiGateway';
 
@@ -220,15 +220,24 @@ export function notificationLink(n: AppNotification, role: Role, records: Notifi
 /** Top 10 #4a (#778, live-bug 2) — when a notice happened, from its write instant. The stored label is frozen
  *  at "just now" on every server row, so two notices hours apart both read "just now" and look like one
  *  duplicated event; the label is the fallback only for a notice that carries no instant (demo, older server). */
-export function noticeTime(n: Pick<AppNotification, 'at' | 'time'>, now: number = Date.now()): string {
+export function noticeTime(n: Pick<AppNotification, 'at' | 'time'>, now: number = Date.now(), lang: Lang = 'en'): string {
   const at = n.at ? Date.parse(n.at) : NaN;
-  if (Number.isNaN(at)) return n.time;
+  if (Number.isNaN(at)) return storedTime(n.time, lang);
   const mins = Math.floor(Math.max(0, now - at) / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return noticeTimeText.justNow[lang];
+  if (mins < 60) return noticeTimeText.ago(mins, 'm', lang);
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return noticeTimeText.ago(hours, 'h', lang);
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  if (days < 7) return noticeTimeText.ago(days, 'd', lang);
+  return new Date(at).toLocaleDateString(lang === 'en' ? 'en-GB' : `${lang}-IN`, { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+/** #827 — the stored label, for a notice with no instant: the writers' own "just now" / "5m ago" shapes are
+ *  said in the viewer's language; any other label is shown as stored. */
+function storedTime(label: string, lang: Lang): string {
+  if (lang === 'en') return label;
+  if (label === 'just now') return noticeTimeText.justNow[lang];
+  const ago = /^(\d+)([mhd]) ago$/.exec(label);
+  return ago ? noticeTimeText.ago(Number(ago[1]), ago[2] as 'm' | 'h' | 'd', lang) : label;
 }
