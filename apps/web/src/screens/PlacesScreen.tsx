@@ -14,7 +14,8 @@ import { PlaceStructure } from '@/screens/PlaceStructure';
 import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
-import { childrenOf, subtreeIds, trailOf, placeContents, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
+import { placeCountWords, type PlaceCountWord } from '@/lib/placeCountWords';
+import { childrenOf, trailOf, placeContents, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
 import { can, SNAPSHOT_SITE_PHOTO_LIMIT, type Photo, type PlacedInspection, type ScreenKey, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -112,17 +113,11 @@ export function PlacesScreen() {
     [active, nodes, decisions, drawings, photos, activities, materials, inspections],
   );
 
-  const countsFor = (id: string) => {
-    const sub = subtreeIds(nodes, id);
-    const inSub = <T extends { nodeId?: string }>(xs: T[]) => xs.filter((x) => x.nodeId && sub.has(x.nodeId)).length;
-    return {
-      decisions: inSub(decisions),
-      drawings: inSub(drawings),
-      photos: inSub(photos),
-      activities: inSub(activities),
-      materials: inSub(materials),
-    };
-  };
+  // #633 — a child card counts with the SAME function as the place it opens (inherited drawings included),
+  // so the card and the opened place can never disagree
+  const countsFor = (id: string) =>
+    placeContents(id, nodes, decisions, drawings, photos, activities, materials, inspections).counts;
+  const countOpts = { inspections: canSeeInspections, activitiesKnown: activityRead === 'known' };
 
   const activeNode = nodes.find((n) => n.id === active);
   const canManagePlaces = can('node.manage', role);
@@ -183,6 +178,9 @@ export function PlacesScreen() {
             })}
           </div>
 
+          {/* #633 (mockup 7) — what this place holds, in words, open issues first */}
+          {active && <CountWords words={placeCountWords(total, countOpts)} testId="place-counts-here" pills />}
+
           {/* Build the tree HERE (audit B3): the PMC adds, renames and deletes locations at the
               place they are standing on */}
           <PlaceStructure active={activeNode} depth={trail.length - 1} />
@@ -212,13 +210,7 @@ export function PlacesScreen() {
                       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.name}</span>
                       <ChevronRight size={15} color="#b8b2a6" style={{ flex: 'none' }} />
                     </div>
-                    <div style={{ display: 'flex', gap: 9, marginTop: 8, flexWrap: 'wrap', fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--muted)' }}>
-                      <span title="decisions">◆ {c.decisions}</span>
-                      <span title="drawings">▤ {c.drawings}</span>
-                      <span title="photos">▦ {c.photos}</span>
-                      <span title="activities">⚒ {c.activities}</span>
-                      <span title="materials">▧ {c.materials}</span>
-                    </div>
+                    <CountWords words={placeCountWords(c, countOpts)} testId={`place-counts-${n.id}`} />
                     {/* B8 — where this space stands, derived from its work (never a stored flag) */}
                     {activityRead !== 'known' ? (
                       <div data-testid={`place-status-${n.id}`} data-state={activityRead} style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
@@ -518,6 +510,24 @@ function Section({ icon, title, count, sub, children }: { icon: React.ReactNode;
 function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 12.5, color: 'var(--faint)', padding: '6px 0' }}>{children}</div>;
 }
+
+/** #633 — a place's counts in words. On a card they read as one quiet line; above the opened place
+ *  (`pills`) each is a pill. An open issue is always the warning colour. Nothing filed reads as such. */
+function CountWords({ words, testId, pills = false }: { words: PlaceCountWord[]; testId: string; pills?: boolean }) {
+  return (
+    <div data-testid={testId} style={{ display: 'flex', gap: pills ? 6 : 4, marginTop: pills ? 0 : 8, marginBottom: pills ? 14 : 0, flexWrap: 'wrap', fontSize: pills ? 12 : 11.5, color: 'var(--muted)' }}>
+      {words.length === 0 ? (
+        <span>Nothing filed here yet</span>
+      ) : words.map((w, i) => (
+        <span key={w.key} data-count={w.key} style={w.alert ? { ...countPill, ...alertTone } : pills ? countPill : undefined}>
+          {w.text}{!pills && !w.alert && i < words.length - 1 ? ' ·' : ''}
+        </span>
+      ))}
+    </div>
+  );
+}
+const countPill: CSSProperties = { padding: '2px 8px', borderRadius: 999, background: 'rgba(35,33,28,.06)', fontWeight: 500 };
+const alertTone: CSSProperties = { background: '#f7e1df', color: '#8a2a25', fontWeight: 600 };
 
 /** A placed inspection's Site-Map status: open → in review → passed/failed. */
 function inspectionStatus(i: PlacedInspection): { label: string; color: string } {

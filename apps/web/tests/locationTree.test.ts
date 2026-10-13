@@ -150,7 +150,7 @@ describe('placeContents — everything at a place', () => {
 
   it('a room shows its subtree decisions/photos/work/materials, inherits ancestor drawings, and surfaces child details', () => {
     const c = placeContents('r1', nodes, decisions, drawings, photos, activities, materials);
-    expect(c.counts).toEqual({ decisions: 2, drawings: 2, photos: 1, activities: 1, materials: 1, inspections: 0 });
+    expect(c.counts).toEqual({ decisions: 2, drawings: 2, photos: 1, activities: 1, materials: 1, inspections: 0, openIssues: 0 });
     // A-100 (filed on the zone above) is inherited; A-201 (on the door below) is a detail
     const byNum = Object.fromEntries(c.drawings.map((d) => [d.drawing.number, d.relation]));
     expect(byNum).toEqual({ 'A-100': 'inherited', 'A-201': 'detail' });
@@ -165,12 +165,12 @@ describe('placeContents — everything at a place', () => {
     const c = placeContents('e1', nodes, decisions, drawings, photos, activities, materials);
     const byNum = Object.fromEntries(c.drawings.map((d) => [d.drawing.number, d.relation]));
     expect(byNum).toEqual({ 'A-201': 'here', 'A-100': 'inherited' });
-    expect(c.counts).toEqual({ decisions: 1, drawings: 2, photos: 1, activities: 1, materials: 0, inspections: 0 });
+    expect(c.counts).toEqual({ decisions: 1, drawings: 2, photos: 1, activities: 1, materials: 0, inspections: 0, openIssues: 0 });
   });
 
   it('whole project (null) returns everything, unfiled items included', () => {
     const c = placeContents(null, nodes, decisions, drawings, photos, activities, materials);
-    expect(c.counts).toEqual({ decisions: 2, drawings: 3, photos: 3, activities: 2, materials: 2, inspections: 0 });
+    expect(c.counts).toEqual({ decisions: 2, drawings: 3, photos: 3, activities: 2, materials: 2, inspections: 0, openIssues: 0 });
     expect(c.drawings.every((d) => d.relation === 'here')).toBe(true);
   });
 
