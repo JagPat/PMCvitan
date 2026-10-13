@@ -55,11 +55,11 @@ describe('B2 — rolesFor / selectRoles: one rollout-aware persona list', () => 
 
   it('the architect persona has screens and a session in it lands on the home, never on an undefined screen', () => {
     const keys = screensFor('architect').map((m) => m.key);
-    expect(keys[0]).toBe('inbox');
+    expect(keys[0]).toBe('dashboard'); // #811 — the Dashboard is every role's home
     expect(keys).toEqual(expect.arrayContaining(['inbox', 'decision-log', 'drawings', 'places']));
     s().setRole('architect');
     expect(s().role).toBe('architect');
-    expect(s().screen).toBe('inbox');
+    expect(s().screen).toBe('dashboard');
   });
 });
 

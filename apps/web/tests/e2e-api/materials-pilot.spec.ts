@@ -189,7 +189,8 @@ test('PILOT: a blocked requirement produces a shortage Inbox action; the cover p
   });
 
   await signInToProject(page, PMC, PILOT_NAME);
-  // the For-You inbox is the home — the shortage action is there with its forecast detail
+  // the For-You inbox (one tap from the Dashboard home, #811) carries the shortage action with its forecast detail
+  await page.getByRole('button', { name: 'For You' }).click();
   await expect(page.getByText(/material shortage/i).first()).toBeVisible();
   await expect(page.getByText(/No covering delivery/i).first()).toBeVisible();
 

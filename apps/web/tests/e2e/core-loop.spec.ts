@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test('core loop: client approves & locks a decision → Decision Log → PMC dashboard count decrements', async ({ page }) => {
   await page.goto('/');
 
-  // every role now lands on the "For You" action queue — switch to the Client
+  // every role lands on the Dashboard (#811) — switch to the Client
   // persona, then open their Decisions Waiting screen to drive the approval flow
   await page.getByRole('button', { name: 'Client', exact: true }).click();
   await page.getByRole('button', { name: 'Decisions Waiting' }).click();

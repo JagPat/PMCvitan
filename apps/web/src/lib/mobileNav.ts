@@ -11,8 +11,9 @@ import { engineerNavLabels, navLabels, type Lang, type Role, type ScreenKey } fr
  */
 
 /** The destinations that earn a permanent tab, in the order they should appear.
- *  For You (what needs me) · Schedule (when) · Places (where) · Portfolio (which project). */
-export const MOBILE_PRIMARY_PREFERENCE: readonly ScreenKey[] = ['inbox', 'site-schedule', 'places', 'portfolio'];
+ *  Dashboard (home, #811) · For You (what needs me) · Schedule (when) · Places (where) · Portfolio (which
+ *  project); with four slots, the first four a role holds win. */
+export const MOBILE_PRIMARY_PREFERENCE: readonly ScreenKey[] = ['dashboard', 'inbox', 'site-schedule', 'places', 'portfolio'];
 
 /** Tabs beside "More". Five bars fit a 390px viewport at a 44px touch target; four plus More is the cap. */
 export const MOBILE_PRIMARY_SLOTS = 4;
@@ -22,13 +23,14 @@ export const MOBILE_MAX_TABS = MOBILE_PRIMARY_SLOTS + 1;
 
 /**
  * UX foundations (owner design brief) — a role whose phone day has a fixed rhythm gets its own,
- * shorter bar. The site engineer's is Today · Site · More: For You is their day, the daily site
- * log is their site, and every other screen they hold stays one tap away behind More. This
+ * shorter bar. The site engineer's is Dashboard · Today · Site · More: the Dashboard is every role's home
+ * (#811), For You is their day, the daily site log is their site, and every other screen they hold stays
+ * one tap away behind More. This
  * supersedes Unit E's single-preference-list recommendation (E3) for the engineer only; every
  * other role keeps the shared rule.
  */
 export const MOBILE_ROLE_PRIMARY: Partial<Record<Role, readonly ScreenKey[]>> = {
-  engineer: ['inbox', 'daily-log'],
+  engineer: ['dashboard', 'inbox', 'daily-log'],
 };
 
 /** The bar/More label for a screen, in the viewer's language (the engineer's two fixed tabs carry

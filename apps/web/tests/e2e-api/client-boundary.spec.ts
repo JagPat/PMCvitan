@@ -39,8 +39,9 @@ test('every API-bound request declares countersign-v1, and the shell reads rollo
   await page.goto('/');
   await signIn(page, ENG);
   await openProject(page, 'Residence at Ambli');
-  // the engineer's home (Today) has settled — the post-sign-in route lands before we navigate away
-  await expect(page.getByTestId('engineer-today')).toBeVisible();
+  // the engineer's home (the Dashboard, #811) has settled — the post-sign-in route lands before we navigate away
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByText('PROJECT DASHBOARD')).toBeVisible();
   // walk one more surface so a command-free navigation's reads are on the wire too
   await page.getByRole('button', { name: /Daily Site Log/i }).click();
   await expect(page.getByTestId('crew-total')).toBeVisible();

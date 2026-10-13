@@ -1,8 +1,10 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { inspectionsSettledForLinks, selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
-import { API_BASE } from '@/data/apiGateway';
+import { decisionRecordLink, inspectionsSettledForLinks, selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
+import { API_BASE, dailyLogReadMode } from '@/data/apiGateway';
 import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
+import { routableScreensFor } from '@/lib/screens';
+import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
@@ -14,6 +16,11 @@ const UNKNOWN = '—';
 const unknownSub = (failed: boolean): string => (failed ? 'Could not load — try again' : 'Loading…');
 
 export function DashboardScreen() {
+  // #811 — every role lands here, so a part shows only to a role that holds where it leads: the review queue is
+  // served to the PMC alone, and a tile or button never opens a screen the viewer would be bounced from
+  const role = useStore((s) => s.role);
+  const routable = routableScreensFor(role);
+  const canOpen = (screen: ScreenKey): boolean => routable.includes(screen);
   // Top 10 #2 (#771) — the decisions awaiting action, the server's `countPending` definition (the Portfolio
   // card's number for this project), never a second definition of "pending"
   const pending = useStore(useShallow(selectDecisionsAwaitingAction));
@@ -34,6 +41,13 @@ export function DashboardScreen() {
   const progress = useStore((s) => s.dailyLog?.progress ?? 0);
   const checkedIn = useStore((s) => s.dailyLog?.checkedIn ?? false);
   const submitted = useStore((s) => s.dailyLog?.submitted ?? false);
+  // #818 Codex 4255945769 — under the daily-log module read, the strip shows the log's facts only once that read
+  // has landed: a failed read is unavailable with a Retry (the Daily Log screen's rule), never "Awaiting check-in"
+  // and zeros invented from an absent log
+  const dailyLogLoad = useStore((s) => s.dailyLogLoad);
+  const logPending = dailyLogReadMode() === 'moduleQuery' && dailyLogLoad !== 'ready';
+  const logFailed = logPending && dailyLogLoad === 'error';
+  const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
   const setScreen = useStore((s) => s.setScreen);
   const openItem = useStore((s) => s.openItem);
   // Top 10 #3 (#774) — the one review a single-review tile names opens AT that review, not the queue
@@ -67,14 +81,24 @@ export function DashboardScreen() {
     return { id: p.id, label: p.name, done, started, summary: `${p.name}: ${r.done} of ${r.activityTotal} activities done` };
   });
 
-  const siteStatus = submitted ? 'Daily log submitted' : checkedIn ? 'Engineer on site · logging' : 'Awaiting check-in';
-  const siteDot = checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)';
+  const siteStatus = logFailed ? 'The site log could not be loaded' : logPending ? 'Loading the site log…' : submitted ? 'Daily log submitted' : checkedIn ? 'Engineer on site · logging' : 'Awaiting check-in';
+  const siteDot = logPending ? 'var(--muted)' : checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)';
 
+  // #818 Codex 4255468689 — the approvals tile opens where the viewer acts on them, the action queue's rule: the
+  // approval screen when every decision it counts awaits THIS viewer as decider (`decisionRecordLink`, the bell's
+  // rule, so a retained row never opens live controls), else the Decision Log, which reads every state
+  const approvalsScreen = useStore((s) => {
+    const mine = selectDecisionsAwaitingAction(s);
+    return mine.length > 0 && mine.every((d) => decisionRecordLink(s, d).screen === 'client-decisions') ? 'client-decisions' : 'decision-log';
+  });
   // `onClick` stays optional: a tile with nowhere to go renders as a plain box (B5)
+  const openApprovals = approvalsScreen === 'client-decisions' || canOpen('decision-log') ? () => setScreen(approvalsScreen) : undefined;
   const tiles: Array<{ key: string; label: string; value: number | string; accent: string; sub: string; onClick?: () => void }> = [
     decisionsKnown
-      ? { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setScreen('decision-log') }
-      : { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed), onClick: () => setScreen('decision-log') },
+      ? { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: openApprovals }
+      : { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed), onClick: openApprovals },
+  ];
+  if (canOpen('inspect-review')) tiles.push(
     inspectionsKnown
       ? { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => (onlyReviewId ? openItem('inspect-review', onlyReviewId) : setScreen('inspect-review')) }
       : { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: UNKNOWN, accent: 'var(--accent)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
@@ -86,6 +110,8 @@ export function DashboardScreen() {
       : inspectionsKnown
       ? { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `In ${reinspections.count} open re-inspection${reinspections.count === 1 ? '' : 's'}` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') }
       : { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: UNKNOWN, accent: 'var(--red-solid)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
+  );
+  tiles.push(
     // B7 (F-13): COMPUTED from the placed photos in every mode — the demo's fixed "24 this week ·
     // 6 zones" contradicted the strip above. The strip shows the daily log's reported count; this,
     // every photo on record.
@@ -96,9 +122,9 @@ export function DashboardScreen() {
       sub: photoStats.capped
         ? `Latest ${photoStats.count} shown${photoStats.zones > 0 ? ` · across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : ''}`
         : photoStats.zones > 0 ? `Across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet',
-      onClick: () => setScreen('places'),
+      onClick: canOpen('places') ? () => setScreen('places') : undefined,
     },
-  ];
+  );
 
   // demo-only prototype highlights; API mode renders the project's own photos (or an honest absence)
   const highlights = [
@@ -124,7 +150,8 @@ export function DashboardScreen() {
         </div>
         {/* Top 10 #1 / live-bug 6 (#769) — no server export exists, so a live project shows no report action at
             all (never a simulated one, and no dead control); the API-less demo keeps its prototype flash */}
-        {!API_BASE && (
+        {/* #818 Codex 4255945761 — the demo's report action is the PMC's; other roles now land here too */}
+        {!API_BASE && role === 'pmc' && (
           <Button variant="ink" onClick={() => flash('Weekly report generated (PDF) — sent to client & contractor.')}>
             Generate Weekly Report <ArrowUpRight size={15} />
           </Button>
@@ -144,8 +171,14 @@ export function DashboardScreen() {
             : progressNow.basis === 'recorded'
               ? 'No activities planned yet — this is the figure recorded on the project'
               : progressNow.basis === 'unavailable'
-                ? 'The activities could not be loaded, so progress is unavailable — open Schedule to retry'
+                ? 'The activities could not be loaded, so progress is unavailable'
                 : 'Loading the activities…'}
+          {/* #818 Codex 4255945778 — the retry is here, not on the Schedule, which most roles do not hold */}
+          {progressNow.basis === 'unavailable' && (
+            <button type="button" onClick={requestFreshSnapshot} data-testid="dash-progress-retry" style={{ marginLeft: 8, background: 'transparent', border: '1px solid var(--hairline)', borderRadius: 7, padding: '4px 10px', minHeight: 32, font: 'inherit', fontWeight: 600, color: 'var(--accent)', cursor: 'pointer' }}>
+              Retry
+            </button>
+          )}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
           {milestones.map((m) => (
@@ -181,11 +214,11 @@ export function DashboardScreen() {
         </div>
         <div style={{ display: 'flex', flex: 1, justifyContent: 'space-around', gap: 12, minWidth: 220 }}>
           {[
-            { v: workers, l: 'WORKERS ON SITE' },
-            { v: materialsCount, l: 'MATERIALS LOGGED' },
+            { v: logPending ? UNKNOWN : workers, l: 'WORKERS ON SITE' },
+            { v: logPending ? UNKNOWN : materialsCount, l: 'MATERIALS LOGGED' },
             // the daily log's own reported count (DailyLog.progress — not linked to media, so no
             // "today" claim); named apart from the photos-on-record tile below (F-13)
-            { v: progress, l: 'PROGRESS PHOTOS · DAILY LOG' },
+            { v: logPending ? UNKNOWN : progress, l: 'PROGRESS PHOTOS · DAILY LOG' },
           ].map((s) => (
             <div key={s.l} style={{ textAlign: 'center' }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 22 }}>{s.v}</div>
@@ -193,9 +226,12 @@ export function DashboardScreen() {
             </div>
           ))}
         </div>
-        <Button variant="ghost" onClick={() => setScreen('site-schedule')} style={{ background: 'rgba(237,231,218,.1)', border: '1px solid rgba(237,231,218,.2)', color: 'var(--sidebar-text)', padding: '9px 14px', fontSize: 12 }}>
+        {logFailed && <Button variant="ghost" onClick={requestFreshSnapshot} data-testid="dash-daily-log-retry" style={{ background: 'rgba(237,231,218,.1)', border: '1px solid rgba(237,231,218,.2)', color: 'var(--sidebar-text)', padding: '9px 14px', fontSize: 12 }}>
+          Retry
+        </Button>}
+        {canOpen('site-schedule') && <Button variant="ghost" onClick={() => setScreen('site-schedule')} style={{ background: 'rgba(237,231,218,.1)', border: '1px solid rgba(237,231,218,.2)', color: 'var(--sidebar-text)', padding: '9px 14px', fontSize: 12 }}>
           View Schedule <ArrowRight size={14} />
-        </Button>
+        </Button>}
       </div>
 
       {/* KPI tiles */}

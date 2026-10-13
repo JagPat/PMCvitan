@@ -223,7 +223,8 @@ test('PILOT: an uncommitted labour shortfall is BLOCKED, surfaces the labour-sho
   const { requirementId, tradeCode } = await labourFixture(request, pmcPilot, pilotId, activityId, tag, { commit: false });
 
   await signInToProject(page, PMC, PILOT_NAME);
-  // the For-You inbox is the home — the labour shortfall action is there
+  // the For-You inbox (one tap from the Dashboard home, #811) carries the labour shortfall action
+  await page.getByRole('button', { name: 'For You' }).click();
   await expect(page.getByText(/labour shortfall/i).first()).toBeVisible();
 
   await openLabour(page);
@@ -273,7 +274,7 @@ test('INERT: a non-pilot project has NO Labour nav, a direct /labour deep link i
   await page.getByTestId('login-password').fill(PASSWORD);
   await page.getByTestId('login-submit').click();
   await expect(page).not.toHaveURL(/\/labour$/, { timeout: 15_000 });
-  await expect(page).toHaveURL(/\/for-you$/, { timeout: 15_000 });
+  await expect(page).toHaveURL(/\/dashboard$/, { timeout: 15_000 });
   await expect(page.getByTestId('labour-summary')).toHaveCount(0);
   const res = await request.get(`${API}/projects/${plainId}/labour/readiness`, { headers: bearer(pmcPlain) });
   expect(res.status()).toBe(404);

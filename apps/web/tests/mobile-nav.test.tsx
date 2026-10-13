@@ -24,12 +24,13 @@ const keysOf = (xs: { key: ScreenKey }[]) => xs.map((x) => x.key);
 const ALL_MODULES = ['activities', 'decisions', 'inspections', 'daily-log', 'drawings', 'nodes', 'orgs'];
 
 describe('splitMobileNav — the primary/secondary composition', () => {
-  it('a PMC gets For You · Schedule · Places · Portfolio, and everything else goes to More', () => {
+  it('a PMC gets Dashboard · For You · Schedule · Places, and everything else goes to More', () => {
     const items = enabledScreensFor('pmc', ALL_MODULES, ['materials', 'labour', 'commercial']);
     const { primary, secondary } = splitMobileNav(items);
-    expect(keysOf(primary)).toEqual(['inbox', 'site-schedule', 'places', 'portfolio']);
+    // #811 — the Dashboard is every role's home, so it holds the first slot and Portfolio moves to More
+    expect(keysOf(primary)).toEqual(['dashboard', 'inbox', 'site-schedule', 'places']);
     // the secondary half is the exact remainder — nothing invented, nothing lost
-    expect(keysOf(secondary)).toEqual(['dashboard', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'team']);
+    expect(keysOf(secondary)).toEqual(['decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'team', 'portfolio']);
     expect(primary.length + secondary.length).toBe(items.length);
   });
 
@@ -48,14 +49,14 @@ describe('splitMobileNav — the primary/secondary composition', () => {
     // the client has neither 'site-schedule' nor 'portfolio' — the bar fills from the role's own order
     expect(keysOf(primary)).not.toContain('site-schedule');
     expect(keysOf(primary)).not.toContain('portfolio');
-    expect(keysOf(primary)[0]).toBe('inbox');
+    expect(keysOf(primary)[0]).toBe('dashboard');
     expect(keysOf(primary)).toContain('places');
     const all = new Set([...keysOf(primary), ...keysOf(secondary)]);
     expect(all).toEqual(new Set(keysOf(items)));
   });
 
   it('a short list keeps every screen on the bar and needs no More', () => {
-    const items = enabledScreensFor('contractor', ALL_MODULES, []);
+    const items = enabledScreensFor('architect', ALL_MODULES, []);
     expect(items.length).toBeLessThanOrEqual(MOBILE_MAX_TABS);
     const { primary, secondary } = splitMobileNav(items);
     expect(secondary).toEqual([]);
@@ -130,7 +131,7 @@ describe('BottomTabs — the rendered bar', () => {
   it('renders four destinations plus More for a PMC', async () => {
     const { BottomTabs } = await loadTabs();
     const r = render(<BottomTabs />);
-    for (const key of ['inbox', 'site-schedule', 'places', 'portfolio']) {
+    for (const key of ['dashboard', 'inbox', 'site-schedule', 'places']) {
       expect(r.getByTestId(`tab-${key}`)).toBeInTheDocument();
     }
     expect(r.getByTestId('tab-more')).toBeInTheDocument();
@@ -162,7 +163,7 @@ describe('BottomTabs — the rendered bar', () => {
   });
 
   it('a role whose screens all fit shows no More tab', async () => {
-    const { BottomTabs } = await loadTabs({ role: 'contractor' });
+    const { BottomTabs } = await loadTabs({ role: 'architect' });
     const r = render(<BottomTabs />);
     expect(r.queryByTestId('tab-more')).not.toBeInTheDocument();
     expect(r.getByTestId('tab-places')).toBeInTheDocument();

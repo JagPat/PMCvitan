@@ -3,10 +3,13 @@ import { test, expect } from '@playwright/test';
 // U2a — the client's home is their project's Pulse: the decisions waiting on them are its
 // "one thing needs you" (a reopened one first), so it replaces their old approval cards.
 // U2b — its way in opens that ONE decision on its own screen: pick one, then approve.
-test("For You: the client lands on their project's Pulse, and its waiting decision opens on its own screen", async ({ page }) => {
+test("For You: the client's For You is their project's Pulse, and its waiting decision opens on its own screen", async ({ page }) => {
   await page.goto('/');
 
   await page.getByRole('button', { name: 'Client', exact: true }).click();
+  // #811 — every role lands on the Dashboard; For You is one tap away
+  await expect(page).toHaveURL(/\/projects\/ambli\/dashboard$/);
+  await page.getByRole('navigation').first().getByRole('button', { name: /^For You/ }).click();
   await expect(page.getByTestId('client-pulse')).toBeVisible();
   await expect(page.getByTestId('pulse-progress')).toBeVisible();
 
@@ -35,6 +38,7 @@ test('For You: acting on everything empties the Pulse (each decision disappears 
   await page.goto('/');
 
   await page.getByRole('button', { name: 'Client', exact: true }).click();
+  await page.getByRole('navigation').first().getByRole('button', { name: /^For You/ }).click(); // #811 — the home is the Dashboard
   await page.getByTestId('pulse-needs-go').click();
 
   // the reopened DL-003 on its own screen: re-approving closes the reopening (Phase 1 Task 2)
@@ -66,6 +70,7 @@ test('For You: every client surface counts the same decisions waiting on them', 
   await page.getByRole('button', { name: 'Client', exact: true }).click();
 
   const rail = page.getByRole('navigation').first();
+  await rail.getByRole('button', { name: /^For You/ }).click(); // #811 — the home is the Dashboard
   await expect(page.getByTestId('pulse-needs')).toContainText('3 things need you');
   await expect(rail.getByRole('button', { name: /^For You/ })).toContainText('3');
   await expect(rail.getByRole('button', { name: /^Decisions Waiting/ })).toContainText('3');
