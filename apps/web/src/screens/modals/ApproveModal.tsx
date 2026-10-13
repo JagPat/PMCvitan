@@ -1,6 +1,6 @@
 import { Modal, Button } from '@/components';
 import { useStore } from '@/store/store';
-import { signed, swatch as swatchGradient } from '@vitan/shared';
+import { signed, swatch as swatchGradient, approveModalLabels as L, approveModalTitle } from '@vitan/shared';
 import { Lock, ArrowRight } from '@/lib/icons';
 
 /** Confirmation modal for the irreversible approve-and-lock step.
@@ -14,6 +14,7 @@ import { Lock, ArrowRight } from '@/lib/icons';
 export function ApproveModal() {
   const modal = useStore((s) => s.modal);
   const closeModal = useStore((s) => s.closeModal);
+  const lang = useStore((s) => s.lang);
   const confirmApprove = useStore((s) => s.confirmApprove);
   const countersignRequired = useStore((s) => s.decisions.find((d) => d.id === s.modal.decId)?.countersignRequired === true);
 
@@ -38,10 +39,10 @@ export function ApproveModal() {
       </div>
       <div style={{ padding: '22px 24px 24px' }}>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.18em', color: 'var(--amber-text)' }}>
-          CONFIRM APPROVAL
+          {L.eyebrow[lang]}
         </div>
         <div id="approve-title" style={{ fontSize: 20, fontWeight: 700, marginTop: 8, lineHeight: 1.25 }}>
-          You are approving {modal.optionLabel} — {modal.material}
+          {approveModalTitle(modal.optionLabel ?? '', modal.material ?? '', lang)}
         </div>
         <div
           style={{
@@ -55,35 +56,35 @@ export function ApproveModal() {
           }}
         >
           <div>
-            <div style={{ fontSize: 11.5, color: 'var(--faint)' }}>Cost impact</div>
+            <div style={{ fontSize: 11.5, color: 'var(--faint)' }}>{L.costImpact[lang]}</div>
             <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 16, marginTop: 2 }}>
               {signed(modal.delta ?? 0)}
             </div>
           </div>
           <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 11.5, color: 'var(--faint)' }}>Decision</div>
+            <div style={{ fontSize: 11.5, color: 'var(--faint)' }}>{L.decision[lang]}</div>
             {countersignRequired ? (
               <div data-testid="approve-outcome" style={{ fontWeight: 600, fontSize: 14, marginTop: 2, color: '#31567F', display: 'flex', alignItems: 'center', gap: 5, justifyContent: 'flex-end' }}>
-                Will be sent to the architect for countersign <ArrowRight size={13} />
+                {L.toCountersign[lang]} <ArrowRight size={13} />
               </div>
             ) : (
               <div data-testid="approve-outcome" style={{ fontWeight: 600, fontSize: 14, marginTop: 2, color: 'var(--green-solid)', display: 'flex', alignItems: 'center', gap: 5, justifyContent: 'flex-end' }}>
-                Will be locked <Lock size={13} />
+                {L.willLock[lang]} <Lock size={13} />
               </div>
             )}
           </div>
         </div>
         <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12, lineHeight: 1.5 }} data-testid="approve-explainer">
           {countersignRequired
-            ? 'This decision will be recorded against your name, time-stamped, and sent to the architect for countersign. It locks when the architect countersigns; a rejection reopens it as a change request.'
-            : 'This decision will be recorded against your name, time-stamped, and locked. Any later change needs a formal Change Request.'}
+            ? L.explainCountersign[lang]
+            : L.explainLock[lang]}
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <Button variant="outline" style={{ flex: 1 }} onClick={closeModal}>
-            Cancel
+            {L.cancel[lang]}
           </Button>
           <Button variant="success" style={{ flex: 1.4 }} onClick={confirmApprove} data-testid="approve-lock">
-            {countersignRequired ? 'Approve & send for countersign' : 'Approve & Lock'}
+            {countersignRequired ? L.approveCountersign[lang] : L.approveLock[lang]}
           </Button>
         </div>
       </div>
