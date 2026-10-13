@@ -215,6 +215,10 @@ function buildBase(): void {
     // 4d-iii / R0b re-issues 4d-i's envelope and lease-freeze bodies with the system pair admitted and the
     // lease's server generation frozen: built on 4d-i, excluded with the rest.
     '20280107000000_phase6_t4d_iii_r0b_system_pair',
+    // Site Visits SV1-a seeds its generation beside A7d's (its prerequisite) and installs claimants for
+    // its `pairingRequired` types: built on A7d, excluded with the rest.
+    '20280111000000_site_visits_sv1a_catalog',
+    '20280112000000_site_visits_sv1a_record',
     // 4d-ii-a / A4a's consultation-cycle seals are 4d-i's bodies re-issued, guarded on 4d-i's
     // retirement marker, so they too apply only on top of 4d-i.
     '20271227000000_phase6_t4d_ii_consultation_finalized_cycle']);

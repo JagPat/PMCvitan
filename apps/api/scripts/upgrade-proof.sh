@@ -4893,9 +4893,11 @@ SQL
 # with its activation head from A6a's catalog-INSERT trigger; the three claimants and the re-issued
 # kernel actor seal standing. Then the replay a restored database takes: a 4c-ii-era `webpush.notify`
 # row (version 2) is moved to 3, a second replay is a no-op, and the effects row is not re-registered.
-assert "4d-ii-a / A7d: four coverage generations, the widened one over U3's keys plus exactly the three A7d adds" \
+# Site Visits SV1-a (20280111) seeds a FIFTH generation beside these four, so the distinct count is 5;
+# A7d's generation itself is unchanged.
+assert "4d-ii-a / A7d: five coverage generations (SV1-a's the fifth), the widened one over U3's keys plus exactly the three A7d adds" \
   "SELECT (SELECT count(DISTINCT \"coverageVersion\") FROM \"ExternalEffectCatalog\")::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c')::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '7dac2bd5646fa8b1a4062d0b844f2514179cf13ce7f59d345d837fd634aa3a61')::text || '|' || (SELECT string_agg(\"effectKey\", ',' ORDER BY \"effectKey\" COLLATE \"C\") FROM \"ExternalEffectCatalog\" a WHERE a.\"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c' AND NOT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" b WHERE b.\"coverageVersion\" = '7dac2bd5646fa8b1a4062d0b844f2514179cf13ce7f59d345d837fd634aa3a61' AND b.\"effectKey\" = a.\"effectKey\"));" \
-  "4|114|111|decision.awaiting_countersign,decision.forwarded,membership.standing_changed"
+  "5|114|111|decision.awaiting_countersign,decision.forwarded,membership.standing_changed"
 assert "4d-ii-a / A7d: every shared key equal in every column but pushRoles; the ceiling moved on exactly the three targeted keys, by the architect joining" \
   "SELECT (SELECT count(*) FROM \"ExternalEffectCatalog\" a JOIN \"ExternalEffectCatalog\" b ON b.\"effectKey\" = a.\"effectKey\" AND b.\"coverageVersion\" = '7dac2bd5646fa8b1a4062d0b844f2514179cf13ce7f59d345d837fd634aa3a61' WHERE a.\"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c' AND (a.\"eventType\", a.\"invalidate\", a.\"pushFamily\", a.\"frozenAudience\", a.\"requiresPush\", a.\"audience\", a.\"pushBody\", a.\"pairingRequired\") IS DISTINCT FROM (b.\"eventType\", b.\"invalidate\", b.\"pushFamily\", b.\"frozenAudience\", b.\"requiresPush\", b.\"audience\", b.\"pushBody\", b.\"pairingRequired\"))::text || '|' || (SELECT string_agg(a.\"effectKey\", ',' ORDER BY a.\"effectKey\" COLLATE \"C\") FROM \"ExternalEffectCatalog\" a JOIN \"ExternalEffectCatalog\" b ON b.\"effectKey\" = a.\"effectKey\" AND b.\"coverageVersion\" = '7dac2bd5646fa8b1a4062d0b844f2514179cf13ce7f59d345d837fd634aa3a61' WHERE a.\"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c' AND a.\"pushRoles\" IS DISTINCT FROM b.\"pushRoles\" AND b.\"pushRoles\" <@ a.\"pushRoles\" AND a.\"pushRoles\" ? 'architect' AND NOT (b.\"pushRoles\" ? 'architect'));" \
   "0|decision.consultation_requested,decision.consultation_responded,decision.published"
@@ -4908,25 +4910,88 @@ assert "4d-ii-a / A7d: the three claimants and the re-issued kernel actor seal s
 assert "4d-ii-a / A7d: decisions.effects is registered INACTIVE (ordered/db/1, types over membership.standing_changed) with its head seq 1 inactive from the catalog-INSERT trigger" \
   "SELECT c.\"consumerKind\" || '|' || c.\"consumerEffect\" || '|' || c.\"catalogVersion\"::text || '|' || c.\"active\"::text || '|' || c.\"activationSeq\"::text || '|' || c.\"dispatchRule\" || '|' || array_to_string(c.\"subscribedEventTypes\", ',') || '|' || a.\"active\"::text || '|' || a.\"actorKind\" FROM \"OutboxConsumerCatalog\" c JOIN \"OutboxConsumerActivation\" a ON a.\"consumer\" = c.\"consumer\" AND a.\"seq\" = c.\"activationSeq\" WHERE c.\"consumer\" = 'decisions.effects';" \
   "ordered|db|1|false|1|types|membership.standing_changed|false|registration"
-# the replay a RESTORED pre-A7d database takes: a 4c-ii-era webpush.notify row at 2 (inactive, ruleless
-# — owed nothing by any delivery seal) is moved to 3; a second replay is a no-op; the effects row is
-# registered once and never re-registered
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A7d: could not plant the 4c-ii-era webpush.notify catalog row"; FAIL=1; }
+# ── Site Visits #792 SV1-a: the eight site-visit keys, as a fifth generation beside A7d's ─────────
+# Over the ledger this database ran: SV1-a's generation (`f9ebcd07…`) is A7d's keys plus exactly the
+# eight site-visit keys, every shared key equal in EVERY column, each added key invalidating, never
+# pushing and pairing-required; seventeen pairing-required keys and A7d's two frozen families.
+assert "SV1-a: the new generation is A7d's 114 keys plus exactly the eight site-visit keys" \
+  "SELECT (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36')::text || '|' || (SELECT string_agg(\"effectKey\", ',' ORDER BY \"effectKey\" COLLATE \"C\") FROM \"ExternalEffectCatalog\" a WHERE a.\"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36' AND NOT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" b WHERE b.\"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c' AND b.\"effectKey\" = a.\"effectKey\")) || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" b WHERE b.\"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c' AND NOT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" a WHERE a.\"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36' AND a.\"effectKey\" = b.\"effectKey\"))::text;" \
+  "122|sitevisit.attendee_added,sitevisit.attendee_retired,sitevisit.closed,sitevisit.ended,sitevisit.late_end_recorded,sitevisit.place_added,sitevisit.place_retired,sitevisit.started|0"
+assert "SV1-a: every shared key equal to A7d's in every column; the eight added invalidate, never push and are pairing-required" \
+  "SELECT (SELECT count(*) FROM \"ExternalEffectCatalog\" a JOIN \"ExternalEffectCatalog\" b ON b.\"effectKey\" = a.\"effectKey\" AND b.\"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c' WHERE a.\"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36' AND (a.\"eventType\", a.\"invalidate\", a.\"pushRoles\", a.\"pushFamily\", a.\"frozenAudience\", a.\"requiresPush\", a.\"audience\", a.\"pushBody\", a.\"pairingRequired\") IS DISTINCT FROM (b.\"eventType\", b.\"invalidate\", b.\"pushRoles\", b.\"pushFamily\", b.\"frozenAudience\", b.\"requiresPush\", b.\"audience\", b.\"pushBody\", b.\"pairingRequired\"))::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36' AND \"effectKey\" LIKE 'sitevisit.%' AND \"eventType\" = \"effectKey\" AND \"invalidate\" AND \"pushRoles\" IS NULL AND \"pushFamily\" IS NULL AND NOT \"frozenAudience\" AND NOT \"requiresPush\" AND \"audience\" IS NULL AND \"pushBody\" IS NULL AND \"pairingRequired\" AND \"retiredAt\" IS NULL)::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36' AND \"pairingRequired\")::text || '|' || (SELECT string_agg(\"effectKey\", ',' ORDER BY \"effectKey\" COLLATE \"C\") FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36' AND \"frozenAudience\");" \
+  "0|8|17|decision.awaiting_countersign,decision.forwarded"
+# SV1-a is on ALWAYS_EXECUTE: it replays over a database that already carries it (no lease here, so its
+# own foreign-generation audit RUNS and admits the five generations it knows), twice, moving nothing.
+if $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280111000000_site_visits_sv1a_catalog/migration.sql" >/dev/null 2>&1 \
+   && $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280111000000_site_visits_sv1a_catalog/migration.sql" >/dev/null 2>&1; then
+  echo "ok      SV1-a: the catalog-generation migration replays twice over a database that already carries it"
+else
+  echo "FAILED  SV1-a: the catalog-generation migration did not replay (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
+fi
+assert "SV1-a: the replays left five generations and SV1-a's at 122 rows" \
+  "SELECT (SELECT count(DISTINCT \"coverageVersion\") FROM \"ExternalEffectCatalog\")::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36')::text;" \
+  "5|122"
+
+# ── A7d's REPLAY, on a scratch database built only up to 20280110 ──────────────────────────────
+# WHY NOT ON THIS DATABASE ANY MORE. A7d's file is immutable and its foreign-generation audit admits the
+# four generations that existed when it was written; it stands down only on 4d-iii's marker or the
+# serving witness (writers declared AND a lease). This database now carries SV1-a's fifth generation
+# and holds no lease yet (one is written further down), so replaying A7d here is REFUSED — correctly:
+# that is the immutable file doing what it says. Asserting A7d's replay over this database would
+# therefore prove nothing about A7d, and silencing it would hide that refusal. So the proof is split:
+#   · A7d's own replay contract (the 4c-ii-era webpush.notify 2 → 3, a second replay a no-op, one
+#     effects head) is proven on a scratch database that is EXACTLY the ledger A7d's replay was
+#     written against — every migration through 20280110, before SV1-a's generation exists;
+#   · then SV1-a is applied to that same scratch database, and A7d's replay is asserted REFUSED by its
+#     own foreign-generation diagnostic naming SV1-a's generation — the outcome the runner avoids by
+#     resolving A7d (with U1 and A7a) as applied on a database carrying SV1-a (scripts/migrate.sh), which
+#     the ledger-lost replays at the end of this script mirror.
+DB_A7D="${DB}_a7d_replay"
+PSQL_A7D="psql -X -v ON_ERROR_STOP=1 -d $DB_A7D"
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB_A7D;" >/dev/null || exit 1
+$PSQL_ADMIN -c "CREATE DATABASE $DB_A7D;" >/dev/null || exit 1
+a7d_scratch_ready=1
+for d in $(ls -d "$MIG_DIR"/*/ | sort); do
+  stamp="$(basename "$d")"; stamp="${stamp%%_*}"
+  if [ "$stamp" -gt 20280110000000 ] 2>/dev/null; then continue; fi
+  psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB_A7D" -f "$d/migration.sql" >/dev/null 2>&1 \
+    || { echo "FAILED  A7d replay scratch: migration $(basename "$d") did not apply"; FAIL=1; a7d_scratch_ready=0; break; }
+done
+if [ "$a7d_scratch_ready" -eq 1 ]; then
+  # the replay a RESTORED pre-A7d database takes: a 4c-ii-era webpush.notify row at 2 (inactive, ruleless
+  # — owed nothing by any delivery seal) is moved to 3; a second replay is a no-op; the effects row is
+  # registered once and never re-registered
+  $PSQL_A7D -q >/dev/null <<'SQL' || { echo "FAILED  A7d: could not plant the 4c-ii-era webpush.notify catalog row"; FAIL=1; }
 INSERT INTO "OutboxConsumerCatalog" ("consumer","consumerKind","consumerEffect","catalogVersion","active","updatedAt")
 VALUES ('webpush.notify','unordered','external',2,false,now()) ON CONFLICT DO NOTHING;
 SQL
-if $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280104000000_phase6_t4d_ii_a7d_catalog_change/migration.sql" >/dev/null 2>&1; then
-  echo "ok      A7d: the catalog-change migration replays over a database that already carries it"
-else
-  echo "FAILED  A7d: the catalog-change migration did not replay (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
+  if $PSQL_A7D -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280104000000_phase6_t4d_ii_a7d_catalog_change/migration.sql" >/dev/null 2>&1; then
+    echo "ok      A7d: the catalog-change migration replays over a database that already carries it (the ledger through 20280110)"
+  else
+    echo "FAILED  A7d: the catalog-change migration did not replay over the ledger through 20280110 (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
+  fi
+  a7d_got="$($PSQL_A7D -tAc "SELECT \"catalogVersion\"::text FROM \"OutboxConsumerCatalog\" WHERE consumer = 'webpush.notify';" 2>&1)"
+  if [ "$a7d_got" = "3" ]; then echo "ok      A7d: a 4c-ii-era webpush.notify row (version 2) is moved to 3 by the replay"
+  else echo "FAILED  A7d: a 4c-ii-era webpush.notify row (version 2) is moved to 3 by the replay — got: $a7d_got"; FAIL=1; fi
+  $PSQL_A7D -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280104000000_phase6_t4d_ii_a7d_catalog_change/migration.sql" >/dev/null 2>&1 || { echo "FAILED  A7d: the second replay failed"; FAIL=1; }
+  a7d_got="$($PSQL_A7D -tAc "SELECT (SELECT \"catalogVersion\"::text FROM \"OutboxConsumerCatalog\" WHERE consumer = 'webpush.notify') || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c')::text || '|' || (SELECT count(*) FROM \"OutboxConsumerActivation\" WHERE consumer = 'decisions.effects')::text || '|' || (SELECT count(DISTINCT \"coverageVersion\") FROM \"ExternalEffectCatalog\")::text;" 2>&1)"
+  if [ "$a7d_got" = "3|114|1|4" ]; then echo "ok      A7d: a second replay leaves webpush.notify at 3, the widened generation at 114 rows, decisions.effects with ONE head, and four generations"
+  else echo "FAILED  A7d: a second replay leaves webpush.notify at 3, the widened generation at 114 rows and decisions.effects with ONE head — got: $a7d_got (want 3|114|1|4)"; FAIL=1; fi
+  # SV1-a over that ledger, then the refusal A7d's immutable audit owes SV1-a's generation with no lease
+  if $PSQL_A7D -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280111000000_site_visits_sv1a_catalog/migration.sql" >/dev/null 2>&1; then
+    echo "ok      SV1-a: the catalog-generation migration applies over the ledger through 20280110"
+  else
+    echo "FAILED  SV1-a: the catalog-generation migration did not apply over the ledger through 20280110"; FAIL=1
+  fi
+  if a7d_out="$($PSQL_A7D -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280104000000_phase6_t4d_ii_a7d_catalog_change/migration.sql" 2>&1)"; then
+    echo "FAILED  A7d: replayed over SV1-a's generation with no lease — its foreign-generation audit no longer guards the catalog"; FAIL=1
+  elif printf '%s' "$a7d_out" | grep -q "phase6 4d-ii-a A7d ABORT: 122 \"ExternalEffectCatalog\" row(s) sit in a coverage generation this rollout does not admit — f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36"; then
+    echo "ok      A7d: with no lease, A7d's replay over SV1-a's generation is refused by its own foreign-generation audit (the runner resolves A7d instead)"
+  else
+    echo "FAILED  A7d: the replay over SV1-a's generation aborted, but not by A7d's foreign-generation diagnostic; got: $(printf '%s' "$a7d_out" | tail -2 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
+  fi
 fi
-assert "A7d: a 4c-ii-era webpush.notify row (version 2) is moved to 3 by the replay" \
-  "SELECT \"catalogVersion\"::text FROM \"OutboxConsumerCatalog\" WHERE consumer = 'webpush.notify';" \
-  "3"
-$PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280104000000_phase6_t4d_ii_a7d_catalog_change/migration.sql" >/dev/null 2>&1 || { echo "FAILED  A7d: the second replay failed"; FAIL=1; }
-assert "A7d: a second replay leaves webpush.notify at 3, the widened generation at 114 rows and decisions.effects with ONE head (guarded on the shapes it moves from)" \
-  "SELECT (SELECT \"catalogVersion\"::text FROM \"OutboxConsumerCatalog\" WHERE consumer = 'webpush.notify') || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c')::text || '|' || (SELECT count(*) FROM \"OutboxConsumerActivation\" WHERE consumer = 'decisions.effects')::text;" \
-  "3|114|1"
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB_A7D;" >/dev/null 2>&1 || true
 
 # ── 4d-ii-a / A8a: the frozen approval tuple admitted on awaiting_countersign ─────────────────────
 # 4b's CHECK admitted the tuple on approved/change alone; 4d-i widened the attribution SEAL's arm for
@@ -5094,7 +5159,9 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # would stand this ledger's dark-window audits down, so it is skipped with them. A4a's
   # consultation-cycle seals (20271227) re-issue 4d-i's seal bodies behind 4d-i's retirement marker.
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*) continue ;; esac
+  # Site Visits SV1-a's two files (20280111, 20280112) extend A7d's catalog generation and 4d-i's
+  # pairing claim, and refuse to apply without them, so they are excluded with their prerequisites.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5569,7 +5636,9 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280103000000_phase6_t4d_ii_a7c_inbox_v3 20280104000000_phase6_t4d_ii_a7d_catalog_change
 20280105000000_phase6_t4d_ii_a8a_awaiting_tuple
 20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence
-20280107000000_phase6_t4d_iii_r0b_system_pair"
+20280107000000_phase6_t4d_iii_r0b_system_pair
+20280111000000_site_visits_sv1a_catalog
+20280112000000_site_visits_sv1a_record"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
@@ -5580,15 +5649,24 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 carries_a7d() {
   [ "$($PSQL -tAc "SELECT (to_regproc('phase6_t4d_membership_transition_seal') IS NOT NULL AND to_regproc('platform_t4d_event_envelope') IS NOT NULL AND to_regproc('platform_t4d_event_pairing_actor') IS NOT NULL AND to_regproc('phase6_t4d_transition_claims_standing') IS NOT NULL AND to_regproc('phase6_t4d_forward_claims_event') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'platform_t4d_event_pairing_actor' AND position('system:membership-standing' in prosrc) > 0))::text" 2>/dev/null)" = "true" ]
 }
+# Site Visits #792 SV1-a — THE RUNNER'S SECOND RULE, MIRRORED: on a database that carries A7d AND
+# SV1-a's generation (`f9ebcd07…`), A7d's replay would refuse SV1-a's rows by the same kind of immutable
+# foreign-generation audit (gated on the witness, so a database that never served cannot stand it down),
+# so A7d is resolved as applied — and with it U1 and A7a, whose replays re-create the actor seal and the
+# revision claimant WITHOUT the bodies only A7d's replay restored.
+carries_sv1a() {
+  [ "$($PSQL -tAc "SELECT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36')::text" 2>/dev/null)" = "true" ]
+}
 t4d_replay() {
   # the runner reads the evidence ONCE, before anything replays: U1's replay re-creates the actor seal
   # with U1's body (A7d re-issues it with the exemption when its own file replays last), so a per-file
   # read would stop seeing A7d halfway through the ledger and replay U3 into its refusal.
-  local m skip=0
-  if carries_a7d; then skip=1; fi
+  local m skip=0 skip_sv1a=0
+  if carries_a7d; then skip=1; if carries_sv1a; then skip_sv1a=1; fi; fi
   for m in $T4D_REPLAY; do
     case "$m" in
       20271220000000_*|20271221000000_*|20271224000000_*) if [ "$skip" -eq 1 ]; then continue; fi ;;
+      20271222000000_*|20280102000000_*|20280104000000_*) if [ "$skip_sv1a" -eq 1 ]; then continue; fi ;;
     esac
     psql -X -q -v ON_ERROR_STOP=1 -d "$DB" -f "$MIG_DIR/$m/migration.sql" 2>&1 >/dev/null || { echo "[$m]"; return 1; }
   done
@@ -5636,7 +5714,7 @@ else
   echo "FAILED  4d-ii-a / A7d: the database does not read as carrying A7d although 20280104 ran on it — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
 fi
 if t4d_out="$(t4d_replay)"; then
-  echo "ok      4d-ii-a / A7d: a ledger-lost replay with NO lease runs 20271222–20280104 through on a database carrying A7d (4d-i and U3 resolved as applied, as the runner does)"
+  echo "ok      4d-ii-a / A7d: a ledger-lost replay with NO lease runs 20271222–20280112 through on a database carrying A7d and SV1-a (4d-i, U3, and — for SV1-a — U1, A7a and A7d resolved as applied, as the runner does)"
 else
   echo "FAILED  4d-ii-a / A7d: the lease-less replay on a database carrying A7d failed; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi
@@ -5679,7 +5757,7 @@ else
   echo "FAILED  4d-ii-a / A7d: the served database does not read as carrying A7d — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
 fi
 if t4d_out="$(t4d_replay)"; then
-  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271222–20280104 through (4d-i and U3 resolved as applied, as the runner does)"
+  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271222–20280112 through (4d-i, U3, U1, A7a and A7d resolved as applied, as the runner does)"
 else
   echo "FAILED  4d-ii-a: the replay refused a database this release served; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi
@@ -5718,6 +5796,12 @@ assert "4d-ii-a / A6e: the replay re-issued the fence's seals and did not lower 
 assert "4d-ii-a / A7a: after the replay the revision claimant carries the revision-naming arm on both of its triggers" \
   "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_revision_claims_approval' AND prosrc LIKE '%v_named IS DISTINCT FROM NEW.\"id\"%')::text || '|' || (SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname = 'phase6_t4d_revision_claims_approval' AND t.tgname IN ('DecisionApprovalRevision_t4d_claim','DecisionApprovalRevision_t4d_claim_deferred'))::text;" \
   "1|2"
+# SV1-a — the replay resolved U1, A7a and A7d as applied (the database carries SV1-a's generation), so
+# the bodies only A7d issues still stand: the actor seal's re-notification exemption and the revision
+# claimant's provisional arm, each on its trigger(s).
+assert "SV1-a: after the replay the kernel actor seal carries A7d's exemption and the revision claimant A7d's provisional arm" \
+  "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_event_pairing_actor' AND prosrc LIKE '%system:membership-standing%')::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_revision_claims_approval' AND prosrc LIKE '%THE PROVISIONAL ARM%')::text;" \
+  "1|1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

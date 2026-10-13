@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { registerConsumer, syncConsumerCatalog, unregisterConsumer, type OutboxConsumer } from '../../src/platform/outbox/registry';
 import { OutboxConsumerActivationService, ConsumerActivationConflictError } from '../../src/platform/outbox/consumer-activation.service';
 import { sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
+import { alwaysExecuteReplay } from './fixtures';
 import type { PrismaService } from '../../src/prisma.service';
 
 /**
@@ -87,7 +88,7 @@ describe('4d-ii-a / A6b — the mirror freeze and the outbox:consumer protocol (
     // (20271230) re-issues `platform_t4d_catalog_rules` one column family wider under the same trigger
     // name; a replay of this file ALONE would leave the database holding the narrower body, which no
     // real replay ever does — migrate.sh runs the list in order.
-    const later = list.split('\n').map((l) => l.trim()).filter((m) => m >= MIGRATION).sort();
+    const later = alwaysExecuteReplay(MIGRATION);
     expect(later[0]).toBe(MIGRATION);
     for (const m of later) {
       execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', join(__dirname, '..', '..', 'prisma', 'migrations', m, 'migration.sql')], { stdio: 'pipe' });

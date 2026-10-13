@@ -16,7 +16,7 @@ describe('Phase 2 Task 7 — module registry', () => {
 
   it('enablement is every compiled module — the single source of truth (finding 7)', () => {
     expect(enabledModuleIds()).toEqual(
-      ['activities', 'auth', 'commercial', 'daily-log', 'decisions', 'drawings', 'inspections', 'inventory', 'labour', 'media', 'nodes', 'orgs', 'platform', 'procurement'],
+      ['activities', 'auth', 'commercial', 'daily-log', 'decisions', 'drawings', 'inspections', 'inventory', 'labour', 'media', 'nodes', 'orgs', 'platform', 'procurement', 'site-visits'],
     );
   });
 

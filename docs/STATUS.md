@@ -96,9 +96,10 @@ mandatory await the owner). #731 stays open until they land. Maintenance runs be
    continuation only; it is not authority to start 4d-iii ahead of items 2–5 above. The remaining live-bug work
    comes before client estimates and isolated QA.
 7. **Site Visits** runs now as its own lane (Board, 13 Oct 2026, on #482 and #792: the #792 plan is approved as
-   written and Q8 is answered). SV1 to SV5 in order, each with its own reviewed technical design first. SV1 is
-   designed in three reviews (database, server, screens; owner, 13 Oct) before it is built; the first is
-   `docs/superpowers/plans/2026-10-13-site-visits-sv1-visit-record.md`. This lane does not move the Now block.
+   written and Q8 is answered). SV1 to SV5 in order, each with its own reviewed technical design first. SV1's database step
+   (SV1-a) is built with a test for each review point instead of another paper round (owner, 13 Oct); its note is
+   `docs/superpowers/plans/2026-10-13-site-visits-sv1-visit-record.md`. The server (SV1-b) and screens (SV1-c) keep
+   their own designs. This lane does not move the Now block.
 
 Each unit is a focused PR from `main`, with its own GitHub issue (rule 9). It goes through CI, exact-head
 Codex review (capped at two rounds once M2 lands), merge, deployment evidence and live validation. Nothing

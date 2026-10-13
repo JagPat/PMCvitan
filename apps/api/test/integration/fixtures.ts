@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Prisma } from '@prisma/client';
 import type { PrismaService } from '../../src/prisma.service';
 
@@ -691,4 +693,21 @@ export async function plantLegacyDecisionAudit<T>(
     await tx.$executeRawUnsafe(toggle('ENABLE'));
     return out;
   }, { timeout: 60_000, maxWait: 30_000 });
+}
+
+/**
+ * The `ALWAYS_EXECUTE` files a deploy REPLAYS over a migrated database, from `from` onward in ledger order — less
+ * the files `migrate.sh` resolves as applied instead (`T4D_SV1A_SUPERSEDED`): every migrated test database carries
+ * Site Visits SV1-a's catalog generation, which A7d's immutable catalog audit refuses, so a deploy never replays
+ * A7d there, nor U1 and A7a, whose replays only A7d's replay repaired. A suite proving "re-applied as a replay is,
+ * it moves nothing" replays exactly this list.
+ */
+export function alwaysExecuteReplay(from: string): string[] {
+  const sh = readFileSync(join(__dirname, '..', '..', 'scripts', 'migrate.sh'), 'utf8');
+  const lines = (name: string) => (sh.match(new RegExp(`${name}="([^"]+)"`))?.[1] ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const superseded = lines('T4D_SV1A_SUPERSEDED');
+  if (!superseded.includes('20280104000000_phase6_t4d_ii_a7d_catalog_change')) {
+    throw new Error('alwaysExecuteReplay: migrate.sh no longer resolves A7d on an SV1-a database; revisit this helper');
+  }
+  return lines('ALWAYS_EXECUTE').filter((m) => m >= from && !superseded.includes(m)).sort();
 }
