@@ -1,4 +1,5 @@
-import { test, expect, type APIRequestContext } from '@playwright/test';
+import { test, expect } from '@playwright/test';
+import { loginTo } from './landing';
 
 /**
  * Codex round-2 finding 3 — the seed bypassed canonical dates: a freshly
@@ -8,24 +9,17 @@ import { test, expect, type APIRequestContext } from '@playwright/test';
  * dates end-to-end, derived from the anchor exactly as the services derive them.
  */
 const API = 'http://localhost:3000';
-// the seed's default demo password (apps/api/prisma/seed.ts, SEED_DEMO_PASSWORD unset)
-const PASSWORD = 'vitan123';
 const A = 'ambli';
 const B = 'test-empty-site';
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-async function apiLogin(request: APIRequestContext, email: string): Promise<{ token: string }> {
-  const res = await request.post(`${API}/auth/login`, { data: { email, password: PASSWORD } });
-  expect(res.ok(), `login ${email} → ${res.status()}`).toBeTruthy();
-  return res.json();
-}
 
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
 test('the seeded database carries canonical civil dates end-to-end', async ({ request }) => {
-  // tokens are scoped to the login's HOME project, so each project is read
-  // with a member whose home it is: test-eng lives on A, test-pmc on B
-  const { token } = await apiLogin(request, 'test-eng@vitan.in');
+  // tokens are project-scoped, so each project is read with a token for it:
+  // test-eng is a member of A, test-pmc of B
+  const { token } = await loginTo(request, 'test-eng@vitan.in', A);
 
   const resA = await request.get(`${API}/projects/${A}/snapshot`, { headers: bearer(token) });
   expect(resA.ok()).toBeTruthy();
@@ -61,7 +55,7 @@ test('the seeded database carries canonical civil dates end-to-end', async ({ re
 
   // the empty fixture project has its anchor too — an anchor is project CONFIG,
   // not an operational record, so B stays truthfully empty of records
-  const { token: tokenB } = await apiLogin(request, 'test-pmc@vitan.in'); // home = B
+  const { token: tokenB } = await loginTo(request, 'test-pmc@vitan.in', B);
   const resB = await request.get(`${API}/projects/${B}/snapshot`, { headers: bearer(tokenB) });
   expect(resB.ok()).toBeTruthy();
   const snapB = await resB.json();

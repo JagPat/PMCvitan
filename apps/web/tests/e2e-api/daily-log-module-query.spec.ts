@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { openProject } from './landing';
 
 /**
  * Phase 2 Task 10 (correction, finding 5) — the daily-log MODULE-OWNED read, proven end-to-end over
@@ -49,7 +50,7 @@ test.describe('daily-log module-owned read (moduleQuery)', () => {
 
     await page.goto('/');
     await signIn(page, 'test-eng@vitan.in');
-    await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+    await openProject(page, 'Residence at Ambli');
 
     // the module-owned GET is fetched alongside the snapshot on load — proving moduleQuery is live
     // (screen navigation itself never refetches; the read rides the snapshot pulls).

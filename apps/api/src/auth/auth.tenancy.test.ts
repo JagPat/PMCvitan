@@ -33,6 +33,8 @@ function fakePrisma(
         // the legacy fallback `include`s the home project — attach a stub
         return u ? { ...u, project: { name: 'Home', short: 'Home', orgId: null, org: null } } : null;
       },
+      // #811 — a successful switch records the project it entered
+      update: async ({ where, data }: { where: { id: string }; data: { lastProjectId: string } }) => ({ id: where.id, ...data }),
     },
     orgMembership: {
       findUnique: async ({ where }: { where: { orgId_userId: { orgId: string; userId: string } } }) =>

@@ -1,4 +1,5 @@
-import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { loginTo, openProject } from './landing';
 
 /**
  * Phase 6 task 4d-ii-b / B3 — the readers over the REAL stack with the six reservation doors STANDING (the
@@ -29,11 +30,6 @@ async function signIn(page: Page, email: string): Promise<void> {
   await page.getByTestId('login-password').fill(PASSWORD);
   await page.getByTestId('login-submit').click();
 }
-async function apiLogin(request: APIRequestContext, email: string): Promise<{ token: string }> {
-  const res = await request.post(`${API}/auth/login`, { data: { email, password: PASSWORD } });
-  expect(res.ok(), `login ${email} → ${res.status()}`).toBeTruthy();
-  return res.json();
-}
 /** the rail's nav button for a screen, and the count its badge renders ('' when no badge) */
 const navButton = (page: Page, label: string) => page.locator('nav button').filter({ hasText: label });
 const badgeOf = async (page: Page, label: string): Promise<string> =>
@@ -41,7 +37,7 @@ const badgeOf = async (page: Page, label: string): Promise<string> =>
 
 test('with the doors standing, the client’s approval badge is the shell’s countPending plus their re-approvals, and the register answers awaiting_countersign with no row carrying it', async ({ page, request }) => {
   // the server's side of the relation, read independently of the app
-  const cli = await apiLogin(request, CLIENT);
+  const cli = await loginTo(request, CLIENT, A);
   const headers = { Authorization: `Bearer ${cli.token}`, 'x-vitan-decisions-contract': 'countersign-v1' };
   const shell = await request.get(`${API}/projects/${A}/shell`, { headers });
   expect(shell.ok()).toBeTruthy();
@@ -59,7 +55,7 @@ test('with the doors standing, the client’s approval badge is the shell’s co
 
   await page.goto('/');
   await signIn(page, CLIENT);
-  await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+  await openProject(page, 'Residence at Ambli');
 
   // the approval badge: the shell's count plus the re-approvals — never an awaiting row (there is none)
   await expect(navButton(page, 'Decisions Waiting')).toBeVisible();

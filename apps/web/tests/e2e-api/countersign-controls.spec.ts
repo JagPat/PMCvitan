@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { openProject } from './landing';
 
 /**
  * Phase 6 task 4d-ii-b / B5b — the countersign chain's affordances over the REAL stack with the six reservation
@@ -26,13 +27,7 @@ async function signIn(page: Page, email: string): Promise<void> {
 test('with the doors standing, the PMC’s register renders no Forward, no countersign control and no stranded resolution on any row', async ({ page }) => {
   await page.goto('/');
   await signIn(page, PMC);
-  await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
-  const optionA = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Residence at Ambli/ });
-  await expect(async () => {
-    if (!(await optionA.isVisible())) await page.getByTestId('project-switcher').click();
-    await optionA.click({ timeout: 2000 });
-  }).toPass();
-  await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+  await openProject(page, 'Residence at Ambli'); // sign-in opens the last project used (#811)
   await page.getByRole('button', { name: 'Decision Log' }).click();
 
   const rows = page.locator('[data-testid^="log-row-"]');
