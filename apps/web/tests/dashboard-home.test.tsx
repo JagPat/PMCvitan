@@ -97,6 +97,15 @@ describe('the Dashboard shows each role only what it can open', () => {
     expect(r.getByTestId('tile-photos').tagName).toBe('DIV');
   });
 
+  it('a decider with pending decisions gets no way into a Decisions module the project switched off (#822)', () => {
+    // #823 Codex 4257107716 — the nav adds the approval screen for a viewer who decides something; that must not
+    // reopen a module the project disabled, so the client's approvals tile stays a plain box
+    useStore.setState((st) => { st.role = 'client'; st.enabledModules = ['daily-log', 'drawings', 'orgs', 'nodes']; });
+    expect(selectDecisionsAwaitingAction(s()).length).toBeGreaterThan(0);
+    const r = render(<DashboardScreen />);
+    expect(r.getByTestId('tile-pending').tagName).toBe('DIV');
+  });
+
   it('the engineer keeps the Schedule button, which it holds, but not the review queue', () => {
     useStore.setState((st) => { st.role = 'engineer'; });
     const r = render(<DashboardScreen />);

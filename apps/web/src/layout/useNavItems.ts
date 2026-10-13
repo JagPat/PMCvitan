@@ -1,6 +1,6 @@
 import { useStore } from '@/store/store';
 import { countActionItems, selectActionItems, selectCountersignObligations, selectDeciderPending, selectDeciderReapproval, selectDraftDecisions, selectDraftDrawings, selectReviewPending } from '@/store/selectors';
-import { enabledScreensFor, SCREEN_META, type ScreenMeta } from '@/lib/screens';
+import { enabledScreensFor, SCREEN_META, SCREEN_MODULE, type ScreenMeta } from '@/lib/screens';
 
 export interface NavItem extends ScreenMeta {
   badge: number;
@@ -39,9 +39,11 @@ export function useNavItems(): NavItem[] {
   const screens = enabledScreensFor(role, enabledModules, capabilities);
   // Phase 6 task 4b (§A.3 round 4) — the approval surface follows the DECIDER: a viewer holding
   // at least one open decision gets the screen in their nav even when their role's static list
-  // omits it (the same predicate RouteBridge uses to keep the route open).
+  // omits it (the same predicate RouteBridge uses to keep the route open). #822 — never when the project
+  // switched the Decisions module off: the decider route belongs to that module like any other.
+  const decisionsEnabled = !enabledModules.length || enabledModules.includes(SCREEN_MODULE['client-decisions'] ?? '');
   const withDecider =
-    deciderPending + deciderReapprove > 0 && !screens.some((m) => m.key === 'client-decisions')
+    decisionsEnabled && deciderPending + deciderReapprove > 0 && !screens.some((m) => m.key === 'client-decisions')
       ? [...screens, SCREEN_META['client-decisions']]
       : screens;
 
