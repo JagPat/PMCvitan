@@ -1339,9 +1339,12 @@ export class OrgsService {
         // Phase 6 task 4b (§A.3, caller round 11) — the pending count is VIEWER-scoped and asked for
         // EVERY decider-capable role: a named engineer-decider's card reports their obligation
         // (countPending itself returns 0 for a viewer who decides nothing).
+        // #633 — "to review" is the PMC's review queue, which only the PMC sees inside the project (AUTH-02,
+        // `inspections-serialize`). Any other role's card counts none, so a card never promises reviews its
+        // project then shows as zero (the board's "inspection counts that differ between projects").
         const [statusCounts, openReviews, pendingDecisions] = await Promise.all([
           this.activitiesQuery.statusCounts(project.id),
-          this.inspections.openInspectionCount(project.id),
+          role === 'pmc' ? this.inspections.openInspectionCount(project.id) : Promise.resolve(0),
           this.decisions.countPending(project.id, { role: role as Role, userId }),
         ]);
         const { total: activityTotal, done, inProgress, blocked, notStarted, phaseCount } = statusCounts;

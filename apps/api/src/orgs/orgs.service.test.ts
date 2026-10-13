@@ -785,6 +785,13 @@ describe('OrgsService.portfolio', () => {
     );
   });
 
+  it.each(['engineer', 'client', 'contractor', 'consultant'])('a %s card counts no reviews: the review queue is the PMC\'s alone (#633)', async (role) => {
+    const { svc, prisma } = makePortfolio(role, ['done']);
+    const rows = await svc.portfolio('u2');
+    expect(rows[0].openReviews).toBe(0);
+    expect(prisma.inspection.count).not.toHaveBeenCalled();
+  });
+
   it('an org owner sees org projects they are not a member of (super-admin reach, as PMC)', async () => {
     // no explicit membership; owner of org1 which owns a "villa" project
     const villa = { id: 'villa', name: 'Villa', short: 'Villa', stage: 'Planning', milestonePct: 0, orgId: 'org1', org: { name: 'Vitan' } };
