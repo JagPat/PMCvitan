@@ -65,3 +65,19 @@ function refuse(text: string, kind: ImpactKind): ImpactReading {
   }
   return { ok: false, reason: HELP[kind] };
 }
+
+/** #827 (Top 10 #5) — a refusal reason in the viewer's language. The English reasons above stay the
+ *  canonical text (tests and the other writers read them); this maps each one for Hindi and Gujarati,
+ *  and returns any reason it does not know unchanged. */
+const REASON_IN: Record<string, { hi: string; gu: string }> = {
+  [HELP.cost]: { hi: 'पूरे रुपये लिखें, जैसे 5,000 या ₹ 5,000 — पैसे या दशमलव नहीं।', gu: 'પૂરા રૂપિયા લખો, જેમ કે 5,000 અથવા ₹ 5,000 — પૈસા કે દશાંશ નહીં.' },
+  [HELP.days]: { hi: 'पूरे दिन लिखें, जैसे 2।', gu: 'પૂરા દિવસ લખો, જેમ કે 2.' },
+  'That amount is too large to record.': { hi: 'यह रकम दर्ज करने के लिए बहुत बड़ी है।', gu: 'આ રકમ નોંધવા માટે બહુ મોટી છે.' },
+  'That number of days is too large to record.': { hi: 'दिनों की यह संख्या दर्ज करने के लिए बहुत बड़ी है।', gu: 'દિવસોની આ સંખ્યા નોંધવા માટે બહુ મોટી છે.' },
+  'Whole rupees only — paise and decimals are not recorded.': { hi: 'सिर्फ़ पूरे रुपये — पैसे और दशमलव दर्ज नहीं होते।', gu: 'ફક્ત પૂરા રૂપિયા — પૈસા અને દશાંશ નોંધાતા નથી.' },
+  'Whole days only — no decimals.': { hi: 'सिर्फ़ पूरे दिन — दशमलव नहीं।', gu: 'ફક્ત પૂરા દિવસ — દશાંશ નહીં.' },
+};
+
+export function impactReasonIn(reason: string, lang: 'en' | 'hi' | 'gu'): string {
+  return lang === 'en' ? reason : (REASON_IN[reason]?.[lang] ?? reason);
+}

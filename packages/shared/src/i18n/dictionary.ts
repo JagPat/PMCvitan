@@ -7,7 +7,7 @@
  * objects and as an i18next `resources` bundle (namespaces: access, trades, workerTrades).
  */
 
-import type { Lang, ScreenKey } from '../domain/types';
+import type { DeciderKind, Lang, ScreenKey } from '../domain/types';
 
 export interface AccessStrings {
   who: string;
@@ -458,6 +458,39 @@ export function approveModalTitle(option: string, material: string, lang: Lang):
   if (lang === 'hi') return `आप ${option} — ${material} मंज़ूर कर रहे हैं`;
   if (lang === 'gu') return `તમે ${option} — ${material} મંજૂર કરી રહ્યા છો`;
   return `You are approving ${option} — ${material}`;
+}
+
+/** #827 (Top 10 #5) — the change-request form against a locked decision, the other modal Board named.
+ *  English is byte-identical to the form's original copy. */
+export const changeModalLabels = {
+  eyebrow: { en: 'CHANGE REQUEST', hi: 'बदलाव का अनुरोध', gu: 'ફેરફારની વિનંતી' },
+  reason: { en: 'REASON FOR CHANGE', hi: 'बदलाव का कारण', gu: 'ફેરફારનું કારણ' },
+  reasonHint: { en: 'e.g. Client prefers a lighter tone…', hi: 'जैसे: क्लाइंट को हल्का रंग पसंद है…', gu: 'જેમ કે: ક્લાયન્ટને હળવો રંગ ગમે છે…' },
+  cost: { en: 'COST IMPACT (₹)', hi: 'खर्च पर असर (₹)', gu: 'ખર્ચ પર અસર (₹)' },
+  costAria: { en: 'Cost impact (₹)', hi: 'खर्च पर असर (₹)', gu: 'ખર્ચ પર અસર (₹)' },
+  time: { en: 'TIME IMPACT (DAYS)', hi: 'समय पर असर (दिन)', gu: 'સમય પર અસર (દિવસ)' },
+  timeAria: { en: 'Time impact (days)', hi: 'समय पर असर (दिन)', gu: 'સમય પર અસર (દિવસ)' },
+  cancel: { en: 'Cancel', hi: 'रद्द करें', gu: 'રદ કરો' },
+  submit: { en: 'Submit for Re-approval', hi: 'फिर से मंज़ूरी के लिए भेजें', gu: 'ફરી મંજૂરી માટે મોકલો' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** Who re-approves a changed decision, in the viewer's language (English matches `deciderNoun`). */
+const DECIDER_NOUN: Record<DeciderKind, Record<Lang, string>> = {
+  client: { en: 'the client', hi: 'क्लाइंट', gu: 'ક્લાયન્ટ' },
+  // `deciderNoun` reads any kind it does not name as the client
+  none: { en: 'the client', hi: 'क्लाइंट', gu: 'ક્લાયન્ટ' },
+  pmc: { en: 'the PMC', hi: 'प्रोजेक्ट मैनेजर (PMC)', gu: 'પ્રોજેક્ટ મેનેજર (PMC)' },
+  member: { en: 'the named decider', hi: 'तय किए गए निर्णयकर्ता', gu: 'નક્કી કરેલા નિર્ણયકર્તા' },
+  architect: { en: 'the architect', hi: 'आर्किटेक्ट', gu: 'આર્કિટેક્ટ' },
+};
+
+/** The form's explanation: the decision is locked and who must re-approve the change. */
+export function changeModalExplainer(kind: DeciderKind, lang: Lang): string {
+  // an unrecognised kind reads as the client, as `deciderNoun` does
+  const who = (DECIDER_NOUN[kind] ?? DECIDER_NOUN.client)[lang];
+  if (lang === 'hi') return `यह निर्णय लॉक है। बदलाव को खर्च और समय पर असर के साथ ${who} से फिर मंज़ूर कराना होगा।`;
+  if (lang === 'gu') return `આ નિર્ણય લૉક છે. ફેરફારને ખર્ચ અને સમય પરની અસર સાથે ${who} પાસે ફરી મંજૂર કરાવવો પડશે.`;
+  return `This decision is locked. A change must be re-approved by ${who} with cost & time impact.`;
 }
 
 /** The language switch's own labels: a short mark for the control, and each language's name
