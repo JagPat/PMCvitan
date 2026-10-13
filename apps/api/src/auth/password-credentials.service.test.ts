@@ -293,7 +293,7 @@ describe('PasswordCredentialsService', () => {
     await expect(service.verify({ requestId: first.requestId, code: delivered[0]!.code })).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('only the held challenge and the three newest others can match, and wrong codes count against the held one', async () => {
+  it('only the held challenge and the three newest others can match, and a wrong code counts against every live one', async () => {
     const { service, prisma, delivered } = make([activeUser()]);
     const ids: string[] = [];
     for (let i = 0; i < 5; i += 1) {
@@ -302,8 +302,7 @@ describe('PasswordCredentialsService', () => {
     }
     // Held = the oldest; candidates = it plus the three newest others, so the second-oldest code is refused.
     await expect(service.verify({ requestId: ids[0]!, code: delivered[1]!.code })).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.challenges.find((row) => row.id === ids[0])?.attempts).toBe(1);
-    expect(prisma.challenges.find((row) => row.id === ids[1])?.attempts).toBe(0);
+    expect(prisma.challenges.map((row) => row.attempts)).toEqual([1, 1, 1, 1, 1]);
     await expect(service.verify({ requestId: ids[0]!, code: delivered[4]!.code })).resolves.toMatchObject({ expiresInSeconds: 600 });
   });
 
@@ -341,6 +340,39 @@ describe('PasswordCredentialsService', () => {
     expect(prisma.challenges[0]?.attempts).toBeGreaterThanOrEqual(5);
     expect(prisma.challenges[0]?.consumedAt).toBeInstanceOf(Date);
     await expect(service.verify({ requestId, code: delivered[0]!.code })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  // #820 Codex 4255840353: each fresh requestId must not bring five more guesses at the same live codes.
+  it('shares one five-guess budget across every requestId of the user', async () => {
+    const { service, prisma, delivered } = make([activeUser()]);
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      ids.push((await service.request({ email: 'member@example.com' })).requestId);
+      vi.advanceTimersByTime(1_000);
+    }
+    for (let guess = 0; guess < 5; guess += 1) {
+      await expect(service.verify({ requestId: ids[guess % 3]!, code: '000000' })).rejects.toBeInstanceOf(BadRequestException);
+    }
+    expect(prisma.challenges.every((row) => row.consumedAt instanceof Date)).toBe(true);
+    for (const requestId of ids) {
+      await expect(service.verify({ requestId, code: delivered[2]!.code })).rejects.toBeInstanceOf(BadRequestException);
+    }
+  });
+
+  // #820 Codex 4255840331: a concurrent wrong guess can push the matched code to the limit after it was read.
+  it('refuses a matched code that reached the attempt limit before the verification took the lock', async () => {
+    const { service, prisma, delivered } = make([activeUser()]);
+    const first = await service.request({ email: 'member@example.com' });
+    vi.advanceTimersByTime(1_000);
+    const second = await service.request({ email: 'member@example.com' });
+    const transaction = prisma.$transaction.getMockImplementation()!;
+    prisma.$transaction.mockImplementationOnce(async (work: (tx: unknown) => Promise<unknown>) => {
+      prisma.challenges.find((row) => row.id === first.requestId)!.attempts = 5;
+      return transaction(work);
+    });
+    await expect(service.verify({ requestId: second.requestId, code: delivered[0]!.code })).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.challenges.find((row) => row.id === second.requestId)?.verifiedAt).toBeNull();
+    expect(prisma.challenges.find((row) => row.id === first.requestId)?.consumedAt).toBeNull();
   });
 
   it('a new request still revokes an outstanding setup token', async () => {

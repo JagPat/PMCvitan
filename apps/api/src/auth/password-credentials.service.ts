@@ -184,28 +184,41 @@ export class PasswordCredentialsService {
     const matched = [challenge, ...newest]
       .filter((candidate) => this.sameHash(candidate.otpHash, this.otpHash(candidate.id, input.code)));
     if (matched.length === 0) {
-      // Every wrong guess counts, even concurrent ones that read the same attempt count (one more live code per
-      // guess makes this matter more), and the lock follows the stored count rather than the one read above.
+      // One shared budget: a wrong guess counts against every live code of the user, because any of them could have
+      // matched it (#820 Codex 4255840353). Otherwise each fresh requestId would bring five more guesses at the same
+      // codes. Increments are atomic, so concurrent guesses all count, and the lock follows the stored counts.
+      const live = { userId: challenge.userId, purpose: PURPOSE, consumedAt: null, verifiedAt: null };
       await this.prisma.passwordCredentialChallenge.updateMany({
-        where: { id: challenge.id, consumedAt: null, verifiedAt: null },
+        where: live,
         data: { attempts: { increment: 1 } },
       });
       await this.prisma.passwordCredentialChallenge.updateMany({
-        where: { id: challenge.id, consumedAt: null, verifiedAt: null, attempts: { gte: MAX_ATTEMPTS } },
+        where: { ...live, attempts: { gte: MAX_ATTEMPTS } },
         data: { consumedAt: now },
       });
       throw this.genericError();
     }
 
     const setupToken = randomBytes(32).toString('base64url');
-    // Under the credential lock, so an invitation-email correction that revokes these challenges cannot interleave:
-    // the matched challenge must still be live, the held one is verified, and every other live one is retired.
-    const verified = await this.prisma.$transaction(async (tx) => {
+    const [match] = matched;
+    // Under the credential lock, so an invitation-email correction that revokes these challenges cannot interleave.
+    // Each step is a conditional write on the full live predicate, so a row that a concurrent wrong guess has just
+    // pushed to the attempt limit is never accepted (4255840331); any failed step rolls the whole verification back.
+    await this.prisma.$transaction(async (tx) => {
       await lockUserCredential(tx, challenge.userId);
-      const live = await tx.passwordCredentialChallenge.count({
-        where: { id: matched[0]!.id, consumedAt: null, verifiedAt: null, expiresAt: { gt: now } },
-      });
-      if (live !== 1) return false;
+      if (match!.id !== challenge.id) {
+        const claimed = await tx.passwordCredentialChallenge.updateMany({
+          where: {
+            id: match!.id,
+            consumedAt: null,
+            verifiedAt: null,
+            expiresAt: { gt: now },
+            attempts: { lt: MAX_ATTEMPTS },
+          },
+          data: { consumedAt: now },
+        });
+        if (claimed.count !== 1) throw this.genericError();
+      }
       const updated = await tx.passwordCredentialChallenge.updateMany({
         where: {
           id: challenge.id,
@@ -220,14 +233,12 @@ export class PasswordCredentialsService {
           setupTokenExpiresAt: new Date(now.getTime() + LIFETIME_MS),
         },
       });
-      if (updated.count !== 1) return false;
+      if (updated.count !== 1) throw this.genericError();
       await tx.passwordCredentialChallenge.updateMany({
         where: { userId: challenge.userId, purpose: PURPOSE, consumedAt: null, id: { not: challenge.id } },
         data: { consumedAt: now },
       });
-      return true;
     });
-    if (!verified) throw this.genericError();
     return { setupToken, expiresInSeconds: 600 };
   }
 
