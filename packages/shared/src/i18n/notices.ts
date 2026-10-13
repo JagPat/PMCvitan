@@ -82,7 +82,14 @@ function approvalNotice(text: string, lang: Exclude<Lang, 'en'>): string | null 
   return null;
 }
 
-export function noticeText(text: string, lang: Lang): string {
+/**
+ * `decision`: the notice is stamped with the decision it is about (`AppNotification.decisionId`). The
+ * approval notices ("<who> approved <title> — <material>") have no fixed prefix, so they are read as
+ * approvals ONLY on a stamped notice: every approval writer stamps one (the server's approve,
+ * provisional and finalizer writers, and the demo store's), and an unstamped text that happens to say
+ * "approved" is shown as stored (Codex 4264170661).
+ */
+export function noticeText(text: string, lang: Lang, opts: { decision?: boolean } = {}): string {
   if (lang === 'en') return text;
   for (const p of PREFIXED) {
     if (!text.startsWith(p.en) || text.length === p.en.length) continue;
@@ -126,9 +133,10 @@ export function noticeText(text: string, lang: Lang): string {
       ? `दोबारा निरीक्षण ${reinspection[1]}: ${reinspection[2]} आइटम — अंतिम तारीख ${reinspection[3]}।`
       : `ફરી નિરીક્ષણ ${reinspection[1]}: ${reinspection[2]} આઇટમ — છેલ્લી તારીખ ${reinspection[3]}.`;
   }
-  const building = /^(.+?) is building to (.+)$/.exec(text);
+  // the drawing acknowledgement's own shape: "<who> is building to <number> Rev <rev>"
+  const building = /^(.+?) is building to (\S+ Rev \S+)$/.exec(text);
   if (building) return lang === 'hi' ? `${building[1]} इस पर काम कर रहे हैं: ${building[2]}` : `${building[1]} આ પ્રમાણે કામ કરી રહ્યા છે: ${building[2]}`;
-  return approvalNotice(text, lang) ?? text;
+  return (opts.decision ? approvalNotice(text, lang) : null) ?? text;
 }
 
 /** When a notice happened, in the viewer's language: the parts `noticeTime` builds, or the stored label. */
