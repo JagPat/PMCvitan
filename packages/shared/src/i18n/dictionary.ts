@@ -430,6 +430,36 @@ export const shellLabels: Record<'more' | 'language' | 'close' | 'screens', Reco
   screens: { en: 'SCREENS', hi: 'स्क्रीन', gu: 'સ્ક્રીન' },
 };
 
+/** #827 (Top 10 #5) — the approve-and-lock confirmation, one of the paths the Board named. The English
+ *  strings are byte-identical to the modal's original copy. */
+export const approveModalLabels = {
+  eyebrow: { en: 'CONFIRM APPROVAL', hi: 'मंज़ूरी की पुष्टि करें', gu: 'મંજૂરીની પુષ્ટિ કરો' },
+  costImpact: { en: 'Cost impact', hi: 'खर्च पर असर', gu: 'ખર્ચ પર અસર' },
+  decision: { en: 'Decision', hi: 'निर्णय', gu: 'નિર્ણય' },
+  toCountersign: { en: 'Will be sent to the architect for countersign', hi: 'आर्किटेक्ट के हस्ताक्षर के लिए भेजा जाएगा', gu: 'આર્કિટેક્ટની સહી માટે મોકલાશે' },
+  willLock: { en: 'Will be locked', hi: 'लॉक हो जाएगा', gu: 'લૉક થઈ જશે' },
+  explainCountersign: {
+    en: 'This decision will be recorded against your name, time-stamped, and sent to the architect for countersign. It locks when the architect countersigns; a rejection reopens it as a change request.',
+    hi: 'यह निर्णय आपके नाम और समय के साथ दर्ज होगा और आर्किटेक्ट के हस्ताक्षर के लिए भेजा जाएगा। आर्किटेक्ट के हस्ताक्षर करने पर यह लॉक होगा; अस्वीकार होने पर यह बदलाव के अनुरोध के रूप में फिर खुलेगा।',
+    gu: 'આ નિર્ણય તમારા નામ અને સમય સાથે નોંધાશે અને આર્કિટેક્ટની સહી માટે મોકલાશે. આર્કિટેક્ટ સહી કરે ત્યારે તે લૉક થશે; નકારાય તો તે ફેરફારની વિનંતી તરીકે ફરી ખૂલશે.',
+  },
+  explainLock: {
+    en: 'This decision will be recorded against your name, time-stamped, and locked. Any later change needs a formal Change Request.',
+    hi: 'यह निर्णय आपके नाम और समय के साथ दर्ज होकर लॉक हो जाएगा। बाद में कोई भी बदलाव करने के लिए बदलाव का औपचारिक अनुरोध चाहिए।',
+    gu: 'આ નિર્ણય તમારા નામ અને સમય સાથે નોંધાઈને લૉક થઈ જશે. પછી કોઈ પણ ફેરફાર માટે ફેરફારની ઔપચારિક વિનંતી જોઈએ.',
+  },
+  cancel: { en: 'Cancel', hi: 'रद्द करें', gu: 'રદ કરો' },
+  approveCountersign: { en: 'Approve & send for countersign', hi: 'मंज़ूर करें और हस्ताक्षर के लिए भेजें', gu: 'મંજૂર કરો અને સહી માટે મોકલો' },
+  approveLock: { en: 'Approve & Lock', hi: 'मंज़ूर करें और लॉक करें', gu: 'મંજૂર કરો અને લૉક કરો' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** The approve confirmation's heading: the option and its material, in the viewer's language. */
+export function approveModalTitle(option: string, material: string, lang: Lang): string {
+  if (lang === 'hi') return `आप ${option} — ${material} मंज़ूर कर रहे हैं`;
+  if (lang === 'gu') return `તમે ${option} — ${material} મંજૂર કરી રહ્યા છો`;
+  return `You are approving ${option} — ${material}`;
+}
+
 /** The language switch's own labels: a short mark for the control, and each language's name
  *  written in that language, so a reader finds theirs without reading the others. Ordered as the
  *  switch shows them — Gujarati first, the site's default. */
