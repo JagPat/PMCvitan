@@ -31,12 +31,15 @@ import { EXTERNAL_EFFECTS, effectCoverageVersion } from '../../src/platform/exte
  *     normalised to a boolean as the sixth element, `true` on exactly the plan's six types. 4d-i-b
  *     seeds it BESIDE the prior one, every other column of every key equal, and it is the ONE
  *     successor shape 4d-i's `_t4d_catalog_successor` derivation admits.
- *   · CURRENT — the 4d-ii-a / A7d release: the EIGHT-element preimage (`frozenAudience` and the
- *     frozen family's `pushBody` joined) over the catalog WIDENED by the three chain keys and the
+ *   · A7D `23f47cd9…` — the 4d-ii-a / A7d release: the EIGHT-element preimage (`frozenAudience` and
+ *     the frozen family's `pushBody` joined) over the catalog WIDENED by the three chain keys and the
  *     `architect` role in three targeted ceilings. A7d seeds it beside the pairing generation,
  *     every shared key equal in every column but those three ceilings.
+ *   · CURRENT — the Site Visits #792 SV1-a release: the same eight-element preimage over A7d's catalog
+ *     plus the eight site-visit keys (invalidate, never push, pairing-required). SV1-a seeds it
+ *     beside A7d's, every shared key equal in every column.
  *
- * WHAT THIS SUITE HOLDS. `licences the seeds` RE-DERIVES all three from source on every run, so
+ * WHAT THIS SUITE HOLDS. `licences the seeds` RE-DERIVES all five from source on every run, so
  * neither migration's literal can outlive its proof: a key added without its row, a policy that
  * moved without being declared, or a seventh flip changes a hash and fails here. The rest reads
  * the live table and drives the envelope seal end to end under each generation.
@@ -44,6 +47,16 @@ import { EXTERNAL_EFFECTS, effectCoverageVersion } from '../../src/platform/exte
 
 /** The version this source computes — the generation a CURRENT writer emits under. */
 const CURRENT = effectCoverageVersion();
+
+/** A7d's generation, as A7d's migration names it (`_t4dii_catalog_seed`'s one version). Read out of
+ *  the migration text; `licences the seeds` asserts the derivation agrees. */
+const A7D = (() => {
+  const sql = readFileSync(join(__dirname, '..', '..', 'prisma', 'migrations',
+    '20280104000000_phase6_t4d_ii_a7d_catalog_change', 'migration.sql'), 'utf8');
+  const m = sql.match(/INSERT INTO "_t4dii_catalog_seed"[^\n]*\n\s+\('([0-9a-f]{64})'/);
+  if (!m?.[1]) throw new Error('the 4d-ii-a / A7d coverage generation could not be read from its migration');
+  return m[1]!;
+})();
 
 /** The pairing generation, as U3's migration names it (`_t4dib_catalog_seed`'s one version). */
 const PAIRING = (() => {
@@ -88,6 +101,12 @@ const PAIRING_REQUIRED = [
 const ADDED_BY_A7D = ['decision.forwarded', 'decision.awaiting_countersign', 'membership.standing_changed'];
 const WIDENED_BY_A7D = ['decision.published', 'decision.consultation_requested', 'decision.consultation_responded'];
 const FROZEN_BY_A7D = ['decision.awaiting_countersign', 'decision.forwarded'];
+/** Site Visits #792 SV1-a — the eight keys the current catalog ADDS over A7d's (each pairing-required,
+ *  invalidating, never pushing). Every older generation lacks them. */
+const ADDED_BY_SV1A = [
+  'sitevisit.started', 'sitevisit.ended', 'sitevisit.closed', 'sitevisit.late_end_recorded',
+  'sitevisit.place_added', 'sitevisit.place_retired', 'sitevisit.attendee_added', 'sitevisit.attendee_retired',
+];
 
 /**
  * THE DECLARED DIVERGENCE between the outgoing and the prior generations (#582 rounds 13 and 18).
@@ -175,36 +194,42 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
     pairingRequired: r.pairingRequired,
   });
 
-  it('licences the seeds — all four generations fall out of THIS catalog, and only the declared bends separate them', () => {
-    // A7d's generation: the eight-element preimage over the widened catalog, which is what
+  it('licences the seeds — all five generations fall out of THIS catalog, and only the declared bends separate them', () => {
+    // SV1-a's generation: the eight-element preimage over the whole catalog, which is what
     // `effectCoverageVersion()` is.
     expect(sha(canonical([], true, true))).toBe(CURRENT);
-    // 4d-i-b's generation: six elements, the three A7d keys absent, the architect out of the three
-    // ceilings it joined.
-    expect(sha(canonical(ADDED_BY_A7D, true))).toBe(PAIRING);
+    // A7d's generation: the same eight elements, the eight site-visit keys absent.
+    expect(sha(canonical(ADDED_BY_SV1A, true, true))).toBe(A7D);
+    // 4d-i-b's generation: six elements, the SV1-a and A7d keys absent, the architect out of the
+    // three ceilings it joined.
+    expect(sha(canonical([...ADDED_BY_SV1A, ...ADDED_BY_A7D], true))).toBe(PAIRING);
     // 4d-i's generation: the same catalog, five elements. The flag's normalisation is what makes
     // "remove the element" reproduce the older preimage exactly.
-    expect(sha(canonical(ADDED_BY_A7D, false))).toBe(PRIOR);
+    expect(sha(canonical([...ADDED_BY_SV1A, ...ADDED_BY_A7D], false))).toBe(PRIOR);
     // the pre-4d-i generation: five elements, minus the keys 4d-i added.
-    expect(sha(canonical([...ADDED_BY_A7D, ...ADDED_BY_4D_I], false))).toBe(OUTGOING);
-    expect(new Set([CURRENT, PAIRING, PRIOR, OUTGOING]).size, 'four DISTINCT generations').toBe(4);
-    // and the flags are EXACTLY the plan's six plus A7d's three — a tenth flag, or a missing one,
-    // moves CURRENT and fails the first assertion; this arm says WHICH key did it.
+    expect(sha(canonical([...ADDED_BY_SV1A, ...ADDED_BY_A7D, ...ADDED_BY_4D_I], false))).toBe(OUTGOING);
+    expect(new Set([CURRENT, A7D, PAIRING, PRIOR, OUTGOING]).size, 'five DISTINCT generations').toBe(5);
+    // and the flags are EXACTLY the plan's six plus A7d's three plus SV1-a's eight — a further flag,
+    // or a missing one, moves CURRENT and fails the first assertion; this arm says WHICH key did it.
     const flagged = Object.entries(EXTERNAL_EFFECTS as Record<string, Def>)
       .filter(([, d]) => d.pairingRequired === true).map(([k]) => k).sort();
-    expect(flagged).toEqual([...PAIRING_REQUIRED, ...ADDED_BY_A7D].sort());
+    expect(flagged).toEqual([...PAIRING_REQUIRED, ...ADDED_BY_A7D, ...ADDED_BY_SV1A].sort());
   });
 
-  it('seeds ALL FOUR generations, over the right key sets', async () => {
+  it('seeds ALL FIVE generations, over the right key sets', async () => {
     const current = await rowsAt(CURRENT);
+    const a7d = await rowsAt(A7D);
     const pairing = await rowsAt(PAIRING);
     const prior = await rowsAt(PRIOR);
     const outgoing = await rowsAt(OUTGOING);
 
     expect(current.length, `no rows at the current generation ${CURRENT}`).toBeGreaterThan(0);
     expect(current.length).toBe(Object.keys(EXTERNAL_EFFECTS).length);
+    // SV1-a extends A7d's generation by exactly its eight keys
+    expect(a7d.map((r) => r.effectKey)).toEqual(current.map((r) => r.effectKey).filter((k) => !ADDED_BY_SV1A.includes(k)));
+    expect(current.length).toBe(a7d.length + ADDED_BY_SV1A.length);
     // A7d extends the pairing generation by exactly its three keys
-    expect(pairing.map((r) => r.effectKey)).toEqual(current.map((r) => r.effectKey).filter((k) => !ADDED_BY_A7D.includes(k)));
+    expect(pairing.map((r) => r.effectKey)).toEqual(a7d.map((r) => r.effectKey).filter((k) => !ADDED_BY_A7D.includes(k)));
     // 4d-i-b extends 4d-i's generation over the SAME keys, both directions
     expect(prior.map((r) => r.effectKey)).toEqual(pairing.map((r) => r.effectKey));
     // A generation seeded PARTIALLY is worse than one not seeded at all: the drain would then
@@ -230,8 +255,8 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
       .toEqual([...PAIRING_REQUIRED].sort());
   });
 
-  it('4d-ii-a / A7d: the current generation is the pairing one plus three keys, the architect in three ceilings, nothing else moved', async () => {
-    const current = await rowsAt(CURRENT);
+  it('4d-ii-a / A7d: A7d\'s generation is the pairing one plus three keys, the architect in three ceilings, nothing else moved', async () => {
+    const current = await rowsAt(A7D);
     const pairing = new Map((await rowsAt(PAIRING)).map((r) => [r.effectKey, r]));
     for (const row of current) {
       const before = pairing.get(row.effectKey);
@@ -257,6 +282,29 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
       .toEqual([...PAIRING_REQUIRED, ...ADDED_BY_A7D].sort());
   });
 
+  it('site visits SV1-a: the current generation is A7d\'s plus exactly the eight site-visit keys, nothing else moved', async () => {
+    const current = await rowsAt(CURRENT);
+    const a7d = new Map((await rowsAt(A7D)).map((r) => [r.effectKey, r]));
+    expect(current.length).toBe(a7d.size + ADDED_BY_SV1A.length);
+    for (const row of current) {
+      const before = a7d.get(row.effectKey);
+      if (ADDED_BY_SV1A.includes(row.effectKey)) {
+        expect(before, `${row.effectKey} is SV1-a's`).toBeUndefined();
+        expect(policy(row)).toEqual({
+          effectKey: row.effectKey, eventType: row.effectKey, invalidate: true, pushRoles: null,
+          pushFamily: null, frozenAudience: false, requiresPush: false, audience: null, pushBody: null,
+          pairingRequired: true,
+        });
+        continue;
+      }
+      expect(before, `A7d's generation carries ${row.effectKey}`).toBeDefined();
+      expect(policy(row), `${row.effectKey}: a shared key moved`).toEqual(policy(before!));
+    }
+    expect(current.filter((r) => r.frozenAudience).map((r) => r.effectKey).sort()).toEqual([...FROZEN_BY_A7D].sort());
+    expect(current.filter((r) => r.pairingRequired).map((r) => r.effectKey).sort())
+      .toEqual([...PAIRING_REQUIRED, ...ADDED_BY_A7D, ...ADDED_BY_SV1A].sort());
+  });
+
   it('the outgoing rows say what the outgoing release means, column for column', async () => {
     const prior = await rowsAt(PRIOR);
     const outgoing = await rowsAt(OUTGOING);
@@ -279,7 +327,7 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
   });
 
   it('no generation is born retired — a retired row may not back a new event', async () => {
-    for (const v of [CURRENT, PAIRING, PRIOR, OUTGOING]) {
+    for (const v of [CURRENT, A7D, PAIRING, PRIOR, OUTGOING]) {
       const rows = await rowsAt(v);
       // presence first, or an absent generation would make this arm vacuously green — which is
       // exactly what it did on the RED measurement of the unfixed head.
@@ -325,14 +373,17 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
     await emitAt(PRIOR, 'cg-ev-prior');
     // the 4d-i-b / A7c release's, still serving through A7d's drain
     await emitAt(PAIRING, 'cg-ev-pairing');
+    // the A7d release's, still serving through SV1-a's drain
+    await emitAt(A7D, 'cg-ev-a7d');
     // and this release's own
     await emitAt(CURRENT, 'cg-ev-current');
     // all COMMITTED, and each carries the version its own emitter computed
     const landed = await t.prisma.$queryRawUnsafe<{ eventId: string; v: string }[]>(
       `SELECT "eventId", "dispatchIntent" ->> 'coverageVersion' AS v FROM "DomainEvent"
-        WHERE "eventId" IN ('cg-ev-outgoing','cg-ev-prior','cg-ev-pairing','cg-ev-current') ORDER BY "eventId"`,
+        WHERE "eventId" IN ('cg-ev-outgoing','cg-ev-prior','cg-ev-pairing','cg-ev-a7d','cg-ev-current') ORDER BY "eventId"`,
     );
     expect(landed).toEqual([
+      { eventId: 'cg-ev-a7d', v: A7D },
       { eventId: 'cg-ev-current', v: CURRENT },
       { eventId: 'cg-ev-outgoing', v: OUTGOING },
       { eventId: 'cg-ev-pairing', v: PAIRING },

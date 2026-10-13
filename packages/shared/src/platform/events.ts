@@ -231,6 +231,18 @@ export const DOMAIN_EVENT_TYPES = [
   // recovered) are already canonical rows with audit attribution. The payload carries which cost
   // heads moved and the §B label for what moved them.
   'commercial.money_moved',
+  // Site Visits (#792) SV1-a — the visit record. Every event is on the visit's stream
+  // (entityType `SiteVisit`, entityId the visit id); a child event's payload names its row as
+  // `rowId`. Each is PAIRED in PostgreSQL with exactly one change to the site-visit tables (the
+  // claimant triggers of `20280112000000_site_visits_sv1a_record`), and is invalidate-only.
+  'sitevisit.started',
+  'sitevisit.ended',
+  'sitevisit.closed',
+  'sitevisit.late_end_recorded',
+  'sitevisit.place_added',
+  'sitevisit.place_retired',
+  'sitevisit.attendee_added',
+  'sitevisit.attendee_retired',
 ] as const;
 
 export type DomainEventType = (typeof DOMAIN_EVENT_TYPES)[number];

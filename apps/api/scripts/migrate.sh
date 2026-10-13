@@ -508,6 +508,12 @@ if echo "$out" | grep -q "P3005"; then
   # Top 10 #4b (20280109) is here for the same reason: `schema.prisma` models `NotificationReceipt`, its composite
   # key and the `Notification` unique key it references, but a db-push baseline gets neither the receipt's standing
   # trigger nor its immutability trigger. Every statement in it is guarded, so it re-runs cleanly.
+  #
+  # Site Visits #792 SV1-a (20280111, 20280112) are here for the same reason. 20280111 seeds the
+  # catalog generation the compiled catalog emits under (rows a db-push baseline never has), behind
+  # A7d-shaped audits and ON CONFLICT DO NOTHING; 20280112 installs the visit tables' raw seals and the
+  # site-visits claimant triggers that pair the eight `pairingRequired` types. Both are guarded and
+  # re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -541,7 +547,9 @@ if echo "$out" | grep -q "P3005"; then
 20280105000000_phase6_t4d_ii_a8a_awaiting_tuple
 20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence
 20280107000000_phase6_t4d_iii_r0b_system_pair
-20280109000000_top10_4b_notification_receipt"
+20280109000000_top10_4b_notification_receipt
+20280111000000_site_visits_sv1a_catalog
+20280112000000_site_visits_sv1a_record"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -663,8 +671,46 @@ if echo "$out" | grep -q "P3005"; then
     echo "[migrate] could not read the 4d-ii-a / A7d seals — 4d-i's halves and U3 stay pending so their raw guards really apply"
   fi
 
+  # Site Visits #792 SV1-a — THE SAME RULE, ONE GENERATION LATER. A7d's file is on ALWAYS_EXECUTE and
+  # carries the same kind of foreign-generation audit, written before SV1-a's generation (`f9ebcd07…`)
+  # existed and gated on the retirement marker or the serving witness; on a database migrated through
+  # SV1-a that never served (no lease), its replay refuses SV1-a's rows and the deploy aborts. A
+  # database holding SV1-a's generation evidences A7d ran to completion (20280111's prerequisite is
+  # A7d's generation, and A7d is one transaction whose fail-closed verification checked U1's actor seal
+  # and A7a's revision arm as A7d re-issued them). So on such a database A7d is RESOLVED as applied —
+  # and with it the two files whose replay A7d's own replay used to repair: U1 (20271222) re-creates
+  # `platform_t4d_event_pairing_actor` WITHOUT A7d's `system:membership-standing` exemption, and A7a
+  # (20280102) re-creates `phase6_t4d_revision_claims_approval` WITHOUT A7d's provisional arm. No other
+  # replayed file defines either function, so resolving all three leaves A7d's bodies standing.
+  # `scripts/upgrade-proof.sh` mirrors this rule in its ledger-lost replays.
+  T4D_SV1A_SUPERSEDED="20271222000000_phase6_t4d_i_b_u1_bound_event_actor
+20280102000000_phase6_t4d_ii_a7a_revision_named
+20280104000000_phase6_t4d_ii_a7d_catalog_change"
+  CARRIES_SV1A=0
+  if [ "$CARRIES_A7D" -eq 1 ]; then
+    sv1a_out=$(node -e '
+      const { PrismaClient } = require("@prisma/client");
+      const prisma = new PrismaClient();
+      prisma.$queryRawUnsafe(
+        "SELECT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = \x27f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36\x27) AS sv1a"
+      ).then((rows) => { console.log(rows[0] && rows[0].sv1a === true ? "carries" : "before"); })
+        .catch((e) => { console.log("error " + (e && e.message ? e.message.split("\n")[0] : e)); })
+        .finally(() => prisma.$disconnect());
+    ' 2>/dev/null)
+    case "$sv1a_out" in
+      carries) CARRIES_SV1A=1; echo "[migrate] this database CARRIES Site Visits SV1-a's catalog generation — 4d-i-b U1, A7a and A7d will be resolved as applied rather than replayed (A7d's catalog audit would refuse SV1-a's generation, and U1's and A7a's replays would revert seal bodies only A7d's replay restores)" ;;
+      before) echo "[migrate] this database does not carry Site Visits SV1-a's catalog generation — U1, A7a and A7d stay pending" ;;
+      *) echo "[migrate] could not read Site Visits SV1-a's catalog generation ($sv1a_out) — U1, A7a and A7d stay pending" ;;
+    esac
+  fi
+
   for dir in prisma/migrations/*/; do
     name=$(basename "$dir")
+    if [ "$CARRIES_SV1A" -eq 1 ] && printf '%s\n' "$T4D_SV1A_SUPERSEDED" | grep -qx "$name"; then
+      echo "[migrate] resolving $name as applied: a database carrying Site Visits SV1-a's generation ran it (docs/RUNBOOK.md §P6T4D)"
+      npx prisma migrate resolve --applied "$name" || exit 1
+      continue
+    fi
     if [ "$CARRIES_A7D" -eq 1 ] && printf '%s\n' "$T4D_CATALOG_OWNERS" | grep -qx "$name"; then
       echo "[migrate] resolving $name as applied: a database carrying 4d-ii-a / A7d ran it (its catalog audit would refuse the generation A7d seeds; docs/RUNBOOK.md §P6T4D)"
       npx prisma migrate resolve --applied "$name" || exit 1

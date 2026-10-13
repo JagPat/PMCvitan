@@ -16,6 +16,7 @@ import { makeMaterialReadinessProjectionConsumer } from '../../src/activities/ma
 import { makeLabourReadinessProjectionConsumer } from '../../src/labour/labour-readiness.projection';
 import { makeCashForecastProjectionConsumer } from '../../src/commercial/cash-forecast.projection';
 import { sanctionedConsumerRemoval } from '../../prisma/sanctioned-reset';
+import { alwaysExecuteReplay } from './fixtures';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a / A6c — the PERSISTED DISPATCH RULES and the REGISTRATION BARRIER,
@@ -122,7 +123,7 @@ describe('4d-ii-a / A6c — the persisted rules and the registration barrier (li
     const before = await prisma.outboxConsumerCatalog.findMany({ orderBy: { consumer: 'asc' }, select: { consumer: true, dispatchRule: true, subscribedEventTypes: true, active: true, activationSeq: true } });
     const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
     // as a replay runs it: this file and every ALWAYS_EXECUTE file after it, in ledger order
-    for (const m of entries.filter((m) => m >= MIGRATION).sort()) {
+    for (const m of alwaysExecuteReplay(MIGRATION)) {
       execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', join(__dirname, '..', '..', 'prisma', 'migrations', m, 'migration.sql')], { stdio: 'pipe' });
     }
     const after = await prisma.outboxConsumerCatalog.findMany({ orderBy: { consumer: 'asc' }, select: { consumer: true, dispatchRule: true, subscribedEventTypes: true, active: true, activationSeq: true } });

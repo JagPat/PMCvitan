@@ -120,6 +120,8 @@ export const DEFAULT_DIR_TO_MODULE: Readonly<Record<string, string>> = {
   labour: 'labour',
   // Phase 5 Task 1 — the commercial SINK (cost heads + commitment attribution)
   commercial: 'commercial',
+  // Site Visits (#792) — SV1-a, the visit record
+  'site-visits': 'site-visits',
   auth: 'auth',
   platform: 'platform',
   push: 'platform',

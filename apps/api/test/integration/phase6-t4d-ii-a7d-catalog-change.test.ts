@@ -216,8 +216,12 @@ describe('4d-ii-a / A7d — the catalog change: the widened generation, the froz
     expect(listConsumers().find((c) => c.name === DECISIONS_EFFECTS)?.kind).toBe('ordered');
     expect(compiledCatalogVersion()).toBe(3);
     const gens = await t.prisma.$queryRawUnsafe<Array<{ v: string; n: number }>>(`SELECT "coverageVersion" AS v, count(*)::int AS n FROM "ExternalEffectCatalog" GROUP BY 1 ORDER BY 1`);
-    expect(gens).toHaveLength(4);
+    // Site Visits SV1-a (20280111) seeded a FIFTH generation beside A7d's: the compiled catalog is now
+    // A7d's plus the eight site-visit keys, and A7d's widened generation stays for the drain.
+    expect(gens).toHaveLength(5);
     expect(gens.find((g) => g.v === effectCoverageVersion())?.n).toBe(Object.keys(EXTERNAL_EFFECTS).length);
+    expect(gens.find((g) => g.v === '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c')?.n)
+      .toBe(Object.keys(EXTERNAL_EFFECTS).filter((k) => !k.startsWith('sitevisit.')).length);
   });
 
   // ── the seals ────────────────────────────────────────────────────────────────────────────────

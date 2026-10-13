@@ -76,6 +76,7 @@ enum InspectionResult {
 
 model Project {
   notificationReceipts            NotificationReceipt[]
+  siteVisits                      SiteVisit[]
   billVerifications               BillVerification[]
   billCertificates                BillCertificate[]
   sodExceptions                   SodException[]
@@ -1308,6 +1309,13 @@ model DrawingAck {
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
   notificationReceipts      NotificationReceipt[]
+  siteVisitsVisited         SiteVisit[]         @relation("siteVisitVisitor")
+  siteVisitsClosed          SiteVisit[]         @relation("siteVisitCloser")
+  siteVisitAttendances      SiteVisitAttendee[] @relation("siteVisitAttendeeUser")
+  siteVisitAttendeesAdded   SiteVisitAttendee[] @relation("siteVisitAttendeeAddedBy")
+  siteVisitAttendeesRetired SiteVisitAttendee[] @relation("siteVisitAttendeeRetiredBy")
+  siteVisitPlacesAdded      SiteVisitPlace[]    @relation("siteVisitPlaceAddedBy")
+  siteVisitPlacesRetired    SiteVisitPlace[]    @relation("siteVisitPlaceRetiredBy")
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
   pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")
   billVerificationsVerified BillVerification[]     @relation("billVerificationsVerified")
@@ -1495,6 +1503,8 @@ model ProjectNode {
   activities  Activity[]
   inspections Inspection[]
   materials   SiteMaterial[]
+  siteVisitStarts SiteVisit[]
+  siteVisitPlaces SiteVisitPlace[]
 
   // composite identity for the (projectId, nodeId) FKs — see Media/Decision/…
   @@unique([projectId, id])
@@ -5029,4 +5039,99 @@ model PaymentReversal {
   @@unique([projectId, id])
   @@index([projectId, billId])
   @@index([projectId, paymentId])
+}
+
+// Site Visits (#792) SV1-a — the visit record. Migration `20280112000000_site_visits_sv1a_record` owns every rule:
+// the CHECKs, the partial unique indexes (one open visit per visitor; one standing row per member or node), the
+// column-list `ON DELETE SET NULL (col)` node actions, and the triggers that stamp receipts, derive accepted times,
+// copy frozen names from the locked identity or node, refuse edits on a closed visit, refuse deletes and pair every
+// change with its `sitevisit.*` event. Ids are device-generated uuids. Columns the database derives carry defaults
+// here only so a writer may omit them; the triggers overwrite whatever a writer sends.
+model SiteVisit {
+  id                String       @id
+  project           Project      @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId         String
+  visitor           User         @relation("siteVisitVisitor", fields: [visitorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  visitorId         String
+  visitorRole       String // pmc | consultant | architect
+  visitorName       String       @default("")
+  startClaimedAt    DateTime
+  startedAt         DateTime     @default(now())
+  startTimeAdjusted Boolean      @default(false)
+  startReceivedAt   DateTime     @default(now())
+  // NoAction here; the migration's composite FK is ON DELETE SET NULL ("startNodeId"), the Activity.nodeId shape.
+  startNode         ProjectNode? @relation(fields: [projectId, startNodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  startNodeId       String?
+  startPlaceName    String?
+  locationKind      String // device | none
+  locLat            Float?
+  locLng            Float?
+  locAccuracyM      Float?
+  locAt             DateTime?
+  status            String       @default("open") // open | ended | closed
+  endClaimedAt      DateTime?
+  endedAt           DateTime?
+  endTimeAdjusted   Boolean?
+  endReceivedAt     DateTime?
+  closedAt          DateTime?
+  closedBy          User?        @relation("siteVisitCloser", fields: [closedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  closedById        String?
+  closeReason       String?
+  lateEndClaimedAt  DateTime?
+  lateEndedAt       DateTime?
+  lateEndTimeAdjusted Boolean?
+  lateEndReceivedAt DateTime?
+
+  attendees SiteVisitAttendee[]
+  places    SiteVisitPlace[]
+
+  @@unique([projectId, id])
+  @@index([projectId])
+  @@index([visitorId])
+  @@index([startNodeId])
+}
+
+model SiteVisitAttendee {
+  id          String    @id
+  visit       SiteVisit @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId   String
+  visitId     String
+  user        User?     @relation("siteVisitAttendeeUser", fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  userId      String?
+  role        String?
+  guestName   String?
+  displayName String    @default("")
+  addedBy     User      @relation("siteVisitAttendeeAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  addedById   String
+  addedAt     DateTime  @default(now())
+  retiredAt   DateTime?
+  retiredBy   User?     @relation("siteVisitAttendeeRetiredBy", fields: [retiredById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  retiredById String?
+
+  @@index([projectId, visitId])
+  @@index([userId])
+}
+
+model SiteVisitPlace {
+  id                String       @id
+  visit             SiteVisit    @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId         String
+  visitId           String
+  // NoAction here; the migration's composite FK is ON DELETE SET NULL ("nodeId").
+  node              ProjectNode? @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  nodeId            String?
+  placeName         String       @default("")
+  addedBy           User         @relation("siteVisitPlaceAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  addedById         String
+  addedClaimedAt    DateTime
+  addedAt           DateTime     @default(now())
+  addedTimeAdjusted Boolean      @default(false)
+  addedReceivedAt   DateTime     @default(now())
+  addedAfterEnd     Boolean      @default(false)
+  retiredAt         DateTime?
+  retiredBy         User?        @relation("siteVisitPlaceRetiredBy", fields: [retiredById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  retiredById       String?
+
+  @@index([projectId, visitId])
+  @@index([nodeId])
 }
