@@ -67,10 +67,11 @@ const RAW = [FIELD_NAME];
 const MARKED = [WORK, ITEM];
 // Autolinks show their address, so they are kept as text; every other tag renders as nothing (4254874280).
 const AUTOLINK = /<([a-z][a-z\d+.-]{1,31}:[^<>\s]*|[^<>\s@]+@[^<>\s]+)>/giu;
-const MARKUP = /<(?:[^<>"'\n]|"[^"\n]*"|'[^'\n]*')*>|(?<=\])\[(?:[^[\]\\\n]|\\.)*\]/gu;
+const TAG = /<(?:[^<>"'\n]|"[^"\n]*"|'[^'\n]*')*>/gu;
 const NUMERIC_ENTITY = /&#(?:(\d{1,7})|x([\da-f]{1,6}));/giu;
 const NAMED_ENTITY = /&[a-z][a-z\d]*;/giu;
-const DELIMITERS = /[*_~`[\]]/gu;
+const EMPHASIS = /[*_~`]/gu;
+const BRACKETS = /[[\]]/gu;
 const decoded = (code) => (code > 0x10ffff || code === 10 || code === 13 ? ' ' : String.fromCodePoint(code));
 /** The message with every complete HTML comment removed, including one that spans lines (4254668164). */
 const withoutComments = (message) => {
@@ -109,42 +110,82 @@ const targetEnds = (line) => {
   }
   return end;
 };
+/** Pairs each unescaped `[` with its `]` on the line (-1 for an unpaired one), in one pass. */
+const bracketPartners = (line) => {
+  const partner = new Int32Array(line.length).fill(-1);
+  const open = [];
+  for (let i = 0; i < line.length; i += 1) {
+    if (line[i] === '\\') i += 1;
+    else if (line[i] === '[') open.push(i);
+    else if (line[i] === ']' && open.length > 0) {
+      const at = open.pop();
+      partner[at] = i;
+      partner[i] = at;
+    }
+  }
+  return partner;
+};
 /**
- * Removes each inline link target `](…)`: balanced or escaped parentheses, and a `<…>` destination that may hold
- * `)` (4254874273). An unterminated target is left as text and the scan goes on past it.
+ * Removes link markup in one pass: paired brackets, and after a paired `]` either an inline target `(…)` (balanced
+ * or escaped parentheses, or a `<…>` destination that may hold `)`; 4254874273) or a paired reference label `[…]`.
+ * With `literal`, an unpaired bracket renders literally, so it and whatever follows it stay as text (4255131567);
+ * without it, every `]` may end a link, as on `main`. An unterminated target stays as text, and the scan goes on past
+ * it (4255076079).
  */
-const withoutLinkTargets = (line) => {
-  if (!line.includes('](')) return line;
-  const end = targetEnds(line);
+const withoutLinks = (line, gap, literal) => {
+  if (!line.includes('[') && !line.includes(']')) return line;
+  const brackets = bracketPartners(line);
+  const end = line.includes('](') ? targetEnds(line) : null;
   let out = '';
   let gt = -2;
   for (let i = 0; i < line.length; i += 1) {
-    if (line[i] === '(' && line[i - 1] === ']') {
-      let j = i + 1;
+    if (line[i] === '\\') {
+      out += line.slice(i, i + 2);
+      i += 1;
+      continue;
+    }
+    if ((line[i] !== '[' && line[i] !== ']') || (literal && brackets[i] < 0)) {
+      out += line[i];
+      continue;
+    }
+    out += gap;
+    if (line[i] !== ']') continue;
+    if (line[i + 1] === '(' && end) {
+      let j = i + 2;
       while (line[j] === ' ' || line[j] === '\t') j += 1;
       if (line[j] === '<') {
         if (gt !== -1 && gt < j) gt = line.indexOf('>', j);
         j = gt < 0 ? -1 : gt + 1;
       }
       const close = j < 0 ? -1 : end[j];
-      if (close >= 0) {
-        i = close;
-        continue;
-      }
+      if (close >= 0) i = close;
+    } else if (line[i + 1] === '[' && brackets[i + 1] > i) {
+      out += gap;
+      i = brackets[i + 1];
     }
-    out += line[i];
   }
   return out;
 };
-const rendered = (line) => withoutLinkTargets(withoutComments(line).replace(AUTOLINK, '$1').replace(MARKUP, ''))
+// Three rendered views. Comments, tags, entities and emphasis always join what they separated (`Wo<b></b>rk` renders
+// `Work`). Link markup joins (`Wo[](x)rk`) in the first two views, where every `]` may end a link (as on `main`) or
+// only a paired one may, and leaves a boundary in the third. Any bracket left over is removed the same way. Every
+// view only adds field lines.
+const VIEWS = [['', false], ['', true], [' ', true]];
+const rendered = (line, [gap, literal]) => withoutLinks(
+  withoutComments(line).replace(AUTOLINK, '$1').replace(TAG, ''),
+  gap,
+  literal,
+)
+  .replace(BRACKETS, gap)
   .replace(NUMERIC_ENTITY, (_, dec, hex) => decoded(dec === undefined ? Number.parseInt(hex, 16) : Number(dec)))
   .replace(NAMED_ENTITY, '')
-  .replace(DELIMITERS, '');
+  .replace(EMPHASIS, '');
 const fieldMatches = (line) => {
   const raw = countFields(line, RAW);
   if (!MARKUP_CHARACTER.test(line)) return raw;
-  const view = rendered(line);
-  return Math.max(raw, countFields(line, MARKED), countFields(view, RAW), countFields(view, MARKED));
+  const views = VIEWS.map((view) => rendered(line, view));
+  const counts = views.flatMap((view) => [countFields(view, RAW), countFields(view, MARKED)]);
+  return Math.max(raw, countFields(line, MARKED), ...counts);
 };
 const fieldCount = (lines) => lines.reduce((sum, line) => sum + fieldMatches(line), 0);
 // The one field line, raw, must itself be the canonical trailer: git's `--unfold` joins an indented continuation

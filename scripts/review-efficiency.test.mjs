@@ -1891,6 +1891,9 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     // #819 Codex: a link after an unterminated target, and a disguise inside a word on a very long line
     ['a link after an unterminated target', `fix\n\nx](unterminated Wo[](x)rk-Item: #750\n${owner}\n`],
     ['a tag inside a word on a long line', `fix\n\n${'a'.repeat(5000)} Wo<b></b>rk-Item: #750\n${owner}\n`],
+    // #819 Codex 4255131567: a `]` that no `[` opens renders literally, so it keeps the words around it apart
+    ['a literal ]( before a tag inside a word', `fix\n\nx](<foo)bar>)Wo<b></b>rk-Item: #750\n${owner}\n`],
+    ['a literal ]( before an empty link inside a word', `fix\n\nx](y)Wo[](z)rk-Item: #750\n${owner}\n`],
     ['wrapped words beside a valid trailer', `fix\n\n<b>Work</b>-<i>Item</i>: #1\n\nWork-Item: #750\n${owner}\n`],
   ]) {
     const result = parse(message);
