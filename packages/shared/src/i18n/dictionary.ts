@@ -650,6 +650,87 @@ export const dailyLogToastText = {
     lang === 'hi' ? `${n} ऑफ़लाइन बदलाव सर्वर पर भेजे गए।` : lang === 'gu' ? `${n} ઓફલાઇન ફેરફારો સર્વર પર મોકલાયા.` : n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.',
 };
 
+/** The engineer's inspection checklist (#827 Top 10 #5, Board-named "Checklist" path). */
+export const checklistLabels = {
+  eyebrow: { en: "TODAY'S INSPECTION", hi: 'आज का निरीक्षण', gu: 'આજનું નિરીક્ષણ' },
+  what: { en: 'Checklist', hi: 'चेकलिस्ट', gu: 'ચેકલિસ્ટ' },
+  showMine: { en: 'Show my checklists', hi: 'मेरी चेकलिस्ट दिखाएँ', gu: 'મારી ચેકલિસ્ટ બતાવો' },
+  openingDetail: { en: 'Opening the checklist this link names.', hi: 'इस लिंक वाली चेकलिस्ट खुल रही है।', gu: 'આ લિંકવાળી ચેકલિસ્ટ ખૂલી રહી છે.' },
+  returning: { en: 'Returning to your checklists…', hi: 'आपकी चेकलिस्ट पर लौट रहे हैं…', gu: 'તમારી ચેકલિસ્ટ પર પાછા જઈ રહ્યા છીએ…' },
+  returnSubmitted: { en: 'This checklist has been submitted.', hi: 'यह चेकलिस्ट भेजी जा चुकी है।', gu: 'આ ચેકલિસ્ટ મોકલાઈ ગઈ છે.' },
+  returnList: { en: 'Back to the checklist list.', hi: 'चेकलिस्ट की सूची पर वापस।', gu: 'ચેકલિસ્ટની યાદી પર પાછા.' },
+  openingAfterSubmit: { en: 'Finishing the submit on the current checklist — this one opens as soon as it lands.', hi: 'अभी वाली चेकलिस्ट भेजी जा रही है — वह पहुँचते ही यह खुलेगी।', gu: 'હાલની ચેકલિસ્ટ મોકલાઈ રહી છે — તે પહોંચતાં જ આ ખૂલશે.' },
+  loadFailed: { en: "Couldn't load the checklist — check your connection and access.", hi: 'चेकलिस्ट नहीं खुल सकी — नेटवर्क और अपनी अनुमति जाँचें।', gu: 'ચેકલિસ્ટ ખૂલી શકી નહીં — નેટવર્ક અને તમારી પરવાનગી તપાસો.' },
+  retry: { en: 'Retry', hi: 'फिर कोशिश करें', gu: 'ફરી પ્રયાસ કરો' },
+  loadingTitle: { en: 'Loading checklist…', hi: 'चेकलिस्ट खुल रही है…', gu: 'ચેકલિસ્ટ ખૂલી રહી છે…' },
+  loadingDetail: { en: "Fetching this project's current inspection checklist.", hi: 'इस प्रोजेक्ट की मौजूदा निरीक्षण चेकलिस्ट लाई जा रही है।', gu: 'આ પ્રોજેક્ટની હાલની નિરીક્ષણ ચેકલિસ્ટ લાવી રહ્યા છીએ.' },
+  noneTitle: { en: 'No checklist issued', hi: 'कोई चेकलिस्ट नहीं दी गई', gu: 'કોઈ ચેકલિસ્ટ અપાઈ નથી' },
+  noneDetail: {
+    en: 'The PMC has not issued an inspection checklist for this project yet. It will appear here the moment one is assigned to you.',
+    hi: 'PMC ने इस प्रोजेक्ट के लिए अभी कोई निरीक्षण चेकलिस्ट नहीं दी है। आपको मिलते ही यहाँ दिखेगी।',
+    gu: 'PMC એ આ પ્રોજેક્ટ માટે હજી કોઈ નિરીક્ષણ ચેકલિસ્ટ આપી નથી. તમને મળતાં જ અહીં દેખાશે.',
+  },
+  done: { en: 'DONE', hi: 'पूरे', gu: 'પૂરા' },
+  photos: { en: 'PHOTOS', hi: 'फ़ोटो', gu: 'ફોટા' },
+  stale: { en: "Couldn't refresh the checklist — what you see may be out of date.", hi: 'चेकलिस्ट ताज़ा नहीं हो सकी — जो दिख रहा है वह पुराना हो सकता है।', gu: 'ચેકલિસ્ટ તાજી થઈ શકી નહીં — જે દેખાય છે તે જૂનું હોઈ શકે.' },
+  lockedSubmitted: { en: 'Submitted — this checklist is now a submitted record, so it can no longer be edited.', hi: 'भेजी गई — यह चेकलिस्ट अब दर्ज रिकॉर्ड है, इसमें बदलाव नहीं हो सकता।', gu: 'મોકલાઈ — આ ચેકલિસ્ટ હવે નોંધાયેલો રેકોર્ડ છે, તેમાં ફેરફાર થઈ શકે નહીં.' },
+  pausedQueued: { en: 'Queued offline — editing is paused until it reaches the architect. It sends when you reconnect.', hi: 'ऑफ़लाइन कतार में — आर्किटेक्ट तक पहुँचने तक बदलाव रुके हैं। नेटवर्क आते ही भेजी जाएगी।', gu: 'ઓફલાઇન કતારમાં — આર્કિટેક્ટ સુધી પહોંચે ત્યાં સુધી ફેરફાર અટક્યા છે. નેટવર્ક આવતાં મોકલાશે.' },
+  pausedSubmitting: { en: 'Submitting — editing is paused until it reaches the architect.', hi: 'भेजी जा रही है — आर्किटेक्ट तक पहुँचने तक बदलाव रुके हैं।', gu: 'મોકલાઈ રહી છે — આર્કિટેક્ટ સુધી પહોંચે ત્યાં સુધી ફેરફાર અટક્યા છે.' },
+  pass: { en: 'Pass', hi: 'ठीक', gu: 'બરાબર' },
+  fail: { en: 'Fail', hi: 'ख़राब', gu: 'ખામી' },
+  na: { en: 'N.A.', hi: 'लागू नहीं', gu: 'લાગુ નથી' },
+  addPhoto: { en: 'Add photo', hi: 'फ़ोटो जोड़ें', gu: 'ફોટો ઉમેરો' },
+  failNeeds: { en: 'Fail requires a note + photo evidence', hi: 'ख़राब होने पर नोट + फ़ोटो सबूत ज़रूरी', gu: 'ખામી હોય તો નોંધ + ફોટો પુરાવો જરૂરી' },
+  describe: { en: 'Describe the issue…', hi: 'समस्या लिखें…', gu: 'સમસ્યા લખો…' },
+  refusedTitle: { en: 'Photos the server refused — choose for each', hi: 'सर्वर ने जो फ़ोटो नहीं लीं — हर एक के लिए चुनें', gu: 'સર્વરે જે ફોટા ન લીધા — દરેક માટે પસંદ કરો' },
+  refusedReason: { en: 'upload rejected', hi: 'फ़ोटो अपलोड नहीं हुई', gu: 'ફોટો અપલોડ ન થયો' },
+  delete: { en: 'Delete', hi: 'हटाएँ', gu: 'કાઢી નાખો' },
+  submitted: { en: 'Submitted ✓ — awaiting architect', hi: 'भेजी गई ✓ — आर्किटेक्ट की राह', gu: 'મોકલાઈ ✓ — આર્કિટેક્ટની રાહ' },
+  submitting: { en: 'Submitting…', hi: 'भेजी जा रही है…', gu: 'મોકલાઈ રહી છે…' },
+  queued: { en: 'Queued — will submit when you reconnect', hi: 'कतार में — नेटवर्क आते ही भेजी जाएगी', gu: 'કતારમાં — નેટવર્ક આવતાં મોકલાશે' },
+  submit: { en: 'Submit Inspection', hi: 'निरीक्षण भेजें', gu: 'નિરીક્ષણ મોકલો' },
+} satisfies Record<string, Record<Lang, string>>;
+
+export const checklistText = {
+  opening: (title: string, lang: Lang): string => (lang === 'hi' ? `${title} खुल रही है…` : lang === 'gu' ? `${title} ખૂલી રહી છે…` : `Opening ${title}…`),
+  out: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} चेकलिस्ट बाकी — बदलने के लिए दबाएँ` : lang === 'gu' ? `${n} ચેકલિસ્ટ બાકી — બદલવા દબાવો` : `${n} CHECKLISTS OUT — TAP TO SWITCH`,
+  evidenceAlt: (k: number, name: string, lang: Lang): string =>
+    lang === 'hi' ? `सबूत ${k} — ${name}` : lang === 'gu' ? `પુરાવો ${k} — ${name}` : `Evidence ${k} — ${name}`,
+  pending: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} फ़ोटो ऑफ़लाइन सहेजी — नेटवर्क आते ही अपलोड होंगी` : lang === 'gu' ? `${n} ફોટા ઓફલાઇન સાચવ્યા — નેટવર્ક આવતાં અપલોડ થશે` : `${n} photo${n === 1 ? '' : 's'} saved offline — will upload when signal returns`,
+  item: (id: string, lang: Lang): string => (lang === 'hi' ? `आइटम ${id}` : lang === 'gu' ? `આઇટમ ${id}` : `item ${id}`),
+  onThis: (where: string, lang: Lang): string =>
+    lang === 'hi' ? `इसी चेकलिस्ट पर — ${where}` : lang === 'gu' ? `આ જ ચેકલિસ્ટ પર — ${where}` : `on this checklist — ${where}`,
+  onOther: (title: string, where: string, lang: Lang): string =>
+    lang === 'hi' ? `${title} पर — ${where}` : lang === 'gu' ? `${title} પર — ${where}` : `on ${title} — ${where}`,
+  markAll: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `भेजने से पहले सभी ${n} आइटम पर निशान लगाएँ।` : lang === 'gu' ? `મોકલતાં પહેલાં બધી ${n} આઇટમ પર નિશાન કરો.` : 'Please mark all ' + n + ' items before submitting.',
+};
+
+/** What the checklist's actions say back. */
+export const checklistToast = {
+  switchWait: { en: 'Finishing the submit — you can switch checklists in a moment.', hi: 'भेजना पूरा हो रहा है — थोड़ी देर में चेकलिस्ट बदल सकेंगे।', gu: 'મોકલવાનું પૂરું થઈ રહ્યું છે — થોડી વારમાં ચેકલિસ્ટ બદલી શકશો.' },
+  noLongerOpen: { en: 'That checklist is no longer open — the photo was not attached.', hi: 'वह चेकलिस्ट अब खुली नहीं है — फ़ोटो नहीं जुड़ी।', gu: 'તે ચેકલિસ્ટ હવે ખુલ્લી નથી — ફોટો જોડાયો નથી.' },
+  noMoreChanges: { en: 'This inspection is submitted — no more changes.', hi: 'यह निरीक्षण भेजा जा चुका है — अब बदलाव नहीं।', gu: 'આ નિરીક્ષણ મોકલાઈ ગયું છે — હવે ફેરફાર નહીં.' },
+  readFailed: { en: 'Could not read that photo — please try again.', hi: 'वह फ़ोटो पढ़ी नहीं जा सकी — फिर कोशिश करें।', gu: 'તે ફોટો વાંચી શકાયો નહીં — ફરી પ્રયાસ કરો.' },
+  tooLarge: { en: 'That photo is too large (over 4 MB) — retake at a lower resolution.', hi: 'फ़ोटो बहुत बड़ी है (4 MB से ज़्यादा) — कम रेज़ोल्यूशन पर फिर से लें।', gu: 'ફોટો બહુ મોટો છે (4 MB થી વધુ) — ઓછા રિઝોલ્યુશન પર ફરી લો.' },
+  attachedDemo: { en: 'Photo attached (demo).', hi: 'फ़ोटो जुड़ी (डेमो)।', gu: 'ફોટો જોડાયો (ડેમો).' },
+  predates: { en: 'This checklist predates evidence capture — reload the project and retry.', hi: 'यह चेकलिस्ट फ़ोटो सबूत से पहले की है — प्रोजेक्ट फिर से खोलें और कोशिश करें।', gu: 'આ ચેકલિસ્ટ ફોટો પુરાવા પહેલાંની છે — પ્રોજેક્ટ ફરી ખોલો અને પ્રયાસ કરો.' },
+  noStorage: { en: 'Could not save this photo on the device (offline storage unavailable) — retake when you have signal.', hi: 'यह फ़ोटो फ़ोन पर सहेजी नहीं जा सकी (ऑफ़लाइन जगह नहीं मिली) — नेटवर्क आने पर फिर से लें।', gu: 'આ ફોટો ફોનમાં સાચવી શકાયો નહીં (ઓફલાઇન જગ્યા ઉપલબ્ધ નથી) — નેટવર્ક આવે ત્યારે ફરી લો.' },
+  noSpace: { en: 'Could not save this photo on the device — free space and retake.', hi: 'यह फ़ोटो फ़ोन पर सहेजी नहीं जा सकी — जगह ख़ाली करें और फिर से लें।', gu: 'આ ફોટો ફોનમાં સાચવી શકાયો નહીં — જગ્યા ખાલી કરો અને ફરી લો.' },
+  savedOffline: { en: 'Photo saved offline — will upload when signal returns.', hi: 'फ़ोटो ऑफ़लाइन सहेजी — नेटवर्क आते ही अपलोड होगी।', gu: 'ફોટો ઓફલાઇન સાચવ્યો — નેટવર્ક આવતાં અપલોડ થશે.' },
+  uploadFailed: { en: 'Could not upload the photo — check your signal and try again.', hi: 'फ़ोटो अपलोड नहीं हुई — नेटवर्क जाँचें और फिर कोशिश करें।', gu: 'ફોટો અપલોડ ન થયો — નેટવર્ક તપાસો અને ફરી પ્રયાસ કરો.' },
+  deleteFailed: { en: 'Could not delete the photo — it is still saved on this device; try again.', hi: 'फ़ोटो हटाई नहीं जा सकी — यह अभी भी फ़ोन पर सहेजी है; फिर कोशिश करें।', gu: 'ફોટો કાઢી શકાયો નહીં — તે હજી ફોનમાં સાચવેલો છે; ફરી પ્રયાસ કરો.' },
+  deleted: { en: 'Photo deleted.', hi: 'फ़ोटो हटाई गई।', gu: 'ફોટો કાઢી નાખ્યો.' },
+  noneIssued: { en: 'No checklist has been issued for today yet.', hi: 'आज के लिए अभी कोई चेकलिस्ट नहीं दी गई है।', gu: 'આજ માટે હજી કોઈ ચેકલિસ્ટ અપાઈ નથી.' },
+  alreadySubmitted: { en: 'This inspection has already been submitted.', hi: 'यह निरीक्षण पहले ही भेजा जा चुका है।', gu: 'આ નિરીક્ષણ પહેલેથી મોકલાઈ ગયું છે.' },
+  failNeedsPhoto: { en: 'A failed item needs a photo before you can submit.', hi: 'भेजने से पहले ख़राब आइटम की फ़ोटो ज़रूरी है।', gu: 'મોકલતાં પહેલાં ખામીવાળી આઇટમનો ફોટો જરૂરી છે.' },
+  submitted: { en: 'Inspection submitted to the architect for review.', hi: 'निरीक्षण जाँच के लिए आर्किटेक्ट को भेजा गया।', gu: 'નિરીક્ષણ તપાસ માટે આર્કિટેક્ટને મોકલાયું.' },
+  submitFailed: { en: 'Could not submit — your marks are kept. Please try again.', hi: 'भेजा नहीं जा सका — आपके निशान सुरक्षित हैं। फिर कोशिश करें।', gu: 'મોકલી શકાયું નહીં — તમારા નિશાન સચવાયેલા છે. ફરી પ્રયાસ કરો.' },
+  savedOfflineSubmit: { en: 'Submit inspection — saved offline, will sync when you reconnect.', hi: 'निरीक्षण भेजना — ऑफ़लाइन सहेजा, नेटवर्क आते ही भेजा जाएगा।', gu: 'નિરીક્ષણ મોકલવું — ઓફલાઇન સાચવ્યું, નેટવર્ક આવતાં મોકલાશે.' },
+} satisfies Record<string, Record<Lang, string>>;
+
 /** The demo build's worker self check-in QR sheet, opened from the daily log. */
 export const qrModalLabels = {
   eyebrow: { en: 'WORKER SELF CHECK-IN', hi: 'मज़दूर की ख़ुद की हाज़िरी', gu: 'કામદારની જાતે હાજરી' },
