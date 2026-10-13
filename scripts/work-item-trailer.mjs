@@ -31,15 +31,33 @@ const FIELD_LINES = new RegExp(FIELD_LINE.source, 'gimu');
 // Markup that renders as nothing, or only as its text, may also sit BETWEEN the two words
 // (`<strong>Work</strong>-<em>Item</em>: #750`, `[Work](url)-[Item](url): #750`, `Work&#45;Item: #750`; #763,
 // #761 Codex 4235968337). A line is also checked as rendered: HTML tags (quoted attribute values may hold `>`),
-// link targets and reference labels removed, numeric entities decoded (`Wo&#114;k`; #814 Codex 4254561958,
-// 4254561977) and named ones removed, since none renders as an ASCII letter. That view only ADDS field lines: a line
-// counts as often as the larger of its raw and rendered matches, so nothing the raw rule refuses can become `none`.
-const MARKUP = /<(?:[^<>"'\n]|"[^"\n]*"|'[^'\n]*')*>|(?<=\])\([^()\n]*\)|(?<=\])\[[^[\]\n]*\]/gu;
+// link targets (with balanced parentheses) and reference labels removed, numeric entities decoded (`Wo&#114;k`),
+// and named ones removed, since none renders as an ASCII letter (#814 Codex 4254561958, 4254561977, 4254561968).
+// That view only ADDS field lines: a line counts as often as the larger of its raw and rendered matches, so
+// nothing the raw rule refuses can become `none`.
+const MARKUP = /<(?:[^<>"'\n]|"[^"\n]*"|'[^'\n]*')*>|(?<=\])\[[^[\]\n]*\]/gu;
 const NUMERIC_ENTITY = /&#(?:(\d{1,7})|x([\da-f]{1,6}));/giu;
 const NAMED_ENTITY = /&[a-z][a-z\d]*;/giu;
 const decoded = (code) => (code > 0x10ffff || code === 10 || code === 13 ? ' ' : String.fromCodePoint(code));
-const rendered = (line) => line
-  .replace(MARKUP, '')
+/** Removes each inline link target `](…)`; its destination may hold balanced or escaped parentheses. */
+const withoutLinkTargets = (line) => {
+  let out = '';
+  for (let i = 0; i < line.length; i += 1) {
+    if (line[i] === '(' && line[i - 1] === ']') {
+      let depth = 1;
+      let j = i + 1;
+      for (; j < line.length && depth > 0; j += 1) {
+        if (line[j] === '\\') j += 1;
+        else if (line[j] === '(') depth += 1;
+        else if (line[j] === ')') depth -= 1;
+      }
+      if (depth === 0) { i = j - 1; continue; }
+    }
+    out += line[i];
+  }
+  return out;
+};
+const rendered = (line) => withoutLinkTargets(line.replace(MARKUP, ''))
   .replace(NUMERIC_ENTITY, (_, dec, hex) => decoded(dec === undefined ? Number.parseInt(hex, 16) : Number(dec)))
   .replace(NAMED_ENTITY, '');
 const fieldMatches = (line) =>

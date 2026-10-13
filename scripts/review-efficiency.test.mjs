@@ -1874,6 +1874,9 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     ['a hex entity letter', `fix\n\nWork-&#x49;tem: #750\n${owner}\n`],
     ['a quoted > in an attribute', `fix\n\n<strong>Work</strong>-<em title="a>b">Item</em>: #750\n\n${owner}\n`],
     ["a single-quoted > in an attribute", `fix\n\nWork<span data-x='>'>-</span>Item: #750\n${owner}\n`],
+    // 4254561968: a link destination with balanced or escaped parentheses
+    ['balanced parentheses in a link target', `fix\n\n[Work](https://example.test/a_(b))-[Item](https://example.test/b): #750\n\n${owner}\n`],
+    ['nested and escaped parentheses in a link target', `fix\n\n[Work](https://example.test/a_((b)c)\\))-[Item](x): #750\n\n${owner}\n`],
     ['wrapped words beside a valid trailer', `fix\n\n<b>Work</b>-<i>Item</i>: #1\n\nWork-Item: #750\n${owner}\n`],
   ]) {
     const result = parse(message);
