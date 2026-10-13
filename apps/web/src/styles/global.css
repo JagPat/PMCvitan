@@ -33,6 +33,16 @@ a {
   text-decoration: none;
 }
 
+/* #827 (Top 10 #5) — capitals and wide letter spacing are Latin styling. In Hindi and Gujarati
+   they pull apart letters that join, so they are switched off when the page language
+   (`<html lang>`, kept by DocumentLang) is either. `!important` so it also wins over the
+   components' inline letterSpacing. */
+:lang(hi),
+:lang(gu) {
+  text-transform: none !important;
+  letter-spacing: normal !important;
+}
+
 /* Native controls also appear in capability-gated ledgers and conditional recovery states.
    Size their hit areas without enlarging read-only text, badges or table cells. Authored
    larger minimums remain valid; checkbox/radio targets are their enclosing labels. */
