@@ -39,3 +39,4 @@ export * from './contracts/commercial';
 export * from './contracts/brief';
 // i18n dictionaries
 export * from './i18n/dictionary';
+export * from './i18n/notices';
