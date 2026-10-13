@@ -1861,11 +1861,24 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     ['an HTML wrapper', `fix\n\n<strong>Work-Item</strong>: #750\n\n${owner}\n`],
     ['a word before the name', `fix\n\n*label* Work-Item: #750\n\n${owner}\n`],
     ['a mention in prose with a value', `fix\n\nThis closes work item #750.\n\n${owner}\n`],
+    // #763 (4235968337): markup between the two words, or inside one, renders as the field name too
+    ['HTML wrappers around each word', `fix\n\n<strong>Work</strong>-<em>Item</em>: #750\n\n${owner}\n`],
+    ['each word linked', `fix\n\n[Work](https://example.test/a)-[Item](https://example.test/b): #750\n\n${owner}\n`],
+    ['each word a reference link', `fix\n\n[Work][a]-[Item][b]: #750\n\n${owner}\n`],
+    ['an entity joiner', `fix\n\nWork&#45;Item: #750\n${owner}\n`],
+    ['a named-entity space', `fix\n\nWork&nbsp;Item: #750\n${owner}\n`],
+    ['an empty tag inside a word', `fix\n\nWo<b></b>rk-Item: #750\n${owner}\n`],
+    ['an HTML comment between the words', `fix\n\nWork<!-- x -->-Item: #750\n${owner}\n`],
+    ['wrapped words beside a valid trailer', `fix\n\n<b>Work</b>-<i>Item</i>: #1\n\nWork-Item: #750\n${owner}\n`],
   ]) {
     const result = parse(message);
     assert.equal(result.state, 'malformed', label);
     assert.equal(result.issue, null, label);
   }
+  // the stripped view only adds field lines: markup in prose without an attempted value, or beside the one
+  // canonical trailer, changes nothing
+  assert.deepEqual(parse(`fix\n\n<b>work</b> items are now read from commits\n\n${owner}\n`), { state: 'none', issue: null, detail: null });
+  assert.deepEqual(parse(`fix <b>bold</b> [x](y)\n\nWork-Item: #750\n${owner}\n`), { state: 'cited', issue: 750, detail: null });
 });
 
 test('M3b / #751 4232759655 (#759) — no message content can hide or invent a citation: nothing is parsed as Markdown', () => {

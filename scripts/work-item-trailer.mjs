@@ -28,6 +28,14 @@ const FIELD_KEY = 'work-item';
 // outside its trailer; prose without an attempted value (`work items are now read from commits`) still passes.
 const FIELD_LINE = /(?<![\p{L}\p{N}])work[^\p{L}\p{N}\n]*item(?![\p{L}\p{N}])[^\n]*?[:=#\d]/iu;
 const FIELD_LINES = new RegExp(FIELD_LINE.source, 'gimu');
+// Markup that renders as nothing, or only as its text, may also sit BETWEEN the two words
+// (`<strong>Work</strong>-<em>Item</em>: #750`, `[Work](url)-[Item](url): #750`, `Work&#45;Item: #750`; #763,
+// #761 Codex 4235968337). A line is also checked with HTML tags, entities, link targets and reference labels
+// removed. That view only ADDS field lines: a line counts as often as the larger of its raw and stripped matches,
+// so nothing the raw rule reports as malformed can become `none`.
+const RENDERED_AS_TEXT = /<[^<>\n]*>|&(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);|(?<=\])\([^()\n]*\)|(?<=\])\[[^[\]\n]*\]/giu;
+const fieldMatches = (line) =>
+  Math.max(line.match(FIELD_LINES)?.length ?? 0, line.replace(RENDERED_AS_TEXT, '').match(FIELD_LINES)?.length ?? 0);
 // The one field line, raw, must itself be the canonical trailer: git's `--unfold` joins an indented continuation
 // into the value, so `Work-Item:` followed by an indented ` #750` would otherwise read as cited (4235903046).
 const CANONICAL_LINE = /^work-item:[ \t]*#[1-9]\d{0,9}[ \t]*$/iu;
@@ -45,7 +53,8 @@ export function parseWorkItemTrailer(commitMessage, { parse = gitParsedTrailers 
   if (typeof commitMessage !== 'string') {
     return { state: 'unreadable', issue: null, detail: 'the head commit message could not be read' };
   }
-  const named = commitMessage.match(FIELD_LINES)?.length ?? 0;
+  const lines = commitMessage.split('\n');
+  const named = lines.reduce((sum, line) => sum + fieldMatches(line), 0);
   if (named === 0) return { state: 'none', issue: null, detail: null };
   const trailers = parse(commitMessage);
   if (trailers === null) {
@@ -64,8 +73,7 @@ export function parseWorkItemTrailer(commitMessage, { parse = gitParsedTrailers 
     };
   }
   const match = VALUE.exec(values[0]);
-  const lines = commitMessage.split('\n');
-  const at = lines.findIndex((line) => FIELD_LINE.test(line));
+  const at = lines.findIndex((line) => fieldMatches(line) > 0);
   if (match && (!CANONICAL_LINE.test(lines[at]) || /^[ \t]/u.test(lines[at + 1] ?? ''))) {
     return {
       state: 'malformed',
