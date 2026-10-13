@@ -9,8 +9,8 @@
 --       (projectId, id) keys. Project deletion cascades project → visit → child (F60).
 --   V2  Who. The visitor (at the start and at every later act of theirs: end, late end, child add or retire), a member
 --       attendee and the closer must hold the stated role on the project when the row (or the change) is written, judged by `platform_user_holds_role_windowed` after the registers it reads are locked
---       in the actor envelope's order: OrgUserAuthority, then ProjectUserStanding, then UserIdentity, then the
---       project row (F55); the identity row FOR UPDATE, as the event's envelope seal takes it. A frozen name is COPIED
+--       in the actor envelope's order: OrgUserAuthority, then ProjectUserStanding, then the project row, then
+--       UserIdentity (F55); the identity row FOR UPDATE, as the event's envelope seal takes it. A frozen name is COPIED
 --       from the locked `UserIdentity`, never taken from the caller (F57). A node's label comes from the nodes module's
 --       own function, `nodes_published_name_locked`, never from a read of its table here.
 --       Only the visitor adds or retires a child row (`addedById` / `retiredById` = the locked visit's visitor, F46).
@@ -18,7 +18,7 @@
 --       the visit row is locked) and derives the ACCEPTED time: the claim when it lies in its window, else the
 --       receipt. `adjusted` is exactly "accepted differs from claimed", both ways (F54), so an accepted time is never
 --       in the future of its receipt and never before the start (F47), and an end is never before a place walked
---       while the visit was open.
+--       while the visit was open. A late end is accepted the same way. Every claimed or device time is finite.
 --   V4  Lifecycle. open → ended | closed, once; a late end only on a closed visit, once. A closed visit takes no
 --       child edit, and a place added to an ended visit is `addedAfterEnd`, set from the locked visit (F49). A visitor
 --       removed after a close records no late end: the close stands (F48).
@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS "SiteVisit" (
     "closedById"         TEXT,
     "closeReason"        TEXT,
     "lateEndClaimedAt"   TIMESTAMP(3),
+    "lateEndedAt"        TIMESTAMP(3),
+    "lateEndTimeAdjusted" BOOLEAN,
     "lateEndReceivedAt"  TIMESTAMP(3),
     CONSTRAINT "SiteVisit_pkey" PRIMARY KEY ("id")
 );
@@ -203,9 +205,11 @@ DO $sv1a_check$ BEGIN
               AND "locLat" IS NOT NULL AND "locLng" IS NOT NULL AND "locAccuracyM" IS NOT NULL AND "locAt" IS NOT NULL
               AND "locLat" BETWEEN -90 AND 90 AND "locLng" BETWEEN -180 AND 180
               -- finite: PostgreSQL orders Infinity and NaN above every number, so `>= 0` alone admits both
-              AND "locAccuracyM" >= 0 AND "locAccuracyM" < 'Infinity'::float8)
+              AND "locAccuracyM" >= 0 AND "locAccuracyM" < 'Infinity'::float8 AND isfinite("locAt"))
         OR ("locationKind" = 'none'
               AND "locLat" IS NULL AND "locLng" IS NULL AND "locAccuracyM" IS NULL AND "locAt" IS NULL))
+      -- every claimed or device time is a real instant: PostgreSQL accepts 'infinity', which no client can read back
+      AND isfinite("startClaimedAt")
       -- V3 / F54: accepted is the claim exactly when not adjusted, else the receipt; never after the receipt
       AND "startTimeAdjusted" = ("startedAt" <> "startClaimedAt")
       AND ("startedAt" = "startClaimedAt" OR "startedAt" = "startReceivedAt")
@@ -217,21 +221,30 @@ DO $sv1a_check$ BEGIN
       ("status" = 'open'
         AND "endClaimedAt" IS NULL AND "endedAt" IS NULL AND "endTimeAdjusted" IS NULL AND "endReceivedAt" IS NULL
         AND "closedAt" IS NULL AND "closedById" IS NULL AND "closeReason" IS NULL
-        AND "lateEndClaimedAt" IS NULL AND "lateEndReceivedAt" IS NULL)
+        AND "lateEndClaimedAt" IS NULL AND "lateEndedAt" IS NULL AND "lateEndTimeAdjusted" IS NULL AND "lateEndReceivedAt" IS NULL)
       OR ("status" = 'ended'
         AND "endClaimedAt" IS NOT NULL AND "endedAt" IS NOT NULL AND "endTimeAdjusted" IS NOT NULL AND "endReceivedAt" IS NOT NULL
+        AND isfinite("endClaimedAt")
         AND "endTimeAdjusted" = ("endedAt" <> "endClaimedAt")
         AND ("endedAt" = "endClaimedAt" OR "endedAt" = "endReceivedAt")
         AND "startedAt" <= "endedAt" AND "endedAt" <= "endReceivedAt" AND "startReceivedAt" <= "endReceivedAt"
         AND "closedAt" IS NULL AND "closedById" IS NULL AND "closeReason" IS NULL
-        AND "lateEndClaimedAt" IS NULL AND "lateEndReceivedAt" IS NULL)
+        AND "lateEndClaimedAt" IS NULL AND "lateEndedAt" IS NULL AND "lateEndTimeAdjusted" IS NULL AND "lateEndReceivedAt" IS NULL)
       OR ("status" = 'closed'
         AND "closedAt" IS NOT NULL AND "closedById" IS NOT NULL AND "closeReason" IS NOT NULL
         AND btrim("closeReason", E' \t\n\x0B\f\r') <> ''
         AND "closedAt" >= "startReceivedAt"
         AND "endClaimedAt" IS NULL AND "endedAt" IS NULL AND "endTimeAdjusted" IS NULL AND "endReceivedAt" IS NULL
+        -- a late end is all four or none, and accepted like an end: the claim inside [start, receipt], else the receipt
         AND ("lateEndClaimedAt" IS NULL) = ("lateEndReceivedAt" IS NULL)
-        AND ("lateEndReceivedAt" IS NULL OR "lateEndReceivedAt" >= "closedAt"))
+        AND ("lateEndClaimedAt" IS NULL) = ("lateEndedAt" IS NULL)
+        AND ("lateEndClaimedAt" IS NULL) = ("lateEndTimeAdjusted" IS NULL)
+        AND ("lateEndClaimedAt" IS NULL OR (
+              isfinite("lateEndClaimedAt")
+              AND "lateEndTimeAdjusted" = ("lateEndedAt" <> "lateEndClaimedAt")
+              AND ("lateEndedAt" = "lateEndClaimedAt" OR "lateEndedAt" = "lateEndReceivedAt")
+              AND "startedAt" <= "lateEndedAt" AND "lateEndedAt" <= "lateEndReceivedAt"
+              AND "lateEndReceivedAt" >= "closedAt")))
     );
   END IF;
 
@@ -252,6 +265,7 @@ DO $sv1a_check$ BEGIN
     ALTER TABLE "SiteVisitPlace" ADD CONSTRAINT "SiteVisitPlace_shape_check" CHECK (
       "id" ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
       AND btrim("placeName", E' \t\n\x0B\f\r') <> ''
+      AND isfinite("addedClaimedAt")
       AND "addedTimeAdjusted" = ("addedAt" <> "addedClaimedAt")
       AND ("addedAt" = "addedClaimedAt" OR "addedAt" = "addedReceivedAt")
       AND "addedAt" <= "addedReceivedAt"
@@ -275,7 +289,7 @@ CREATE OR REPLACE FUNCTION site_visits_now() RETURNS TIMESTAMP(3) LANGUAGE sql V
 $$;
 
 -- Locks what `platform_user_holds_role_windowed` reads, in the actor envelope's order (OrgUserAuthority through the
--- project's org, then ProjectUserStanding, then UserIdentity), then the project row the operability check holds,
+-- project's org, then ProjectUserStanding), then the project row the operability check holds, then UserIdentity,
 -- and answers. A concurrent removal, re-role, demotion or rename of a PRESENT row therefore waits for this
 -- transaction or is seen by it (F55, F57). Returns the user's locked display name; raises when the user does not
 -- hold the role, the project is archived, or the account has no name.
@@ -289,12 +303,15 @@ BEGIN
   PERFORM 1 FROM "ProjectUserStanding"
    WHERE "projectId" = p_project AND "userId" = p_user
      FOR SHARE;
-  -- FOR UPDATE, the strength the event's envelope seal takes on this row: two share holders would each wait to
-  -- upgrade at their event and deadlock (two starts by one visitor on two projects, two closes by one PMC).
-  SELECT "displayName" INTO v_name FROM "UserIdentity" WHERE "userId" = p_user FOR UPDATE;
+  -- The project row before the identity row, the order every fact writer and `emitEvent` take them in (an archive
+  -- updates "Project", then its event locks the actor's identity): the reverse order deadlocks against a PMC who
+  -- archives the project while their own visit act is in flight.
   IF NOT phase6_project_operable(p_project) THEN
     RAISE EXCEPTION 'site-visits: project % is not operable (archived or absent), so no % may be written on it', p_project, p_what;
   END IF;
+  -- FOR UPDATE, the strength the event's envelope seal takes on this row: two share holders would each wait to
+  -- upgrade at their event and deadlock (two starts by one visitor on two projects, two closes by one PMC).
+  SELECT "displayName" INTO v_name FROM "UserIdentity" WHERE "userId" = p_user FOR UPDATE;
   IF NOT platform_user_holds_role_windowed(p_project, p_user, p_role) THEN
     RAISE EXCEPTION 'site-visits: user % does not hold role % on project %, so they cannot be the % of a site visit',
       p_user, p_role, p_project, p_what;
@@ -416,7 +433,8 @@ BEGIN
     END IF;
     PERFORM site_visits_standing_name(OLD."projectId", NEW."closedById", 'pmc', 'closer');
     NEW."closedAt" := site_visits_now();
-    NEW."endedAt" := NULL; NEW."endTimeAdjusted" := NULL; NEW."endReceivedAt" := NULL; NEW."lateEndReceivedAt" := NULL;
+    NEW."endedAt" := NULL; NEW."endTimeAdjusted" := NULL; NEW."endReceivedAt" := NULL;
+    NEW."lateEndedAt" := NULL; NEW."lateEndTimeAdjusted" := NULL; NEW."lateEndReceivedAt" := NULL;
     RETURN NEW;
   END IF;
 
@@ -427,7 +445,14 @@ BEGIN
     -- F48: a late end is the visitor's act, so it needs their standing now. A visitor removed from the project
     -- after the close can no longer record one: the PMC's close stands (the kernel refuses their event too).
     PERFORM site_visits_standing_name(OLD."projectId", OLD."visitorId", OLD."visitorRole", 'visitor');
-    NEW."lateEndReceivedAt" := site_visits_now();
+    -- V3, as for an end: the claim is accepted within [start or the last place walked, receipt], else the receipt.
+    SELECT GREATEST(OLD."startedAt", COALESCE(max(p."addedAt"), OLD."startedAt")) INTO v_lower
+      FROM "SiteVisitPlace" p
+     WHERE p."projectId" = OLD."projectId" AND p."visitId" = OLD."id" AND NOT p."addedAfterEnd";
+    v_received := site_visits_now();
+    NEW."lateEndReceivedAt" := v_received;
+    NEW."lateEndedAt" := site_visits_accept(NEW."lateEndClaimedAt", v_lower, v_received);
+    NEW."lateEndTimeAdjusted" := NEW."lateEndedAt" <> NEW."lateEndClaimedAt";
     RETURN NEW;
   END IF;
 
@@ -466,6 +491,14 @@ BEGIN
   SELECT * INTO v FROM site_visits_lock_visit(NEW."projectId", NEW."visitId");
   IF NEW."addedById" IS DISTINCT FROM v.o_visitor THEN
     RAISE EXCEPTION 'site-visits: only the visitor adds attendees to visit % (added by %)', NEW."visitId", NEW."addedById";
+  END IF;
+  -- Two identities are locked here (the visitor's and a member attendee's). They are taken in user-id order, after
+  -- the project row as everywhere else, so two visitors adding each other to their own visits cannot deadlock.
+  IF NEW."userId" IS NOT NULL THEN
+    IF NOT phase6_project_operable(NEW."projectId") THEN
+      RAISE EXCEPTION 'site-visits: project % is not operable (archived or absent), so no attendee may be written on it', NEW."projectId";
+    END IF;
+    PERFORM 1 FROM "UserIdentity" WHERE "userId" IN (v.o_visitor, NEW."userId") ORDER BY "userId" FOR UPDATE;
   END IF;
   PERFORM site_visits_standing_name(NEW."projectId", v.o_visitor, v.o_role, 'visitor');
   IF NEW."retiredAt" IS NOT NULL OR NEW."retiredById" IS NOT NULL THEN

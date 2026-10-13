@@ -449,6 +449,62 @@ describe('Site Visits SV1-a — the visit record (live PG)', () => {
       expect((await visit(v2)).status).toBe('closed');
     });
 
+    it('takes the project row before the identity row, the order an archive and its event take them, so they cannot deadlock', async () => {
+      await endOpen(f.memberUser.id);
+      // the archive's order: "Project" first, then its event locks the actor's identity
+      const held = gate(); const go = gate();
+      const archive = t.prisma.$transaction(async (q) => {
+        await q.$executeRawUnsafe(`UPDATE "Project" SET "name" = "name" WHERE "id" = $1`, f.projectA.id);
+        held.open();
+        await go.p;
+        await q.$queryRawUnsafe(`SELECT 1 FROM "UserIdentity" WHERE "userId" = $1 FOR UPDATE`, f.memberUser.id);
+      }, { timeout: 30_000 });
+      await held.p;
+      const startTag = tag('start-behind-archive');
+      const s = startOpts({ tagged: startTag, node: null });
+      const visitTx = settle(t.prisma.$transaction(async (q) => {
+        await startRow(q, s);
+        await plant(q, s.projectId, s.id, { type: 'sitevisit.started', actor: s.visitor, role: 'pmc', notice: true });
+      }, { timeout: 30_000 }));
+      expect(await reachesLockWait(startTag), 'the start waits on the project row before taking the identity row').toBe(true);
+      go.open();
+      expect(await settle(archive)).toMatchObject({ ok: true });
+      expect(await visitTx).toMatchObject({ ok: true });
+      await end(s.id);
+    });
+
+    it('two visitors adding each other as attendees take the two identities in one order, so they cannot deadlock', async () => {
+      await endOpen(f.memberUser.id);
+      await endOpen(consultant, f.projectA.id, 'consultant');
+      // the visitor whose id sorts last adds the other: an unordered trigger would hold the visitor's identity while
+      // waiting for the attendee's, which the other side holds and would next upgrade toward the visitor's
+      const [lo, hi] = [f.memberUser.id, consultant].sort();
+      const roleOf = (u: string) => (u === consultant ? 'consultant' : 'pmc');
+      const v = await start({ visitor: hi, role: roleOf(hi), node: null });
+      const held = gate(); const go = gate();
+      const other = t.prisma.$transaction(async (q) => {
+        await q.$queryRawUnsafe(`SELECT 1 FROM "UserIdentity" WHERE "userId" = $1 FOR UPDATE`, lo);
+        held.open();
+        await go.p;
+        await q.$queryRawUnsafe(`SELECT 1 FROM "UserIdentity" WHERE "userId" = $1 FOR UPDATE`, hi);
+      }, { timeout: 30_000 });
+      await held.p;
+      const addTag = tag('crossed-attendee');
+      const aid = randomUUID();
+      const add = settle(t.prisma.$transaction(async (q) => {
+        await q.$executeRawUnsafe(
+          `INSERT /* ${addTag} */ INTO "SiteVisitAttendee" ("id","projectId","visitId","userId","role","addedById") VALUES ($1,$2,$3,$4,$5,$6)`,
+          aid, f.projectA.id, v, lo, roleOf(lo), hi);
+        await plant(q, f.projectA.id, v, { type: 'sitevisit.attendee_added', actor: hi, role: roleOf(hi), rowId: aid });
+      }, { timeout: 30_000 }));
+      expect(await reachesLockWait(addTag), 'the attendee add waits on the first identity in id order').toBe(true);
+      go.open();
+      expect(await settle(other)).toMatchObject({ ok: true });
+      expect(await add).toMatchObject({ ok: true });
+      expect((await attendee(aid)).displayName).toBe(names.get(lo));
+      await end(v, ago(0), hi, roleOf(hi));
+    });
+
     it('every later act of the visitor needs their standing; a removed visitor’s late end is refused and the close stands (F48)', async () => {
       const gone = `sv-cons-gone-${run}`;
       extraUsers.push(gone);
@@ -528,6 +584,31 @@ describe('Site Visits SV1-a — the visit record (live PG)', () => {
       await expect(lateEnd(id, consultant, 'consultant')).rejects.toThrow(/moves only/);
       await expect(raw(`UPDATE "SiteVisit" SET "status" = 'open', "closedById" = NULL, "closeReason" = NULL, "closedAt" = NULL WHERE "id" = $1`, id))
         .rejects.toThrow(/moves only/);
+    });
+
+    it('a claimed or device time is a real instant: infinity is refused for start, location, end, place and late end', async () => {
+      await endOpen(f.memberUser.id);
+      await expect(start({ claimed: 'infinity', device: false })).rejects.toThrow(/SiteVisit_shape_check/);
+      await expect(start({ claimed: '-infinity', device: true })).rejects.toThrow(/SiteVisit_shape_check/);
+      const id = await start({ node: null });
+      await expect(addPlace(id, n1.id, { claimed: 'infinity' })).rejects.toThrow(/SiteVisitPlace_shape_check/);
+      await expect(end(id, 'infinity')).rejects.toThrow(/SiteVisit_lifecycle_check/);
+      await close(id);
+      await expect(lateEnd(id, f.memberUser.id, 'pmc', 'infinity')).rejects.toThrow(/SiteVisit_lifecycle_check/);
+      await lateEnd(id, f.memberUser.id, 'pmc', ago(1));
+    });
+
+    it('a late end is accepted like an end: a claim before the start or in the future is taken at its receipt', async () => {
+      for (const [claimed, adjusted] of [[ago(60 * 24 * 3), true], [new Date(Date.now() + 3_600_000).toISOString(), true], [ago(1), false]] as const) {
+        await endOpen(f.memberUser.id);
+        const id = await start({ claimed: ago(30), node: null });
+        await close(id);
+        await lateEnd(id, f.memberUser.id, 'pmc', claimed);
+        const v = await visit(id);
+        expect(v.lateEndTimeAdjusted, claimed).toBe(adjusted);
+        expect(v.lateEndedAt, claimed).toEqual(adjusted ? v.lateEndReceivedAt : v.lateEndClaimedAt);
+        expect((v.lateEndedAt as Date) >= (v.startedAt as Date)).toBe(true);
+      }
     });
 
     it('a place added after the end is marked addedAfterEnd, accepted at its receipt, and leaves the end as it was', async () => {

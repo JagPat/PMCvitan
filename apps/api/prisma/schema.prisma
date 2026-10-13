@@ -5078,6 +5078,8 @@ model SiteVisit {
   closedById        String?
   closeReason       String?
   lateEndClaimedAt  DateTime?
+  lateEndedAt       DateTime?
+  lateEndTimeAdjusted Boolean?
   lateEndReceivedAt DateTime?
 
   attendees SiteVisitAttendee[]
