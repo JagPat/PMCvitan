@@ -30,12 +30,20 @@ const FIELD_LINE = /(?<![\p{L}\p{N}])work[^\p{L}\p{N}\n]*item(?![\p{L}\p{N}])[^\
 const FIELD_LINES = new RegExp(FIELD_LINE.source, 'gimu');
 // Markup that renders as nothing, or only as its text, may also sit BETWEEN the two words
 // (`<strong>Work</strong>-<em>Item</em>: #750`, `[Work](url)-[Item](url): #750`, `Work&#45;Item: #750`; #763,
-// #761 Codex 4235968337). A line is also checked with HTML tags, entities, link targets and reference labels
-// removed. That view only ADDS field lines: a line counts as often as the larger of its raw and stripped matches,
-// so nothing the raw rule reports as malformed can become `none`.
-const RENDERED_AS_TEXT = /<[^<>\n]*>|&(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);|(?<=\])\([^()\n]*\)|(?<=\])\[[^[\]\n]*\]/giu;
+// #761 Codex 4235968337). A line is also checked as rendered: HTML tags (quoted attribute values may hold `>`),
+// link targets and reference labels removed, numeric entities decoded (`Wo&#114;k`; #814 Codex 4254561958,
+// 4254561977) and named ones removed, since none renders as an ASCII letter. That view only ADDS field lines: a line
+// counts as often as the larger of its raw and rendered matches, so nothing the raw rule refuses can become `none`.
+const MARKUP = /<(?:[^<>"'\n]|"[^"\n]*"|'[^'\n]*')*>|(?<=\])\([^()\n]*\)|(?<=\])\[[^[\]\n]*\]/gu;
+const NUMERIC_ENTITY = /&#(?:(\d{1,7})|x([\da-f]{1,6}));/giu;
+const NAMED_ENTITY = /&[a-z][a-z\d]*;/giu;
+const decoded = (code) => (code > 0x10ffff || code === 10 || code === 13 ? ' ' : String.fromCodePoint(code));
+const rendered = (line) => line
+  .replace(MARKUP, '')
+  .replace(NUMERIC_ENTITY, (_, dec, hex) => decoded(dec === undefined ? Number.parseInt(hex, 16) : Number(dec)))
+  .replace(NAMED_ENTITY, '');
 const fieldMatches = (line) =>
-  Math.max(line.match(FIELD_LINES)?.length ?? 0, line.replace(RENDERED_AS_TEXT, '').match(FIELD_LINES)?.length ?? 0);
+  Math.max(line.match(FIELD_LINES)?.length ?? 0, rendered(line).match(FIELD_LINES)?.length ?? 0);
 // The one field line, raw, must itself be the canonical trailer: git's `--unfold` joins an indented continuation
 // into the value, so `Work-Item:` followed by an indented ` #750` would otherwise read as cited (4235903046).
 const CANONICAL_LINE = /^work-item:[ \t]*#[1-9]\d{0,9}[ \t]*$/iu;

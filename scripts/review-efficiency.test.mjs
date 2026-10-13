@@ -1869,6 +1869,11 @@ test('M3b — `Work-Item: #N` is read from the head commit\'s terminal trailer b
     ['a named-entity space', `fix\n\nWork&nbsp;Item: #750\n${owner}\n`],
     ['an empty tag inside a word', `fix\n\nWo<b></b>rk-Item: #750\n${owner}\n`],
     ['an HTML comment between the words', `fix\n\nWork<!-- x -->-Item: #750\n${owner}\n`],
+    // #814 Codex 4254561958 / 4254561977: an entity that renders a letter, and a quoted `>` inside a tag
+    ['a decimal entity letter', `fix\n\nWo&#114;k-Item: #750\n${owner}\n`],
+    ['a hex entity letter', `fix\n\nWork-&#x49;tem: #750\n${owner}\n`],
+    ['a quoted > in an attribute', `fix\n\n<strong>Work</strong>-<em title="a>b">Item</em>: #750\n\n${owner}\n`],
+    ["a single-quoted > in an attribute", `fix\n\nWork<span data-x='>'>-</span>Item: #750\n${owner}\n`],
     ['wrapped words beside a valid trailer', `fix\n\n<b>Work</b>-<i>Item</i>: #1\n\nWork-Item: #750\n${owner}\n`],
   ]) {
     const result = parse(message);
