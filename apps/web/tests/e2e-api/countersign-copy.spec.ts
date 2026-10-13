@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { openProject } from './landing';
 
 /**
  * Phase 6 task 4d-ii-b / B4 — the copy and the withdraw rule over the REAL stack with the six reservation
@@ -28,7 +29,7 @@ async function signIn(page: Page, email: string): Promise<void> {
 test('with the doors standing, the client’s confirmation reads the delivered copy and is cancelled without approving', async ({ page }) => {
   await page.goto('/');
   await signIn(page, CLIENT);
-  await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+  await openProject(page, 'Residence at Ambli');
   await page.getByRole('button', { name: 'Decisions Waiting' }).click();
   // the first option of the first pending card opens the confirmation; nothing is approved here
   const approve = page.locator('[data-testid^="approve-DL-"]').first();
@@ -44,14 +45,8 @@ test('with the doors standing, the client’s confirmation reads the delivered c
 test('with the doors standing, the PMC’s register offers Withdraw on the seeded standard change request and names no origin', async ({ page }) => {
   await page.goto('/');
   await signIn(page, PMC);
-  await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
-  // switch to ambli, where the seeded reopened decision lives (the project-scope spec's pattern)
-  const optionA = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Residence at Ambli/ });
-  await expect(async () => {
-    if (!(await optionA.isVisible())) await page.getByTestId('project-switcher').click();
-    await optionA.click({ timeout: 2000 });
-  }).toPass();
-  await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+  // ambli holds the seeded reopened decision; sign-in opens the last project used (#811)
+  await openProject(page, 'Residence at Ambli');
   await page.getByRole('button', { name: 'Decision Log' }).click();
   await page.getByTestId('filter-change').click();
   const row = page.locator('[data-testid^="log-row-"]').first();

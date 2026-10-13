@@ -1,4 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { loginTo, openProject } from './landing';
 
 /**
  * Phase 0 Task 8 — the two-project acceptance proof, over the REAL stack:
@@ -15,6 +16,8 @@ import { test, expect, type Page, type APIRequestContext } from '@playwright/tes
  *
  * Serial (one worker): scenarios share one seeded database; the revocation
  * scenario mutates memberships and runs against its own dedicated user.
+ * Sign-in opens the project a user last switched into (#811), and earlier specs
+ * switch these users, so a scenario that needs a project asks for it (./landing).
  */
 const API = 'http://localhost:3000';
 // the seed's default demo password (apps/api/prisma/seed.ts, SEED_DEMO_PASSWORD unset)
@@ -55,8 +58,8 @@ test('authentication lands on the server project', async ({ page }) => {
 
 test('populated A to empty B is atomic', async ({ page }) => {
   await page.goto('/');
-  await signIn(page, 'test-pmc@vitan.in'); // home = B
-  await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
+  await signIn(page, 'test-pmc@vitan.in');
+  await openProject(page, 'Test Empty Site');
 
   // over to populated A, onto its decision log
   // open-and-pick retries as one unit — a post-sign-in re-render can close the dropdown between
@@ -95,7 +98,9 @@ test('populated A to empty B is atomic', async ({ page }) => {
   await expect(page.getByText(/Residence at Ambli/)).toHaveCount(0);
 });
 
-test('deep link survives token switch', async ({ page }) => {
+test('deep link survives token switch', async ({ page, request }) => {
+  // sign-in opens the last project used (#811): make that B, the deep link's project
+  await loginTo(request, 'test-pmc@vitan.in', B);
   await page.goto(`/projects/${B}/decisions`);
   await signIn(page, 'test-pmc@vitan.in');
   await expect(page).toHaveURL(new RegExp(`/projects/${B}/decisions$`));
@@ -111,8 +116,8 @@ test('deep link survives token switch', async ({ page }) => {
 
 test('history preserves scope and screen', async ({ page }) => {
   await page.goto('/');
-  await signIn(page, 'test-pmc@vitan.in'); // lands on B's role home
-  await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
+  await signIn(page, 'test-pmc@vitan.in');
+  await openProject(page, 'Test Empty Site');
 
   // the same one-unit open-and-pick retry as above
   const optionA2 = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Residence at Ambli/ });
@@ -158,8 +163,7 @@ test('history preserves scope and screen', async ({ page }) => {
 
 test('non-member is forbidden', async ({ page, request }) => {
   // API: the A-only engineer's token gets 403 on every Project B surface
-  const eng = await apiLogin(request, 'test-eng@vitan.in');
-  expect(eng.projectId).toBe(A);
+  const eng = await loginTo(request, 'test-eng@vitan.in', A);
   const snap = await request.get(`${API}/projects/${B}/snapshot`, { headers: bearer(eng.token) });
   expect(snap.status()).toBe(403);
   const sw = await request.post(`${API}/auth/switch`, { headers: bearer(eng.token), data: { projectId: B } });
@@ -173,7 +177,7 @@ test('non-member is forbidden', async ({ page, request }) => {
   });
   await page.goto('/');
   await signIn(page, 'test-eng@vitan.in');
-  await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+  await openProject(page, 'Residence at Ambli');
   await expect(page.getByText('Test Empty Site')).toHaveCount(0);
   await page.evaluate(() => {
     history.pushState({}, '', '/projects/test-empty-site/decisions');
@@ -197,7 +201,7 @@ test('removed membership revokes token', async ({ page, request }) => {
   await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
 
   // an org owner removes the membership through the real admin endpoint
-  const owner = await apiLogin(request, 'pmc@vitan.in');
+  const owner = await loginTo(request, 'pmc@vitan.in', A);
   const del = await request.delete(`${API}/projects/${A}/members/test-user-removed`, { headers: bearer(owner.token) });
   expect(del.ok(), `member removal → ${del.status()}`).toBeTruthy();
 
@@ -216,8 +220,7 @@ test('removed membership revokes token', async ({ page, request }) => {
 });
 
 test('cross-project reference is rejected', async ({ request }) => {
-  const pmc = await apiLogin(request, 'test-pmc@vitan.in');
-  expect(pmc.projectId).toBe(B);
+  const pmc = await loginTo(request, 'test-pmc@vitan.in', B);
 
   // a Project B drawing claiming to govern a Project A activity
   const res = await request.post(`${API}/projects/${B}/drawings`, {
@@ -246,7 +249,7 @@ test('empty project is truthful', async ({ page, browser }) => {
   // PMC surfaces on B: live identity, zero counts, no Ambli, no fake report
   await page.goto('/');
   await signIn(page, 'test-pmc@vitan.in');
-  await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
+  await openProject(page, 'Test Empty Site');
 
   await page.getByRole('button', { name: 'Dashboard' }).click();
   await expect(page.getByText('Test Empty Site, Bodakdev')).toBeVisible();

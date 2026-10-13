@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
+import { loginTo, openProject } from './landing';
 
 /**
  * Live bug 1 — owner live check (#482 6039737806): on the deployed app, Back after opening a record from
@@ -18,9 +19,7 @@ const API = 'http://localhost:3000';
  * moduleQuery run, after which the bell correctly reports it unavailable (#738).
  */
 async function issueChecklist(request: APIRequestContext): Promise<{ id: string; text: string }> {
-  const login = await request.post(`${API}/auth/login`, { data: { email: 'pmc@vitan.in', password: PASSWORD } });
-  expect(login.ok()).toBeTruthy();
-  const headers = { Authorization: `Bearer ${(await login.json()).token}` };
+  const headers = { Authorization: `Bearer ${(await loginTo(request, 'pmc@vitan.in', 'ambli')).token}` };
   const title = `Bell check ${Date.now()}`;
   const text = `New checklist issued: ${title} — Terrace`;
   const res = await request.post(`${API}/projects/ambli/inspections`, { headers, data: { title, zone: 'Terrace', items: ['Slope to drain'] } });
@@ -41,13 +40,8 @@ async function signIn(page: Page, email: string): Promise<void> {
 }
 
 async function openAmbli(page: Page): Promise<void> {
-  // the PMC's home is the empty project B; Ambli holds the seeded notices
-  const optionA = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: /Residence at Ambli/ });
-  await expect(async () => {
-    if (!(await optionA.isVisible())) await page.getByTestId('project-switcher').click();
-    await optionA.click({ timeout: 2000 });
-  }).toPass();
-  await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+  // Ambli holds the seeded notices; sign-in opens the PMC's last project used (#811)
+  await openProject(page, 'Residence at Ambli');
 }
 
 async function tapNotice(page: Page, text: string): Promise<void> {

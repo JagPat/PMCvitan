@@ -1,4 +1,5 @@
-import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { loginTo, openProject } from './landing';
 
 /**
  * Phase 6 task 4d-ii-b / B1 — the client boundary over the REAL stack, probed with the six reservation
@@ -25,11 +26,6 @@ async function signIn(page: Page, email: string): Promise<void> {
   await page.getByTestId('login-password').fill(PASSWORD);
   await page.getByTestId('login-submit').click();
 }
-async function apiLogin(request: APIRequestContext, email: string): Promise<{ token: string }> {
-  const res = await request.post(`${API}/auth/login`, { data: { email, password: PASSWORD } });
-  expect(res.ok(), `login ${email} → ${res.status()}`).toBeTruthy();
-  return res.json();
-}
 
 test('every API-bound request declares countersign-v1, and the shell reads rollout.phase6_4d = reserved', async ({ page, request }) => {
   const apiRequests: { url: string; contract: string | undefined }[] = [];
@@ -42,7 +38,7 @@ test('every API-bound request declares countersign-v1, and the shell reads rollo
 
   await page.goto('/');
   await signIn(page, ENG);
-  await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+  await openProject(page, 'Residence at Ambli');
   // the engineer's home (Today) has settled — the post-sign-in route lands before we navigate away
   await expect(page.getByTestId('engineer-today')).toBeVisible();
   // walk one more surface so a command-free navigation's reads are on the wire too
@@ -60,7 +56,7 @@ test('every API-bound request declares countersign-v1, and the shell reads rollo
   expect(apiRequests.some((r) => r.contract === 'recorded-v1')).toBe(false);
 
   // the shell the app read reports the doors STANDING — the value every client gate reads
-  const eng = await apiLogin(request, ENG);
+  const eng = await loginTo(request, ENG, A);
   const shell = await request.get(`${API}/projects/${A}/shell`, {
     headers: { Authorization: `Bearer ${eng.token}`, 'x-vitan-decisions-contract': 'countersign-v1' },
   });
