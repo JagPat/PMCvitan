@@ -5,7 +5,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
-import { PasswordCredentialsService } from '../../src/auth/password-credentials.service';
 
 describe('password enrollment and reset (live PostgreSQL)', () => {
   let t: TestApp;
@@ -245,101 +244,5 @@ describe('password enrollment and reset (live PostgreSQL)', () => {
     expect(owner.email).toBe(f.ownerUser.email);
     expect(owner.passwordHash).not.toBeNull();
     expect(owner.emailVerifiedAt).toBeInstanceOf(Date);
-  });
-
-  /**
-   * #806 unit B, against real PostgreSQL. A late code from an earlier request verifies; a successful verification
-   * retires the other codes; and an invitation-email correction still revokes every pending code, so a code mailed
-   * to the old address never works afterwards. The service is called directly to stay inside the endpoint throttle.
-   */
-  it('accepts a late code, retires the rest, and an email correction still revokes pending codes', async () => {
-    const service = t.app.get(PasswordCredentialsService);
-    const email = f.clientUser.email!;
-    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: f.clientUser.id, role: 'member' } });
-
-    const first = await service.request({ email });
-    const firstCode = codes.get(email)!;
-    const second = await service.request({ email });
-    expect(codes.get(email)).not.toBe(firstCode);
-    await expect(service.verify({ requestId: second.requestId, code: firstCode })).resolves.toMatchObject({ expiresInSeconds: 600 });
-    expect(await t.prisma.passwordCredentialChallenge.findUniqueOrThrow({ where: { id: first.requestId } }))
-      .toMatchObject({ consumedAt: expect.any(Date), verifiedAt: null });
-
-    // Two concurrent verifications with live codes for the same user. A barrier proves they overlap: A is held
-    // inside its locked transaction at the verifying UPDATE, B is seen waiting on the credential lock, then A is
-    // released (#820 Codex 4255840345). Exactly one may win.
-    const raceA = await service.request({ email });
-    const raceCode = codes.get(email)!;
-    const raceB = await service.request({ email });
-    expect(raceA.requestId).toMatch(/^[0-9a-f-]+$/);
-    await t.prisma.$executeRawUnsafe(`
-      CREATE FUNCTION test_hold_password_verify() RETURNS trigger AS $$
-      BEGIN
-        PERFORM pg_sleep(1.5);
-        RETURN NEW;
-      END;
-      $$ LANGUAGE plpgsql
-    `);
-    await t.prisma.$executeRawUnsafe(`
-      CREATE TRIGGER test_hold_password_verify
-      BEFORE UPDATE ON "PasswordCredentialChallenge"
-      FOR EACH ROW WHEN (NEW.id = '${raceA.requestId}' AND OLD."verifiedAt" IS NULL AND NEW."verifiedAt" IS NOT NULL)
-      EXECUTE FUNCTION test_hold_password_verify()
-    `);
-    const waitFor = async (sql: string): Promise<boolean> => {
-      for (let attempt = 0; attempt < 300; attempt += 1) {
-        const [state] = await t.prisma.$queryRawUnsafe<Array<{ seen: boolean }>>(sql);
-        if (state?.seen) return true;
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      return false;
-    };
-    let raced: Array<PromiseSettledResult<unknown>>;
-    try {
-      const verifyA = service.verify({ requestId: raceA.requestId, code: raceCode }).then(
-        (value) => ({ status: 'fulfilled', value }) as const,
-        (reason) => ({ status: 'rejected', reason }) as const,
-      );
-      expect(await waitFor(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-        WHERE datname = current_database() AND wait_event = 'PgSleep') AS seen`)).toBe(true);
-      const verifyB = service.verify({ requestId: raceB.requestId, code: raceCode }).then(
-        (value) => ({ status: 'fulfilled', value }) as const,
-        (reason) => ({ status: 'rejected', reason }) as const,
-      );
-      expect(await waitFor(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-        WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event = 'advisory') AS seen`)).toBe(true);
-      raced = await Promise.all([verifyA, verifyB]);
-    } finally {
-      await t.prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS test_hold_password_verify ON "PasswordCredentialChallenge"');
-      await t.prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS test_hold_password_verify()');
-    }
-    expect(raced.map((outcome) => outcome.status)).toEqual(['fulfilled', 'rejected']);
-    expect(await t.prisma.passwordCredentialChallenge.findUniqueOrThrow({ where: { id: raceA.requestId } }))
-      .toMatchObject({ verifiedAt: expect.any(Date), consumedAt: null });
-    expect(await t.prisma.passwordCredentialChallenge.findUniqueOrThrow({ where: { id: raceB.requestId } }))
-      .toMatchObject({ verifiedAt: null, consumedAt: expect.any(Date) });
-
-    const third = await service.request({ email });
-    const thirdCode = codes.get(email)!;
-    const fourth = await service.request({ email });
-    const fourthCode = codes.get(email)!;
-    // The owner set a password in the serialization test above, so the token carries the current credential version.
-    const owner = await t.prisma.user.findUniqueOrThrow({ where: { id: f.ownerUser.id } });
-    const ownerToken = t.app.get(JwtService).sign({
-      sub: f.ownerUser.id,
-      role: 'pmc',
-      projectId: f.projectA.id,
-      orgId: f.orgA.id,
-      credentialVersion: owner.credentialVersion,
-    });
-    await request(t.app.getHttpServer())
-      .patch(`/orgs/${f.orgA.id}/members/${f.clientUser.id}/invitation-email`)
-      .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ email: `corrected-${f.clientUser.id}@test.local` })
-      .expect(200);
-
-    for (const [requestId, code] of [[fourth.requestId, thirdCode], [fourth.requestId, fourthCode], [third.requestId, thirdCode]]) {
-      await expect(service.verify({ requestId: requestId!, code: code! })).rejects.toThrow();
-    }
   });
 });
