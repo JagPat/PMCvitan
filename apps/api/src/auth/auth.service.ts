@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
@@ -37,6 +37,8 @@ export interface TokenResult {
  */
 @Injectable()
 export class AuthService {
+  private readonly log = new Logger(AuthService.name);
+
   constructor(
     private readonly jwt: JwtService,
     private readonly prisma: PrismaService,
@@ -94,18 +96,29 @@ export class AuthService {
     return null;
   }
 
+  /** The role a sign-in may land with on this project: none when it is missing or archived, else the one
+   *  access rule's answer. */
+  private async landingAccess(user: { id: string }, projectId: string): Promise<{ projectId: string; role: Role } | null> {
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
+    if (!project || project.archivedAt) return null;
+    const role = await this.resolveProjectRole(user, projectId);
+    return role ? { projectId, role } : null;
+  }
+
   /**
-   * Where a successful credential lands (SEC-01): the user's home project when
+   * Where a successful credential lands (SEC-01): the project the user last
+   * switched into (#811) when still permitted, else their home project when
    * still permitted, else their first active membership, else any project in an
    * org they administer. When none of those hold the account has been revoked
    * everywhere — reject the sign-in even though the credential was valid.
+   * `lastProjectId` is a plain stamp: it only chooses among projects the access
+   * rule already grants, and the role always comes from that rule.
    */
-  private async signInAccess(user: { id: string; projectId: string; role: string }): Promise<{ projectId: string; role: Role }> {
-    const home = await this.prisma.project.findUnique({ where: { id: user.projectId }, select: { archivedAt: true } });
-    if (home && !home.archivedAt) {
-      const homeRole = await this.resolveProjectRole(user, user.projectId);
-      if (homeRole) return { projectId: user.projectId, role: homeRole };
-    }
+  private async signInAccess(user: { id: string; projectId: string; role: string; lastProjectId?: string | null }): Promise<{ projectId: string; role: Role }> {
+    const last = user.lastProjectId ? await this.landingAccess(user, user.lastProjectId) : null;
+    if (last) return last;
+    const home = await this.landingAccess(user, user.projectId);
+    if (home) return home;
     const membership = await this.prisma.membership.findFirst({
       where: { userId: user.id, status: 'active', project: { archivedAt: null } },
       orderBy: { createdAt: 'asc' },
@@ -229,7 +242,7 @@ export class AuthService {
 
   /** Issue the normal project-scoped session after an identity-level credential
    * transaction succeeds. Password proof alone grants no project access. */
-  async signInUser(user: { id: string; projectId: string; role: string; name: string; credentialVersion?: number }): Promise<TokenResult> {
+  async signInUser(user: { id: string; projectId: string; role: string; name: string; credentialVersion?: number; lastProjectId?: string | null }): Promise<TokenResult> {
     const access = await this.signInAccess(user);
     return {
       token: this.issueNamedUser(user, access.role, access.projectId),
@@ -376,6 +389,17 @@ export class AuthService {
     // admins over an explicit membership is a product decision — see docs/ORGS.md.)
     const role = await this.resolveProjectRole(user, projectId);
     if (!role) throw new ForbiddenException('You are not a member of this project');
+    await this.rememberLastProject(user.id, projectId);
     return { token: this.issueNamedUser(user, role, projectId), role, projectId, name: user.name };
+  }
+
+  /** #811 — the next sign-in opens the project this switch entered. A landing preference, never authority, so a
+   *  failed write is logged and does not fail the switch; concurrent switches leave the later write. */
+  private async rememberLastProject(userId: string, projectId: string): Promise<void> {
+    try {
+      await this.prisma.user.update({ where: { id: userId }, data: { lastProjectId: projectId } });
+    } catch (err) {
+      this.log.warn(`Last project not recorded for a switch: ${(err as Error)?.constructor?.name ?? 'unknown error'}`);
+    }
   }
 }
