@@ -4367,6 +4367,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
           "account contact detail, changed by the account's owner; it attributes no act",
         emailVerifiedAt:
           "set when verification completes and cleared when the address changes; part of the credential lifecycle",
+        lastProjectId:
+          "#811: the project this user last switched into, a sign-in landing preference that moves on every switch; it attributes no act and grants nothing (sign-in re-resolves access through the membership rule before honouring it)",
         name:
           "a person's name changes, and the register mirrors it; every act already recorded carries its own frozen name pair, so renaming does not rewrite any attribution",
         passwordHash:
@@ -5112,6 +5114,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
           "account contact detail, supplied by the account's owner; it attributes no act",
         emailVerifiedAt:
           "set when verification completes \u2014 the act it records IS this write, and it is the auth unit's act, not one this unit attributes",
+        lastProjectId:
+          "#811: first set by the user's first project switch; a landing preference, not an act this unit attributes (see the writable arm above)",
         passwordHash:
           "a credential, set when the account gains one; freezing its first write would make password setup impossible",
         phone:
