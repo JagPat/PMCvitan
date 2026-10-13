@@ -9,7 +9,10 @@ const READ_ATTRIBUTES = ['placeholder', 'aria-label', 'title', 'alt'];
 
 export function leftoverEnglish(root: HTMLElement, allowed: readonly string[] = []): string[] {
   const allow = new Set(allowed.flatMap((a) => a.match(/[A-Za-z]+/g) ?? []));
-  const texts = [root.textContent ?? ''];
+  // each text node on its own: `textContent` glues neighbours ("Kitchen" + "Main Door" → "KitchenMain")
+  const texts: string[] = [];
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) texts.push(n.nodeValue ?? '');
   root.querySelectorAll('*').forEach((el) => {
     for (const name of READ_ATTRIBUTES) {
       const value = el.getAttribute(name);

@@ -12,7 +12,7 @@ import { projectScopeOf } from '@/store/projectScope';
 import { dailyLogCommandInFlight, dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
-import { can, labourLabels, type ScreenKey } from '@vitan/shared';
+import { can, dailyLogLabels as L, dailyLogText as T, labourLabels, type ScreenKey, type Lang } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
@@ -109,8 +109,8 @@ export function DailyLogScreen() {
   };
 
   const conn = online
-    ? { bg: 'var(--green-chip)', border: 'var(--green-border)', dot: 'var(--green-solid)', color: 'var(--green-text)', text: 'Online · all synced', toggle: 'Simulate offline' }
-    : { bg: 'var(--amber-chip)', border: 'var(--amber-border)', dot: 'var(--amber-solid)', color: 'var(--amber-text)', text: `Offline · ${queueCount} update${queueCount === 1 ? '' : 's'} queued`, toggle: 'Back online' };
+    ? { bg: 'var(--green-chip)', border: 'var(--green-border)', dot: 'var(--green-solid)', color: 'var(--green-text)', text: L.online[lang], toggle: L.simulateOffline[lang] }
+    : { bg: 'var(--amber-chip)', border: 'var(--amber-border)', dot: 'var(--amber-solid)', color: 'var(--amber-text)', text: T.offline(queueCount, lang), toggle: L.backOnline[lang] };
 
   const sectionLabel: React.CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.2em', color: 'var(--faint)', margin: '22px 0 10px' };
 
@@ -124,14 +124,14 @@ export function DailyLogScreen() {
   if (record.state !== 'list' && record.state !== 'record') {
     return (
       <div className={styles.mobileScreen}>
-        <Eyebrow size={9}>DAILY SITE LOG</Eyebrow>
+        <Eyebrow size={9}>{L.eyebrow[lang]}</Eyebrow>
         <RecordBoundary
           record={record}
           prefix="daily-log"
-          what="Daily log"
-          loadingText="Loading the site log…"
-          unavailableText="Couldn't load the site log — check your connection and access."
-          showAllLabel="Open the current log"
+          what={L.what[lang]}
+          loadingText={L.boundaryLoading[lang]}
+          unavailableText={L.boundaryUnavailable[lang]}
+          showAllLabel={L.openCurrent[lang]}
           onShowAll={() => setRouteItem(null)}
           onRetry={requestFreshSnapshot}
         />
@@ -146,8 +146,8 @@ export function DailyLogScreen() {
   if (reading && !dailyLog) {
     return (
       <EmptyState
-        title="Loading today's log…"
-        detail="Fetching this project's daily site log."
+        title={L.loadingTitle[lang]}
+        detail={L.loadingDetail[lang]}
       />
     );
   }
@@ -155,11 +155,11 @@ export function DailyLogScreen() {
     return (
       <EmptyState
         icon={<WifiOff size={26} />}
-        title="Daily log unavailable"
-        detail="We couldn't load this project's site log. Check your connection and access, then retry."
+        title={L.unavailableTitle[lang]}
+        detail={L.unavailableDetail[lang]}
         action={
           <Button variant="ink" onClick={requestFreshSnapshot} data-testid="daily-log-retry">
-            <RefreshCw size={15} /> Retry
+            <RefreshCw size={15} /> {L.retry[lang]}
           </Button>
         }
       />
@@ -172,12 +172,12 @@ export function DailyLogScreen() {
   if (!dailyLog) {
     return (
       <EmptyState
-        title="No daily log started"
-        detail="Start today's log when site work begins — attendance, crew, materials and progress photos all record onto it."
+        title={L.noLogTitle[lang]}
+        detail={L.noLogDetail[lang]}
         action={
           can('dailyLog.start', role) ? (
             <Button variant="ink" onClick={startNewDay} disabled={inFlight} data-testid="start-new-day">
-              <Plus size={15} /> {starting ? 'Starting today\u2019s log\u2026' : "Start today's log"}
+              <Plus size={15} /> {starting ? L.starting[lang] : L.startToday[lang]}
             </Button>
           ) : undefined
         }
@@ -196,22 +196,22 @@ export function DailyLogScreen() {
           <div data-testid="daily-log-stale-warning" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px', marginBottom: 12 }}>
             <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
             <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>
-              Showing the last-known log — the latest couldn't load. Actions are paused until it refreshes.
+              {L.stale[lang]}
             </span>
             <button onClick={requestFreshSnapshot} data-testid="daily-log-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', minHeight: 44, fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <RefreshCw size={12} /> Retry
+              <RefreshCw size={12} /> {L.retry[lang]}
             </button>
           </div>
         )}
         <div style={{ padding: '10px 0 12px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
-            <Eyebrow size={9}>DAILY SITE LOG</Eyebrow>
+            <Eyebrow size={9}>{L.eyebrow[lang]}</Eyebrow>
             <div style={{ fontWeight: 700, fontSize: 22, marginTop: 4 }}>{short}</div>
-            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{dailyLog.date}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{logDateIn(dailyLog, lang)}</div>
           </div>
           {dailyLog.submitted && can('dailyLog.start', role) && (
             <Button variant="outline" onClick={startNewDay} disabled={actionsLocked || inFlight} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
-              <Plus size={15} /> Start new day
+              <Plus size={15} /> {L.startNewDay[lang]}
             </Button>
           )}
         </div>
@@ -237,39 +237,39 @@ export function DailyLogScreen() {
               </span>
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: 14 }}>Checked in · {dailyLog.checkinTime}</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'rgba(237,231,218,.62)', marginTop: 2 }}>{siteLabel} · within 60 m · GPS + selfie</div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{T.checkedIn(dailyLog.checkinTime, lang)}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'rgba(237,231,218,.62)', marginTop: 2 }}>{T.checkedInWhere(siteLabel, lang)}</div>
             </div>
             <button onClick={checkOut} disabled={sending} data-testid="check-out" style={{ background: 'transparent', border: '1px solid rgba(237,231,218,.3)', color: 'var(--sidebar-text)', padding: '8px 11px', minHeight: 44, borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
-              Check out
+              {L.checkOut[lang]}
             </button>
           </div>
         ) : (
           <>
             <button onClick={checkIn} disabled={sending} data-testid="check-in" style={{ width: '100%', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 15, padding: 18, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9 }}>
-              <Crosshair size={18} /> Check in at site
+              <Crosshair size={18} /> {L.checkIn[lang]}
             </button>
             {/* the PRESENCE PROOF is not an eyebrow: it tells the worker what this button is about to
                 take from their phone, so F-1b's 13px floor applies (#584 review round 1, finding 3). */}
-            <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--muted)', marginTop: 7 }}>Uses this phone's GPS + a selfie as proof of presence</div>
+            <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--muted)', marginTop: 7 }}>{L.proof[lang]}</div>
           </>
         )}
 
         {/* crew */}
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '22px 0 10px' }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.2em', color: 'var(--faint)' }}>CREW PRESENT TODAY</div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600 }} data-testid="crew-total">{total} workers</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.2em', color: 'var(--faint)' }}>{L.crewTitle[lang]}</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600 }} data-testid="crew-total">{T.workers(total, lang)}</div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {dailyLog.crew.map((c, i) => (
             <div key={c.trade} style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 12, padding: '11px 13px', display: 'flex', alignItems: 'center', gap: 11 }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: c.count > 0 ? 'var(--green-solid)' : 'rgba(35,33,28,.18)' }} />
               <div style={{ flex: 1, fontWeight: 600, fontSize: 13.5 }}>{c.trade}</div>
-              <button onClick={() => crewStep(i, -1)} disabled={sending} aria-label={`Remove ${c.trade}`} style={stepBtn}>
+              <button onClick={() => crewStep(i, -1)} disabled={sending} aria-label={T.removeTrade(c.trade, lang)} style={stepBtn}>
                 <Minus size={16} />
               </button>
               <div style={{ width: 26, textAlign: 'center', fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 15 }}>{c.count}</div>
-              <button onClick={() => crewStep(i, 1)} disabled={sending} aria-label={`Add ${c.trade}`} style={stepBtn}>
+              <button onClick={() => crewStep(i, 1)} disabled={sending} aria-label={T.addTrade(c.trade, lang)} style={stepBtn}>
                 <Plus size={16} />
               </button>
             </div>
@@ -279,7 +279,7 @@ export function DailyLogScreen() {
             record) — demo only; live attendance comes from the labour register below */}
         {!API_BASE && (
           <button onClick={openQr} style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-            <QrCode size={16} /> Worker self check-in (scan QR)
+            <QrCode size={16} /> {L.qr[lang]}
           </button>
         )}
 
@@ -313,7 +313,7 @@ export function DailyLogScreen() {
         )}
 
         {/* materials */}
-        <div style={sectionLabel}>MATERIAL ON SITE</div>
+        <div style={sectionLabel}>{L.materialTitle[lang]}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {dailyLog.materials.map((m, i) => (
             <div key={m.name} style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: 12, display: 'flex', gap: 12 }}>
@@ -328,7 +328,7 @@ export function DailyLogScreen() {
                     that changes what a user must DO, and it keeps the weight it already carried
                     on the mismatch arm. */}
                 <div style={{ fontSize: 13, marginTop: 2, color: m.matched ? 'var(--green-text)' : 'var(--red-solid)', fontWeight: m.matched ? 400 : 600 }}>
-                  {m.matched ? '✓ Matches locked decision ' : '⚠ MISMATCH — not the approved '}
+                  {m.matched ? L.matches[lang] : L.mismatch[lang]}
                   {/* Top 10 #3 (#774) — the decision it is checked against opens at its own record */}
                   {m.decisionId ? (
                     <button type="button" onClick={() => { const link = linkFor(m.decisionId!); openItem(link.screen, link.item); }} data-testid={`material-decision-${i}`} style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}>
@@ -357,7 +357,7 @@ export function DailyLogScreen() {
                       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                     }}
                   >
-                    <TriangleAlert size={14} /> Flag mismatch
+                    <TriangleAlert size={14} /> {L.flagMismatch[lang]}
                   </button>
                 )}
               </div>
@@ -366,31 +366,31 @@ export function DailyLogScreen() {
         </div>
         {can('dailyLog.addMaterial', role) && (
           <button onClick={() => setAddingMaterial(true)} disabled={actionsLocked || sending} data-testid="add-material" style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-            <Plus size={16} /> Record material delivery
+            <Plus size={16} /> {L.recordDelivery[lang]}
           </button>
         )}
 
         {/* progress */}
-        <div style={sectionLabel}>TODAY'S PROGRESS</div>
+        <div style={sectionLabel}>{L.progressTitle[lang]}</div>
         <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: 13.5 }}>{dailyLog.progress} progress photos</div>
-            <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Stamped with the time and place the photo itself recorded</div>
+            <div style={{ fontWeight: 600, fontSize: 13.5 }}>{T.photos(dailyLog.progress, lang)}</div>
+            <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>{L.stamped[lang]}</div>
           </div>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
           <button onClick={() => fileRef.current?.click()} disabled={sending} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Camera size={14} /> Add
+            <Camera size={14} /> {L.add[lang]}
           </button>
         </div>
         {/* Location spine: place the next photo so it shows up at that zone/room/object. */}
         {nodes.length > 0 && (
           <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: 12, marginTop: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.12em', color: 'var(--faint)', marginBottom: 8 }}>
-              <MapPin size={12} /> PLACE THIS PHOTO {photoNode ? '' : '(OPTIONAL)'}
+              <MapPin size={12} /> {L.placePhoto[lang]} {photoNode ? '' : L.optional[lang]}
             </div>
             <LocationPicker value={photoNode} onChange={setPhotoNode} idPrefix="photo-loc" />
             {photoNode && (
-              <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>Next photo → {pathOf(nodes, photoNode).join(' › ')}</div>
+              <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>{L.nextPhoto[lang]} {pathOf(nodes, photoNode).join(' › ')}</div>
             )}
           </div>
         )}
@@ -403,7 +403,7 @@ export function DailyLogScreen() {
                 data-testid="progress-thumb"
                 style={{ flex: 'none', width: 66, height: 66, borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}
               >
-                <img src={p.url} alt={`Progress photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <img src={p.url} alt={T.photoAlt(i + 1, lang)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </button>
             ))}
           </div>
@@ -420,7 +420,7 @@ export function DailyLogScreen() {
           data-testid="submit-daily-log"
           style={{ width: '100%', maxWidth: 460, margin: '0 auto', display: 'block', padding: 15, borderRadius: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, cursor: actionsLocked || inFlight ? 'not-allowed' : 'pointer', opacity: actionsLocked || inFlight ? 0.6 : 1, border: 'none', background: dailyLog.submitted ? 'var(--green-chip)' : 'var(--ink)', color: dailyLog.submitted ? 'var(--green-text)' : 'var(--sidebar-text)' }}
         >
-          {dailyLog.submitted ? 'Submitted ✓ — sent to PMC' : sending ? 'Sending to PMC\u2026' : 'Submit Daily Log to PMC'}
+          {dailyLog.submitted ? L.submitted[lang] : sending ? L.sending[lang] : L.submit[lang]}
         </button>
       </div>
     </div>
@@ -443,3 +443,14 @@ const stepBtn: React.CSSProperties = {
   justifyContent: 'center',
 };
 
+const LOCALE: Record<Lang, string> = { en: 'en-IN', hi: 'hi-IN', gu: 'gu-IN' };
+
+/** The log's day. English keeps the server's display string; Hindi and Gujarati format the log's
+ *  civil date (ISO) in their own month names. It is already the site's day, so it is formatted as-is
+ *  (UTC). A row with no usable civil date falls back to the display string. */
+function logDateIn(log: { date: string; logDate?: string | null }, lang: Lang): string {
+  if (lang === 'en' || !log.logDate) return log.date;
+  const at = new Date(`${log.logDate}T00:00:00Z`);
+  if (Number.isNaN(at.getTime())) return log.date;
+  return new Intl.DateTimeFormat(LOCALE[lang], { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(at);
+}

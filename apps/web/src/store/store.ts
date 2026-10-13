@@ -75,6 +75,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -2276,14 +2277,16 @@ export const useStore = create<Store>()(
      * So a lost/uncertain online response never strands a command without its key: the ledger applies
      * it exactly once however many times it is retried. Returns true when handled (gateway present).
      */
-    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string): boolean => {
+    // `offlineMsg`: what the toast says when the op is queued offline (#827: the daily log says it in the
+    // viewer's language); without it, the label plus the standard English line, as before
+    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string, offlineMsg?: string): boolean => {
       if (!gateway) return false;
       set((s) => { s.outbox.push(op); if (!s.online) s.syncQueue.push(label); });
       persistOutbox();
       if (get().online) {
         get().flushOutbox({ okMsg });
       } else {
-        get().flash(label + ' — saved offline, will sync when you reconnect.');
+        get().flash(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.');
       }
       return true;
     };
@@ -4788,7 +4791,7 @@ export const useStore = create<Store>()(
     },
     addLocationNode: async (input) => {
       if (!gateway) {
-        get().flash('Managing locations needs the server.');
+        get().flash(LOC.needsServer[get().lang]);
         return null;
       }
       const before = new Set(get().nodes.map((n) => n.id));
@@ -4860,7 +4863,7 @@ export const useStore = create<Store>()(
           else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
-        get().flash(`Added ${body.kind}: ${body.name}.`);
+        get().flash(LOC.added(body.kind, body.name, get().lang));
         // the server names the place (#703) — the one it made, or (#705) the one already holding the
         // name, which was in the tree before: never pick it by name or by what is new. A server without
         // the field: the node that was not in the tree before.
@@ -4869,7 +4872,7 @@ export const useStore = create<Store>()(
         return nodes.find((n) => !before.has(n.id) && n.name === body.name && n.kind === body.kind)?.id ?? null;
       } catch {
         // gate round 12: a failure landing after a switch (of project or of user) must not toast.
-        if (scopeStillCurrent(scope) && sentBySameUser()) get().flash('Could not add the location — check your access and try again.');
+        if (scopeStillCurrent(scope) && sentBySameUser()) get().flash(LOC.failed[get().lang]);
         return null;
       }
     },
@@ -4965,27 +4968,29 @@ export const useStore = create<Store>()(
     },
     startDailyLog: () => {
       if (!gateway) {
-        get().flash('Starting a new log needs the server.');
+        get().flash(DLT.startNeedsServer[get().lang]);
         return;
       }
       // a start already on its way (queued, or committed but not yet read back) is never queued twice
       if (dailyLogCommandInFlight(get())) {
-        get().flash('Today\u2019s log is already being started.');
+        get().flash(DLT.startInFlight[get().lang]);
         return;
       }
       // Task 10 correction round 2 (finding 1): WRITE-AHEAD — the op + its key are persisted to the
       // durable outbox before the network call (online or offline), so a lost/uncertain response never
       // strands the command without its key; a retry or reload replays the SAME op under the SAME key.
       const key = newIdempotencyKey();
-      runWriteAhead({ t: 'startDailyLog', idempotencyKey: key }, 'New daily log', 'New daily log started — crew carried over at zero.');
+      const lang = get().lang;
+      runWriteAhead({ t: 'startDailyLog', idempotencyKey: key }, DLC.start.en, DLT.started[lang], DLX.savedOffline(DLC.start[lang], lang));
     },
     addSiteMaterial: (input) => {
       if (!gateway) {
-        get().flash('Recording materials needs the server.');
+        get().flash(DLT.materialNeedsServer[get().lang]);
         return;
       }
       const key = newIdempotencyKey();
-      runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, 'Record material', `Material recorded: ${input.name}.`);
+      const lang = get().lang;
+      runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, DLC.material.en, DLX.materialRecorded(input.name, lang), DLX.savedOffline(DLC.material[lang], lang));
     },
     loadTeam: () => {
       if (!gateway) return Promise.resolve();
@@ -5175,7 +5180,7 @@ export const useStore = create<Store>()(
     // ---- daily log (phone = attendance device) ----
     checkIn: () => {
       if (!get().dailyLog) {
-        get().flash('No daily log yet — start today\u2019s log first.');
+        get().flash(DLT.noLog[get().lang]);
         return;
       }
       set((s) => {
@@ -5187,7 +5192,7 @@ export const useStore = create<Store>()(
       persistDailyLogDraft();
       get().record('Check-in 8:12 AM');
       // the site named in the toast is the LIVE project's, never seeded copy (Phase 0 Task 7)
-      get().flash(get().online ? `Checked in at ${get().location || get().short} · within 60 m · selfie + time stamped.` : 'Checked in offline — will sync when signal returns.');
+      get().flash(get().online ? DLX.checkedIn(get().location || get().short, get().lang) : DLT.checkedInOffline[get().lang]);
     },
     checkOut: () => {
       set((s) => {
@@ -5197,13 +5202,13 @@ export const useStore = create<Store>()(
         recordDailyLogDraft(s, (d) => { d.checkIn = { checkedIn: false, checkinTime: null }; });
       });
       persistDailyLogDraft();
-      get().flash('Checked out. Shift hours logged.');
+      get().flash(DLT.checkedOut[get().lang]);
     },
     scanWorker: () => {
       // demo action tied to the seeded Helper row — a project with an empty crew has no row 4
       const helper = get().dailyLog?.crew[4];
       if (!helper) {
-        get().flash('No crew rows on this log yet — add trades on the daily log first.');
+        get().flash(DLT.noCrewRows[get().lang]);
         return;
       }
       set((s) => {
@@ -5214,7 +5219,7 @@ export const useStore = create<Store>()(
       });
       persistDailyLogDraft();
       get().record('QR check-in · Helper');
-      get().flash('Worker checked in via QR · Helper · 9:03 AM · face verified.');
+      get().flash(DLT.qrScanned[get().lang]);
     },
     confirmCrew: () => {
       set((s) => {
@@ -5267,7 +5272,7 @@ export const useStore = create<Store>()(
       if (pickedIn && !scopeStillCurrent(pickedIn)) return;
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
-        get().flash('Could not read that photo — please try again.');
+        get().flash(DLT.photoUnreadable[get().lang]);
         return;
       }
       const [, mime, base64] = m;
@@ -5297,7 +5302,7 @@ export const useStore = create<Store>()(
           });
           persistOutbox();
           persistDailyLogDraft();
-          get().flash('Photo saved offline — will upload when signal returns.');
+          get().flash(DLT.photoOffline[get().lang]);
           return;
         }
         // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
@@ -5316,12 +5321,10 @@ export const useStore = create<Store>()(
             persistDailyLogDraft();
             // say what the photo actually carried, not what the feature is called
             get().flash(
-              hasStamp(stamped)
-                ? 'Progress photo uploaded — stamped from the photo, visible to PMC.'
-                : 'Progress photo uploaded — visible to PMC.',
+              hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang],
             );
           })
-          .catch(() => get().flash('Could not upload the photo — please try again.'));
+          .catch(() => get().flash(DLT.photoUploadFailed[get().lang]));
         return;
       }
       // local demo: keep the data URL as the image source; also place it on the tree
@@ -5346,41 +5349,40 @@ export const useStore = create<Store>()(
       persistDailyLogDraft();
       get().record('Progress photo');
       if (!get().online) {
-        get().flash('Photo saved offline — will upload when signal returns.');
+        get().flash(DLT.photoOffline[get().lang]);
       } else {
         get().flash(
-          hasStamp(stamped)
-            ? 'Progress photo added — stamped from the photo.'
-            : 'Progress photo added.',
+          hasStamp(stamped) ? DLT.photoAddedStamped[get().lang] : DLT.photoAdded[get().lang],
         );
       }
     },
     submitDailyLog: () => {
       const dl = get().dailyLog;
       if (!dl) {
-        get().flash('No daily log yet — start today\u2019s log first.');
+        get().flash(DLT.noLog[get().lang]);
         return;
       }
       if (!dl.checkedIn) {
-        get().flash('Please check in at site before submitting the daily log.');
+        get().flash(DLT.submitNeedsCheckIn[get().lang]);
         return;
       }
       // a log already sent is never sent again: each send mints a fresh idempotency key, so the
       // server would take a second tap as a second, independent submission
       if (dl.submitted) {
-        get().flash('Today\u2019s log is already with PMC.');
+        get().flash(DLT.alreadySent[get().lang]);
         return;
       }
       // a send already on its way (queued, or committed but not yet read back) is never queued twice
       if (dailyLogCommandInFlight(get())) {
-        get().flash('Today\u2019s log is already on its way to PMC.');
+        get().flash(DLT.alreadyOnItsWay[get().lang]);
         return;
       }
       const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew };
       // Task 10 correction round 2 (finding 1): WRITE-AHEAD — the op + its key are persisted before the
       // network call (online too), so a lost response is retried under the SAME key, submitting once.
       const submitKey = newIdempotencyKey();
-      if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, 'Submit daily log', 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
+      const lang = get().lang;
+      if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, DLC.submit.en, DLT.sent[lang], DLX.savedOffline(DLC.submit[lang], lang))) return;
       set((s) => {
         if (!s.dailyLog) return;
         s.dailyLog.submitted = true;
@@ -5388,7 +5390,7 @@ export const useStore = create<Store>()(
       });
       persistDailyLogDraft();
       get().record('Daily log submit');
-      get().flash(get().online ? 'Daily site log sent to PMC — attendance, materials & photos attached.' : 'Saved offline — log will upload to PMC when signal returns.');
+      get().flash(get().online ? DLT.sent[lang] : DLT.sentOffline[lang]);
     },
     flagMismatch: (idx) => {
       const mat = get().dailyLog?.materials[idx];
@@ -5396,7 +5398,8 @@ export const useStore = create<Store>()(
       const flagKey = newIdempotencyKey();
       // finding 1: WRITE-AHEAD — persist the op + key before the call; a lost response replays the SAME
       // key, flagging exactly once.
-      if (runWriteAhead({ t: 'flagMismatch', decisionId: mat.decisionId, idempotencyKey: flagKey }, 'Flag ' + mat.decisionId, 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
+      const lang = get().lang;
+      if (runWriteAhead({ t: 'flagMismatch', decisionId: mat.decisionId, idempotencyKey: flagKey }, 'Flag ' + mat.decisionId, DLT.flagged[lang], DLX.savedOffline(`${DLC.flag[lang]} ${mat.decisionId}`, lang))) return;
       set((s) => {
         const m = s.dailyLog?.materials[idx];
         if (m) m.matched = false;
@@ -5410,7 +5413,7 @@ export const useStore = create<Store>()(
         s.notifications.unshift({ text: 'Material mismatch: ' + mat.name + ' ≠ approved ' + mat.decisionId, time: 'just now', color: '#B23A34' });
       });
       get().record('Material mismatch flag');
-      get().flash('Mismatch flagged — PMC alerted and the linked activity is now blocked.');
+      get().flash(DLT.flagged[lang]);
     },
     record: (label) => {
       if (!get().online) set((s) => { s.syncQueue.push(label); });
@@ -5419,7 +5422,7 @@ export const useStore = create<Store>()(
       const goingOnline = !get().online;
       set((s) => { s.online = goingOnline; });
       if (!goingOnline) {
-        get().flash('Signal lost — the app keeps working, updates will queue.');
+        get().flash(DLT.signalLost[get().lang]);
         return;
       }
       // back online: replay queued API mutations (Phase 8 outbox); else clear demo labels
@@ -5430,7 +5433,7 @@ export const useStore = create<Store>()(
       if (get().syncQueue.length) {
         const n = get().syncQueue.length;
         set((s) => { s.syncQueue = []; });
-        get().flash(n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.');
+        get().flash(DLX.synced(n, get().lang));
       }
     },
     flushOutbox: async (opts) => {
@@ -5607,10 +5610,11 @@ export const useStore = create<Store>()(
       if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), opts?.okMsg, flushLease.scope);
 
       const parts: string[] = [];
-      if (synced > 0 && !opts?.okMsg) parts.push(`${synced} offline update${synced > 1 ? 's' : ''} synced`);
-      if (dropped > 0) parts.push(`${dropped} could not be applied and ${dropped > 1 ? 'were' : 'was'} discarded`);
-      if (remaining.length > 0) parts.push(`${remaining.length} still pending — will retry when you reconnect`);
-      if (parts.length) get().flash(parts.join('; ') + '.');
+      const lang = get().lang;
+      if (synced > 0 && !opts?.okMsg) parts.push(SYNC.synced(synced, lang));
+      if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
+      if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
+      if (parts.length) get().flash(SYNC.join(parts, lang));
       // the chain refusals carry the server's words, so they are not folded into the count above
       if (chainRefusals.length) get().flash(chainRefusals.join(' '));
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved

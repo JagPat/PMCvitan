@@ -493,6 +493,256 @@ export function changeModalExplainer(kind: DeciderKind, lang: Lang): string {
   return `This decision is locked. A change must be re-approved by ${who} with cost & time impact.`;
 }
 
+/** #827 (Top 10 #5) — the engineer's daily site log, a Board-named path. English is byte-identical to the
+ *  screen's original copy. Crew trades, dates, material names and places are project data, shown as recorded. */
+export const dailyLogLabels = {
+  eyebrow: { en: 'DAILY SITE LOG', hi: 'रोज़ का साइट लॉग', gu: 'રોજનો સાઇટ લૉગ' },
+  what: { en: 'Daily log', hi: 'रोज़ का लॉग', gu: 'રોજનો લૉગ' },
+  boundaryLoading: { en: 'Loading the site log…', hi: 'साइट लॉग खुल रहा है…', gu: 'સાઇટ લૉગ ખૂલી રહ્યો છે…' },
+  boundaryUnavailable: {
+    en: "Couldn't load the site log — check your connection and access.",
+    hi: 'साइट लॉग नहीं खुला — अपना इंटरनेट और अनुमति जाँचें।',
+    gu: 'સાઇટ લૉગ ન ખૂલ્યો — તમારું ઇન્ટરનેટ અને પરવાનગી તપાસો.',
+  },
+  openCurrent: { en: 'Open the current log', hi: 'आज का लॉग खोलें', gu: 'હાલનો લૉગ ખોલો' },
+  loadingTitle: { en: "Loading today's log…", hi: 'आज का लॉग खुल रहा है…', gu: 'આજનો લૉગ ખૂલી રહ્યો છે…' },
+  loadingDetail: { en: "Fetching this project's daily site log.", hi: 'इस प्रोजेक्ट का रोज़ का साइट लॉग ला रहे हैं।', gu: 'આ પ્રોજેક્ટનો રોજનો સાઇટ લૉગ લાવી રહ્યા છીએ.' },
+  unavailableTitle: { en: 'Daily log unavailable', hi: 'रोज़ का लॉग अभी नहीं मिल रहा', gu: 'રોજનો લૉગ હાલ મળતો નથી' },
+  unavailableDetail: {
+    en: "We couldn't load this project's site log. Check your connection and access, then retry.",
+    hi: 'इस प्रोजेक्ट का साइट लॉग नहीं खुला। अपना इंटरनेट और अनुमति जाँचें, फिर दोबारा कोशिश करें।',
+    gu: 'આ પ્રોજેક્ટનો સાઇટ લૉગ ન ખૂલ્યો. તમારું ઇન્ટરનેટ અને પરવાનગી તપાસો, પછી ફરી પ્રયાસ કરો.',
+  },
+  retry: { en: 'Retry', hi: 'फिर कोशिश करें', gu: 'ફરી પ્રયાસ કરો' },
+  noLogTitle: { en: 'No daily log started', hi: 'आज का लॉग शुरू नहीं हुआ', gu: 'આજનો લૉગ શરૂ થયો નથી' },
+  noLogDetail: {
+    en: "Start today's log when site work begins — attendance, crew, materials and progress photos all record onto it.",
+    hi: 'साइट पर काम शुरू होते ही आज का लॉग शुरू करें — हाज़िरी, कारीगर, सामान और काम की फ़ोटो सब इसी में दर्ज होते हैं।',
+    gu: 'સાઇટ પર કામ શરૂ થાય ત્યારે આજનો લૉગ શરૂ કરો — હાજરી, કારીગરો, માલસામાન અને કામના ફોટા બધું તેમાં નોંધાય છે.',
+  },
+  starting: { en: 'Starting today’s log…', hi: 'आज का लॉग शुरू हो रहा है…', gu: 'આજનો લૉગ શરૂ થઈ રહ્યો છે…' },
+  startToday: { en: "Start today's log", hi: 'आज का लॉग शुरू करें', gu: 'આજનો લૉગ શરૂ કરો' },
+  stale: {
+    en: "Showing the last-known log — the latest couldn't load. Actions are paused until it refreshes.",
+    hi: 'पिछला मिला हुआ लॉग दिख रहा है — नया नहीं खुला। ताज़ा होने तक बटन रुके हैं।',
+    gu: 'છેલ્લો મળેલો લૉગ દેખાય છે — નવો ન ખૂલ્યો. તાજો થાય ત્યાં સુધી બટન બંધ છે.',
+  },
+  startNewDay: { en: 'Start new day', hi: 'नया दिन शुरू करें', gu: 'નવો દિવસ શરૂ કરો' },
+  online: { en: 'Online · all synced', hi: 'ऑनलाइन · सब भेजा जा चुका', gu: 'ઓનલાઇન · બધું મોકલાઈ ગયું' },
+  simulateOffline: { en: 'Simulate offline', hi: 'ऑफ़लाइन करके देखें', gu: 'ઓફલાઇન કરી જુઓ' },
+  backOnline: { en: 'Back online', hi: 'फिर ऑनलाइन', gu: 'ફરી ઓનલાઇન' },
+  checkOut: { en: 'Check out', hi: 'साइट से निकलें', gu: 'સાઇટ પરથી નીકળો' },
+  checkIn: { en: 'Check in at site', hi: 'साइट पर हाज़िरी लगाएँ', gu: 'સાઇટ પર હાજરી પૂરો' },
+  proof: {
+    en: "Uses this phone's GPS + a selfie as proof of presence",
+    hi: 'हाज़िरी के सबूत के लिए इस फ़ोन का GPS और एक सेल्फ़ी लेता है',
+    gu: 'હાજરીના પુરાવા માટે આ ફોનનું GPS અને એક સેલ્ફી લે છે',
+  },
+  crewTitle: { en: 'CREW PRESENT TODAY', hi: 'आज मौजूद कारीगर', gu: 'આજે હાજર કારીગરો' },
+  qr: { en: 'Worker self check-in (scan QR)', hi: 'कारीगर खुद हाज़िरी लगाएँ (QR स्कैन)', gu: 'કારીગર જાતે હાજરી પૂરે (QR સ્કેન)' },
+  materialTitle: { en: 'MATERIAL ON SITE', hi: 'साइट पर सामान', gu: 'સાઇટ પર માલસામાન' },
+  matches: { en: '✓ Matches locked decision ', hi: '✓ लॉक निर्णय से मेल खाता है ', gu: '✓ લૉક નિર્ણય સાથે મેળ ખાય છે ' },
+  mismatch: { en: '⚠ MISMATCH — not the approved ', hi: '⚠ मेल नहीं — यह मंज़ूर किया हुआ नहीं ', gu: '⚠ મેળ નથી — આ મંજૂર કરેલું નથી ' },
+  flagMismatch: { en: 'Flag mismatch', hi: 'मेल नहीं — बताएँ', gu: 'મેળ નથી — જણાવો' },
+  recordDelivery: { en: 'Record material delivery', hi: 'सामान की डिलीवरी दर्ज करें', gu: 'માલસામાનની ડિલિવરી નોંધો' },
+  progressTitle: { en: "TODAY'S PROGRESS", hi: 'आज का काम', gu: 'આજનું કામ' },
+  stamped: {
+    en: 'Stamped with the time and place the photo itself recorded',
+    hi: 'फ़ोटो में दर्ज समय और जगह के साथ',
+    gu: 'ફોટામાં નોંધાયેલા સમય અને જગ્યા સાથે',
+  },
+  add: { en: 'Add', hi: 'जोड़ें', gu: 'ઉમેરો' },
+  placePhoto: { en: 'PLACE THIS PHOTO', hi: 'यह फ़ोटो कहाँ की है', gu: 'આ ફોટો ક્યાંનો છે' },
+  optional: { en: '(OPTIONAL)', hi: '(ज़रूरी नहीं)', gu: '(જરૂરી નથી)' },
+  nextPhoto: { en: 'Next photo →', hi: 'अगली फ़ोटो →', gu: 'આગળનો ફોટો →' },
+  submitted: { en: 'Submitted ✓ — sent to PMC', hi: 'भेज दिया ✓ — PMC को', gu: 'મોકલી દીધું ✓ — PMC ને' },
+  sending: { en: 'Sending to PMC…', hi: 'PMC को भेज रहे हैं…', gu: 'PMC ને મોકલી રહ્યા છીએ…' },
+  submit: { en: 'Submit Daily Log to PMC', hi: 'रोज़ का लॉग PMC को भेजें', gu: 'રોજનો લૉગ PMC ને મોકલો' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** The daily log's counted and filled-in lines, in the viewer's language (English as before). */
+export const dailyLogText = {
+  offline: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `ऑफ़लाइन · ${n} अपडेट भेजने बाकी` : lang === 'gu' ? `ઓફલાઇન · ${n} અપડેટ મોકલવાના બાકી` : `Offline · ${n} update${n === 1 ? '' : 's'} queued`,
+  // a check-in with no recorded time says so without one, never "· null"
+  checkedIn: (time: string | null, lang: Lang): string => {
+    const at = time ? ` · ${clockTimeIn(time, lang)}` : '';
+    return lang === 'hi' ? `हाज़िरी लगी${at}` : lang === 'gu' ? `હાજરી પુરાઈ${at}` : `Checked in${at}`;
+  },
+  checkedInWhere: (site: string, lang: Lang): string =>
+    lang === 'hi' ? `${site} · 60 मी के अंदर · GPS + सेल्फ़ी` : lang === 'gu' ? `${site} · 60 મી ની અંદર · GPS + સેલ્ફી` : `${site} · within 60 m · GPS + selfie`,
+  workers: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} कारीगर` : lang === 'gu' ? `${n} કારીગરો` : `${n} workers`,
+  removeTrade: (trade: string, lang: Lang): string =>
+    lang === 'hi' ? `${trade} एक कम करें` : lang === 'gu' ? `${trade} એક ઓછો કરો` : `Remove ${trade}`,
+  addTrade: (trade: string, lang: Lang): string =>
+    lang === 'hi' ? `${trade} एक बढ़ाएँ` : lang === 'gu' ? `${trade} એક વધારો` : `Add ${trade}`,
+  photos: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `काम की ${n} फ़ोटो` : lang === 'gu' ? `કામના ${n} ફોટા` : `${n} progress photos`,
+  photoAlt: (i: number, lang: Lang): string =>
+    lang === 'hi' ? `काम की फ़ोटो ${i}` : lang === 'gu' ? `કામનો ફોટો ${i}` : `Progress photo ${i}`,
+};
+
+/** The place picker (zone → room → object) the daily log, drawings and plan forms share. English keeps the
+ *  picker's original words: the kind is lower-cased inside a sentence. */
+export const placeKindLabels = {
+  zone: { en: 'Zone', hi: 'ज़ोन', gu: 'ઝોન' },
+  room: { en: 'Room', hi: 'कमरा', gu: 'રૂમ' },
+  element: { en: 'Object', hi: 'चीज़', gu: 'વસ્તુ' },
+} satisfies Record<string, Record<Lang, string>>;
+
+export const placePickerText = {
+  add: { en: 'Add', hi: 'जोड़ें', gu: 'ઉમેરો' },
+  cancel: { en: 'Cancel', hi: 'रद्द करें', gu: 'રદ કરો' },
+  newName: (kind: keyof typeof placeKindLabels, lang: Lang): string =>
+    lang === 'en' ? `New ${placeKindLabels[kind].en.toLowerCase()} name` : lang === 'hi' ? `नए ${placeKindLabels[kind].hi} का नाम` : `નવા ${placeKindLabels[kind].gu}નું નામ`,
+  addNew: (kind: keyof typeof placeKindLabels, lang: Lang): string =>
+    lang === 'en' ? `+ New ${placeKindLabels[kind].en.toLowerCase()}…` : lang === 'hi' ? `+ नया ${placeKindLabels[kind].hi} जोड़ें…` : `+ નવો ${placeKindLabels[kind].gu} ઉમેરો…`,
+  objectTag: (lang: Lang): string => (lang === 'en' ? placeKindLabels.element.en.toLowerCase() : placeKindLabels.element[lang]),
+};
+
+/** A clock time as the viewer reads it: Hindi and Gujarati read a 12-hour "8:12 AM" (the time the check-in
+ *  writer records) as 24-hour "08:12", so no English AM/PM is left; English, and any other text, is unchanged. */
+export function clockTimeIn(time: string, lang: Lang): string {
+  if (lang === 'en') return time;
+  const m = /^(\d{1,2}):(\d{2})\s*([AaPp])\.?[Mm]\.?$/.exec(time.trim());
+  if (!m) return time;
+  const h = Number(m[1]) % 12 + (m[3].toLowerCase() === 'p' ? 12 : 0);
+  return `${String(h).padStart(2, '0')}:${m[2]}`;
+}
+
+/** What the daily log's actions say back (the toast after a tap). English is byte-identical to the store's
+ *  original messages. */
+export const dailyLogToast = {
+  noLog: { en: 'No daily log yet — start today’s log first.', hi: 'अभी आज का लॉग नहीं है — पहले आज का लॉग शुरू करें।', gu: 'હજી આજનો લૉગ નથી — પહેલાં આજનો લૉગ શરૂ કરો.' },
+  startNeedsServer: { en: 'Starting a new log needs the server.', hi: 'नया लॉग शुरू करने के लिए सर्वर चाहिए।', gu: 'નવો લૉગ શરૂ કરવા સર્વર જોઈએ.' },
+  startInFlight: { en: 'Today’s log is already being started.', hi: 'आज का लॉग शुरू हो रहा है।', gu: 'આજનો લૉગ શરૂ થઈ રહ્યો છે.' },
+  started: { en: 'New daily log started — crew carried over at zero.', hi: 'नया लॉग शुरू हुआ — कारीगरों की गिनती शून्य से।', gu: 'નવો લૉગ શરૂ થયો — કારીગરોની ગણતરી શૂન્યથી.' },
+  materialNeedsServer: { en: 'Recording materials needs the server.', hi: 'सामान दर्ज करने के लिए सर्वर चाहिए।', gu: 'માલસામાન નોંધવા સર્વર જોઈએ.' },
+  checkedInOffline: { en: 'Checked in offline — will sync when signal returns.', hi: 'ऑफ़लाइन हाज़िरी लगी — नेटवर्क आते ही भेज दी जाएगी।', gu: 'ઓફલાઇન હાજરી પુરાઈ — નેટવર્ક આવતાં મોકલાશે.' },
+  checkedOut: { en: 'Checked out. Shift hours logged.', hi: 'साइट से निकले। काम के घंटे दर्ज हुए।', gu: 'સાઇટ પરથી નીકળ્યા. કામના કલાક નોંધાયા.' },
+  noCrewRows: { en: 'No crew rows on this log yet — add trades on the daily log first.', hi: 'इस लॉग में अभी कारीगरों की पंक्तियाँ नहीं हैं — पहले काम के प्रकार जोड़ें।', gu: 'આ લૉગમાં હજી કારીગરોની હાર નથી — પહેલાં કામના પ્રકાર ઉમેરો.' },
+  qrScanned: { en: 'Worker checked in via QR · Helper · 9:03 AM · face verified.', hi: 'कारीगर की QR से हाज़िरी लगी · हेल्पर · 09:03 · चेहरा जाँचा गया।', gu: 'કારીગરની QR થી હાજરી પુરાઈ · હેલ્પર · 09:03 · ચહેરો ચકાસાયો.' },
+  photoUnreadable: { en: 'Could not read that photo — please try again.', hi: 'यह फ़ोटो पढ़ी नहीं जा सकी — फिर कोशिश करें।', gu: 'આ ફોટો વાંચી ન શકાયો — ફરી પ્રયાસ કરો.' },
+  photoOffline: { en: 'Photo saved offline — will upload when signal returns.', hi: 'फ़ोटो ऑफ़लाइन सहेजी — नेटवर्क आते ही अपलोड होगी।', gu: 'ફોટો ઓફલાઇન સાચવ્યો — નેટવર્ક આવતાં અપલોડ થશે.' },
+  photoUploadedStamped: { en: 'Progress photo uploaded — stamped from the photo, visible to PMC.', hi: 'काम की फ़ोटो अपलोड हुई — फ़ोटो के समय-जगह के साथ, PMC देख सकते हैं।', gu: 'કામનો ફોટો અપલોડ થયો — ફોટાના સમય-જગ્યા સાથે, PMC જોઈ શકે છે.' },
+  photoUploaded: { en: 'Progress photo uploaded — visible to PMC.', hi: 'काम की फ़ोटो अपलोड हुई — PMC देख सकते हैं।', gu: 'કામનો ફોટો અપલોડ થયો — PMC જોઈ શકે છે.' },
+  photoUploadFailed: { en: 'Could not upload the photo — please try again.', hi: 'फ़ोटो अपलोड नहीं हुई — फिर कोशिश करें।', gu: 'ફોટો અપલોડ ન થયો — ફરી પ્રયાસ કરો.' },
+  photoAddedStamped: { en: 'Progress photo added — stamped from the photo.', hi: 'काम की फ़ोटो जुड़ी — फ़ोटो के समय-जगह के साथ।', gu: 'કામનો ફોટો ઉમેરાયો — ફોટાના સમય-જગ્યા સાથે.' },
+  photoAdded: { en: 'Progress photo added.', hi: 'काम की फ़ोटो जुड़ी।', gu: 'કામનો ફોટો ઉમેરાયો.' },
+  submitNeedsCheckIn: { en: 'Please check in at site before submitting the daily log.', hi: 'लॉग भेजने से पहले साइट पर हाज़िरी लगाएँ।', gu: 'લૉગ મોકલતાં પહેલાં સાઇટ પર હાજરી પૂરો.' },
+  alreadySent: { en: 'Today’s log is already with PMC.', hi: 'आज का लॉग PMC के पास पहुँच चुका है।', gu: 'આજનો લૉગ PMC પાસે પહોંચી ગયો છે.' },
+  alreadyOnItsWay: { en: 'Today’s log is already on its way to PMC.', hi: 'आज का लॉग PMC को जा रहा है।', gu: 'આજનો લૉગ PMC ને જઈ રહ્યો છે.' },
+  sent: { en: 'Daily site log sent to PMC — attendance, materials & photos attached.', hi: 'रोज़ का लॉग PMC को भेजा — हाज़िरी, सामान और फ़ोटो साथ में।', gu: 'રોજનો લૉગ PMC ને મોકલ્યો — હાજરી, માલસામાન અને ફોટા સાથે.' },
+  sentOffline: { en: 'Saved offline — log will upload to PMC when signal returns.', hi: 'ऑफ़लाइन सहेजा — नेटवर्क आते ही लॉग PMC को जाएगा।', gu: 'ઓફલાઇન સાચવ્યું — નેટવર્ક આવતાં લૉગ PMC ને જશે.' },
+  flagged: { en: 'Mismatch flagged — PMC alerted and the linked activity is now blocked.', hi: 'मेल न होने की सूचना दी — PMC को बताया गया और जुड़ा काम रोका गया।', gu: 'મેળ ન હોવાની જાણ કરી — PMC ને જણાવ્યું અને જોડાયેલું કામ રોક્યું.' },
+  signalLost: { en: 'Signal lost — the app keeps working, updates will queue.', hi: 'नेटवर्क चला गया — ऐप चलता रहेगा, बदलाव कतार में रहेंगे।', gu: 'નેટવર્ક ગયું — ઍપ ચાલુ રહેશે, ફેરફારો કતારમાં રહેશે.' },
+} satisfies Record<string, Record<Lang, string>>;
+
+export const dailyLogToastText = {
+  checkedIn: (site: string, lang: Lang): string =>
+    lang === 'hi' ? `${site} पर हाज़िरी लगी · 60 मी के अंदर · सेल्फ़ी + समय दर्ज।` : lang === 'gu' ? `${site} પર હાજરી પુરાઈ · 60 મી ની અંદર · સેલ્ફી + સમય નોંધાયો.` : `Checked in at ${site} · within 60 m · selfie + time stamped.`,
+  materialRecorded: (name: string, lang: Lang): string =>
+    lang === 'hi' ? `सामान दर्ज हुआ: ${name}।` : lang === 'gu' ? `માલસામાન નોંધાયો: ${name}.` : `Material recorded: ${name}.`,
+  savedOffline: (label: string, lang: Lang): string =>
+    lang === 'hi' ? `${label} — ऑफ़लाइन सहेजा, नेटवर्क आते ही भेजा जाएगा।` : lang === 'gu' ? `${label} — ઓફલાઇન સાચવ્યું, નેટવર્ક આવતાં મોકલાશે.` : `${label} — saved offline, will sync when you reconnect.`,
+  synced: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} ऑफ़लाइन बदलाव सर्वर पर भेजे गए।` : lang === 'gu' ? `${n} ઓફલાઇન ફેરફારો સર્વર પર મોકલાયા.` : n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.',
+};
+
+/** What a reconnect says about the queued offline work it replayed (the outbox flush). */
+export const syncResultText = {
+  synced: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} ऑफ़लाइन बदलाव भेजे गए` : lang === 'gu' ? `${n} ઓફલાઇન ફેરફારો મોકલાયા` : `${n} offline update${n > 1 ? 's' : ''} synced`,
+  dropped: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} लागू नहीं हो सके और हटा दिए गए` : lang === 'gu' ? `${n} લાગુ ન થઈ શક્યા અને કાઢી નખાયા` : `${n} could not be applied and ${n > 1 ? 'were' : 'was'} discarded`,
+  pending: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} अभी बाकी — नेटवर्क आते ही फिर कोशिश होगी` : lang === 'gu' ? `${n} હજી બાકી — નેટવર્ક આવતાં ફરી પ્રયાસ થશે` : `${n} still pending — will retry when you reconnect`,
+  join: (parts: string[], lang: Lang): string => parts.join('; ') + (lang === 'hi' ? '।' : '.'),
+};
+
+/** What adding a place (zone, room or object) from the place picker says back. */
+export const locationResultText = {
+  needsServer: { en: 'Managing locations needs the server.', hi: 'जगहें बदलने के लिए सर्वर से जुड़ना ज़रूरी है।', gu: 'જગ્યાઓ બદલવા સર્વર સાથે જોડાણ જરૂરી છે.' },
+  failed: { en: 'Could not add the location — check your access and try again.', hi: 'जगह नहीं जुड़ सकी — अपनी अनुमति जाँचें और फिर कोशिश करें।', gu: 'જગ્યા ઉમેરી શકાઈ નહીં — તમારી પરવાનગી તપાસો અને ફરી પ્રયાસ કરો.' },
+  added: (kind: string, name: string, lang: Lang): string => {
+    if (lang === 'en') return `Added ${kind}: ${name}.`;
+    const k = (placeKindLabels as Record<string, Record<Lang, string>>)[kind]?.[lang] ?? kind;
+    return lang === 'hi' ? `${k} जोड़ा गया: ${name}।` : `${k} ઉમેરાયું: ${name}.`;
+  },
+};
+
+/** The names of the daily log's write-ahead commands, as the "saved offline" toast says them. */
+export const dailyLogCommandLabels = {
+  start: { en: 'New daily log', hi: 'नया लॉग', gu: 'નવો લૉગ' },
+  material: { en: 'Record material', hi: 'सामान दर्ज', gu: 'માલસામાન નોંધ' },
+  submit: { en: 'Submit daily log', hi: 'लॉग भेजना', gu: 'લૉગ મોકલવો' },
+  flag: { en: 'Flag', hi: 'मेल नहीं', gu: 'મેળ નથી' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** The material-delivery form the daily log opens. */
+export const addMaterialLabels = {
+  title: { en: 'Record material delivery', hi: 'सामान की डिलीवरी दर्ज करें', gu: 'માલસામાનની ડિલિવરી નોંધો' },
+  introBefore: { en: 'What arrived, how much, and where. Under ', hi: 'क्या आया, कितना और कहाँ। ', gu: 'શું આવ્યું, કેટલું અને ક્યાં. ' },
+  introAfter: {
+    en: ': how it is stored, and a link to a locked decision so the PMC can confirm the delivery matches what the client approved.',
+    hi: ' में: कैसे रखा है, और लॉक निर्णय से जोड़ें ताकि PMC देख सके कि सामान क्लाइंट की मंज़ूरी से मेल खाता है।',
+    gu: ' માં: કેવી રીતે રાખ્યું છે, અને લૉક નિર્ણય સાથે જોડો જેથી PMC જોઈ શકે કે માલ ક્લાયન્ટની મંજૂરી સાથે મેળ ખાય છે.',
+  },
+  name: { en: 'Material (e.g. Italian Marble slabs)', hi: 'सामान (जैसे इटालियन मार्बल की स्लैब)', gu: 'માલસામાન (જેમ કે ઇટાલિયન માર્બલની સ્લેબ)' },
+  qty: { en: 'Qty (e.g. 40 sqm)', hi: 'मात्रा (जैसे 40 वर्ग मी)', gu: 'જથ્થો (જેમ કે 40 ચો.મી.)' },
+  storage: { en: 'Stored how? (e.g. covered, on pallets)', hi: 'कैसे रखा है? (जैसे ढका हुआ, पैलेट पर)', gu: 'કેવી રીતે રાખ્યું છે? (જેમ કે ઢાંકેલું, પૅલેટ પર)' },
+  linkTitle: { en: 'LINK TO DECISION', hi: 'निर्णय से जोड़ें', gu: 'નિર્ણય સાથે જોડો' },
+  linkAria: { en: 'Link to decision', hi: 'निर्णय से जोड़ें', gu: 'નિર્ણય સાથે જોડો' },
+  noLink: { en: '— No linked decision —', hi: '— कोई निर्णय नहीं जुड़ा —', gu: '— કોઈ નિર્ણય જોડાયો નથી —' },
+  swatchAria: { en: 'Material swatch', hi: 'सामान का रंग-नमूना', gu: 'માલસામાનનો રંગ-નમૂનો' },
+  cancel: { en: 'Cancel', hi: 'रद्द करें', gu: 'રદ કરો' },
+  save: { en: 'Record delivery', hi: 'डिलीवरी दर्ज करें', gu: 'ડિલિવરી નોંધો' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** The swatch names a material picks from; English is the swatch's own key, as the picker always showed. */
+export const swatchLabels = {
+  marble: { en: 'marble', hi: 'मार्बल', gu: 'માર્બલ' },
+  vitrified: { en: 'vitrified', hi: 'विट्रिफ़ाइड', gu: 'વિટ્રિફાઇડ' },
+  teak: { en: 'teak', hi: 'सागौन', gu: 'સાગ' },
+  walnut: { en: 'walnut', hi: 'अखरोट', gu: 'અખરોટ' },
+  chrome: { en: 'chrome', hi: 'क्रोम', gu: 'ક્રોમ' },
+  glass: { en: 'glass', hi: 'काँच', gu: 'કાચ' },
+  quartz: { en: 'quartz', hi: 'क्वार्ट्ज़', gu: 'ક્વાર્ટ્ઝ' },
+  water: { en: 'water', hi: 'पानी', gu: 'પાણી' },
+  concrete: { en: 'concrete', hi: 'कंक्रीट', gu: 'કોંક્રિટ' },
+  tile: { en: 'tile', hi: 'टाइल', gu: 'ટાઇલ' },
+  paint: { en: 'paint', hi: 'पेंट', gu: 'પેઇન્ટ' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** The shared form pieces a capture form uses: the inherited place chip and the folded "More details". */
+export const formPieceLabels = {
+  location: { en: 'LOCATION', hi: 'जगह', gu: 'જગ્યા' },
+  change: { en: 'Change', hi: 'बदलें', gu: 'બદલો' },
+  moreDetails: { en: 'More details', hi: 'और जानकारी', gu: 'વધુ વિગતો' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** The full-screen photo viewer. */
+export const photoViewerLabels = {
+  dialog: { en: 'Photo', hi: 'फ़ोटो', gu: 'ફોટો' },
+  close: { en: 'Close photo', hi: 'फ़ोटो बंद करें', gu: 'ફોટો બંધ કરો' },
+  image: { en: 'Site photo, full size', hi: 'साइट की फ़ोटो, पूरे आकार में', gu: 'સાઇટનો ફોટો, પૂરા કદમાં' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** What a hub says under a record link while that record cannot be shown (every hub shares it). */
+export const recordBoundaryText = {
+  opening: (id: string, lang: Lang): string => (lang === 'hi' ? `${id} खुल रहा है…` : lang === 'gu' ? `${id} ખૂલી રહ્યું છે…` : `Opening ${id}…`),
+  returning: { en: 'Returning…', hi: 'वापस जा रहे हैं…', gu: 'પાછા જઈ રહ્યા છીએ…' } as Record<Lang, string>,
+  retry: { en: 'Retry', hi: 'फिर कोशिश करें', gu: 'ફરી પ્રયાસ કરો' } as Record<Lang, string>,
+  /** "<what> <id> isn't available": the words after the id, which keeps its own type face */
+  missingAfter: { en: " isn't available", hi: ' अभी नहीं मिल रहा', gu: ' હાલ મળતું નથી' } as Record<Lang, string>,
+  missingDetail: {
+    en: 'It may have been completed or removed, or you may not have access to it.',
+    hi: 'शायद यह पूरा हो गया या हटा दिया गया, या आपको इसे देखने की अनुमति नहीं है।',
+    gu: 'કદાચ તે પૂરું થયું કે દૂર કરાયું, અથવા તમને તે જોવાની પરવાનગી નથી.',
+  } as Record<Lang, string>,
+};
+
 /** The language switch's own labels: a short mark for the control, and each language's name
  *  written in that language, so a reader finds theirs without reading the others. Ordered as the
  *  switch shows them — Gujarati first, the site's default. */

@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectVisibleDecisions } from '@/store/selectors';
 import { Button, Modal, Swatch, InheritedContext, MoreDetails } from '@/components';
-import { SW, type SwatchKey } from '@vitan/shared';
+import { SW, addMaterialLabels as L, formPieceLabels, swatchLabels, type SwatchKey } from '@vitan/shared';
 import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
 
 /**
@@ -23,6 +23,7 @@ import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
  */
 export function AddMaterialModal({ context, onClose }: { context?: CaptureContext; onClose: () => void }) {
   const addSiteMaterial = useStore((s) => s.addSiteMaterial);
+  const lang = useStore((s) => s.lang);
   // a delivery matches a published decision — drafts aren't linkable
   // …and a WITHDRAWN decision is terminal: a delivery can no longer match it, so the picker
   // excludes it for EVERY role on top of the shared audience rule (4a round 6, Codex)
@@ -53,14 +54,12 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
   return (
     <Modal onClose={onClose} maxWidth={440} labelledBy="add-mat-title">
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
-        <div id="add-mat-title" style={{ fontWeight: 700, fontSize: 17 }}>Record material delivery</div>
+        <div id="add-mat-title" style={{ fontWeight: 700, fontSize: 17 }}>{L.title[lang]}</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          What arrived, how much, and where. Under <b>More details</b>: how it is stored, and a
-          link to a locked decision so the PMC can confirm the delivery matches what the client
-          approved.
+          {L.introBefore[lang]}<b>{formPieceLabels.moreDetails[lang]}</b>{L.introAfter[lang]}
         </div>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Material (e.g. Italian Marble slabs)" style={{ ...fldM, marginTop: 14, width: '100%' }} data-testid="mat-name" />
-        <input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Qty (e.g. 40 sqm)" style={{ ...fldM, marginTop: 10, width: '100%' }} data-testid="mat-qty" />
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder={L.name[lang]} style={{ ...fldM, marginTop: 14, width: '100%' }} data-testid="mat-name" />
+        <input value={qty} onChange={(e) => setQty(e.target.value)} placeholder={L.qty[lang]} style={{ ...fldM, marginTop: 10, width: '100%' }} data-testid="mat-qty" />
 
         <div style={{ marginTop: 12 }}>
           <InheritedContext value={nodeId} onChange={setNodeId} inherited={inherited} idPrefix="mat-loc" testId="mat-place" />
@@ -68,11 +67,11 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
 
         <MoreDetails testId="mat-more">
           {/* where and how it is STORED — not the location, which the place above carries */}
-          <input value={storage} onChange={(e) => setStorage(e.target.value)} placeholder="Stored how? (e.g. covered, on pallets)" style={{ ...fldM, width: '100%' }} data-testid="mat-storage" />
+          <input value={storage} onChange={(e) => setStorage(e.target.value)} placeholder={L.storage[lang]} style={{ ...fldM, width: '100%' }} data-testid="mat-storage" />
 
-          <div style={{ ...sectionLabel, marginTop: 14 }}>LINK TO DECISION</div>
-          <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldM, width: '100%' }} data-testid="mat-decision" aria-label="Link to decision">
-            <option value="">— No linked decision —</option>
+          <div style={{ ...sectionLabel, marginTop: 14 }}>{L.linkTitle[lang]}</div>
+          <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldM, width: '100%' }} data-testid="mat-decision" aria-label={L.linkAria[lang]}>
+            <option value="">{L.noLink[lang]}</option>
             {decisions.map((d) => (
               <option key={d.id} value={d.id}>{d.id} · {d.title}</option>
             ))}
@@ -80,17 +79,17 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
 
           <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
             <Swatch swatch={swatch} size={40} radius={9} />
-            <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 44 }} aria-label="Material swatch">
+            <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 44 }} aria-label={L.swatchAria[lang]}>
               {swatchKeys.map((k) => (
-                <option key={k} value={k}>{k}</option>
+                <option key={k} value={k}>{swatchLabels[k][lang]}</option>
               ))}
             </select>
           </div>
         </MoreDetails>
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
-          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-material" style={{ flex: 1, padding: 12 }}>Record delivery</Button>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>{L.cancel[lang]}</Button>
+          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-material" style={{ flex: 1, padding: 12 }}>{L.save[lang]}</Button>
         </div>
       </div>
     </Modal>

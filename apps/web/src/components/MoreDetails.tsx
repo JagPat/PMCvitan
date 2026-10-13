@@ -1,5 +1,7 @@
 import { useState, type ReactNode, type CSSProperties } from 'react';
 import { ChevronRight, ChevronDown } from '@/lib/icons';
+import { useStore } from '@/store/store';
+import { formPieceLabels } from '@vitan/shared';
 
 /**
  * Secondary fields, folded away until someone wants them.
@@ -14,7 +16,7 @@ import { ChevronRight, ChevronDown } from '@/lib/icons';
  */
 export function MoreDetails({
   children,
-  label = 'More details',
+  label,
   testId,
 }: {
   children: ReactNode;
@@ -22,6 +24,7 @@ export function MoreDetails({
   testId?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const lang = useStore((s) => s.lang);
 
   return (
     <div style={{ marginTop: 12 }} data-testid={testId}>
@@ -33,7 +36,7 @@ export function MoreDetails({
         style={toggle}
       >
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        {label}
+        {label ?? formPieceLabels.moreDetails[lang]}
       </button>
       {open && (
         <div style={{ marginTop: 10 }} data-testid={testId ? `${testId}-body` : undefined}>
