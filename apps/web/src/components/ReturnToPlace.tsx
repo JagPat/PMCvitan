@@ -28,7 +28,7 @@ export function ReturnToPlace() {
 const link: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
-  minHeight: 36,
+  minHeight: 44,
   marginBottom: 8,
   padding: '6px 10px',
   border: '1px solid var(--hairline-strong)',
