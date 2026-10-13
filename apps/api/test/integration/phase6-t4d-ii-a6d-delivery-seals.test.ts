@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { DOMAIN_EVENT_TYPES } from '@vitan/shared';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, insertRawEvent, plantLegacyDelivery, plantLegacyEvent, rawDeliveryRowsSql, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, insertRawEvent, plantLegacyDelivery, plantLegacyEvent, rawDeliveryRowsSql, alwaysExecuteReplay, type TwoProjectFixture } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { OutboxConsumerActivationService } from '../../src/platform/outbox/consumer-activation.service';
@@ -350,7 +350,7 @@ describe('4d-ii-a / A6d — the delivery rows and their seals (live PG)', () => 
     const { eventId } = await publish(entity());
     const before = await rowsOf(eventId);
     const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
-    for (const m of entries.filter((m) => m >= MIGRATION).sort()) {
+    for (const m of alwaysExecuteReplay(MIGRATION)) {
       execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', join(__dirname, '..', '..', 'prisma', 'migrations', m, 'migration.sql')], { stdio: 'pipe' });
     }
     expect(await rowsOf(eventId)).toEqual(before);

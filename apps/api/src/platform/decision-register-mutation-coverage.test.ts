@@ -104,6 +104,9 @@ const COVERAGE: Record<string, Class> = {
   // disagreement command is the only writer) to prove the fold, the rebuild and the live slice carry
   // the non-`standard` origin identically; the same whole-table, single-transaction shape as A7b's.
   'test/integration/phase6-t4d-ii-a7c-inbox-v3.test.ts': 'planted countersign_rejection origin under a whole-table, single-transaction DISABLE TRIGGER USER on ChangeRequest (the A7b shape); teardown by wipeDecisionsVia',
+  // Site Visits SV1-a — writes kinded `sitevisit.*` notices beside their events (the pairing it proves); teardown of
+  // the project it creates deletes its kindless notices only, after the sanctioned reset.
+  'test/integration/site-visits-sv1a.test.ts': 'kinded notices planted beside their events as the pairing under test; teardown by sanctionedReset and a scoped notice delete',
   'test/integration/platform-command-receipt.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
   'test/integration/start-readiness-race.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
 

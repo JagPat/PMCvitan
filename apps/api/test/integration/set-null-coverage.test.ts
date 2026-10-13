@@ -53,6 +53,17 @@ const COVERAGE: Record<string, Classification> = {
       'no module projection serializes Media.nodeId — the snapshot photo layer is a LIVE read ' +
       '(SnapshotService attaches placed photos per request), so a silent null can never be served stale',
   },
+  // ── nodes.remove: the site-visit record (Site Visits #792 SV1-a) ─────────────────────────────
+  'SiteVisit.startNodeId': {
+    exempt:
+      'no module projection serializes site visits — they are read LIVE; the visit keeps its frozen ' +
+      '`startPlaceName`, and the database admits this null only from the node FK action itself (F58)',
+  },
+  'SiteVisitPlace.nodeId': {
+    exempt:
+      'no module projection serializes site visits — they are read LIVE; the place keeps its frozen ' +
+      '`placeName`, and the database admits this null only from the node FK action itself (F58)',
+  },
   // ── activities.remove ───────────────────────────────────────────────────────────────────────
   'Drawing.activityId': {
     signal: 'drawing.activity_unlinked',

@@ -127,6 +127,10 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // helper in either direction: the helper would disable the seal whose refusal is measured,
       // and after the retirement there is no seal for it to toggle.
       'phase6-t4c-v-seal-retirement.test.ts': 1,
+      // Site Visits SV1-a: each of the three visit-record no-truncate seals asserted to REFUSE
+      // the statement (one looped site). Through the helper the seal would be off and the
+      // refusal unmeasured.
+      'site-visits-sv1a.test.ts': 1,
       // Phase 6 unit 4c-iii-r: the repair MARKER's statement-level `BEFORE TRUNCATE` seal. The
       // marker authorizes every later start to skip the decisions.inbox repair, so losing it by
       // TRUNCATE is sealed exactly as losing it by DELETE is — and this probe asserts the seal

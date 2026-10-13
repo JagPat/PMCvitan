@@ -1416,6 +1416,11 @@ baseline it before anything replays (t3c seals exit 5; see §P4T3C3).
   `ALWAYS_EXECUTE` file (A7d's own catalog audit admits the four generations it knows, lease or no
   lease). The runner prints which branch it took. A database that does not carry A7d — a db-push
   baseline, a restore from before A7d — leaves them pending exactly as before.
+  **From Site Visits SV1-a** the same rule extends one generation: A7d's own catalog audit (immutable,
+  gated on the marker or the witness) refuses SV1-a's generation (`f9ebcd07…`), so on a database that
+  carries A7d AND SV1-a's generation the runner also resolves A7d as applied — with 4d-i-b U1 and A7a,
+  whose replays would re-create the kernel actor seal and the revision claimant without the bodies
+  only A7d's replay restored. `scripts/upgrade-proof.sh` proves both the lease-less and served arms.
 - **Restored from a point after A7d was applied but before any process of this release served:** the
   same rule applies — A7d's seals are on the database, a lease is not — so the deploy completes with
   4d-i and U3 resolved. The residual: 4d-i's replay audits do not judge that database's rows; the live
@@ -1583,6 +1588,13 @@ separate cutover seal. 4d-i and 4d-i-b each take the same sequence 4d-ii takes:
    names the version the next `outbox` restart will verify;
 3. restart the SAME build with `OUTBOX_SENDER_MODE=outbox`; startup verifies the seal
    against its own compiled coverage.
+
+**Site Visits #792 SV1-a changes it a fourth time** — `23f47cd9…` → `f9ebcd07…`:
+eight `sitevisit.*` keys (invalidate, never push, pairing-required).
+`20280111000000_site_visits_sv1a_catalog` seeds that generation beside A7d's (and
+`20280112000000_site_visits_sv1a_record` installs the claimants that pair it); the
+SV1-a build takes the same three steps above with `f9ebcd07…` as the seal's version.
+No consumer contract version moves, so nothing else in this section changes.
 
 The seeded `ExternalEffectCatalog` rows are a DIFFERENT mechanism and do not
 substitute for this: two coverage generations keep a still-serving previous

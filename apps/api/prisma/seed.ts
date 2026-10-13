@@ -65,6 +65,9 @@ async function main(): Promise<void> {
     // Top 10 #4b (#778) — a receipt's composite key references `Notification`, so it truncates in the same statement.
     // A TRUNCATE fires no row trigger, so the receipts' immutability seal (a row DELETE refusal) is not met here.
     'NotificationReceipt',
+    // Site Visits (#792) SV1-a — the visit record refuses row DELETE (so `deleteMany` on a project, user or node would
+    // be refused or blocked); it is cleared here, its TRUNCATE seals bypassed by `sanctionedReset`.
+    'SiteVisitPlace', 'SiteVisitAttendee', 'SiteVisit',
     'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
     'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
     'InspectionsProjection', 'MaterialReadinessProjection', 'CashForecastProjection',

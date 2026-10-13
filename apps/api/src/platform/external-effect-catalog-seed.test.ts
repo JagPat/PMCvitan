@@ -28,9 +28,13 @@ const MIGRATIONS = join(__dirname, '..', '..', 'prisma', 'migrations');
 const MIGRATION_4D_I = join(MIGRATIONS, '20271220000000_phase6_t4d_i_dark_migration', 'migration.sql');
 /** 4d-i-b's seed: the pairing generation, the flag true on exactly the plan's six. */
 const MIGRATION_4D_I_B = join(MIGRATIONS, '20271224000000_phase6_t4d_i_b_u3_pairing_flip', 'migration.sql');
-/** 4d-ii-a / A7d's seed: the generation THIS source compiles — the three chain types added, the
- *  architect in three targeted ceilings, the two frozen families with their constant bodies. */
+/** 4d-ii-a / A7d's seed: the three chain types added, the architect in three targeted ceilings, the
+ *  two frozen families with their constant bodies. Since Site Visits SV1-a it is the PREVIOUS
+ *  generation: this source with the eight site-visit keys removed. */
 const MIGRATION_4D_II_A7D = join(MIGRATIONS, '20280104000000_phase6_t4d_ii_a7d_catalog_change', 'migration.sql');
+/** Site Visits #792 SV1-a's seed: the generation THIS source compiles — A7d's plus exactly the eight
+ *  site-visit keys (invalidate, never push, pairing-required). */
+const MIGRATION_SV1A = join(MIGRATIONS, '20280111000000_site_visits_sv1a_catalog', 'migration.sql');
 
 /**
  * Phase 6 unit 4d-i-b — TWO LITERALS, TWO GENERATIONS, ONE SOURCE. 4d-i's literal may not be
@@ -57,6 +61,16 @@ const PAIRING_REQUIRED = new Set([
  */
 const ADDED_BY_A7D = new Set(['decision.forwarded', 'decision.awaiting_countersign', 'membership.standing_changed']);
 const WIDENED_BY_A7D = new Set(['decision.published', 'decision.consultation_requested', 'decision.consultation_responded']);
+
+/**
+ * Site Visits #792 SV1-a — FOUR LITERALS NOW. SV1-a's generation is what this source compiles; A7d's
+ * is pinned as the previous one, DERIVED from this source with the eight keys SV1-a added removed
+ * (A7d's eight-element preimage is unchanged). Every older generation lacks them too.
+ */
+const ADDED_BY_SV1A = new Set([
+  'sitevisit.started', 'sitevisit.ended', 'sitevisit.closed', 'sitevisit.late_end_recorded',
+  'sitevisit.place_added', 'sitevisit.place_retired', 'sitevisit.attendee_added', 'sitevisit.attendee_retired',
+]);
 
 type Row = {
   coverageVersion: string;
@@ -130,14 +144,20 @@ function seededRows(migration: string, seedTable: string): Row[] {
  * (the five-element preimage the 4d-i release hashed, the flag false everywhere) — the two
  * generations whose literals ship, both derived from ONE source.
  */
-type Generation = 'current' | 'pairing' | 'previous';
+type Generation = 'current' | 'a7d' | 'pairing' | 'previous';
 
-/** The catalog as a PREVIOUS generation saw it: A7d's keys removed, its role widening undone. */
+/** The catalog as a PREVIOUS generation saw it: SV1-a's keys removed; before A7d, A7d's keys removed
+ *  and its role widening undone. */
 function catalogBefore(generation: Generation): Record<string, Def> {
   const catalog = EXTERNAL_EFFECTS as Record<string, Def>;
   if (generation === 'current') return catalog;
   const out: Record<string, Def> = {};
   for (const k of Object.keys(catalog)) {
+    if (ADDED_BY_SV1A.has(k)) continue;
+    if (generation === 'a7d') {
+      out[k] = catalog[k]!;
+      continue;
+    }
     if (ADDED_BY_A7D.has(k)) continue;
     const d = catalog[k]!;
     out[k] = WIDENED_BY_A7D.has(k) && d.push !== null ? { ...d, push: d.push.filter((r) => r !== 'architect') } : d;
@@ -187,18 +207,21 @@ function compiledRows(generation: Generation): Row[] {
  *  sixth element. `phase6-t4d-i-catalog-generations.test.ts` pins the same derivation against
  *  the migration's own `_t4d_catalog_incoming` literal; here it is what the 4d-i literal is
  *  compared to, key by key. */
-function previousCoverageVersion(generation: 'pairing' | 'previous'): string {
+function previousCoverageVersion(generation: 'a7d' | 'pairing' | 'previous'): string {
   const catalog = catalogBefore(generation);
   const preimage = JSON.stringify(Object.keys(catalog).sort().map((k) => {
     const d = catalog[k]!;
     const five = [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
+    // SV1-a — A7d's generation is this source's EIGHT-element preimage over its own keys.
+    if (generation === 'a7d') return [...five, d.pairingRequired === true, d.frozenAudience === true, d.pushBody ?? null];
     return generation === 'pairing' ? [...five, d.pairingRequired === true] : five;
   }));
   return createHash('sha256').update(preimage).digest('hex');
 }
 
 const GENERATIONS = [
-  ['4d-ii-a A7d (current)', MIGRATION_4D_II_A7D, '_t4dii_catalog_seed', 'current'],
+  ['site-visits SV1-a (current)', MIGRATION_SV1A, '_sv1a_catalog_seed', 'current'],
+  ['4d-ii-a A7d', MIGRATION_4D_II_A7D, '_t4dii_catalog_seed', 'a7d'],
   ['4d-i-b (pairing)', MIGRATION_4D_I_B, '_t4dib_catalog_seed', 'pairing'],
   ['4d-i (previous)', MIGRATION_4D_I, '_t4d_catalog_seed', 'previous'],
 ] as const;
@@ -278,5 +301,45 @@ describe('phase 6 unit 4d-ii-a / A7d — the widened literal is U3\'s with exact
       }
     }
     expect(cur[0]!.coverageVersion).not.toBe(prev.values().next().value!.coverageVersion);
+  });
+});
+
+describe('site visits #792 SV1-a — the new literal is A7d\'s plus exactly the eight site-visit keys', () => {
+  it('eight keys added (invalidate, never push, pairing-required), every shared key equal in every column but the version', () => {
+    const prev = new Map(seededRows(MIGRATION_4D_II_A7D, '_t4dii_catalog_seed').map((r) => [r.effectKey, r]));
+    const cur = seededRows(MIGRATION_SV1A, '_sv1a_catalog_seed');
+    expect(ADDED_BY_SV1A.size).toBe(8);
+    expect(cur.length).toBe(prev.size + ADDED_BY_SV1A.size);
+    expect(cur.filter((r) => ADDED_BY_SV1A.has(r.effectKey)).map((r) => r.effectKey).sort()).toEqual([...ADDED_BY_SV1A].sort());
+    for (const k of prev.keys()) expect(ADDED_BY_SV1A.has(k), `${k} already existed at A7d`).toBe(false);
+    const versions = new Set(cur.map((r) => r.coverageVersion));
+    expect(versions.size, 'one literal is one generation').toBe(1);
+    for (const row of cur) {
+      const before = prev.get(row.effectKey);
+      if (ADDED_BY_SV1A.has(row.effectKey)) {
+        expect(before, `${row.effectKey} is NEW with SV1-a`).toBeUndefined();
+        expect(row).toEqual({
+          coverageVersion: row.coverageVersion,
+          effectKey: row.effectKey,
+          eventType: row.effectKey,
+          invalidate: true,
+          push: null,
+          pushFamily: null,
+          frozenAudience: false,
+          requiresPush: false,
+          audience: null,
+          pushBody: null,
+          pairingRequired: true,
+        });
+        continue;
+      }
+      expect(before, `A7d seeds no row for ${row.effectKey}`).toBeDefined();
+      const { coverageVersion: _v, ...policyNow } = row;
+      const { coverageVersion: _u, ...policyThen } = before!;
+      expect(policyNow, `${row.effectKey}: a shared key moved between A7d and SV1-a`).toEqual(policyThen);
+    }
+    expect(cur[0]!.coverageVersion).not.toBe(prev.values().next().value!.coverageVersion);
+    expect(cur[0]!.coverageVersion).toBe(effectCoverageVersion());
+    expect(prev.values().next().value!.coverageVersion).toBe('23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c');
   });
 });
