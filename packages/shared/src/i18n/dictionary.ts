@@ -698,14 +698,22 @@ export const checklistText = {
   evidenceAlt: (k: number, name: string, lang: Lang): string =>
     lang === 'hi' ? `सबूत ${k} — ${name}` : lang === 'gu' ? `પુરાવો ${k} — ${name}` : `Evidence ${k} — ${name}`,
   pending: (n: number, lang: Lang): string =>
-    lang === 'hi' ? `${n} फ़ोटो ऑफ़लाइन सहेजी — नेटवर्क आते ही अपलोड होंगी` : lang === 'gu' ? `${n} ફોટા ઓફલાઇન સાચવ્યા — નેટવર્ક આવતાં અપલોડ થશે` : `${n} photo${n === 1 ? '' : 's'} saved offline — will upload when signal returns`,
+    lang === 'hi'
+      ? n === 1 ? '1 फ़ोटो ऑफ़लाइन सहेजी गई — नेटवर्क आते ही अपलोड होगी' : `${n} फ़ोटो ऑफ़लाइन सहेजी गईं — नेटवर्क आते ही अपलोड होंगी`
+      : lang === 'gu'
+        ? n === 1 ? '1 ફોટો ઓફલાઇન સાચવ્યો — નેટવર્ક આવતાં અપલોડ થશે' : `${n} ફોટા ઓફલાઇન સાચવ્યા — નેટવર્ક આવતાં અપલોડ થશે`
+        : `${n} photo${n === 1 ? '' : 's'} saved offline — will upload when signal returns`,
   item: (id: string, lang: Lang): string => (lang === 'hi' ? `आइटम ${id}` : lang === 'gu' ? `આઇટમ ${id}` : `item ${id}`),
   onThis: (where: string, lang: Lang): string =>
     lang === 'hi' ? `इसी चेकलिस्ट पर — ${where}` : lang === 'gu' ? `આ જ ચેકલિસ્ટ પર — ${where}` : `on this checklist — ${where}`,
   onOther: (title: string, where: string, lang: Lang): string =>
     lang === 'hi' ? `${title} पर — ${where}` : lang === 'gu' ? `${title} પર — ${where}` : `on ${title} — ${where}`,
   markAll: (n: number, lang: Lang): string =>
-    lang === 'hi' ? `भेजने से पहले सभी ${n} आइटम पर निशान लगाएँ।` : lang === 'gu' ? `મોકલતાં પહેલાં બધી ${n} આઇટમ પર નિશાન કરો.` : 'Please mark all ' + n + ' items before submitting.',
+    lang === 'hi'
+      ? n === 1 ? 'भेजने से पहले आइटम पर निशान लगाएँ।' : `भेजने से पहले सभी ${n} आइटम पर निशान लगाएँ।`
+      : lang === 'gu'
+        ? n === 1 ? 'મોકલતાં પહેલાં આઇટમ પર નિશાન કરો.' : `મોકલતાં પહેલાં બધી ${n} આઇટમ પર નિશાન કરો.`
+        : 'Please mark all ' + n + ' items before submitting.',
 };
 
 /** What the checklist's actions say back. */
@@ -730,6 +738,11 @@ export const checklistToast = {
   submitted: { en: 'Inspection submitted to the architect for review.', hi: 'निरीक्षण जाँच के लिए आर्किटेक्ट को भेजा गया।', gu: 'નિરીક્ષણ તપાસ માટે આર્કિટેક્ટને મોકલાયું.' },
   submitFailed: { en: 'Could not submit — your marks are kept. Please try again.', hi: 'भेजा नहीं जा सका — आपके निशान सुरक्षित हैं। फिर कोशिश करें।', gu: 'મોકલી શકાયું નહીં — તમારા નિશાન સચવાયેલા છે. ફરી પ્રયાસ કરો.' },
   savedOfflineSubmit: { en: 'Submit inspection — saved offline, will sync when you reconnect.', hi: 'निरीक्षण भेजना — ऑफ़लाइन सहेजा, नेटवर्क आते ही भेजा जाएगा।', gu: 'નિરીક્ષણ મોકલવું — ઓફલાઇન સાચવ્યું, નેટવર્ક આવતાં મોકલાશે.' },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** Where a record is filed, when it is filed nowhere (the shared `LocationContext`). */
+export const locationContextLabels = {
+  unfiled: { en: 'Not filed to a location', hi: 'किसी जगह से नहीं जुड़ा', gu: 'કોઈ જગ્યા સાથે જોડાયેલું નથી' },
 } satisfies Record<string, Record<Lang, string>>;
 
 /** The demo build's worker self check-in QR sheet, opened from the daily log. */

@@ -64,6 +64,10 @@ const STATES: [string, Record<string, unknown>, { mode?: string }?][] = [
   ['submitting', { submission: { inspectionId: 'INSP-1', generation: 0, status: 'submitting', attempt: 1 } }],
   ['queued offline', { submission: { inspectionId: 'INSP-1', generation: 0, status: 'queued', attempt: 1 } }],
   ['submitted', { checklist: { ...ONE, submitted: true }, openChecklists: [] }],
+  // Codex 4263137970 — a checklist filed nowhere (no place, blank zone) says so in the chosen language
+  ['filed to no place', { checklist: { ...ONE, zone: '', nodeId: null }, openChecklists: [] }],
+  // Codex 4263137981 — one photo waiting is its own case
+  ['one photo waiting', { pendingEvidenceCount: 1 }],
 ];
 
 describe('the inspection checklist in Hindi and Gujarati', () => {
@@ -132,4 +136,27 @@ describe('an online photo upload says so in the chosen language (Codex 426257303
       expect(useStore.getState().toast).toBe(line);
     });
   }
+});
+
+describe('counts of one read as one (Codex 4263137981)', () => {
+  for (const [lang, photo, mark] of [
+    ['hi', '1 फ़ोटो ऑफ़लाइन सहेजी गई — नेटवर्क आते ही अपलोड होगी', 'भेजने से पहले आइटम पर निशान लगाएँ।'],
+    ['gu', '1 ફોટો ઓફલાઇન સાચવ્યો — નેટવર્ક આવતાં અપલોડ થશે', 'મોકલતાં પહેલાં આઇટમ પર નિશાન કરો.'],
+    ['en', '1 photo saved offline — will upload when signal returns', 'Please mark all 1 items before submitting.'],
+  ] as const) {
+    it(`${lang}: one photo waiting, one item to mark`, async () => {
+      const single = checklist('INSP-1', 'Slab casting', { items: [{ id: 'x', name: 'Shuttering', state: null, photos: 0, note: '', evidence: [] }] });
+      const { view, useStore } = await mount(lang, { pendingEvidenceCount: 1, checklist: single, openChecklists: [single] });
+      expect(view.getByTestId('evidence-pending').textContent).toBe(photo);
+      act(() => { useStore.getState().submitInspection(); });
+      expect(useStore.getState().toast).toBe(mark);
+    });
+  }
+});
+
+describe('a checklist filed nowhere (Codex 4263137970)', () => {
+  it('keeps its English line', async () => {
+    const { view } = await mount('en', { checklist: { ...ONE, zone: '', nodeId: null }, openChecklists: [] });
+    expect(view.getByTestId('checklist-place').textContent).toBe('Not filed to a location');
+  });
 });

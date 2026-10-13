@@ -210,7 +210,7 @@ export function EngineerChecklistScreen() {
           <div data-testid="checklist-title" style={{ fontWeight: 700, fontSize: 21, marginTop: 4, lineHeight: 1.2 }}>{checklist.title}</div>
           {/* WHERE this check is carried out — the filed trail, tappable back to the Site Map. */}
           <div style={{ marginTop: 4 }}>
-            <LocationContext nodeId={checklist.nodeId} fallback={checklist.zone} compact testId="checklist-place" />
+            <LocationContext nodeId={checklist.nodeId} fallback={checklist.zone} compact testId="checklist-place" lang={lang} />
           </div>
           <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{checklist.date}</div>
           {/* More than one checklist is out on this site. Before this, the engineer saw only the
