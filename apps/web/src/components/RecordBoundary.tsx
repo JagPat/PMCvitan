@@ -1,8 +1,7 @@
 import type { RoutedRecord } from '@/lib/useRoutedRecord';
 import { Button } from './Button';
 import { ItemNotFound } from './ItemNotFound';
-import { useStore } from '@/store/store';
-import { recordBoundaryText as T } from '@vitan/shared';
+import { recordBoundaryText as T, type Lang } from '@vitan/shared';
 
 const note = { marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 } as const;
 
@@ -11,7 +10,7 @@ const note = { marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSi
  * returning to the whole hub, waiting for a settled slice (with Retry when its read failed), or saying the record
  * is not there. Renders nothing for the hub's list or the record itself.
  */
-export function RecordBoundary({ record, prefix, what, loadingText, unavailableText, showAllLabel, onShowAll, onRetry }: {
+export function RecordBoundary({ record, prefix, what, loadingText, unavailableText, showAllLabel, onShowAll, onRetry, lang = 'en' }: {
   record: RoutedRecord;
   /** test-id prefix, e.g. `materials` */
   prefix: string;
@@ -22,8 +21,10 @@ export function RecordBoundary({ record, prefix, what, loadingText, unavailableT
   showAllLabel: string;
   onShowAll: () => void;
   onRetry: () => void;
+  /** the language of the boundary's own words. The caller sets it with the words it passes, so a
+   *  screen not yet translated never shows a sentence that is half one language and half another. */
+  lang?: Lang;
 }) {
-  const lang = useStore((s) => s.lang);
   switch (record.state) {
     case 'list':
     case 'record':
@@ -42,6 +43,6 @@ export function RecordBoundary({ record, prefix, what, loadingText, unavailableT
         </div>
       );
     case 'missing':
-      return <ItemNotFound what={what} id={record.id} onShowAll={onShowAll} showAllLabel={showAllLabel} />;
+      return <ItemNotFound what={what} id={record.id} onShowAll={onShowAll} showAllLabel={showAllLabel} lang={lang} />;
   }
 }

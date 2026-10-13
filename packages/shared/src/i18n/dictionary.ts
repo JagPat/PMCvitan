@@ -650,6 +650,21 @@ export const dailyLogToastText = {
     lang === 'hi' ? `${n} ऑफ़लाइन बदलाव सर्वर पर भेजे गए।` : lang === 'gu' ? `${n} ઓફલાઇન ફેરફારો સર્વર પર મોકલાયા.` : n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.',
 };
 
+/** The demo build's worker self check-in QR sheet, opened from the daily log. */
+export const qrModalLabels = {
+  eyebrow: { en: 'WORKER SELF CHECK-IN', hi: 'मज़दूर की ख़ुद की हाज़िरी', gu: 'કામદારની જાતે હાજરી' },
+  title: { en: 'Ask the worker to scan this', hi: 'मज़दूर से इसे स्कैन करने को कहें', gu: 'કામદારને આ સ્કેન કરવા કહો' },
+  site: { en: 'SITE', hi: 'साइट', gu: 'સાઇટ' },
+  validToday: { en: 'VALID FOR TODAY ONLY', hi: 'सिर्फ़ आज के लिए मान्य', gu: 'ફક્ત આજ માટે માન્ય' },
+  explain: {
+    en: 'Each worker scans once at the gate. Their trade, time and a face photo are stamped — no paper muster, no proxy attendance.',
+    hi: 'हर मज़दूर गेट पर एक बार स्कैन करता है। उसका काम, समय और चेहरे की फ़ोटो दर्ज होती है — न काग़ज़ी हाज़िरी, न किसी और के नाम पर हाज़िरी।',
+    gu: 'દરેક કામદાર ગેટ પર એક વાર સ્કેન કરે છે. તેનું કામ, સમય અને ચહેરાનો ફોટો નોંધાય છે — ન કાગળની હાજરી, ન બીજાના નામે હાજરી.',
+  },
+  done: { en: 'Done', hi: 'हो गया', gu: 'થઈ ગયું' },
+  simulate: { en: 'Simulate a scan', hi: 'स्कैन आज़माएँ', gu: 'સ્કેન અજમાવો' },
+} satisfies Record<string, Record<Lang, string>>;
+
 /** What a reconnect says about the queued offline work it replayed (the outbox flush). */
 export const syncResultText = {
   synced: (n: number, lang: Lang): string =>
