@@ -348,6 +348,8 @@ export interface AppState {
   decisionFocus: string | null;
   /** Audit F-02 — the activity the schedule brings into view when opened from a place (project-owned) */
   activityFocus: string | null;
+  /** #633 — the Site Map place a record was opened from, offered as the way back on that screen (project-owned) */
+  returnPlace: { nodeId: string | null; screen: ScreenKey } | null;
   /** B6 — the one item the current screen's URL names (place, open drawing, highlighted decision; project-owned) */
   routeItem: string | null;
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
@@ -483,7 +485,7 @@ export interface AppActions {
   /** the Site Map has adopted `placeFocus` and will not re-adopt it */
   clearPlaceFocus: () => void;
   /** Audit F-02 — open the schedule with one activity brought into view (from a place's Work list) */
-  openActivity: (activityId: string) => void;
+  openActivity: (activityId: string, fromPlace?: { nodeId: string | null }) => void;
   /** the schedule has shown `activityFocus` and will not re-show it */
   clearActivityFocus: () => void;
   /** U2b — open one decision on its own screen (the Pulse's "one thing needs you") */
@@ -491,12 +493,12 @@ export interface AppActions {
   /** …and back to the list of decisions */
   closeDecision: () => void;
   /** B6 — open the Drawings register with one drawing in the viewer */
-  openDrawing: (drawingId: string) => void;
+  openDrawing: (drawingId: string, fromPlace?: { nodeId: string | null }) => void;
   /** B6 — name (or clear) the current screen's item; the URL follows it (RouteBridge) */
   setRouteItem: (item: string | null) => void;
   /** Live bug 1 — open a screen AT one of its records (a notification tap): the screen, its item
    *  (a client's decision focus on `client-decisions`), and the panel closed, in one step. */
-  openItem: (screen: ScreenKey, item: string | null) => void;
+  openItem: (screen: ScreenKey, item: string | null, fromPlace?: { nodeId: string | null }) => void;
   setLang: (l: Lang) => void;
   toggleNotif: () => void;
   /** Top 10 #4b unit D (#778) — opening the bell marks the displayed unread notices seen, in sequential
@@ -1245,6 +1247,7 @@ export function getInitialState(): AppState {
     placeFocus: null,
     decisionFocus: null,
     activityFocus: null,
+    returnPlace: null,
     routeItem: null,
     checklist: structuredClone(SEED_CHECKLIST),
     openChecklists: [structuredClone(SEED_CHECKLIST)],
@@ -2692,9 +2695,11 @@ export const useStore = create<Store>()(
         // #781 Codex 4240026312 — a Site Map hand-off still waiting for the schedule to settle is abandoned with
         // the visit: a later visit opens at the top, never at that activity
         s.activityFocus = null;
+        s.returnPlace = null; // #633 — a nav visit leaves the Site Map's return behind
       }),
     openDecision: (decisionId) =>
       set((s) => {
+        s.returnPlace = null;
         s.decisionFocus = decisionId;
         s.routeItem = null;
         s.screen = 'client-decisions';
@@ -2704,8 +2709,9 @@ export const useStore = create<Store>()(
       set((s) => {
         s.decisionFocus = null;
       }),
-    openDrawing: (drawingId) =>
+    openDrawing: (drawingId, fromPlace) =>
       set((s) => {
+        s.returnPlace = fromPlace ? { nodeId: fromPlace.nodeId, screen: 'drawings' } : null;
         s.routeItem = drawingId;
         s.decisionFocus = null;
         s.screen = 'drawings';
@@ -2716,8 +2722,9 @@ export const useStore = create<Store>()(
         if (s.screen === 'client-decisions') s.decisionFocus = item;
         else s.routeItem = item;
       }),
-    openItem: (screen, item) =>
+    openItem: (screen, item, fromPlace) =>
       set((s) => {
+        s.returnPlace = fromPlace ? { nodeId: fromPlace.nodeId, screen } : null;
         s.screen = screen;
         s.notifOpen = false;
         s.decisionFocus = screen === 'client-decisions' ? item : null;
@@ -2726,6 +2733,7 @@ export const useStore = create<Store>()(
       }),
     openPlace: (nodeId) =>
       set((s) => {
+        s.returnPlace = null;
         s.placeFocus = nodeId;
         s.routeItem = nodeId;
         s.decisionFocus = null;
@@ -2736,8 +2744,9 @@ export const useStore = create<Store>()(
       set((s) => {
         s.placeFocus = null;
       }),
-    openActivity: (activityId) =>
+    openActivity: (activityId, fromPlace) =>
       set((s) => {
+        s.returnPlace = fromPlace ? { nodeId: fromPlace.nodeId, screen: 'site-schedule' } : null;
         s.activityFocus = activityId;
         // Top 10 #3c (#774) — the activity is the URL's item (`/schedule/<id>`): reload-safe and shareable
         s.routeItem = activityId;

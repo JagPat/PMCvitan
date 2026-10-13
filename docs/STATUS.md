@@ -16,9 +16,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: switch-modules-824
-reviewed_merge: 93d70a3
-open_pr: 825
+work_item: site-map-633
+reviewed_merge: b085fe7
+open_pr: 826
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-13
@@ -26,11 +26,12 @@ updated: 2026-10-13
 
 ### Current unit
 
-**A failed project switch keeps its modules (#824)** (on `claude/project-thread-cm4aq9`): the follow-up Codex
-deferred from #823. #822 merged at `93d70a3` (#823): the Dashboard's tiles and buttons follow the nav's screen set,
-and the shell's enabled modules reset on every project scope change. This unit restores the old project's module set
-when a switch is refused, so its switched-off modules stay hidden. Lane 1 of the Board's three-lane plan (13 Oct);
-next in the lane is the UX redesign, then #633.
+**Site Map as the project workspace (#633), unit 1: the way back to a place** (on `claude/project-thread-cm4aq9`):
+a record opened from the Site Map (drawing, decision, inspection, activity) shows "Back to <place>" on its screen,
+returning to the place it was opened from. #822 and its follow-up #824 merged at `93d70a3` (#823) and `b085fe7`
+(#825). Lane 1 of the Board's three-lane plan (13 Oct); the "UX redesign" item awaits the owner's description, so
+#633 runs first. Later #633 units: where a project switch lands (an owner decision, given #811), mobile tab placement, the hierarchy,
+lock explanations and inspection issue counts.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.

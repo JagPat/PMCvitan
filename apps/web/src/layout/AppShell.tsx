@@ -1,5 +1,5 @@
 import { useStore } from '@/store/store';
-import { Toast } from '@/components';
+import { Toast, ReturnToPlace } from '@/components';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { LeftRail } from './LeftRail';
 import { TopBar } from './TopBar';
@@ -40,6 +40,7 @@ export function AppShell() {
                 the boundary covers the gap until the new project's snapshot lands, and a
                 failed transition shows a recoverable error — never stale records. */}
             <ProjectLoadBoundary state={projectLoadState} error={projectLoadError} label={short} onRetry={retryProjectLoad}>
+              <ReturnToPlace />
               <ScreenView />
             </ProjectLoadBoundary>
           </div>
