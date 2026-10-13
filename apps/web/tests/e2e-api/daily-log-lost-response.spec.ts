@@ -1,4 +1,5 @@
-import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { loginTo, openProject } from './landing';
 
 /**
  * Phase 2 Task 10 correction ROUND 2 (finding 1) — the write-ahead outbox proves itself over the REAL
@@ -23,18 +24,13 @@ async function signIn(page: Page, email: string): Promise<void> {
   await page.getByTestId('login-password').fill(PASSWORD);
   await page.getByTestId('login-submit').click();
 }
-async function apiLogin(request: APIRequestContext, email: string): Promise<{ token: string }> {
-  const res = await request.post(`${API}/auth/login`, { data: { email, password: PASSWORD } });
-  expect(res.ok(), `login ${email} → ${res.status()}`).toBeTruthy();
-  return res.json();
-}
 
 test('a lost response after the server commits does NOT double-apply — the write-ahead retry reuses the key', async ({ page, request }) => {
   const MAT = `LostResp-${test.info().workerIndex}-${test.info().retry}`;
 
   await page.goto('/');
   await signIn(page, 'test-eng@vitan.in');
-  await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
+  await openProject(page, 'Residence at Ambli');
   await page.getByRole('button', { name: /Daily Site Log/i }).click();
   // Wait for the seeded daily log to settle before interacting — add-material can
   // render before the module read finishes, which flakes the lost-response probe.
@@ -67,7 +63,7 @@ test('a lost response after the server commits does NOT double-apply — the wri
   await page.getByTestId('toggle-online').click(); // back online → flushOutbox replays the pending op
 
   // proven against the server: the material exists EXACTLY ONCE despite the lost response + retry
-  const eng = await apiLogin(request, 'test-eng@vitan.in');
+  const eng = await loginTo(request, 'test-eng@vitan.in', A);
   await expect
     .poll(async () => {
       const res = await request.get(`${API}/projects/${A}/snapshot`, { headers: { Authorization: `Bearer ${eng.token}` } });

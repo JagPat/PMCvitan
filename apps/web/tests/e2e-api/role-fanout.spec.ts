@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { openProject } from './landing';
 
 /**
  * Phase 6 task 4d-ii-b / B2 — the role fan-out over the REAL stack with the six reservation doors
@@ -27,7 +28,7 @@ const optionValues = (page: Page, testId: string) =>
 test('with the doors standing, no picker offers the architect: the Team role pickers and the decider picker follow the reserved shell', async ({ page }) => {
   await page.goto('/');
   await signIn(page, PMC);
-  await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
+  await openProject(page, 'Test Empty Site'); // sign-in opens the last project used (#811)
 
   // the Team screen: the add-member picker offers the five delivered roles and never the architect
   await page.getByRole('button', { name: 'Team' }).click();

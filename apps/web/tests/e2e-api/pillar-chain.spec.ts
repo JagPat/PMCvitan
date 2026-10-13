@@ -1,4 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { loginTo } from './landing';
 
 /**
  * Phase 1 Task 7 — THE PILLAR CHAIN, browser-level, over the real stack
@@ -44,7 +45,7 @@ async function login(request: APIRequestContext, email: string): Promise<string>
   return (await res.json()).token;
 }
 
-/** A token SCOPED to the chain project (login lands on the user's home project). */
+/** A token SCOPED to the chain project (sign-in lands on the user's last project used, #811). */
 async function chainToken(request: APIRequestContext, email: string, projectId: string): Promise<string> {
   const home = await login(request, email);
   const res = await request.post(`${API}/auth/switch`, { headers: bearer(home), data: { projectId } });
@@ -453,7 +454,7 @@ test('NEGATIVES: review copies never govern; same-room inspections are invisible
 
 test('ISOLATION re-proof: the chain is invisible from every other project, and outsiders cannot read the chain', async ({ request }) => {
   // the seeded projects see NONE of the chain records
-  const pmcAmbli = await login(request, PMC); // home = ambli
+  const pmcAmbli = (await loginTo(request, PMC, 'ambli')).token; // sign-in may land on the chain (#811)
   const ambliSnap = await (await request.get(`${API}/projects/ambli/snapshot`, { headers: bearer(pmcAmbli) })).json();
   const flat = JSON.stringify(ambliSnap);
   for (const marker of ['Chain floor finish', 'Chain flooring', 'CH-100', 'Chain quality check', chainName]) {
