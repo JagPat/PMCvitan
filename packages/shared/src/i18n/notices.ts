@@ -31,7 +31,6 @@ const PREFIXED: readonly { en: string; hi: string; gu: string }[] = [
 
 /** The fixed endings some notices carry after the quoted part. */
 const SIGNOFF_AWAITING: Words = { en: " — awaiting the PMC's closing inspection", hi: ' — PMC के अंतिम निरीक्षण की राह', gu: ' — PMC ના અંતિમ નિરીક્ષણની રાહ' };
-const COUNTERSIGN_AWAITING: Words = { en: " — awaiting the architect's countersign", hi: ' — आर्किटेक्ट के प्रति-हस्ताक्षर की राह', gu: ' — આર્કિટેક્ટની પ્રતિ-સહીની રાહ' };
 
 /** A forward's target when it is a role (a named member's name is data). */
 const FORWARD_TO: Record<string, Words> = {
@@ -40,46 +39,21 @@ const FORWARD_TO: Record<string, Words> = {
   'the architect': { en: 'the architect', hi: 'आर्किटेक्ट', gu: 'આર્કિટેક્ટ' },
 };
 
-/** Whom a PMC recorded consent on behalf of. */
-const ON_BEHALF: Record<string, Words> = {
-  client: { en: 'client', hi: 'क्लाइंट', gu: 'ક્લાયન્ટ' },
-  'named decider': { en: 'named decider', hi: 'तय करने वाले व्यक्ति', gu: 'નક્કી કરનાર વ્યક્તિ' },
-  architect: { en: 'architect', hi: 'आर्किटेक्ट', gu: 'આર્કિટેક્ટ' },
-  pmc: { en: 'pmc', hi: 'PMC', gu: 'PMC' },
-};
-
 const APPROVED: Words = { en: '', hi: 'ने मंज़ूरी दी', gu: 'એ મંજૂરી આપી' };
 
-/** "… approved T — M", with the finality endings the approve, provisional and finalizer writers add. */
+/**
+ * "<who> approved <title> — <material>", and the same with an on-behalf, provisional or finalized ending.
+ * Only the lead-in is translated. Everything after "approved " is the writer's title and material, which are
+ * free text, followed by an ending that free text can imitate ("Oak — countersigned by Supplier" is a valid
+ * material), so no ending is inferred from the string: the rest is shown verbatim (Codex 4264170648). The
+ * endings can be translated once the feed serves the approval's facts beside its text (#839).
+ */
 function approvalNotice(text: string, lang: Exclude<Lang, 'en'>): string | null {
-  let core = text;
-  let tail = '';
-  if (core.endsWith(COUNTERSIGN_AWAITING.en)) {
-    core = core.slice(0, -COUNTERSIGN_AWAITING.en.length);
-    tail = COUNTERSIGN_AWAITING[lang];
-  } else {
-    const finalized = / — finalized by (.+) with no active architect$/.exec(core);
-    const countersigned = / — countersigned by (.+)$/.exec(core);
-    if (finalized) {
-      core = core.slice(0, finalized.index);
-      tail = lang === 'hi' ? ` — ${finalized[1]} ने पूरा किया, कोई सक्रिय आर्किटेक्ट नहीं` : ` — ${finalized[1]} એ પૂરું કર્યું, કોઈ સક્રિય આર્કિટેક્ટ નથી`;
-    } else if (countersigned) {
-      core = core.slice(0, countersigned.index);
-      tail = lang === 'hi' ? ` — ${countersigned[1]} के प्रति-हस्ताक्षर` : ` — ${countersigned[1]} ની પ્રતિ-સહી`;
-    }
+  if (text.startsWith('Client approved ') && text.length > 'Client approved '.length) {
+    return `${FORWARD_TO['the client'][lang]} ${APPROVED[lang]}: ${text.slice('Client approved '.length)}`;
   }
-  if (core.startsWith('Client approved ') && core.includes(' — ')) {
-    return `${FORWARD_TO['the client'][lang]} ${APPROVED[lang]}: ${core.slice('Client approved '.length)}${tail}`;
-  }
-  const behalf = /^(.+?) approved (.+) on behalf of the (client|named decider|architect|pmc) — (.+)$/.exec(core);
-  if (behalf) {
-    const whom = ON_BEHALF[behalf[3]][lang];
-    const verb = lang === 'hi' ? `ने ${whom} की ओर से मंज़ूरी दी` : `એ ${whom} વતી મંજૂરી આપી`;
-    return `${behalf[1]} ${verb}: ${behalf[2]} — ${behalf[4]}${tail}`;
-  }
-  const actor = /^(.+?) approved (.+ — .+)$/.exec(core);
-  if (actor) return `${actor[1]} ${APPROVED[lang]}: ${actor[2]}${tail}`;
-  return null;
+  const actor = /^(.+?) approved (.+)$/.exec(text);
+  return actor ? `${actor[1]} ${APPROVED[lang]}: ${actor[2]}` : null;
 }
 
 /**

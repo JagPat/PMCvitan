@@ -66,7 +66,14 @@ describe('the bell shows every server notice in Hindi and Gujarati', () => {
     for (const [name, text, decision] of SERVER_NOTICES) {
       it(`${lang}, ${name}`, () => {
         const shown = noticeText(text, lang, { decision });
-        expect(latin(shown)).toEqual([]);
+        if (!decision) {
+          expect(latin(shown)).toEqual([]);
+          return;
+        }
+        // an approval: the lead-in is translated, everything after "approved " is shown as written (#839)
+        const tail = text.slice(text.indexOf(' approved ') + ' approved '.length);
+        expect(shown.endsWith(`: ${tail}`)).toBe(true);
+        expect(latin(shown.slice(0, -tail.length))).toEqual([]);
       });
     }
   }
@@ -83,6 +90,16 @@ describe('the bell shows every server notice in Hindi and Gujarati', () => {
 
   it('a notice no template knows is shown as stored, never guessed at', () => {
     expect(noticeText('Something new happened', 'hi')).toBe('Something new happened');
+  });
+
+  it('a material that imitates an approval ending is shown as written, never read as that ending (Codex 4264170648)', () => {
+    for (const material of ['Oak — countersigned by Supplier', "Oak — awaiting the architect's countersign", 'Oak (on behalf of the client)']) {
+      const text = approvedDecisionNotice(facts({ material }));
+      for (const lang of ['hi', 'gu'] as const) {
+        const shown = noticeText(text, lang, { decision: true });
+        expect(shown.endsWith(`: Kitchen Counter — ${material}`)).toBe(true);
+      }
+    }
   });
 
   it('an unstamped text that says "approved" or "is building to" is not read as an approval or a drawing (Codex 4264170661)', () => {
