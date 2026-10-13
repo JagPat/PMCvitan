@@ -27,17 +27,13 @@ const PREFIXED: readonly { en: string; hi: string; gu: string }[] = [
   { en: 'Mismatch resolved: ', hi: 'बेमेल सुलझाया गया: ', gu: 'મેળ ન ખાતું ઉકેલાયું: ' },
   { en: 'Drawing issued: ', hi: 'ड्रॉइंग जारी: ', gu: 'ડ્રોઇંગ જારી: ' },
   { en: 'New location added: ', hi: 'नई जगह जोड़ी गई: ', gu: 'નવી જગ્યા ઉમેરાઈ: ' },
+  // the target after " → " is a role label OR a member's name, and a member may be named "the client", so it is
+  // shown as written like the title (Codex 4264702275); translating a role target needs its kind in the feed (#839)
+  { en: 'Decision forwarded: ', hi: 'निर्णय आगे भेजा गया: ', gu: 'નિર્ણય આગળ મોકલાયો: ' },
 ];
 
 /** The fixed endings some notices carry after the quoted part. */
 const SIGNOFF_AWAITING: Words = { en: " — awaiting the PMC's closing inspection", hi: ' — PMC के अंतिम निरीक्षण की राह', gu: ' — PMC ના અંતિમ નિરીક્ષણની રાહ' };
-
-/** A forward's target when it is a role (a named member's name is data). */
-const FORWARD_TO: Record<string, Words> = {
-  'the client': { en: 'the client', hi: 'क्लाइंट', gu: 'ક્લાયન્ટ' },
-  'the PMC': { en: 'the PMC', hi: 'PMC', gu: 'PMC' },
-  'the architect': { en: 'the architect', hi: 'आर्किटेक्ट', gu: 'આર્કિટેક્ટ' },
-};
 
 const APPROVED: Words = { en: '', hi: 'ने मंज़ूरी दी', gu: 'એ મંજૂરી આપી' };
 
@@ -49,39 +45,33 @@ const APPROVED: Words = { en: '', hi: 'ने मंज़ूरी दी', gu:
  * endings can be translated once the feed serves the approval's facts beside its text (#839).
  */
 function approvalNotice(text: string, lang: Exclude<Lang, 'en'>): string | null {
-  if (text.startsWith('Client approved ') && text.length > 'Client approved '.length) {
-    return `${FORWARD_TO['the client'][lang]} ${APPROVED[lang]}: ${text.slice('Client approved '.length)}`;
-  }
   const actor = /^(.+?) approved (.+)$/.exec(text);
   return actor ? `${actor[1]} ${APPROVED[lang]}: ${actor[2]}` : null;
 }
 
 /**
- * `decision`: the notice is stamped with the decision it is about (`AppNotification.decisionId`). The
- * approval notices ("<who> approved <title> — <material>") have no fixed prefix, so they are read as
- * approvals ONLY on a stamped notice: every approval writer stamps one (the server's approve,
- * provisional and finalizer writers, and the demo store's), and an unstamped text that happens to say
- * "approved" is shown as stored (Codex 4264170661).
+ * `decision`: the notice is stamped with the decision it is about (`AppNotification.decisionId`). A
+ * "<who> approved <title> — <material>" notice has no fixed prefix, so it is read as an approval ONLY on a
+ * stamped notice: every approval writer stamps one, and an unstamped text that happens to say "approved"
+ * is shown as stored (Codex 4264170661). "Client approved " is the client-decider writer's fixed lead-in,
+ * so it is read stamped or not: the seeded demo notice carries no stamp (Codex 4264702283). "<who>" is shown
+ * as written in every case, "Client" included, since a named decider can carry that name.
+ *
+ * `inspection`: the notice is stamped with an inspection (`AppNotification.inspectionId`). Only the server's
+ * sign-off writer adds the closing-inspection ending, and it stamps the closing inspection; the demo store's
+ * unstamped sign-off notice has no ending, so its activity name is shown whole even when it imitates one
+ * (Codex 4264702263).
  */
-export function noticeText(text: string, lang: Lang, opts: { decision?: boolean } = {}): string {
+export function noticeText(text: string, lang: Lang, opts: { decision?: boolean; inspection?: boolean } = {}): string {
   if (lang === 'en') return text;
   for (const p of PREFIXED) {
     if (!text.startsWith(p.en) || text.length === p.en.length) continue;
     return p[lang] + text.slice(p.en.length);
   }
-  if (text.startsWith('Decision forwarded: ')) {
-    const rest = text.slice('Decision forwarded: '.length);
-    const arrow = rest.lastIndexOf(' → ');
-    if (arrow > 0) {
-      const to = rest.slice(arrow + 3);
-      const label = lang === 'hi' ? 'निर्णय आगे भेजा गया' : 'નિર્ણય આગળ મોકલાયો';
-      return `${label}: ${rest.slice(0, arrow)} → ${FORWARD_TO[to]?.[lang] ?? to}`;
-    }
-  }
   if (text.startsWith('Sign-off requested: ')) {
     let rest = text.slice('Sign-off requested: '.length);
     let tail = '';
-    if (rest.endsWith(SIGNOFF_AWAITING.en)) {
+    if (opts.inspection && rest.endsWith(SIGNOFF_AWAITING.en)) {
       rest = rest.slice(0, -SIGNOFF_AWAITING.en.length);
       tail = SIGNOFF_AWAITING[lang];
     }
@@ -110,7 +100,7 @@ export function noticeText(text: string, lang: Lang, opts: { decision?: boolean 
   // the drawing acknowledgement's own shape: "<who> is building to <number> Rev <rev>"
   const building = /^(.+?) is building to (\S+ Rev \S+)$/.exec(text);
   if (building) return lang === 'hi' ? `${building[1]} इस पर काम कर रहे हैं: ${building[2]}` : `${building[1]} આ પ્રમાણે કામ કરી રહ્યા છે: ${building[2]}`;
-  return (opts.decision ? approvalNotice(text, lang) : null) ?? text;
+  return (opts.decision || text.startsWith('Client approved ') ? approvalNotice(text, lang) : null) ?? text;
 }
 
 /** When a notice happened, in the viewer's language: the parts `noticeTime` builds, or the stored label. */

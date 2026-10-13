@@ -25,7 +25,7 @@ const NOTICES = [
   { id: 'n4', text: 'Re-inspection due: Waterproofing, Terrace', time: '2h ago', color: '#B23A34' },
   { id: 'n5', at: '2026-05-01T09:00:00Z', text: 'Drawing issued: A-101 — Ground floor plan', time: 'just now', color: '#C08A2D' },
 ];
-const DATA = ['Porch Tiles', 'Master Bath CP Fittings', 'Kohler', 'Granite', 'DL-2', 'Waterproofing', 'Terrace', 'A-101', 'Ground floor plan', 'PMC'];
+const DATA = ['Client', 'Porch Tiles', 'Master Bath CP Fittings', 'Kohler', 'Granite', 'DL-2', 'Waterproofing', 'Terrace', 'A-101', 'Ground floor plan', 'PMC'];
 
 async function mount(lang: Lang, notifications: typeof NOTICES, over: Record<string, unknown> = {}) {
   vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
@@ -65,6 +65,12 @@ describe('the bell in Hindi and Gujarati', () => {
         expect(leftoverEnglish(view.container, DATA)).toEqual([]);
       });
     }
+
+    it(`${lang}: the server's sign-off notice, stamped with its closing inspection, translates its ending`, async () => {
+      const signOff = { id: 's1', text: "Sign-off requested: Slab casting — awaiting the PMC's closing inspection", time: 'just now', color: '#C08A2D', inspectionId: 'INSP-9' };
+      const { view } = await mount(lang, [signOff as (typeof NOTICES)[number]]);
+      expect(leftoverEnglish(view.container, [...DATA, 'Slab casting'])).toEqual([]);
+    });
 
     it(`${lang}: a translated notice still opens its record`, async () => {
       const { view, useStore } = await mount(lang, [NOTICES[1]]);

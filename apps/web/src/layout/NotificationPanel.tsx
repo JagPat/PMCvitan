@@ -113,7 +113,7 @@ export function NotificationPanel() {
               <>
                 <span className={styles.dot} style={{ background: n.color }} />
                 <div style={{ flex: 1 }}>
-                  <div className={styles.text}>{noticeText(n.text, lang, { decision: n.decisionId !== undefined })}</div>
+                  <div className={styles.text}>{noticeText(n.text, lang, { decision: n.decisionId !== undefined, inspection: n.inspectionId !== undefined })}</div>
                   <div className={styles.time}>{noticeTime(n, now, lang)}</div>
                 </div>
                 {link && <ChevronRight size={15} style={{ alignSelf: 'center', opacity: 0.5, flex: 'none' }} />}
