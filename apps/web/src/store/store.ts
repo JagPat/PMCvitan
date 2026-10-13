@@ -4501,6 +4501,10 @@ export const useStore = create<Store>()(
       const short = membership?.short ?? 'project';
       // the OLD project's identity, restored if the switch fails (we keep its auth scope)
       const prev = (({ name, short: sh, descriptor, stage, siteCode }) => ({ name, short: sh, descriptor, stage, siteCode }))(get());
+      // #824 — the old project's module set, restored with its identity if the switch fails: the entry below
+      // empties it, and an empty set means "no module filter", so a failed switch would otherwise reopen
+      // modules the old project switched off (its shell is not reloaded, since the active project never changed)
+      const prevModules = get().enabledModules;
       // ATOMIC ENTRY — before the auth request goes out: bump the scope generation
       // (in-flight replies for the old scope will be dropped), mark the transition,
       // and EMPTY every project-owned field. Old records can neither render nor
@@ -4523,6 +4527,7 @@ export const useStore = create<Store>()(
         Object.assign(s, emptyProjectData());
         Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
       });
+      const switchGeneration = get().projectScopeGeneration;
       return gateway
         .switchProject(projectId)
         .then((res) => {
@@ -4544,6 +4549,8 @@ export const useStore = create<Store>()(
             s.descriptor = prev.descriptor;
             s.stage = prev.stage;
             s.siteCode = prev.siteCode;
+            // only into the scope this switch left: a sign-out or re-auth meanwhile owns the state now
+            if (s.projectScopeGeneration === switchGeneration) s.enabledModules = prevModules;
           });
           get().flash('Could not switch project — please try again.');
           return false;
