@@ -223,7 +223,8 @@ test('PILOT: an uncommitted labour shortfall is BLOCKED, surfaces the labour-sho
   const { requirementId, tradeCode } = await labourFixture(request, pmcPilot, pilotId, activityId, tag, { commit: false });
 
   await signInToProject(page, PMC, PILOT_NAME);
-  // the For-You inbox is the home — the labour shortfall action is there
+  // the For-You inbox (one tap from the Dashboard home, #811) carries the labour shortfall action
+  await page.getByRole('button', { name: 'For You' }).click();
   await expect(page.getByText(/labour shortfall/i).first()).toBeVisible();
 
   await openLabour(page);
