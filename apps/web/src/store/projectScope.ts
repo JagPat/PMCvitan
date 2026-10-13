@@ -117,6 +117,10 @@ export interface ProjectDataState {
   // project-owned, so a switch starts clean and an old project's in-flight answer has nothing to change
   notifSeen: NotifSeenState;
   companies: ProjectCompany[];
+  // #822 (Codex 4257275282) — the shell's enabled modules are the project's own: a switch starts with none
+  // known (empty = no module filter, as before the shell lands) until the next project's shell reports them,
+  // so the nav and the Dashboard never hide screens by the previous project's set
+  enabledModules: string[];
   // Phase 3 Task 7 — the PER-PROJECT pilot capabilities (`['materials']` on a pilot project) + the
   // Materials bundle. Project-owned, so they tear down on every scope change: a non-pilot / freshly
   // switched project shows NO Materials nav until its shell reloads the capability (never stale).
@@ -215,6 +219,7 @@ export function emptyProjectData(): ProjectDataState {
     notifications: [],
     notifSeen: emptyNotifSeen(),
     companies: [],
+    enabledModules: [],
     capabilities: [],
     capabilitiesKnown: false,
     phase6_4dRollout: 'reserved',
