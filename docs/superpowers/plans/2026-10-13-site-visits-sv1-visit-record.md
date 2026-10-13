@@ -1,11 +1,23 @@
-# Site Visits SV1: the visit record (technical design)
+# Site Visits SV1, design 1 of 3: the visit record in the database
 
 **Status:** technical design for review. No code ships with this document.
 **Tracking issue:** [#792](https://github.com/JagPat/PMCvitan/issues/792). Product plan:
 [2026-10-12-site-visits.md](2026-10-12-site-visits.md), approved as written by the Board on 13 Oct 2026. That
 approval also placed Site Visits in the queue (Q8).
+
+**Why three designs.** The second reviewed head of this PR met POLICY's stop: its P1s targeted text the first
+correction had added. The owner chose, on 13 Oct 2026, to redesign SV1 as **three smaller designs reviewed one by
+one, with building starting after all three pass**:
+1. **this document:** the database (unit SV1-a);
+2. the server: commands, time rules, the read, notices (unit SV1-b);
+3. the screens: outbox ops, location, the open-visit card (unit SV1-c).
+
+Each later design states only what it adds. This one fixes every rule PostgreSQL itself enforces, so designs 2 and
+3 cannot weaken it. The findings that belong to designs 2 and 3 stay open on #792 until those designs answer them
+(§9).
+
 **Scope:** SV1 only. The Board scope for SV1 is "Start visit" and "Visit this area": who, when, GPS check-in,
-attendees and the places walked; the visit shows in the project's history and works offline. Observations, actions,
+attendees and the places walked. The visit shows in the project's history and works offline. Observations, actions,
 reports and sharing are SV2 to SV5, each with its own design.
 
 ## 0. Decisions this design follows
@@ -13,302 +25,270 @@ reports and sharing are SV2 to SV5, each with its own design.
 | Item | Decision | Source |
 | --- | --- | --- |
 | D5 | A visit is started by the PMC or a consultant (and an architect once the role opens). | Owner, 12 Oct |
-| Q3 | Architects visit as **consultant** members until 4d-iii opens the role. The `architect` ceiling is present but unreachable until then (§7). | Board, 13 Oct (accepted as proposed) |
+| Q3 | Architects visit as **consultant** members until 4d-iii opens the role. | Board, 13 Oct (accepted as proposed) |
 | Q6 | Location is recorded when the device offers it and never blocks a start. | Board, 13 Oct (accepted as proposed) |
-| Q12 | **No one-phone-per-visit rule.** The same login can start, add to, edit and end a visit from any device (phone, laptop, iPad), during or after the visit. The device only registers the visit and its location when available. A laptop or iPad without GPS records an approximate location or "no location" and is never blocked. Offline or concurrent edits use normal sync and conflict resolution. | Board, 13 Oct (changed from the proposal) |
+| Q12 | **No one-phone-per-visit rule.** The same login can start, add to, edit and end a visit from any device, during or after the visit. A device without GPS records an approximate location or "no location" and is never blocked. Offline or concurrent edits use normal sync and conflict resolution. | Board, 13 Oct (changed from the proposal) |
 | S1 | A plain **End visit** exists in SV1. An ended visit is never shown as signed or delivered. | Board, 13 Oct (accepted as proposed) |
 | S2 | At most **one open visit per visitor per project**. | Board, 13 Oct (accepted as proposed) |
+| Shape | Three designs (database, server, screens), reviewed one by one before building. | Owner, 13 Oct |
 
-Recorded on [#792](https://github.com/JagPat/PMCvitan/issues/792). Nothing here widens a role's rights outside the
-new site-visit actions.
+## 1. What the database guarantees, in plain words
 
-## 1. What people get
+- A visit, its attendees and its places all belong to one project, and every person named on them stood on that
+  project, in the stated role, when they were written.
+- Only the visitor edits their visit, and a PMC is the only one who closes it. Nobody's name can be put on an edit
+  they did not make.
+- Nothing is overwritten or deleted. Editing adds a row or retires one, once. The original taps are kept beside
+  the times the record accepted.
+- The accepted times are always in order: start, then the places walked, then the end.
+- A closed visit takes no more edits.
+- Every change is paired, in the same transaction, with exactly one event, exactly one audit row and (for start,
+  end and close) exactly one project notice. A change without its counterparts, or a counterpart without its
+  change, does not commit.
 
-- **PMC:** "Start visit" on the PMC Brief (For You). **Consultant:** "Start visit" on For You.
-- **Both:** "Visit this area" on a place in the Site Map, which starts a visit with that place as its starting
-  place.
-- While a visit is open, the visitor sees one card on For You, on **every device they are signed in on**. The card
-  shows the time the visit started, the attendees, the places walked so far, **Add place**, **Add attendee** and
-  **End visit**.
-- After the visit, the visitor can still correct it from any device: add or remove a place or an attendee.
-- Everyone on the project sees the visit in the project feed (the bell) when it starts and when it ends, and on
-  each place in the Site Map ("Visits here").
-- The PMC can **close** anyone's open visit, with a reason (for a visitor who has left the project).
-
-## 2. Data (unit SV1-a, migration only)
+## 2. Tables
 
 One new module, `site-visits`, owns three tables. All are additive. No existing table gains a column.
 
-**`SiteVisit`**
-- **Identity.** `id` is the **primary key**, a uuid generated **on the device** so that offline steps can name the
-  visit before the server has it. It is therefore globally unique in PostgreSQL. A second unique key,
-  `(projectId, id)`, lets later tables (SV2 observations, Media) hold provably same-project composite keys.
-- **Who.**
-  - `visitorId` (FK `User`).
-  - A `BEFORE INSERT` trigger requires a current `ProjectUserStanding` row for `(projectId, visitorId, visitorRole)`.
-    That table is the repository's record of who stands on a project in which role, and it covers an org owner or
-    admin acting as PMC without a membership row. PostgreSQL therefore refuses a visit attributed to someone with no
-    standing on this project. The check runs only at insert, so a later removal is never blocked; the frozen fields
-    keep the record.
-  - `visitorRole` and `visitorName` are frozen from the actor envelope, resolved **inside** the command transaction
-    (§3). Nothing about the visitor comes from the request body (R1).
-- **When (R2, F5).** Each device-reported time is stored twice:
-  - **as claimed**, exactly as the device sent it and never rewritten (evidence): `startClaimedAt`;
-  - **as accepted**: `startedAt` is the claim when it is within bounds (§4), otherwise the server's receipt time,
-    with `startTimeAdjusted = true`.
+### `SiteVisit`
 
-  `startReceivedAt` is the server's commit time.
-- **Where it started.** `startNodeId` is nullable, with a composite FK `(projectId, startNodeId)` to `ProjectNode`
-  (NoAction). `startPlaceName` is a frozen label. A CHECK, `startNodeId IS NULL OR startPlaceName IS NOT NULL`,
-  means a node is never stored without its label, and the label survives the node's later removal (F12).
-- **Location (Q6, Q12).**
-  - `locationKind` is one of `device | none` (CHECK).
-  - For `device`, all of `locLat`, `locLng`, `locAccuracyM` and `locAt` are set, latitude and longitude are in
-    range, and accuracy is ≥ 0. For `none`, all four are null.
-  - Whatever the browser's location service returns is kept with its accuracy. A phone's GPS fix is typically a few
-    metres; a laptop's or iPad's Wi-Fi or IP estimate can be hundreds of metres.
-  - The read labels a fix **approximate** when its accuracy is worse than 100 m. A denied, unavailable or timed-out
-    request records `none` and never blocks the start.
-- **Lifecycle.** `status` is one of `open | ended | closed` (CHECK). The end fields are:
-  - ordinary end: `endClaimedAt`, `endedAt` (accepted), `endTimeAdjusted` and `endReceivedAt`;
-  - close: `closedAt` (server time), `closedById`, `closedRole` and `closeReason`;
-  - late end: `lateEndClaimedAt` and `lateEndReceivedAt`. These record the first end that arrives, from any device,
-    after the PMC has closed the visit.
-- **Lifecycle CHECKs.**
+- **Identity.** `id` is the primary key, a uuid generated **on the device**, so offline steps can name the visit
+  before the server has it. A second unique key, `(projectId, id)`, is the target of every composite foreign key
+  below and of later SV2 tables.
+- **Project.** `projectId`, a foreign key to `Project`.
+- **Who.** `visitorId` (FK `User`), with `visitorRole` and `visitorName` frozen.
+  - CHECK: `visitorRole IN ('pmc','consultant','architect')`.
+  - `visitorName` is non-blank under the full ASCII whitespace set `btrim(x, E' \t\n\x0B\f\r')`.
+- **When.** Each device-reported time is stored twice: as **claimed** (exactly what the device sent, never
+  rewritten) and as **accepted**.
+  - Start: `startClaimedAt`, `startedAt`, `startTimeAdjusted` and `startReceivedAt` (the server's time).
+  - CHECK: `startedAt <= startReceivedAt`. The database admits no accepted time in the future of its own receipt
+    (F47).
+  - CHECK: `startTimeAdjusted` implies `startedAt = startReceivedAt`. An adjusted time is always the receipt time,
+    never a third value.
+  - How the server chooses between claim and receipt is design 2's.
+- **Where it started.** `startNodeId` is nullable, with a composite FK `(projectId, startNodeId)` to
+  `ProjectNode (projectId, id)`, NO ACTION. `startPlaceName` is a frozen label.
+  - CHECK: `startNodeId IS NULL OR startPlaceName IS NOT NULL`. The label survives the node's later removal.
+- **Location.** `locationKind` is `device` or `none` (CHECK).
+  - For `device`, all of `locLat`, `locLng`, `locAccuracyM` and `locAt` are set. Latitude is within ±90,
+    longitude within ±180, and accuracy is ≥ 0.
+  - For `none`, all four are null.
+  - "Approximate" is a read-time label (accuracy worse than 100 m), not a stored kind. It is design 2's.
+- **Lifecycle.** `status` is `open`, `ended` or `closed` (CHECK).
+  - Ordinary end: `endClaimedAt`, `endedAt`, `endTimeAdjusted` and `endReceivedAt`.
+  - Close: `closedAt` (server time), `closedById` (FK `User`) and `closeReason`.
+  - Late end: `lateEndClaimedAt` and `lateEndReceivedAt`.
+- **Lifecycle CHECKs:**
   - `open`: no end, close or late-end field is set.
-  - `ended`: every ordinary end field is set, and `endedAt >= startedAt`. No close or late-end field is set.
-  - `closed`:
-    - every close field is set, and `closedAt >= startReceivedAt`;
-    - `closeReason` is non-blank under the full ASCII whitespace set `btrim(x, E' \t\n\x0B\f\r')`;
-    - **no ordinary end field is set**;
-    - the late-end pair is both null or both set.
-- **One open visit per visitor (S2, F8):** a partial unique index on `(projectId, visitorId) WHERE status = 'open'`.
-- **The closer.** The same standing trigger checks `(projectId, closedById, closedRole)` when a row moves to
-  `closed`.
+  - `ended`: every ordinary end field is set, and `startedAt <= endedAt <= endReceivedAt`. `endTimeAdjusted`
+    implies `endedAt = endReceivedAt`. No close or late-end field is set.
+  - `closed`: every close field is set, with `closedAt >= startReceivedAt` and a non-blank `closeReason`. No ordinary
+    end field is set. The late-end pair is both null or both set, with `lateEndReceivedAt >= closedAt`.
+- **One open visit per visitor (S2):** a partial unique index on `(projectId, visitorId) WHERE status = 'open'`.
 
-**`SiteVisitAttendee`**
-- `visitId` and `projectId`, with a composite FK to the visit.
+### `SiteVisitAttendee`
+
+- `id` is the primary key, a uuid generated **on the device** (F52). Commands, events and retires name the
+  attendee by this id, so a retire sent from two devices names the same row.
+- `projectId` and `visitId`, with a composite FK `(projectId, visitId)` to `SiteVisit (projectId, id)`.
 - Exactly one of:
-  - `userId`, a member, checked by the same insert-time standing trigger for `(projectId, userId, role)`;
-  - `guestName`, typed, non-blank under the same whitespace CHECK, at most 120 characters.
-- A frozen `displayName` and `role` for members, so the record reads the same after the member leaves.
-- `addedById`, `addedAt` (server time), and the retire pair `retiredAt` / `retiredById`. Both are null while the
-  attendee stands; both are set when the visitor removes them.
-- Unique `(visitId, userId) WHERE retiredAt IS NULL`. A member who was removed and then added again gets a new row,
-  so the history shows both edits.
+  - `userId` (FK `User`), a member, with a frozen `displayName` and `role`;
+  - `guestName`, non-blank, at most 120 characters.
+- `addedById` (FK `User`) and `addedAt` (server time).
+- The retire pair `retiredAt` / `retiredById`, both null or both set (CHECK).
+- A partial unique index on `(visitId, userId) WHERE userId IS NOT NULL AND retiredAt IS NULL`. A member removed
+  and added again gets a new row, so the record shows both edits.
 
-**`SiteVisitPlace`** (the places walked)
-- `visitId` and `projectId`.
-- `nodeId` is nullable, with a composite FK (NoAction). `placeName` is frozen and NOT NULL.
-- `addedClaimedAt`, `addedAt` (accepted) and `addedReceivedAt`.
-- `addedAfterEnd` is true when the visitor adds the place as a correction after the visit ended (§4).
-- The retire pair `retiredAt` / `retiredById`, as for attendees.
-- Unique `(visitId, nodeId) WHERE nodeId IS NOT NULL AND retiredAt IS NULL`. A place stays on the visit even with no
-  observation (R2, F12).
+### `SiteVisitPlace` (the places walked)
 
-**Edits are additions, never rewrites.** "Editing" a visit means adding a row, or retiring one by setting its
-retire pair once. Nothing is overwritten, so every edit from every device stays visible, with who made it and when.
+- `id` is the primary key, a device-generated uuid (F52).
+- `projectId` and `visitId`, with a composite FK to the visit as above.
+- `nodeId`, with a composite FK `(projectId, nodeId)` to `ProjectNode`, NO ACTION. `placeName` is frozen and
+  NOT NULL.
+- **`nodeId` is required on insert (F51).** The column is nullable only so that a node's removal can clear it
+  (§4). The insert trigger refuses a null `nodeId`, so no place is ever recorded without the node it names.
+- `addedById`, `addedClaimedAt`, `addedAt` (accepted), `addedTimeAdjusted` and `addedReceivedAt`.
+  - CHECK: `addedAt <= addedReceivedAt`. `addedTimeAdjusted` implies `addedAt = addedReceivedAt`.
+- `addedAfterEnd`, set by the trigger (§3), never by the caller.
+  - CHECK: `addedAfterEnd` implies `addedAt = addedReceivedAt`. A correction after the visit is not part of the
+    walk's timeline.
+- The retire pair, as for attendees.
+- A partial unique index on `(visitId, nodeId) WHERE nodeId IS NOT NULL AND retiredAt IS NULL`.
 
-**Frozen evidence is enforced in PostgreSQL**, with row-level triggers in the repository's existing append-only
-style:
-- `SiteVisit` refuses `DELETE`. Its `UPDATE` may only:
-  - move `open → ended` or `open → closed`, filling exactly that arm's fields;
-  - fill the late-end pair once, on a `closed` row;
-  - set `startNodeId` to null (the node-removal transition).
+## 3. Triggers: who, order, and the closed-visit ban
 
-  Every other column is immutable, including who, the claimed and accepted start times, the location and
-  `startPlaceName`.
-- `SiteVisitAttendee` and `SiteVisitPlace` refuse `DELETE`. Their `UPDATE` may only:
-  - fill the retire pair once;
-  - for a place, set `nodeId` to null.
-- The seed and the test resets clear these tables through the sanctioned reset (`prisma/sanctioned-reset.ts`), as
-  every sealed table does.
+All are row-level PL/pgSQL triggers owned by `site-visits`, in the repository's existing sealed-table style.
 
-**Events.** These event types join `DOMAIN_EVENT_TYPES`:
-- `sitevisit.started`;
-- `sitevisit.place_added`;
-- `sitevisit.place_retired`;
-- `sitevisit.attendee_added`;
-- `sitevisit.attendee_retired`;
-- `sitevisit.ended`;
-- `sitevisit.closed`;
-- `sitevisit.late_end_recorded`.
+**Standing.** People are checked with `platform_user_holds_role_windowed(projectId, userId, role)`, the
+repository's one spelling of "holds this role on this project". It also admits an org owner or admin acting as
+PMC with no membership row. The check runs only when the row is written, so a later removal never blocks reading
+the record; the frozen names keep it readable.
 
-Each has an `invalidate`-only external-effect entry, with no push. The `invalidate` effect is what refreshes the
-visit on the visitor's other devices. The effect catalog is sealed by generation, so SV1-a also ships the
-catalog-generation seed migration and its test row, in the existing style. SV1 has no projection consumer, so no
-consumer rule changes.
+| Write | The trigger requires |
+| --- | --- |
+| Insert `SiteVisit` | The visitor holds `visitorRole` on the project. |
+| `SiteVisit` to `closed` | `closedById` holds `pmc` on the project. |
+| Insert an attendee or a place | `addedById = visit.visitorId` (F46). For a member attendee, the member holds `role` on the project. |
+| Retire an attendee or a place | `retiredById = visit.visitorId` (F46). |
 
-**Repository bookkeeping in SV1-a** (each is an existing tripwire):
-- the manifest's `ownsModels`;
-- the seed wipe order and the sanctioned reset;
-- the `set-null-coverage` classification for the two node columns (see §5);
-- the migration count in `pg-parse.test.mjs`.
+**Binding attribution to the visit (F46).** An attendee or place row names the visitor as the person who added or
+retired it, read from the locked visit row. A row can therefore never carry the name of someone from another
+project, or of anyone but the visitor. The PMC's only write is the close.
 
-## 3. Commands (unit SV1-b, server)
+**The visit row is the lock for every child write (F49).** Each child trigger begins with
+`SELECT … FROM "SiteVisit" WHERE ("projectId", id) = (NEW."projectId", NEW."visitId") FOR UPDATE` and then decides
+from that locked row:
+- the visit is `closed`: the insert or retire is refused;
+- for a place insert: `addedAfterEnd` is set to `(status = 'ended')`, whatever the caller sent;
+- for a place added while `open`: `addedAt >= visit.startedAt`.
 
-**The envelope every command shares:**
-- Each command runs through `executeCommand` with an `Idempotency-Key`. A replay under the same key returns the
-  committed result; a different payload under the same key is a 409.
-- Who the actor is comes from `requireActorEnvelope`, **inside** that transaction. This is the repository's
-  transaction-bound identity: it locks the actor's standing and display name, so the frozen `visitorName` and the
-  event's actor come from the same locked read. A role that has changed since sign-in is refused
-  (`STALE_ROLE_MESSAGE`).
-- The token role is checked against the route ceiling.
-- **The device is never part of authority.** Any device signed in as the visitor is the visitor (Q12).
+The end transition locks the same row, so an end and an add serialise. Either the add commits first and the end
+sees it, or the end commits first and the add is recorded as `addedAfterEnd`.
 
-| Command | Who | Order inside the transaction | Rule |
-| --- | --- | --- | --- |
-| `siteVisit.start` | Ceiling: pmc, consultant, architect (§7). | 1. The actor envelope. 2. Each attendee member's standing row `FOR SHARE`, in sorted user-id order, through the orgs-owned standing query (the `lockStandingForWrite` ordering). 3. Read each attendee as active. 4. Insert. | `startNodeId` must pass `resolveProjectNode`, which admits published nodes only. The time rule is in §4. An id that already exists is a 409, never an overwrite (it is the primary key). A second open visit for the same visitor fails the partial index, so it is a 409 under any interleaving, and the response names the open visit (§4). |
-| `siteVisit.addPlace` | The visitor. The ceiling is as for start; the service narrows to `visitorId`. | Visit row `FOR UPDATE`, then read status | Allowed while `open` or `ended`. `nodeId` is required and must pass `resolveProjectNode` (published nodes only), so a draft place is never recorded or exposed. A place already standing on the visit changes nothing. |
-| `siteVisit.retirePlace` | The visitor. | Visit row `FOR UPDATE`, then read the place | Allowed while `open` or `ended`. A place that is already retired changes nothing. |
-| `siteVisit.addAttendee` | The visitor. | 1. Visit row `FOR UPDATE`. 2. The attendee's standing row `FOR SHARE`. 3. Read it as active. | Allowed while `open` or `ended`. A member who is already standing on the visit changes nothing. Guests are names only. |
-| `siteVisit.retireAttendee` | The visitor. | Visit row `FOR UPDATE`, then read the attendee | Allowed while `open` or `ended`. An attendee who is already retired changes nothing. |
-| `siteVisit.end` | The visitor, from any device. | Visit row `FOR UPDATE`, then read status and the latest accepted time of the places added while open | `open` becomes `ended`. If the visit is already `ended`, nothing changes: the first end wins (§4). If it is already `closed`, the first end fills the late-end pair and nothing else changes (R4). |
-| `siteVisit.close` | pmc, for any visit. | Visit row `FOR UPDATE`, then read status | `open` only. A reason is required. The visit becomes `closed` at server time, marked unsigned. |
+**Order of the walk (F47).**
+- On `open → ended`, the visit's own trigger requires `endedAt >=` the latest `addedAt` of the places added while
+  open, standing or retired. No place walked during the visit sits after its end.
+- Every accepted time is at or before its own receipt time (the CHECKs in §2), and receipt times only grow.
+  Therefore an adjusted time is never before the visit's start, and the accepted history is always in order.
 
-A `closed` visit takes no edits. The PMC closed it because the visitor can no longer act on it.
+**What may change.** Every table refuses `DELETE` and `TRUNCATE`.
+- The only exception is the cascade from a project deletion: `phase6_t4d_project_is_deleting(OLD."projectId")` at
+  `pg_trigger_depth() > 1`, as the existing sealed tables do.
+- The seed and the test resets clear these tables through `sanctionedReset`, which disables the TRUNCATE seals by
+  name.
 
-**Writes happen only on a real change.** An `AuditLog` row, the event and any `Notification` are written only when
-the command changes a row. A command that changes nothing returns the current visit and writes only its command
-receipt; examples are a repeated place, a second end, or retiring a row that is already retired. No history ever
-shows a transition that did not happen.
+`UPDATE` on `SiteVisit` may only:
+- move `open → ended` or `open → closed`, filling exactly that arm's fields;
+- fill the late-end pair once, on a `closed` row;
+- set `startNodeId` to null (§4).
 
-Start, end and close each write one project `Notification` ("Site visit started by …", "Site visit ended …"). The
-project feed is the project's history surface today; there is no history screen to extend. Edits and a late end
-write their event but no notification.
+`UPDATE` on an attendee or a place may only fill the retire pair once, or, for a place, set `nodeId` to null (§4).
 
-**Errors are never about time.** A command gets a 4xx answer only for one of these:
-- authorization: the wrong person or role;
-- a missing or draft place;
-- a cross-project id;
-- an id clash;
-- the open-visit index;
-- an edit to a closed visit.
+Every other column is immutable: who, every claimed and accepted time, the location, the frozen names and
+`addedAfterEnd`.
 
-Time never refuses a command (§4). The web outbox drops every 4xx except 401, 408 and 429 as terminal
-(`isTerminalOutboxError`), so it can never drop an end because of its time.
+## 4. Removing a node
 
-**Reading.** `GET /projects/:projectId/site-visits` (route policy `project.read`) lists the project's visits.
-- Each visit comes with its standing attendees and places, and with its retired rows (marked, with who retired them
-  and when).
-- Every claimed time and every accepted time is shown, and adjusted times are marked.
-- The location, labelled approximate or "no location" as in §2, is returned only to the visitor and the PMC.
-- An `overlaps` flag is computed at read time, between visits of the same visitor. It uses each visit's accepted
-  start and its end point: `endedAt` for an ended visit, `closedAt` for a closed one. It is computed only when both
-  visits have an end point (F34).
-- A `closed` or `ended` visit is never labelled signed or delivered (S1, F38).
+A node's removal must not delete or block the record. The composite FKs are NO ACTION, so a removal that forgot
+the visits fails instead of losing them. A site-visits participant clears `startNodeId` and `nodeId` inside the
+nodes removal transaction, before the node row (and any subtree) is deleted. It follows the daily-log precedent
+`unfileMaterialsForDeletedNodes`. The triggers admit exactly that one nulling transition; the frozen names remain.
+The participant's code is design 2's. This design fixes only what the database admits.
 
-## 4. Offline, several devices, and time (R2, R3, F5, F14)
+The columns are NO ACTION, not SET NULL, so `set-null-coverage` does not count them.
 
-**The device's role.** A device generates the visit id and the idempotency keys, and captures the location when it
-can. It writes each op to the durable outbox first, through the existing write-ahead path. It sends the moment the
-person tapped as the claimed time. Every device signed in as the visitor reads the same open visit from the server,
-so a visit started on a phone can be added to on a laptop, and ended from either.
+## 5. Events, audit rows and notices, sealed to the change (F45)
 
-**Conflict resolution (Q12): every edit is an operation, and operations merge.** Each command applies under the
-visit's row lock, so edits from several devices are serialised in the order they reach the server. They are built to
-commute:
-- adds are keyed: the same place or member is added once;
-- retires are set-once;
-- the first end wins, and a later end from another device changes nothing;
-- an end after a PMC close becomes the late end.
+**Event types.** Eight types join `DOMAIN_EVENT_TYPES`:
+- `sitevisit.started`, `sitevisit.ended`, `sitevisit.closed`, `sitevisit.late_end_recorded`;
+- `sitevisit.place_added`, `sitevisit.place_retired`;
+- `sitevisit.attendee_added`, `sitevisit.attendee_retired`.
 
-So two devices editing at once, or one coming back online after the other, converge on the same visit with nothing
-lost. Every edit stays in the record (§2). After each committed op, the `invalidate` effect refreshes the visit on
-the visitor's other devices.
+Every event is on the visit's stream: `entityType = 'SiteVisit'`, `entityId` = the visit id. A child event's payload
+names the child row's `id`.
 
-**Two starts (S2, F14).**
-- If a device starts a visit while the visitor already has one open (for example, offline on a laptop while the phone
-  visit is open), the start is refused with a 409 that names the open visit.
-- The device then shows: "You already have a visit in progress, started at 10:02. Add what you recorded here to it?"
-  If the visitor confirms, the device re-sends its queued places and attendees against that visit, under fresh keys.
-  If the visitor declines, the device keeps its own visit locally, marked "not recorded", to retry once the other
-  visit ends.
-- Visits are never merged silently.
-- A delayed start that arrives after the other visit ended is accepted as its **own** visit. A true overlap shows as
-  the read-time `overlaps` flag.
+**Catalog.** Each type has one external-effect entry: `invalidate: true`, no push, `pairingRequired: true`. The
+invalidation is what refreshes the visit on the visitor's other devices. No consumer contract moves: no projection
+consumes `sitevisit.`, and `socket.invalidation` and `webpush.notify` keep their versions.
 
-**Time: the claim is never refused and never rewritten.** The server keeps the claim as evidence and derives the
-accepted time:
-- **start:** the claim, when `max(received − 7 days, project.createdAt) <= claim <= received + 5 min`; otherwise
-  the receipt time, flagged as adjusted;
-- **add-place while open:** the claim, when `startedAt <= claim <= received + 5 min`; otherwise the receipt time,
-  flagged;
-- **end:** the claim, when `max(startedAt, latest accepted time of the places added while open) <= claim <=
-  received + 5 min`; otherwise the receipt time, flagged. This is read under the visit's row lock, so no place
-  walked during the visit can sit after the end;
-- **add-place after the visit ended:** marked `addedAfterEnd`. Its accepted time is the receipt time, and it is not
-  part of the walk's timeline, so it never moves the end;
-- **retires, attendee edits and close:** server time. These are later steps that are not held to the visit's window
-  (F16).
+**Pairing, in both directions.**
+- **Event without its change.** The kernel's existing seal refuses, at commit, a `pairingRequired` event that no
+  fact claimed. It also requires a human actor with an actor id.
+- **Change without its counterparts.** Each change (an insert, or one of the transitions in §3) has a claimant
+  trigger in two halves on one function: an immediate AFTER trigger and a DEFERRED constraint trigger. This is
+  U3's order-independent shape. At commit, the claimant requires, among rows written in this same transaction
+  (`xmin = txid_current()`):
+  - **exactly one event** of the change's type on the visit's stream, from a human actor whose `actorId` is the
+    attributed person: the visitor, `addedById`, `retiredById` or `closedById`. For a child change, "exactly one"
+    counts only the events whose payload `rowId` is this row's `id`. A start that names three attendees writes
+    three `sitevisit.attendee_added` events on one visit stream in one transaction, each paired to its own row.
+  - **exactly one `AuditLog` row** for the project, with `entityId` = the changed row's id, `action` = the event
+    type, and `actorId` = the same person.
+  - for `started`, `ended` and `closed`, **exactly one `Notification`** for the project whose `eventId` is that
+    event.
+  - It then claims the event with `platform_claim_event_pairing_once`.
+- Counting uses the generic `platform_tx_event_count`, not the decisions-only helper.
 
-**Why the accepted order holds.** A device that was offline for more than 7 days has its start adjusted to the
-receipt time. Its queued places and end are received later still, so each is either inside its bounds or adjusted
-to a later receipt time. The accepted history is always in order, and the original taps are always kept.
+**Notices render with no feed change (F50, database half).** A site-visit notice has no `kind` and no
+`decisionId`. Kind-less notices are already served from their stored text to every reader, and
+`Notification_t4d_binding_bound` already checks that its `eventId` was written in the same transaction. The wording
+is design 2's.
 
-## 5. Every way a visit ends (R4, F9, F35, F40)
+**One generation, one reseal.** Adding entries changes the sealed catalog's coverage hash. SV1-a therefore ships a
+catalog-generation migration in A7d's shape (Part 1 only), carrying all eight keys at once. The first release that
+carries it needs the operator reseal in `docs/RUNBOOK.md` ("catalog changed"). SV2 to SV5 will each add their own
+types, so each will need one reseal too. That is accepted, rather than reserving types now for designs that do not
+exist yet.
 
-| Situation | End state | Test |
-| --- | --- | --- |
-| The visitor taps End visit, on any device | `ended` (not signed; reports arrive in SV4) | end, then a replay; an end from a second device after the first changes nothing |
-| The visitor's phone is lost or broken | the visitor ends the visit from any other signed-in device: `ended` | start on device A, end on device B |
-| The visitor is removed or re-roled | the PMC closes the visit, with a reason: `closed`, unsigned | the removed visitor's calls are refused (route or envelope); the PMC close succeeds |
-| A device ends the visit after the PMC closed it | stays `closed`; the end fills the late-end pair | PMC close, then an offline end lands |
-| The device's clock is wrong | the end is accepted at receipt time, flagged; the claim is kept | an end claiming a time before the start, or before the last place, is accepted and flagged |
-| A node on the visit is removed | the visit's status is unchanged; the site-visits participant sets `startNodeId` / `nodeId` to null inside the nodes removal transaction; the frozen names remain | remove a node a visit walked |
+## 6. Repository bookkeeping in SV1-a
 
-The node participant follows the daily-log precedent (`unfileMaterialsForDeletedNodes`): it runs under the nodes
-tree lock, in the same transaction, before the node row is deleted. The trigger admits exactly this nulling. The
-columns are classified `exempt` in `set-null-coverage` because no projection serialises them.
+The migration is **inseparable** from its catalog code. The envelope seal refuses every emit whose
+`(coverageVersion, effectKey)` the database does not hold, so the new entries and the seeded generation must land
+together.
 
-How a visit ended in SV1 enters SV4's signing flow, and when edits stop once a report is signed (R7), are SV4's
-design (F38). SV1 only guarantees that such a visit is never shown as signed.
+Files:
+- the migration;
+- `schema.prisma`;
+- the events list in `packages/shared`;
+- `external-effects.ts`;
+- the module manifest and the registry;
+- the boundary analyzer's directory map;
+- `seed.ts` and `sanctioned-reset.ts`;
+- the catalog seed and generation tests;
+- `upgrade-proof.sh`;
+- `migrate.sh` (`ALWAYS_EXECUTE`, so a db-push baseline gets the catalog rows and triggers);
+- `pg-parse.test.mjs`;
+- the new integration suite;
+- the RUNBOOK note.
 
-## 6. Screens (unit SV1-c, web)
+That is about 16 files, within one standard unit. The plumbing map behind this list is recorded on #792.
 
-- **Outbox ops:** `startSiteVisit`, `addSiteVisitPlace`, `retireSiteVisitPlace`, `addSiteVisitAttendee`,
-  `retireSiteVisitAttendee`, `endSiteVisit` and `closeSiteVisit`. Each carries its key, and the walk ops carry their
-  claimed time.
-- **Location:** one `navigator.geolocation.getCurrentPosition` at start, with a short timeout. It works the same on a
-  phone, laptop or iPad: a GPS fix, an approximate fix or "no location". It never blocks the start (Q6, Q12).
-- **Where it shows:** the For You open-visit card on every signed-in device, the visit's detail (where it is edited
-  after the visit), and the Site Map's "Visit this area" and "Visits here".
-- **A 409 on start** shows the "add to the visit in progress?" prompt (§4).
-- **New strings** in English, Hindi and Gujarati.
-- **No new navigation item (D1).** Before SV1-c starts, it is checked against the navigation lane's files (the
-  Dashboard work and #633 Site Map). If they overlap, this lane pauses and says so.
+## 7. What SV1-a must prove
 
-## 7. Tenancy and roles (R1)
+Each hostile write sits beside an accepted, coherent one, so the test shows the rule and not a broken fixture:
+- **Lifecycle:** two open visits for one visitor; a row both ended and closed; an end before the start or after
+  its receipt; an adjusted time that is not the receipt time; a late end on an `open` or `ended` row; a second late
+  end.
+- **Data shape:** a blank close reason; a node without its label; a half-set location; a start accepted after its
+  receipt.
+- **Who:** a visitor, closer or attendee with no standing on the project; an org owner of an unrelated organisation
+  as closer; an attendee or place added or retired by anyone but the visitor (F46).
+- **Places:** a cross-project place; a place inserted with no node (F51); a place's `addedAfterEnd` sent wrong by
+  the caller and corrected by the trigger.
+- **Closed visits:** an insert or retire on a closed visit (F49).
+- **Walk order:** an end earlier than a place walked while open (F47).
+- **Locking:** an add racing an end, which lands either before the end or as `addedAfterEnd` (two-connection
+  barrier test).
+- **Immutability:** an update to each frozen column; a second retire; a delete; a truncate; a project deletion that
+  cascades cleanly.
+- **Pairing (F45):** for each of the eight changes, the change with no event, two events, an event of the wrong
+  type, an event naming another actor or another child, no audit row, or (for start, end and close) no notice. Also
+  a `sitevisit.*` event with no change.
+- **Catalog:** the upgrade proof, the generation tests, and an outbox start in `outbox` mode refused until the
+  reseal.
 
-- **Provable tenancy.** Every table carries `projectId`, with composite foreign keys to the visit and the place, and
-  every person is checked by the insert-time standing trigger (§2). A visit, its visitor, its closer, its attendees
-  and its places are therefore provably one project in PostgreSQL.
-- **Attendees.** An attendee member is read as active only after their standing row is locked (§3). A removal that
-  commits first is seen; one that commits later waits.
-- **Role ceilings** live in `ROLE_POLICY`:
-  - every visitor command admits `pmc`, `consultant` and `architect`, and the service narrows it to the visitor;
-  - close admits `pmc`.
-- **Architect (Q3).** `architect` is in the visitor ceilings from SV1, so the two lanes may land in either order.
-  - While 4d-i's reservation doors stand, no token carries the role, so the row is unreachable, and architects visit
-    as consultant members.
-  - The moment 4d-iii opens the role, architects can start visits with no further unit.
-  - This follows the existing `consultation.request` precedent. `route-policy.test.ts`'s architect action list is
-    updated in SV1-b.
-- **Who reads.** Engineers, contractors and clients read visits; they do not start or edit them (D5).
+## 8. Tenancy and roles in the database
 
-## 8. Units and what each must prove (R16, F23)
+Every table carries `projectId`, with composite foreign keys to the visit and the node, and every person is checked
+by the standing triggers (§3). A visit, its visitor, its closer, its attendees and its places are therefore provably
+one project. `architect` is admitted by the role CHECK, and so is unreachable only through standing: no one holds
+the role until 4d-iii opens it (Q3). Route ceilings and `ROLE_POLICY` are design 2's.
 
-| Unit | Contents | Proof |
-| --- | --- | --- |
-| SV1-0 | This design, and its hard choices on #792 | Review |
-| SV1-a | Migration: the three tables, the CHECKs, the partial indexes, the standing triggers, the immutability triggers, the catalog generation; module ownership and the sanctioned reset | Upgrade proof. Hostile inserts and updates, each beside an accepted coherent row: two open visits; a blank close reason; a row both ended and closed; a node without its label; a half-set location; a visitor, closer or attendee with no standing on the project; a cross-project place; an update to a frozen column; a second retire; a delete. |
-| SV1-b | The seven commands, the read, the node participant, the role policy | Barrier tests: two concurrent starts with different keys leave one open visit (F8); end racing close leaves exactly one end state; ends from two devices racing leave one end; add-place racing end lands either before the end or as `addedAfterEnd`, never inside the walk after the end (R6 ahead of SV2); an attendee removal racing start or add-attendee either precedes and refuses, or follows. Wrong-role tests for each command, and a test that a different user on the same device is refused. Claimed and accepted time tests, including an end claimed before the last place (F5). No-op commands write no event or notification. A draft node is refused. Every §5 row. |
-| SV1-c | Web: outbox ops, location, the cards and the 409 prompt | Browser tests: (1) start offline, add a place, end, reconnect, and the server holds one visit with the claimed times; (2) start on one device, add a place on a second, end on the first; (3) an offline start while another visit is open, then "add to the visit in progress"; (4) a location refusal starts with "no location"; (5) the PMC closes a visit while the device is offline, and the device's end lands as a late end. |
+## 9. Findings
 
-SV1 counts as done only after real-role QA on the isolated QA project (R17).
+| Finding | Where it is answered |
+| --- | --- |
+| F45 pairing with event, audit and notice | §5, proofs in §7 |
+| F46 attribution bound to the visit | §3 |
+| F47 times never before the start | §2 CHECKs and §3 walk order; the server's choice of claim or receipt in design 2 |
+| F49 no edits on a closed visit, in PostgreSQL | §3 |
+| F51 node required on insert | §2, §3 |
+| F52 stable child ids | §2 |
+| F50 site-visit notices render | database half in §5; wording and the feed check in design 2 |
+| F48 late end after the visitor's removal | design 2 (command authority); the database admits the late-end pair (§2) |
+| F53 queued ops survive a start conflict | design 3 (web outbox) |
 
-## 9. Findings this design answers
-
-F5, F8, F9, F12, F14, F34, F35 and F40 (SV1's rows on #792). F40 (a lost phone) is answered by Q12's ruling: any
-signed-in device ends the visit. Each finding stays open until its proof above passes in the unit that builds it.
+The first round's findings stay answered where they were. The earlier SV1 rows on #792 (F5, F8, F9, F12, F14,
+F34, F35, F40) are carried by the same three designs. Each finding stays open until its proof passes in the unit
+that builds it.
