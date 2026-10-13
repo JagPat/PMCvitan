@@ -75,7 +75,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -3037,7 +3037,7 @@ export const useStore = create<Store>()(
       // submission lifecycle — eleven gate rounds of it — untouched.
       const sub = get().submission;
       if (sub.status === 'submitting' && sub.generation === get().projectScopeGeneration) {
-        get().flash('Finishing the submit — you can switch checklists in a moment.');
+        get().flash(CHT.switchWait[get().lang]);
         return;
       }
       const fresh = structuredClone(target);
@@ -3084,20 +3084,20 @@ export const useStore = create<Store>()(
       if (!c || !item) {
         // The checklist the photo was taken on is no longer outstanding (submitted, decided, or the
         // project moved). Say so rather than dropping the capture in silence.
-        if (capturedOn) get().flash('That checklist is no longer open — the photo was not attached.');
+        if (capturedOn) get().flash(CHT.noLongerOpen[get().lang]);
         return;
       }
-      if (inspectionFrozen(get(), c)) { get().flash('This inspection is submitted — no more changes.'); return; } // gate round 8
+      if (inspectionFrozen(get(), c)) { get().flash(CHT.noMoreChanges[get().lang]); return; } // gate round 8
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
-        get().flash('Could not read that photo — please try again.');
+        get().flash(CHT.readFailed[get().lang]);
         return;
       }
       const [, mime, base64] = m;
       // hard size cap (the capture flow should downscale before calling this;
       // an oversize photo is REFUSED explicitly, never silently truncated)
       if (base64.length > 5_600_000) { // ~4 MB decoded
-        get().flash('That photo is too large (over 4 MB) — retake at a lower resolution.');
+        get().flash(CHT.tooLarge[get().lang]);
         return;
       }
       // ONE rule for every local thumbnail this function writes. Round 4 fixed the offline branch
@@ -3128,11 +3128,11 @@ export const useStore = create<Store>()(
         // Demo has no durable row, so these copies ARE the record — which is exactly why declining
         // to write loses the photo outright rather than merely delaying it.
         set(mirrorCapture);
-        get().flash('Photo attached (demo).');
+        get().flash(CHT.attachedDemo[get().lang]);
         return;
       }
       if (!item.id) {
-        get().flash('This checklist predates evidence capture — reload the project and retry.');
+        get().flash(CHT.predates[get().lang]);
         return;
       }
       const clientKey = (globalThis.crypto?.randomUUID?.() ?? `ev-${Math.random().toString(36).slice(2)}`);
@@ -3143,7 +3143,7 @@ export const useStore = create<Store>()(
         // shown ONLY after the IndexedDB write commits; a quota/write failure (or
         // no IndexedDB at all) surfaces as an explicit failure and queues NOTHING.
         if (!evidenceAvailable()) {
-          get().flash('Could not save this photo on the device (offline storage unavailable) — retake when you have signal.');
+          get().flash(CHT.noStorage[get().lang]);
           return;
         }
         // gate round-3: the durable row belongs to the scope the user captured
@@ -3152,7 +3152,7 @@ export const useStore = create<Store>()(
         try {
           await putEvidence({ userScope: ctx.scope, projectId: ctx.projectId, clientKey, mime, data: base64, ...meta });
         } catch {
-          if (evidenceContextStillCurrent(ctx)) get().flash('Could not save this photo on the device — free space and retake.');
+          if (evidenceContextStillCurrent(ctx)) get().flash(CHT.noSpace[get().lang]);
           return;
         }
         // gate round-4 finding 1: the context check comes FIRST — only a
@@ -3184,7 +3184,7 @@ export const useStore = create<Store>()(
           s.pendingEvidenceCount += 1;
         });
         persistOutbox();
-        get().flash('Photo saved offline — will upload when signal returns.');
+        get().flash(CHT.savedOffline[get().lang]);
         return;
       }
       // ONLINE: upload now with the idempotency key; reconcile from the snapshot.
@@ -3201,11 +3201,11 @@ export const useStore = create<Store>()(
         // the snapshot is actually `applied` (never on a superseded / wrong-project one).
         const lease = beginSnapshotLease(scope);
         const snap = await gateway.snapshot();
-        consumeSnapshotResult(acceptSnapshot(snap, lease), 'Evidence photo uploaded and linked to the item.', lease.scope);
+        consumeSnapshotResult(acceptSnapshot(snap, lease), CHT.uploaded[get().lang], lease.scope);
       } catch {
         // the failure belongs to the scope the capture was made in — a moved
         // scope (gate round-4 finding 3) hears nothing
-        if (scopeStillCurrent(scope)) get().flash('Could not upload the photo — check your signal and try again.');
+        if (scopeStillCurrent(scope)) get().flash(CHT.uploadFailed[get().lang]);
       }
     },
     retryFailedEvidence: async (clientKey) => {
@@ -3236,28 +3236,28 @@ export const useStore = create<Store>()(
         // UI must never claim success. Surface the failure only to the scope
         // the user acted in; a moved scope hears nothing.
         if (!evidenceContextStillCurrent(ctx)) return;
-        get().flash('Could not delete the photo — it is still saved on this device; try again.');
+        get().flash(CHT.deleteFailed[get().lang]);
         return;
       }
       // gate round-3: the delete honored the user's decision in ITS scope; a
       // switch that landed mid-await leaves the NEW scope's UI untouched
       if (!evidenceContextStillCurrent(ctx)) return;
       set((s) => { s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey); });
-      get().flash('Photo deleted.');
+      get().flash(CHT.deleted[get().lang]);
     },
     hydrateEvidence: async () => reconcileEvidence(),
     setNote: (idx, txt) => set((s) => { const c = s.checklist; const it = c?.items[idx]; if (c && it) { if (checklistFrozen(s)) return; it.note = txt; recordChecklistMark(s, c.id, it.id, 'note', txt); } }),
     submitInspection: () => {
       const c = get().checklist;
       if (!c || !c.items.length) {
-        get().flash('No checklist has been issued for today yet.');
+        get().flash(CHT.noneIssued[get().lang]);
         return;
       }
       // gate round 8: once the payload is frozen (submitting / queued / already
       // server-submitted) a repeat submit is a no-op — no double submission, and
       // no edit can slip in between the click and the outcome.
       if (checklistFrozen(get())) {
-        get().flash('This inspection has already been submitted.');
+        get().flash(CHT.alreadySubmitted[get().lang]);
         return;
       }
       const undone = c.items.filter((it) => !it.state).length;
@@ -3266,11 +3266,11 @@ export const useStore = create<Store>()(
       // whose photo is a real linked Media row (Task 7 acceptance finding).
       const failNoPhoto = c.items.filter((it) => it.state === 'fail' && it.photos === 0 && (it.evidence?.length ?? 0) === 0).length;
       if (undone > 0) {
-        get().flash('Please mark all ' + c.items.length + ' items before submitting.');
+        get().flash(CHX.markAll(c.items.length, get().lang));
         return;
       }
       if (failNoPhoto > 0) {
-        get().flash('A failed item needs a photo before you can submit.');
+        get().flash(CHT.failNeedsPhoto[get().lang]);
         return;
       }
       if (gateway) {
@@ -3302,7 +3302,7 @@ export const useStore = create<Store>()(
               if (!isThisAttempt()) return; // a newer submit/socket/session retired this command
               const result = acceptSnapshot(snap, lease);
               if (result === 'applied') {
-                get().flash('Inspection submitted to the architect for review.');
+                get().flash(CHT.submitted[get().lang]);
                 // Live bug 1b — the same rule as `consumeSnapshotResult`: an APPLIED snapshot carries no
                 // module slice, so under module ownership the submit still owes the read that shows it
                 // (the submitted checklist leaving the outstanding set; the slice is owed until it lands)
@@ -3334,7 +3334,7 @@ export const useStore = create<Store>()(
                   s.submission.status = 'idle';
                 }
               });
-              get().flash('Could not submit — your marks are kept. Please try again.');
+              get().flash(CHT.submitFailed[get().lang]);
             });
           return;
         }
@@ -3346,7 +3346,7 @@ export const useStore = create<Store>()(
           s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued', attempt: 0 };
         });
         persistOutbox();
-        get().flash('Submit inspection — saved offline, will sync when you reconnect.');
+        get().flash(CHT.savedOfflineSubmit[get().lang]);
         return;
       }
       // demo (no gateway): the submit succeeds locally and synchronously — the
@@ -3396,7 +3396,7 @@ export const useStore = create<Store>()(
         // `current` first: `next` is an immer draft, and a draft proxy is not a cloneable source
         if (next) { s.checklist = structuredClone(current(next)) as Checklist; s.selectedChecklistId = next.id; }
       });
-      get().flash('Inspection submitted to the architect for review.');
+      get().flash(CHT.submitted[get().lang]);
     },
 
     // ---- pmc review (queue) ----
