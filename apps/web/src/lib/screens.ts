@@ -33,7 +33,9 @@ export interface ScreenMeta {
 
 export const SCREEN_META: Record<ScreenKey, ScreenMeta> = {
   inbox: { key: 'inbox', label: 'For You', short: 'For You', path: '/for-you', icon: Inbox },
-  dashboard: { key: 'dashboard', label: 'Dashboard', short: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+  // #811 — every role's home; "Dashboard" does not fit a fifth of a 320px phone bar at the 13px label floor, so
+  // its short (bar and More) name is "Home"
+  dashboard: { key: 'dashboard', label: 'Dashboard', short: 'Home', path: '/dashboard', icon: LayoutDashboard },
   drafts: { key: 'drafts', label: 'Drafts', short: 'Drafts', path: '/drafts', icon: FileEdit },
   'site-schedule': { key: 'site-schedule', label: 'Site Schedule', short: 'Schedule', path: '/schedule', icon: CalendarDays },
   'decision-log': { key: 'decision-log', label: 'Decision Log', short: 'Decision Log', path: '/decisions', icon: ClipboardList },
@@ -133,23 +135,23 @@ export function enabledScreensFor(
 
 /** Permission-filtered screen list per role (mirrors the prototype's screensFor). */
 export function screensFor(role: Role): ScreenMeta[] {
-  // 'inbox' ("For You") is the home for every role — a live, cross-cutting to-do list, first
-  // in the nav so everyone lands on exactly what needs them before drilling into a screen.
+  // #811 (Board decision 2026-10-13) — the Dashboard is the home for every role: first in the nav, so
+  // everyone lands on it after login. For You (the live action queue) stays second.
   const keys: Record<Role, ScreenKey[]> = {
-    pmc: ['inbox', 'dashboard', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team', 'portfolio'],
-    client: ['inbox', 'client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
+    pmc: ['dashboard', 'inbox', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team', 'portfolio'],
+    client: ['dashboard', 'inbox', 'client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
     // engineers hold activity.start/complete, so they get the Schedule (its authoring
     // controls stay behind activity.manage — pmc only). Materials and Labour (`labour.read` is
     // pmc/engineer) are pmc/engineer planning surfaces.
-    engineer: ['inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team-access', 'decision-log'],
-    contractor: ['inbox', 'drawings', 'places', 'team-access', 'decision-log'],
+    engineer: ['dashboard', 'inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team-access', 'decision-log'],
+    contractor: ['dashboard', 'inbox', 'drawings', 'places', 'team-access', 'decision-log'],
     // a discipline consultant: read-mostly reviewer — drawings, the register, the Site Map, project health
-    consultant: ['inbox', 'drawings', 'decision-log', 'places', 'client-health'],
+    consultant: ['dashboard', 'inbox', 'drawings', 'decision-log', 'places', 'client-health'],
     // Phase 6 task 4d-ii-b / B2 — the architect's screens, from the role's ROLE_POLICY rows: the
     // Inbox (the awaiting-countersign item, B3), the Decision Log (Countersign / Reject back / Forward
     // on and the consultation surface, B4/B5b), the drawing register and the Site Map (`project.read`).
     // No session can carry the role until 4d-iii drops the doors; the list is what such a session lands on.
-    architect: ['inbox', 'decision-log', 'drawings', 'places'],
+    architect: ['dashboard', 'inbox', 'decision-log', 'drawings', 'places'],
   };
   return keys[role].map((k) => SCREEN_META[k]);
 }

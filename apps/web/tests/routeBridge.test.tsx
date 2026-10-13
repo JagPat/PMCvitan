@@ -96,8 +96,8 @@ describe('RouteBridge — capability-gated deep links (Phase 4 Task 6, Codex F-d
     useStore.setState({ capabilities: [], capabilitiesKnown: true });
     renderAt('/projects/ambli/labour');
     await flush();
-    expect(useStore.getState().screen).toBe('inbox');
-    expect(currentPath).toBe('/projects/ambli/for-you');
+    expect(useStore.getState().screen).toBe('dashboard');
+    expect(currentPath).toBe('/projects/ambli/dashboard');
   });
 
   it('a labour deep link on a labour-PILOT project lands on the hub', async () => {
@@ -118,16 +118,16 @@ describe('RouteBridge — capability-gated deep links (Phase 4 Task 6, Codex F-d
     // the shell lands: this project has NO labour capability → the provisional screen is ejected
     act(() => { useStore.setState({ capabilities: [], capabilitiesKnown: true }); });
     await flush();
-    expect(useStore.getState().screen).toBe('inbox');
-    expect(currentPath).toBe('/projects/ambli/for-you');
+    expect(useStore.getState().screen).toBe('dashboard');
+    expect(currentPath).toBe('/projects/ambli/dashboard');
   });
 
   it('the same gate covers materials (every capability-gated screen, not a labour special case)', async () => {
     useStore.setState({ capabilities: [], capabilitiesKnown: true });
     renderAt('/projects/ambli/materials');
     await flush();
-    expect(useStore.getState().screen).toBe('inbox');
-    expect(currentPath).toBe('/projects/ambli/for-you');
+    expect(useStore.getState().screen).toBe('dashboard');
+    expect(currentPath).toBe('/projects/ambli/dashboard');
   });
 });
 
@@ -200,7 +200,7 @@ describe('RouteBridge — the decider route survives a loading decision slice (P
     expect(useStore.getState().screen).toBe('client-decisions'); // held while loading
     act(() => { useStore.setState({ projectLoadState: 'ready' } as never); });
     await flush();
-    expect(useStore.getState().screen).toBe('inbox'); // judged against the settled slice
+    expect(useStore.getState().screen).toBe('dashboard'); // judged against the settled slice
   });
 
   it('R10-F4: a dev-auth cold load (identity not yet issued) does NOT settle the slice — the decider deep link survives until the recorded identity can judge it', async () => {
@@ -243,7 +243,7 @@ describe('RouteBridge — the decider route survives a loading decision slice (P
     expect(useStore.getState().screen).toBe('client-decisions'); // held while the identity is pending
     act(() => { useStore.setState({ sessionUserId: 'u-eng-b', projectLoadState: 'ready' } as never); });
     await flush();
-    expect(useStore.getState().screen).toBe('inbox'); // judged against the settled, identified slice
+    expect(useStore.getState().screen).toBe('dashboard'); // judged against the settled, identified slice
   });
 
   it('R6-F4: a SNAPSHOT-mode load error does not settle the slice — the decider deep link holds until a decision-bearing read succeeds', async () => {
@@ -265,7 +265,7 @@ describe('RouteBridge — the decider route survives a loading decision slice (P
     // a successful decision-bearing read then settles it — the real non-decider is bounced
     act(() => { useStore.setState({ projectLoadState: 'ready' } as never); });
     await flush();
-    expect(useStore.getState().screen).toBe('inbox');
+    expect(useStore.getState().screen).toBe('dashboard');
   });
 });
 

@@ -124,7 +124,7 @@ export type CreateProjectOutcome =
 
 function initialScreen(): ScreenKey {
   const fromUrl = typeof window !== 'undefined' ? parseLocation(window.location.pathname).screen : null;
-  return fromUrl ?? 'inbox';
+  return fromUrl ?? 'dashboard';
 }
 
 /** Issue-decision payload from the UI: an option may carry a captured photo (base64),
@@ -1189,7 +1189,7 @@ export function getInitialState(): AppState {
     // land on the admin (PMC) view by default — create/manage projects, teams,
     // portfolio. The persona switcher graduates to team/individual views.
     role: 'pmc',
-    // 'inbox' ("For You") is every role's home — the live cross-cutting action queue.
+    // the Dashboard is every role's home (#811); For You is the live cross-cutting action queue.
     // Seeded from the URL on a cold load so a refresh / deep link restores the screen.
     screen: initialScreen(),
     lang: 'en',

@@ -1183,6 +1183,7 @@ test('phone and worker OTP recovery actions meet the target floor', async ({ pag
 test("the engineer's crew questions meet the target floor and fit the phone, in Gujarati", async ({ page }) => {
   await page.goto('/');
   await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  await page.getByTestId('tab-inbox').click(); // #811 — every role lands on the Dashboard; For You is a tab away
   // U1 — Today's crew step, asked one trade at a time; an engineer lands in Gujarati, the longest copy
   await page.getByTestId('today-step-crew').click();
   await expect(page.getByTestId('crew-stepper')).toBeVisible();
@@ -1201,6 +1202,7 @@ test("the engineer's crew questions meet the target floor and fit the phone, in 
 test("a long free-text trade name wraps within the phone's width on the crew question", async ({ page }) => {
   await page.goto('/');
   await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  await page.getByTestId('tab-inbox').click(); // #811 — every role lands on the Dashboard; For You is a tab away
   // U1 (#690, Codex finding 4166618246): trades are each site's own free text, of any length
   const long = 'Waterproofingmembraneapplicatorforterraceandwetareassubcontractgang'; // one unbroken token
   await page.evaluate((trade) => {
@@ -1228,6 +1230,7 @@ test("a long free-text trade name wraps within the phone's width on the crew que
 test("a large crew roster's progress bar stays within the phone's width", async ({ page }) => {
   await page.goto('/');
   await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  await page.getByTestId('tab-inbox').click(); // #811 — every role lands on the Dashboard; For You is a tab away
   // U1 (#690, Codex finding 4167176496): a roster has no size cap, and daily-log.start copies it whole
   const crew = Array.from({ length: 60 }, (_, i) => ({ trade: `Trade ${i + 1}`, count: 0 }));
   await page.evaluate((rows) => {
@@ -1248,6 +1251,7 @@ test("a large crew roster's progress bar stays within the phone's width", async 
 test('"Same as yesterday" meets the target floor and fits the phone, in Gujarati', async ({ page }) => {
   await page.goto('/');
   await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  await page.getByTestId('tab-inbox').click(); // #811 — every role lands on the Dashboard; For You is a tab away
   // U1b — the last log's count for this trade, one tap; an engineer lands in Gujarati, the longest copy
   await page.evaluate(() => {
     const d = new Date();
@@ -1273,6 +1277,7 @@ test('"Same as yesterday" meets the target floor and fits the phone, in Gujarati
 test("the client's Pulse meets the target floor and fits the phone", async ({ page }) => {
   await page.goto('/');
   await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('client');
+  await page.getByTestId('tab-inbox').click(); // #811 — every role lands on the Dashboard; For You is a tab away
   // U2a — the client's home: progress, what is being built, the one thing waiting, what happens next
   await expect(page.getByTestId('client-pulse')).toBeVisible();
   await expect(page.getByTestId('pulse-needs')).toBeVisible();
@@ -1288,6 +1293,7 @@ test("the client's Pulse meets the target floor and fits the phone", async ({ pa
 test('one decision on its own screen meets the target floor and fits the phone', async ({ page }) => {
   await page.goto('/');
   await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('client');
+  await page.getByTestId('tab-inbox').click(); // #811 — every role lands on the Dashboard; For You is a tab away
   // U2b — the Pulse's way in opens that one decision: pick one, then approve
   await page.getByTestId('pulse-needs-go').click();
   await expect(page.getByTestId('decision-focus')).toBeVisible();
@@ -1315,6 +1321,7 @@ test('one decision on its own screen meets the target floor and fits the phone',
 test("the PMC's brief meets the target floor and fits the phone, in Gujarati", async ({ page }) => {
   await page.goto('/');
   await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('pmc');
+  await page.getByTestId('tab-inbox').click(); // #811 — every role lands on the Dashboard; For You is a tab away
   // U3b — the PMC's home across their projects (the demo has no server, so the brief is seeded)
   await page.evaluate(() => {
     const row = (projectId: string, short: string, over: Record<string, unknown>) => ({

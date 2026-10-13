@@ -54,7 +54,9 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   await signIn(page, ENG);
   await openProject(page, 'Residence at Ambli');
 
-  // For You is the engineer's home: Today reads the seeded unsent log — the first step is to check in
+  // #811 — every role lands on the Dashboard; For You (the engineer's Today) reads the seeded unsent log —
+  // the first step is to check in
+  await page.getByRole('button', { name: 'For You' }).click();
   const now = page.getByTestId('today-now');
   await expect(now).toHaveAttribute('data-action', 'checkIn');
   await expect(page.getByTestId('today-step-checkIn')).toHaveAttribute('data-state', 'next');

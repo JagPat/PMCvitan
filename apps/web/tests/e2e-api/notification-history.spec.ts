@@ -54,14 +54,15 @@ test('a notification opens its record, and Back and Forward walk the history the
   await page.goto('/');
   await signIn(page, PMC);
   await openAmbli(page);
-  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
+  // #811 — every role lands on the Dashboard
+  await expect(page).toHaveURL(/\/projects\/ambli\/dashboard$/);
 
   // decision
   await tapNotice(page, 'Living Room Flooring');
   await expect(page).toHaveURL(/\/projects\/ambli\/decisions\/DL-014$/);
   await expect(page.getByTestId('log-row-DL-014')).toHaveAttribute('aria-current', 'true');
   await page.goBack();
-  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
+  await expect(page).toHaveURL(/\/projects\/ambli\/dashboard$/);
   await expect(page.getByTestId('log-row-DL-014')).toHaveCount(0);
   await page.goForward();
   await expect(page).toHaveURL(/\/projects\/ambli\/decisions\/DL-014$/);
@@ -70,9 +71,9 @@ test('a notification opens its record, and Back and Forward walk the history the
   // inspection — live bug 1b-3: the writer stamped the notice (1b-3b), the snapshot served the stamp, and
   // the bell (#735, #738) opens that inspection on the PMC's review screen, which holds the open checklist
   await page.goBack();
-  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
+  await expect(page).toHaveURL(/\/projects\/ambli\/dashboard$/);
   await tapNotice(page, issued.text);
   await expect(page).toHaveURL(new RegExp(`/projects/ambli/review/${issued.id}$`));
   await page.goBack();
-  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
+  await expect(page).toHaveURL(/\/projects\/ambli\/dashboard$/);
 });

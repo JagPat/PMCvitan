@@ -4,7 +4,7 @@ test('schedule groups activities by phase; portfolio shows a project card (Orgs 
   await page.goto('/');
 
   // become the PMC (dev-auth persona switch in the local demo) and open the Dashboard
-  // (every role now lands on the "For You" action queue first)
+  // (every role lands on the Dashboard, #811; the click keeps the test independent of the home)
   await page.getByRole('button', { name: 'PMC', exact: true }).click();
   await page.getByRole('button', { name: 'Dashboard' }).click();
   await expect(page.getByText('PROJECT DASHBOARD')).toBeVisible();

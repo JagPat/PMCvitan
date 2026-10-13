@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test';
 
 test('the URL is project-scoped: root redirects, and navigating carries the project id', async ({ page }) => {
   await page.goto('/');
-  // root resolves to the active project's home ("For You")
-  await expect(page).toHaveURL(/\/projects\/ambli\/for-you$/);
+  // root resolves to the active project's home, the Dashboard (#811)
+  await expect(page).toHaveURL(/\/projects\/ambli\/dashboard$/);
 
   // navigating to a screen keeps the project in the path
   await page.getByRole('button', { name: 'Decision Log' }).click();
