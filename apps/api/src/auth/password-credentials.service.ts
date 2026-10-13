@@ -15,6 +15,8 @@ import { EmailService } from '../platform/email.service';
 const PURPOSE = 'password_setup_or_reset';
 const LIFETIME_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 5;
+// #806 unit B: besides the held challenge, a code may match one of this many newest live challenges for the user.
+const NEWEST_CANDIDATES = 3;
 const BCRYPT_COST = 12;
 const GENERIC_ERROR = 'Password setup code or link is invalid or expired.';
 
@@ -98,8 +100,11 @@ export class PasswordCredentialsService {
       await lockUserCredential(tx, user!.id);
       const eligible = await this.userById(tx, user!.id);
       if (!this.eligible(eligible) || eligible?.email !== email) return false;
+      // #806 unit B: earlier codes stay live until one verifies, so an email that arrives late, or out of order,
+      // still carries a working code. `verify` retires them; an invitation-email correction revokes them. An
+      // outstanding setup token from an earlier verification is still revoked here, as before.
       await tx.passwordCredentialChallenge.updateMany({
-        where: { userId: user!.id, purpose: PURPOSE, consumedAt: null },
+        where: { userId: user!.id, purpose: PURPOSE, consumedAt: null, verifiedAt: { not: null } },
         data: { consumedAt: now },
       });
       await tx.passwordCredentialChallenge.create({
@@ -132,14 +137,11 @@ export class PasswordCredentialsService {
 
     // #806 — the send is bounded by the mail transport's own timeouts (EmailService), not nodemailer's
     // minute-long defaults that held the owner's "Send verification code" on "Sending…" (#482, 12 Oct 2026).
+    // A failed send keeps its challenge: a timeout is ambiguous and the mail may still arrive (#806 unit B).
     try {
       await this.email.sendPasswordCredentialCode(email, code);
       this.log.log(`Password credential request ${publicRequestId}: code handed to the mail provider`);
     } catch (error) {
-      await this.prisma.passwordCredentialChallenge.updateMany({
-        where: { id: publicRequestId, consumedAt: null },
-        data: { consumedAt: new Date() },
-      });
       this.log.error(`Password credential delivery failed for challenge ${publicRequestId}: ${(error as Error).constructor.name}`);
     }
     return { accepted: true, requestId: publicRequestId };
@@ -163,32 +165,69 @@ export class PasswordCredentialsService {
       throw this.genericError();
     }
 
-    const suppliedHash = this.otpHash(challenge.id, input.code);
-    if (!this.sameHash(challenge.otpHash, suppliedHash)) {
-      const locked = challenge.attempts + 1 >= MAX_ATTEMPTS;
+    // #806 unit B: the code may come from any live challenge of the same user (the held one, or one of the newest
+    // few), so a delayed or reordered email still works. Wrong codes count against the held challenge, as before.
+    const newest = await this.prisma.passwordCredentialChallenge.findMany({
+      where: {
+        userId: challenge.userId,
+        purpose: PURPOSE,
+        consumedAt: null,
+        verifiedAt: null,
+        expiresAt: { gt: now },
+        attempts: { lt: MAX_ATTEMPTS },
+        id: { not: challenge.id },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: NEWEST_CANDIDATES,
+      select: { id: true, otpHash: true },
+    });
+    const matched = [challenge, ...newest]
+      .filter((candidate) => this.sameHash(candidate.otpHash, this.otpHash(candidate.id, input.code)));
+    if (matched.length === 0) {
+      // Every wrong guess counts, even concurrent ones that read the same attempt count (one more live code per
+      // guess makes this matter more), and the lock follows the stored count rather than the one read above.
       await this.prisma.passwordCredentialChallenge.updateMany({
-        where: { id: challenge.id, attempts: challenge.attempts, consumedAt: null, verifiedAt: null },
-        data: { attempts: { increment: 1 }, ...(locked ? { consumedAt: now } : {}) },
+        where: { id: challenge.id, consumedAt: null, verifiedAt: null },
+        data: { attempts: { increment: 1 } },
+      });
+      await this.prisma.passwordCredentialChallenge.updateMany({
+        where: { id: challenge.id, consumedAt: null, verifiedAt: null, attempts: { gte: MAX_ATTEMPTS } },
+        data: { consumedAt: now },
       });
       throw this.genericError();
     }
 
     const setupToken = randomBytes(32).toString('base64url');
-    const updated = await this.prisma.passwordCredentialChallenge.updateMany({
-      where: {
-        id: challenge.id,
-        attempts: challenge.attempts,
-        consumedAt: null,
-        verifiedAt: null,
-        expiresAt: { gt: now },
-      },
-      data: {
-        verifiedAt: now,
-        setupTokenHash: this.tokenHash(setupToken),
-        setupTokenExpiresAt: new Date(now.getTime() + LIFETIME_MS),
-      },
+    // Under the credential lock, so an invitation-email correction that revokes these challenges cannot interleave:
+    // the matched challenge must still be live, the held one is verified, and every other live one is retired.
+    const verified = await this.prisma.$transaction(async (tx) => {
+      await lockUserCredential(tx, challenge.userId);
+      const live = await tx.passwordCredentialChallenge.count({
+        where: { id: matched[0]!.id, consumedAt: null, verifiedAt: null, expiresAt: { gt: now } },
+      });
+      if (live !== 1) return false;
+      const updated = await tx.passwordCredentialChallenge.updateMany({
+        where: {
+          id: challenge.id,
+          attempts: challenge.attempts,
+          consumedAt: null,
+          verifiedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: {
+          verifiedAt: now,
+          setupTokenHash: this.tokenHash(setupToken),
+          setupTokenExpiresAt: new Date(now.getTime() + LIFETIME_MS),
+        },
+      });
+      if (updated.count !== 1) return false;
+      await tx.passwordCredentialChallenge.updateMany({
+        where: { userId: challenge.userId, purpose: PURPOSE, consumedAt: null, id: { not: challenge.id } },
+        data: { consumedAt: now },
+      });
+      return true;
     });
-    if (updated.count !== 1) throw this.genericError();
+    if (!verified) throw this.genericError();
     return { setupToken, expiresInSeconds: 600 };
   }
 

@@ -34,11 +34,14 @@ function fakePrisma(seed: UserRow[]) {
   const events: Array<Record<string, unknown>> = [];
 
   const matches = (row: ChallengeRow, where: Record<string, unknown>): boolean => {
-    if (where.id !== undefined && row.id !== where.id) return false;
+    if (typeof where.id === 'string' && row.id !== where.id) return false;
+    if (typeof where.id === 'object' && where.id !== null && 'not' in where.id && row.id === (where.id as { not: string }).not) return false;
     if (where.userId !== undefined && row.userId !== where.userId) return false;
     if (where.purpose !== undefined && row.purpose !== where.purpose) return false;
     if (where.setupTokenHash !== undefined && row.setupTokenHash !== where.setupTokenHash) return false;
     if (where.attempts !== undefined && typeof where.attempts === 'number' && row.attempts !== where.attempts) return false;
+    if (typeof where.attempts === 'object' && where.attempts !== null && 'lt' in where.attempts && row.attempts >= (where.attempts as { lt: number }).lt) return false;
+    if (typeof where.attempts === 'object' && where.attempts !== null && 'gte' in where.attempts && row.attempts < (where.attempts as { gte: number }).gte) return false;
     if (where.consumedAt === null && row.consumedAt !== null) return false;
     if (where.verifiedAt === null && row.verifiedAt !== null) return false;
     if (typeof where.verifiedAt === 'object' && where.verifiedAt !== null && 'not' in where.verifiedAt && row.verifiedAt === null) return false;
@@ -76,6 +79,13 @@ function fakePrisma(seed: UserRow[]) {
         if (!row) return null;
         return { ...row, user: { ...users.find((user) => user.id === row.userId)! } };
       }),
+      findMany: vi.fn(async ({ where, take }: { where: Record<string, unknown>; take?: number }) =>
+        challenges
+          .filter((row) => matches(row, where))
+          .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
+          .slice(0, take)
+          .map((row) => ({ ...row }))),
+      count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => challenges.filter((row) => matches(row, where)).length),
       updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         const selected = challenges.filter((row) => matches(row, where));
         for (const row of selected) {
@@ -257,6 +267,88 @@ describe('PasswordCredentialsService', () => {
     expect(JSON.stringify(prisma.events)).not.toContain(verified.setupToken);
     expect(JSON.stringify(prisma.events)).not.toContain('a long internal passphrase');
     await expect(service.complete({ setupToken: verified.setupToken, password: 'another long passphrase' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  /**
+   * #806 unit B: an ambiguous send (a timeout after the provider may have accepted the mail) or a slow mailbox can
+   * deliver an older code after a newer one was requested. Any of the user's newest live codes verifies, under the
+   * held challenge's attempt cap, and a successful verification retires every other live code.
+   */
+  it('accepts a late or out-of-order code from the same user, then retires the rest', async () => {
+    const { service, prisma, delivered } = make([activeUser()]);
+    const email = (service as unknown as { email: { sendPasswordCredentialCode: ReturnType<typeof vi.fn> } }).email;
+    email.sendPasswordCredentialCode.mockImplementationOnce(async (address: string, code: string) => {
+      delivered.push({ email: address, code });
+      throw new Error('timed out after the provider took the message');
+    });
+    const first = await service.request({ email: 'member@example.com' });
+    vi.advanceTimersByTime(1_000);
+    const second = await service.request({ email: 'member@example.com' });
+
+    expect(prisma.challenges.map((row) => row.consumedAt)).toEqual([null, null]);
+    const verified = await service.verify({ requestId: second.requestId, code: delivered[0]!.code });
+    expect(verified).toEqual({ setupToken: expect.any(String), expiresInSeconds: 600 });
+    expect(prisma.challenges.find((row) => row.id === second.requestId)?.verifiedAt).toBeInstanceOf(Date);
+    expect(prisma.challenges.find((row) => row.id === first.requestId)?.consumedAt).toBeInstanceOf(Date);
+    await expect(service.verify({ requestId: first.requestId, code: delivered[0]!.code })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('only the held challenge and the three newest others can match, and wrong codes count against the held one', async () => {
+    const { service, prisma, delivered } = make([activeUser()]);
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      ids.push((await service.request({ email: 'member@example.com' })).requestId);
+      vi.advanceTimersByTime(1_000);
+    }
+    // Held = the oldest; candidates = it plus the three newest others, so the second-oldest code is refused.
+    await expect(service.verify({ requestId: ids[0]!, code: delivered[1]!.code })).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.challenges.find((row) => row.id === ids[0])?.attempts).toBe(1);
+    expect(prisma.challenges.find((row) => row.id === ids[1])?.attempts).toBe(0);
+    await expect(service.verify({ requestId: ids[0]!, code: delivered[4]!.code })).resolves.toMatchObject({ expiresInSeconds: 600 });
+  });
+
+  it('never matches a locked, revoked or expired code, or another user\'s code', async () => {
+    const { service, prisma, delivered } = make([
+      activeUser(),
+      activeUser({ id: 'u-other', email: 'other@example.com' }),
+    ]);
+    const locked = await service.request({ email: 'member@example.com' });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await expect(service.verify({ requestId: locked.requestId, code: '000000' })).rejects.toBeInstanceOf(BadRequestException);
+    }
+    const revoked = await service.request({ email: 'member@example.com' });
+    prisma.challenges.find((row) => row.id === revoked.requestId)!.consumedAt = new Date();
+    const other = await service.request({ email: 'other@example.com' });
+    const held = await service.request({ email: 'member@example.com' });
+
+    for (const code of [delivered[0]!.code, delivered[1]!.code, delivered[2]!.code]) {
+      await expect(service.verify({ requestId: held.requestId, code })).rejects.toBeInstanceOf(BadRequestException);
+    }
+    expect(other.requestId).not.toBe(held.requestId);
+
+    const late = await service.request({ email: 'member@example.com' });
+    vi.advanceTimersByTime(10 * 60_000 + 1);
+    const fresh = await service.request({ email: 'member@example.com' });
+    await expect(service.verify({ requestId: fresh.requestId, code: delivered[4]!.code })).rejects.toBeInstanceOf(BadRequestException);
+    expect(late.requestId).not.toBe(fresh.requestId);
+  });
+
+  it('counts every concurrent wrong guess, then locks the challenge', async () => {
+    const { service, prisma, delivered } = make([activeUser()]);
+    const { requestId } = await service.request({ email: 'member@example.com' });
+    const guesses = await Promise.allSettled(Array.from({ length: 8 }, () => service.verify({ requestId, code: '000000' })));
+    expect(guesses.every((guess) => guess.status === 'rejected')).toBe(true);
+    expect(prisma.challenges[0]?.attempts).toBeGreaterThanOrEqual(5);
+    expect(prisma.challenges[0]?.consumedAt).toBeInstanceOf(Date);
+    await expect(service.verify({ requestId, code: delivered[0]!.code })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('a new request still revokes an outstanding setup token', async () => {
+    const { service, delivered } = make([activeUser()]);
+    const { requestId } = await service.request({ email: 'member@example.com' });
+    const verified = await service.verify({ requestId, code: delivered[0]!.code });
+    await service.request({ email: 'member@example.com' });
+    await expect(service.complete({ setupToken: verified.setupToken, password: 'a long internal passphrase' })).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('rolls back token consumption when access is removed after verification', async () => {
