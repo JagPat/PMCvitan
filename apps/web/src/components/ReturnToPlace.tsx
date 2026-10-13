@@ -11,8 +11,12 @@ import { useStore } from '@/store/store';
  * moving to another record on the same screen leaves the way back behind); any other navigation
  * clears it in the store.
  */
-export function ReturnToPlace() {
+export function ReturnToPlace({ inViewer = false }: { inViewer?: boolean }) {
   const returnPlace = useStore((s) => s.returnPlace);
+  // #826 Codex 4258001540 — an open drawing is a full-screen modal over the shell, so its way back lives
+  // inside the viewer (`inViewer`); the shell's copy stands aside while that viewer is up
+  const drawingViewerUp = useStore((s) =>
+    s.screen === 'drawings' && !!s.routeItem && s.drawings.some((d) => d.id === s.routeItem));
   const screen = useStore((s) => s.screen);
   // the record on show: the client's approval screen names it by `decisionFocus`, every other by `routeItem`
   const item = useStore((s) => (s.screen === 'client-decisions' ? s.decisionFocus : s.routeItem));
@@ -20,10 +24,11 @@ export function ReturnToPlace() {
     s.returnPlace?.nodeId ? s.nodes.find((n) => n.id === s.returnPlace?.nodeId)?.name ?? null : null);
   const openPlace = useStore((s) => s.openPlace);
   if (!returnPlace || returnPlace.screen !== screen || returnPlace.item !== item || screen === 'places') return null;
+  if (drawingViewerUp !== inViewer) return null;
   // a place removed meanwhile: return to the Site Map itself rather than to a node it can't open
   const target = placeName ? returnPlace.nodeId : null;
   return (
-    <button type="button" style={link} data-testid="return-to-place" onClick={() => openPlace(target)}>
+    <button type="button" style={inViewer ? inModal : stuck} data-testid="return-to-place" onClick={() => openPlace(target)}>
       ← Back to {placeName ?? 'the Site Map'}
     </button>
   );
@@ -43,3 +48,8 @@ const link: CSSProperties = {
   fontWeight: 600,
   cursor: 'pointer',
 };
+
+// #826 Codex 4258001551 — a routed record scrolls itself into view; the way back stays pinned to the top of
+// the stage instead of scrolling away with the page
+const stuck: CSSProperties = { ...link, display: 'flex', width: 'fit-content', position: 'sticky', top: 8, zIndex: 5 };
+const inModal: CSSProperties = { ...link, margin: '12px 18px 0' };

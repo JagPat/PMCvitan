@@ -2708,6 +2708,7 @@ export const useStore = create<Store>()(
     closeDecision: () =>
       set((s) => {
         s.decisionFocus = null;
+        s.returnPlace = null; // #633 — leaving the record leaves its way back behind
       }),
     openDrawing: (drawingId, fromPlace) =>
       set((s) => {
@@ -2721,6 +2722,9 @@ export const useStore = create<Store>()(
       set((s) => {
         if (s.screen === 'client-decisions') s.decisionFocus = item;
         else s.routeItem = item;
+        // #826 Codex 4258001532 — the way back belongs to the visit that opened the record: leaving it (closing
+        // it, or opening another) drops it, so reopening the same record from its list offers none
+        if (s.returnPlace && s.returnPlace.item !== item) s.returnPlace = null;
       }),
     openItem: (screen, item, fromPlace) =>
       set((s) => {

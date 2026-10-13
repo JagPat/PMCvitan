@@ -5,6 +5,7 @@ import { RouteBridge } from '@/layout/RouteBridge';
 import { useStore, getInitialState } from '@/store/store';
 import { emptyProjectData } from '@/store/projectScope';
 import { PlacesScreen } from '@/screens/PlacesScreen';
+import { DrawingsScreen } from '@/screens/DrawingsScreen';
 import { ReturnToPlace } from '@/components/ReturnToPlace';
 
 /**
@@ -17,7 +18,7 @@ beforeEach(() => useStore.setState(getInitialState()));
 afterEach(cleanup);
 
 describe('a record opened from the Site Map leads back to its place', () => {
-  it('a drawing opened at a place shows "Back to <place>", which reopens that place', () => {
+  it('a drawing opened at a place shows "Back to <place>" inside its viewer, which reopens that place', () => {
     const drawing = s().drawings.find((d) => !d.draft && d.nodeId);
     expect(drawing).toBeTruthy();
     const node = s().nodes.find((n) => n.id === drawing!.nodeId)!;
@@ -25,9 +26,13 @@ describe('a record opened from the Site Map leads back to its place', () => {
     render(<PlacesScreen />).getByTestId(`place-drawing-${drawing!.number}`).click();
     expect(s().screen).toBe('drawings');
     cleanup();
-    const r = render(<ReturnToPlace />);
-    expect(r.getByTestId('return-to-place').textContent).toContain(`Back to ${node.name}`);
-    fireEvent.click(r.getByTestId('return-to-place'));
+    // #826 Codex 4258001540 — the viewer is a modal over the shell: the way back is inside it, the shell's stands aside
+    const r = render(<><ReturnToPlace /><DrawingsScreen /></>);
+    const back = r.getAllByTestId('return-to-place');
+    expect(back).toHaveLength(1);
+    expect(r.getByRole('dialog').contains(back[0])).toBe(true);
+    expect(back[0].textContent).toContain(`Back to ${node.name}`);
+    fireEvent.click(back[0]);
     expect(s().screen).toBe('places');
     expect(s().routeItem).toBe(node.id);
     expect(s().returnPlace).toBeNull();
@@ -48,7 +53,7 @@ describe('a record opened from the Site Map leads back to its place', () => {
   });
 
   it('a place removed meanwhile returns to the Site Map, not to a missing place', () => {
-    useStore.setState((st) => { st.screen = 'drawings'; st.routeItem = 'D-1'; st.returnPlace = { nodeId: 'GONE', screen: 'drawings', item: 'D-1' }; });
+    useStore.setState((st) => { st.screen = 'site-schedule'; st.routeItem = 'A-1'; st.returnPlace = { nodeId: 'GONE', screen: 'site-schedule', item: 'A-1' }; });
     const r = render(<ReturnToPlace />);
     expect(r.getByTestId('return-to-place').textContent).toContain('Back to the Site Map');
     fireEvent.click(r.getByTestId('return-to-place'));
@@ -74,14 +79,29 @@ describe('the way back appears only where it applies', () => {
 
   it('closing the record, or moving to another on the same screen, leaves the way back behind', () => {
     // #826 Codex 4257851275 — the way back belongs to the record opened from the place, not to its screen
-    const [first, second] = s().drawings;
-    s().openDrawing(first.id, { nodeId: null });
+    const [first, second] = s().decisions;
+    s().openItem('decision-log', first.id, { nodeId: null });
     const r = render(<ReturnToPlace />);
     expect(r.queryByTestId('return-to-place')).toBeInTheDocument();
     act(() => s().setRouteItem(second.id));
     expect(r.queryByTestId('return-to-place')).not.toBeInTheDocument();
-    act(() => s().setRouteItem(null));
-    expect(r.queryByTestId('return-to-place')).not.toBeInTheDocument();
+    expect(s().returnPlace).toBeNull();
+  });
+
+  it('reopening the same record from its own list offers no way back', () => {
+    // #826 Codex 4258001532 — close drawing A opened at a place, then open A again from the register
+    const drawing = s().drawings[0];
+    s().openDrawing(drawing.id, { nodeId: null });
+    s().setRouteItem(null);
+    s().setRouteItem(drawing.id);
+    expect(s().returnPlace).toBeNull();
+    expect(render(<ReturnToPlace inViewer />).queryByTestId('return-to-place')).not.toBeInTheDocument();
+  });
+
+  it('the URL settling on the same record keeps it', () => {
+    s().openActivity('A-1', { nodeId: null });
+    s().setRouteItem('A-1');
+    expect(s().returnPlace).toEqual({ nodeId: null, screen: 'site-schedule', item: 'A-1' });
   });
 
   it('it shows only on the screen the record was opened on', () => {
