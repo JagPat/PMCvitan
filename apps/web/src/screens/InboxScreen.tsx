@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useStore } from '@/store/store';
 import { countActionItems, selectActionItems, type ActionItem } from '@/store/selectors';
-import { ROLE_LABEL } from '@/lib/screens';
+import { actionItemText, forYouCount, forYouIntro, forYouLabels as FY, forYouRole } from '@vitan/shared';
 import { Eyebrow, Button } from '@/components';
 import { ArrowRight, CircleCheck } from '@/lib/icons';
 import { EngineerToday } from './EngineerToday';
@@ -40,6 +40,7 @@ export function InboxScreen() {
   const briefAt = useStore((s) => s.briefAt);
   const loadBrief = useStore((s) => s.loadBrief);
   const activeProjectId = useStore((s) => s.activeProjectId);
+  const lang = useStore((s) => s.lang);
 
   // the PMC's brief (U3b) is read fresh each time they land here, then every minute and whenever the
   // page is shown again while it stays on screen: it spans projects whose access and civil day change
@@ -108,12 +109,12 @@ export function InboxScreen() {
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
-      <Eyebrow>FOR YOU · {ROLE_LABEL[role].toUpperCase()}</Eyebrow>
+      <Eyebrow>{FY.eyebrow[lang]} · {lang === 'en' ? forYouRole[role].en.toUpperCase() : forYouRole[role][lang]}</Eyebrow>
       <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em', marginTop: 4 }}>
-        {total ? `${total} thing${total === 1 ? ' needs' : 's need'} you` : 'You’re all caught up'}
+        {total ? forYouCount(total, lang) : FY.caughtUp[lang]}
       </div>
       <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, maxWidth: 560 }}>
-        Everything waiting on you in <b>{short}</b> — decisions, drawings, inspections and the site log — in one place. Tap a card to go straight there. Use the project switcher to see another project.
+        {forYouIntro(lang).before}<b>{short}</b>{forYouIntro(lang).after}
       </div>
 
       {items.length === 0 ? (
@@ -122,8 +123,8 @@ export function InboxScreen() {
           style={{ marginTop: 34, textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '34px 16px', border: '1px dashed var(--hairline)', borderRadius: 14 }}
         >
           <CircleCheck size={28} color="var(--green-solid)" />
-          <div style={{ marginTop: 10, fontWeight: 600, color: 'var(--ink)' }}>Nothing needs you right now</div>
-          <div style={{ marginTop: 4 }}>When a decision, drawing or inspection is waiting on you, it’ll show up here.</div>
+          <div style={{ marginTop: 10, fontWeight: 600, color: 'var(--ink)' }}>{FY.nothing[lang]}</div>
+          <div style={{ marginTop: 4 }}>{FY.nothingDetail[lang]}</div>
         </div>
       ) : (
         <div style={{ marginTop: 22 }}>
@@ -138,18 +139,20 @@ export function InboxScreen() {
 function ActionList({ items, onOpen }: { items: ActionItem[]; onOpen: (screen: ActionItem['screen']) => void }) {
   // Top 10 #3 (#774) — an item about ONE record opens that record, at its reload-safe URL, not the list
   const openItem = useStore((s) => s.openItem);
+  const lang = useStore((s) => s.lang);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
       {items.map((it) => {
         const t = TONE[it.tone];
+        const words = actionItemText(it, lang);
         return (
           <div key={it.key} data-testid={`inbox-item-${it.key}`} style={{ ...card, borderColor: t.border }}>
             <span aria-hidden style={{ ...rail, background: t.accent }} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600, fontSize: 14.5, lineHeight: 1.3 }}>{it.title}</div>
-              {it.detail && (
+              <div style={{ fontWeight: 600, fontSize: 14.5, lineHeight: 1.3 }}>{words.title}</div>
+              {words.detail && (
                 <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {it.detail}
+                  {words.detail}
                 </div>
               )}
             </div>
@@ -159,7 +162,7 @@ function ActionList({ items, onOpen }: { items: ActionItem[]; onOpen: (screen: A
               data-testid={`inbox-cta-${it.key}`}
               style={{ flex: 'none', padding: '9px 13px', fontSize: 13 }}
             >
-              {it.cta} <ArrowRight size={15} />
+              {words.cta} <ArrowRight size={15} />
             </Button>
           </div>
         );
