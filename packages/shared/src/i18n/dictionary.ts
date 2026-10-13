@@ -86,7 +86,7 @@ export const labourLabels: Record<string, Record<Lang, string>> = {
  *  "Decision Log" (not "Log"); hi/gu wording awaits a native speaker's review. */
 export const navLabels: Record<ScreenKey, Record<Lang, string>> = {
   inbox: { en: 'For You', hi: 'आपके लिए', gu: 'તમારા માટે' },
-  dashboard: { en: 'Dashboard', hi: 'डैशबोर्ड', gu: 'ડેશબોર્ડ' },
+  dashboard: { en: 'Home', hi: 'होम', gu: 'હોમ' },
   drafts: { en: 'Drafts', hi: 'ड्राफ़्ट', gu: 'ડ્રાફ્ટ' },
   'site-schedule': { en: 'Schedule', hi: 'समय-सारणी', gu: 'સમયપત્રક' },
   'decision-log': { en: 'Decision Log', hi: 'निर्णय', gu: 'નિર્ણયો' },

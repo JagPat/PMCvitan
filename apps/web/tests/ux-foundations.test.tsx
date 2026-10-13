@@ -62,20 +62,21 @@ describe('Eyebrow — the 13px critical-label floor', () => {
   });
 });
 
-describe("the engineer's phone bar — Today · Site · More", () => {
-  it('an engineer gets exactly For You and the daily log on the bar, everything else behind More', () => {
+describe("the engineer's phone bar — Dashboard · Today · Site · More", () => {
+  it('an engineer gets exactly the Dashboard, For You and the daily log on the bar, everything else behind More', () => {
     const items = enabledScreensFor('engineer', ALL_MODULES, ALL_CAPS);
     const { primary, secondary } = splitMobileNav(items, 'engineer');
-    expect(keysOf(primary)).toEqual(['inbox', 'daily-log']);
+    // #811 — the Dashboard is every role's home, so the engineer's bar opens with it
+    expect(keysOf(primary)).toEqual(['dashboard', 'inbox', 'daily-log']);
     // nothing is dropped: every other screen the engineer holds is still one tap away
     expect(new Set([...keysOf(primary), ...keysOf(secondary)])).toEqual(new Set(keysOf(items)));
-    expect(keysOf(secondary)).toEqual(keysOf(items).filter((k) => k !== 'inbox' && k !== 'daily-log'));
+    expect(keysOf(secondary)).toEqual(keysOf(items).filter((k) => k !== 'dashboard' && k !== 'inbox' && k !== 'daily-log'));
   });
 
   it('a disabled daily-log module leaves Today alone on the bar — nothing is fabricated', () => {
     const items = enabledScreensFor('engineer', ALL_MODULES.filter((m) => m !== 'daily-log'), []);
     const { primary, secondary } = splitMobileNav(items, 'engineer');
-    expect(keysOf(primary)).toEqual(['inbox']);
+    expect(keysOf(primary)).toEqual(['dashboard', 'inbox']);
     expect(keysOf(secondary)).not.toContain('daily-log');
   });
 

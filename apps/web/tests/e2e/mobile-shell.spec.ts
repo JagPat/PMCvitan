@@ -22,7 +22,8 @@ test('journey 1 + 8 — the project is named on the bar, and More holds the seco
   // the bar holds four destinations plus More — never thirteen compressed tabs
   const tabs = page.getByTestId('bottom-tabs');
   await expect(tabs).toBeVisible();
-  for (const key of ['inbox', 'site-schedule', 'places', 'portfolio', 'more']) {
+  // #811 — the Dashboard (every role's home) holds the first slot; Portfolio is in More
+  for (const key of ['dashboard', 'inbox', 'site-schedule', 'places', 'more']) {
     await expect(page.getByTestId(`tab-${key}`)).toBeVisible();
   }
   // and the bar itself never overflows the viewport

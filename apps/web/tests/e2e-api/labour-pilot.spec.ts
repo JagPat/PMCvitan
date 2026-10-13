@@ -273,7 +273,7 @@ test('INERT: a non-pilot project has NO Labour nav, a direct /labour deep link i
   await page.getByTestId('login-password').fill(PASSWORD);
   await page.getByTestId('login-submit').click();
   await expect(page).not.toHaveURL(/\/labour$/, { timeout: 15_000 });
-  await expect(page).toHaveURL(/\/for-you$/, { timeout: 15_000 });
+  await expect(page).toHaveURL(/\/dashboard$/, { timeout: 15_000 });
   await expect(page.getByTestId('labour-summary')).toHaveCount(0);
   const res = await request.get(`${API}/projects/${plainId}/labour/readiness`, { headers: bearer(pmcPlain) });
   expect(res.status()).toBe(404);

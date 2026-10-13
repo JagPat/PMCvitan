@@ -3,6 +3,8 @@ import { useStore } from '@/store/store';
 import { inspectionsSettledForLinks, selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
+import { routableScreensFor } from '@/lib/screens';
+import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
@@ -14,6 +16,11 @@ const UNKNOWN = '—';
 const unknownSub = (failed: boolean): string => (failed ? 'Could not load — try again' : 'Loading…');
 
 export function DashboardScreen() {
+  // #811 — every role lands here, so a part shows only to a role that holds where it leads: the review queue is
+  // served to the PMC alone, and a tile or button never opens a screen the viewer would be bounced from
+  const role = useStore((s) => s.role);
+  const routable = routableScreensFor(role);
+  const canOpen = (screen: ScreenKey): boolean => routable.includes(screen);
   // Top 10 #2 (#771) — the decisions awaiting action, the server's `countPending` definition (the Portfolio
   // card's number for this project), never a second definition of "pending"
   const pending = useStore(useShallow(selectDecisionsAwaitingAction));
@@ -71,10 +78,13 @@ export function DashboardScreen() {
   const siteDot = checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)';
 
   // `onClick` stays optional: a tile with nowhere to go renders as a plain box (B5)
+  const openDecisionLog = canOpen('decision-log') ? () => setScreen('decision-log') : undefined;
   const tiles: Array<{ key: string; label: string; value: number | string; accent: string; sub: string; onClick?: () => void }> = [
     decisionsKnown
-      ? { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setScreen('decision-log') }
-      : { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed), onClick: () => setScreen('decision-log') },
+      ? { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: openDecisionLog }
+      : { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed), onClick: openDecisionLog },
+  ];
+  if (canOpen('inspect-review')) tiles.push(
     inspectionsKnown
       ? { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => (onlyReviewId ? openItem('inspect-review', onlyReviewId) : setScreen('inspect-review')) }
       : { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: UNKNOWN, accent: 'var(--accent)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
@@ -86,6 +96,8 @@ export function DashboardScreen() {
       : inspectionsKnown
       ? { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `In ${reinspections.count} open re-inspection${reinspections.count === 1 ? '' : 's'}` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') }
       : { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: UNKNOWN, accent: 'var(--red-solid)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
+  );
+  tiles.push(
     // B7 (F-13): COMPUTED from the placed photos in every mode — the demo's fixed "24 this week ·
     // 6 zones" contradicted the strip above. The strip shows the daily log's reported count; this,
     // every photo on record.
@@ -96,9 +108,9 @@ export function DashboardScreen() {
       sub: photoStats.capped
         ? `Latest ${photoStats.count} shown${photoStats.zones > 0 ? ` · across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : ''}`
         : photoStats.zones > 0 ? `Across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet',
-      onClick: () => setScreen('places'),
+      onClick: canOpen('places') ? () => setScreen('places') : undefined,
     },
-  ];
+  );
 
   // demo-only prototype highlights; API mode renders the project's own photos (or an honest absence)
   const highlights = [
@@ -144,7 +156,7 @@ export function DashboardScreen() {
             : progressNow.basis === 'recorded'
               ? 'No activities planned yet — this is the figure recorded on the project'
               : progressNow.basis === 'unavailable'
-                ? 'The activities could not be loaded, so progress is unavailable — open Schedule to retry'
+                ? (canOpen('site-schedule') ? 'The activities could not be loaded, so progress is unavailable — open Schedule to retry' : 'The activities could not be loaded, so progress is unavailable')
                 : 'Loading the activities…'}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
@@ -193,9 +205,9 @@ export function DashboardScreen() {
             </div>
           ))}
         </div>
-        <Button variant="ghost" onClick={() => setScreen('site-schedule')} style={{ background: 'rgba(237,231,218,.1)', border: '1px solid rgba(237,231,218,.2)', color: 'var(--sidebar-text)', padding: '9px 14px', fontSize: 12 }}>
+        {canOpen('site-schedule') && <Button variant="ghost" onClick={() => setScreen('site-schedule')} style={{ background: 'rgba(237,231,218,.1)', border: '1px solid rgba(237,231,218,.2)', color: 'var(--sidebar-text)', padding: '9px 14px', fontSize: 12 }}>
           View Schedule <ArrowRight size={14} />
-        </Button>
+        </Button>}
       </div>
 
       {/* KPI tiles */}
