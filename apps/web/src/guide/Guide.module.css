@@ -1,0 +1,89 @@
+/* #482 — the in-app guide. Above modals (50) so a step inside a dialog is still pointed at, below
+   the toast and the mobile sheet (60). The spotlight lets every tap through to the real control. */
+.spot {
+  position: fixed;
+  z-index: 55;
+  border-radius: 12px;
+  box-shadow: 0 0 0 9999px rgba(35, 33, 28, 0.45);
+  outline: 2px solid var(--accent);
+  pointer-events: none;
+}
+
+/* a dialog already dims the page, and its fields must stay readable while the person fills them */
+.spotInDialog {
+  box-shadow: none;
+}
+
+/* the tip lets taps through to whatever it overlaps, except its own Skip */
+.tip {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 56;
+  background: var(--ink);
+  color: var(--sidebar-text);
+  /* an ink surface holding a control (Skip): it takes the dark focus ring */
+  --active-focus-ring: var(--focus-ring-dark);
+  border-radius: 12px;
+  padding: 6px 6px 6px 14px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+  font-family: var(--font-sans);
+}
+
+.tipText {
+  flex: 1;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.skip {
+  flex: none;
+  pointer-events: auto;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.guideMeRow {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.guideMe {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.guideMeMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  border: 1.5px solid currentColor;
+  font-size: 12px;
+  line-height: 1;
+}
