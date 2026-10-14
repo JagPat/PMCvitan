@@ -72,17 +72,17 @@ describe('Access gate — the prototype trade in-charge and worker paths', () =>
     const { TeamAccessScreen } = await import('@/screens/TeamAccessScreen');
     const r = render(<TeamAccessScreen />);
     const buttons = r.getAllByRole('button').map((b) => b.textContent ?? '');
-    expect(buttons.some((t) => /team/i.test(t))).toBe(true);
     expect(buttons.some((t) => /mistri|trade in-charge/i.test(t))).toBe(false);
     expect(buttons.some((t) => /worker/i.test(t))).toBe(false);
     expect(r.queryByText(/Workers just tap their photo/i)).not.toBeInTheDocument();
+    // #827 one-screen sign-in: a live build opens straight on the team member's phone number
+    expect(useStore.getState().access.step).toBe('phone');
+    expect(r.getByTestId('phone-input')).toBeInTheDocument();
     for (const who of ['worker', 'trade'] as const) {
       useStore.getState().accWho(who);
-      expect(useStore.getState().access.step).toBe('who');
-      expect(useStore.getState().access.who).toBeNull();
+      expect(useStore.getState().access.step).toBe('phone');
+      expect(useStore.getState().access.who).toBe('team');
     }
-    useStore.getState().accWho('team');
-    expect(useStore.getState().access.step).toBe('phone');
   });
 
   it('the API-less demo keeps all three paths', async () => {

@@ -466,8 +466,9 @@ describe('the sign-in gate picker — carried only to the team member who signs 
   it('a team member’s own pick at the gate is still carried and saved for them', async () => {
     const { useStore, LangPreference, TeamAccessScreen } = await loadGate();
     const gate = render(<TeamAccessScreen />);
+    // #827 one-screen sign-in: a live gate opens on the phone number, with the language row above it
+    expect(gate.getByTestId('phone-input')).toBeInTheDocument();
     fireEvent.click(gate.getByRole('button', { name: 'हिंदी' }));
-    fireEvent.click(gate.getByRole('button', { name: /टीम सदस्य/ }));
     gate.unmount();
     act(() => useStore.setState({ sessionUserId: 'u-client', role: 'client', screen: 'inbox' }));
     render(<LangPreference />);

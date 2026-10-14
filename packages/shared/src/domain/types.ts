@@ -654,6 +654,10 @@ export interface AccessState {
   error: string | null;
   /** dev-stub OTP hint returned by the server when no SMS provider is configured. */
   devCode: string | null;
+  /** #827 one-screen sign-in: how the server sent the phone sign-in code ('email' until SMS is live)
+   *  and how many digits it has. Absent before a code is requested (a 4-digit SMS code is assumed). */
+  channel?: string | null;
+  codeLength?: number;
   /** Public request id and one-time setup token; memory-only, never persisted. */
   passwordRequestId: string | null;
   passwordSetupToken: string | null;
