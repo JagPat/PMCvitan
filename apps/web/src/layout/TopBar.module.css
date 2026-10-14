@@ -93,6 +93,10 @@
 }
 .select {
   min-width: 44px;
+  /* #827: "Project manager (PMC)" is the longest role name; capped so the bar still fits a
+     320px phone (the open list shows it in full, the closed field ends in "…") */
+  max-width: 6.5em;
+  text-overflow: ellipsis;
   min-height: 44px;
   background: transparent;
   border: none;
