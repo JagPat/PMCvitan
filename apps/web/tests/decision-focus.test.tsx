@@ -133,7 +133,7 @@ describe('#482 follow-up — Withdraw on the waiting card matches what the serve
       ...scope.emptyProjectData(), activeProjectId: 'ambli', projectLoadState: 'ready', role: 'pmc', lang: 'en',
       short: 'Ambli', decisions: [d], sessionUserId: 'u-pmc', sessionToken: null, ...overrides,
     });
-    const { WaitingCardActions } = await import('@/screens/DecisionFocus');
+    const { WaitingCardActions } = await import('@/components');
     return render(<WaitingCardActions d={d} />);
   }
 
