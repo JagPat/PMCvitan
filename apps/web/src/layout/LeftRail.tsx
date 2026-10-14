@@ -42,12 +42,14 @@ export function LeftRail() {
   const { primary, secondary } = splitMobileNav(items, role);
   // attention never hides behind More: while it is closed it carries the badges of the screens inside it
   const moreBadge = secondary.reduce((n, i) => n + i.badge, 0);
-  const moreActive = secondary.some((i) => i.active);
+  const activeMoreKey = secondary.find((i) => i.active)?.key;
+  const moreActive = activeMoreKey !== undefined;
   const [moreOpen, setMoreOpen] = useState(moreActive);
-  // a screen inside More reached another way (a link, a notice, the For You list) opens More to show it
+  // a screen inside More reached another way (a link, a notice, the For You list) opens More to show it,
+  // also when More was folded by hand while another screen inside it was on stage
   useEffect(() => {
-    if (moreActive) setMoreOpen(true);
-  }, [moreActive]);
+    if (activeMoreKey) setMoreOpen(true);
+  }, [activeMoreKey]);
 
   const navButton = (n: NavItem) => (
     <button

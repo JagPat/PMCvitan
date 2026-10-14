@@ -80,6 +80,20 @@ describe('#482 QA: the desktop rail holds at most five rows, the rest under More
     expect(r.getByRole('button', { name: /^Decisions/ })).toHaveAttribute('aria-current', 'page');
   });
 
+  it('moving to another screen inside a hand-folded More opens it again', async () => {
+    const { LeftRail, useStore } = await loadRail('pmc');
+    act(() => useStore.setState({ screen: 'decision-log' }));
+    const r = render(<LeftRail />);
+    const more = r.getByTestId('rail-more');
+    expect(more).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(more);
+    expect(more).toHaveAttribute('aria-expanded', 'false');
+    // a notice or link lands on a different screen that also lives under More
+    act(() => useStore.setState({ screen: 'inspect-review' }));
+    expect(more).toHaveAttribute('aria-expanded', 'true');
+    expect(r.getByRole('button', { name: /Inspection Review/ })).toHaveAttribute('aria-current', 'page');
+  });
+
   it('a folded More carries the badges of the screens inside it', async () => {
     const { LeftRail, useStore } = await loadRail('pmc');
     // two inspection reviews waiting: Inspection Review sits behind the PMC's More
