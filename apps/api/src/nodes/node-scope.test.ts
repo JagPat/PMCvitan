@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
-import { previewPublishedProjectNode, resolveProjectNode, resolvePublishedProjectNode } from './node-scope';
+import { hiddenDraftWhere, previewPublishedProjectNode, resolveProjectNode, resolvePublishedProjectNode } from './node-scope';
 import type { Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma.service';
 
@@ -87,5 +87,15 @@ describe('previewPublishedProjectNode — the early no before an upload stores b
     expect(err.message).toBe('Unknown location for this project');
     expect(await previewPublishedProjectNode(db as unknown as PrismaService, 'ambli', null)).toBeNull();
     expect(db.$transaction).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('hiddenDraftWhere (photos filed on drafts before #881)', () => {
+  it('hides every draft but the viewer\'s own, null authors included', () => {
+    expect(hiddenDraftWhere('ambli', 'u1')).toEqual({ projectId: 'ambli', publishedAt: null, OR: [{ authorId: null }, { authorId: { not: 'u1' } }] });
+  });
+
+  it('hides every draft when there is no viewer', () => {
+    expect(hiddenDraftWhere('ambli', undefined)).toEqual({ projectId: 'ambli', publishedAt: null });
   });
 });

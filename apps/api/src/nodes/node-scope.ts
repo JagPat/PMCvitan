@@ -68,3 +68,42 @@ export async function previewPublishedProjectNode(
   if (!nodeId) return null;
   return prisma.$transaction((tx) => resolvePublishedProjectNode(tx, projectId, nodeId));
 }
+
+/**
+ * Draft places hidden from `viewerId` (Draft -> Publish: an unpublished place is private to its author):
+ * every unpublished place of the project except the viewer's own drafts. A null author or no viewer hides
+ * the draft from everyone. Records filed on these places before #881 (photos) share the place's privacy.
+ */
+export function hiddenDraftWhere(projectId: string, viewerId: string | null | undefined): Prisma.ProjectNodeWhereInput {
+  return viewerId
+    ? { projectId, publishedAt: null, OR: [{ authorId: null }, { authorId: { not: viewerId } }] }
+    : { projectId, publishedAt: null };
+}
+
+/** The ids of the places `hiddenDraftWhere` describes — what a read must not show this viewer. */
+export async function hiddenDraftNodeIds(
+  client: Prisma.TransactionClient | PrismaService,
+  projectId: string,
+  viewerId: string | null | undefined,
+): Promise<string[]> {
+  const rows = await client.projectNode.findMany({ where: hiddenDraftWhere(projectId, viewerId), select: { id: true } });
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Is the place `nodeId` a draft hidden from `viewerId`? Decided under the tree lock's SHARED side (the
+ * first statement of `tx`, like `resolvePublishedProjectNode`), so a publish or delete in flight finishes
+ * first. A write that moves a record OFF a place uses it, so a record on someone else's private draft is
+ * answered as if it did not exist. An unfiled record (null) is never hidden.
+ */
+export async function isPlaceHiddenFrom(
+  tx: Prisma.TransactionClient,
+  projectId: string,
+  nodeId: string | null | undefined,
+  viewerId: string | null | undefined,
+): Promise<boolean> {
+  if (!nodeId) return false;
+  await lockProjectTreeShared(tx, projectId);
+  const hidden = await tx.projectNode.findFirst({ where: { id: nodeId, ...hiddenDraftWhere(projectId, viewerId) }, select: { id: true } });
+  return hidden !== null;
+}
