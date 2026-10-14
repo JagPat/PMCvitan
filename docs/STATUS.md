@@ -18,7 +18,7 @@ task: 4
 task_state: in_progress
 work_item: site-map-633
 reviewed_merge: 0936d32
-open_pr: none
+open_pr: 883
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-14
@@ -26,7 +26,7 @@ updated: 2026-10-14
 
 ### Current unit
 
-**#633 unit C: desktop tree layout** (on `claude/project-thread-cm4aq9`): on a desktop-width screen the Site Map
+**#633 unit C: desktop tree layout** (#883, on `claude/project-thread-cm4aq9`): on a desktop-width screen the Site Map
 shows a "Places" tree beside the selected place, with the path to it open and each blocked or issue-carrying place
 flagged in words; phones keep the single column. Unit B merged as `0936d32` (#879), unit A as `4a60d1a` (#877). Lane 1.
 
