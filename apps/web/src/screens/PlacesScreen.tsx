@@ -187,7 +187,7 @@ export function PlacesScreen() {
           </div>
 
           {/* #633 (mockup 7) — what this place holds, in words, open issues first */}
-          {active && <CountWords counts={placeCountWords(total, countOpts)} testId="place-counts-here" pills />}
+          {active && <CountWords words={placeCountWords(total, countOpts)} testId="place-counts-here" pills />}
 
           {/* Build the tree HERE (audit B3): the PMC adds, renames and deletes locations at the
               place they are standing on */}
@@ -218,7 +218,7 @@ export function PlacesScreen() {
                       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.name}</span>
                       <ChevronRight size={15} color="#b8b2a6" style={{ flex: 'none' }} />
                     </div>
-                    <CountWords counts={placeCountWords(c, countOpts)} testId={`place-counts-${n.id}`} />
+                    <CountWords words={placeCountWords(c, countOpts)} testId={`place-counts-${n.id}`} />
                     {/* B8 — where this space stands, derived from its work (never a stored flag) */}
                     {activityRead !== 'known' ? (
                       <div data-testid={`place-status-${n.id}`} data-state={activityRead} style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
@@ -520,16 +520,13 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 /** #633 — a place's counts in words. On a card they read as one quiet line; above the opened place
- *  (`pills`) each is a pill. An open issue is always the warning colour. "Nothing filed" is said only when
- *  every count is known; with nothing known yet, nothing is claimed. */
-function CountWords({ counts, testId, pills = false }: { counts: { words: PlaceCountWord[]; complete: boolean }; testId: string; pills?: boolean }) {
-  const { words, complete } = counts;
-  if (words.length === 0 && !complete) return null;
+ *  (`pills`) each is a pill. An open issue is always the warning colour. With no count to show, nothing is
+ *  claimed: an empty line could be a read still loading, never proof the place is empty. */
+function CountWords({ words, testId, pills = false }: { words: PlaceCountWord[]; testId: string; pills?: boolean }) {
+  if (words.length === 0) return null;
   return (
     <div data-testid={testId} style={{ display: 'flex', gap: pills ? 6 : 4, marginTop: pills ? 0 : 8, marginBottom: pills ? 14 : 0, flexWrap: 'wrap', fontSize: pills ? 12 : 11.5, color: 'var(--muted)' }}>
-      {words.length === 0 ? (
-        <span>Nothing filed here yet</span>
-      ) : words.map((w, i) => (
+      {words.map((w, i) => (
         <span key={w.key} data-count={w.key} style={w.alert ? { ...countPill, ...alertTone } : pills ? countPill : undefined}>
           {w.text}{!pills && !w.alert && i < words.length - 1 ? ' ·' : ''}
         </span>

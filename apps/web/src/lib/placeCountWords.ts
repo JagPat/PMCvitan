@@ -33,13 +33,14 @@ export interface PlaceCountOptions {
  * #633 (mockups 7 and 10) — a place's counts as words, open issues first, zeros left out. A child card and
  * the place it opens read the SAME `placeContents` counts, so the two can never disagree.
  *
- * An unknown count is left out, never shown as 0, and `complete` says whether every count the viewer may see
- * is known and whole. Only a complete, empty result may be read as "nothing filed here".
+ * An unknown count is left out, never shown as 0. An empty result never means "nothing filed here": every
+ * module read (decisions, drawings, daily log, inspections, activities) can still be loading or have failed,
+ * so the Site Map never claims a place is empty from its counts (Codex 4265796887, 4266016679).
  */
 export function placeCountWords(
   counts: PlaceContents['counts'],
   opts: PlaceCountOptions,
-): { words: PlaceCountWord[]; complete: boolean } {
+): PlaceCountWord[] {
   const inspectionsKnown = opts.inspections === 'known';
   const n: Record<PlaceCountWord['key'], number | null> = {
     openIssues: inspectionsKnown ? counts.openIssues : null,
@@ -50,8 +51,6 @@ export function placeCountWords(
     activities: opts.activitiesKnown ? counts.activities : null,
     materials: counts.materials,
   };
-  const complete = opts.inspections !== 'unknown' && (opts.inspections === 'hidden' || counts.openIssues !== null)
-    && opts.activitiesKnown && !opts.photosCapped;
   const words: PlaceCountWord[] = [];
   for (const key of Object.keys(NOUNS) as PlaceCountWord['key'][]) {
     const v = n[key];
@@ -59,5 +58,5 @@ export function placeCountWords(
     const noun = NOUNS[key][v === 1 ? 0 : 1];
     words.push({ key, text: `${v} ${key === 'photos' && opts.photosCapped ? `recent ${noun}` : noun}`, alert: key === 'openIssues' });
   }
-  return { words, complete };
+  return words;
 }

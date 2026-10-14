@@ -56,14 +56,12 @@ describe('one open-issue count', () => {
   });
   it('is unknown when any row comes from a server older than the field', () => {
     expect(openIssueCount([insp('a', 'kit', 2), insp('b', 'kit')])).toBeNull();
-    const r = placeCountWords(placeContents('kit', NODES, [], [], [], [], [], [insp('b', 'kit')]).counts, KNOWN);
-    expect(r.words.map((w) => w.key)).toEqual(['inspections']);
-    expect(r.complete).toBe(false);
+    expect(placeCountWords(placeContents('kit', NODES, [], [], [], [], [], [insp('b', 'kit')]).counts, KNOWN).map((w) => w.key)).toEqual(['inspections']);
   });
 });
 
 describe('counts in words', () => {
-  const words = (c: Parameters<typeof placeCountWords>[0], o: PlaceCountOptions = KNOWN) => placeCountWords(c, o).words.map((w) => w.text);
+  const words = (c: Parameters<typeof placeCountWords>[0], o: PlaceCountOptions = KNOWN) => placeCountWords(c, o).map((w) => w.text);
   const counts = { decisions: 2, drawings: 1, photos: 0, activities: 3, materials: 0, inspections: 1, openIssues: 1 };
   it('open issues first, singular and plural, zeros left out', () => {
     expect(words(counts)).toEqual(['1 open issue', '1 inspection', '2 decisions', '1 drawing', '3 activities']);
@@ -75,17 +73,11 @@ describe('counts in words', () => {
     expect(words(counts, { ...KNOWN, activitiesKnown: false })).not.toContain('3 activities');
   });
   const none = { decisions: 0, drawings: 0, photos: 0, activities: 0, materials: 0, inspections: 0, openIssues: 0 };
-  it('"nothing here" is only claimed when every count is known (Codex 4265796887)', () => {
-    expect(placeCountWords(none, KNOWN).complete).toBe(true);
-    expect(placeCountWords(none, { ...KNOWN, inspections: 'hidden' }).complete).toBe(true);
-    expect(placeCountWords(none, { ...KNOWN, activitiesKnown: false }).complete).toBe(false);
-    expect(placeCountWords(none, { ...KNOWN, inspections: 'unknown' }).complete).toBe(false);
-    expect(placeCountWords({ ...none, openIssues: null }, KNOWN).complete).toBe(false);
+  it('an unknown inspections read shows no inspection or issue count, not a zero', () => {
+    expect(words(counts, { ...KNOWN, inspections: 'unknown' })).toEqual(['2 decisions', '1 drawing', '3 activities']);
   });
   it('a full photo window counts recent photos, never the whole record (Codex 4265796882)', () => {
-    const r = placeCountWords({ ...none, photos: 3 }, { ...KNOWN, photosCapped: true });
-    expect(r.words.map((w) => w.text)).toEqual(['3 recent photos']);
-    expect(placeCountWords(none, { ...KNOWN, photosCapped: true }).complete).toBe(false);
+    expect(placeCountWords({ ...none, photos: 3 }, { ...KNOWN, photosCapped: true }).map((w) => w.text)).toEqual(['3 recent photos']);
   });
 });
 
@@ -103,10 +95,12 @@ describe('Site Map cards match the place they open', () => {
     expect([...here.querySelectorAll('[data-count]')].map((e) => e.textContent)).toEqual(['1 open issue', '1 inspection', '2 decisions', '2 drawings']);
   });
 
-  it('a place with nothing filed says so', async () => {
+  it('a place with no count to show claims nothing: any read may still be loading (Codex 4266016679)', async () => {
     const { PlacesScreen, useStore } = await load({ placedInspections: [], drawings: [drawing('K-01', 'kit')] });
     useStore.setState({ routeItem: 'gf' });
-    expect(render(<PlacesScreen />).getByTestId('place-counts-bath').textContent).toBe('Nothing filed here yet');
+    const r = render(<PlacesScreen />);
+    expect(r.queryByTestId('place-counts-bath')).toBeNull();
+    expect(r.queryByText('Nothing filed here yet')).toBeNull();
   });
 
   it('while the activities are still loading, an empty card claims nothing', async () => {
