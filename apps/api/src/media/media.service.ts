@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
@@ -26,6 +26,18 @@ export interface UploadedMedia {
   id: string;
   url: string;
 }
+
+/** The roles that keep the record-linked uploads: evidence for a decision, a daily log or an inspection item. */
+const SITE_RECORD_ROLES: ReadonlySet<string> = new Set(['pmc', 'engineer']);
+
+/** A plain site photo: a progress photo, optionally placed on the location tree, linked to no record. */
+function isPlainSitePhoto(input: CreateMediaInput): boolean {
+  return input.kind === 'progress' && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
+}
+
+/** What a clientKey replay must read to decide whether the caller may have the stored row back. */
+const REPLAY_SELECT = { id: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true } as const;
+type ReplayRow = { id: string; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null };
 
 export type MediaBytes = { mime: string; bytes: Buffer };
 export type MediaRedirect = { redirect: string };
@@ -58,18 +70,35 @@ export class MediaService {
     private readonly commercialParticipant: CommercialParticipant,
   ) {}
 
+  /** A clientKey replay returns the stored row only when the caller could have created it: for the roles
+   *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence. */
+  private replayed(user: AuthUser, row: ReplayRow): UploadedMedia {
+    if (!SITE_RECORD_ROLES.has(user.role)) {
+      const plain = row.kind === 'progress' && !row.decisionId && !row.dailyLogId && !row.inspectionId && !row.inspectionItemId;
+      if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
+    }
+    return { id: row.id, url: this.signed.mediaPath(row.id) };
+  }
+
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
    *  IDEMPOTENT per (projectId, clientKey): replaying the same key returns the
    *  already-stored row — an offline photo uploads exactly once (Phase 1 Task 4). */
   async create(projectId: string, user: AuthUser, input: CreateMediaInput): Promise<UploadedMedia> {
     const uploadedBy = user.sub;
+    // #482 (Board, 14 Oct 2026) — every member may add a SITE photo; only the PMC and the engineer may add one
+    // that is evidence for something (a decision, a daily log, an inspection item) or a non-progress kind.
+    // Asked before the idempotency read and before any byte is stored, so a refused caller learns nothing
+    // about another photo's key and leaves nothing in the bucket.
+    if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input)) {
+      throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
+    }
     // idempotency fast-path: this exact photo already landed
     if (input.clientKey) {
       const existing = await this.prisma.media.findUnique({
         where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
-        select: { id: true },
+        select: REPLAY_SELECT,
       });
-      if (existing) return { id: existing.id, url: this.signed.mediaPath(existing.id) };
+      if (existing) return this.replayed(user, existing);
     }
     // Location spine: the place must be this project's and PUBLISHED (a team photo never goes on a draft).
     // Checked here BEFORE the bytes are stored, as an early no; the tree's state is decided again under its
@@ -158,9 +187,15 @@ export class MediaService {
       if (input.clientKey && e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
         const winner = await this.prisma.media.findUniqueOrThrow({
           where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
-          select: { id: true },
+          select: REPLAY_SELECT,
         });
-        return { id: winner.id, url: this.signed.mediaPath(winner.id) };
+        try {
+          return this.replayed(user, winner);
+        } catch (refused) {
+          // the key is another member's: nothing references THIS request's object, so it goes
+          // through the same earned cleanup below rather than staying in the bucket
+          e = refused;
+        }
       }
       // THE ROLLBACK DOES NOT REACH THE BUCKET (#571 round 11, finding 3). The preflight above is
       // deliberately advisory, so the authoritative in-transaction check is the one that can refuse
