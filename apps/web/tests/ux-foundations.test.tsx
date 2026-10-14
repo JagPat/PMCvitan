@@ -81,8 +81,9 @@ describe("the engineer's phone bar — Dashboard · Today · Site · More", () =
   });
 
   it('every other role is unchanged by passing its role', () => {
-    // the PMC has its own bar since 14 Oct 2026 (#482); pmc-daily-log-nav.test.tsx covers it
-    for (const role of ['client', 'contractor', 'consultant'] as Role[]) {
+    // the PMC (pmc-daily-log-nav.test.tsx) and the contractor (role-menus.test.tsx) have their own bars since
+    // 14 Oct 2026 (#482)
+    for (const role of ['client', 'consultant'] as Role[]) {
       expect(MOBILE_ROLE_PRIMARY[role]).toBeUndefined();
       const items = enabledScreensFor(role, ALL_MODULES, ALL_CAPS);
       expect(splitMobileNav(items, role)).toEqual(splitMobileNav(items));
@@ -510,6 +511,8 @@ describe('LeftRail — the desktop nav follows the switch above it', () => {
     const { useStore, LeftRail } = await loadShell({ role: 'pmc', lang: 'en' });
     const r = render(<LeftRail />);
     expect(r.getByText('SCREENS')).toBeInTheDocument();
+    // #482 QA item 2 — the Schedule sits behind the PMC's More
+    fireEvent.click(r.getByTestId('rail-more'));
     expect(r.getByRole('button', { name: /Site Schedule/ })).toBeInTheDocument();
     fireEvent.click(r.getByTestId('lang-seg-gu'));
     expect(useStore.getState().lang).toBe('gu');

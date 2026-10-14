@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 2 Task 10 (Module 3 — Inspections) — the inspections MODULE-OWNED read, proven end-to-end over
@@ -73,7 +74,7 @@ test.describe('inspections module-owned read (moduleQuery)', () => {
 
     // onto the Inspection Review screen (PMC review queue). The seeded pending review (INSP-21) is
     // ALWAYS present, so we decide it unconditionally and prove the module path end-to-end.
-    await page.getByRole('button', { name: 'Inspection Review' }).click();
+    await openNav(page, /^Inspection Review( \d+)?$/);
     const approve = page.getByRole('button', { name: 'Approve Inspection' });
     // deterministic: the seed guarantees a pending review, so the decide control is present (no guard).
     await expect(approve, 'the seeded pending review (INSP-21) is in the PMC queue').toBeVisible();

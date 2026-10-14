@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNav } from './fixtures/nav';
 
 test('schedule groups activities by phase; portfolio shows a project card (Orgs Slice 3)', async ({ page }) => {
   await page.goto('/');
@@ -10,7 +11,7 @@ test('schedule groups activities by phase; portfolio shows a project card (Orgs 
   await expect(page.getByText('PROJECT DASHBOARD')).toBeVisible();
 
   // Site Schedule now groups under phase headers with a rollup
-  await page.getByRole('button', { name: 'Site Schedule' }).click();
+  await openNav(page, /^Site Schedule( \d+)?$/);
   await expect(page.getByText('Services & Waterproofing')).toBeVisible();
   await expect(page.getByText('Finishing', { exact: true })).toBeVisible();
   // the seeded services phase is 1/2 done
@@ -19,7 +20,7 @@ test('schedule groups activities by phase; portfolio shows a project card (Orgs 
   await expect(page.getByTestId('sched-ACT-22')).toBeVisible();
 
   // Portfolio: a monitoring card for the active project
-  await page.getByRole('button', { name: 'Portfolio' }).click();
+  await openNav(page, /^Portfolio( \d+)?$/);
   await expect(page.getByText('Every project at a glance')).toBeVisible();
   await expect(page.getByTestId('portfolio-ambli')).toBeVisible();
   await expect(page.getByTestId('portfolio-ambli')).toContainText('activities done');

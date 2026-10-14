@@ -7,6 +7,7 @@ import { rolesFor } from '../../src/lib/screens';
 // hides the reserved architect persona. These are the personas the switcher offers in that state.
 const ROLES = rolesFor('reserved');
 import { pilotTargetState } from './fixtures/pilot-targets';
+import { openNav, openRailMore } from './fixtures/nav';
 import { SEED_DECISIONS, SEED_DRAWINGS } from '@vitan/shared';
 
 /**
@@ -729,7 +730,7 @@ for (const width of [390, 1280]) {
         await page.getByTestId('tab-more').click();
         await page.getByTestId(`more-item-${key}`).click();
       } else {
-        await page.getByRole('button', { name: label, exact: true }).click();
+        await openNav(page, new RegExp(`^${label}( \\d+)?$`));
       }
     };
     await openPilot('commercial', 'Commercial');
@@ -873,7 +874,7 @@ test('desktop keeps its authored density — the floor is a MOBILE floor, not a 
   // navigates through `LeftRail`, which is the whole reason this width has its own density.
   // The decision register is the surface chosen because it renders a text-entry control at
   // BOTH widths — the schedule surface renders none at desktop, so it could prove nothing here.
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  await openNav(page, /^Decision Log( \d+)?$/);
   await expect(page.getByText('DECISION REGISTER')).toBeVisible();
   const sizes = await page.$$eval(
     "input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):not([type='submit']):not([type='button']):not([type='reset']):not([type='image']), textarea, select",
@@ -938,11 +939,13 @@ test.describe('phone landscape', () => {
     await sweepActionTargets(page, 'landscape rail shell — as it opens');
 
     // and every screen the rail's own navigation reaches, discovered from the rail, not named.
-    const rows = await page.locator('aside nav button').evaluateAll((els) =>
+    // #482 QA item 2 — the rail folds all but five rows under "More"; open it so the walk reaches every screen
+    await openRailMore(page);
+    const rows = await page.locator('aside nav button:not([data-testid="rail-more"])').evaluateAll((els) =>
       els.map((e) => (e.textContent || '').trim()).filter(Boolean));
     expect(rows.length, 'the rail must offer navigation rows to walk').toBeGreaterThan(0);
     for (const row of rows) {
-      await page.locator('aside nav button', { hasText: row }).first().click();
+      await page.locator('aside nav button:not([data-testid="rail-more"])', { hasText: row }).first().click();
       await sweepActionTargets(page, `landscape rail shell — ${row}`);
     }
   });
@@ -953,7 +956,7 @@ test.describe('phone landscape', () => {
     // 640px — so a phone in landscape navigates through `LeftRail` and receives the authored
     // desktop density. That is precisely why the hazard is real here and why the floor's second
     // condition exists: the app has stopped treating this device as a phone, and Safari has not.
-    await page.getByRole('button', { name: 'Decision Log' }).click();
+    await openNav(page, 'Decision Log');
     await expect(page.getByText('DECISION REGISTER')).toBeVisible();
     const small = await page.$$eval(
       "input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):not([type='submit']):not([type='button']):not([type='reset']):not([type='image']), textarea, select",
