@@ -27,6 +27,8 @@ export interface SiteVisitDto {
   closeReason: string | null;
   /** The visitor's end, recorded after a PMC closed the visit. */
   lateEndedAt: string | null;
+  /** Whether the late end was recorded at its receipt instead of its claimed time; null when there is no late end. */
+  lateEndTimeAdjusted: boolean | null;
 }
 
 type Row = Prisma.SiteVisitGetPayload<Record<string, never>>;
@@ -53,6 +55,7 @@ export function toSiteVisitDto(v: Row): SiteVisitDto {
     closedById: v.closedById,
     closeReason: v.closeReason,
     lateEndedAt: iso(v.lateEndedAt),
+    lateEndTimeAdjusted: v.lateEndTimeAdjusted,
   };
 }
 
@@ -61,12 +64,20 @@ export function toSiteVisitDto(v: Row): SiteVisitDto {
 export class SiteVisitsQueryService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** The project's latest visits, newest start first. */
-  async list(projectId: string, limit = 50): Promise<SiteVisitDto[]> {
+  /**
+   * A page of the project's visits, newest start first. `before` names the last visit of the previous page, so
+   * every visit stays reachable however many the project has.
+   */
+  async list(projectId: string, page: { before?: string; limit?: number } = {}): Promise<SiteVisitDto[]> {
+    if (page.before !== undefined) {
+      const anchor = await this.prisma.siteVisit.findFirst({ where: { projectId, id: page.before }, select: { id: true } });
+      if (!anchor) throw new NotFoundException('Site visit not found');
+    }
     const rows = await this.prisma.siteVisit.findMany({
       where: { projectId },
       orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
-      take: limit,
+      take: page.limit ?? 50,
+      ...(page.before !== undefined ? { cursor: { id: page.before }, skip: 1 } : {}),
     });
     return rows.map(toSiteVisitDto);
   }

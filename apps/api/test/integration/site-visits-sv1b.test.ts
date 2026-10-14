@@ -135,6 +135,40 @@ describe('Site Visits SV1-b — start, end and close (live PG)', () => {
     expect(await t.prisma.siteVisit.count({ where: { projectId: f.projectA.id, visitorId: f.memberUser.id, status: 'open' } })).toBe(0);
   });
 
+  it('a device id written in capitals is stored lowercase, and the device can end the visit by it (Codex 4265859188)', async () => {
+    const id = randomUUID();
+    const res = await start(pmcToken, { id: id.toUpperCase(), claimedAt: ago(1) });
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBe(id);
+    expect((await end(pmcToken, id.toUpperCase())).status).toBe(201);
+  });
+
+  it('the visit list pages back through every visit, newest first (Codex 4265859179)', async () => {
+    for (let i = 0; i < 3; i += 1) {
+      const id = randomUUID();
+      expect((await start(consultantToken, { id, claimedAt: ago(40 + i) })).status).toBe(201);
+      await finish(consultantToken, id);
+    }
+    const page = (query: string) => http().get(`${base()}${query}`).set('Authorization', `Bearer ${clientToken}`);
+    const all = await page('?limit=200');
+    expect(all.status).toBe(200);
+    const ids: string[] = all.body.map((v: { id: string }) => v.id);
+    expect(ids.length).toBeGreaterThanOrEqual(3);
+    const walked: string[] = [];
+    let before: string | undefined;
+    for (;;) {
+      const res = await page(`?limit=2${before ? `&before=${before}` : ''}`);
+      expect(res.status).toBe(200);
+      if (res.body.length === 0) break;
+      walked.push(...res.body.map((v: { id: string }) => v.id));
+      before = walked[walked.length - 1];
+    }
+    expect(walked).toEqual(ids);
+    expect((await page(`?before=${randomUUID()}`)).status).toBe(404);
+    expect((await page('?limit=0')).status).toBe(400);
+    expect((await page('?limit=201')).status).toBe(400);
+  });
+
   it('a retried start with the same Idempotency-Key lands once', async () => {
     const id = randomUUID();
     const key = `sv1b-${randomUUID()}`;
@@ -172,6 +206,9 @@ describe('Site Visits SV1-b — start, end and close (live PG)', () => {
     expect(late.status).toBe(201);
     expect(late.body.status).toBe('closed');
     expect(late.body.lateEndedAt).not.toBeNull();
+    // the read says whether the late end kept its claim or was recorded at its receipt (Codex 4265859183)
+    expect(closed.body.lateEndTimeAdjusted).toBeNull();
+    expect(late.body.lateEndTimeAdjusted).toBe(false);
     expect((await end(consultantToken, id)).status).toBe(409);
     const evs = await eventsOf(id);
     expect(evs.map((e) => [e.eventType, e.actorRole])).toEqual([

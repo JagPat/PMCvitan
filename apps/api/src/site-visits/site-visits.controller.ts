@@ -1,10 +1,10 @@
-import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
 import {
-  closeSiteVisitSchema, endSiteVisitSchema, startSiteVisitSchema,
-  type CloseSiteVisitInput, type EndSiteVisitInput, type StartSiteVisitInput,
+  closeSiteVisitSchema, endSiteVisitSchema, listSiteVisitsSchema, startSiteVisitSchema,
+  type CloseSiteVisitInput, type EndSiteVisitInput, type ListSiteVisitsInput, type StartSiteVisitInput,
 } from '../contracts';
 import { SiteVisitsService } from './site-visits.service';
 import { SiteVisitsQueryService } from './site-visits.query';
@@ -18,11 +18,11 @@ export class SiteVisitsController {
     private readonly visitsQuery: SiteVisitsQueryService,
   ) {}
 
-  /** The project's latest visits; every member reads them (D1). */
+  /** The project's visits, newest first, a page at a time (`before` = the previous page's last id); every member reads them (D1). */
   @Get()
   @RolesFor('project.read')
-  list(@Param('projectId') projectId: string) {
-    return this.visitsQuery.list(projectId);
+  list(@Param('projectId') projectId: string, @Query(new ZodPipe(listSiteVisitsSchema)) query: ListSiteVisitsInput) {
+    return this.visitsQuery.list(projectId, query);
   }
 
   @Post()
@@ -45,7 +45,7 @@ export class SiteVisitsController {
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.visits.end(projectId, visitId, body, user, idempotencyKey);
+    return this.visits.end(projectId, visitId.toLowerCase(), body, user, idempotencyKey);
   }
 
   @Post(':visitId/close')
@@ -57,6 +57,6 @@ export class SiteVisitsController {
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.visits.close(projectId, visitId, body, user, idempotencyKey);
+    return this.visits.close(projectId, visitId.toLowerCase(), body, user, idempotencyKey);
   }
 }

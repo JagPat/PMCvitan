@@ -8,7 +8,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import type { AuthUser } from '../common/auth';
 import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
-import { resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
+import { lockActorStanding, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
 import { executeCommand, hashRequest, peekReplay, type CommandScope, type CommandTx } from '../platform/commands';
 import type { CloseSiteVisitInput, EndSiteVisitInput, StartSiteVisitInput } from '../contracts';
 import { SiteVisitsQueryService, type SiteVisitDto } from './site-visits.query';
@@ -185,15 +185,7 @@ export class SiteVisitsService {
    * registers FOR SHARE, the project row (the operability check), then the envelope (the identity FOR UPDATE).
    */
   private async standing(tx: CommandTx, projectId: string, actor: Actor, user: AuthUser): Promise<ActorEnvelope> {
-    await tx.$queryRaw(Prisma.sql`
-      SELECT 1 FROM "OrgUserAuthority" a
-        JOIN "ProjectOrg" po ON po."orgId" = a."orgId"
-       WHERE po."projectId" = ${projectId} AND a."userId" = ${user.sub}
-         FOR SHARE OF a`);
-    await tx.$queryRaw(Prisma.sql`
-      SELECT 1 FROM "ProjectUserStanding"
-       WHERE "projectId" = ${projectId} AND "userId" = ${user.sub}
-         FOR SHARE`);
+    await lockActorStanding(tx, projectId, user.sub);
     const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${projectId}) AS "operable"`);
     if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
     const envelope = await resolveActorEnvelope(tx, projectId, actor);

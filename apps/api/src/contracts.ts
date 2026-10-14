@@ -1876,10 +1876,12 @@ export type PayAdvanceInput = z.infer<typeof payAdvanceSchema>;
 
 // ── Site Visits SV1-b (#792) ───────────────────────────────────────────────
 // The caller sends only CLAIMED times; the database stamps each receipt and decides the accepted time (SV1-a, V3).
-// `id` is minted by the device so an offline end can name a visit whose start has not reached the server yet.
+// `id` is minted by the device so an offline end can name a visit whose start has not reached the server yet. It is
+// stored lowercase, as SV1-a's shape check requires, whatever case the device writes it in.
 const siteVisitClaim = z.string().datetime({ offset: true });
+export const siteVisitIdSchema = z.string().uuid().transform((value) => value.toLowerCase());
 export const startSiteVisitSchema = z.object({
-  id: z.string().uuid(),
+  id: siteVisitIdSchema,
   claimedAt: siteVisitClaim,
   nodeId: z.string().trim().min(1).optional(),
   // Q6: a location is recorded when the device offers one, and its absence never blocks a start
@@ -1895,3 +1897,9 @@ export const endSiteVisitSchema = z.object({ claimedAt: siteVisitClaim }).strict
 export type EndSiteVisitInput = z.infer<typeof endSiteVisitSchema>;
 export const closeSiteVisitSchema = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
 export type CloseSiteVisitInput = z.infer<typeof closeSiteVisitSchema>;
+// The visit list's page: newest start first, `before` naming the last visit of the previous page.
+export const listSiteVisitsSchema = z.object({
+  before: siteVisitIdSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+}).strict();
+export type ListSiteVisitsInput = z.infer<typeof listSiteVisitsSchema>;
