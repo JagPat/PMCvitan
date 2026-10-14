@@ -151,7 +151,10 @@ describe('the engineer is guided through raising an issue on the live checklist'
     });
     tick();
     expect(view.container.querySelectorAll('[data-guide="fail-photo"]')).toHaveLength(1);
-    press(view.container.querySelectorAll('[data-guide="mark-fail"]')[1]!);
+    // the failed item's own Fail is no longer a guide target (#862): only item 2's is
+    const fails = view.container.querySelectorAll('[data-guide="mark-fail"]');
+    expect(fails).toHaveLength(1);
+    press(fails[0]!);
     tick();
     expect(step()).toBe('1');
     const { useGuideState } = await import('@/guide/guideState');
@@ -449,6 +452,84 @@ describe('a step that can fail finishes only when it really succeeds (review rou
     act(() => { s.useStore.getState()._setGateway({ createInspection: vi.fn().mockRejectedValue(new Error('no')) } as never); });
     s.useStore.getState().issueChecklist(input);
     await vi.waitFor(() => expect(seen).toEqual(['checklist-issue-failed', 'checklist-issue-failed']));
+  });
+});
+
+describe('follow-ups from review (#858, #861, #862)', () => {
+  it('the Submit step follows the guided checklist: another checklist\'s submit does not finish it', async () => {
+    await engineerAtSubmit();
+    expect(document.querySelector('[data-guide="submit-inspection"]')?.getAttribute('data-guide-key')).toBe('INSP-1');
+    const { emitGuideOutcome } = await import('@/guide/outcomes');
+    const { useGuideState } = await import('@/guide/guideState');
+    act(() => { useGuideState.getState().setWait(true); });
+    act(() => { emitGuideOutcome('inspection-submitted', 'INSP-2'); });
+    expect(useGuideState.getState().run?.step).toBe(2);
+    expect(done()).toEqual([]);
+    act(() => { emitGuideOutcome('inspection-submitted', 'INSP-1'); });
+    expect(useGuideState.getState().run).toBeNull();
+    expect(done()).toEqual(['raise-issue-engineer']);
+  });
+
+  it('a live refresh that shows the checklist submitted before the request answers still finishes the guide', async () => {
+    const { useStore } = await engineerAtSubmit();
+    const gw = { submitInspection: vi.fn(() => new Promise(() => {})) };
+    act(() => {
+      useStore.getState()._setGateway(gw as never);
+      useStore.setState({ online: true });
+    });
+    press(document.querySelector('[data-testid="submit-inspection"]')!);
+    tick(2000);
+    expect(done()).toEqual([]);
+    // what the socket refresh does: the submitted checklist leaves the open set (and the request's
+    // own answer, when it lands, is dropped as a retired attempt)
+    act(() => { useStore.setState({ openChecklists: [], checklist: null }); });
+    tick();
+    expect(tip()).toBeNull();
+    expect(done()).toEqual(['raise-issue-engineer']);
+  });
+
+  it('an already-failed item\'s Fail is never the spotlit control (pressing it would clear the failure)', async () => {
+    const s = await setup('engineer', 'engineer-check');
+    const c = checklist();
+    c.items[0] = { ...c.items[0]!, state: 'fail' };
+    s.useStore.setState({ openChecklists: [c], checklist: c, selectedChecklistId: null });
+    const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
+    render(<><s.GuideHost /><EngineerChecklistScreen /></>);
+    tick();
+    const fails = document.querySelectorAll('[data-guide="mark-fail"]');
+    expect(fails).toHaveLength(1);
+    expect(fails[0]!.getAttribute('data-guide-key')).toBe('INSP-1:1');
+    expect(step()).toBe('0');
+  });
+
+  it('a viewport that shrinks under the control moves the tip above it', async () => {
+    await engineer();
+    tick();
+    expect(tip()?.style.top).not.toBe('');
+    const before = window.innerHeight;
+    try {
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 100 });
+      act(() => { window.dispatchEvent(new Event('resize')); });
+      expect(tip()?.style.top).toBe('');
+      expect(tip()?.style.bottom).not.toBe('');
+    } finally {
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: before });
+    }
+  });
+
+  it('a wrong-project answer to "Issue to engineer" is not an issued checklist', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome } = await import('@/guide/outcomes');
+    const seen: string[] = [];
+    subscribeGuideOutcome((o) => seen.push(o));
+    act(() => {
+      s.useStore.getState()._setGateway({
+        createInspection: vi.fn().mockResolvedValue({ project: { id: 'another-project' } }),
+        snapshot: vi.fn(() => new Promise(() => {})),
+      } as never);
+    });
+    s.useStore.getState().issueChecklist({ title: 'T', zone: 'Z', items: ['a'] });
+    await vi.waitFor(() => expect(seen).toEqual(['checklist-issue-failed']));
   });
 });
 
