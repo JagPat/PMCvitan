@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { openProject } from './landing';
+import { openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 6 task 4d-ii-b / B5b — the countersign chain's affordances over the REAL stack with the six reservation
@@ -28,7 +29,7 @@ test('with the doors standing, the PMC’s register renders no Forward, no count
   await page.goto('/');
   await signIn(page, PMC);
   await openProject(page, 'Residence at Ambli'); // sign-in opens the last project used (#811)
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  await openNav(page, /^Decision Log( \d+)?$/);
 
   const rows = page.locator('[data-testid^="log-row-"]');
   await expect(rows.first()).toBeVisible();

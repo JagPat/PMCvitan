@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { openNav } from './fixtures/nav';
 
 /**
  * B5: an automated WCAG 2.1 A/AA sweep (axe-core) over every primary screen, at desktop and
@@ -63,7 +64,7 @@ for (const vp of VIEWPORTS) {
       await page.goto('/projects/ambli/for-you');
       await page.getByRole('button', { name: s.role, exact: true }).click();
       await page.getByRole('button', { name: 'EN', exact: true }).click();
-      await page.getByRole('navigation').getByRole('button', { name: new RegExp(`^${s.label}( \\d+)?$`) }).click();
+      await openNav(page, new RegExp(`^${s.label}( \\d+)?$`));
       await expect(page).toHaveURL(new RegExp(`/projects/ambli/${s.path}$`));
       await page.setViewportSize(vp.size);
       await expectNoViolations(page);

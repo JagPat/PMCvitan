@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNav } from './fixtures/nav';
 
 // U2a — the client's home is their project's Pulse: the decisions waiting on them are its
 // "one thing needs you" (a reopened one first), so it replaces their old approval cards.
@@ -78,6 +79,6 @@ test('For You: every client surface counts the same decisions waiting on them', 
   await page.getByTestId('pulse-needs-all').click();
   await expect(page.getByText('Decisions waiting for you')).toBeVisible();
 
-  await rail.getByRole('button', { name: /^Project Health/ }).click();
+  await openNav(page, /^Project Health/); // #482 QA item 2 — folded under the client's More
   await expect(page.getByText('3 decisions waiting for you')).toBeVisible();
 });
