@@ -2854,7 +2854,11 @@ export const useStore = create<Store>()(
           d.photoSwatch = o.swatch;
           delete d.changeRequest; // a re-approval RESOLVES the open change request
         }
-        s.notifications.unshift({ text: 'Client approved ' + title + ' — ' + material, time: 'just now', color: '#3F7A54', decisionId: decId });
+        s.notifications.unshift({
+          text: 'Client approved ' + title + ' — ' + material, time: 'just now', color: '#3F7A54', decisionId: decId,
+          // #839 — the demo's approval carries its facts as the server's does, so the bell can translate it
+          facts: { kind: 'approval', byClient: true, actorName: 'Mr. Shah', actorRole: 'client', title, material, onBehalfOf: null, ending: null },
+        });
         s.modal = { type: null };
       });
       get().flash(DTX.approvedDemo[get().lang]);

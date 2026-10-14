@@ -123,7 +123,7 @@ describe('the bell shows every server notice in Hindi and Gujarati', () => {
     expect(noticeText(text, 'hi').endsWith(": Roof — awaiting the PMC's closing inspection")).toBe(true);
     // the server's writer stamps the closing inspection and adds the ending once, after the name
     const server = "Sign-off requested: Roof — awaiting the PMC's closing inspection — awaiting the PMC's closing inspection";
-    expect(noticeText(server, 'hi', { inspection: true })).toContain(": Roof — awaiting the PMC's closing inspection — PMC");
+    expect(noticeText(server, 'hi', { inspection: true })).toContain(": Roof — awaiting the PMC's closing inspection — प्रोजेक्ट मैनेजर (PMC)");
   });
 
   it('the seeded client approval, which carries no stamp, is translated (Codex 4264702283)', () => {
