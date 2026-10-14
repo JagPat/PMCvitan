@@ -53,6 +53,7 @@ import {
   type PlacedInspection,
   type ItemState,
   type Lang,
+  accessDict,
   type ModalState,
   type Review,
   type ReservationPlan,
@@ -857,19 +858,25 @@ function httpStatusOf(err: unknown): number | undefined {
 }
 
 /**
- * What a failed request for a phone sign-in code tells the person (#827 one-screen sign-in). A throttle names
- * the real wait when the server sends one and otherwise says "later", never a guessed minute. Any other failure
- * (no SMS channel, or the email carrying the code could not be sent) points to the email sign-in below, so a
- * broken send never looks like a code that is on its way.
+ * What a failed request for a phone sign-in code tells the person, in the gate's language (#827 one-screen
+ * sign-in). A throttle names the real wait when the server sends one and otherwise says "later", never a guessed
+ * minute. Any other failure (no SMS channel, or the email carrying the code could not be sent) points to the
+ * email sign-in below, so a broken send never looks like a code that is on its way.
  */
-function otpRequestFailureMessage(err: unknown): string {
+function otpRequestFailureMessage(err: unknown, lang: Lang): string {
+  const t = accessDict[lang];
   const status = httpStatusOf(err);
   if (status === 429) {
     const seconds = (err as { retryAfter?: unknown } | null)?.retryAfter;
-    return typeof seconds === 'number' && seconds > 0 ? `Too many tries. ${throttleWait(err)}, then try again.` : 'Too many tries. Try again later.';
+    if (typeof seconds !== 'number' || !(seconds > 0)) return t.tooManyLater;
+    const minutes = Math.ceil(seconds / 60);
+    const wait = seconds < 60
+      ? t.waitSeconds.replace('{n}', String(Math.ceil(seconds)))
+      : minutes === 1 ? t.waitMinute : t.waitMinutes.replace('{n}', String(minutes));
+    return t.tooManyWait.replace('{wait}', wait);
   }
-  if (status === undefined) return 'Could not reach the server. Check your connection and try again.';
-  return 'Could not send a sign-in code right now. Use “Sign in with email” below.';
+  if (status === undefined) return t.noServer;
+  return t.sendFailed;
 }
 
 /** How long a throttled (429) caller should wait, from the seconds the server says remain in its window
@@ -6174,9 +6181,11 @@ export const useStore = create<Store>()(
         })
         .catch((e: unknown) => {
           if (get().access.generation !== generation) return;
+          // a failure for a number the person has since changed says nothing about the number shown
+          const message = get().access.phone === phone ? otpRequestFailureMessage(e, get().lang) : null;
           set((s) => {
             s.access.sending = false;
-            s.access.error = otpRequestFailureMessage(e);
+            if (message) s.access.error = message;
           });
         });
     },
@@ -6250,7 +6259,7 @@ export const useStore = create<Store>()(
           set((s) => {
             s.access.sending = false;
             s.access.otp = '';
-            s.access.error = httpStatusOf(e) === 429 ? 'Too many tries. Try again later.' : 'Wrong or expired code — try again.';
+            s.access.error = httpStatusOf(e) === 429 ? accessDict[get().lang].tooManyLater : 'Wrong or expired code — try again.';
           });
         });
     },

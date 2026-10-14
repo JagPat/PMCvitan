@@ -176,6 +176,36 @@ describe('#827 one-screen sign-in', () => {
     expect(useStore.getState().access).toMatchObject({ step: 'phone', phone: '9123456789', sending: false });
   });
 
+  it('a failure for a number the person has since changed shows no error against the new number', async () => {
+    let fail!: (e: unknown) => void;
+    const requestOtp = vi.fn(() => new Promise((_, reject) => { fail = reject; }));
+    const { TeamAccessScreen, useStore } = await load({ requestOtp } as unknown as Partial<ApiGateway>);
+    render(<TeamAccessScreen />);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    act(() => useStore.getState().accSetPhone('9123456789'));
+    await act(async () => { fail(Object.assign(new Error('/auth/otp/request 429'), { status: 429 })); });
+    await flush();
+    expect(useStore.getState().access).toMatchObject({ step: 'phone', phone: '9123456789', sending: false, error: null });
+  });
+
+  it('why a code did not come reads in the gate’s language, with the real wait', async () => {
+    const requestOtp = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('/auth/otp/request 429'), { status: 429, retryAfter: 30 }))
+      .mockRejectedValueOnce(Object.assign(new Error('/auth/otp/request 503'), { status: 503 }));
+    const { TeamAccessScreen, useStore } = await load({ requestOtp } as unknown as Partial<ApiGateway>);
+    const r = render(<TeamAccessScreen />);
+    fireEvent.click(r.getByTestId('gate-lang-gu'));
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    expect(useStore.getState().access.error).toBe('ઘણી વાર પ્રયાસ થયો. 30 સેકન્ડ રાહ જુઓ, પછી ફરી પ્રયાસ કરો.');
+    fireEvent.click(r.getByTestId('gate-lang-hi'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    expect(useStore.getState().access.error).toBe('अभी साइन-इन कोड नहीं भेज सके। नीचे “ईमेल से साइन इन करें” दबाएँ।');
+  });
+
   it('leaving in the short pause after the last digit sends nothing', async () => {
     const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
     const verifyOtp = vi.fn().mockResolvedValue({ token: 't', role: 'client', name: 'Priya', projectId: 'villa-b' });
