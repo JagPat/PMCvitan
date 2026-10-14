@@ -120,7 +120,7 @@ export class DecisionsQueryService {
     userId?: string,
     /** 4d-ii-a / A7a — the revisions the feed's events name, from {@link kindedNoticeRevisions}. */
     revisions?: ReadonlyMap<string, ApprovalRevisionFacts>,
-  ): { text: string; color: string } | null {
+  ): ReturnType<typeof renderKindedDecisionNotice> {
     if (!decision || !kindedDecisionNoticeServed(kind, event, decision, role, userId)) return null;
     return renderKindedDecisionNotice(kind, event, revisions, decision.id);
   }

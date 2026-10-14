@@ -110,7 +110,8 @@ export function servedNotifications(
       }
       if (!event || !n.decisionId) return [];
       const rendered = decisionsQuery.renderKindedNotice(n.kind, event, visibleById.get(n.decisionId), role, userId, revisions);
-      return rendered ? [{ id: n.id, at: n.at.toISOString(), text: rendered.text, time: n.time, color: rendered.color, ...noticeSubject(n.decisionId), unread: !seen.has(n.id) }] : [];
+      // #839 — the facts the text was rendered from ride beside it, so the bell can translate the line
+      return rendered ? [{ id: n.id, at: n.at.toISOString(), text: rendered.text, time: n.time, color: rendered.color, ...noticeSubject(n.decisionId), unread: !seen.has(n.id), ...(rendered.facts ? { facts: rendered.facts } : {}) }] : [];
     }
     // KIND-LESS rows (every notice written today): the delivered text-prefix filters, unchanged.
     if (stripPendingNotice(n)) return [];

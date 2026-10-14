@@ -20,6 +20,7 @@ import {
  * Phase 6 task 4d unit 4d-ii-a / A4c — the RENDERER TRIPWIRE (§A.3 obligation 7): a kinded notice is
  * rendered from its kind and event, and the rendering must equal what the delivered writer caches in
  * `text`/`color` for the same act, so the kinded path and the kind-less cache cannot disagree.
+ * (#839: an approval or forward rendering also carries its facts, pinned in `notice-facts.test.ts`, hence `toMatchObject`.)
  */
 const envelope = { actorRole: 'pmc', actorName: 'Ar. Meghna' };
 const published = (title: string, effectKey = 'decision.published') => ({ eventType: 'decision.published', payload: { title }, effectKey, ...envelope });
@@ -48,24 +49,24 @@ const render = (kind: string, event: Parameters<typeof renderKindedDecisionNotic
 describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   it('renders each arm exactly as its writer caches it', () => {
     expect(renderKindedDecisionNotice('decision.published', published('Kitchen counter')))
-      .toEqual({ text: pendingDecisionNotice('Kitchen counter'), color: PENDING_DECISION_NOTICE_COLOR });
+      .toMatchObject({ text: pendingDecisionNotice('Kitchen counter'), color: PENDING_DECISION_NOTICE_COLOR });
     expect(renderKindedDecisionNotice('decision.published', published('Stair rail', 'decision.published.record')))
-      .toEqual({ text: recordedDecisionNotice('Stair rail'), color: RECORDED_DECISION_NOTICE_COLOR });
+      .toMatchObject({ text: recordedDecisionNotice('Stair rail'), color: RECORDED_DECISION_NOTICE_COLOR });
     expect(renderKindedDecisionNotice('decision.withdrawn', withdrawn('Kitchen counter', 'Client changed scope')))
-      .toEqual({ text: withdrawnDecisionNotice('Kitchen counter', 'Client changed scope'), color: WITHDRAWN_DECISION_NOTICE_COLOR });
+      .toMatchObject({ text: withdrawnDecisionNotice('Kitchen counter', 'Client changed scope'), color: WITHDRAWN_DECISION_NOTICE_COLOR });
     // A7a — the green notice: the approver from the envelope, the option and on-behalf fact from
     // the revision the event names, the title and holder kind from the payload
     expect(render('decision.approved', approved()))
-      .toEqual({ text: approvedDecisionNotice({ actorName: 'Client One', actorRole: 'client', title: 'Kitchen counter', material: 'Granite', deciderKind: 'client', onBehalfOf: null }), color: APPROVED_DECISION_NOTICE_COLOR });
+      .toMatchObject({ text: approvedDecisionNotice({ actorName: 'Client One', actorRole: 'client', title: 'Kitchen counter', material: 'Granite', deciderKind: 'client', onBehalfOf: null }), color: APPROVED_DECISION_NOTICE_COLOR });
     expect(render('decision.reapproved', approved({ kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client', actorRole: 'pmc', actorName: 'Ar. Meghna' })))
-      .toEqual({ text: approvedDecisionNotice({ actorName: 'Ar. Meghna', actorRole: 'pmc', title: 'Kitchen counter', material: 'Quartz', deciderKind: 'client', onBehalfOf: 'client' }), color: APPROVED_DECISION_NOTICE_COLOR });
+      .toMatchObject({ text: approvedDecisionNotice({ actorName: 'Ar. Meghna', actorRole: 'pmc', title: 'Kitchen counter', material: 'Quartz', deciderKind: 'client', onBehalfOf: 'client' }), color: APPROVED_DECISION_NOTICE_COLOR });
   });
 
   it('the green notice, character for character (the three announcement shapes the delivered approve wrote inline)', () => {
     expect(render('decision.approved', approved())?.text).toBe('Client approved Kitchen counter — Granite');
     expect(render('decision.approved', approved({ deciderKind: 'member', actorRole: 'engineer', actorName: 'Ravi' }))?.text).toBe('Ravi approved Kitchen counter — Granite');
     expect(render('decision.reapproved', approved({ kind: 'decision.reapproved', revisionId: 'dar-D1-v2', onBehalfOf: 'client', actorRole: 'pmc', actorName: 'Ar. Meghna' })))
-      .toEqual({ text: 'Ar. Meghna (PMC) approved Kitchen counter on behalf of the client — Quartz', color: '#3F7A54' });
+      .toMatchObject({ text: 'Ar. Meghna (PMC) approved Kitchen counter on behalf of the client — Quartz', color: '#3F7A54' });
     expect(approvedDecisionNotice({ actorName: 'Ar. Meghna', actorRole: 'pmc', title: 'T', material: 'M', deciderKind: 'member', onBehalfOf: 'member' })).toBe('Ar. Meghna (PMC) approved T on behalf of the named decider — M');
   });
 
@@ -101,9 +102,9 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   });
 
   it('the strings and colours are today\'s, character for character (the cache every kind-less row carries)', () => {
-    expect(renderKindedDecisionNotice('decision.published', published('X'))).toEqual({ text: 'Decision awaiting approval: X', color: '#C08A2D' });
-    expect(renderKindedDecisionNotice('decision.published', published('X', 'decision.published.record'))).toEqual({ text: 'Issue recorded: X', color: '#6B665C' });
-    expect(renderKindedDecisionNotice('decision.withdrawn', withdrawn('X', 'R'))).toEqual({ text: 'Decision withdrawn: X — R', color: '#6B665C' });
+    expect(renderKindedDecisionNotice('decision.published', published('X'))).toMatchObject({ text: 'Decision awaiting approval: X', color: '#C08A2D' });
+    expect(renderKindedDecisionNotice('decision.published', published('X', 'decision.published.record'))).toMatchObject({ text: 'Issue recorded: X', color: '#6B665C' });
+    expect(renderKindedDecisionNotice('decision.withdrawn', withdrawn('X', 'R'))).toMatchObject({ text: 'Decision withdrawn: X — R', color: '#6B665C' });
   });
 
   it('renders NOTHING it has no arm for, and never trusts a kind that disagrees with its event', () => {
@@ -120,7 +121,7 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   it('the forwarded notice renders the title and the new holder\'s frozen label from its event, and nothing without them', () => {
     const forwarded = (payload: object) => ({ eventType: 'decision.forwarded', payload, effectKey: 'decision.forwarded', ...envelope });
     expect(render('decision.forwarded', forwarded({ forwardId: 'dfw-1', title: 'Kitchen counter', toLabel: 'Ravi', reason: 'site engineer decides finishes' })))
-      .toEqual({ text: forwardedDecisionNotice('Kitchen counter', 'Ravi'), color: FORWARDED_DECISION_NOTICE_COLOR });
+      .toMatchObject({ text: forwardedDecisionNotice('Kitchen counter', 'Ravi'), color: FORWARDED_DECISION_NOTICE_COLOR });
     expect(render('decision.forwarded', forwarded({ title: 'Kitchen counter', toLabel: 'the architect' }))?.text).toBe('Decision forwarded: Kitchen counter → the architect');
     expect(FORWARDED_DECISION_NOTICE_COLOR).toBe('#C08A2D');
     expect(render('decision.forwarded', forwarded({ title: 'Kitchen counter' }))).toBeNull();
@@ -137,7 +138,7 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   it('the provisional approval notice renders as the green one does, from the PROVISIONAL revision the demand names, with the countersign it awaits stated; a re-notification renders nothing', () => {
     const demand = approved({ kind: 'decision.awaiting_countersign' });
     expect(render('decision.awaiting_countersign', demand))
-      .toEqual({ text: provisionalApprovalNotice({ actorName: 'Client One', actorRole: 'client', title: 'Kitchen counter', material: 'Granite', deciderKind: 'client', onBehalfOf: null }), color: AWAITING_COUNTERSIGN_NOTICE_COLOR });
+      .toMatchObject({ text: provisionalApprovalNotice({ actorName: 'Client One', actorRole: 'client', title: 'Kitchen counter', material: 'Granite', deciderKind: 'client', onBehalfOf: null }), color: AWAITING_COUNTERSIGN_NOTICE_COLOR });
     expect(render('decision.awaiting_countersign', demand)?.text).toBe("Client approved Kitchen counter — Granite — awaiting the architect's countersign");
     expect(AWAITING_COUNTERSIGN_NOTICE_COLOR).toBe('#31567F');
     expect(kindedNoticeRevisionId('decision.awaiting_countersign', demand)).toBe('dar-D1-v1');
@@ -152,7 +153,7 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   it('the change-request notice renders the title and the reason from a `countersign_rejection` event, nothing from the standard request (which writes no notice) or without them, and is served to pmc and the decider', () => {
     const rejected = (payload: object) => ({ eventType: 'decision.change_requested', payload, effectKey: 'decision.change_requested', actorRole: 'architect', actorName: 'Arch One' });
     expect(render('decision.change_requested', rejected({ origin: 'countersign_rejection', title: 'Kitchen counter', reason: 'the wear rating is wrong', path: 'reject_back', revisionId: 'dar-D1-v1', requestId: 'cr-1' })))
-      .toEqual({ text: changeRequestedNotice('Kitchen counter', 'the wear rating is wrong'), color: CHANGE_REQUESTED_NOTICE_COLOR });
+      .toMatchObject({ text: changeRequestedNotice('Kitchen counter', 'the wear rating is wrong'), color: CHANGE_REQUESTED_NOTICE_COLOR });
     expect(render('decision.change_requested', rejected({ origin: 'countersign_rejection', title: 'Kitchen counter', reason: 'choose again', outcome: 'returned' }))?.text).toBe('Change requested: Kitchen counter — choose again');
     expect(CHANGE_REQUESTED_NOTICE_COLOR).toBe('#C08A2D');
     // the standard request's event (no origin; the delivered path writes no notice) renders nothing
@@ -207,7 +208,7 @@ describe('the kinded decision notice renderer (4d-ii-a / A4c)', () => {
   it('A8b — a FINALIZER\'s green notice names the approver from the revision\'s frozen pair and the finalizer as its own attribution; an unknown finalization or a revision with no frozen approver renders nothing', () => {
     const countersigned = approved({ actorName: 'Arch One', actorRole: 'architect' });
     (countersigned.payload as Record<string, unknown>).finalization = 'countersign';
-    expect(render('decision.approved', countersigned)).toEqual({
+    expect(render('decision.approved', countersigned)).toMatchObject({
       text: finalizedApprovalNotice({ actorName: 'Client One', actorRole: 'client', title: 'Kitchen counter', material: 'Granite', deciderKind: 'client', onBehalfOf: null }, 'countersign', 'Arch One'),
       color: APPROVED_DECISION_NOTICE_COLOR,
     });
