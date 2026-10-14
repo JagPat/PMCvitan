@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import type { Decision, Drawing, PlacedInspection, ProjectNode } from '@vitan/shared';
-import { openIssueCount, placeContents } from '@/lib/locationTree';
+import { demoSiteMapInspections, openIssueCount, placeContents } from '@/lib/locationTree';
 import { placeCountWords, type PlaceCountOptions } from '@/lib/placeCountWords';
 
 const KNOWN: PlaceCountOptions = { inspections: 'known', activitiesKnown: true, photosCapped: false };
@@ -87,7 +87,7 @@ describe('Site Map cards match the place they open', () => {
     useStore.setState({ routeItem: 'gf' });
     const { getByTestId, unmount } = render(<PlacesScreen />);
     const card = getByTestId('place-counts-kit');
-    expect(card.textContent).toBe('1 open issue1 inspection ·2 decisions ·2 drawings');
+    expect(card.textContent).toBe('1 open issue 1 inspection · 2 decisions · 2 drawings');
     expect(card.querySelector('[data-count="openIssues"]')).not.toBeNull();
     unmount();
     useStore.setState({ routeItem: 'kit' });
@@ -113,6 +113,78 @@ describe('Site Map cards match the place they open', () => {
   it('a client sees no inspection or issue count on a card', async () => {
     const { PlacesScreen, useStore } = await load({ role: 'client', decisions: [decision('DL-1', 'kit'), decision('DL-2', 'kit')].map((d) => ({ ...d, status: 'approved' })) });
     useStore.setState({ routeItem: 'gf' });
-    expect(render(<PlacesScreen />).getByTestId('place-counts-kit').textContent).toBe('2 decisions ·2 drawings');
+    expect(render(<PlacesScreen />).getByTestId('place-counts-kit').textContent).toBe('2 decisions · 2 drawings');
+  });
+});
+
+describe('the API-less demo keeps open issues on the Site Map (#847)', () => {
+  async function demo() {
+    vi.stubEnv('VITE_API_URL', '');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const { selectFailedCount, inspectionRecordLink } = await import('@/store/selectors');
+    useStore.setState({ ...getInitialState(), role: 'pmc', activeReviewId: 'INSP-21' });
+    const map = () => {
+      const s = useStore.getState();
+      return demoSiteMapInspections(s.placedInspections, s.reviews);
+    };
+    return { useStore, selectFailedCount, inspectionRecordLink, map };
+  }
+
+  it('the map counts the same open issues as the Dashboard, before and after a re-inspection is sent', async () => {
+    const { useStore, selectFailedCount, map } = await demo();
+    expect(openIssueCount(map())).toBe(selectFailedCount(useStore.getState()));
+    useStore.getState().sendReinspection();
+    expect(openIssueCount(map())).toBe(selectFailedCount(useStore.getState()));
+    expect(openIssueCount(map().filter((i) => i.nodeId === 'z-terrace'))).toBeGreaterThan(0);
+  });
+
+  it('with a second failing review on record, the totals still agree (Codex 4269558676)', async () => {
+    const { useStore, selectFailedCount, map } = await demo();
+    const seed = useStore.getState().reviews[0];
+    useStore.setState((s) => ({
+      reviews: [...s.reviews, { ...structuredClone(seed), id: 'INSP-22', title: 'Second check', decided: false, items: seed.items.map((it) => ({ ...it, result: 'FAIL' as const, rejected: false })) }],
+    }));
+    useStore.getState().sendReinspection();
+    const s = useStore.getState();
+    expect(selectFailedCount(s)).toBeGreaterThan(1);
+    expect(openIssueCount(map())).toBe(selectFailedCount(s));
+  });
+
+  it('every inspection carrying open issues opens its record; no row goes nowhere (Codex 4269558684)', async () => {
+    const { useStore, inspectionRecordLink, map } = await demo();
+    useStore.getState().sendReinspection();
+    const s = useStore.getState();
+    const withIssues = map().filter((r) => (r.openIssues ?? 0) > 0);
+    expect(withIssues.length).toBeGreaterThan(0);
+    for (const row of withIssues) expect(inspectionRecordLink(s, row.id)).not.toBeNull();
+    expect(map().map((r) => r.id)).not.toContain('INSP-21-R');
+  });
+
+  it('an approved review leaves no open issue on the map or the Dashboard (Codex 4271005424)', async () => {
+    const { useStore, selectFailedCount, map } = await demo();
+    expect(openIssueCount(map())).toBe(1);
+    useStore.getState().approveInspection();
+    const s = useStore.getState();
+    expect(selectFailedCount(s)).toBe(0);
+    expect(openIssueCount(map())).toBe(0);
+    // the row still reads as the server serializes it: the failed item stays failed, only the issue closed
+    expect(map().find((r) => r.id === 'INSP-21')).toMatchObject({ decided: true, failedItems: 1, openIssues: 0 });
+  });
+
+  it('an engineer sees no review rows the engineer cannot open (Codex 4271005431)', async () => {
+    const { useStore } = await demo();
+    const seed = useStore.getState().reviews[0];
+    useStore.setState((s) => ({
+      reviews: [...s.reviews, { ...structuredClone(seed), id: 'INSP-22', title: 'Second check', nodeId: 'z-terrace', decided: false }],
+      routeItem: 'z-terrace',
+    }));
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    useStore.setState({ role: 'engineer' });
+    const asEngineer = render(<PlacesScreen />);
+    expect(asEngineer.queryByTestId('place-inspection-INSP-22')).toBeNull();
+    asEngineer.unmount();
+    useStore.setState({ role: 'pmc' });
+    expect(render(<PlacesScreen />).getByTestId('place-inspection-INSP-22').tagName).toBe('BUTTON');
   });
 });

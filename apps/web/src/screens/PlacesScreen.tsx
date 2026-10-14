@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { decisionRecordLink, inspectionRecordLink, inspectionsSettledForLinks, selectVisibleDecisions } from '@/store/selectors';
-import { activitiesReadMode, inspectionsReadMode, resolveDrawingUrl } from '@/data/apiGateway';
+import { API_BASE, activitiesReadMode, inspectionsReadMode, resolveDrawingUrl } from '@/data/apiGateway';
 import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer, Button, CreateMenu } from '@/components';
 import { createOptionsFor, type CreateKind } from '@/lib/createOptions';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
@@ -15,7 +15,7 @@ import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
 import { placeCountWords, type PlaceCountOptions, type PlaceCountWord } from '@/lib/placeCountWords';
-import { childrenOf, trailOf, placeContents, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
+import { childrenOf, trailOf, placeContents, demoSiteMapInspections, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
 import { can, SNAPSHOT_SITE_PHOTO_LIMIT, type Photo, type PlacedInspection, type ScreenKey, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -64,7 +64,15 @@ export function PlacesScreen() {
   // consultant Place view (the server already sends them [] for those roles; this mirrors it
   // in the demo where the store is shared across the persona switcher).
   const canSeeInspections = useStore((s) => s.role === 'pmc' || s.role === 'engineer');
-  const inspections = useStore(useShallow((s) => (s.role === 'pmc' || s.role === 'engineer' ? s.placedInspections : [])));
+  const placedInspections = useStore(useShallow((s) => (s.role === 'pmc' || s.role === 'engineer' ? s.placedInspections : [])));
+  // #847 — the API-less demo counts its own open issues from its reviews, by the Dashboard's rule; only for
+  // the PMC, the one demo role whose record link opens a review (an engineer keeps the placed rows)
+  const demoReviewsForMap = useStore((s) => s.role === 'pmc');
+  const demoReviews = useStore((s) => s.reviews);
+  const inspections = useMemo(
+    () => (API_BASE || !demoReviewsForMap ? placedInspections : demoSiteMapInspections(placedInspections, demoReviews)),
+    [placedInspections, demoReviews, demoReviewsForMap],
+  );
   const inspectionsKnown = useStore((s) => inspectionsSettledForLinks(s)
     && !(inspectionsReadMode() === 'moduleQuery' && s.inspectionsLoad === 'error' && s.placedInspections.length === 0));
 
@@ -88,7 +96,7 @@ export function PlacesScreen() {
   const openItem = useStore((s) => s.openItem);
   // id → the screen that opens it for this viewer (plain strings, so the shallow compare holds)
   const inspectionScreens = useStore(useShallow((s) => Object.fromEntries(
-    s.placedInspections.flatMap((i) => { const l = inspectionRecordLink(s, i.id); return l ? [[i.id, l.screen]] : []; }),
+    [...s.placedInspections.map((i) => i.id), ...(API_BASE || s.role !== 'pmc' ? [] : s.reviews.map((r) => r.id))].flatMap((id) => { const l = inspectionRecordLink(s, id); return l ? [[id, l.screen]] : []; }),
   ) as Record<string, ScreenKey>));
   const decisionScreens = useStore(useShallow((s) => Object.fromEntries(
     selectVisibleDecisions(s).map((d) => [d.id, decisionRecordLink(s, d).screen]),
@@ -527,9 +535,13 @@ function CountWords({ words, testId, pills = false }: { words: PlaceCountWord[];
   return (
     <div data-testid={testId} style={{ display: 'flex', gap: pills ? 6 : 4, marginTop: pills ? 0 : 8, marginBottom: pills ? 14 : 0, flexWrap: 'wrap', fontSize: pills ? 12 : 11.5, color: 'var(--muted)' }}>
       {words.map((w, i) => (
-        <span key={w.key} data-count={w.key} style={w.alert ? { ...countPill, ...alertTone } : pills ? countPill : undefined}>
-          {w.text}{!pills && !w.alert && i < words.length - 1 ? ' ·' : ''}
-        </span>
+        <Fragment key={w.key}>
+          <span data-count={w.key} style={w.alert ? { ...countPill, ...alertTone } : pills ? countPill : undefined}>
+            {w.text}{!pills && !w.alert && i < words.length - 1 ? ' ·' : ''}
+          </span>
+          {/* #847 — a space between counts keeps copied and read-aloud text apart; the flex gap hides it */}
+          {i < words.length - 1 ? ' ' : null}
+        </Fragment>
       ))}
     </div>
   );

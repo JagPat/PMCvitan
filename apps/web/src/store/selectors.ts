@@ -11,6 +11,7 @@
 import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActionItemFacts, type ActivityReadiness, type Checklist, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
+import { demoReviewOpenIssues } from '@/lib/locationTree';
 import { decisionsSliceSettled, drawingsSliceSettled, inspectionsSliceSettled, projectSnapshotSettled } from '@/lib/notifications';
 import { activitiesReadMode, dailyLogReadMode, inspectionsReadMode } from '@/data/apiGateway';
 import { dailyLogCommandInFlight } from './dailyLogPending';
@@ -223,13 +224,12 @@ export function selectReinspectionsAwaitingSubmission(s: AppState): Checklist[] 
 
 /**
  * Dashboard "failed items awaiting re-inspection" — the API-LESS DEMO's count (its seed creates no linked
- * re-inspection; a live project reads `selectOpenReinspections`). Note the ternary can RISE
- * after the PMC rejects PASS items and sends re-inspection — mirror it exactly.
+ * re-inspection; a live project reads `selectOpenReinspections`). Per review (#847, `demoReviewOpenIssues`):
+ * an approved review stops counting, and the count can RISE when the PMC rejects PASS items and sends a
+ * re-inspection. The demo Site Map reads the same rule.
  */
 export function selectFailedCount(s: AppState): number {
-  return s.reinspectionCreated
-    ? selectFailedItems(s)
-    : s.reviews.reduce((n, r) => n + r.items.filter((it) => it.result === 'FAIL').length, 0);
+  return s.reviews.reduce((n, r) => n + demoReviewOpenIssues(r), 0);
 }
 
 // ---- schedule ----

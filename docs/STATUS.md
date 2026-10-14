@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: site-map-633
-reviewed_merge: 2276567
-open_pr: 851
+reviewed_merge: 2b90859
+open_pr: 865
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-14
@@ -26,9 +26,10 @@ updated: 2026-10-14
 
 ### Current unit
 
-**#633 unit 3: a reopened decision counts as awaiting action everywhere** (on `claude/project-thread-cm4aq9`): the
-Dashboard tile, Portfolio card and shell count a decision reopened by a change request, as the decider's badge and For You
-already did. Units 1a (`5af437b`, #826), 2a (`3c69e18`, #828) and 2b (`2276567`, #842) merged. Lane 1; later units on #633.
+**#847: Site Map follow-ups from #842** (on `claude/project-thread-cm4aq9`): the API-less demo keeps a re-inspection's
+open issues on the Site Map, and the count line keeps a space between counts. Units 1a (`5af437b`, #826), 2a (`3c69e18`,
+#828), 2b (`2276567`, #842) and 3 (`2b90859`, #851) of #633 merged; #864 holds #851's deferred note. Lane 1; Site Map
+layout units on #633 follow.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.
