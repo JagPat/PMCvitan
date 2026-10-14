@@ -139,6 +139,8 @@ export function PlacesScreen() {
 
   const activeNode = nodes.find((n) => n.id === active);
   const canManagePlaces = can('node.manage', role);
+  // only a role the server lets request a change is told to (the architect's path is countersign; Codex 4273627437)
+  const canRequestChange = can('decision.change', role);
   const total = contents.counts;
   // Only truly empty when there's no tree AND nothing filed anywhere — otherwise the
   // whole-project view still lists unfiled items (e.g. the seeded demo).
@@ -189,7 +191,7 @@ export function PlacesScreen() {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
             {contents.decisions.map((d) => (
-              <button key={d.id} data-testid={`place-decision-${d.id}`} style={rowCard} onClick={() => openItem(decisionScreens[d.id] ?? 'decision-log', d.id, { nodeId: sel })} aria-label={`Open decision ${d.id}`}>
+              <button key={d.id} data-testid={`place-decision-${d.id}`} style={rowCard} onClick={() => openItem(decisionScreens[d.id] ?? 'decision-log', d.id, { nodeId: sel })} aria-label={`Open decision ${d.id}`} aria-describedby={d.status === 'approved' ? `place-decision-lock-${d.id}` : undefined}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{d.id}</span>
@@ -198,8 +200,8 @@ export function PlacesScreen() {
                   {d.approvedOption && <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{d.approvedOption}{d.material ? ` — ${d.material}` : ''}</div>}
                   {/* #633 unit B — a locked record says why, and the way to change it (its record offers "Request change") */}
                   {d.status === 'approved' && (
-                    <div data-testid={`place-decision-lock-${d.id}`} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--green-text)', marginTop: 3 }}>
-                      <Lock size={12} style={{ flex: 'none' }} /><span>Locked after approval. Open it to request a change.</span>
+                    <div id={`place-decision-lock-${d.id}`} data-testid={`place-decision-lock-${d.id}`} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--green-text)', marginTop: 3 }}>
+                      <Lock size={12} style={{ flex: 'none' }} /><span>{canRequestChange ? 'Locked after approval. Open it to request a change.' : 'Locked after approval.'}</span>
                     </div>
                   )}
                 </div>

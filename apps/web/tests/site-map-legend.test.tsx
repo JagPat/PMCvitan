@@ -14,7 +14,7 @@ const NODES: ProjectNode[] = [
 const decision = (id: string, status: Decision['status']) =>
   ({ id, title: id, room: '', nodeId: 'kit', status, options: [] }) as unknown as Decision;
 
-async function load(role: 'pmc' | 'client' | 'contractor') {
+async function load(role: 'pmc' | 'client' | 'contractor' | 'architect') {
   vi.stubEnv('VITE_API_URL', 'http://api.test');
   vi.resetModules();
   const { useStore, getInitialState } = await import('@/store/store');
@@ -42,10 +42,13 @@ describe('Site Map colours and locks (#633 unit B)', () => {
     const legend = view.getByTestId('site-map-legend');
     expect(view.getAllByTestId('site-map-legend')).toHaveLength(1);
     expect(within(legend).getByText('Colours mean')).toBeTruthy();
-    expect(within(legend).getByTestId('site-map-legend-done').textContent).toBe('Done, or approved and locked');
-    expect(within(legend).getByTestId('site-map-legend-under-way').textContent).toBe('Under way, or waiting on someone');
-    expect(within(legend).getByTestId('site-map-legend-attention').textContent).toBe('Blocked, failed or an open issue');
-    expect(within(legend).getByTestId('site-map-legend-not-started').textContent).toBe('Not started');
+    expect([...legend.querySelectorAll('[data-testid^="site-map-legend-"]')].map((e) => e.textContent)).toEqual([
+      'Done, passed, or approved and locked',
+      'Under way, or waiting on a decision or review',
+      'Change requested, or waiting for sign-off',
+      'Blocked, failed or an open issue',
+      'Not started, withdrawn or only recorded',
+    ]);
     expect(legend.getAttribute('role')).toBe('group');
     expect(legend.getAttribute('aria-labelledby')).toBe('site-map-legend-title');
   });
@@ -56,6 +59,14 @@ describe('Site Map colours and locks (#633 unit B)', () => {
       const locked = view.getByTestId('place-decision-DL-1');
       expect(within(locked).getByTestId('place-decision-lock-DL-1').textContent).toBe('Locked after approval. Open it to request a change.');
       expect(view.queryByTestId('place-decision-lock-DL-2')).toBeNull();
+      // the row's accessible description carries the reason, since its label is "Open decision DL-1" (Codex 4273627442)
+      expect(locked.getAttribute('aria-describedby')).toBe('place-decision-lock-DL-1');
+      expect(view.queryByTestId('place-decision-DL-2')?.getAttribute('aria-describedby') ?? null).toBeNull();
     });
   }
+
+  it('does not tell an architect to request a change the server would refuse (Codex 4273627437)', async () => {
+    const view = await load('architect');
+    expect(view.getByTestId('place-decision-lock-DL-1').textContent).toBe('Locked after approval.');
+  });
 });

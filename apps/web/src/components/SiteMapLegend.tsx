@@ -1,11 +1,18 @@
 import type { CSSProperties } from 'react';
+import { activityChip, decisionChip } from '@vitan/shared';
 
-/** One colour on the Site Map and what it means, in the same tones the place cards and record rows use. */
+const tone = (c: { bg: string; color: string; border: string }): CSSProperties => ({ background: c.bg, color: c.color, border: `1px solid ${c.border}` });
+
+/**
+ * Each colour family the Site Map's chips and rows use, from the shared status tokens, and what it means. One
+ * entry per family, so every colour on the screen has a meaning here (Codex 4273627423).
+ */
 const ENTRIES: { key: string; label: string; tone: CSSProperties }[] = [
-  { key: 'done', label: 'Done, or approved and locked', tone: { background: '#dcebdf', color: 'var(--green-text)' } },
-  { key: 'under-way', label: 'Under way, or waiting on someone', tone: { background: '#f6ead2', color: 'var(--amber-text)' } },
-  { key: 'attention', label: 'Blocked, failed or an open issue', tone: { background: '#f7e1df', color: '#8a2a25' } },
-  { key: 'not-started', label: 'Not started', tone: { background: 'rgba(35,33,28,.06)', color: 'var(--muted)' } },
+  { key: 'done', label: 'Done, passed, or approved and locked', tone: tone(activityChip.done) },
+  { key: 'under-way', label: 'Under way, or waiting on a decision or review', tone: tone(decisionChip.pending) },
+  { key: 'with-reviewer', label: 'Change requested, or waiting for sign-off', tone: tone(activityChip['awaiting-signoff']) },
+  { key: 'attention', label: 'Blocked, failed or an open issue', tone: { background: '#f7e1df', color: '#8a2a25', border: `1px solid ${activityChip.blocked.border}` } },
+  { key: 'neutral', label: 'Not started, withdrawn or only recorded', tone: tone(activityChip['not-started']) },
 ];
 
 /**
