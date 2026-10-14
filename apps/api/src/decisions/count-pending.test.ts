@@ -40,3 +40,15 @@ describe('countPending — the architect arm and the countersign obligations (4d
     expect(await make({ ...rows, architects: 1 }).countPending('p1', { role: 'contractor', userId: 'x1' })).toBe(0);
   });
 });
+
+describe('countPending — a reopened decision is awaiting action (#633)', () => {
+  it('counts the decisions reopened by a change request with the new ones, for the PMC and for a decider', async () => {
+    for (const viewer of [{ role: 'pmc' as const, userId: 'p1' }, { role: 'client' as const, userId: 'c1' }]) {
+      const svc = make({ pendingByKind: { client: 1 }, awaiting: 0, architects: 1 });
+      await svc.countPending('p1', viewer);
+      const count = (svc as unknown as { prisma: { decision: { count: ReturnType<typeof vi.fn> } } }).prisma.decision.count;
+      const open = count.mock.calls.map(([a]) => (a as { where: { status: unknown } }).where.status).filter((st) => st !== 'awaiting_countersign');
+      expect(open).toEqual([{ in: ['pending', 'change'] }]);
+    }
+  });
+});

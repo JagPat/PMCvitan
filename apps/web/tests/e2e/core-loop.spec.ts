@@ -25,11 +25,12 @@ test('core loop: client approves & locks a decision → Decision Log → PMC das
   await expect(row).toContainText('APPROVED & LOCKED');
   await expect(page.getByTestId('lock-DL-014')).toBeVisible();
 
-  // switch persona to PMC and open the Dashboard → the "Decisions pending" tile has decremented 2 → 1
+  // switch persona to PMC and open the Dashboard → the "Decisions pending" tile has decremented 3 → 2
+  // (the other pending decision, and DL-003 reopened by a change request: it awaits re-approval, #633)
   await page.getByRole('button', { name: 'PMC', exact: true }).click();
   await page.getByRole('button', { name: 'Dashboard' }).click();
   await expect(page.getByText('PROJECT DASHBOARD')).toBeVisible();
-  await expect(page.getByTestId('tile-pending-value')).toHaveText('1');
+  await expect(page.getByTestId('tile-pending-value')).toHaveText('2');
 });
 
 test('offline-first: daily-log mutations queue while offline and flush on reconnect', async ({ page }) => {
