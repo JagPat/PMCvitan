@@ -51,7 +51,6 @@ export async function openProject(page: Page, name: string): Promise<void> {
 /** Sign in through the browser's email + password form. One shared copy, so a change to the sign-in screen
  *  updates every spec that uses it. */
 export async function signIn(page: Page, email: string): Promise<void> {
-  await page.getByRole('button', { name: /team member/i }).click();
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(email);
   await page.getByTestId('login-password').fill(PASSWORD);
