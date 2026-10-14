@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: site-map-633
-reviewed_merge: 2b90859
-open_pr: 865
+reviewed_merge: 6564494
+open_pr: 877
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-14
@@ -26,10 +26,10 @@ updated: 2026-10-14
 
 ### Current unit
 
-**#847: Site Map follow-ups from #842** (on `claude/project-thread-cm4aq9`): the API-less demo keeps a re-inspection's
-open issues on the Site Map, and the count line keeps a space between counts. Units 1a (`5af437b`, #826), 2a (`3c69e18`,
-#828), 2b (`2276567`, #842) and 3 (`2b90859`, #851) of #633 merged; #864 holds #851's deferred note. Lane 1; Site Map
-layout units on #633 follow.
+**#633 unit A: "Places inside" and "Work and records here"** (#877, on `claude/project-thread-cm4aq9`): an opened
+place lists its child places, then one panel with a section per kind of record, inspections with open issues first.
+#847 merged as `6564494` (#865); #876 holds its deferred notes. Lane 1; units B (lock reasons, "Colours mean" key)
+and C (desktop tree layout) follow.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.
