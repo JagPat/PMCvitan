@@ -9,6 +9,8 @@ import type { Guide } from './guides';
 export interface GuideRun {
   guide: Guide;
   step: number;
+  /** the `data-guide-key` of the control pressed in an earlier step, for a `keyed` step */
+  key: string | null;
 }
 
 interface GuideState {
@@ -16,7 +18,7 @@ interface GuideState {
   /** the guide "Guide me" would start here, or null when this screen has none ready to point at */
   offer: Guide | null;
   start: (guide: Guide) => void;
-  setStep: (step: number) => void;
+  setStep: (step: number, key?: string | null) => void;
   stop: () => void;
   setOffer: (guide: Guide | null) => void;
 }
@@ -24,8 +26,8 @@ interface GuideState {
 export const useGuideState = create<GuideState>()((set) => ({
   run: null,
   offer: null,
-  start: (guide) => set({ run: { guide, step: 0 } }),
-  setStep: (step) => set((s) => (s.run ? { run: { ...s.run, step } } : s)),
+  start: (guide) => set({ run: { guide, step: 0, key: null } }),
+  setStep: (step, key) => set((s) => (s.run ? { run: { ...s.run, step, key: key === undefined ? s.run.key : key } } : s)),
   stop: () => set({ run: null }),
   setOffer: (offer) => set((s) => (s.offer === offer ? s : { offer })),
 }));

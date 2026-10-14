@@ -6,14 +6,26 @@ import { projectDataUsable } from '@/store/projectScope';
 import { guidesFor, type Guide } from './guides';
 import { readGuidesDone, markGuideDone } from './guideDone';
 import { useGuideState } from './guideState';
-import { findGuideTarget, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
+import { findGuideTarget, findStepTarget, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
 import { GUIDE_TIPS, GUIDE_WORDS } from './words';
 import styles from './Guide.module.css';
+
+/** Move the run past its current step (finishing the guide after the last one). */
+function completeStep(doneKey: string, g: ReturnType<typeof useGuideState.getState>, pressedKey: string | null): void {
+  if (!g.run) return;
+  const { guide, step } = g.run;
+  if (step + 1 < guide.steps.length) {
+    g.setStep(step + 1, pressedKey ?? undefined);
+  } else {
+    markGuideDone(doneKey, guide.id);
+    g.stop();
+  }
+}
 
 const enabled = (el: HTMLElement | null): el is HTMLElement => el !== null && !(el as HTMLButtonElement).disabled;
 
 function sameBox(a: Box | null, b: Box | null): boolean {
-  return a === b || (!!a && !!b && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height && a.inDialog === b.inDialog);
+  return a === b || (!!a && !!b && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height && a.dialog === b.dialog);
 }
 
 /**
@@ -21,7 +33,8 @@ function sameBox(a: Box | null, b: Box | null): boolean {
  *
  * Mounted once in the shell. While a guide runs it dims the screen around the step's real control,
  * shows one short tip beside it with a one-tap Skip, and moves to the next step when the person
- * presses that control. Nothing blocks the screen: the dimming lets every tap through, so the person
+ * presses that control, or, for a step that must really happen (a photo attached, a submit accepted),
+ * when the control marks itself `data-guide-done`. Nothing blocks the screen: the dimming lets every tap through, so the person
  * is always doing the real task, never a demo of it.
  *
  * - The first time a person reaches a guided screen, its first unfinished guide starts by itself,
@@ -79,15 +92,25 @@ export function GuideHost() {
         }
         return;
       }
-      const { guide, step } = g.run;
+      const { guide, step, key: runKey } = g.run;
       const show = (el: HTMLElement) => {
+        const dialog = el.closest<HTMLElement>('[role="dialog"]');
+        // a dialog still sliding in is a moving containing block for the tip: wait for it to settle
+        if (dialog && typeof dialog.getAnimations === 'function' && dialog.getAnimations().length > 0) {
+          setBox(null);
+          return;
+        }
         const r = el.getBoundingClientRect();
-        const next = { top: r.top, left: r.left, width: r.width, height: r.height, inDialog: el.closest('[role="dialog"]') !== null };
+        const next = { top: r.top, left: r.left, width: r.width, height: r.height, dialog };
         setBox((prev) => (sameBox(prev, next) ? prev : next));
       };
-      const here = findGuideTarget(guide.steps[step]!.target);
+      const here = findStepTarget(guide.steps[step]!, runKey);
       if (here) {
         missing.current = null;
+        if (guide.steps[step]!.until === 'done' && here.getAttribute('data-guide-done') === 'true') {
+          completeStep(key, g, null);
+          return;
+        }
         show(here);
         return;
       }
@@ -102,7 +125,7 @@ export function GuideHost() {
       }
       if (now - missing.current.since < GUIDE_REWIND_MS) return;
       for (let i = step - 1; i >= 0; i--) {
-        const el = findGuideTarget(guide.steps[i]!.target);
+        const el = findStepTarget(guide.steps[i]!, runKey);
         if (!el) continue;
         missing.current = null;
         g.setStep(i);
@@ -118,29 +141,33 @@ export function GuideHost() {
     const unsubscribe = useGuideState.subscribe((s, prev) => {
       if (s.run !== prev.run) queueMicrotask(tick);
     });
+    // a control saying its step is done (a photo attached, a submit accepted) is seen at once, before
+    // a later render can take it away
+    const observer = new MutationObserver(tick);
+    observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['data-guide-done'] });
     return () => {
       live = false;
       window.clearInterval(id);
       window.removeEventListener('scroll', tick, true);
       window.removeEventListener('resize', tick);
+      observer.disconnect();
       unsubscribe();
     };
   }, [ready, role, screen, key]);
 
-  // pressing the step's control moves the guide on; pressing the last one finishes it
+  // pressing a `press` step's control moves the guide on (carrying that control's key to a `keyed`
+  // step); pressing the last one finishes it
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       const g = useGuideState.getState();
       if (!g.run) return;
-      const { guide, step } = g.run;
+      const current = g.run.guide.steps[g.run.step]!;
+      if (current.until === 'done') return;
       const target = e.target instanceof Element ? e.target : null;
-      if (!target?.closest(`[data-guide="${guide.steps[step]!.target}"]`)) return;
-      if (step + 1 < guide.steps.length) {
-        g.setStep(step + 1);
-      } else {
-        markGuideDone(key, guide.id);
-        g.stop();
-      }
+      const pressed = target?.closest(`[data-guide="${current.target}"]`);
+      if (!pressed) return;
+      if (current.keyed && pressed.getAttribute('data-guide-key') !== g.run.key) return;
+      completeStep(key, g, pressed.getAttribute('data-guide-key'));
     };
     document.addEventListener('click', onClick, true);
     return () => document.removeEventListener('click', onClick, true);
@@ -152,12 +179,13 @@ export function GuideHost() {
   }, [run]);
 
   // scroll a step's control into view once, when the step begins
-  const stepTarget = run ? run.guide.steps[run.step]!.target : null;
+  const step = run ? run.guide.steps[run.step]! : null;
+  const runKey = run?.key ?? null;
   useEffect(() => {
-    if (!stepTarget) return;
-    const el = findGuideTarget(stepTarget);
+    if (!step) return;
+    const el = findStepTarget(step, runKey);
     if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
-  }, [stepTarget]);
+  }, [step, runKey]);
 
   if (!run || !box || !ready) return null;
 
@@ -170,7 +198,7 @@ export function GuideHost() {
   return createPortal(
     <>
       <div
-        className={box.inDialog ? `${styles.spot} ${styles.spotInDialog}` : styles.spot}
+        className={box.dialog ? `${styles.spot} ${styles.spotInDialog}` : styles.spot}
         aria-hidden="true"
         data-testid="guide-spot"
         style={{ top: box.top - 6, left: box.left - 6, width: box.width + 12, height: box.height + 12 }}
@@ -182,7 +210,8 @@ export function GuideHost() {
         </button>
       </div>
     </>,
-    document.body,
+    // inside a dialog, the tip lives IN it: the dialog's focus trap and `aria-modal` then include Skip
+    box.dialog ?? document.body,
   );
 }
 

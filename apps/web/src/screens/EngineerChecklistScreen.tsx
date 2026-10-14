@@ -296,13 +296,15 @@ export function EngineerChecklistScreen() {
                 <div style={{ fontWeight: 600, fontSize: 14.5, lineHeight: 1.3 }}>{it.name}</div>
                 <div style={{ display: 'flex', gap: 7, marginTop: 11, opacity: frozen ? 0.55 : 1 }}>
                   <button onClick={set(i, 'pass')} disabled={frozen} style={toggleStyle(it.state === 'pass', 'var(--green-solid)', 'var(--green-solid)')}>{L.pass[lang]}</button>
-                  <button onClick={set(i, 'fail')} disabled={frozen} data-guide="mark-fail" style={toggleStyle(it.state === 'fail', 'var(--red-solid)', 'var(--red-solid)')}>{L.fail[lang]}</button>
+                  <button onClick={set(i, 'fail')} disabled={frozen} data-guide="mark-fail" data-guide-key={`${checklist.id}:${i}`} style={toggleStyle(it.state === 'fail', 'var(--red-solid)', 'var(--red-solid)')}>{L.fail[lang]}</button>
                   <button onClick={set(i, 'na')} disabled={frozen} style={toggleStyle(it.state === 'na', '#6b665c', '#6b665c')}>{L.na[lang]}</button>
                   <button
                     onClick={() => pickEvidence(i)}
                     disabled={frozen}
                     data-testid={`evidence-${i}`}
                     data-guide={it.state === 'fail' ? 'fail-photo' : undefined}
+                    data-guide-key={`${checklist.id}:${i}`}
+                    data-guide-done={it.photos > 0 ? 'true' : undefined}
                     aria-label={L.addPhoto[lang]}
                     style={{
                       flex: 1,
@@ -395,6 +397,8 @@ export function EngineerChecklistScreen() {
           disabled={frozen}
           data-testid="submit-inspection"
           data-guide="submit-inspection"
+          // the guide finishes only once the submit is accepted or queued, never on a refused press
+          data-guide-done={checklist.submitted || submissionStatus !== 'idle' ? 'true' : undefined}
           data-submission={checklist.submitted ? 'submitted' : submissionStatus}
           style={{
             width: '100%',

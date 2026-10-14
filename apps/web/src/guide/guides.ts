@@ -16,6 +16,15 @@ export interface GuideStep {
   /** the `data-guide` value of the control this step points at */
   target: string;
   tip: GuideTip;
+  /**
+   * When the step is complete: `press` (default) when the control is pressed; `done` when the control
+   * says so with `data-guide-done="true"` (a photo actually attached, a submit actually accepted or
+   * queued), so a cancelled picker or a refused submit does not move the guide on.
+   */
+  until?: 'press' | 'done';
+  /** point at the control carrying the same `data-guide-key` as the one pressed in an earlier step
+   *  (the photo button of the item just failed, not of another failed item) */
+  keyed?: boolean;
 }
 
 export interface Guide {
@@ -33,8 +42,8 @@ export const GUIDES: readonly Guide[] = [
     screen: 'engineer-check',
     steps: [
       { target: 'mark-fail', tip: 'issueMarkFail' },
-      { target: 'fail-photo', tip: 'issueFailPhoto' },
-      { target: 'submit-inspection', tip: 'issueSubmit' },
+      { target: 'fail-photo', tip: 'issueFailPhoto', keyed: true, until: 'done' },
+      { target: 'submit-inspection', tip: 'issueSubmit', until: 'done' },
     ],
   },
   {

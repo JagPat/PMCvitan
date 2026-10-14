@@ -91,9 +91,19 @@ const step = () => tip()?.getAttribute('data-guide-step') ?? null;
 const done = (): string[] => JSON.parse(localStorage.getItem(DONE_KEY) ?? '[]') as string[];
 const press = (el: Element) => act(() => { fireEvent.click(el); });
 
+type Store = Awaited<ReturnType<typeof setup>>['useStore'];
+/** what a picked photo does to the item (`addChecklistEvidence`): its photo count goes up */
+function attachPhoto(useStore: Store, i: number) {
+  act(() => {
+    useStore.setState((st) => ({
+      checklist: st.checklist && { ...st.checklist, items: st.checklist.items.map((it, j) => (j === i ? { ...it, photos: it.photos + 1 } : it)) },
+    }));
+  });
+}
+
 describe('the engineer is guided through raising an issue on the live checklist', () => {
-  it('shows itself the first time, moves on as each real control is pressed, and is done at the end', async () => {
-    const { view } = await engineer();
+  it('shows itself the first time, moves on as each step really happens, and is done at the end', async () => {
+    const { view, useStore } = await engineer();
     tick();
     expect(tip()?.textContent).toContain('Problem with an item? Tap Fail on it.');
     expect(step()).toBe('0');
@@ -105,19 +115,56 @@ describe('the engineer is guided through raising an issue on the live checklist'
     tick();
     expect(step()).toBe('1');
     expect(tip()?.textContent).toContain('Add a photo of the problem.');
-    // only the failed item's photo button is the photo step's control
-    expect(view.container.querySelectorAll('[data-guide="fail-photo"]')).toHaveLength(1);
-    expect(view.getByTestId('evidence-1').getAttribute('data-guide')).toBe('fail-photo');
 
+    // opening the camera and cancelling attaches nothing: the photo step stays
     press(view.getByTestId('evidence-1'));
+    tick();
+    expect(step()).toBe('1');
+    // a photo lands on that item (what the picker's `onPicked` does): now the guide moves on
+    attachPhoto(useStore, 1);
     tick();
     expect(step()).toBe('2');
     expect(tip()?.textContent).toContain('When you are done, send it from here.');
 
+    // a refused submit (the failed item has no note yet) does not finish the guide
+    press(view.getByTestId('submit-inspection'));
+    tick();
+    expect(step()).toBe('2');
+    expect(done()).toEqual([]);
+
+    act(() => {
+      useStore.setState((st) => ({
+        checklist: st.checklist && { ...st.checklist, items: st.checklist.items.map((it, j) => ({ ...it, state: it.state ?? 'pass', note: j === 1 ? 'Gap at the corner' : it.note })) },
+      }));
+    });
     press(view.getByTestId('submit-inspection'));
     tick();
     expect(tip()).toBeNull();
     expect(done()).toEqual(['raise-issue-engineer']);
+  });
+
+  it('points the photo step at the item just failed, not at an item failed earlier', async () => {
+    const { view, useStore } = await engineer();
+    // item 1 was already failed before the guide ran
+    act(() => {
+      useStore.setState((st) => ({ checklist: st.checklist && { ...st.checklist, items: st.checklist.items.map((it, j) => (j === 0 ? { ...it, state: 'fail' as const } : it)) } }));
+    });
+    tick();
+    expect(view.container.querySelectorAll('[data-guide="fail-photo"]')).toHaveLength(1);
+    press(view.container.querySelectorAll('[data-guide="mark-fail"]')[1]!);
+    tick();
+    expect(step()).toBe('1');
+    const { useGuideState } = await import('@/guide/guideState');
+    const { findStepTarget } = await import('@/guide/guideTarget');
+    const run = useGuideState.getState().run!;
+    expect(findStepTarget(run.guide.steps[1]!, run.key)?.getAttribute('data-testid')).toBe('evidence-1');
+    // a photo on the EARLIER failed item does not complete this step
+    attachPhoto(useStore, 0);
+    tick();
+    expect(step()).toBe('1');
+    attachPhoto(useStore, 1);
+    tick();
+    expect(step()).toBe('2');
   });
 
   it('a press somewhere else does not move the guide on', async () => {
@@ -224,11 +271,14 @@ describe('the PMC is guided from + to issuing a check', () => {
     tick();
     expect(step()).toBe('1');
     expect(tip()?.textContent).toContain('have the engineer check it');
+    // inside the menu dialog, the tip (and its Skip) live IN the dialog, inside its focus trap
+    expect(tip()?.closest('[role="dialog"]')).not.toBeNull();
 
     press(document.querySelector('[data-guide="create-inspection"]')!);
     tick();
     expect(step()).toBe('2');
     expect(document.querySelector('[data-guide="issue-checklist"]')?.getAttribute('data-testid')).toBe('save-checklist');
+    expect(tip()?.closest('[role="dialog"]')?.contains(document.querySelector('[data-guide="issue-checklist"]'))).toBe(true);
 
     // Cancel closes the form and the menu is gone too: back to the + step
     press(Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Cancel')!);
