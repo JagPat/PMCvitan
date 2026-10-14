@@ -25,6 +25,15 @@ export class DecisionsController {
     return this.decisionsQuery.moduleDecisions(projectId, user.role, user.sub);
   }
 
+  /** #482 QA check (14 Oct 2026) — what waits on the CLIENT, as a summary (title, place, waiting since; no options,
+   *  prices or controls), so an engineer, contractor or consultant can plan around it. Any project member may
+   *  read it; the project scope is the token's (JwtGuard). */
+  @Get('awaiting-client')
+  @RolesFor('project.read')
+  awaitingClient(@Param('projectId') projectId: string) {
+    return this.decisionsQuery.awaitingClientSummary(projectId);
+  }
+
   /** Issue a new decision (title/room + options) — the PMC/architect's authority. The optional
    *  `Idempotency-Key` header makes a retried/replayed issue create the decision exactly once. */
   @Post()
