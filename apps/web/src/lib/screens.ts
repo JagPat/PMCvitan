@@ -171,6 +171,9 @@ export const ROLE_SCREEN_LABEL: Partial<Record<Role, Partial<Record<ScreenKey, s
   engineer: { 'decision-log': 'Decisions' },
   contractor: { 'decision-log': 'Decisions' },
   consultant: { 'decision-log': 'Decisions' },
+  // #857 — the client's register is the history half of their one "Decisions" screen; a notice that opens it by
+  // its old `/decisions` path says so (Codex 4269920634)
+  client: { 'decision-log': 'Decisions' },
 };
 
 /**

@@ -5,7 +5,7 @@ import { selectLogDecisions } from '@/store/selectors';
 import { viewerIsDecider, noticeText, notificationPanelLabels as L, navLabels } from '@vitan/shared';
 import { notificationLink, noticeTime, projectSnapshotSettled, decisionsSliceSettled, inspectionsSliceSettled, type NotificationLink, type NotificationRecords } from '@/lib/notifications';
 import { inspectionsReadMode } from '@/data/apiGateway';
-import { SCREEN_META } from '@/lib/screens';
+import { ROLE_SCREEN_LABEL, SCREEN_META } from '@/lib/screens';
 import { ChevronRight } from '@/lib/icons';
 import styles from './NotificationPanel.module.css';
 
@@ -146,7 +146,7 @@ export function NotificationPanel() {
                       onClick={() => openItem(link.screen, null)}
                       style={{ justifySelf: 'start', minHeight: 44, padding: '0 12px', borderRadius: 8, border: '1px solid currentColor', background: 'transparent', color: 'inherit', font: 'inherit', fontWeight: 600, cursor: 'pointer' }}
                     >
-                      {lang === 'en' ? `Open ${SCREEN_META[link.screen].label}` : `${navLabels[link.screen][lang]} ${L.open[lang]}`}
+                      {lang === 'en' ? `Open ${ROLE_SCREEN_LABEL[role]?.[link.screen] ?? SCREEN_META[link.screen].label}` : `${navLabels[link.screen][lang]} ${L.open[lang]}`}
                     </button>
                   </div>
                 )}
