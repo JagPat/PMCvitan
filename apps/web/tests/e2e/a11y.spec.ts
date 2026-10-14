@@ -23,7 +23,6 @@ const PMC_SCREENS = ['for-you', 'dashboard', 'drafts', 'schedule', 'decisions', 
 const PERSONA_SCREENS = [
   { role: 'Engineer', label: 'Daily Site Log', path: 'site/log' },
   { role: 'Engineer', label: "Today's Checklist", path: 'site/checklist' },
-  { role: 'Engineer', label: 'Team Access & Login', path: 'access' },
   { role: 'Client', label: 'Decisions', path: 'client/decisions' },
   { role: 'Client', label: 'Project Health', path: 'client/health' },
 ];
@@ -45,6 +44,18 @@ for (const vp of VIEWPORTS) {
       await expectNoViolations(page);
     });
   }
+
+  // #482 QA: the access screen left the engineer's menu, so the scan opens it by its route
+  test(`access (Engineer) has no WCAG 2.1 A/AA violations (${vp.name})`, async ({ page }) => {
+    await page.setViewportSize(DESKTOP);
+    await page.goto('/projects/ambli/for-you');
+    await page.getByRole('button', { name: 'Engineer', exact: true }).click();
+    await page.getByRole('button', { name: 'EN', exact: true }).click();
+    await page.evaluate(() => (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed({ screen: 'team-access' }));
+    await expect(page).toHaveURL(/\/projects\/ambli\/access$/);
+    await page.setViewportSize(vp.size);
+    await expectNoViolations(page);
+  });
 
   for (const s of PERSONA_SCREENS) {
     test(`${s.path} (${s.role}) has no WCAG 2.1 A/AA violations (${vp.name})`, async ({ page }) => {
