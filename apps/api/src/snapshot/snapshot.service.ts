@@ -13,6 +13,7 @@ import type { Role } from '../common/auth';
 import type { DecisionsContract } from '../common/decisions-contract';
 import type { ProjectShellCounts, SnapshotDto } from './types';
 import { readViewerFeed, servedNotifications } from './served-notifications';
+import { hiddenDraftNodeIds } from '../nodes/node-scope';
 
 @Injectable()
 export class SnapshotService {
@@ -98,13 +99,17 @@ export class SnapshotService {
       this.dailyLogQuery.snapshotSlice(projectId),
       feedSnapshot,
       // Site-reality photos for the daily-log gallery AND the Place view. One query,
-      // capped, newest first; carries nodeId so a photo can be shown at its location.
-      this.prisma.media.findMany({
-        where: { projectId, kind: { in: ['progress', 'inspection', 'material'] } },
-        orderBy: { createdAt: 'desc' },
-        take: SNAPSHOT_SITE_PHOTO_LIMIT,
-        select: { id: true, kind: true, url: true, takenAt: true, nodeId: true },
-      }),
+      // capped, newest first; carries nodeId so a photo can be shown at its location. A photo filed
+      // on someone else's private draft (before #881) is as private as the place: the nodes module
+      // names the viewer's hidden drafts, and their photos are left out (unfiled photos stay).
+      hiddenDraftNodeIds(this.prisma, projectId, userId).then((hidden) =>
+        this.prisma.media.findMany({
+          where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...(hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {}) },
+          orderBy: { createdAt: 'desc' },
+          take: SNAPSHOT_SITE_PHOTO_LIMIT,
+          select: { id: true, kind: true, url: true, takenAt: true, nodeId: true },
+        }),
+      ),
       // Task 10 — the drawings register comes from the module's query (the baked per-viewer register:
       // draft-author visibility + the viewer's ack/recipient state + fresh signed urls), never a direct
       // `prisma.drawing` read. Byte-identical to the pre-extraction inline shaping.

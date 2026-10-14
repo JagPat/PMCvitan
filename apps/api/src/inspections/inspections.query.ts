@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import type { InspectionsModuleResult, ReadinessInspection } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
+import { mediaHiddenFrom } from '../media/media-visibility';
 import { bakeInspections, computeInspectionsBase, type InspectionsBase, type InspectionsSlices } from './inspections-serialize';
 import { bindingAssigneeIds } from './assignment-eligibility';
 import { OrgsParticipant } from '../orgs/orgs.participant';
@@ -59,6 +60,15 @@ export class InspectionsQueryService {
   /** Bake an evidence media row's short-lived signed serve path (minted per read — never stored). */
   private evidencePath = (mediaId: string): string => this.signed.mediaPath(mediaId);
 
+  /** The base's evidence photos this viewer may not see: a photo filed on someone else's private draft
+   *  place (before #881) is as private as the place, so it gets no signed path. Asked of the media module
+   *  per read, like the signed path itself, because it is a live per-viewer fact the stored base can't hold. */
+  private hiddenEvidence(projectId: string, base: InspectionsBase, viewerId?: string): Promise<ReadonlySet<string>> {
+    const ids = new Set<string>();
+    for (const i of base.inspections) for (const it of i.items) for (const m of it.mediaIds) ids.add(m);
+    return mediaHiddenFrom(this.prisma, projectId, viewerId, [...ids]);
+  }
+
   /**
    * The inspection slices of the project snapshot (checklist / reviews / review / reinspectionCreated /
    * placedInspections), baked for `role` (PMC-only review queue, pmc/engineer placement) with each item's
@@ -66,7 +76,7 @@ export class InspectionsQueryService {
    */
   async snapshotSlice(projectId: string, role: string, viewerId?: string): Promise<InspectionsSlices> {
     const base = await computeInspectionsBase(this.prisma, projectId);
-    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base) });
+    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence: await this.hiddenEvidence(projectId, base, viewerId) });
   }
 
   /**
@@ -128,7 +138,7 @@ export class InspectionsQueryService {
     // half of the fence; the write half (an `InspectionsProjection` writer trigger mirroring the
     // decisions one) is a separate unit, and until it exists this is what keeps wrong data unserved.
     if (!isCurrentInspectionsBase(base)) return { slices: empty, generation: null };
-    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base) }), generation: gen.generation };
+    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence: await this.hiddenEvidence(projectId, base, viewerId) }), generation: gen.generation };
   }
 
   /**
