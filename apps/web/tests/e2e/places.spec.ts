@@ -43,6 +43,9 @@ test('site map on a desktop: the places tree sits beside the opened place, and a
   await page.getByRole('button', { name: 'Site Map' }).click();
   const tree = page.getByRole('navigation', { name: 'Places' });
   await expect(tree).toBeVisible();
+  // a long tree scrolls inside its own column, never taller than the window
+  await expect(tree).toHaveCSS('overflow-y', 'auto');
+  expect((await tree.boundingBox())!.height).toBeLessThanOrEqual(800);
 
   // one click on a place in the tree opens it, and the tree marks it
   await page.getByTestId('site-map-tree-z-gf').click();
@@ -51,6 +54,6 @@ test('site map on a desktop: the places tree sits beside the opened place, and a
   await expect(page.getByTestId('site-map-tree-r-entrance')).toBeVisible(); // its branch is open
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(tree).toBeHidden();
+  await expect(tree).toHaveCount(0); // not built on a phone
   await expect(page.getByTestId('place-breadcrumb')).toContainText('Ground Floor');
 });

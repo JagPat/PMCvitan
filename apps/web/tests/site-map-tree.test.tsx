@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, within, fireEvent } from '@testing-library/react';
 import type { PlacedInspection, ProjectNode } from '@vitan/shared';
-import { siteMapTreeRows } from '@/components/SiteMapTree';
+import { siteMapTree } from '@/components/SiteMapTree';
 
 /**
  * #633 unit C (mockup 10) — on a desktop the Site Map keeps the places as a tree beside the opened place: the
@@ -20,13 +20,16 @@ const insp = (id: string, nodeId: string, openIssues: number): PlacedInspection 
   id, title: id, zone: '', nodeId, kind: 'checklist', submitted: true, decided: true, failedItems: openIssues, openIssues,
 });
 
-describe('siteMapTreeRows', () => {
+type Item = ReturnType<typeof siteMapTree>;
+const flat = (t: Item): [string | null, number][] => [[t.id, t.depth], ...t.children.flatMap(flat)];
+
+describe('siteMapTree', () => {
   it('shows the whole project and the top-level places when nothing is open', () => {
-    expect(siteMapTreeRows(NODES, null).map((r) => [r.id, r.depth])).toEqual([[null, 0], ['gf', 1], ['ff', 1]]);
+    expect(flat(siteMapTree(NODES, null))).toEqual([[null, 0], ['gf', 1], ['ff', 1]]);
   });
 
   it('opens the branch down to the place on show, and no other', () => {
-    expect(siteMapTreeRows(NODES, 'kit').map((r) => [r.id, r.depth])).toEqual([
+    expect(flat(siteMapTree(NODES, 'kit'))).toEqual([
       [null, 0], ['gf', 1], ['kit', 2], ['sink', 3], ['liv', 2], ['ff', 1],
     ]);
   });
@@ -50,6 +53,7 @@ async function load(role: 'pmc' | 'client', routeItem: string | null) {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.resetModules();
 });
@@ -81,5 +85,27 @@ describe('the desktop places tree (#633 unit C)', () => {
     const tree = view.getByTestId('site-map-tree');
     expect(within(tree).queryByTestId('site-map-tree-flag-gf')).toBeNull();
     expect(within(tree).queryByTestId('site-map-tree-flag-sink')).toBeNull();
+  });
+
+  it('nests each place in the list of the place it sits in, so its level is not only visual', async () => {
+    const { view } = await load('pmc', 'kit');
+    const kitchen = view.getByTestId('site-map-tree-kit');
+    // button → li (Kitchen) → ul → li (Ground Floor)
+    const parentItem = kitchen.parentElement?.parentElement?.closest('li');
+    expect(within(parentItem as HTMLElement).getByTestId('site-map-tree-gf')).toBeTruthy();
+    expect(kitchen.closest('ul')?.getAttribute('role')).toBe('list');
+    expect(within(kitchen.parentElement as HTMLElement).getByTestId('site-map-tree-sink')).toBeTruthy();
+  });
+
+  it('keeps every row at the 44 px touch floor', async () => {
+    const { view } = await load('pmc', 'kit');
+    expect(view.getByTestId('site-map-tree-kit').style.minHeight).toBe('44px');
+  });
+
+  it('is not built at all below the desktop breakpoint', async () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} }));
+    const { view } = await load('pmc', 'kit');
+    expect(view.queryByTestId('site-map-tree')).toBeNull();
+    expect(view.getByTestId('place-breadcrumb')).toBeTruthy();
   });
 });
