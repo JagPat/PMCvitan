@@ -326,6 +326,16 @@ describe('MediaService — location spine (nodeId)', () => {
     expect(prisma.media.update).toHaveBeenCalledWith({ where: { id: 'med1' }, data: { nodeId: null } });
   });
 
+  it('setNode answers a photo on someone else\'s private draft as not found and writes nothing', async () => {
+    const { svc, prisma } = make(null, null, [{ id: 'r1', projectId: 'ambli' }]);
+    // the photo sits on a draft the caller did not author (filed before #881)
+    for (let i = 0; i < 2; i++) prisma.media.findUnique.mockResolvedValueOnce({ id: 'med1', projectId: 'ambli' }).mockResolvedValueOnce({ nodeId: 'd1' });
+    (prisma.projectNode as unknown as { findFirst: unknown }).findFirst = vi.fn(async () => ({ id: 'd1' }));
+    await expect(svc.setNode('med1', 'ambli', 'r1', user)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(svc.setNode('med1', 'ambli', null, user)).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.media.update).not.toHaveBeenCalled();
+  });
+
   it('setNode refuses media from another project', async () => {
     const { svc, prisma } = make(null);
     prisma.media.findUnique.mockResolvedValueOnce({ id: 'med1', projectId: 'other' });

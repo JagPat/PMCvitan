@@ -13,7 +13,7 @@ import { InventoryParticipant } from '../inventory/inventory.participant';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialParticipant } from '../commercial/commercial.participant';
-import { previewPublishedProjectNode, resolvePublishedProjectNode } from '../nodes/node-scope';
+import { isPlaceHiddenFrom, previewPublishedProjectNode, resolvePublishedProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
@@ -201,7 +201,13 @@ export class MediaService {
     if (!row || row.projectId !== projectId) throw new NotFoundException('Media not found');
     const actor = await resolveActor(this.prisma, user);
     const ev = await this.prisma.$transaction(async (tx) => {
-      // first statement: the place's publication under the tree lock's shared side
+      // a photo on someone else's private draft (filed before #881) is answered as if it did not exist:
+      // its current place is decided under the tree lock's shared side, inside this transaction
+      const current = await tx.media.findUnique({ where: { id }, select: { nodeId: true } });
+      if (!current || (await isPlaceHiddenFrom(tx, projectId, current.nodeId, user.sub))) {
+        throw new NotFoundException('Media not found');
+      }
+      // the target place's publication under the same shared lock
       const resolved = await resolvePublishedProjectNode(tx, projectId, nodeId);
       await tx.media.update({ where: { id }, data: { nodeId: resolved } });
       return emitEvent(tx, { projectId, actor, eventType: 'media.refiled', entityType: 'Media', entityId: id, payload: { nodeId: resolved }, effectKey: 'media.refiled', dispatch: {} });

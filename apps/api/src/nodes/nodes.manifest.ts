@@ -20,7 +20,8 @@ export const nodesManifest: ModuleManifest = {
   // module's participant in the same transaction, so every projection that serializes a nodeId
   // observes the location change (the ON DELETE SET NULL FKs stay as the database backstop). No
   // query read here, so nodes has no dependsOn edge to any of them — only workflow-participant edges.
-  workflowParticipants: ['inspections', 'activities', 'drawings', 'daily-log'],
+  // #884 — `media`: the delete's draft-photo guard counts photos through the media participant
+  workflowParticipants: ['inspections', 'activities', 'drawings', 'daily-log', 'media'],
   producesEvents: ['node.created', 'node.published', 'node.renamed', 'node.moved', 'node.removed'],
   consumesEvents: [],
   commands: ['nodes.create', 'nodes.rename', 'nodes.move', 'nodes.publish', 'nodes.remove'],

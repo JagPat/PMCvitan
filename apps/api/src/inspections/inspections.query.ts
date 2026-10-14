@@ -47,6 +47,12 @@ function isCurrentInspectionsBase(base: InspectionsBase): boolean {
   return entries.every((e) => e !== null && typeof e === 'object' && CURRENT_BASE_KEYS.every((k) => k in (e as object)));
 }
 
+/** The evidence photos the caller says this viewer may not see (#884). A photo filed on someone else's private
+ *  draft place (before #881) is as private as the place, so it gets no signed path. The set is an INPUT: the
+ *  read side that serves the viewer composes it (`snapshot/hidden-media.ts`), so this module never reads the
+ *  media-owned table. Both served reads pass it; the empty default is for the projection/parity tests. */
+const NONE_HIDDEN: ReadonlySet<string> = new Set();
+
 @Injectable()
 export class InspectionsQueryService {
   constructor(
@@ -64,9 +70,9 @@ export class InspectionsQueryService {
    * placedInspections), baked for `role` (PMC-only review queue, pmc/engineer placement) with each item's
    * evidence as fresh signed serve paths. Served from LIVE canonical state.
    */
-  async snapshotSlice(projectId: string, role: string, viewerId?: string): Promise<InspectionsSlices> {
+  async snapshotSlice(projectId: string, role: string, viewerId?: string, hiddenEvidence: ReadonlySet<string> = NONE_HIDDEN): Promise<InspectionsSlices> {
     const base = await computeInspectionsBase(this.prisma, projectId);
-    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base) });
+    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence });
   }
 
   /**
@@ -99,7 +105,7 @@ export class InspectionsQueryService {
    * no-op-bootstrapped (no row), lagging or blocked generation returns `generation: null` and the caller
    * falls back to the canonical live slice.
    */
-  async projectionSlice(projectId: string, role: string, viewerId?: string): Promise<{ slices: InspectionsSlices; generation: number | null }> {
+  async projectionSlice(projectId: string, role: string, viewerId?: string, hiddenEvidence: ReadonlySet<string> = NONE_HIDDEN): Promise<{ slices: InspectionsSlices; generation: number | null }> {
     const gen = await readServableGeneration(this.prisma, INSPECTIONS_PROJECTION, projectId);
     const empty: InspectionsSlices = { checklist: null, openChecklists: [], reviews: [], review: null, reinspectionCreated: false, placedInspections: [] };
     if (!gen) return { slices: empty, generation: null };
@@ -128,7 +134,7 @@ export class InspectionsQueryService {
     // half of the fence; the write half (an `InspectionsProjection` writer trigger mirroring the
     // decisions one) is a separate unit, and until it exists this is what keeps wrong data unserved.
     if (!isCurrentInspectionsBase(base)) return { slices: empty, generation: null };
-    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base) }), generation: gen.generation };
+    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence }), generation: gen.generation };
   }
 
   /**
@@ -138,12 +144,12 @@ export class InspectionsQueryService {
    * rebuilt) — additive and correct, never empty during warm-up. `source` tells the client which path
    * served it (the slices are byte-identical either way).
    */
-  async moduleInspections(projectId: string, role: string, viewerId?: string): Promise<InspectionsModuleResult> {
-    const proj = await this.projectionSlice(projectId, role, viewerId);
+  async moduleInspections(projectId: string, role: string, viewerId?: string, hiddenEvidence: ReadonlySet<string> = NONE_HIDDEN): Promise<InspectionsModuleResult> {
+    const proj = await this.projectionSlice(projectId, role, viewerId, hiddenEvidence);
     if (proj.generation !== null) {
       return { ...proj.slices, source: 'projection', generation: proj.generation };
     }
-    const live = await this.snapshotSlice(projectId, role, viewerId);
+    const live = await this.snapshotSlice(projectId, role, viewerId, hiddenEvidence);
     return { ...live, source: 'live', generation: null };
   }
 
