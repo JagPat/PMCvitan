@@ -6093,10 +6093,14 @@ export const useStore = create<Store>()(
         });
         return;
       }
+      // round-2 Codex — "Sign in with email" stays tappable while this is in flight; a late answer must not
+      // pull the person back from the email sign-in (the same generation guard as the password flows)
+      const generation = get().access.generation;
       set((s) => { s.access.sending = true; s.access.error = null; });
       gateway
         .requestOtp(phone)
         .then((r) => {
+          if (get().access.generation !== generation) return;
           set((s) => {
             s.access.sending = false;
             s.access.step = 'otp';
@@ -6108,6 +6112,7 @@ export const useStore = create<Store>()(
           });
         })
         .catch((e: unknown) => {
+          if (get().access.generation !== generation) return;
           set((s) => {
             s.access.sending = false;
             s.access.error = otpRequestFailureMessage(e);
@@ -6163,11 +6168,17 @@ export const useStore = create<Store>()(
         return;
       }
 
+      // round-2 Codex — a verify answer that lands after the person left for the email sign-in signs nothing in
+      const generation = a.generation;
       set((s) => { s.access.sending = true; s.access.error = null; });
       gateway
         .verifyOtp(a.phone, a.otp)
-        .then((res) => signIn(res.name ?? null, res.token, res.role, res.projectId))
+        .then((res) => {
+          if (get().access.generation !== generation) return;
+          signIn(res.name ?? null, res.token, res.role, res.projectId);
+        })
         .catch(() => {
+          if (get().access.generation !== generation) return;
           set((s) => {
             s.access.sending = false;
             s.access.otp = '';

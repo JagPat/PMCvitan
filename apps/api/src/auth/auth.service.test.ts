@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import { ConflictException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
@@ -562,6 +562,35 @@ describe('AuthService — phone sign-in code by email (#827 one-screen sign-in)'
     const code = codeIn(sent[0].text)!;
     await expect(auth.verifyOtp({ phone: '9876543210', code, projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
     await expect(auth.verifyOtp({ phone: '987-654-3210', code, projectId: 'ambli' })).resolves.toMatchObject({ name: 'Ravi' });
+  });
+
+  it('a code mailed before the account\'s email was corrected no longer signs in', async () => {
+    // round-2 Codex — the code is bound to the address it went to; verify reads the account's address again
+    const prisma = fakePrisma([{ ...priya }], [{ ...priyaMember }]);
+    const { auth, email } = make(prisma);
+    const sent = withMailbox(email);
+    await auth.requestOtp({ phone: '9876543210', projectId: 'ambli' });
+    const code = codeIn(sent[0].text)!;
+    prisma.users[0].email = 'priya.new@example.com';
+    await expect(auth.verifyOtp({ phone: '9876543210', code, projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('a resend whose email fails leaves the code already delivered working', async () => {
+    // round-2 Codex — the new code is stored only once its mail has gone
+    vi.useFakeTimers();
+    try {
+      const prisma = fakePrisma([{ ...priya }], [{ ...priyaMember }]);
+      const { auth, email } = make(prisma);
+      const sent = withMailbox(email);
+      await auth.requestOtp({ phone: '9876543210', projectId: 'ambli' });
+      const first = codeIn(sent[0].text)!;
+      vi.advanceTimersByTime(31_000);
+      withMailbox(email, true);
+      await expect(auth.requestOtp({ phone: '9876543210', projectId: 'ambli' })).rejects.toMatchObject({ status: 503 });
+      await expect(auth.verifyOtp({ phone: '9876543210', code: first, projectId: 'ambli' })).resolves.toMatchObject({ name: 'Priya' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps the per-number resend wait, for known and unknown numbers alike', async () => {

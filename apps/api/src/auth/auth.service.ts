@@ -5,7 +5,7 @@ import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma.service';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { SmsService } from './sms.service';
-import { EmailService } from '../platform/email.service';
+import { EmailService, type PhoneCodeOwner } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import type { Role } from '../common/auth';
@@ -259,14 +259,21 @@ export class AuthService {
     return !this.sms.live && this.email.configured;
   }
 
+  /** The account an emailed phone code is for: the one whose stored number is exactly `phone`, with the
+   *  address on it now. Verify reads it again, so a code mailed before the address was corrected no
+   *  longer matches (round-2 Codex). */
+  private async phoneCodeOwner(phone: string): Promise<PhoneCodeOwner | null> {
+    const user = await this.prisma.user.findUnique({ where: { phone }, select: { id: true, email: true } });
+    return user?.email ? { id: user.id, email: user.email } : null;
+  }
+
   /** Start a phone-OTP sign-in. `devCode` only with no provider; `channel` names the delivery route;
    *  `codeLength` is how many digits the code has. */
   async requestOtp(input: OtpRequestInput): Promise<{ sent: boolean; live: boolean; channel: string; codeLength: number; devCode?: string }> {
     if (this.phoneCodeByEmail) {
       // The same answer whether or not the number has an account, so the form can't be used to
       // find out which numbers do; an unknown number is mailed nothing.
-      const owner = await this.prisma.user.findUnique({ where: { phone: input.phone }, select: { email: true } });
-      await this.email.sendPhoneSignInCode(input.phone, owner?.email ?? null);
+      await this.email.sendPhoneSignInCode(input.phone, await this.phoneCodeOwner(input.phone));
       return { sent: true, live: true, channel: 'email', codeLength: 4 };
     }
     const r = await this.sms.sendOtp(input.phone);
@@ -277,7 +284,7 @@ export class AuthService {
   async verifyOtp(input: OtpVerifyInput): Promise<TokenResult> {
     const byEmail = this.phoneCodeByEmail;
     const ok = byEmail
-      ? await this.email.verifyPhoneSignInCode(input.phone, input.code)
+      ? await this.email.verifyPhoneSignInCode(input.phone, await this.phoneCodeOwner(input.phone), input.code)
       : await this.sms.verifyOtp(input.phone, input.code);
     if (!ok) {
       throw new UnauthorizedException('Invalid or expired code');

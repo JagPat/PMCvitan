@@ -116,6 +116,39 @@ describe('#827 one-screen sign-in', () => {
     expect(r.getByText('Could not send a sign-in code right now. Use “Sign in with email” below.')).toBeInTheDocument();
   });
 
+  it('a code answer that lands after "Sign in with email" was tapped neither moves nor signs in the person', async () => {
+    // round-2 Codex — the email link stays tappable while a request or a verify is in flight
+    let answerRequest!: (v: unknown) => void;
+    let answerVerify!: (v: unknown) => void;
+    const requestOtp = vi.fn()
+      .mockResolvedValueOnce({ sent: true, live: true, channel: 'email', codeLength: 4 })
+      .mockImplementationOnce(() => new Promise((r) => { answerRequest = r; }));
+    const verifyOtp = vi.fn(() => new Promise((r) => { answerVerify = r; }));
+    const { TeamAccessScreen, useStore } = await load({ requestOtp, verifyOtp } as unknown as Partial<ApiGateway>);
+    const r = render(<TeamAccessScreen />);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    // a resend still on its way when the person leaves for the email sign-in
+    act(() => useStore.getState().requestOtp());
+    fireEvent.click(r.getByTestId('otp-go-login'));
+    await act(async () => { answerRequest({ sent: true, live: true, channel: 'email', codeLength: 4 }); });
+    await flush();
+    expect(useStore.getState().access.step).toBe('login');
+
+    // a verify still on its way when the person leaves
+    act(() => useStore.getState().accReset());
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    useStore.setState((s) => { s.access.step = 'otp'; s.access.channel = 'email'; s.access.codeLength = 4; s.access.otp = '1234'; });
+    act(() => useStore.getState().otpVerify());
+    expect(verifyOtp).toHaveBeenCalledWith('9876543210', '1234');
+    act(() => useStore.getState().accGoLogin());
+    await act(async () => { answerVerify({ token: 't', role: 'client', name: 'Priya', projectId: 'villa-b' }); });
+    await flush();
+    expect(useStore.getState().sessionToken).toBeNull();
+    expect(useStore.getState().access.step).toBe('login');
+  });
+
   it('a back tap from the code screen returns to the number, not to "Who are you?"', async () => {
     const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
     const { TeamAccessScreen, useStore } = await load({ requestOtp } as Partial<ApiGateway>);

@@ -19,10 +19,16 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-/** The phone code's key: the number as given, never normalised (see `sendPhoneSignInCode`). The
- *  prefix keeps it apart from the digits-only resend-wait keys in the same store. */
-function exactPhoneKey(phone: string): string {
-  return `exact:${phone}`;
+/** The account a phone sign-in code is mailed for: its id and the address the code went to. */
+export interface PhoneCodeOwner {
+  id: string;
+  email: string;
+}
+
+/** The phone code's key: the number as given (never normalised), the account and its address (see
+ *  `sendPhoneSignInCode`). The prefix keeps it apart from the digits-only resend-wait keys in the same store. */
+function phoneCodeKey(phone: string, owner: PhoneCodeOwner): string {
+  return `exact:${JSON.stringify([phone, owner.id, owner.email.trim().toLowerCase()])}`;
 }
 
 export interface EmailOtpResult {
@@ -132,26 +138,28 @@ export class EmailService {
 
   /** #827 one-screen sign-in: until SMS is live, a phone sign-in's code goes to the email on
    *  the account that owns the number. The resend wait is per number (its digits, as for an SMS
-   *  code); the code itself is held under the number EXACTLY as the account lookup used it, so a
-   *  code mailed for "987-654-3210" can never sign in an account stored as "9876543210" (round-1
-   *  Codex: phones are stored verbatim, so digits alone don't name one account). `to` is null for
-   *  a number with no account (or no email): the send is recorded for throttling but nothing is
-   *  mailed, so the caller's answer stays the same and nobody can probe which numbers have
-   *  accounts. The code is 4 digits like an SMS code, so a web bundle from before this change
-   *  (a 4-box pad that submits on the fourth digit) can still type it (round-1 Codex). */
-  async sendPhoneSignInCode(phone: string, to: string | null): Promise<void> {
+   *  code). The code itself is bound to the number EXACTLY as the account lookup used it AND to
+   *  the account and address it was mailed to (`phoneCodeKey`): phones are stored verbatim, so
+   *  digits alone don't name one account (round-1 Codex), and a code mailed to an address that
+   *  is corrected afterwards must stop working (round-2 Codex) — verify re-reads the account and
+   *  builds the key from its current address. `owner` is null for a number with no account (or no
+   *  email): the send is recorded for throttling but nothing is mailed, so the caller's answer
+   *  stays the same and nobody can probe which numbers have accounts. The code is 4 digits like an
+   *  SMS code, so a web bundle from before this change (a 4-box pad that submits on the fourth
+   *  digit) can still type it (round-1 Codex). A code is only stored once its mail has gone, so a
+   *  failed resend leaves the code already delivered working (round-2 Codex). */
+  async sendPhoneSignInCode(phone: string, owner: PhoneCodeOwner | null): Promise<void> {
     const throttleKey = phone.replace(/\D/g, '');
     if (!this.phoneOtp.canSend(throttleKey)) {
       throw new HttpException('Please wait a moment before requesting another code.', HttpStatus.TOO_MANY_REQUESTS);
     }
     this.phoneOtp.markSent(throttleKey);
-    if (!to) return;
+    if (!owner) return;
     const code = String(randomInt(1000, 10000));
-    this.phoneOtp.put(exactPhoneKey(phone), code);
     try {
       await this.tx().sendMail({
         from: this.from,
-        to: to.trim().toLowerCase(),
+        to: owner.email.trim().toLowerCase(),
         subject: 'Your Vitan PMC sign-in code',
         text: `Your Vitan PMC sign-in code is ${code}. It expires in 10 minutes. If you didn't try to sign in, ignore this email.`,
         html: `<p>Your Vitan PMC sign-in code is <b style="font-size:20px;letter-spacing:2px">${code}</b>.</p><p>It expires in 10 minutes. If you didn't try to sign in, ignore this email.</p>`,
@@ -160,10 +168,13 @@ export class EmailService {
       this.log.error(`SMTP send failed: ${(err as Error).message}`);
       throw new ServiceUnavailableException('Could not send the sign-in code. Please try again.');
     }
+    this.phoneOtp.put(phoneCodeKey(phone, owner), code);
   }
 
-  async verifyPhoneSignInCode(phone: string, code: string): Promise<boolean> {
-    return this.phoneOtp.verify(exactPhoneKey(phone), code);
+  /** `owner` is the account that owns `phone` NOW (null: none, so nothing verifies). */
+  async verifyPhoneSignInCode(phone: string, owner: PhoneCodeOwner | null, code: string): Promise<boolean> {
+    if (!owner) return false;
+    return this.phoneOtp.verify(phoneCodeKey(phone, owner), code);
   }
 
   /** Deliver a code whose lifecycle is owned by the durable credential service.
