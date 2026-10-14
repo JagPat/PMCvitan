@@ -93,6 +93,19 @@ describe('the client\'s one "Decisions" screen', () => {
     expect(r.queryByTestId('decisions-caught-up')).toBeNull();
   });
 
+  it('while the decisions are unsettled, the old /decisions path stays the read-only register (Codex 4269078179)', async () => {
+    const { useStore } = await import('@/store/store');
+    const owed = { ...useStore.getState().commandReconcileOwed, decisions: true };
+    const { r } = await load({ screen: 'decision-log', commandReconcileOwed: owed });
+    expect(r.getByTestId('log-row-D-1')).toBeTruthy();
+    expect(r.queryByTestId('approve-D-1-A')).toBeNull();
+    expect(r.queryByText('Decisions waiting for you')).toBeNull();
+    // the approval path itself is unchanged
+    cleanup();
+    const again = await load({ screen: 'client-decisions', commandReconcileOwed: owed });
+    expect(again.r.getByText('Decisions waiting for you')).toBeTruthy();
+  });
+
   it('shows a short "all caught up" line above the history when nothing waits', async () => {
     const { r } = await load({ decisions: [approved('D-9')] });
     expect(r.getByTestId('decisions-caught-up').textContent).toContain('All caught up');
