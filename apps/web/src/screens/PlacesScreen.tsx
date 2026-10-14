@@ -12,9 +12,10 @@ import { captureAtPlace } from '@/lib/captureContext';
 import { stampText } from '@/lib/captureStamp';
 import { PlaceStructure } from '@/screens/PlaceStructure';
 import { PlaceWorkRecords, PlaceRecordsEmpty, type PlaceRecordSection } from '@/components/PlaceWorkRecords';
+import { SiteMapLegend } from '@/components/SiteMapLegend';
 import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
-import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
+import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus, Lock } from '@/lib/icons';
 import { placeCountWords, type PlaceCountOptions, type PlaceCountWord } from '@/lib/placeCountWords';
 import { childrenOf, trailOf, placeContents, demoSiteMapInspections, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
 import { can, SNAPSHOT_SITE_PHOTO_LIMIT, type Photo, type PlacedInspection, type ScreenKey, type SwatchKey } from '@vitan/shared';
@@ -195,6 +196,12 @@ export function PlacesScreen() {
                     <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.title}</span>
                   </div>
                   {d.approvedOption && <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{d.approvedOption}{d.material ? ` — ${d.material}` : ''}</div>}
+                  {/* #633 unit B — a locked record says why, and the way to change it (its record offers "Request change") */}
+                  {d.status === 'approved' && (
+                    <div data-testid={`place-decision-lock-${d.id}`} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--green-text)', marginTop: 3 }}>
+                      <Lock size={12} style={{ flex: 'none' }} /><span>Locked after approval. Open it to request a change.</span>
+                    </div>
+                  )}
                 </div>
                 <DecisionChip status={d.status} />
               </button>
@@ -386,6 +393,9 @@ export function PlacesScreen() {
               </Button>
             </div>
           )}
+
+          {/* #633 unit B — what the status colours below mean, in words */}
+          <SiteMapLegend />
 
           {/* drill-down: child zones/rooms/objects with per-place counts — "Places inside" (mockup 7) */}
           {children.length > 0 && (
