@@ -728,7 +728,7 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
   const [endIso, setEndIso] = useState(() => {
     if (!anchor) return '';
     if (activity) return activity.plannedEndDate ?? addCivilDays(anchor, activity.pe);
-    return addCivilDays(today > anchor ? today : anchor, 7);
+    return addCivilDays(today > anchor ? today : anchor, 6); // a week, both ends counted
   });
   const [phaseId, setPhaseId] = useState(activity?.phaseId ?? '');
   const [decisionId, setDecisionId] = useState(activity?.decisionId ?? '');
@@ -791,7 +791,7 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
         <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="act-loc" />
         {anchor ? (
           <>
-            <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'flex-start' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 10, alignItems: 'flex-start' }}>
               <DatePicker label="Starts" value={startIso} min={anchor} today={today} testId="act-start"
                 onChange={(iso) => { setStartIso(iso); if (endIso < iso) setEndIso(iso); }} />
               <DatePicker label="Ends" value={endIso} min={startIso} today={today} testId="act-end" onChange={setEndIso} />

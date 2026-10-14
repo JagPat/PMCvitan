@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties } from 'react';
+import { useId, useRef, useState, type CSSProperties } from 'react';
 import { parseCivilDate } from '@vitan/shared';
 
 /**
@@ -66,14 +66,23 @@ export function DatePicker({
 }) {
   const [open, setOpen] = useState(false);
   const [month, setMonth] = useState(() => monthStart(value));
+  // a value changed from outside (the start moving the end) brings its month into view
+  const [shownValue, setShownValue] = useState(value);
+  if (shownValue !== value) {
+    setShownValue(value);
+    setMonth(monthStart(value));
+  }
+  const toggleRef = useRef<HTMLButtonElement>(null);
   const panelId = useId();
   const cells = monthCells(month);
   const canGoBack = !min || shiftMonth(month, -1) >= monthStart(min);
 
   return (
-    <div style={{ flex: 1, minWidth: 0 }}>
+    // an open calendar takes the whole row, so its days stay tappable on a phone
+    <div style={{ flex: open ? '1 1 100%' : '1 1 0', minWidth: 0 }}>
       <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>{label}</div>
       <button
+        ref={toggleRef}
         type="button"
         onClick={() => { setMonth(monthStart(value)); setOpen((o) => !o); }}
         aria-expanded={open}
@@ -110,7 +119,7 @@ export function DatePicker({
                   aria-pressed={selected}
                   aria-label={DAY_NAME_FMT.format(parseCivilDate(iso))}
                   aria-current={iso === today ? 'date' : undefined}
-                  onClick={() => { onChange(iso); setOpen(false); }}
+                  onClick={() => { onChange(iso); setOpen(false); toggleRef.current?.focus(); }}
                   data-testid={`${testId}-day-${iso}`}
                   style={{
                     minHeight: 44, borderRadius: 8, border: 'none', fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-sans)',

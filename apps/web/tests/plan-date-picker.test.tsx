@@ -47,6 +47,25 @@ describe('the calendar picker', () => {
     expect(r.queryByTestId('p-day-2026-12-31')).toBeNull();
   });
 
+  it('returns focus to the field after a day is picked, and an open calendar takes the whole row', () => {
+    const r = render(<DatePicker label="Starts" value="2026-10-20" onChange={() => {}} testId="p" />);
+    const field = r.getByTestId('p');
+    expect((field.parentElement as HTMLElement).style.flex).not.toContain('100%');
+    fireEvent.click(field);
+    expect((field.parentElement as HTMLElement).style.flex).toContain('100%');
+    fireEvent.click(r.getByTestId('p-day-2026-10-22'));
+    expect(document.activeElement).toBe(field);
+  });
+
+  it('an open calendar follows its value when it changes from outside', () => {
+    const r = render(<DatePicker label="Ends" value="2026-10-20" onChange={() => {}} testId="p" />);
+    fireEvent.click(r.getByTestId('p'));
+    expect(r.getByTestId('p-day-2026-10-20')).toBeTruthy();
+    r.rerender(<DatePicker label="Ends" value="2026-12-03" onChange={() => {}} min="2026-12-03" testId="p" />);
+    expect(r.getByTestId('p-day-2026-12-03').getAttribute('aria-pressed')).toBe('true');
+    expect(r.queryByTestId('p-day-2026-10-20')).toBeNull();
+  });
+
   it('labels and spans', () => {
     expect(pickerLabel('2026-02-28')).toBe('Sat 28 Feb 2026');
     expect(inclusiveDays('2026-10-20', '2026-10-25')).toBe(6);
@@ -68,7 +87,8 @@ describe('the Plan activity form', () => {
     const r = planWith(createActivity, '2026-10-01');
     // a new plan starts today and runs a week
     expect(r.getByTestId('act-start').textContent).toContain('Tue 13 Oct 2026');
-    expect(r.getByTestId('act-end').textContent).toContain('Tue 20 Oct 2026');
+    expect(r.getByTestId('act-end').textContent).toContain('Mon 19 Oct 2026');
+    expect(r.getByTestId('act-span').textContent).toBe('7 days');
     fireEvent.click(r.getByTestId('act-start'));
     fireEvent.click(r.getByTestId('act-start-day-2026-10-20'));
     fireEvent.click(r.getByTestId('act-end'));
