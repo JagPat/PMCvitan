@@ -156,6 +156,8 @@ describe('Site Visits SV1-b unit 2 — places and attendees (live PG)', () => {
     expect((await addAttendee(pmcToken, visitId, { guestName: 'x'.repeat(121) })).status).toBe(400);
     expect((await addAttendee(pmcToken, visitId, { userId: consultant, role: 'consultant', guestName: 'Both' })).status).toBe(400);
     expect((await addAttendee(consultantToken, visitId, { guestName: 'Not my visit' })).status).toBe(403);
+    // the visitor is on the visit already; they are not their own attendee
+    expect((await addAttendee(pmcToken, visitId, { userId: f.memberUser.id, role: 'pmc' })).status).toBe(400);
 
     const memberId = member.body.attendees[0].id as string;
     const retired = await post(pmcToken, `/${visitId}/attendees/${memberId}/retire`);

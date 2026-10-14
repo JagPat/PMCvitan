@@ -210,6 +210,8 @@ export class SiteVisitsService {
     return this.visitorEdit(projectId, visitId, 'site-visits.add-attendee', { visitId, ...dto }, user, idempotencyKey, async (tx, actor) => {
       const visit = await this.lockEditableVisit(tx, projectId, visitId, user);
       const member = 'userId' in dto ? { userId: dto.userId, role: dto.role } : null;
+      // the visitor is on the visit as its visitor; an attendee is someone with them
+      if (member?.userId === user.sub) throw new BadRequestException('You are already on this visit as the visitor');
       const envelope = await this.visitorStanding(tx, projectId, actor, user, visit, member?.userId);
       if (await tx.siteVisitAttendee.findUnique({ where: { id: dto.id }, select: { id: true } })) {
         throw new ConflictException('This attendee has already been added');
