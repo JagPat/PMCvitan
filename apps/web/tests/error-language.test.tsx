@@ -98,6 +98,16 @@ describe('approve', () => {
   });
 });
 
+describe('a screen not yet translated keeps its English failure line', () => {
+  for (const lang of ['hi', 'gu'] as const) {
+    it(`${lang}: renaming a location (still English) says the English network line`, async () => {
+      connect({ renameNode: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) }, lang);
+      s().renameNode('N-1', 'Tower A');
+      await settles(() => s().toast === 'Could not reach the server — please try again.');
+    });
+  }
+});
+
 describe('change request and withdraw', () => {
   const change = (decId: string) =>
     useStore.setState({ modal: { type: 'change', decId, changeText: 'Thicker slab', changeCost: '0', changeTime: '0' } } as never);

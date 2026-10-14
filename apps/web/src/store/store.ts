@@ -2105,7 +2105,9 @@ export const useStore = create<Store>()(
     /** `refused` (#699 shadow review): a command the server can REFUSE for a reason the viewer must see
      *  (a location still holding decisions they cannot see, an inspected activity) says that reason,
      *  instead of the network copy that would send them retrying a request that will never succeed. */
-    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg, refused?: (why: string) => string): Promise<boolean> => {
+    // `unreachable`: the network-failure line in the viewer's language, passed only by callers whose screen
+    // is translated (#827); every other caller keeps the English line, so an English screen stays English
+    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg, refused?: (why: string) => string, unreachable?: () => string): Promise<boolean> => {
       const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
       return call()
         .then((snap) => { consumeSnapshotResult(acceptSnapshot(snap, lease), typeof okMsg === 'function' ? okMsg(snap) : okMsg, lease.scope); return true; })
@@ -2114,7 +2116,7 @@ export const useStore = create<Store>()(
           // a terminal refusal is never reported as a network failure, even when its body carried no
           // readable reason (a proxy's error page): retrying it would fail the same way (#699 shadow review)
           if (refused && isTerminalOutboxError(err)) get().flash(refused(refusalMessage(err) ?? 'the server refused it'));
-          else get().flash(DTX.unreachable[get().lang]);
+          else get().flash(unreachable ? unreachable() : 'Could not reach the server — please try again.');
           return false;
         });
     };
@@ -2239,12 +2241,13 @@ export const useStore = create<Store>()(
       label: string,
       call: () => Promise<ApiSnapshot>,
       okMsg: OkMsg,
-      // #827: the queued line in the viewer's language; without it, the label plus the standard English line
+      // #827: a translated caller's queued line in the viewer's language; it also gets the network-failure
+      // line in that language. Without it, the label plus the standard English lines, as before
       offlineMsg?: string,
     ): boolean => {
       if (!gateway) return false;
       if (get().online) {
-        runRemote(call, okMsg);
+        runRemote(call, okMsg, undefined, offlineMsg !== undefined ? () => DTX.unreachable[get().lang] : undefined);
         return true;
       }
       set((s) => {
@@ -4463,7 +4466,7 @@ export const useStore = create<Store>()(
         .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), 'Worker onboarded to the project roster.', lease.scope))
         .catch(() => {
           // failure (including a LOST committed response) RETAINS the key for the retry
-          if (scopeStillCurrent(lease.scope)) get().flash(DTX.unreachable[get().lang]);
+          if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
         });
     },
     bindLabourDevice: (deviceId, workerId) => {
@@ -4495,7 +4498,7 @@ export const useStore = create<Store>()(
               }
             } catch {
               // the bind COMMITTED but the reconcile failed — RETAIN the key (round 10)
-              if (scopeStillCurrent(lease.scope)) get().flash(DTX.unreachable[get().lang]);
+              if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
             }
           },
           (e: unknown) => {
@@ -4512,7 +4515,7 @@ export const useStore = create<Store>()(
               set((s) => { if (s.labourBindPending[sig] === key) delete s.labourBindPending[sig]; });
               get().flash('Device binding was refused — check the device id and worker.');
             } else {
-              get().flash(DTX.unreachable[get().lang]);
+              get().flash('Could not reach the server — please try again.');
             }
           },
         );
