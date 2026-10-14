@@ -27,7 +27,7 @@ test('core loop: client approves & locks a decision → Decision Log → PMC das
 
   // switch persona to PMC and open the Dashboard → the "Decisions pending" tile has decremented 3 → 2
   // (the other pending decision, and DL-003 reopened by a change request: it awaits re-approval, #633)
-  await page.getByRole('button', { name: 'PMC', exact: true }).click();
+  await page.getByRole('button', { name: 'Project manager (PMC)', exact: true }).click();
   await page.getByRole('button', { name: 'Dashboard' }).click();
   await expect(page.getByText('PROJECT DASHBOARD')).toBeVisible();
   await expect(page.getByTestId('tile-pending-value')).toHaveText('2');
