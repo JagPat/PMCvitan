@@ -66,6 +66,11 @@ export const EMPTY_HINTS = {
     hi: 'इंजीनियर से कुछ जँचवाना है? ऊपर + वाला बटन दबाएँ।',
     gu: 'એન્જિનિયર પાસે કંઈ તપાસાવવું છે? ઉપર + વાળું બટન દબાવો.',
   },
+  decision: {
+    en: 'To put choices to the client, tap + Issue decision above.',
+    hi: 'क्लाइंट से कुछ चुनवाना है? ऊपर + वाला बटन दबाएँ।',
+    gu: 'ક્લાયન્ટ પાસે કંઈ પસંદ કરાવવું છે? ઉપર + વાળું બટન દબાવો.',
+  },
 } satisfies Record<string, Words>;
 
 export type EmptyHintTask = keyof typeof EMPTY_HINTS;
