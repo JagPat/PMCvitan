@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
-import { resolveProjectNode } from './node-scope';
+import { resolveProjectNode, resolveVisibleProjectNode } from './node-scope';
 import type { PrismaService } from '../prisma.service';
 
-function prismaWith(nodes: Array<{ id: string; projectId: string }>) {
+function prismaWith(nodes: Array<{ id: string; projectId: string; publishedAt?: Date | null; authorId?: string | null }>) {
   return {
     projectNode: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null),
@@ -32,5 +32,29 @@ describe('resolveProjectNode — the shared location-spine guard', () => {
   it('rejects an unknown node', async () => {
     const prisma = prismaWith([]);
     await expect(resolveProjectNode(prisma, 'ambli', 'ghost')).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('resolveVisibleProjectNode — filing on a place the caller can see', () => {
+  const published = { id: 'p1', projectId: 'ambli', publishedAt: new Date(), authorId: 'pmc-1' };
+  const draft = { id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'pmc-1' };
+
+  it('accepts a published place for anyone', async () => {
+    expect(await resolveVisibleProjectNode(prismaWith([published]), 'ambli', 'p1', 'someone')).toBe('p1');
+  });
+
+  it('accepts a private draft for its own author', async () => {
+    expect(await resolveVisibleProjectNode(prismaWith([draft]), 'ambli', 'd1', 'pmc-1')).toBe('d1');
+  });
+
+  it('refuses another author\'s private draft exactly like an unknown place', async () => {
+    const err = await resolveVisibleProjectNode(prismaWith([draft]), 'ambli', 'd1', 'engineer-1').catch((e) => e);
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(err.message).toBe('Unknown location for this project');
+  });
+
+  it('keeps the project guard and the unfiled case', async () => {
+    await expect(resolveVisibleProjectNode(prismaWith([{ ...published, projectId: 'other' }]), 'ambli', 'p1', 'pmc-1')).rejects.toBeInstanceOf(BadRequestException);
+    expect(await resolveVisibleProjectNode(prismaWith([]), 'ambli', null, 'pmc-1')).toBeNull();
   });
 });

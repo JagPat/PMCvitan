@@ -13,7 +13,7 @@ import { InventoryParticipant } from '../inventory/inventory.participant';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialParticipant } from '../commercial/commercial.participant';
-import { resolveProjectNode } from '../nodes/node-scope';
+import { resolveVisibleProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
@@ -71,8 +71,9 @@ export class MediaService {
       });
       if (existing) return { id: existing.id, url: this.signed.mediaPath(existing.id) };
     }
-    // Location spine: validate the place tag belongs to this project before storing.
-    const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
+    // Location spine: the place tag belongs to this project AND is one the uploader can see (never another
+    // author's private draft) — validated before storing.
+    const nodeId = await resolveVisibleProjectNode(this.prisma, projectId, input.nodeId, user.sub);
     // Project-owned references: a photo may only point at THIS project's decision/log.
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     // Task 10 — a daily-log reference is validated through the daily-log module's query, not `project-ref`.
@@ -194,7 +195,7 @@ export class MediaService {
   async setNode(id: string, projectId: string, nodeId: string | null, user: AuthUser): Promise<SnapshotDto> {
     const row = await this.prisma.media.findUnique({ where: { id } });
     if (!row || row.projectId !== projectId) throw new NotFoundException('Media not found');
-    const resolved = await resolveProjectNode(this.prisma, projectId, nodeId);
+    const resolved = await resolveVisibleProjectNode(this.prisma, projectId, nodeId, user.sub);
     const actor = await resolveActor(this.prisma, user);
     const ev = await this.prisma.$transaction(async (tx) => {
       await tx.media.update({ where: { id }, data: { nodeId: resolved } });
