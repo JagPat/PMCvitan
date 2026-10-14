@@ -493,3 +493,102 @@ describe('AuthService — org-roster access resolution', () => {
     expect(await auth.switchProject('u1', 'ambli')).toMatchObject({ role: 'client' });
   });
 });
+
+describe('AuthService — phone sign-in code by email (#827 one-screen sign-in)', () => {
+  const SMS_KEYS = ['MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'TELEGRAM_GATEWAY_TOKEN', 'FAST2SMS_API_KEY', 'AUTH_ALLOW_PHONE_SIGNUP'];
+  beforeEach(() => {
+    for (const k of SMS_KEYS) delete process.env[k];
+    process.env.SMTP_HOST = 'smtp.test';
+    process.env.SMTP_USER = 'u';
+    process.env.SMTP_PASS = 'p';
+  });
+  afterEach(() => {
+    for (const k of SMS_KEYS) delete process.env[k];
+    delete process.env.SMTP_HOST;
+    delete process.env.SMTP_USER;
+    delete process.env.SMTP_PASS;
+  });
+
+  /** Capture outgoing mail instead of talking to SMTP. */
+  function withMailbox(email: EmailService, fail = false) {
+    const sent: Array<{ to: string; text: string }> = [];
+    (email as unknown as { tx: () => unknown }).tx = () => ({
+      sendMail: async (m: { to: string; text: string }) => {
+        if (fail) throw new Error('smtp down');
+        sent.push(m);
+      },
+    });
+    return sent;
+  }
+  const codeIn = (text: string) => /\b(\d{6})\b/.exec(text)?.[1];
+  const priya = { id: 'u1', projectId: 'ambli', role: 'client', name: 'Priya', email: 'priya@example.com', phone: '9876543210' };
+  const priyaMember = { projectId: 'ambli', userId: 'u1', role: 'client', status: 'active' };
+
+  it('emails a 6-digit code to the account that owns the number, and the code signs that account in', async () => {
+    const prisma = fakePrisma([{ ...priya }], [{ ...priyaMember }]);
+    const { auth, email } = make(prisma);
+    const sent = withMailbox(email);
+    const req = await auth.requestOtp({ phone: '9876543210', projectId: 'ambli' });
+    expect(req).toEqual({ sent: true, live: true, channel: 'email', codeLength: 6 });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].to).toBe('priya@example.com');
+    const code = codeIn(sent[0].text);
+    expect(code).toMatch(/^\d{6}$/);
+    const res = await auth.verifyOtp({ phone: '9876543210', code: code!, projectId: 'ambli' });
+    expect(res).toMatchObject({ role: 'client', name: 'Priya' });
+  });
+
+  it('answers an unknown number exactly as a known one, mails nothing, and never creates an account', async () => {
+    process.env.AUTH_ALLOW_PHONE_SIGNUP = 'true'; // even with phone signup on, an emailed code never provisions
+    const prisma = fakePrisma();
+    const { auth, email } = make(prisma);
+    const sent = withMailbox(email);
+    const req = await auth.requestOtp({ phone: '9000000000', projectId: 'ambli' });
+    expect(req).toEqual({ sent: true, live: true, channel: 'email', codeLength: 6 });
+    expect(sent).toHaveLength(0);
+    await expect(auth.verifyOtp({ phone: '9000000000', code: '123456', projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(prisma.users).toHaveLength(0);
+  });
+
+  it('keeps the per-number resend wait, for known and unknown numbers alike', async () => {
+    const prisma = fakePrisma([{ ...priya }], [{ ...priyaMember }]);
+    const { auth, email } = make(prisma);
+    const sent = withMailbox(email);
+    await auth.requestOtp({ phone: '9876543210', projectId: 'ambli' });
+    await expect(auth.requestOtp({ phone: '9876543210', projectId: 'ambli' })).rejects.toMatchObject({ status: 429 });
+    await auth.requestOtp({ phone: '9000000000', projectId: 'ambli' });
+    await expect(auth.requestOtp({ phone: '9000000000', projectId: 'ambli' })).rejects.toMatchObject({ status: 429 });
+    expect(sent).toHaveLength(1);
+  });
+
+  it('reports a failed send instead of claiming the code is on its way', async () => {
+    const prisma = fakePrisma([{ ...priya }], [{ ...priyaMember }]);
+    const { auth, email } = make(prisma);
+    withMailbox(email, true);
+    await expect(auth.requestOtp({ phone: '9876543210', projectId: 'ambli' })).rejects.toMatchObject({ status: 503 });
+  });
+
+  it('a wrong code does not sign in, and five misses burn the code', async () => {
+    const prisma = fakePrisma([{ ...priya }], [{ ...priyaMember }]);
+    const { auth, email } = make(prisma);
+    const sent = withMailbox(email);
+    await auth.requestOtp({ phone: '9876543210', projectId: 'ambli' });
+    const code = codeIn(sent[0].text)!;
+    const wrong = code === '111111' ? '222222' : '111111';
+    for (let i = 0; i < 5; i += 1) {
+      await expect(auth.verifyOtp({ phone: '9876543210', code: wrong, projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+    }
+    await expect(auth.verifyOtp({ phone: '9876543210', code, projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('uses the SMS channel, and its 4-digit code, whenever an SMS provider is configured', async () => {
+    process.env.TELEGRAM_GATEWAY_TOKEN = 'tg';
+    const prisma = fakePrisma([{ ...priya }], [{ ...priyaMember }]);
+    const { auth, email, sms } = make(prisma);
+    const sent = withMailbox(email);
+    (sms as unknown as { sendViaTelegram: () => Promise<void> }).sendViaTelegram = async () => {};
+    const req = await auth.requestOtp({ phone: '9876543210', projectId: 'ambli' });
+    expect(req).toMatchObject({ channel: 'telegram', codeLength: 4 });
+    expect(sent).toHaveLength(0);
+  });
+});

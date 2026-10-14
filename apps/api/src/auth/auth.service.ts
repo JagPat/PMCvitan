@@ -252,21 +252,41 @@ export class AuthService {
     };
   }
 
-  /** Start a phone-OTP sign-in. `devCode` only with no provider; `channel` names the delivery route. */
-  async requestOtp(input: OtpRequestInput): Promise<{ sent: boolean; live: boolean; channel: string; devCode?: string }> {
+  /** #827 one-screen sign-in: with no SMS channel but working mail, a phone sign-in's code is
+   *  emailed to the account that owns the number (Board, 13 Oct: "code arrives by email until
+   *  SMS is live"). Production has no SMS provider today, so this is the live path. */
+  private get phoneCodeByEmail(): boolean {
+    return !this.sms.live && this.email.configured;
+  }
+
+  /** Start a phone-OTP sign-in. `devCode` only with no provider; `channel` names the delivery route;
+   *  `codeLength` is how many digits the code has. */
+  async requestOtp(input: OtpRequestInput): Promise<{ sent: boolean; live: boolean; channel: string; codeLength: number; devCode?: string }> {
+    if (this.phoneCodeByEmail) {
+      // The same answer whether or not the number has an account, so the form can't be used to
+      // find out which numbers do; an unknown number is mailed nothing.
+      const owner = await this.prisma.user.findUnique({ where: { phone: input.phone }, select: { email: true } });
+      await this.email.sendPhoneSignInCode(input.phone, owner?.email ?? null);
+      return { sent: true, live: true, channel: 'email', codeLength: 6 };
+    }
     const r = await this.sms.sendOtp(input.phone);
-    return { sent: true, live: r.live, channel: r.channel, devCode: r.devCode };
+    return { sent: true, live: r.live, channel: r.channel, codeLength: 4, devCode: r.devCode };
   }
 
   /** Complete a phone-OTP sign-in; provisions a site-engineer account on first use. */
   async verifyOtp(input: OtpVerifyInput): Promise<TokenResult> {
-    if (!(await this.sms.verifyOtp(input.phone, input.code))) {
+    const byEmail = this.phoneCodeByEmail;
+    const ok = byEmail
+      ? await this.email.verifyPhoneSignInCode(input.phone, input.code)
+      : await this.sms.verifyOtp(input.phone, input.code);
+    if (!ok) {
       throw new UnauthorizedException('Invalid or expired code');
     }
     // An unknown number auto-provisions a site engineer only when phone signup is
     // enabled (AUTH_ALLOW_PHONE_SIGNUP; off by default in production). A number
-    // already on an account always signs in.
-    return this.signInOrProvision({ phone: input.phone, projectId: input.projectId, allowProvision: this.phoneSignupAllowed });
+    // already on an account always signs in. An emailed code only ever went to an
+    // existing account, so it never provisions one.
+    return this.signInOrProvision({ phone: input.phone, projectId: input.projectId, allowProvision: !byEmail && this.phoneSignupAllowed });
   }
 
   /** Start an email-OTP sign-in (zero-DLT fallback). `devCode` only with no SMTP. */

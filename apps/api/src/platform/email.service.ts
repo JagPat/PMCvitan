@@ -52,6 +52,7 @@ export interface MemberInviteEmailResult {
 export class EmailService {
   private readonly log = new Logger('EmailService');
   private readonly otp = new OtpStore(OTP_TTL_MS);
+  private readonly phoneOtp = new OtpStore(OTP_TTL_MS);
   private transporter: Transporter | null = null;
 
   get configured(): boolean {
@@ -122,6 +123,40 @@ export class EmailService {
     return this.otp.verify(email.trim().toLowerCase(), code);
   }
 
+  /** #827 one-screen sign-in: until SMS is live, a phone sign-in's code goes to the email on
+   *  the account that owns the number. Keyed by the number, under the same per-number resend
+   *  wait as an SMS code. `to` is null for a number with no account (or no email): the send is
+   *  recorded for throttling but nothing is mailed, so the caller's answer stays the same and
+   *  nobody can probe which numbers have accounts. */
+  async sendPhoneSignInCode(phone: string, to: string | null): Promise<void> {
+    const key = phone.replace(/\D/g, '');
+    if (!this.phoneOtp.canSend(key)) {
+      throw new HttpException('Please wait a moment before requesting another code.', HttpStatus.TOO_MANY_REQUESTS);
+    }
+    if (!to) {
+      this.phoneOtp.markSent(key);
+      return;
+    }
+    const code = this.newCode();
+    this.phoneOtp.put(key, code);
+    try {
+      await this.tx().sendMail({
+        from: this.from,
+        to: to.trim().toLowerCase(),
+        subject: 'Your Vitan PMC sign-in code',
+        text: `Your Vitan PMC sign-in code is ${code}. It expires in 10 minutes. If you didn't try to sign in, ignore this email.`,
+        html: `<p>Your Vitan PMC sign-in code is <b style="font-size:20px;letter-spacing:2px">${code}</b>.</p><p>It expires in 10 minutes. If you didn't try to sign in, ignore this email.</p>`,
+      });
+    } catch (err) {
+      this.log.error(`SMTP send failed: ${(err as Error).message}`);
+      throw new ServiceUnavailableException('Could not send the sign-in code. Please try again.');
+    }
+  }
+
+  async verifyPhoneSignInCode(phone: string, code: string): Promise<boolean> {
+    return this.phoneOtp.verify(phone.replace(/\D/g, ''), code);
+  }
+
   /** Deliver a code whose lifecycle is owned by the durable credential service.
    * It is deliberately never copied into the legacy in-memory sign-in OTP store. */
   async sendPasswordCredentialCode(email: string, code: string): Promise<PasswordCredentialEmailResult> {
@@ -178,7 +213,7 @@ export class EmailService {
     // administrator added to Vitan PMC"), and its eligibility rule is the same one that
     // decides whether this invite is sent at all.
     const open = invite.signInUrl ? `Open ${invite.signInUrl}` : 'Open the Vitan PMC app';
-    const where = `${open}, choose "Architect / Client / Contractor? Sign in with email", then "Set up or forgot password", and enter this address — a verification code will be sent to it.`;
+    const where = `${open}, choose "Sign in with email", then "Set up or forgot password", and enter this address — a verification code will be sent to it.`;
     const link = invite.signInUrl
       ? `<p><a href="${escapeHtml(invite.signInUrl)}">${escapeHtml(invite.signInUrl)}</a></p>`
       : '';

@@ -139,7 +139,7 @@ describe('EmailService.sendMemberInvite', () => {
     it('walks the invitee through the real TeamAccessScreen controls, in order', async () => {
       await new EmailService().sendMemberInvite('growthos@vitan.in', invite);
       const text = sent[0].text;
-      const signIn = text.indexOf('Architect / Client / Contractor? Sign in with email');
+      const signIn = text.indexOf('"Sign in with email"');
       const setup = text.indexOf('Set up or forgot password');
       expect(signIn).toBeGreaterThan(-1);
       expect(setup).toBeGreaterThan(signIn);

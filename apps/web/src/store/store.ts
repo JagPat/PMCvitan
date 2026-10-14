@@ -857,6 +857,22 @@ function httpStatusOf(err: unknown): number | undefined {
 
 /** How long a throttled (429) caller should wait, from the seconds the server says remain in its window
  *  (#808: a fixed "10 minutes" overstated a window that may be seconds from resetting). */
+/**
+ * What a failed request for a phone sign-in code tells the person (#827 one-screen sign-in). A throttle names
+ * the real wait when the server sends one and otherwise says "later", never a guessed minute. Any other failure
+ * (no SMS channel, or the email carrying the code could not be sent) points to the email sign-in below, so a
+ * broken send never looks like a code that is on its way.
+ */
+function otpRequestFailureMessage(err: unknown): string {
+  const status = httpStatusOf(err);
+  if (status === 429) {
+    const seconds = (err as { retryAfter?: unknown } | null)?.retryAfter;
+    return typeof seconds === 'number' && seconds > 0 ? `Too many tries. ${throttleWait(err)}, then try again.` : 'Too many tries. Try again later.';
+  }
+  if (status === undefined) return 'Could not reach the server. Check your connection and try again.';
+  return 'Could not send a sign-in code right now. Use “Sign in with email” below.';
+}
+
 function throttleWait(err: unknown): string {
   const seconds = (err as { retryAfter?: unknown } | null)?.retryAfter;
   if (typeof seconds !== 'number' || !(seconds > 0)) return 'Wait a few minutes';
@@ -885,8 +901,10 @@ function signInFailureMessage(err: unknown): string {
 function freshAccess(generation = 0): AccessState {
   return {
     generation,
-    step: 'who',
-    who: null,
+    // #827 one-screen sign-in: a live build opens on the phone number (team members are the only ones who
+    // sign in there); the API-less demo keeps "Who are you?" for its trade and worker prototypes
+    step: API_BASE ? 'phone' : 'who',
+    who: API_BASE ? 'team' : null,
     trade: null,
     phone: '',
     email: '',
@@ -6070,6 +6088,8 @@ export const useStore = create<Store>()(
           s.access.otp = '';
           s.access.error = null;
           s.access.devCode = null;
+          s.access.channel = null;
+          s.access.codeLength = 4;
         });
         return;
       }
@@ -6082,18 +6102,15 @@ export const useStore = create<Store>()(
             s.access.step = 'otp';
             s.access.otp = '';
             s.access.devCode = r.devCode ?? null;
+            // #827 one-screen sign-in: until SMS is live the code arrives by email, 6 digits long
+            s.access.channel = r.channel ?? null;
+            s.access.codeLength = r.codeLength ?? 4;
           });
         })
         .catch((e: unknown) => {
-          const status = (e as { status?: number } | null)?.status;
           set((s) => {
             s.access.sending = false;
-            // 429 = throttled; anything else = the code couldn't be delivered to this
-            // number (e.g. no Telegram / SMS not provisioned) — steer office roles to email.
-            s.access.error =
-              status === 429
-                ? 'Too many attempts — wait a minute, then try again.'
-                : 'Couldn’t text a code to this number. Architect, client or contractor? Use “Sign in with email” below.';
+            s.access.error = otpRequestFailureMessage(e);
           });
         });
     },
@@ -6104,14 +6121,15 @@ export const useStore = create<Store>()(
         set((s) => { s.access.otp = cur.slice(0, -1); s.access.error = null; });
         return;
       }
-      if (cur.length >= 4) return;
+      const length = get().access.codeLength ?? 4;
+      if (cur.length >= length) return;
       const otp = cur + d;
       set((s) => { s.access.otp = otp; s.access.error = null; });
-      if (otp.length === 4) setTimeout(() => get().otpVerify(), 250);
+      if (otp.length === length) setTimeout(() => get().otpVerify(), 250);
     },
     otpVerify: () => {
       const a = get().access;
-      if (a.otp.length < 4 || a.sending) return;
+      if (a.otp.length < (a.codeLength ?? 4) || a.sending) return;
 
       // team → sign in with the REAL role the server returns (a phone can belong to
       // any provisioned member — client / contractor / pmc / engineer), not always

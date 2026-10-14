@@ -287,7 +287,21 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     s().requestOtp();
     await flush();
 
-    expect(s().access.error).toMatch(/wait a minute/i);
+    // #827 one-screen sign-in: no guessed "wait a minute" (the lockout can be longer); with no wait from the
+    // server it says "later"
+    expect(s().access.error).toBe('Too many tries. Try again later.');
+  });
+
+  it('requestOtp names the real wait when the server sends one (429 with Retry-After)', async () => {
+    const err = Object.assign(new Error('/auth/otp/request 429'), { status: 429, retryAfter: 300 });
+    const gw = { requestOtp: vi.fn().mockRejectedValue(err) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().accSetPhone('9408771747');
+
+    s().requestOtp();
+    await flush();
+
+    expect(s().access.error).toBe('Too many tries. Wait 5 minutes, then try again.');
   });
 
   it('loadPortfolio populates the cross-project rollup (Slice 3)', async () => {

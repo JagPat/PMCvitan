@@ -583,8 +583,9 @@ export class ApiGateway {
   passwordCredentialComplete(setupToken: string, password: string): Promise<AuthResult> {
     return this.pub('/auth/password/complete', { setupToken, password });
   }
-  /** Ask the server to send a phone OTP. `devCode` is present only in dev-stub mode. */
-  requestOtp(phone: string): Promise<{ sent: boolean; live: boolean; devCode?: string }> {
+  /** Ask the server to send a phone OTP. `devCode` is present only in dev-stub mode; `channel` is how it was
+   *  sent ('email' until SMS is live, #827) and `codeLength` how many digits it has. */
+  requestOtp(phone: string): Promise<{ sent: boolean; live: boolean; channel?: string; codeLength?: number; devCode?: string }> {
     return this.pub('/auth/otp/request', { phone, projectId: this.projectId });
   }
   /** Verify a phone OTP; on success the server returns a role-scoped session token. */
