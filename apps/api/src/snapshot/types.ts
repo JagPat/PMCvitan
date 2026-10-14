@@ -220,7 +220,9 @@ export interface PlacedInspectionDto {
   submitted: boolean;
   decided: boolean;
   /** count of failed/rejected items — a passed inspection has 0 */
-  failedItems: number;
+  failedItems: number;  /** #633 — open issues here: the items on a re-inspection not yet decided (0 otherwise).
+   *  Same rule as the Dashboard count of failed items awaiting re-inspection. */
+  openIssues: number;
 }
 
 /** A project phase with a live rollup of its activities — the unit of phase-level

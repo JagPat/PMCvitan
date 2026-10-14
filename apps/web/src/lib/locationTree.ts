@@ -215,7 +215,11 @@ export interface PlaceContents {
   materials: Material[];
   /** inspections in this node's subtree (pmc/engineer only — callers pass [] for other roles) */
   inspections: PlacedInspection[];
-  counts: { decisions: number; drawings: number; photos: number; activities: number; materials: number; inspections: number };
+  counts: {
+    decisions: number; drawings: number; photos: number; activities: number; materials: number; inspections: number;
+    /** #633 — open issues here (see {@link openIssueCount}); null when a server older than the field sent the inspections */
+    openIssues: number | null;
+  };
 }
 
 const RELATION_RANK: Record<DrawingRelation, number> = { here: 0, detail: 1, inherited: 2 };
@@ -227,6 +231,21 @@ const RELATION_RANK: Record<DrawingRelation, number> = { here: 0, detail: 1, inh
  * (`inherited`, e.g. the floor plan), or on a descendant object (`detail`, e.g. a door
  * detail). `nodeId === null` means the whole project: everything, unfiled items included.
  */
+/**
+ * #633 — the ONE "open issue" count for a place: the items on its re-inspections not yet decided, as the
+ * server counts them per inspection (`openIssues`, the same rule as the Dashboard's "failed items awaiting
+ * re-inspection"). A row without the key comes from a server older than the field: the count is then
+ * unknown (null) and is never shown as a number.
+ */
+export function openIssueCount(inspections: PlacedInspection[]): number | null {
+  let n = 0;
+  for (const i of inspections) {
+    if (typeof i.openIssues !== 'number') return null;
+    n += i.openIssues;
+  }
+  return n;
+}
+
 export function placeContents(
   nodeId: string | null,
   nodes: ProjectNode[],
@@ -248,7 +267,7 @@ export function placeContents(
       activities: [...activities],
       materials: [...materials],
       inspections: [...inspections],
-      counts: { decisions: decisions.length, drawings: drawings.length, photos: photos.length, activities: activities.length, materials: materials.length, inspections: inspections.length },
+      counts: { decisions: decisions.length, drawings: drawings.length, photos: photos.length, activities: activities.length, materials: materials.length, inspections: inspections.length, openIssues: openIssueCount(inspections) },
     };
   }
 
@@ -281,7 +300,7 @@ export function placeContents(
     activities: activitiesHere,
     materials: materialsHere,
     inspections: inspectionsHere,
-    counts: { decisions: decisionsHere.length, drawings: placedDrawings.length, photos: photosHere.length, activities: activitiesHere.length, materials: materialsHere.length, inspections: inspectionsHere.length },
+    counts: { decisions: decisionsHere.length, drawings: placedDrawings.length, photos: photosHere.length, activities: activitiesHere.length, materials: materialsHere.length, inspections: inspectionsHere.length, openIssues: openIssueCount(inspectionsHere) },
   };
 }
 
