@@ -524,7 +524,7 @@ describe('AuthService — phone sign-in code by email routing (#827 one-screen s
 
   it('a redeemed code signs in exactly that account', async () => {
     const { auth, phoneSignIn } = make(fakePrisma([{ ...priya }], [{ ...priyaMember }]));
-    vi.spyOn(phoneSignIn, 'verify').mockResolvedValue('u1');
+    vi.spyOn(phoneSignIn, 'verify').mockResolvedValue({ kind: 'ok', userId: 'u1' });
     await expect(auth.verifyOtp({ phone: '9876543210', code: '1234', projectId: 'ambli' })).resolves.toMatchObject({ role: 'client', name: 'Priya' });
   });
 
@@ -532,7 +532,7 @@ describe('AuthService — phone sign-in code by email routing (#827 one-screen s
     process.env.AUTH_ALLOW_PHONE_SIGNUP = 'true';
     const prisma = fakePrisma();
     const { auth, phoneSignIn } = make(prisma);
-    vi.spyOn(phoneSignIn, 'verify').mockResolvedValue(null);
+    vi.spyOn(phoneSignIn, 'verify').mockResolvedValue({ kind: 'wrong' });
     await expect(auth.verifyOtp({ phone: '9000000000', code: '1234', projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
     expect(prisma.users).toHaveLength(0);
   });
@@ -545,6 +545,19 @@ describe('AuthService — phone sign-in code by email routing (#827 one-screen s
     await expect(auth.requestOtp({ phone: '9876543210', projectId: 'ambli' })).resolves.toMatchObject({ channel: 'telegram', codeLength: 4 });
     expect(request).not.toHaveBeenCalled();
   });
+
+  it('an emailed code still redeems after an SMS provider is switched on, and the SMS route answers the rest', async () => {
+    process.env.TELEGRAM_GATEWAY_TOKEN = 'tg';
+    const { auth, sms, phoneSignIn } = make(fakePrisma([{ ...priya }], [{ ...priyaMember }]));
+    const smsVerify = vi.spyOn(sms, 'verifyOtp');
+    vi.spyOn(phoneSignIn, 'verify').mockResolvedValueOnce({ kind: 'ok', userId: 'u1' });
+    await expect(auth.verifyOtp({ phone: '9876543210', code: '1234', projectId: 'ambli' })).resolves.toMatchObject({ name: 'Priya' });
+    expect(smsVerify).not.toHaveBeenCalled();
+    vi.spyOn(phoneSignIn, 'verify').mockResolvedValueOnce({ kind: 'none' });
+    smsVerify.mockResolvedValueOnce(false);
+    await expect(auth.verifyOtp({ phone: '9876543210', code: '9999', projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(smsVerify).toHaveBeenCalledWith('9876543210', '9999');
+  });
 });
 
 describe('ResendWait — the per-number wait for phone sign-in codes', () => {
@@ -553,6 +566,13 @@ describe('ResendWait — the per-number wait for phone sign-in codes', () => {
     expect(wait.claim('9876543210', 0)).toBe(true);
     expect(wait.claim('9876543210', 29_999)).toBe(false);
     expect(wait.claim('9876543210', 30_000)).toBe(true);
+  });
+
+  it('a released claim can be taken again at once (a send that did not happen)', () => {
+    const wait = new ResendWait(30_000);
+    expect(wait.claim('9876543210', 0)).toBe(true);
+    wait.release('9876543210');
+    expect(wait.claim('9876543210', 1)).toBe(true);
   });
 
   it('drops lapsed numbers, so cycling through numbers does not grow it without bound', () => {

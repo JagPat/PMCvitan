@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { PHONE_SIGN_IN_PURPOSE, PhoneSignInService, ResendWait } from '../../src/auth/phone-sign-in.service';
+import { lockUserCredential } from '../../src/common/credential-lock';
 
 /**
  * #827 one-screen sign-in, server unit (replaces #856). With mail configured and no SMS provider, a phone
@@ -18,7 +19,7 @@ describe('phone sign-in code by email (live PostgreSQL)', () => {
   const SMS_KEYS = ['MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'TELEGRAM_GATEWAY_TOKEN', 'FAST2SMS_API_KEY'];
   const saved: Record<string, string | undefined> = {};
   const run = Math.floor(Math.random() * 1e6).toString().padStart(6, '0');
-  const PHONE = { member: `91${run}01`, client: `91${run}02`, stranger: `91${run}03`, unknown: `91${run}04` };
+  const PHONE = { member: `91${run}01`, client: `91${run}02`, stranger: `91${run}03`, unknown: `91${run}04`, archived: `91${run}05` };
 
   beforeAll(async () => {
     for (const k of [...SMS_KEYS, 'THROTTLE_DISABLED', 'AUTH_ALLOW_PHONE_SIGNUP']) saved[k] = process.env[k];
@@ -37,6 +38,8 @@ describe('phone sign-in code by email (live PostgreSQL)', () => {
     await t.prisma.user.update({ where: { id: f.memberUser.id }, data: { phone: PHONE.member, emailVerifiedAt: new Date() } });
     await t.prisma.user.update({ where: { id: f.clientUser.id }, data: { phone: PHONE.client } });
     await t.prisma.user.update({ where: { id: f.strangerUser.id }, data: { phone: PHONE.stranger, emailVerifiedAt: new Date() } });
+    // `other` is an established account whose only access is project B; one case archives B for a while
+    await t.prisma.user.update({ where: { id: f.otherUser.id }, data: { phone: PHONE.archived, emailVerifiedAt: new Date() } });
   });
 
   afterAll(async () => {
@@ -49,6 +52,7 @@ describe('phone sign-in code by email (live PostgreSQL)', () => {
   });
 
   beforeEach(() => {
+    vi.restoreAllMocks();
     mailbox.length = 0;
     mailFails = false;
     // each case starts outside every number's resend wait
@@ -146,10 +150,102 @@ describe('phone sign-in code by email (live PostgreSQL)', () => {
     }
   });
 
-  it('two redemptions of one code at once sign in exactly once', async () => {
+  const ungrantedLocks = async (): Promise<number> => {
+    const rows = await t.prisma.$queryRawUnsafe<{ n: number }[]>('SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted');
+    return rows[0]?.n ?? 0;
+  };
+  /** Hold the member's credential lock until `release` is called. */
+  const holdCredentialLock = async (userId: string) => {
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    let taken!: () => void;
+    const isTaken = new Promise<void>((r) => { taken = r; });
+    const done = t.prisma.$transaction(async (tx) => {
+      await lockUserCredential(tx, userId);
+      taken();
+      await released;
+    }, { timeout: 20_000 });
+    await isTaken;
+    return { release, done };
+  };
+  /** Condition-based wait (never a fixed sleep) until `count` more lock waits than `baseline` are queued. */
+  const waitersQueued = async (baseline: number, count: number, pending: Promise<unknown>[]): Promise<void> => {
+    const state = { settled: false };
+    for (const p of pending) void p.then(() => { state.settled = true; }, () => { state.settled = true; });
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      if (state.settled) throw new Error('a redemption settled instead of waiting on the lock: the race shape was lost');
+      if ((await ungrantedLocks()) >= baseline + count) return;
+      if (Date.now() > deadline) throw new Error('the redemptions did not queue on the lock within 8s');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
+
+  it('two redemptions of one code, both queued on the credential lock before either runs, sign in exactly once', async () => {
     await ask(PHONE.member).expect(201);
     const { code } = mailbox[0];
-    const results = await Promise.all([redeem(PHONE.member, code), redeem(PHONE.member, code)]);
+    const baseline = await ungrantedLocks();
+    const hold = await holdCredentialLock(f.memberUser.id);
+    const both = [redeem(PHONE.member, code).then((r) => r), redeem(PHONE.member, code).then((r) => r)];
+    await waitersQueued(baseline, 2, both);
+    hold.release();
+    await hold.done;
+    const results = await Promise.all(both);
     expect(results.map((r) => r.status).sort()).toEqual([201, 401]);
+  });
+
+  it('a code that expires while its redemption waits on the lock is refused', async () => {
+    await ask(PHONE.member).expect(201);
+    const { code } = mailbox[0];
+    const baseline = await ungrantedLocks();
+    const hold = await holdCredentialLock(f.memberUser.id);
+    const pending = redeem(PHONE.member, code).then((r) => r);
+    await waitersQueued(baseline, 1, [pending]);
+    // the code was live when the redemption started and lapses while it is queued
+    const lapse = new Date(Date.now() + 300);
+    await t.prisma.passwordCredentialChallenge.updateMany({
+      where: { userId: f.memberUser.id, purpose: PHONE_SIGN_IN_PURPOSE, consumedAt: null },
+      data: { expiresAt: lapse },
+    });
+    while (Date.now() <= lapse.getTime() + 50) await new Promise((r) => setTimeout(r, 25));
+    hold.release();
+    await hold.done;
+    expect((await pending).status).toBe(401);
+  });
+
+  it('an account whose only access is an archived project is mailed nothing', async () => {
+    await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: new Date() } });
+    try {
+      await ask(PHONE.archived).expect(201);
+      expect(mailbox).toEqual([]);
+      expect(await liveChallenges(f.otherUser.id)).toBe(0);
+    } finally {
+      await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: null } });
+    }
+    // once the project is unarchived the same account is mailed again (outside the number's resend wait)
+    (t.app.get(PhoneSignInService) as unknown as { resendWait: ResendWait }).resendWait = new ResendWait();
+    await ask(PHONE.archived).expect(201);
+    expect(mailbox).toHaveLength(1);
+  });
+
+  it('when the code cannot be recorded, nothing is mailed and an immediate retry is allowed', async () => {
+    const prisma = t.app.get(PhoneSignInService) as unknown as { prisma: { $transaction: (...a: unknown[]) => unknown } };
+    vi.spyOn(prisma.prisma, '$transaction').mockRejectedValueOnce(new Error('connection lost'));
+    await ask(PHONE.member).expect(500);
+    expect(mailbox).toEqual([]);
+    await ask(PHONE.member).expect(201);
+    expect(mailbox).toHaveLength(1);
+    await redeem(PHONE.member, mailbox[0].code).expect(201);
+  });
+
+  it('an emailed code is still redeemed after an SMS provider is switched on', async () => {
+    await ask(PHONE.member).expect(201);
+    const { code } = mailbox[0];
+    process.env.TELEGRAM_GATEWAY_TOKEN = 'tg';
+    try {
+      await redeem(PHONE.member, code).expect(201);
+    } finally {
+      delete process.env.TELEGRAM_GATEWAY_TOKEN;
+    }
   });
 });

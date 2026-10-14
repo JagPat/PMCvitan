@@ -273,16 +273,19 @@ export class AuthService {
     return { sent: true, live: r.live, channel: r.channel, codeLength: 4, devCode: r.devCode };
   }
 
-  /** Complete a phone-OTP sign-in; provisions a site-engineer account on first use. */
+  /** Complete a phone-OTP sign-in; provisions a site-engineer account on first use. An emailed code stays
+   *  redeemable whatever the providers are now (SMS switched on, or another replica's settings): the durable
+   *  emailed challenge is checked first, and the SMS route answers whatever it does not redeem. */
   async verifyOtp(input: OtpVerifyInput): Promise<TokenResult> {
-    if (this.phoneCodeByEmail) {
+    const emailed = await this.phoneSignIn.verify(input.phone, input.code);
+    if (emailed.kind === 'ok') {
       // an emailed code signs in exactly the account it was redeemed for, and never provisions one
-      const userId = await this.phoneSignIn.verify(input.phone, input.code);
-      const user = userId ? await this.prisma.user.findUnique({ where: { id: userId } }) : null;
+      const user = await this.prisma.user.findUnique({ where: { id: emailed.userId } });
       if (!user) throw new UnauthorizedException('Invalid or expired code');
       const access = await this.signInAccess(user);
       return { token: this.issueNamedUser(user, access.role, access.projectId), role: access.role, projectId: access.projectId, name: user.name };
     }
+    if (this.phoneCodeByEmail) throw new UnauthorizedException('Invalid or expired code');
     if (!(await this.sms.verifyOtp(input.phone, input.code))) {
       throw new UnauthorizedException('Invalid or expired code');
     }
