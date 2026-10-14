@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: site-map-633
-reviewed_merge: 4a60d1a
-open_pr: 879
+reviewed_merge: 0936d32
+open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-14
@@ -26,9 +26,9 @@ updated: 2026-10-14
 
 ### Current unit
 
-**#633 unit B: "Colours mean" key and lock reasons** (#879, on `claude/project-thread-cm4aq9`): the Site Map names
-each status colour in words, and a locked decision's row says why and how to change it. Unit A merged as `4a60d1a`
-(#877). Lane 1; unit C (desktop tree layout) follows.
+**#633 unit C: desktop tree layout** (on `claude/project-thread-cm4aq9`): on a desktop-width screen the Site Map
+shows a "Places" tree beside the selected place, with the path to it open and each blocked or issue-carrying place
+flagged in words; phones keep the single column. Unit B merged as `0936d32` (#879), unit A as `4a60d1a` (#877). Lane 1.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.

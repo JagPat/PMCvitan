@@ -1,0 +1,37 @@
+/* #633 unit C (mockup 10) — the desktop Site Map: the places tree beside the opened place.
+   Below the desktop breakpoint (>1024, as in screens/responsive.module.css) the tree is hidden and the
+   content keeps its single column. */
+
+.layout {
+  display: block;
+}
+
+.main {
+  min-width: 0;
+}
+
+.tree {
+  display: none;
+}
+
+@media (min-width: 1025px) {
+  .layout {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: 24px;
+    align-items: start;
+    margin-top: 18px;
+  }
+
+  .tree {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    position: sticky;
+    top: 16px;
+    padding: 8px;
+    background: #fff;
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+  }
+}
