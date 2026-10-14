@@ -5,8 +5,8 @@ import { type ModuleManifest } from '@vitan/shared';
  * device's location, with whom, and the places walked.
  *
  * SV1-a is the record: the three tables, the rules PostgreSQL enforces on them, and the eight event
- * types each change is paired with. SV1-b's first unit adds the commands that start, end and close a
- * visit, and the members' read; adding and retiring places and attendees follow. The tables are
+ * types each change is paired with. SV1-b adds the commands that start, end and close a visit, the
+ * visitor's adding and retiring of places and attendees, and the members' read. The tables are
  * append-only and set-once (edits add or retire rows), so every change is attributed and timed in the
  * record itself.
  */
@@ -31,12 +31,19 @@ export const siteVisitsManifest: ModuleManifest = {
     'sitevisit.attendee_retired',
   ],
   consumesEvents: [],
-  commands: ['site-visits.start', 'site-visits.end', 'site-visits.close'],
+  commands: [
+    'site-visits.start', 'site-visits.end', 'site-visits.close',
+    'site-visits.add-place', 'site-visits.retire-place', 'site-visits.add-attendee', 'site-visits.retire-attendee',
+  ],
   queries: ['site-visits.list'],
   routes: [
     'POST /projects/:projectId/site-visits',
     'POST /projects/:projectId/site-visits/:visitId/end',
     'POST /projects/:projectId/site-visits/:visitId/close',
+    'POST /projects/:projectId/site-visits/:visitId/places',
+    'POST /projects/:projectId/site-visits/:visitId/places/:placeId/retire',
+    'POST /projects/:projectId/site-visits/:visitId/attendees',
+    'POST /projects/:projectId/site-visits/:visitId/attendees/:attendeeId/retire',
   ],
   permissions: ['pmc', 'consultant', 'architect'],
 };
