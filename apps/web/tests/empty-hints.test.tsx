@@ -26,6 +26,9 @@ describe('empty-screen lines', () => {
     const hint = view.getByTestId('empty-hint');
     expect(hint.textContent).toBe('To send the engineer something to check, tap + New checklist above.');
     expect(view.getByTestId('new-checklist').textContent).toContain('New checklist');
+    // inside the centred empty message, not left-aligned on its own under it
+    expect(hint.parentElement?.style.textAlign).toBe('center');
+    expect(hint.parentElement?.textContent).toContain('No inspections awaiting review');
   });
 
   it.each(['hi', 'gu'] as const)('the line is in %s, with no English words left in it', async (lang) => {

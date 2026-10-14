@@ -176,8 +176,8 @@ export function InspectionReviewScreen() {
         </div>
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
           No inspections awaiting review. Submitted checklists and closing inspections land here.
+          <EmptyHint task="checklist" />
         </div>
-        <EmptyHint task="checklist" />
         <OutstandingChecklists items={openChecklists} focused={routeChecklist} />
       </div>
     );
