@@ -274,10 +274,10 @@ export function rolesFor(rollout: Phase6_4dRollout): readonly Role[] {
 }
 
 export const ROLE_SUBTITLE: Record<Role, string> = {
-  pmc: 'Architect · full access',
+  pmc: 'Project manager · full access',
   client: 'Owner · Mr. & Mrs. Shah',
   engineer: 'Site Engineer · Ramesh',
-  contractor: 'Contractor · read-only',
+  contractor: 'Contractor · builds and fixes on site',
   consultant: 'Discipline consultant · reviews',
   architect: 'Architect · countersigns decisions',
 };
