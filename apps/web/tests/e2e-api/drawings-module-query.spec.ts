@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { openProject } from './landing';
+import { openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 2 Task 10 (Module 2 — Drawings) — the drawings MODULE-OWNED read, proven end-to-end over the
@@ -58,7 +59,7 @@ test.describe('drawings module-owned read (moduleQuery)', () => {
       .toBeGreaterThan(0);
 
     // onto the Drawings register — the seeded A-201 renders (served by the module read)
-    await page.getByRole('button', { name: 'Drawings' }).click();
+    await openNav(page, /^Drawings( \d+)?$/);
     await expect(page.getByText('DRAWINGS · REGISTER')).toBeVisible();
     await expect(page.getByTestId('drawing-A-201')).toBeVisible();
 
@@ -97,7 +98,7 @@ test.describe('drawings module-owned read (moduleQuery)', () => {
     await signIn(page, 'test-pmc@vitan.in');
     await openProject(page, 'Residence at Ambli'); // where the register lives
 
-    await page.getByRole('button', { name: 'Drawings' }).click();
+    await openNav(page, /^Drawings( \d+)?$/);
     await expect(page.getByText('DRAWINGS · REGISTER')).toBeVisible();
     await expect.poll(() => drawingGETs.length).toBeGreaterThan(0);
     const getsBefore = drawingGETs.length;

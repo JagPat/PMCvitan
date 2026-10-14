@@ -35,6 +35,9 @@ export const MOBILE_ROLE_PRIMARY: Partial<Record<Role, readonly ScreenKey[]>> = 
   // Board decision 14 Oct 2026 (#482): the PMC reaches the Daily Site Log from its bar, beside the Site Map
   // (#633, the main way around a project). Schedule and Portfolio stay one tap away behind More.
   pmc: ['dashboard', 'inbox', 'daily-log', 'places'],
+  // #482 QA item 2 (coordinator call, 14 Oct 2026): the contractor's bar is Dashboard · For You · Site Map ·
+  // Drawings; Decisions (and Site Visits, where the server lets them read it) sit behind More
+  contractor: ['dashboard', 'inbox', 'places', 'drawings'],
 };
 
 /** The bar/More label for a screen, in the viewer's language (the engineer's two fixed tabs carry

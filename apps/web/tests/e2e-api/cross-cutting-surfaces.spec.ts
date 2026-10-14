@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 2 Task 10 FINALIZATION — the three CROSS-CUTTING surfaces (Inbox "For You", Dashboard,
@@ -106,7 +107,7 @@ test.describe('cross-cutting surfaces under all-module reads', () => {
     // the weightless-draft rule across surfaces: the seeded author-private draft (DL-015, status
     // pending, unpublished) must not inflate the portfolio count the way the pre-finalization
     // countPending did (it counted drafts; shell/dashboard/inbox all excluded them).
-    await page.getByRole('button', { name: 'Portfolio' }).click();
+    await openNav(page, /^Portfolio( \d+)?$/);
     await expect(page.getByTestId(`portfolio-${A}`)).toBeVisible();
     await expect(page.getByTestId('portfolio-test-empty-site')).toBeVisible();
     await expect(page.getByTestId(`portfolio-${A}-decisions`)).toHaveText(`${awaitingFromModuleRead} decisions`);

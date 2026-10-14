@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { attemptName } from './attempt-name';
+import { navButton, openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 5 Task 7B-iv (§M) — the pilot COMMERCIAL acceptance chain: REAL browser, live PostgreSQL,
@@ -71,7 +72,7 @@ async function signInToProject(page: Page, email: string, projectName: string): 
 }
 
 async function openCommercial(page: Page): Promise<void> {
-  await page.getByRole('navigation').getByRole('button', { name: /Commercial|Money/ }).click();
+  await openNav(page, /Commercial|Money/);
   await expect(page.getByTestId('commercial-tab-claims')).toBeVisible();
 }
 
@@ -399,7 +400,7 @@ test('PILOT §M chain: browser VERIFIES → CERTIFIES → WITHHOLDS → APPROVES
 test('NON-PILOT: the Commercial surface is ABSENT, and its reads 404', async ({ page, request }) => {
   await signInToProject(page, PMC, plainName);
   await expect(
-    page.getByRole('navigation').getByRole('button', { name: /Commercial|Money/ }),
+    await navButton(page, /Commercial|Money/),
     'no capability, no nav',
   ).toHaveCount(0);
 

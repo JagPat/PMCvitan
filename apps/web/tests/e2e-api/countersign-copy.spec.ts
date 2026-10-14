@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { openProject } from './landing';
+import { openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 6 task 4d-ii-b / B4 — the copy and the withdraw rule over the REAL stack with the six reservation
@@ -29,7 +30,7 @@ test('with the doors standing, the client’s confirmation reads the delivered c
   await page.goto('/');
   await signIn(page, CLIENT);
   await openProject(page, 'Residence at Ambli');
-  await page.getByRole('navigation').getByRole('button', { name: /^Decisions( \d+)?$/ }).click();
+  await openNav(page, /^Decisions( \d+)?$/);
   // the first option of the first pending card opens the confirmation; nothing is approved here
   const approve = page.locator('[data-testid^="approve-DL-"]').first();
   await expect(approve).toBeVisible();
@@ -46,7 +47,7 @@ test('with the doors standing, the PMC’s register offers Withdraw on the seede
   await signIn(page, PMC);
   // ambli holds the seeded reopened decision; sign-in opens the last project used (#811)
   await openProject(page, 'Residence at Ambli');
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  await openNav(page, /^Decision Log( \d+)?$/);
   await page.getByTestId('filter-change').click();
   const row = page.locator('[data-testid^="log-row-"]').first();
   await expect(row).toBeVisible();

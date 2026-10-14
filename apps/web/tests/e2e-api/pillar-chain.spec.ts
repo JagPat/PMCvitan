@@ -1,5 +1,6 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
 import { loginTo } from './landing';
+import { openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 1 Task 7 — THE PILLAR CHAIN, browser-level, over the real stack
@@ -250,7 +251,7 @@ test('the chain is AUTHORED: decision, linked activity, frozen drawing, linked c
 test('the CLIENT approves in the browser — attributed, and the decision gate flips', async ({ page, request }) => {
   await ensureIds(request);
   await signInToChain(page, CLIENT, chainName);
-  await page.getByRole('navigation').getByRole('button', { name: /^Decisions( \d+)?$/ }).click();
+  await openNav(page, /^Decisions( \d+)?$/);
   await expect(page.getByText('Chain floor finish')).toBeVisible();
   await page.getByTestId(`approve-${decisionId}-a`).click();
   await page.getByTestId('approve-lock').click();
@@ -266,7 +267,7 @@ test('the CLIENT approves in the browser — attributed, and the decision gate f
 test('the frozen distribution acknowledges — engineer in the browser, contractor over the API — and the drawing gate follows the set', async ({ page, request }) => {
   await ensureIds(request);
   await signInToChain(page, ENG, chainName);
-  await page.getByRole('button', { name: 'Drawings' }).click();
+  await openNav(page, /^Drawings( \d+)?$/);
   await page.getByTestId('drawing-CH-100').click();
   await page.getByTestId('ack-drawing').click();
   await expect(page.getByText(/acknowledged/i).first()).toBeVisible();
@@ -283,7 +284,7 @@ test('the ENGINEER fails an item with a REAL photo; the PMC rejects; the linked 
   await ensureIds(request);
   // the evidence rule end-to-end: the failed item carries a LINKED photo
   await signInToChain(page, ENG, chainName);
-  await page.getByRole('button', { name: "Today's Checklist" }).click();
+  await openNav(page, /^Today's Checklist( \d+)?$/);
   await expect(page.getByText('Chain quality check')).toBeVisible();
   await page.getByRole('button', { name: 'Fail' }).click();
   await page.getByPlaceholder(/describe the issue/i).fill('Hollow patch near the door');
@@ -302,7 +303,7 @@ test('the ENGINEER fails an item with a REAL photo; the PMC rejects; the linked 
 
   // the PMC rejects the failed work in the browser
   await signInToChain(page, PMC, chainName);
-  await page.getByRole('button', { name: 'Inspection Review' }).click();
+  await openNav(page, /^Inspection Review( \d+)?$/);
   await expect(page.getByText('Chain quality check').first()).toBeVisible();
   await page.getByRole('button', { name: 'Reject item' }).click(); // the PMC NAMES the rejected work
   // the mark is store-only until Send; a relay-driven refresh landing here used to wipe it
@@ -340,7 +341,7 @@ test('the engineer PASSES the reinspection with evidence; the PMC accepts; the a
   await ensureIds(request);
   // engineer corrects the work: pass WITH a supporting photo
   await signInToChain(page, ENG, chainName);
-  await page.getByRole('button', { name: "Today's Checklist" }).click();
+  await openNav(page, /^Today's Checklist( \d+)?$/);
   await expect(page.getByText('Re-inspection: Chain quality check')).toBeVisible();
   await page.getByRole('button', { name: 'Pass' }).click(); // mark FIRST — the upload's snapshot refresh preserves marks
   await page.getByTestId('evidence-file-input').setInputFiles({ name: 'fixed.png', mimeType: 'image/png', buffer: PX });
@@ -353,14 +354,14 @@ test('the engineer PASSES the reinspection with evidence; the PMC accepts; the a
 
   // the PMC ACCEPTS the correction — the chain closes, the gate turns ok
   await signInToChain(page, PMC, chainName);
-  await page.getByRole('button', { name: 'Inspection Review' }).click();
+  await openNav(page, /^Inspection Review( \d+)?$/);
   await page.getByRole('button', { name: 'Approve Inspection' }).click();
   await expect(page.getByText(/approved/i).first()).toBeVisible();
   await pollGate(request, 'inspection', 'ok');
 
   // START in the browser — every derived gate now aligns
   await signInToChain(page, ENG, chainName);
-  await page.getByRole('button', { name: 'Site Schedule' }).click();
+  await openNav(page, /^Site Schedule( \d+)?$/);
   await page.getByTestId(`start-${activityId}`).click();
   await expect(page.getByRole('button', { name: /mark complete/i })).toBeVisible();
 
@@ -371,7 +372,7 @@ test('the engineer PASSES the reinspection with evidence; the PMC accepts; the a
 
   // ONLY the PMC's closing approval writes done
   await signInToChain(page, PMC, chainName);
-  await page.getByRole('button', { name: 'Inspection Review' }).click();
+  await openNav(page, /^Inspection Review( \d+)?$/);
   await expect(page.getByTestId('closing-signoff-label')).toBeVisible();
   await page.getByRole('button', { name: 'Approve Inspection' }).click();
   await pollStatus(request, 'done');
@@ -386,7 +387,7 @@ test('the CHANGE LOOP: a change request reverts readiness; the client re-approve
   await pollGate(request, 'decision', 'wait'); // the reopening reverts readiness automatically
 
   await signInToChain(page, CLIENT, chainName);
-  await page.getByRole('navigation').getByRole('button', { name: /^Decisions( \d+)?$/ }).click();
+  await openNav(page, /^Decisions( \d+)?$/);
   await page.getByTestId(`approve-${decisionId}-a`).click();
   await page.getByTestId('approve-lock').click();
   await expect(page.getByText(/approved/i).first()).toBeVisible();
@@ -489,11 +490,11 @@ test('OFFLINE EVIDENCE: a captured photo survives a reload and replays exactly o
   await signInToChain(page, ENG, chainName);
 
   // go OFFLINE (the app's own connectivity switch — the queue is the contract)
-  await page.getByRole('button', { name: 'Daily Site Log' }).click();
+  await openNav(page, /^Daily Site Log( \d+)?$/);
   await page.getByTestId('toggle-online').click();
 
   // an OVERSIZED capture is refused loudly and queues nothing
-  await page.getByRole('button', { name: "Today's Checklist" }).click();
+  await openNav(page, /^Today's Checklist( \d+)?$/);
   await expect(page.getByText('Offline capture check')).toBeVisible();
   await page.getByTestId('evidence-file-input').setInputFiles({ name: 'huge.png', mimeType: 'image/png', buffer: Buffer.alloc(5 * 1024 * 1024, 7) });
   await expect(page.getByText(/too large/i).first()).toBeVisible();
@@ -517,7 +518,7 @@ test('OFFLINE EVIDENCE: a captured photo survives a reload and replays exactly o
 
   // back online → the replay uploads EXACTLY once (project-scoped clientKey dedupe).
   // Boot resets online=true without flushing — cycle the switch to trigger the flush.
-  await page.getByRole('button', { name: 'Daily Site Log' }).click();
+  await openNav(page, /^Daily Site Log( \d+)?$/);
   await expect(page.getByTestId('conn-text')).toBeVisible();
   await page.getByTestId('toggle-online').click(); // → offline
   await page.getByTestId('toggle-online').click(); // → online: flush
@@ -530,16 +531,16 @@ test('OFFLINE EVIDENCE: a captured photo survives a reload and replays exactly o
     .toBe(1);
 
   // a TERMINAL non-dedupe 4xx must dead-letter, not delete: capture offline, fail the replay once
-  await page.getByRole('button', { name: 'Daily Site Log' }).click();
+  await openNav(page, /^Daily Site Log( \d+)?$/);
   await page.getByTestId('toggle-online').click(); // offline again
-  await page.getByRole('button', { name: "Today's Checklist" }).click();
+  await openNav(page, /^Today's Checklist( \d+)?$/);
   await page.getByTestId('evidence-file-input').setInputFiles({ name: 'second.png', mimeType: 'image/png', buffer: PX });
   await expect(page.getByText(/saved offline/i).first()).toBeVisible();
 
   await page.route('**/media', (route) => route.fulfill({ status: 403, contentType: 'application/json', body: '{"message":"forbidden"}' }));
-  await page.getByRole('button', { name: 'Daily Site Log' }).click();
+  await openNav(page, /^Daily Site Log( \d+)?$/);
   await page.getByTestId('toggle-online').click(); // replay → 403 → FAILED state, bytes retained
-  await page.getByRole('button', { name: "Today's Checklist" }).click();
+  await openNav(page, /^Today's Checklist( \d+)?$/);
   await expect(page.getByTestId('evidence-failed')).toBeVisible();
 
   // the user's RETRY re-uses the same key once the server accepts again

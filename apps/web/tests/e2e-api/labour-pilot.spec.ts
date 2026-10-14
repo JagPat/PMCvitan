@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import { execSync } from 'node:child_process';
+import { navButton, openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 4 Task 6 (§J) — the pilot LABOUR acceptance chain, in a REAL browser over live PostgreSQL,
@@ -71,7 +72,7 @@ async function signInToProject(page: Page, email: string, projectName: string): 
 }
 
 async function openLabour(page: Page): Promise<void> {
-  await page.getByRole('navigation').getByRole('button', { name: /Labour/ }).click();
+  await openNav(page, /Labour/);
   await expect(page.getByTestId('labour-summary')).toBeVisible();
 }
 
@@ -244,7 +245,7 @@ test('PILOT: the Team roster section onboards a worker against the catalog', asy
   await post(request, pmcPilot, `/projects/${pilotId}/labour/trades`, { code: tradeCode, name: `Carpenter ${tag}` });
 
   await signInToProject(page, PMC, PILOT_NAME);
-  await page.getByRole('navigation').getByRole('button', { name: /Team/, exact: false }).first().click();
+  await openNav(page, /Team/);
   await expect(page.getByTestId('labour-roster')).toBeVisible();
   await page.getByTestId('labour-worker-name').fill(`Roster ${tag}`);
   await page.getByTestId('labour-worker-trade').selectOption(tradeCode);
@@ -258,7 +259,7 @@ test('PILOT: the Team roster section onboards a worker against the catalog', asy
 
 test('INERT: a non-pilot project has NO Labour nav, a direct /labour deep link is BOUNCED, and the labour read 404s', async ({ page, request }) => {
   await signInToProject(page, PMC, PLAIN_NAME);
-  await expect(page.getByRole('navigation').getByRole('button', { name: /Labour/ })).toHaveCount(0);
+  await expect(await navButton(page, /Labour/)).toHaveCount(0);
   // Codex F-deeplink — a bookmarked /labour URL must never land on a permanently-loading hub. A
   // full reload drops the in-memory token (the project-scope deep-link pattern): sign in THROUGH
   // the gate with the deep link's URL standing. Once the shell reports no `labour` capability the
