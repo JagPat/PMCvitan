@@ -296,6 +296,7 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
 const NON_PILLAR_WRITERS: Record<string, string> = {
   'auth/auth.service.ts': 'identity provisioning — signInOrProvision creates User+Membership, workerToken creates WorkerDevice (see the provisioning-writes test below)',
   'auth/password-credentials.service.ts': 'identity security — durable challenge CAS, password establishment and security audit; no project signal',
+  'auth/phone-sign-in.service.ts': 'identity security — durable phone sign-in challenges under the credential lock and security audit; no project signal',
   'orgs/members.service.ts': 'project roster — writes orgs-owned User/Membership; no cross-domain write, no signal',
   'orgs/companies.service.ts': 'project roster — writes orgs-owned ProjectCompany; no cross-domain write, no signal',
   'orgs/invitations.service.ts': 'identity notice (Phase 7c-auth) — the post-commit invite mail for a roster write, writing only the SHARED SecurityAuditEvent trail; reads orgs-owned User fields, no domain table, no signal',

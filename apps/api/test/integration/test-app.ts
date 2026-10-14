@@ -26,6 +26,8 @@ export interface TestApp {
  */
 export interface TestAppOptions {
   capturePasswordCode?: (email: string, code: string) => void;
+  /** #827 — mail is "configured" and phone sign-in codes are captured here instead of sent (throw to fail a send). */
+  capturePhoneCode?: (email: string, code: string) => void;
 }
 
 export async function createTestApp(options: TestAppOptions = {}): Promise<TestApp> {
@@ -33,12 +35,24 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
     throw new Error('Refusing to run integration tests: DATABASE_URL must point at a disposable *test* database');
   }
   const builder = Test.createTestingModule({ imports: [AppModule] });
-  if (options.capturePasswordCode) {
+  if (options.capturePasswordCode || options.capturePhoneCode) {
     const email = new EmailService();
-    email.sendPasswordCredentialCode = async (address, code) => {
-      options.capturePasswordCode!(address, code);
-      return { live: true };
-    };
+    if (options.capturePasswordCode) {
+      email.sendPasswordCredentialCode = async (address, code) => {
+        options.capturePasswordCode!(address, code);
+        return { live: true };
+      };
+    }
+    if (options.capturePhoneCode) {
+      // the real `sendPhoneSignInCode` runs (its 503 on a failed hand-over included); only the transport is replaced
+      Object.defineProperty(email, 'configured', { get: () => true });
+      (email as unknown as { tx: () => unknown }).tx = () => ({
+        sendMail: async (mail: { to: string; subject: string; text: string }) => {
+          const code = /sign-in code is (\d+)/.exec(mail.text)?.[1];
+          if (code) options.capturePhoneCode!(mail.to, code);
+        },
+      });
+    }
     builder.overrideProvider(EmailService).useValue(email);
   }
   const moduleRef = await builder.compile();

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import { ConflictException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
@@ -6,6 +6,7 @@ import { AuthService } from './auth.service';
 import { SmsService } from './sms.service';
 import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
+import { PhoneSignInService, ResendWait } from './phone-sign-in.service';
 import type { PrismaService } from '../prisma.service';
 
 interface FakeUser {
@@ -116,8 +117,9 @@ function make(prisma: ReturnType<typeof fakePrisma>) {
   const sms = new SmsService();
   const email = new EmailService();
   const google = new GoogleAuthService();
-  const auth = new AuthService(jwt, prisma as unknown as PrismaService, sms, email, google);
-  return { auth, jwt, sms, email, google };
+  const phoneSignIn = new PhoneSignInService(prisma as unknown as PrismaService, email);
+  const auth = new AuthService(jwt, prisma as unknown as PrismaService, sms, email, google, phoneSignIn);
+  return { auth, jwt, sms, email, google, phoneSignIn };
 }
 
 describe('AuthService.login', () => {
@@ -491,5 +493,109 @@ describe('AuthService — org-roster access resolution', () => {
     const { auth } = make(prisma);
     // explicit membership wins over the org-admin PMC reach (documented precedence)
     expect(await auth.switchProject('u1', 'ambli')).toMatchObject({ role: 'client' });
+  });
+});
+
+describe('AuthService — phone sign-in code by email routing (#827 one-screen sign-in)', () => {
+  // the code's storage, lock and account rules are PhoneSignInService's, proven on live PostgreSQL in
+  // test/integration/phone-sign-in.test.ts; this block proves which route AuthService takes and what it answers
+  const SMS_KEYS = ['MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'TELEGRAM_GATEWAY_TOKEN', 'FAST2SMS_API_KEY', 'AUTH_ALLOW_PHONE_SIGNUP'];
+  beforeEach(() => {
+    for (const k of SMS_KEYS) delete process.env[k];
+    process.env.SMTP_HOST = 'smtp.test';
+    process.env.SMTP_USER = 'u';
+    process.env.SMTP_PASS = 'p';
+  });
+  afterEach(() => {
+    for (const k of SMS_KEYS) delete process.env[k];
+    delete process.env.SMTP_HOST;
+    delete process.env.SMTP_USER;
+    delete process.env.SMTP_PASS;
+  });
+  const priya = { id: 'u1', projectId: 'ambli', role: 'client', name: 'Priya', email: 'priya@example.com', phone: '9876543210' };
+  const priyaMember = { projectId: 'ambli', userId: 'u1', role: 'client', status: 'active' };
+
+  it('with mail and no SMS, a request goes by email and answers channel "email" with a 4-digit code', async () => {
+    const { auth, phoneSignIn } = make(fakePrisma());
+    const request = vi.spyOn(phoneSignIn, 'request').mockResolvedValue();
+    await expect(auth.requestOtp({ phone: '9000000000', projectId: 'ambli', acceptEmailCode: true })).resolves.toEqual({ sent: true, live: true, channel: 'email', codeLength: 4 });
+    expect(request).toHaveBeenCalledWith('9000000000', expect.any(Function));
+  });
+
+  it('a screen that does not say it can show an emailed code keeps the SMS route, even with mail and no SMS', async () => {
+    const { auth, phoneSignIn } = make(fakePrisma());
+    const request = vi.spyOn(phoneSignIn, 'request');
+    await expect(auth.requestOtp({ phone: '9000000000', projectId: 'ambli' })).resolves.toMatchObject({ channel: 'stub' });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('the eligibility rule handed to the code service is the sign-in access rule', async () => {
+    const { auth, phoneSignIn } = make(fakePrisma([{ ...priya }], [{ ...priyaMember }]));
+    const request = vi.spyOn(phoneSignIn, 'request').mockResolvedValue();
+    await auth.requestOtp({ phone: '9876543210', projectId: 'ambli', acceptEmailCode: true });
+    const eligible = request.mock.calls[0][1];
+    await expect(eligible('u1')).resolves.toBe(true);
+    await expect(eligible('nobody')).resolves.toBe(false);
+  });
+
+  it('a redeemed code signs in exactly that account', async () => {
+    const { auth, phoneSignIn } = make(fakePrisma([{ ...priya }], [{ ...priyaMember }]));
+    vi.spyOn(phoneSignIn, 'verify').mockResolvedValue({ kind: 'ok', userId: 'u1' });
+    await expect(auth.verifyOtp({ phone: '9876543210', code: '1234', projectId: 'ambli' })).resolves.toMatchObject({ role: 'client', name: 'Priya' });
+  });
+
+  it('a code that does not redeem signs nobody in and never creates an account, even with phone signup on', async () => {
+    process.env.AUTH_ALLOW_PHONE_SIGNUP = 'true';
+    const prisma = fakePrisma();
+    const { auth, phoneSignIn } = make(prisma);
+    vi.spyOn(phoneSignIn, 'verify').mockResolvedValue({ kind: 'wrong' });
+    await expect(auth.verifyOtp({ phone: '9000000000', code: '1234', projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(prisma.users).toHaveLength(0);
+  });
+
+  it('with an SMS provider configured, the SMS route and its 4-digit code are used', async () => {
+    process.env.TELEGRAM_GATEWAY_TOKEN = 'tg';
+    const { auth, sms, phoneSignIn } = make(fakePrisma());
+    const request = vi.spyOn(phoneSignIn, 'request');
+    (sms as unknown as { sendViaTelegram: () => Promise<void> }).sendViaTelegram = async () => {};
+    await expect(auth.requestOtp({ phone: '9876543210', projectId: 'ambli', acceptEmailCode: true })).resolves.toMatchObject({ channel: 'telegram', codeLength: 4 });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('an emailed code still redeems after an SMS provider is switched on, and the SMS route answers the rest', async () => {
+    process.env.TELEGRAM_GATEWAY_TOKEN = 'tg';
+    const { auth, sms, phoneSignIn } = make(fakePrisma([{ ...priya }], [{ ...priyaMember }]));
+    const smsVerify = vi.spyOn(sms, 'verifyOtp');
+    vi.spyOn(phoneSignIn, 'verify').mockResolvedValueOnce({ kind: 'ok', userId: 'u1' });
+    await expect(auth.verifyOtp({ phone: '9876543210', code: '1234', projectId: 'ambli' })).resolves.toMatchObject({ name: 'Priya' });
+    expect(smsVerify).not.toHaveBeenCalled();
+    vi.spyOn(phoneSignIn, 'verify').mockResolvedValueOnce({ kind: 'none' });
+    smsVerify.mockResolvedValueOnce(false);
+    await expect(auth.verifyOtp({ phone: '9876543210', code: '9999', projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(smsVerify).toHaveBeenCalledWith('9876543210', '9999');
+  });
+});
+
+describe('ResendWait — the per-number wait for phone sign-in codes', () => {
+  it('refuses a second send inside the wait and allows it after', () => {
+    const wait = new ResendWait(30_000);
+    expect(wait.claim('9876543210', 0)).toBe(true);
+    expect(wait.claim('9876543210', 29_999)).toBe(false);
+    expect(wait.claim('9876543210', 30_000)).toBe(true);
+  });
+
+  it('a released claim can be taken again at once (a send that did not happen)', () => {
+    const wait = new ResendWait(30_000);
+    expect(wait.claim('9876543210', 0)).toBe(true);
+    wait.release('9876543210');
+    expect(wait.claim('9876543210', 1)).toBe(true);
+  });
+
+  it('drops lapsed numbers, so cycling through numbers does not grow it without bound', () => {
+    const wait = new ResendWait(30_000);
+    for (let i = 0; i < 100; i += 1) wait.claim(`90000000${String(i).padStart(2, '0')}`, 0);
+    expect(wait.size).toBe(100);
+    wait.claim('9876543210', 30_000);
+    expect(wait.size).toBe(1);
   });
 });

@@ -56,7 +56,7 @@ function make(
   orgMemberships: Parameters<typeof fakePrisma>[2] = [],
   projects: Parameters<typeof fakePrisma>[3] = [],
 ) {
-  return new AuthService(jwt, fakePrisma(memberships, users, orgMemberships, projects) as unknown as PrismaService, new SmsService(), new EmailService(), new GoogleAuthService());
+  return new AuthService(jwt, fakePrisma(memberships, users, orgMemberships, projects) as unknown as PrismaService, new SmsService(), new EmailService(), new GoogleAuthService(), {} as never);
 }
 
 describe('AuthService.switchProject', () => {

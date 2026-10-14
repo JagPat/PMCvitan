@@ -122,6 +122,25 @@ export class EmailService {
     return this.otp.verify(email.trim().toLowerCase(), code);
   }
 
+  /** #827 one-screen sign-in: mail a phone sign-in code (its lifecycle is `PhoneSignInService`'s; nothing is kept
+   *  here). Throws 503 when the mail cannot be handed over, so the caller never claims a code is on its way. */
+  async sendPhoneSignInCode(email: string, code: string): Promise<void> {
+    const to = email.trim().toLowerCase();
+    try {
+      await this.tx().sendMail({
+        from: this.from,
+        to,
+        subject: 'Your Vitan PMC sign-in code',
+        text: `Your Vitan PMC sign-in code is ${code}. It expires in 10 minutes. If you didn't try to sign in, ignore this email.`,
+        html: `<p>Your Vitan PMC sign-in code is <b style="font-size:20px;letter-spacing:2px">${code}</b>.</p><p>It expires in 10 minutes. If you didn't try to sign in, ignore this email.</p>`,
+      });
+    } catch (error) {
+      const smtpCode = (error as { code?: unknown }).code;
+      this.log.error(`Phone sign-in email failed: ${(error as Error).constructor.name}${typeof smtpCode === 'string' ? ` (${smtpCode})` : ''}`);
+      throw new ServiceUnavailableException('Could not send the sign-in code. Please try again.');
+    }
+  }
+
   /** Deliver a code whose lifecycle is owned by the durable credential service.
    * It is deliberately never copied into the legacy in-memory sign-in OTP store. */
   async sendPasswordCredentialCode(email: string, code: string): Promise<PasswordCredentialEmailResult> {
