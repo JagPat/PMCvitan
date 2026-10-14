@@ -308,6 +308,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'withdrawn' #2": 'excludes: the withdrawal reason',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'change'": 'excludes: the open change request’s panel, shown only while reopened',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'change' #2": 'excludes: the change-request affordances, only on a reopened row',
+    "apps/web/src/screens/PlacesScreen.tsx :: d.status === 'approved'": 'excludes: the Site Map lock line marks a FINAL approval, as the Decision Log lock does; an uncountersigned one is provisional',
+    "apps/web/src/screens/PlacesScreen.tsx :: d.status === 'approved' #2": 'excludes: the lock reason is the row’s accessible description only where the lock line shows (the same FINAL-approval rule)',
     "apps/web/src/screens/ScheduleScreen.tsx :: d.status !== 'withdrawn'": 'excludes: the withdrawn arm of the schedule’s decision list',
     "apps/web/src/screens/TeamAccessScreen.tsx :: d.status === 'approved'": 'excludes: the welcome sample of FINAL approvals',
     "apps/web/src/screens/modals/AddMaterialModal.tsx :: d.status !== 'withdrawn'": 'excludes: the withdrawn arm of the provenance picker (the server refuses a provisional head anyway, A4b)',
