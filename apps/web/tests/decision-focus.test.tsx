@@ -154,3 +154,16 @@ describe('#482 follow-up — Withdraw on the waiting card matches what the serve
     expect(r.getByTestId('edit-state-D-3').textContent).toContain('You asked for this change');
   });
 });
+
+describe('#482 follow-up — opening another decision starts its actions afresh (Codex 4277101136)', () => {
+  it('a Forward form left open on one decision does not carry over to the next one opened', async () => {
+    const { useStore, Screen, r } = await load({ decisionFocus: 'D-1', sessionUserId: 'u-client', phase6_4dRollout: 'open' });
+    fireEvent.click(r.getByTestId('forward-D-1'));
+    fireEvent.change(r.getByTestId('chain-reason-D-1'), { target: { value: 'meant for D-1' } });
+    useStore.getState().openDecision('D-2');
+    r.rerender(<Screen />);
+    expect(r.getByTestId('decision-focus').dataset.decision).toBe('D-2');
+    expect(r.queryByTestId('chain-panel-D-2')).toBeNull();
+    expect(r.queryByTestId('chain-reason-D-2')).toBeNull();
+  });
+});

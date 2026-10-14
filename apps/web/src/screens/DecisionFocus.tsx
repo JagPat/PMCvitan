@@ -50,7 +50,8 @@ export function DecisionFocus({ d, reopened }: { d: Decision; reopened: boolean 
           {d.changeRequest && <ChangeRequestContext d={d} />}
         </>
       )}
-      <WaitingCardActions d={d} />
+      {/* keyed by the decision: a half-written advice reply or Forward form never carries over to the next decision opened */}
+      <WaitingCardActions key={d.id} d={d} />
 
       <div className={styles.options} role="radiogroup" aria-label={d.title}>
         {d.options.map((o, i) => (
