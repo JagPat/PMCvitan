@@ -93,9 +93,12 @@ test.describe('cross-cutting surfaces under all-module reads', () => {
       `${pendingFromModuleRead} decision${pendingFromModuleRead === 1 ? '' : 's'} awaiting the client`,
     );
 
-    // DASHBOARD — the pending tile shows the same module-read-served count.
+    // DASHBOARD — the pending tile shows the same module-read-served count, with any decision reopened by a
+    // change request (#633: it awaits re-approval, so it is awaiting action too).
+    const reopenedFromModuleRead = (decisionsPayload!.decisions ?? []).filter((d) => d.status === 'change' && !d.draft).length;
+    const awaitingFromModuleRead = pendingFromModuleRead + reopenedFromModuleRead;
     await page.getByRole('button', { name: 'Dashboard' }).click();
-    await expect(page.getByTestId('tile-pending-value')).toHaveText(String(pendingFromModuleRead));
+    await expect(page.getByTestId('tile-pending-value')).toHaveText(String(awaitingFromModuleRead));
     // the review tile renders a number (inspections module read serving the review queue)
     await expect(page.getByTestId('tile-review-value')).toHaveText(/^\d+$/);
 
@@ -107,6 +110,6 @@ test.describe('cross-cutting surfaces under all-module reads', () => {
     await page.getByRole('button', { name: 'Portfolio' }).click();
     await expect(page.getByTestId(`portfolio-${A}`)).toBeVisible();
     await expect(page.getByTestId('portfolio-test-empty-site')).toBeVisible();
-    await expect(page.getByTestId(`portfolio-${A}-decisions`)).toHaveText(`${pendingFromModuleRead} decisions`);
+    await expect(page.getByTestId(`portfolio-${A}-decisions`)).toHaveText(`${awaitingFromModuleRead} decisions`);
   });
 });

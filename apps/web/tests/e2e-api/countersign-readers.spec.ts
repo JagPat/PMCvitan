@@ -35,7 +35,7 @@ const navButton = (page: Page, label: string) => page.locator('nav button').filt
 const badgeOf = async (page: Page, label: string): Promise<string> =>
   ((await navButton(page, label).innerText()).replace(label, '').trim());
 
-test('with the doors standing, the client’s approval badge is the shell’s countPending plus their re-approvals, and the register answers awaiting_countersign with no row carrying it', async ({ page, request }) => {
+test('with the doors standing, the client’s approval badge is the shell’s countPending (new and reopened approvals), and the register answers awaiting_countersign with no row carrying it', async ({ page, request }) => {
   // the server's side of the relation, read independently of the app
   const cli = await loginTo(request, CLIENT, A);
   const headers = { Authorization: `Bearer ${cli.token}`, 'x-vitan-decisions-contract': 'countersign-v1' };
@@ -48,8 +48,9 @@ test('with the doors standing, the client’s approval badge is the shell’s co
   const decisions = ((await snapshot.json()) as { decisions: { status: string; deciderKind?: string; draft?: boolean }[] }).decisions;
   const pending = decisions.filter((d) => d.status === 'pending' && !d.draft && (d.deciderKind ?? 'client') === 'client').length;
   const reapprovals = decisions.filter((d) => d.status === 'change' && !d.draft && (d.deciderKind ?? 'client') === 'client').length;
-  // the server's countPending for the client is exactly their pending approvals (no countersign arm can be non-zero)
-  expect(shellJson.counts.pendingDecisions).toBe(pending);
+  // the server's countPending for the client is exactly their pending approvals and re-approvals (#633: a reopened
+  // decision awaits action too; no countersign arm can be non-zero)
+  expect(shellJson.counts.pendingDecisions).toBe(pending + reapprovals);
   expect(pending).toBeGreaterThan(0);
   expect(decisions.some((d) => d.status === 'awaiting_countersign')).toBe(false);
 
@@ -57,9 +58,9 @@ test('with the doors standing, the client’s approval badge is the shell’s co
   await signIn(page, CLIENT);
   await openProject(page, 'Residence at Ambli');
 
-  // the approval badge: the shell's count plus the re-approvals — never an awaiting row (there is none)
+  // the approval badge: the shell's count, which now carries the re-approvals — never an awaiting row (there is none)
   await expect(navButton(page, 'Decisions Waiting')).toBeVisible();
-  await expect.poll(() => badgeOf(page, 'Decisions Waiting')).toBe(String(shellJson.counts.pendingDecisions + reapprovals));
+  await expect.poll(() => badgeOf(page, 'Decisions Waiting')).toBe(String(shellJson.counts.pendingDecisions));
   // the Decision Log badge is the viewer's countersign obligations — a client has none, and no row is awaiting
   expect(await badgeOf(page, 'Decision Log')).toBe('');
 

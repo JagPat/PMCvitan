@@ -40,15 +40,15 @@ function decisions(seed: Decision): Decision[] {
 }
 
 describe('selectDecisionsAwaitingAction mirrors the server countPending, arm by arm', () => {
-  it('pmc: every published pending decision plus the stranded countersigns — no change, held-awaiting or draft', async () => {
+  it('pmc: every published pending or reopened decision plus the stranded countersigns — no held-awaiting or draft', async () => {
     const { useStore } = await demo();
     const sel = await import('@/store/selectors');
     useStore.setState({ role: 'pmc', decisions: decisions(useStore.getState().decisions[0]) });
     expect(sel.selectDecisionsAwaitingAction(useStore.getState()).map((d) => d.id).sort())
-      .toEqual(['A-STRANDED', 'P-ARCH', 'P-CLIENT', 'P-MEMBER', 'P-PMC']);
+      .toEqual(['A-STRANDED', 'C-CLIENT', 'P-ARCH', 'P-CLIENT', 'P-MEMBER', 'P-PMC']);
   });
 
-  it('client / member / architect: their own decider-scoped pending, and the architect every countersign', async () => {
+  it('client / member / architect: their own decider-scoped pending and reopened, and the architect every countersign', async () => {
     const { useStore } = await demo();
     const sel = await import('@/store/selectors');
     const rows = decisions(useStore.getState().decisions[0]);
@@ -56,7 +56,7 @@ describe('selectDecisionsAwaitingAction mirrors the server countPending, arm by 
       useStore.setState({ decisions: rows, ...over });
       return sel.selectDecisionsAwaitingAction(useStore.getState()).map((d) => d.id).sort();
     };
-    expect(ids({ role: 'client', sessionUserId: 'u-client' })).toEqual(['P-CLIENT']);
+    expect(ids({ role: 'client', sessionUserId: 'u-client' })).toEqual(['C-CLIENT', 'P-CLIENT']);
     expect(ids({ role: 'engineer', sessionUserId: 'u-eng' })).toEqual(['P-MEMBER']);
     expect(ids({ role: 'contractor', sessionUserId: 'u-con' })).toEqual([]);
     expect(ids({ role: 'architect', sessionUserId: 'u-arch' })).toEqual(['A-HELD', 'A-STRANDED', 'P-ARCH']);
@@ -118,9 +118,9 @@ describe('the live Dashboard tiles', () => {
     return { useStore, r: render(<DashboardScreen />) };
   }
 
-  it('the decisions tile is the countPending number (pending + stranded), labelled for any decider', async () => {
+  it('the decisions tile is the countPending number (pending, reopened and stranded), labelled for any decider', async () => {
     const { r } = await live({});
-    expect(r.getByTestId('tile-pending-value').textContent).toBe('5');
+    expect(r.getByTestId('tile-pending-value').textContent).toBe('6');
     expect(r.getByText('DECISIONS AWAITING APPROVAL')).toBeInTheDocument();
     expect(r.queryByText(/PENDING WITH CLIENT/)).not.toBeInTheDocument();
   });
@@ -139,7 +139,7 @@ describe('the live Dashboard tiles', () => {
     const failed = await live({ inspectionsLoad: 'error' });
     expect(failed.r.getByTestId('tile-review-value').textContent).toBe('—');
     expect(failed.r.getAllByText('Could not load — try again').length).toBe(2);
-    expect(failed.r.getByTestId('tile-pending-value').textContent).toBe('5');
+    expect(failed.r.getByTestId('tile-pending-value').textContent).toBe('6');
   });
 });
 

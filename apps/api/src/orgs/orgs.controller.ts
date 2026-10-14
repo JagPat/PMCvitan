@@ -43,7 +43,7 @@ export class OrgsController {
   @Get('me/portfolio')
   @StripsArchitectRows()
   portfolio(@CurrentUser() user: AuthUser) {
-    return this.orgs.portfolio(user.sub);
+    return this.orgs.portfolio(user.sub, user.decisionsContract);
   }
 
   /** U3a — the PMC's daily brief across every project they run as PMC (the portfolio's reach,

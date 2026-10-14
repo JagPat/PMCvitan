@@ -10,6 +10,7 @@ import { SignedUrlService } from '../media/signed-url.service';
 import { SNAPSHOT_SITE_PHOTO_LIMIT } from '@vitan/shared';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
+import type { DecisionsContract } from '../common/decisions-contract';
 import type { ProjectShellCounts, SnapshotDto } from './types';
 import { readViewerFeed, servedNotifications } from './served-notifications';
 
@@ -40,7 +41,7 @@ export class SnapshotService {
    * The `pendingDecisions` count is served from the decisions projection with the SAME role authz as
    * the snapshot (non-pmc/client see 0), so the nav badge is projection-driven, never an RBAC bypass.
    */
-  async shellSummary(projectId: string, role: Role, userId?: string): Promise<ProjectShellCounts> {
+  async shellSummary(projectId: string, role: Role, userId?: string, contract?: DecisionsContract): Promise<ProjectShellCounts> {
     const project = await this.prisma.project.findUnique({
       where: { id: projectId },
       select: { id: true, name: true, descriptor: true, stage: true, siteCode: true, org: { select: { id: true, name: true } } },
@@ -53,7 +54,7 @@ export class SnapshotService {
     // Phase 6 task 4d (§A.1) — the badge is the decisions module's `countPending`, the SAME count the
     // Portfolio tile shows: the published decisions awaiting THIS viewer, countersign obligations
     // included (#561's review round 1, finding 6: the shell used to count visible pending rows itself)
-    const pendingDecisions = await this.decisionsQuery.countPending(projectId, { role, userId });
+    const pendingDecisions = await this.decisionsQuery.countPending(projectId, { role, userId, contract });
     return {
       id: project.id,
       name: project.name,
