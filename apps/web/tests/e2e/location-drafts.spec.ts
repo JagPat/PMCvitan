@@ -6,7 +6,7 @@ test('location drafts: a PMC builds a location privately, then publishes it live
   // A seeded DRAFT location (Basement) must NOT appear on the shared Site Map yet.
   await page.getByRole('button', { name: 'Site Map' }).click();
   await expect(page.getByText('BY LOCATION')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Ground Floor' })).toBeVisible(); // published tree is there
+  await expect(page.getByTestId('place-node-z-gf')).toBeVisible(); // published tree is there
   await expect(page.getByText('Basement', { exact: true })).toHaveCount(0); // the draft is hidden
 
   // The PMC opens the full Locations editor from the Site Map (audit B3) — the draft's private home.
@@ -25,5 +25,5 @@ test('location drafts: a PMC builds a location privately, then publishes it live
   // exact: a Site Map card's name now carries its derived status ("… Done 1/1 done", B8)
   await page.getByRole('button', { name: 'Done', exact: true }).click();
   await page.getByRole('button', { name: 'Site Map' }).click();
-  await expect(page.getByRole('button', { name: 'Basement' })).toBeVisible();
+  await expect(page.getByTestId('place-node-z-basement')).toBeVisible();
 });
