@@ -323,6 +323,41 @@ describe('#827 one-screen sign-in', () => {
     });
   }
 
+  it('a throttled code check keeps the code, since the code was never looked at (#886 round 2)', async () => {
+    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
+    const verifyOtp = vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/verify 429'), { status: 429, retryAfter: 30 }));
+    const { useStore } = await load({ requestOtp, verifyOtp } as Partial<ApiGateway>);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    useStore.setState((s) => { s.access.otp = '1234'; });
+    act(() => useStore.getState().otpVerify());
+    await flush();
+    expect(useStore.getState().access.otp).toBe('1234');
+    expect(useStore.getState().access.error).toBe('Too many tries. Wait 30 seconds, then try again.');
+  });
+
+  it('a retry refused after "could not check" asks for a new code instead of calling it wrong (#886 round 2)', async () => {
+    // the first check may have reached the server and used the code before its answer was lost
+    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
+    const verifyOtp = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(Object.assign(new Error('/auth/otp/verify 401'), { status: 401 }));
+    const { TeamAccessScreen, useStore } = await load({ requestOtp, verifyOtp } as Partial<ApiGateway>);
+    const r = render(<TeamAccessScreen />);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    useStore.setState((s) => { s.access.otp = '1234'; });
+    act(() => useStore.getState().otpVerify());
+    await flush();
+    fireEvent.click(r.getByTestId('otp-retry'));
+    await flush();
+    expect(useStore.getState().access.otp).toBe('');
+    expect(r.getByText('That code could not be used. Tap “Resend code” for a new one.')).toBeInTheDocument();
+    expect(r.queryByText('Wrong code — try again')).not.toBeInTheDocument();
+  });
+
   it('a code the server refuses is cleared and called wrong, in the gate language (#886)', async () => {
     const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
     const verifyOtp = vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/verify 401'), { status: 401 }));

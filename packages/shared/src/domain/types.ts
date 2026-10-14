@@ -640,7 +640,7 @@ export interface Worker {
 
 /** #886: a phone sign-in failure as an `accessDict` key (plus the throttle wait), and the text it produced. */
 export type AccessErrorKey =
-  | { key: 'noServer' | 'sendFailed' | 'tooManyLater' | 'wrongCode' | 'checkFailed'; text: string }
+  | { key: 'noServer' | 'sendFailed' | 'tooManyLater' | 'wrongCode' | 'checkFailed' | 'retryRefused'; text: string }
   | { key: 'tooManyWait'; seconds: number; text: string };
 
 export interface AccessState {

@@ -863,7 +863,7 @@ function httpStatusOf(err: unknown): number | undefined {
 
 /** A phone sign-in failure before it is put into words (#886): the gate words it in its current language. */
 type AccessErrorWhy =
-  | { key: 'noServer' | 'sendFailed' | 'tooManyLater' | 'wrongCode' | 'checkFailed' }
+  | { key: 'noServer' | 'sendFailed' | 'tooManyLater' | 'wrongCode' | 'checkFailed' | 'retryRefused' }
   | { key: 'tooManyWait'; seconds: number };
 
 /**
@@ -880,13 +880,15 @@ function otpRequestFailure(err: unknown): AccessErrorWhy {
 }
 
 /** A failed code check (#886). Only a refusal from the server means a wrong or expired code; no answer at all
- *  or a server fault says the code could not be checked, so the typed code stays for another try. */
-function otpVerifyFailure(err: unknown): AccessErrorWhy {
+ *  or a server fault says the code could not be checked, so the typed code stays for another try. A refusal of
+ *  that retry may only mean the first check went through and used the code up, so it asks for a new code
+ *  instead of calling the code wrong. */
+function otpVerifyFailure(err: unknown, retry: boolean): AccessErrorWhy {
   const status = httpStatusOf(err);
   if (status === 429) return otpThrottle(err);
   // 408: the check timed out on the way (a server or proxy), so the code was never judged
   if (status === undefined || status === 408 || status >= 500) return { key: 'checkFailed' };
-  return { key: 'wrongCode' };
+  return { key: retry ? 'retryRefused' : 'wrongCode' };
 }
 
 /** A throttled code request or code check (429): the real wait from the server's `retryAfter` when it sends
@@ -6292,6 +6294,8 @@ export const useStore = create<Store>()(
 
       // round-2 Codex — a verify answer that lands after the person left for the email sign-in signs nothing in
       const generation = a.generation;
+      // #886: a check of a code that already met "could not check" may find it used by that first check
+      const retry = a.errorKey?.key === 'checkFailed';
       set((s) => { s.access.sending = true; s.access.errorKey = null; s.access.error = null; });
       gateway
         .verifyOtp(a.phone, a.otp)
@@ -6301,11 +6305,12 @@ export const useStore = create<Store>()(
         })
         .catch((e: unknown) => {
           if (get().access.generation !== generation) return;
-          const failure = accessError(otpVerifyFailure(e), get().lang);
+          const failure = accessError(otpVerifyFailure(e, retry), get().lang);
           set((s) => {
             s.access.sending = false;
-            // #886: a code that could not be checked is kept, so the person can tap Verify again
-            if (failure.key !== 'checkFailed') s.access.otp = '';
+            // #886: only a code the server judged is cleared; one that could not be checked, or a check that was
+            // throttled before the code was looked at, stays for another try
+            if (failure.key === 'wrongCode' || failure.key === 'retryRefused') s.access.otp = '';
             s.access.error = failure.text;
             s.access.errorKey = failure;
           });
