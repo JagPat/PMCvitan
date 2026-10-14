@@ -11,8 +11,10 @@ describe('one English name per screen', () => {
   it('rail, phone tabs and More all call the map "Site Map" and the register "Decision Log"', () => {
     for (const role of ['pmc', 'client', 'contractor', 'consultant'] as const) {
       expect(navLabelFor('places', role, 'en')).toBe('Site Map');
-      expect(navLabelFor('decision-log', role, 'en')).toBe('Decision Log');
     }
+    // #482 QA (14 Oct 2026): the register's readers call it "Decisions"; the PMC and the client keep the old name
+    for (const role of ['pmc', 'client'] as const) expect(navLabelFor('decision-log', role, 'en')).toBe('Decision Log');
+    for (const role of ['engineer', 'contractor', 'consultant'] as const) expect(navLabelFor('decision-log', role, 'en')).toBe('Decisions');
     expect(SCREEN_META.places.short).toBe(SCREEN_META.places.label);
     expect(SCREEN_META['decision-log'].short).toBe(SCREEN_META['decision-log'].label);
   });

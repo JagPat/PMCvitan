@@ -1,4 +1,5 @@
 import { engineerNavLabels, navLabels, type Lang, type Role, type ScreenKey } from '@vitan/shared';
+import { ROLE_SCREEN_LABEL } from './screens';
 
 /**
  * Mobile information architecture: which of the role's permitted screens earn a permanent
@@ -37,8 +38,11 @@ export const MOBILE_ROLE_PRIMARY: Partial<Record<Role, readonly ScreenKey[]>> = 
 };
 
 /** The bar/More label for a screen, in the viewer's language (the engineer's two fixed tabs carry
- *  their day names). English equals `SCREEN_META.short` for every other screen. */
+ *  their day names). English equals the `short` of the role's `screensFor` entry for every other screen. */
 export function navLabelFor(key: ScreenKey, role: Role, lang: Lang): string {
+  // #482 QA — a role's own English name for a screen ("Decisions" for the engineer, contractor, consultant)
+  const renamed = lang === 'en' ? ROLE_SCREEN_LABEL[role]?.[key] : undefined;
+  if (renamed) return renamed;
   const own = role === 'engineer' ? engineerNavLabels[key] : undefined;
   return (own ?? navLabels[key])[lang];
 }
