@@ -1897,6 +1897,20 @@ export const endSiteVisitSchema = z.object({ claimedAt: siteVisitClaim }).strict
 export type EndSiteVisitInput = z.infer<typeof endSiteVisitSchema>;
 export const closeSiteVisitSchema = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
 export type CloseSiteVisitInput = z.infer<typeof closeSiteVisitSchema>;
+// SV1-b unit 2: the visitor adds or retires the places walked and the people with them. Each row's id is minted by
+// the device, as the visit's is, so a queued retire can name a row whose add has not reached the server yet.
+export const addSiteVisitPlaceSchema = z.object({
+  id: siteVisitIdSchema,
+  nodeId: z.string().trim().min(1),
+  claimedAt: siteVisitClaim,
+}).strict();
+export type AddSiteVisitPlaceInput = z.infer<typeof addSiteVisitPlaceSchema>;
+// a member of the project, in the role they attended in, or a guest by name (SV1-a's shape check)
+export const addSiteVisitAttendeeSchema = z.union([
+  z.object({ id: siteVisitIdSchema, userId: z.string().trim().min(1), role: z.string().trim().min(1).max(32) }).strict(),
+  z.object({ id: siteVisitIdSchema, guestName: z.string().trim().min(1).max(120) }).strict(),
+]);
+export type AddSiteVisitAttendeeInput = z.infer<typeof addSiteVisitAttendeeSchema>;
 // The visit list's page: newest start first, `before` naming the last visit of the previous page.
 export const listSiteVisitsSchema = z.object({
   before: siteVisitIdSchema.optional(),
