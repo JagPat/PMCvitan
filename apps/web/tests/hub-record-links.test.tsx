@@ -189,10 +189,10 @@ describe('the site log is a record at /site/log/<dailyLogId> (12c)', () => {
     crew: [], materials: [], progress: 0, photos: [], ...over,
   });
 
-  it('the route parses, and the PMC reaches it by link while their nav still carries no Daily Log', async () => {
+  it('the route parses, and the PMC reaches it by link (and, since 14 Oct 2026, from its nav)', async () => {
     const screens = await import('@/lib/screens');
     expect(parseLocation('/projects/ambli/site/log/LOG-1')).toEqual({ projectId: 'ambli', screen: 'daily-log', item: 'LOG-1' });
-    expect(screens.screensFor('pmc').map((m) => m.key)).not.toContain('daily-log');
+    expect(screens.screensFor('pmc').map((m) => m.key)).toContain('daily-log');
     expect(screens.routableScreensFor('pmc')).toContain('daily-log');
     expect(screens.routableScreensFor('pmc')[0]).toBe(screens.screensFor('pmc')[0].key); // home unchanged
     expect(screens.routableScreensFor('client')).not.toContain('daily-log');

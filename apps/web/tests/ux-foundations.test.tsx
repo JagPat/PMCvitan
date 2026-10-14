@@ -81,7 +81,8 @@ describe("the engineer's phone bar — Dashboard · Today · Site · More", () =
   });
 
   it('every other role is unchanged by passing its role', () => {
-    for (const role of ['pmc', 'client', 'contractor', 'consultant'] as Role[]) {
+    // the PMC has its own bar since 14 Oct 2026 (#482); pmc-daily-log-nav.test.tsx covers it
+    for (const role of ['client', 'contractor', 'consultant'] as Role[]) {
       expect(MOBILE_ROLE_PRIMARY[role]).toBeUndefined();
       const items = enabledScreensFor(role, ALL_MODULES, ALL_CAPS);
       expect(splitMobileNav(items, role)).toEqual(splitMobileNav(items));

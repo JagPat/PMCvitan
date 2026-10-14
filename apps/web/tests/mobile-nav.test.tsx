@@ -30,7 +30,7 @@ describe('splitMobileNav — the primary/secondary composition', () => {
     // #811 — the Dashboard is every role's home, so it holds the first slot and Portfolio moves to More
     expect(keysOf(primary)).toEqual(['dashboard', 'inbox', 'site-schedule', 'places']);
     // the secondary half is the exact remainder — nothing invented, nothing lost
-    expect(keysOf(secondary)).toEqual(['decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'team', 'portfolio']);
+    expect(keysOf(secondary)).toEqual(['daily-log', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'team', 'portfolio']);
     expect(primary.length + secondary.length).toBe(items.length);
   });
 
@@ -131,7 +131,8 @@ describe('BottomTabs — the rendered bar', () => {
   it('renders four destinations plus More for a PMC', async () => {
     const { BottomTabs } = await loadTabs();
     const r = render(<BottomTabs />);
-    for (const key of ['dashboard', 'inbox', 'site-schedule', 'places']) {
+    // the PMC's own bar (#482, 14 Oct 2026): the Daily Site Log beside the Site Map
+    for (const key of ['dashboard', 'inbox', 'daily-log', 'places']) {
       expect(r.getByTestId(`tab-${key}`)).toBeInTheDocument();
     }
     expect(r.getByTestId('tab-more')).toBeInTheDocument();
