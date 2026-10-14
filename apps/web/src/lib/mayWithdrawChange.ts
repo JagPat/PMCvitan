@@ -13,12 +13,25 @@ import { can, type Decision } from '@vitan/shared';
  * Shared by the register and the client's waiting card (#482), so the two never disagree.
  */
 export function useMayWithdrawChange(): (d: Decision) => boolean {
+  const mySub = useMySub();
   const role = useStore((s) => s.role);
+  return useMemo(
+    () => (d: Decision): boolean =>
+      can('decision.withdrawChange', role)
+      // the service refuses unless the decision is in `change` with an open request (409)
+      && d.status === 'change' && !!d.changeRequest
+      && d.changeRequest.origin !== 'countersign_rejection'
+      && (role === 'pmc' || (!!mySub && d.changeRequest.requestedById === mySub)),
+    [role, mySub],
+  );
+}
+
+/** The signed-in identity the audience and consultation rules read (`sessionUserId`, which the DEV_AUTH connection
+ *  also records), else the session token's subject; null in demo mode. */
+export function useMySub(): string | null {
   const sessionUserId = useStore((s) => s.sessionUserId);
   const sessionToken = useStore((s) => s.sessionToken);
-  // who am I? — the signed-in identity the audience and consultation rules read (`sessionUserId`, which the
-  // DEV_AUTH connection also records), else the session token's subject; null in demo mode
-  const mySub = useMemo(() => {
+  return useMemo(() => {
     if (sessionUserId) return sessionUserId;
     if (!sessionToken) return null;
     try {
@@ -27,11 +40,4 @@ export function useMayWithdrawChange(): (d: Decision) => boolean {
       return null;
     }
   }, [sessionUserId, sessionToken]);
-  return useMemo(
-    () => (d: Decision): boolean =>
-      can('decision.withdrawChange', role)
-      && d.changeRequest?.origin !== 'countersign_rejection'
-      && (role === 'pmc' || (!!mySub && d.changeRequest?.requestedById === mySub)),
-    [role, mySub],
-  );
 }

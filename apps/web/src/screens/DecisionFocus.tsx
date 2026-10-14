@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/store';
 import { Swatch, LocationContext, ConsultationThread, EditState } from '@/components';
-import { useMayWithdrawChange } from '@/lib/mayWithdrawChange';
+import { useMayWithdrawChange, useMySub } from '@/lib/mayWithdrawChange';
 import { ChevronLeft, Lock } from '@/lib/icons';
 import {
   clientDecisionApprove,
@@ -118,6 +118,9 @@ export function ChangeRequestContext({ d }: { d: Decision }) {
 export function WaitingCardActions({ d }: { d: Decision }) {
   const withdrawChange = useStore((s) => s.withdrawChange);
   const mayWithdraw = useMayWithdrawChange();
+  const mySub = useMySub();
+  // the PMC may withdraw anyone's request — say so rather than claim they asked for it
+  const mine = !!mySub && d.changeRequest?.requestedById === mySub;
   return (
     <>
       <ConsultationThread decision={d} />
@@ -125,7 +128,9 @@ export function WaitingCardActions({ d }: { d: Decision }) {
         <div style={{ marginTop: 10 }}>
           <EditState
             state="workflow"
-            reason="You asked for this change. Withdraw it to keep the approved choice."
+            reason={mine
+              ? 'You asked for this change. Withdraw it to keep the approved choice.'
+              : 'Another member asked for this change. As PMC you can withdraw it to keep the approved choice.'}
             action={{ label: 'Withdraw request', onClick: () => withdrawChange(d.id), testId: `withdraw-${d.id}` }}
             testId={`edit-state-${d.id}`}
           />
