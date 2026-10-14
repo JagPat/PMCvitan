@@ -1317,8 +1317,9 @@ export const useStore = create<Store>()(
     // When present, mutating actions persist through the API and reconcile from
     // the returned snapshot; when null, they mutate the seeded local store.
     let gateway: ApiGateway | null = null;
-    // #482 — decision publishes still on their way, for the in-app guide's Publish step (see `issueDecision`)
-    let decisionPublishesInFlight = 0;
+    // #482 — decision publishes still on their way, per project scope (project + generation, which a
+    // switch or sign-in moves), for the in-app guide's Publish step (see `issueDecision`)
+    const decisionPublishesInFlight = new Map<string, number>();
 
     /** Latest-request ownership for the Materials bundle (correction finding 2). Each `loadMaterials()`
      *  claims the next token; only the newest same-project load may write the view or change its load
@@ -4732,13 +4733,19 @@ export const useStore = create<Store>()(
       // The in-app guide's Publish step waits while ANY publish is on its way (outcomes carry no request
       // identity): a second publish's quick failure must not end the wait for one still pending. A reply
       // that lands after the project or person changed is not about the guide now on screen.
-      if (input.publish) decisionPublishesInFlight += 1;
+      // Counted per scope, so a publish left pending in a project the person has left cannot hold back
+      // the current project's failure.
+      const scopeKey = `${scope.projectId}:${scope.generation}`;
+      const inFlight = () => decisionPublishesInFlight.get(scopeKey) ?? 0;
+      if (input.publish) decisionPublishesInFlight.set(scopeKey, inFlight() + 1);
       const reportPublish = (ok: boolean) => {
         if (!input.publish) return;
-        decisionPublishesInFlight -= 1;
+        const left = inFlight() - 1;
+        if (left > 0) decisionPublishesInFlight.set(scopeKey, left);
+        else decisionPublishesInFlight.delete(scopeKey);
         if (!scopeStillCurrent(scope)) return;
         if (ok) emitGuideOutcome('decision-published');
-        else if (decisionPublishesInFlight === 0) emitGuideOutcome('decision-publish-failed');
+        else if (left <= 0) emitGuideOutcome('decision-publish-failed');
       };
       // Upload any captured option photos first, then create with their urls.
       void (async () => {

@@ -826,4 +826,26 @@ describe('review round 1 on "record a decision"', () => {
     await act(async () => { replies[0]!({ project: { id: 'project-a' } }); await Promise.resolve(); await Promise.resolve(); });
     await vi.waitFor(() => expect(seen).toEqual(['decision-published']));
   });
+
+  it('a publish left pending in a project the person has left does not hold back the current project\'s failure', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome } = await import('@/guide/outcomes');
+    const seen: string[] = [];
+    subscribeGuideOutcome((o) => seen.push(o));
+    const settle: Array<{ ok: (v: unknown) => void; no: (e: Error) => void }> = [];
+    act(() => {
+      s.useStore.getState()._setGateway({
+        createDecision: vi.fn(() => new Promise((ok, no) => { settle.push({ ok, no }); })),
+        snapshot: vi.fn(() => new Promise(() => {})),
+      } as never);
+    });
+    const input = { title: 'T', nodeId: 'gf', publish: true, options: [] } as never;
+    s.useStore.getState().issueDecision(input);
+    await vi.waitFor(() => expect(settle).toHaveLength(1));
+    act(() => { s.useStore.setState({ activeProjectId: 'project-b', projectScopeGeneration: 2 }); });
+    s.useStore.getState().issueDecision(input);
+    await vi.waitFor(() => expect(settle).toHaveLength(2));
+    await act(async () => { settle[1]!.no(new Error('refused')); await Promise.resolve(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(seen).toEqual(['decision-publish-failed']));
+  });
 });
