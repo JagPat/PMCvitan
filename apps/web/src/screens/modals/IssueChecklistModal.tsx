@@ -81,7 +81,7 @@ export function IssueChecklistModal({ context, onClose }: { context?: CaptureCon
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
-          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-checklist" style={{ flex: 1, padding: 12 }}>Issue to engineer</Button>
+          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-checklist" data-guide="issue-checklist" style={{ flex: 1, padding: 12 }}>Issue to engineer</Button>
         </div>
       </div>
     </Modal>
