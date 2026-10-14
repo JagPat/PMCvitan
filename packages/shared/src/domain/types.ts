@@ -593,7 +593,9 @@ export interface PlacedInspection {
   submitted: boolean;
   decided: boolean;
   /** count of failed/rejected items — a passed inspection has 0 */
-  failedItems: number;
+  failedItems: number;  /** #633 — open issues here: the items on a re-inspection not yet decided (0 otherwise).
+   *  Absent from a server older than the field: the count is then unknown, never shown as 0. */
+  openIssues?: number;
 }
 
 /** A reference to an uploaded photo. `url` is absolute (S3/R2) or a data URL (local demo). */
