@@ -57,9 +57,32 @@ columns are classified `exempt` in `set-null-coverage.test.ts`.
 - The `site-visits` module manifest (`dependsOn: ['nodes']`, for the node-label function), the truncate seals in
   `sanctioned-reset.ts`, and the seed reset list.
 
+## SV1-b, unit 1: start, end and close through the server
+
+Built with tests (`apps/api/test/integration/site-visits-sv1b.test.ts`), the path the owner chose for SV1-a.
+
+- **Routes.** `GET /projects/:projectId/site-visits` (every member, newest first, a page at a time: `limit` up to
+  200, default 50, and `before` the previous page's last id); `POST …/site-visits` (start: the PMC or a consultant,
+  with a device-minted `id`, stored lowercase whatever its case, a claimed time, an optional published place and an optional device
+  location); `POST …/:visitId/end` (the visitor only; on a visit a PMC already closed it records the late end once);
+  `POST …/:visitId/close` (the PMC, with a reason). Each takes an optional `Idempotency-Key`.
+- **Refusals before the database's.** A second open visit (S2), a reused id, a draft or another project's place, an
+  end by anyone but the visitor or in another role than the visit's, and a second end or close are clear 4xx
+  answers; SV1-a's triggers stay the backstop.
+- **Read.** Accepted times (the late end's included), whether each was adjusted, the frozen visitor and place names, and the location with
+  "approximate" when its accuracy is worse than 100 m (Q6).
+- **Notices (F50).** "Site visit started: <visitor> — <place>", "Site visit ended: <visitor>" and "Site visit closed
+  by the PMC: <visitor>", rendered from their events, served to every member, and translated in the bell.
+- **Lock order (#834).** Every act takes the project's readiness lock first, as membership changes and archives
+  do; then the visit row; a start naming a place then takes the project's tree lock and the node, as every node
+  writer does; then the standing registers (through the platform's `lockActorStanding`), the project row and the
+  identity. Both deadlocks Codex named on #815
+  (a start against the same PMC's node removal; a visit act against the same PMC's membership change) are
+  reproduced by barrier tests that fail without these locks.
+
 ## Left for later units
 
 | Finding | Where |
 | --- | --- |
-| F50 notice wording and the feed renderer | SV1-b |
+| Adding and retiring places and attendees through the server | SV1-b, unit 2 |
 | F53 queued offline actions survive a start conflict | SV1-c |

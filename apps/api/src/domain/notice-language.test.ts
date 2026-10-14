@@ -12,6 +12,7 @@ import {
   DESIGNATION_ROLE_LABEL,
   type ApprovedDecisionNoticeFacts,
 } from './notifications';
+import { siteVisitClosedNotice, siteVisitEndedNotice, siteVisitStartedNotice } from '../site-visits/site-visit-notice';
 
 /**
  * #827 (Top 10 #5, the bell) — every notice this server writes reads in Hindi and Gujarati in the bell.
@@ -61,6 +62,11 @@ const SERVER_NOTICES: [string, string, Stamps?][] = [
   // drawings.service.ts (push bodies)
   ['drawing issued', 'Drawing issued: A-101 Rev 2 — Ground floor'],
   ['building to', 'Rohan Shah is building to A-101 Rev 2'],
+  // site-visit-notice.ts (the writers' own functions)
+  ['visit started', siteVisitStartedNotice('Rohan Shah', 'Ground floor')],
+  ['visit started, no place', siteVisitStartedNotice('Rohan Shah', null)],
+  ['visit ended', siteVisitEndedNotice('Rohan Shah')],
+  ['visit closed', siteVisitClosedNotice('Rohan Shah')],
 ];
 
 describe('the bell shows every server notice in Hindi and Gujarati', () => {

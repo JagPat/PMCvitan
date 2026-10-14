@@ -30,6 +30,10 @@ const PREFIXED: readonly { en: string; hi: string; gu: string }[] = [
   // the target after " → " is a role label OR a member's name, and a member may be named "the client", so it is
   // shown as written like the title (Codex 4264702275); translating a role target needs its kind in the feed (#839)
   { en: 'Decision forwarded: ', hi: 'निर्णय आगे भेजा गया: ', gu: 'નિર્ણય આગળ મોકલાયો: ' },
+  // Site Visits SV1-b (#792): the visitor's name and the place are shown as written
+  { en: 'Site visit started: ', hi: 'साइट विज़िट शुरू: ', gu: 'સાઇટ મુલાકાત શરૂ: ' },
+  { en: 'Site visit ended: ', hi: 'साइट विज़िट पूरी: ', gu: 'સાઇટ મુલાકાત પૂરી: ' },
+  { en: 'Site visit closed by the PMC: ', hi: 'PMC ने साइट विज़िट बंद की: ', gu: 'PMC એ સાઇટ મુલાકાત બંધ કરી: ' },
 ];
 
 /** The fixed endings some notices carry after the quoted part. */

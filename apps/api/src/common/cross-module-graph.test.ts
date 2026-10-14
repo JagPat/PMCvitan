@@ -76,6 +76,8 @@ const MODEL_OWNER: Record<string, string> = {
   // Phase 3 Task 5 (§E) — the append-only mismatch resolution register, written only by
   // daily-log.resolveMismatch (one per observation; the observation row is never edited)
   mismatchResolution: 'daily-log',
+  // Site Visits (#792) — the append-only visit record, written only by the site-visits commands
+  siteVisit: 'site-visits', siteVisitAttendee: 'site-visits', siteVisitPlace: 'site-visits',
   // Phase 3 Task 1 — the demand contract is activities-module-owned; its classifier domain is
   // 'requirements' (the requirements.service pillar entry writes ONLY this model)
   activityRequirement: 'requirements', activityRequirementRoot: 'requirements', materialRequirementSpec: 'requirements',
@@ -212,6 +214,8 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // edge 4 (material mismatch block) → activity.participant.blockForMaterialMismatch;
   // Phase 3 Task 5 adds resolveMismatch (the inverse edge → clearMaterialMismatchBlock)
   'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, dispatch: 5 },
+  // Site Visits SV1-b — start, end (or late end) and close each dispatch their committed event once
+  'site-visits/site-visits.service.ts': { domain: 'site-visits', foreign: {}, dispatch: 3 },
   // edge 7 (node unfiling across five domains) → FK SET NULL (nodeId); decisions stay a guarded NO ACTION
   'nodes/nodes.service.ts': { domain: 'nodes', foreign: {}, dispatch: 1 },
   'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 3 },
@@ -410,6 +414,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   // record conversion / options) under the new `decision.updateDraft` policy.
   'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Patch(':decisionId/draft')", "Post(':decisionId/approve')", "Post(':decisionId/forward')", "Post(':decisionId/countersign')", "Post(':decisionId/disagree')", "Post(':decisionId/stranded')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')", "Post(':decisionId/consultations')", "Post(':decisionId/consultations/respond')"],
   'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('resolve-mismatch')", "Post('submit')"],
+  'site-visits/site-visits.controller.ts': ['Post()', "Post(':visitId/end')", "Post(':visitId/close')"],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
   // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice binding route
@@ -609,7 +614,7 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
     it('84 external-effect dispatch sites total across the pillar services (82 + Phase-6 unit 4c-ii request/respond consultation)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(88);
+      expect(total).toBe(91); // +3: Site Visits SV1-b start, end, close
     });
   });
 
@@ -620,12 +625,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen)', () => {
+    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(177);
+      expect(total).toBe(180);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(177);
+      expect(live).toBe(180);
     });
   });
 
@@ -640,8 +645,8 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
   describe('read + sender coupling (SnapshotService + ExternalEffectDispatcher injected in every emitter)', () => {
     const emitters = Object.entries(SERVICES).filter(([, s]) => s.dispatch > 0).map(([f]) => f);
-    it('all fifteen dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning ones also read through SnapshotService', () => {
-      expect(emitters.length).toBe(15);
+    it('all sixteen dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning ones also read through SnapshotService', () => {
+      expect(emitters.length).toBe(16);
       const moduleReadServices = [
         // Phase 3 — requirements (Task 1), procurement (Tasks 2-3) and inventory (Task 4)
         // return MODULE-OWNED dtos (the Task-10 module-read pattern), never the snapshot, so
@@ -654,6 +659,8 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         'labour/labour-procurement.service.ts',
         // Phase 4 Task 3 — the §C time-capacity facts return module-owned labour DTOs, not the snapshot
         'labour/labour-capacity.service.ts',
+        // Site Visits SV1-b — returns the module-owned SiteVisitDto
+        'site-visits/site-visits.service.ts',
       ];
       for (const file of emitters) {
         if (!moduleReadServices.includes(file)) {
