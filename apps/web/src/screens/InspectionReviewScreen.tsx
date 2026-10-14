@@ -5,6 +5,7 @@ import { selectActiveReview } from '@/store/selectors';
 import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound } from '@/components';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { X, Plus } from '@/lib/icons';
+import { EmptyHint } from '@/guide/EmptyHint';
 import { swatch as swatchGradient, can, type Checklist, type Review } from '@vitan/shared';
 import { resolveMediaUrl, inspectionsReadMode } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
@@ -176,6 +177,7 @@ export function InspectionReviewScreen() {
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
           No inspections awaiting review. Submitted checklists and closing inspections land here.
         </div>
+        <EmptyHint task="checklist" />
         <OutstandingChecklists items={openChecklists} focused={routeChecklist} />
       </div>
     );
