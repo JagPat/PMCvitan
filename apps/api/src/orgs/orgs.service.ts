@@ -21,6 +21,7 @@ import { lockOrgStanding, lockProjectReadiness } from '../common/readiness-lock'
 import { assertOrgStandingSnapshotCurrent, holdsOrgStanding, lockOrgStandingWriters } from './org-standing';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import type { AuthUser, Role } from '../common/auth';
+import type { DecisionsContract } from '../common/decisions-contract';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
@@ -1327,7 +1328,7 @@ export class OrgsService {
    * counts activities by status, open reviews and (RBAC-gated) pending decisions,
    * so a PMC running several sites sees them all at a glance.
    */
-  async portfolio(userId: string): Promise<PortfolioProject[]> {
+  async portfolio(userId: string, contract?: DecisionsContract): Promise<PortfolioProject[]> {
     // the shared reach (active memberships + org owner/admin reach, archived dropped, no legacy
     // home-field fallback) — one definition with the PMC brief (`project-reach.ts`)
     const scoped = await projectsInReach(this.prisma, userId);
@@ -1345,7 +1346,7 @@ export class OrgsService {
         const [statusCounts, openReviews, pendingDecisions] = await Promise.all([
           this.activitiesQuery.statusCounts(project.id),
           role === 'pmc' ? this.inspections.openInspectionCount(project.id) : Promise.resolve(0),
-          this.decisions.countPending(project.id, { role: role as Role, userId }),
+          this.decisions.countPending(project.id, { role: role as Role, userId, contract }),
         ]);
         const { total: activityTotal, done, inProgress, blocked, notStarted, phaseCount } = statusCounts;
         return {

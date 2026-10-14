@@ -40,8 +40,9 @@ function decisions(seed: Decision): Decision[] {
   ];
 }
 
-/** the decision cards' per-record counts: the PMC's own approvals, the other-held pending and the stranded */
-const DECISION_KEYS = ['decider-pending', 'client-pending', 'pmc-pending', 'pmc-stranded', 'arch-countersign'];
+/** the decision cards' per-record counts: the viewer's own approvals and re-approvals, the other-held pending and
+ *  change requests, and the stranded. #633 — a reopened decision is awaiting action on every surface */
+const DECISION_KEYS = ['decider-pending', 'client-pending', 'decider-reapprove', 'client-reapprove', 'pmc-pending', 'pmc-change', 'pmc-stranded', 'arch-countersign'];
 
 describe('one number for decisions awaiting action: Dashboard tile, For You cards, Portfolio card', () => {
   async function surfaces(role: Role, sessionUserId: string) {
@@ -61,13 +62,13 @@ describe('one number for decisions awaiting action: Dashboard tile, For You card
     return { selector: sel.selectDecisionsAwaitingAction(s).length, forYou, tile: Number(tile), portfolio: Number(chip.split(' ')[0]) };
   }
 
-  it('pmc: every published pending decision plus the stranded countersign, on all three surfaces', async () => {
-    // P-CLIENT-1, P-CLIENT-2, P-PMC, P-ARCH, P-MEMBER and A-STRANDED; never the draft, the change or A-HELD
-    expect(await surfaces('pmc', 'u-pmc')).toEqual({ selector: 6, forYou: 6, tile: 6, portfolio: 6 });
+  it('pmc: every published pending or reopened decision plus the stranded countersign, on all three surfaces', async () => {
+    // P-CLIENT-1, P-CLIENT-2, P-PMC, P-ARCH, P-MEMBER, the reopened C-CLIENT (#633) and A-STRANDED; never the draft or A-HELD
+    expect(await surfaces('pmc', 'u-pmc')).toEqual({ selector: 7, forYou: 7, tile: 7, portfolio: 7 });
   });
 
   it('client, member-decider and architect: their own countPending, on all three surfaces', async () => {
-    expect(await surfaces('client', 'u-client')).toEqual({ selector: 2, forYou: 2, tile: 2, portfolio: 2 });
+    expect(await surfaces('client', 'u-client')).toEqual({ selector: 3, forYou: 3, tile: 3, portfolio: 3 });
     expect(await surfaces('engineer', 'u-eng')).toEqual({ selector: 1, forYou: 1, tile: 1, portfolio: 1 });
     expect(await surfaces('architect', 'u-arch')).toEqual({ selector: 3, forYou: 3, tile: 3, portfolio: 3 });
   });
