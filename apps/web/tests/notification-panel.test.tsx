@@ -74,6 +74,23 @@ describe('NotificationPanel — the record a notice opens', () => {
   });
 });
 
+describe('a notice opens only a screen the project has switched on (#855, Codex 4267658021)', () => {
+  it('a PMC material notice opens the Daily Site Log when the Schedule is off, and is no link when both are', async () => {
+    const material = [{ text: 'Material mismatch: Marble', time: 'now', color: '#000' }];
+    let r = await mount(material, { enabledModules: ['daily-log', 'drawings'] });
+    fireEvent.click(r.getByTestId('notif-item'));
+    expect(r.useStore.getState().screen).toBe('daily-log');
+    cleanup();
+    r = await mount(material, { enabledModules: ['activities', 'drawings'] });
+    fireEvent.click(r.getByTestId('notif-item'));
+    expect(r.useStore.getState().screen).toBe('site-schedule');
+    cleanup();
+    r = await mount(material, { enabledModules: ['drawings'] });
+    fireEvent.click(r.getByText('Material mismatch: Marble'));
+    expect(r.useStore.getState().screen).toBe('inbox');
+  });
+});
+
 describe('a decider of any role opens the approval screen (Codex review 5440751865)', () => {
   const memberDecision = (status: Decision['status']) =>
     ({ id: 'DL-900', title: 'Site Gate', room: 'Entry', status, photoSwatch: 'marble', options: [], deciderKind: 'member', deciderUserId: 'u-eng' }) as Decision;

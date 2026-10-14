@@ -276,7 +276,8 @@ async function sweep(page: Page, surface: string, atLeast: number) {
 
 test('the schedule surface focuses every field without zooming', async ({ page }) => {
   await page.goto('/');
-  await page.getByTestId('tab-site-schedule').click();
+  await page.getByTestId('tab-more').click(); // the PMC's bar holds Daily and Site Map; Schedule is behind More (#482)
+  await page.getByTestId('more-item-site-schedule').click();
 
   // the fields are in the dialogs, so the dialogs are where the sweep has to be (round 4,
   // finding 1). Each is swept while OPEN, and the count assertion below is what makes a dialog
@@ -837,7 +838,8 @@ test('a schedule row\'s controls hold the 44px floor from their first frame', as
   await page.goto('/');
   // Pause before rows mount so a slow worker cannot let the 300ms animation finish.
   await page.addStyleTag({ content: '[data-testid^="sched-"] { animation-play-state: paused !important; }' });
-  await page.getByTestId('tab-site-schedule').click();
+  await page.getByTestId('tab-more').click(); // the PMC's bar holds Daily and Site Map; Schedule is behind More (#482)
+  await page.getByTestId('more-item-site-schedule').click();
   const edit = page.locator('[data-testid^="edit-"]').first();
   await expect(edit).toBeVisible();
   const time = await edit.evaluate(async (el) => {
