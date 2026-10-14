@@ -15,6 +15,7 @@ import { EmailService } from './platform/email.service';
 import { InvitationsService } from './orgs/invitations.service';
 import { GoogleAuthService } from './auth/google.service';
 import { PasswordCredentialsService } from './auth/password-credentials.service';
+import { PhoneSignInService } from './auth/phone-sign-in.service';
 import { SnapshotService } from './snapshot/snapshot.service';
 import { ProjectController } from './snapshot/project.controller';
 import { NotificationsSeenController } from './snapshot/notifications-seen.controller';
@@ -208,6 +209,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     EmailService,
     GoogleAuthService,
     PasswordCredentialsService,
+    PhoneSignInService,
     SnapshotService,
     NotificationsSeenService,
     DecisionsService,

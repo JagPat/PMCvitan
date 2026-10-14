@@ -7,6 +7,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { SmsService } from './sms.service';
 import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
+import { PhoneSignInService } from './phone-sign-in.service';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import type { Role } from '../common/auth';
 import type {
@@ -45,6 +46,7 @@ export class AuthService {
     private readonly sms: SmsService,
     private readonly email: EmailService,
     private readonly google: GoogleAuthService,
+    private readonly phoneSignIn: PhoneSignInService,
   ) {}
 
   private issue(sub: string, role: Role, projectId: string, extra?: Record<string, unknown>): string {
@@ -252,14 +254,35 @@ export class AuthService {
     };
   }
 
-  /** Start a phone-OTP sign-in. `devCode` only with no provider; `channel` names the delivery route. */
-  async requestOtp(input: OtpRequestInput): Promise<{ sent: boolean; live: boolean; channel: string; devCode?: string }> {
+  /** #827 one-screen sign-in: with no SMS channel but working mail, a phone sign-in's code is emailed to the
+   *  account that owns the number (Board, 13 Oct: "code arrives by email until SMS is live"). Production has no SMS
+   *  provider today, so this is the live path. */
+  private get phoneCodeByEmail(): boolean {
+    return !this.sms.live && this.email.configured;
+  }
+
+  /** Start a phone-OTP sign-in. `devCode` only with no provider; `channel` names the delivery route; `codeLength`
+   *  is how many digits the code has (4 on both routes). */
+  async requestOtp(input: OtpRequestInput): Promise<{ sent: boolean; live: boolean; channel: string; codeLength: number; devCode?: string }> {
+    if (this.phoneCodeByEmail) {
+      // the same answer whether or not the number has an account that can be mailed (PhoneSignInService)
+      await this.phoneSignIn.request(input.phone);
+      return { sent: true, live: true, channel: 'email', codeLength: 4 };
+    }
     const r = await this.sms.sendOtp(input.phone);
-    return { sent: true, live: r.live, channel: r.channel, devCode: r.devCode };
+    return { sent: true, live: r.live, channel: r.channel, codeLength: 4, devCode: r.devCode };
   }
 
   /** Complete a phone-OTP sign-in; provisions a site-engineer account on first use. */
   async verifyOtp(input: OtpVerifyInput): Promise<TokenResult> {
+    if (this.phoneCodeByEmail) {
+      // an emailed code signs in exactly the account it was redeemed for, and never provisions one
+      const userId = await this.phoneSignIn.verify(input.phone, input.code);
+      const user = userId ? await this.prisma.user.findUnique({ where: { id: userId } }) : null;
+      if (!user) throw new UnauthorizedException('Invalid or expired code');
+      const access = await this.signInAccess(user);
+      return { token: this.issueNamedUser(user, access.role, access.projectId), role: access.role, projectId: access.projectId, name: user.name };
+    }
     if (!(await this.sms.verifyOtp(input.phone, input.code))) {
       throw new UnauthorizedException('Invalid or expired code');
     }
