@@ -3,18 +3,18 @@ import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
-import { lockProjectTree } from '../../src/common/tree-lock';
+import { lockProjectTree, treeLockKey } from '../../src/common/tree-lock';
 
 /**
- * #482 — a photo is filed only on a place its uploader can see: a published place, or a private draft the
- * uploader authored (the snapshot's own rule). Another author's private draft is refused exactly like an
- * unknown place, on upload and on re-filing, and nothing is stored. Proven through the real routes against
- * PostgreSQL.
+ * #482 — a site photo is a team record, so it is filed only on a PUBLISHED place. Any draft, its author's
+ * own included, is refused exactly like an unknown place, on upload and on re-filing, and nothing is
+ * stored. A photo already sitting on a draft (filed before this rule) reaches only the draft's author.
+ * Proven through the real routes against PostgreSQL.
  *
- * Reproduce-first: the "another author's draft" probes are 201/200 at the base and 400 here; the snapshot
- * probe (a photo on a private draft reaches only its author) fails on fdabb16.
+ * Reproduce-first: the "another author's draft" probes are 201/200 at the base, the own-draft probes are
+ * 201/200 on da4273c, the snapshot probe fails on fdabb16; all are refused/private here.
  */
-describe('a photo goes only on a place its uploader can see (live PG)', () => {
+describe('a photo goes only on a published place (live PG)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
   let pmc: string;
@@ -71,14 +71,19 @@ describe('a photo goes only on a place its uploader can see (live PG)', () => {
     expect(await t.prisma.media.count({ where: { clientKey: { in: ['vp-hidden', 'vp-unknown'] } } })).toBe(0);
   });
 
-  it('files a photo on the uploader\'s own private draft', async () => {
-    const res = await upload(pmc, { nodeId: nodeId('pmc-draft'), clientKey: 'vp-own-draft' });
-    expect(res.status).toBe(201);
+  it('refuses the uploader\'s own private draft too: a team photo never goes on a draft', async () => {
+    const own = await upload(pmc, { nodeId: nodeId('pmc-draft'), clientKey: 'vp-own-draft' });
+    const unknown = await upload(pmc, { nodeId: nodeId('nowhere'), clientKey: 'vp-own-unknown' });
+    expect(own.status).toBe(400);
+    expect(own.body.message).toBe(unknown.body.message);
+    expect(await t.prisma.media.count({ where: { clientKey: { in: ['vp-own-draft', 'vp-own-unknown'] } } })).toBe(0);
   });
 
-  it('a photo on a private draft place is as private as the place: only the draft\'s author gets it in the snapshot', async () => {
-    const photo = await upload(pmc, { nodeId: nodeId('pmc-draft'), clientKey: 'vp-draft-private' });
-    expect(photo.status).toBe(201);
+  it('a photo already on a private draft place (filed before this rule) reaches only the draft\'s author', async () => {
+    const legacy = await t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: f.memberUser.id, data: Buffer.from(px, 'base64'), nodeId: nodeId('pmc-draft') },
+    });
+    const photo = { body: { id: legacy.id } };
     const snap = (token: string) => request(t.app.getHttpServer()).get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${token}`);
     const ids = (body: { photos: Array<{ id: string }> }) => body.photos.map((p) => p.id);
     const mine = await snap(pmc);
@@ -92,13 +97,14 @@ describe('a photo goes only on a place its uploader can see (live PG)', () => {
     expect(JSON.stringify(theirs.body)).not.toContain(nodeId('pmc-draft'));
   });
 
-  it('re-filing onto another author\'s private draft is refused and the photo stays where it was', async () => {
+  it('re-filing onto any draft is refused and the photo stays where it was', async () => {
     const photo = await upload(engineer, { nodeId: nodeId('published'), clientKey: 'vp-refile' });
     expect(photo.status).toBe(201);
     expect((await refile(engineer, photo.body.id, nodeId('pmc-draft'))).status).toBe(400);
     expect((await t.prisma.media.findUniqueOrThrow({ where: { id: photo.body.id } })).nodeId).toBe(nodeId('published'));
-    // the draft's author may re-file it there
-    expect((await refile(pmc, photo.body.id, nodeId('pmc-draft'))).status).toBe(200);
+    // nor may the draft's own author: a team photo never goes on a draft
+    expect((await refile(pmc, photo.body.id, nodeId('pmc-draft'))).status).toBe(400);
+    expect((await t.prisma.media.findUniqueOrThrow({ where: { id: photo.body.id } })).nodeId).toBe(nodeId('published'));
   });
 
   it('an upload racing a publish waits for it and files the photo on the now-published place', async () => {
@@ -116,10 +122,16 @@ describe('a photo goes only on a place its uploader can see (live PG)', () => {
     }, { timeout: 20_000 });
     await holding;
     const upload$ = upload(engineer, { nodeId: nodeId('racing'), clientKey: 'vp-race' }).then((r) => r);
-    // barrier: the upload is queued on the tree lock (an ungranted advisory lock), not merely slow
+    // barrier: the upload is queued on THIS project's tree lock (an ungranted request for that exact
+    // advisory key), not merely slow, and not some other worker's advisory wait. A bigint advisory key shows
+    // in pg_locks as its high 32 bits in classid and its low 32 bits in objid, with objsubid 1.
     let waiting = 0;
     for (let i = 0; i < 100 && waiting === 0; i++) {
-      const [row] = await t.prisma.$queryRaw<Array<{ n: number }>>`SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`;
+      const [row] = await t.prisma.$queryRaw<Array<{ n: number }>>`
+        WITH k AS (SELECT hashtextextended(${treeLockKey(f.projectA.id)}, 0) AS h)
+        SELECT count(*)::int AS n FROM pg_locks, k
+        WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+          AND classid::bigint = ((k.h >> 32) & 4294967295) AND objid::bigint = (k.h & 4294967295)`;
       waiting = row.n;
       if (!waiting) await new Promise((r) => setTimeout(r, 50));
     }

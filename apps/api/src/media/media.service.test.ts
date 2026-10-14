@@ -294,10 +294,11 @@ describe('MediaService — location spine (nodeId)', () => {
     expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
   });
 
-  it('files a photo on the uploader\'s own private draft', async () => {
-    const { svc, prisma } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'user-1' }]);
-    await svc.create('ambli', uploader, { ...input, nodeId: 'd1' });
-    expect(prisma.media.create.mock.calls[0][0].data.nodeId).toBe('d1');
+  it('refuses the uploader\'s own private draft too: a team photo never goes on a draft', async () => {
+    const { svc, prisma, storage } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'user-1' }]);
+    await expect(svc.create('ambli', uploader, { ...input, nodeId: 'd1' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(prisma.media.create).not.toHaveBeenCalled();
   });
 
   it('rejects a photo pinned to another project’s node', async () => {
