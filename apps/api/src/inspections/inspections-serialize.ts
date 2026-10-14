@@ -323,6 +323,9 @@ export function bakeInspections(
           submitted: i.submitted,
           decided: i.decided,
           failedItems: i.items.filter((it) => it.rejected || it.result === 'FAIL').length,
+          // #633 — the ONE "open issue" count: the items on a re-inspection not yet decided (open or in
+          // review), the same rule as the Dashboard's "failed items awaiting re-inspection".
+          openIssues: i.reinspectionOfId && !i.decided ? i.items.length : 0,
         }),
       )
     : [];

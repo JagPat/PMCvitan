@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: site-map-633
-reviewed_merge: 5af437b
-open_pr: 828
+reviewed_merge: 3c69e18
+open_pr: 842
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-13
@@ -26,8 +26,8 @@ updated: 2026-10-13
 
 ### Current unit
 
-**#633 unit 2a: Portfolio "to review" matches the project** (on `claude/project-thread-cm4aq9`): only a PMC's card
-counts reviews. Unit 1a merged (`5af437b`, #826). Lane 1 (13 Oct); later #633 units are on #633.
+**#633 unit 2b: Site Map counts in words, one "open issue" rule** (on `claude/project-thread-cm4aq9`): a card
+counts like the place it opens. Units 1a (`5af437b`, #826) and 2a (`3c69e18`, #828) merged. Lane 1; later units on #633.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.
