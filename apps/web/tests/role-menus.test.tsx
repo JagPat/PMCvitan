@@ -50,15 +50,15 @@ describe('#482 QA role menus', () => {
     }
   });
 
-  it('the engineer, contractor and consultant call the register "Decisions"; the PMC and client keep "Decision Log"', () => {
+  it('the engineer, contractor and consultant call the register "Decisions"; the PMC keeps "Decision Log"', () => {
     for (const role of ['engineer', 'contractor', 'consultant'] as Role[]) {
       const entry = screensFor(role).find((m) => m.key === 'decision-log');
       expect(entry?.label).toBe('Decisions');
       expect(navLabelFor('decision-log', role, 'en')).toBe('Decisions');
     }
-    for (const role of ['pmc', 'client'] as Role[]) {
-      expect(screensFor(role).find((m) => m.key === 'decision-log')?.label).toBe('Decision Log');
-    }
+    expect(screensFor('pmc').find((m) => m.key === 'decision-log')?.label).toBe('Decision Log');
+    // #857 — the client's register is the history half of their one "Decisions" entry, so no separate entry
+    expect(screensFor('client').find((m) => m.key === 'decision-log')).toBeUndefined();
   });
 
   it('Hindi and Gujarati keep their word for decisions', () => {

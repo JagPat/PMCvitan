@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Guide } from './guides';
+import { beginGuideRun } from './outcomes';
 
 /**
  * #482 — the guide's own small state, kept out of the app store: which guide is running and on
@@ -8,6 +9,8 @@ import type { Guide } from './guides';
  */
 export interface GuideRun {
   guide: Guide;
+  /** this run's number from `beginGuideRun`: an outcome sent under another run is not this one's */
+  id: number;
   step: number;
   /** the `data-guide-key` of the control pressed in an earlier step, for a `keyed` step */
   key: string | null;
@@ -22,6 +25,8 @@ interface GuideState {
   run: GuideRun | null;
   /** the guide "Guide me" would start here, or null when this screen has none ready to point at */
   offer: Guide | null;
+  /** the id of the guide started last (automatically or by "Guide me"), so replays take turns */
+  lastStarted: string | null;
   start: (guide: Guide) => void;
   setStep: (step: number, key?: string | null) => void;
   stop: () => void;
@@ -33,7 +38,8 @@ interface GuideState {
 export const useGuideState = create<GuideState>()((set) => ({
   run: null,
   offer: null,
-  start: (guide) => set({ run: { guide, step: 0, key: null, waiting: false } }),
+  lastStarted: null,
+  start: (guide) => set({ run: { guide, id: beginGuideRun(), step: 0, key: null, waiting: false }, lastStarted: guide.id }),
   setStep: (step, key) => set((s) => (s.run ? { run: { ...s.run, step, key: key === undefined ? s.run.key : key, waiting: false } } : s)),
   stop: () => set({ run: null }),
   setWait: (waiting) => set((s) => (s.run ? { run: { ...s.run, waiting } } : s)),

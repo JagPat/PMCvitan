@@ -93,6 +93,12 @@ describe('the bell in English is unchanged', () => {
     expect(missing.view.getByTestId('notif-missing-open').textContent).toBe('Open Decision Log');
   });
 
+  it('the client\'s fallback names their one Decisions screen (#857 Codex 4269920634)', async () => {
+    const missing = await mount('en', [NOTICES[0]], { role: 'client' });
+    fireEvent.click(missing.view.getByTestId('notif-item'));
+    expect(missing.view.getByTestId('notif-missing-open').textContent).toBe('Open Decisions');
+  });
+
   it('noticeTime keeps its English shapes, and speaks Hindi when asked', () => {
     const at = (ms: number) => ({ at: new Date(NOW - ms).toISOString(), time: 'x' });
     expect(noticeTime(at(5 * 60_000), NOW)).toBe('5m ago');

@@ -93,7 +93,7 @@ import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHe
 import { todayCivil } from '@/lib/civilDate';
 import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
-import { emitGuideOutcome } from '@/guide/outcomes';
+import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -1320,6 +1320,9 @@ export const useStore = create<Store>()(
     // When present, mutating actions persist through the API and reconcile from
     // the returned snapshot; when null, they mutate the seeded local store.
     let gateway: ApiGateway | null = null;
+    // #482 — decision publishes still on their way, per project scope (project + generation, which a
+    // switch or sign-in moves), for the in-app guide's Publish step (see `issueDecision`)
+    const decisionPublishesInFlight = new Map<string, number>();
 
     /** Latest-request ownership for the Materials bundle (correction finding 2). Each `loadMaterials()`
      *  claims the next token; only the newest same-project load may write the view or change its load
@@ -4726,10 +4729,30 @@ export const useStore = create<Store>()(
     issueDecision: (input) => {
       if (!gateway) {
         get().flash('Issuing decisions needs the server.');
+        if (input.publish) emitGuideOutcome('decision-publish-failed');
         return;
       }
       const gw = gateway;
       const scope = currentScope();
+      // The in-app guide's Publish step waits while ANY publish of its run is on its way: a second
+      // publish's quick failure must not end the wait for one still pending. Each publish carries the
+      // guide run it was sent under, so a late reply cannot finish a later run (a replay), and is counted
+      // per scope and run, so a publish left pending in a project the person has left cannot hold back
+      // the current project's failure. A reply that lands after the project or person changed is not
+      // about the guide now on screen.
+      const guideRun = guideRunToken();
+      const pendingKey = `${scope.projectId}:${scope.generation}:${guideRun}`;
+      const inFlight = () => decisionPublishesInFlight.get(pendingKey) ?? 0;
+      if (input.publish) decisionPublishesInFlight.set(pendingKey, inFlight() + 1);
+      const reportPublish = (ok: boolean) => {
+        if (!input.publish) return;
+        const left = inFlight() - 1;
+        if (left > 0) decisionPublishesInFlight.set(pendingKey, left);
+        else decisionPublishesInFlight.delete(pendingKey);
+        if (!scopeStillCurrent(scope)) return;
+        if (ok) emitGuideOutcome('decision-published', null, guideRun);
+        else if (left <= 0) emitGuideOutcome('decision-publish-failed', null, guideRun);
+      };
       // Upload any captured option photos first, then create with their urls.
       void (async () => {
         try {
@@ -4756,8 +4779,12 @@ export const useStore = create<Store>()(
             newIdempotencyKey(),
           );
           const record = input.deciderKind === 'none';
+          // `superseded` is returned before the project check, so a wrong-project reply a newer pull
+          // overtook is still not a published decision
+          const accepted = acceptSnapshot(snap, lease);
+          const result = accepted === 'superseded' && snap.project.id !== lease.scope.projectId ? 'invalid-project' : accepted;
           consumeSnapshotResult(
-            acceptSnapshot(snap, lease),
+            result,
             input.publish
               ? record
                 ? `Issue recorded: ${input.title} — filed for the team; no approval is required.`
@@ -4767,7 +4794,10 @@ export const useStore = create<Store>()(
               : `Draft saved: ${input.title} — visible only to you until you publish it.`,
             lease.scope,
           );
+          // the guide teaches putting choices to a decider: a record-only issue is not that task
+          reportPublish(!record && (result === 'applied' || result === 'superseded'));
         } catch {
+          reportPublish(false);
           // gate round 12: a failure that lands after a project switch must not toast
           // into the new project (the same stale-toast rule as the success path).
           if (scopeStillCurrent(scope)) get().flash(input.publish ? 'Could not issue the decision — check your access and try again.' : 'Could not save the draft — check your access and try again.');
@@ -4999,11 +5029,13 @@ export const useStore = create<Store>()(
           const accepted = acceptSnapshot(snap, lease);
           const result = accepted === 'superseded' && snap.project.id !== lease.scope.projectId ? 'invalid-project' : accepted;
           consumeSnapshotResult(result, `Checklist issued: ${input.title} — the engineer has been notified.`, lease.scope);
-          emitGuideOutcome(result === 'applied' || result === 'superseded' ? 'checklist-issued' : 'checklist-issue-failed');
+          // a reply that lands after the project or person changed is not about the guide now on screen
+          if (scopeStillCurrent(lease.scope)) emitGuideOutcome(result === 'applied' || result === 'superseded' ? 'checklist-issued' : 'checklist-issue-failed');
         })
         .catch(() => {
+          if (!scopeStillCurrent(lease.scope)) return;
           emitGuideOutcome('checklist-issue-failed');
-          if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
+          get().flash('Could not reach the server — please try again.');
         });
     },
     startDailyLog: () => {

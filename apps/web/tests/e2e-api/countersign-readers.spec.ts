@@ -31,7 +31,8 @@ async function signIn(page: Page, email: string): Promise<void> {
   await page.getByTestId('login-submit').click();
 }
 /** the rail's nav button for a screen, and the count its badge renders ('' when no badge) */
-const navButton = (page: Page, label: string) => page.locator('nav button').filter({ hasText: label });
+// `.first()`: the desktop rail's entry; the phone bar's tab, hidden at this width, can carry the same short name
+const navButton = (page: Page, label: string) => page.locator('nav button').filter({ hasText: label }).first();
 const badgeOf = async (page: Page, label: string): Promise<string> =>
   ((await navButton(page, label).innerText()).replace(label, '').trim());
 
@@ -59,18 +60,20 @@ test('with the doors standing, the client’s approval badge is the shell’s co
   await openProject(page, 'Residence at Ambli');
 
   // the approval badge: the shell's count, which now carries the re-approvals — never an awaiting row (there is none)
-  await expect(navButton(page, 'Decisions Waiting')).toBeVisible();
-  await expect.poll(() => badgeOf(page, 'Decisions Waiting')).toBe(String(shellJson.counts.pendingDecisions));
-  // the Decision Log badge is the viewer's countersign obligations — a client has none, and no row is awaiting
-  expect(await badgeOf(page, 'Decision Log')).toBe('');
+  await expect(navButton(page, 'Decisions')).toBeVisible();
+  await expect.poll(() => badgeOf(page, 'Decisions')).toBe(String(shellJson.counts.pendingDecisions));
+  // #482 QA (14 Oct 2026): the client's register is the history half of their one Decisions screen, so the
+  // countersign badge has no separate entry to sit on — a client has no such obligations anyway
+  await expect(page.locator('nav button').filter({ hasText: 'Decision Log' })).toHaveCount(0);
 
   // the register answers the value: the filter chip is offered; no served row carries it
-  await navButton(page, 'Decision Log').click();
+  await navButton(page, 'Decisions').click();
   await expect(page.getByTestId('filter-awaiting_countersign')).toBeVisible();
   await expect(page.getByTestId('filter-recorded')).toBeVisible();
   const rows = page.locator('[data-testid^="log-row-"]');
   await expect(rows.first()).toBeVisible();
-  expect(await rows.count()).toBe(decisions.filter((d) => !d.draft).length);
+  // the history lists every served row except the ones waiting on the client, which sit above it
+  expect(await rows.count()).toBe(decisions.filter((d) => !d.draft).length - pending - reapprovals);
   await expect(page.getByText('AWAITING COUNTERSIGN', { exact: true })).toHaveCount(0); // exact: the filter chip reads "Awaiting countersign"
   await expect(page.getByText('PROVISIONAL', { exact: true })).toHaveCount(0);
   // narrowing to the awaiting rows shows honestly nothing

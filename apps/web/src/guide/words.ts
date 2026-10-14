@@ -37,9 +37,38 @@ export const GUIDE_TIPS = {
     hi: 'क्या और कहाँ जाँचना है लिखें, फिर यहाँ दबाएँ।',
     gu: 'શું અને ક્યાં તપાસવું તે લખો, પછી અહીં દબાવો.',
   },
+  decisionAdd: {
+    en: 'Something to be decided? Tap +.',
+    hi: 'कुछ तय करना है? + दबाएँ।',
+    gu: 'કંઈ નક્કી કરવાનું છે? + દબાવો.',
+  },
+  decisionPick: {
+    en: 'Tap here to set out the choices.',
+    hi: 'विकल्प लिखने के लिए यहाँ दबाएँ।',
+    gu: 'વિકલ્પો લખવા અહીં દબાવો.',
+  },
+  decisionPublish: {
+    en: 'Add a title, place and options, then tap here.',
+    hi: 'शीर्षक, जगह और विकल्प भरें, फिर यहाँ दबाएँ।',
+    gu: 'શીર્ષક, જગ્યા અને વિકલ્પો ભરો, પછી અહીં દબાવો.',
+  },
 } satisfies Record<string, Words>;
 
 export type GuideTip = keyof typeof GUIDE_TIPS;
+
+/**
+ * #482 — the one line an empty screen shows under its "nothing here yet", naming the button on that
+ * screen that starts the work. The button is marked +, so the line points at the + in every language.
+ */
+export const EMPTY_HINTS = {
+  checklist: {
+    en: 'To send the engineer something to check, tap + New checklist above.',
+    hi: 'इंजीनियर से कुछ जँचवाना है? ऊपर + वाला बटन दबाएँ।',
+    gu: 'એન્જિનિયર પાસે કંઈ તપાસાવવું છે? ઉપર + વાળું બટન દબાવો.',
+  },
+} satisfies Record<string, Words>;
+
+export type EmptyHintTask = keyof typeof EMPTY_HINTS;
 
 export const GUIDE_WORDS = {
   skip: { en: 'Skip', hi: 'छोड़ें', gu: 'છોડો' },

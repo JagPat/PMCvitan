@@ -73,7 +73,7 @@ test('For You: every client surface counts the same decisions waiting on them', 
   await rail.getByRole('button', { name: /^For You/ }).click(); // #811 — the home is the Dashboard
   await expect(page.getByTestId('pulse-needs')).toContainText('3 things need you');
   await expect(rail.getByRole('button', { name: /^For You/ })).toContainText('3');
-  await expect(rail.getByRole('button', { name: /^Decisions Waiting/ })).toContainText('3');
+  await expect(rail.getByRole('button', { name: /^Decisions( \d+)?$/ })).toContainText('3');
 
   await page.getByTestId('pulse-needs-all').click();
   await expect(page.getByText('Decisions waiting for you')).toBeVisible();
