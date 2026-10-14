@@ -46,10 +46,11 @@ describe('the read-only "Awaiting client" list', () => {
     it(`${role}: lists what waits on the client, how long, and nothing to decide`, async () => {
       const { r } = await load(role, () => Promise.resolve(served));
       await waitFor(() => expect(r.getByTestId('awaiting-client-D-1')).toBeTruthy());
-      expect(r.getByTestId('awaiting-client-count').textContent).toBe('2 DECISIONS');
+      expect(r.getByTestId('awaiting-client-count').textContent).toBe('1 DECISION');
       expect(r.getByTestId('awaiting-client-D-1').textContent).toContain('Kitchen countertop');
       expect(r.getByTestId('awaiting-client-D-1').textContent).toContain('Waiting 3 days');
-      expect(r.getByTestId('awaiting-client-D-2').textContent).toContain('Reopened · Waiting 1 day');
+      // a reopened decision is already a register row these roles read: listed once, there, never in the summary
+      expect(r.queryByTestId('awaiting-client-D-2')).toBeNull();
       // read-only: no option, price or decide control anywhere in the list
       const list = r.getByTestId('awaiting-client');
       expect(list.querySelectorAll('button')).toHaveLength(0);
@@ -75,11 +76,20 @@ describe('the read-only "Awaiting client" list', () => {
     act(() => { useStore.setState({ decisions: [dec('D-9', { status: 'approved' })] } as never); });
     await waitFor(() => expect(r.getByTestId('awaiting-client-failed')).toBeTruthy());
     expect(r.queryByTestId('awaiting-client-D-1')).toBeNull();
-    reply = () => Promise.resolve([served[1]]);
+    reply = () => Promise.resolve([{ ...served[0], id: 'D-3', title: 'Bathroom tiles' }]);
     act(() => { r.getByTestId('awaiting-client-retry').click(); });
-    await waitFor(() => expect(r.getByTestId('awaiting-client-D-2')).toBeTruthy());
+    await waitFor(() => expect(r.getByTestId('awaiting-client-D-3')).toBeTruthy());
     expect(r.queryByTestId('awaiting-client-D-1')).toBeNull();
     expect(r.queryByTestId('awaiting-client-failed')).toBeNull();
+  });
+
+  it('a reopened decision shows once on the screen: in the register, not again in the summary', async () => {
+    const { r } = await load('contractor', () => Promise.resolve(served), {
+      decisions: [dec('D-2', { status: 'change', title: 'Main door veneer' })],
+    });
+    await waitFor(() => expect(r.getByTestId('awaiting-client-D-1')).toBeTruthy());
+    expect(r.getByTestId('log-row-D-2')).toBeTruthy();
+    expect(r.queryByTestId('awaiting-client-D-2')).toBeNull();
   });
 
   it('the waiting age moves on while the screen stays open', async () => {
@@ -91,7 +101,7 @@ describe('the read-only "Awaiting client" list', () => {
     expect(r.getByTestId('awaiting-client-D-1').textContent).toContain('Waiting 1 day');
   });
 
-  it('with no server (the demo) it reads the seeded client-held open decisions, never a draft or another decider\'s', async () => {
+  it('with no server (the demo) it reads the seeded new client-held decisions, never a draft, a reopened one or another decider\'s', async () => {
     const { r } = await load('engineer', () => Promise.resolve(null), {
       decisions: [
         dec('D-1'),
@@ -103,8 +113,7 @@ describe('the read-only "Awaiting client" list', () => {
     });
     await waitFor(() => expect(r.getByTestId('awaiting-client-D-1')).toBeTruthy());
     expect(r.getByTestId('awaiting-client-D-1').textContent).toContain('Waiting 4 days');
-    expect(r.getByTestId('awaiting-client-D-2')).toBeTruthy();
-    for (const id of ['D-3', 'D-4', 'D-5']) expect(r.queryByTestId(`awaiting-client-${id}`)).toBeNull();
+    for (const id of ['D-2', 'D-3', 'D-4', 'D-5']) expect(r.queryByTestId(`awaiting-client-${id}`)).toBeNull();
   });
 
   it('a reply for a project the viewer has left is dropped', async () => {

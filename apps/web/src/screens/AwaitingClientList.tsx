@@ -20,7 +20,8 @@ function waitingDays(row: AwaitingClientRow & { ageDays?: number }, now: number)
  * #482 QA check (14 Oct 2026, item 4) — the decisions waiting on the CLIENT, read-only, at the top of the
  * engineer's, contractor's and consultant's Decisions screen, so they can plan around them. A summary from the
  * server (title, place, how long it has waited): never the options, prices or a decide button, which stay with
- * the client. With no server (the local demo) it reads the seeded decisions the same way.
+ * the client. With no server (the local demo) it reads the seeded decisions the same way. Only a NEW decision
+ * is listed: a reopened one is already a row of the register below, which these roles read, so it shows once.
  */
 export function AwaitingClientList() {
   const fetchAwaitingClient = useStore((s) => s.fetchAwaitingClient);
@@ -28,7 +29,7 @@ export function AwaitingClientList() {
   // any reconcile (an approval, a reopening) may change what waits; a fresh read follows the decisions slice
   const decisions = useStore((s) => s.decisions);
   const seeded = useStore(useShallow((s) =>
-    s.decisions.filter((d) => !d.draft && (d.deciderKind ?? 'client') === 'client' && (d.status === 'pending' || d.status === 'change'))));
+    s.decisions.filter((d) => !d.draft && (d.deciderKind ?? 'client') === 'client' && d.status === 'pending')));
   const [served, setServed] = useState<{ scope: string; rows: AwaitingClientRow[] | null } | null>(null);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -60,7 +61,9 @@ export function AwaitingClientList() {
   const current = served?.scope === scope ? served : null;
   const rows: (AwaitingClientRow & { ageDays?: number })[] | null = !current
     ? null
-    : current.rows ?? seeded.map((d) => ({ id: d.id, title: d.title, room: d.room, nodeId: d.nodeId ?? null, status: d.status as 'pending' | 'change', waitingSince: '', ageDays: d.ageDays }));
+    // a reopened decision is already a row of the register below, read by these roles: listed once, there
+    : current.rows?.filter((r) => r.status === 'pending')
+      ?? seeded.map((d) => ({ id: d.id, title: d.title, room: d.room, nodeId: d.nodeId ?? null, status: 'pending' as const, waitingSince: '', ageDays: d.ageDays }));
 
   return (
     <section data-testid="awaiting-client" aria-labelledby="awaiting-client-title" style={{ margin: '4px 0 26px' }}>
@@ -72,7 +75,7 @@ export function AwaitingClientList() {
           </span>
         )}
       </div>
-      <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>The client decides these. Shown so you can plan around them.</div>
+      <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>New decisions the client still has to make, shown so you can plan around them. Reopened ones are in the list below.</div>
 
       {rows === null && !failed && <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }}>Loading…</div>}
       {rows === null && failed && (
@@ -89,7 +92,7 @@ export function AwaitingClientList() {
         </div>
       )}
       {rows !== null && rows.length === 0 && (
-        <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }} data-testid="awaiting-client-empty">Nothing is waiting on the client.</div>
+        <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }} data-testid="awaiting-client-empty">No new decision is waiting on the client.</div>
       )}
       {rows !== null && rows.length > 0 && (
         <ul style={{ listStyle: 'none', margin: '12px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -104,7 +107,6 @@ export function AwaitingClientList() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 600, fontSize: 15 }}>{r.title}</span>
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                    {r.status === 'change' ? 'Reopened · ' : ''}
                     {days === null ? 'Waiting on the client' : `Waiting ${days} ${days === 1 ? 'day' : 'days'}`}
                   </span>
                 </div>

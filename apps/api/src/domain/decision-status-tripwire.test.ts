@@ -289,8 +289,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/web/src/components/ConsultationThread.tsx :: decision.status === 'pending' || decision.status === 'change' || decision.status === 'awaiting_countersign'": 'answered',
     // 4d-ii-b / B5b — the chain's controls: Forward hands over an OPEN decision (an awaiting one is the architect's,
     // handed on through `disagree` / `forward_on`); the architect's countersign controls sit on the awaiting row
-    "apps/web/src/screens/AwaitingClientList.tsx :: d.status === 'pending' || d.status === 'change'": 'excludes: the demo-seed fallback of the "Awaiting client" summary mirrors the server read, which lists only a decision open for the CLIENT; an awaiting one waits on the architect (#482 QA)',
-    "apps/web/src/screens/AwaitingClientList.tsx :: r.status === 'change'": 'excludes: the summary row is pending or reopened only (the server filter); "Reopened" marks the second (#482 QA)',
+    "apps/web/src/screens/AwaitingClientList.tsx :: d.status === 'pending'": 'excludes: the demo-seed fallback of the "Awaiting client" list keeps only a NEW decision open for the CLIENT; an awaiting one waits on the architect (#482 QA)',
+    "apps/web/src/screens/AwaitingClientList.tsx :: r.status === 'pending'": 'excludes: the list keeps only a NEW summary row; a reopened one is already in the register below (#482 QA)',
     "apps/web/src/components/CountersignControls.tsx :: d.status === 'pending' || d.status === 'change'": 'excludes: the Forward affordance offers an OPEN decision; an awaiting one is forwarded on by the architect’s disagreement (its own arm below)',
     "apps/web/src/components/CountersignControls.tsx :: d.status === 'awaiting_countersign'": 'answered',
     // the approval route opens on ACTIONABLE states only: an awaiting decision is not one its decider can
