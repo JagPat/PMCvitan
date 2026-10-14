@@ -18,7 +18,8 @@ import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { CreateMediaInput } from '../contracts';
 import { answerActorEnvelope } from '../../test/unit-support/actor-envelope-stub';
 
-interface NodeRow { id: string; projectId: string }
+// a node without `publishedAt` is a published place; `publishedAt: null` is a private draft of `authorId`
+interface NodeRow { id: string; projectId: string; publishedAt?: Date | null; authorId?: string | null }
 interface RefRow { id: string; projectId: string }
 
 function make(
@@ -48,7 +49,10 @@ function make(
       delete: vi.fn(async () => ({})),
     },
     projectNode: {
-      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const n = nodes.find((x) => x.id === where.id);
+        return n ? { publishedAt: new Date(), authorId: null, ...n } : null;
+      }),
     },
     // resolveActor (Task 3) + the platform event kernel (Task 4) now run inside these mutations
     user: { findUnique: vi.fn(async () => ({ name: 'Tester' })) },
@@ -269,9 +273,43 @@ describe('MediaService — location spine (nodeId)', () => {
     expect(prisma.media.create.mock.calls[0][0].data.nodeId).toBe('r1');
   });
 
+  it('refuses another author\'s private draft BEFORE storing any bytes', async () => {
+    const { svc, prisma, storage } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'someone-else' }]);
+    await expect(svc.create('ambli', uploader, { ...input, nodeId: 'd1' })).rejects.toBeInstanceOf(BadRequestException);
+    // the early no: nothing reaches the bucket, so nothing can be orphaned
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(prisma.media.create).not.toHaveBeenCalled();
+  });
+
+  it('still decides inside the transaction: a place hidden after the early check is refused and its object cleaned up', async () => {
+    const { svc, prisma, storage } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: new Date(), authorId: 'someone-else' }]);
+    Object.assign(prisma.media, { findFirst: vi.fn(async () => null) });
+    // the preflight sees it published; by the locked read it is another author's draft again
+    prisma.projectNode.findUnique
+      .mockResolvedValueOnce({ id: 'd1', projectId: 'ambli', publishedAt: new Date(), authorId: 'someone-else' })
+      .mockResolvedValueOnce({ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'someone-else' });
+    await expect(svc.create('ambli', uploader, { ...input, nodeId: 'd1' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(storage.put).toHaveBeenCalledTimes(1);
+    expect(prisma.media.create).not.toHaveBeenCalled();
+    expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
+  });
+
+  it('refuses the uploader\'s own private draft too: a team photo never goes on a draft', async () => {
+    const { svc, prisma, storage } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'user-1' }]);
+    await expect(svc.create('ambli', uploader, { ...input, nodeId: 'd1' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(prisma.media.create).not.toHaveBeenCalled();
+  });
+
   it('rejects a photo pinned to another project’s node', async () => {
     const { svc } = make(null, null, [{ id: 'r1', projectId: 'other' }]);
     await expect(svc.create('ambli', uploader, { ...input, nodeId: 'r1' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('setNode refuses another author\'s private draft and writes nothing', async () => {
+    const { svc, prisma } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'someone-else' }]);
+    await expect(svc.setNode('med1', 'ambli', 'd1', user)).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.media.update).not.toHaveBeenCalled();
   });
 
   it('setNode re-files onto a node and returns a snapshot', async () => {
