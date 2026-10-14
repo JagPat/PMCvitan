@@ -34,7 +34,10 @@ function screenForKind(kind: NotificationKind, role: Role): ScreenKey | null {
     case 'inspection':
       return pick('inspect-review', 'engineer-check');
     case 'material':
-      return pick('daily-log', 'site-schedule');
+      // the PMC keeps its Schedule landing (#855, Codex 4267468088): its nav now lists the Daily Site Log too, but
+      // this rule reads the role's unfiltered screens, so preferring Daily Log here would open it even on a
+      // project that switched the daily-log module off
+      return role === 'pmc' ? pick('site-schedule', 'daily-log') : pick('daily-log', 'site-schedule');
   }
 }
 

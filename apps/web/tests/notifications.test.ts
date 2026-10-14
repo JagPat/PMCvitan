@@ -29,8 +29,9 @@ describe('notificationTarget — role-aware jump from the bell', () => {
     expect(notificationTarget('Drawing issued: A-201', 'contractor')).toBe('drawings');
     expect(notificationTarget('Re-inspection due: X', 'pmc')).toBe('inspect-review');
     expect(notificationTarget('New checklist: X', 'engineer')).toBe('engineer-check');
-    // the PMC's nav carries the Daily Site Log since 14 Oct 2026 (#482), so a material notice opens it, as for the engineer
-    expect(notificationTarget('Material mismatch: X', 'pmc')).toBe('daily-log');
+    // the PMC's nav carries the Daily Site Log since 14 Oct 2026 (#482), but a material notice still opens its
+    // Schedule (#855, Codex 4267468088): this rule cannot see a project's disabled modules
+    expect(notificationTarget('Material mismatch: X', 'pmc')).toBe('site-schedule');
     expect(notificationTarget('Material mismatch: X', 'contractor')).toBeNull();
   });
 
