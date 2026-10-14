@@ -68,6 +68,7 @@ export function CreateControl() {
         onClick={openCreate}
         aria-haspopup="dialog"
         data-testid="create-fab"
+        data-guide="add"
         aria-label="Add"
       >
         <Plus size={22} />
@@ -101,7 +102,7 @@ export function CreateRailButton() {
   const openCreate = useStore((s) => s.openCreate);
   if (!canCreate) return null;
   return (
-    <button className={styles.railButton} onClick={openCreate} aria-haspopup="dialog" data-testid="create-rail">
+    <button className={styles.railButton} onClick={openCreate} aria-haspopup="dialog" data-testid="create-rail" data-guide="add">
       <Plus size={15} /> Add
     </button>
   );
