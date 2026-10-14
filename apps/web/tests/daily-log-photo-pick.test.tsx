@@ -192,3 +192,26 @@ function dataUrlOf(bytes: Uint8Array): string {
   for (const b of bytes) binary += String.fromCharCode(b);
   return `data:image/jpeg;base64,${btoa(binary)}`;
 }
+
+describe('the progress photo input offers the gallery as well as the camera', () => {
+  it('accepts any image and does not force the camera', async () => {
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const scope = await import('@/store/projectScope');
+    useStore.setState(getInitialState());
+    useStore.setState({
+      ...scope.emptyProjectData(),
+      activeProjectId: 'villa-b',
+      projectLoadState: 'ready',
+      role: 'pmc',
+      dailyLog: log(),
+    });
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+
+    const input = r.getByTestId('progress-file');
+    expect(input.getAttribute('accept')).toBe('image/*');
+    // `capture` makes Android open the camera only, with no way to pick from the gallery
+    expect(input.hasAttribute('capture')).toBe(false);
+  });
+});
