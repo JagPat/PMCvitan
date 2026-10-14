@@ -1,6 +1,5 @@
 import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { GoogleSignInButton } from '@/components';
 import { useStore } from '@/store/store';
 import { API_BASE } from '@/data/apiGateway';
 import { useT } from '@/i18n/useT';
@@ -80,7 +79,6 @@ export function TeamAccessScreen() {
   const requestEmailOtp = useStore((s) => s.requestEmailOtp);
   const accSetCode = useStore((s) => s.accSetCode);
   const emailOtpVerify = useStore((s) => s.emailOtpVerify);
-  const googleSignIn = useStore((s) => s.googleSignIn);
   const requestOtp = useStore((s) => s.requestOtp);
   const otpPress = useStore((s) => s.otpPress);
   const accReset = useStore((s) => s.accReset);
@@ -267,7 +265,6 @@ export function TeamAccessScreen() {
         <button onClick={accGoPasswordSetup} data-testid="go-password-setup" style={linkBtn}>
           Set up or forgot password
         </button>
-        <GoogleSignInButton onToken={googleSignIn} />
         <div style={{ marginTop: 'auto' }} />
       </div>
     );
