@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Role, ScreenKey } from '@vitan/shared';
 import { navLabelFor, splitMobileNav, MOBILE_MAX_TABS } from '@/lib/mobileNav';
 import { enabledScreensFor, routableScreensFor, screensFor } from '@/lib/screens';
@@ -85,6 +85,7 @@ describe('#482 QA role menus', () => {
   it('the contractor’s desktop sidebar reads "Decisions" and has no access screen', async () => {
     const LeftRail = await loadRail('contractor');
     const r = render(<LeftRail />);
+    fireEvent.click(r.getByTestId('rail-more'));
     expect(r.getByRole('button', { name: /^Decisions/ })).toBeInTheDocument();
     expect(r.queryByRole('button', { name: /Decision Log/ })).not.toBeInTheDocument();
     expect(r.queryByRole('button', { name: /Team Access/ })).not.toBeInTheDocument();
@@ -93,6 +94,7 @@ describe('#482 QA role menus', () => {
   it('the PMC’s desktop sidebar still reads "Decision Log"', async () => {
     const LeftRail = await loadRail('pmc');
     const r = render(<LeftRail />);
+    fireEvent.click(r.getByTestId('rail-more'));
     expect(r.getByRole('button', { name: /Decision Log/ })).toBeInTheDocument();
   });
 });

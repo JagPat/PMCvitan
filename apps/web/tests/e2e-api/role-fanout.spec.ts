@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { openProject } from './landing';
+import { openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 6 task 4d-ii-b / B2 — the role fan-out over the REAL stack with the six reservation doors
@@ -31,14 +32,14 @@ test('with the doors standing, no picker offers the architect: the Team role pic
   await openProject(page, 'Test Empty Site'); // sign-in opens the last project used (#811)
 
   // the Team screen: the add-member picker offers the five delivered roles and never the architect
-  await page.getByRole('button', { name: 'Team' }).click();
+  await openNav(page, /^Team( \d+)?$/);
   await expect(page.getByTestId('member-role')).toBeVisible();
   const memberRoles = await optionValues(page, 'member-role');
   expect(memberRoles).toEqual(['pmc', 'client', 'engineer', 'contractor', 'consultant']);
   expect(memberRoles).not.toContain('architect');
 
   // the decider picker on a new decision: no architect designation while reserved
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  await openNav(page, /^Decision Log( \d+)?$/);
   await page.getByTestId('issue-decision').click();
   await expect(page.getByTestId('dec-decider-kind')).toBeVisible();
   const deciderKinds = await optionValues(page, 'dec-decider-kind');
