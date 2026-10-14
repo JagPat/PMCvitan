@@ -250,6 +250,79 @@ describe('#827 one-screen sign-in', () => {
     expect(r.getByText('Too many tries. Wait 9 minutes, then try again.')).toBeInTheDocument();
   });
 
+  it('a send failure shown before a language switch is re-worded in the new language (#886)', async () => {
+    const requestOtp = vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/request 429'), { status: 429, retryAfter: 30 }));
+    const { TeamAccessScreen } = await load({ requestOtp } as Partial<ApiGateway>);
+    const r = render(<TeamAccessScreen />);
+    fireEvent.change(r.getByTestId('phone-input'), { target: { value: '9876543210' } });
+    fireEvent.click(r.getByTestId('send-code'));
+    await flush();
+    expect(r.getByText('Too many tries. Wait 30 seconds, then try again.')).toBeInTheDocument();
+    fireEvent.click(r.getByTestId('gate-lang-gu'));
+    expect(r.getByText('ઘણી વાર પ્રયાસ થયો. 30 સેકન્ડ રાહ જુઓ, પછી ફરી પ્રયાસ કરો.')).toBeInTheDocument();
+    fireEvent.click(r.getByTestId('gate-lang-hi'));
+    expect(r.getByText('बहुत बार कोशिश हुई। 30 सेकंड रुकें, फिर कोशिश करें।')).toBeInTheDocument();
+    expect(r.queryByText('Too many tries. Wait 30 seconds, then try again.')).not.toBeInTheDocument();
+  });
+
+  it('a later error in other words is shown as written, not as the earlier re-worded one (#886)', async () => {
+    const requestOtp = vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/request 503'), { status: 503 }));
+    const { TeamAccessScreen, useStore } = await load({ requestOtp } as Partial<ApiGateway>);
+    const r = render(<TeamAccessScreen />);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    act(() => useStore.getState().accSetPhone('123'));
+    act(() => useStore.getState().requestOtp());
+    expect(r.getByText('Enter a 10-digit mobile number.')).toBeInTheDocument();
+    expect(r.queryByText('Could not send a sign-in code right now. Use “Sign in with email” below.')).not.toBeInTheDocument();
+  });
+
+  for (const [label, failure] of [
+    ['no connection', new TypeError('Failed to fetch')],
+    ['a server fault', Object.assign(new Error('/auth/otp/verify 502'), { status: 502 })],
+  ] as const) {
+    it(`a code check that fails with ${label} keeps the code and checks it again on Verify (#886)`, async () => {
+      const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
+      const verifyOtp = vi.fn()
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValueOnce({ token: 't', role: 'client', name: 'Priya', projectId: 'villa-b' });
+      const { TeamAccessScreen, useStore } = await load({ requestOtp, verifyOtp } as Partial<ApiGateway>);
+      const r = render(<TeamAccessScreen />);
+      act(() => useStore.getState().accSetPhone('9876543210'));
+      act(() => useStore.getState().requestOtp());
+      await flush();
+      useStore.setState((s) => { s.access.otp = '1234'; });
+      act(() => useStore.getState().otpVerify());
+      await flush();
+      expect(useStore.getState().access.otp).toBe('1234');
+      expect(r.getByText('Could not check the code right now. Check your connection, then tap Verify.')).toBeInTheDocument();
+      expect(r.queryByText('Wrong code — try again')).not.toBeInTheDocument();
+      fireEvent.click(r.getByTestId('otp-retry'));
+      await flush();
+      expect(verifyOtp).toHaveBeenCalledTimes(2);
+      expect(verifyOtp).toHaveBeenLastCalledWith('9876543210', '1234');
+      expect(useStore.getState().sessionToken).toBe('t');
+    });
+  }
+
+  it('a code the server refuses is cleared and called wrong, in the gate language (#886)', async () => {
+    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
+    const verifyOtp = vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/verify 401'), { status: 401 }));
+    const { TeamAccessScreen, useStore } = await load({ requestOtp, verifyOtp } as Partial<ApiGateway>);
+    useStore.setState({ lang: 'hi' });
+    const r = render(<TeamAccessScreen />);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    useStore.setState((s) => { s.access.otp = '1234'; });
+    act(() => useStore.getState().otpVerify());
+    await flush();
+    expect(useStore.getState().access.otp).toBe('');
+    expect(r.getByText('गलत कोड — फिर से')).toBeInTheDocument();
+    expect(r.queryByTestId('otp-retry')).not.toBeInTheDocument();
+  });
+
   it('a back tap from the code screen returns to the number, not to "Who are you?"', async () => {
     const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
     const { TeamAccessScreen, useStore } = await load({ requestOtp } as Partial<ApiGateway>);

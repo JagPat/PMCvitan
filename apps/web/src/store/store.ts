@@ -30,6 +30,7 @@ import {
   SEED_PLACED_INSPECTIONS,
   PROJECT,
   type AccessState,
+  type AccessErrorKey,
   type AccessWho,
   type Activity,
   type AppNotification,
@@ -857,31 +858,62 @@ function httpStatusOf(err: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
+/** A phone sign-in failure before it is put into words (#886): the gate words it in its current language. */
+type AccessErrorWhy =
+  | { key: 'noServer' | 'sendFailed' | 'tooManyLater' | 'wrongCode' | 'checkFailed' }
+  | { key: 'tooManyWait'; seconds: number };
+
 /**
- * What a failed request for a phone sign-in code tells the person, in the gate's language (#827 one-screen
- * sign-in). A throttle names the real wait when the server sends one and otherwise says "later", never a guessed
- * minute. Any other failure (no SMS channel, or the email carrying the code could not be sent) points to the
- * email sign-in below, so a broken send never looks like a code that is on its way.
+ * What a failed request for a phone sign-in code tells the person (#827 one-screen sign-in). A throttle names
+ * the real wait when the server sends one and otherwise says "later", never a guessed minute. Any other failure
+ * (no SMS channel, or the email carrying the code could not be sent) points to the email sign-in below, so a
+ * broken send never looks like a code that is on its way.
  */
-function otpRequestFailureMessage(err: unknown, lang: Lang): string {
-  const t = accessDict[lang];
+function otpRequestFailure(err: unknown): AccessErrorWhy {
   const status = httpStatusOf(err);
-  if (status === 429) return otpThrottleMessage(err, lang);
-  if (status === undefined) return t.noServer;
-  return t.sendFailed;
+  if (status === 429) return otpThrottle(err);
+  if (status === undefined) return { key: 'noServer' };
+  return { key: 'sendFailed' };
 }
 
-/** A throttled code request or code check (429), in the gate's language: the real wait from the server's
- *  `retryAfter` when it sends one, otherwise "try again later". */
-function otpThrottleMessage(err: unknown, lang: Lang): string {
-  const t = accessDict[lang];
+/** A failed code check (#886). Only a refusal from the server means a wrong or expired code; no answer at all
+ *  or a server fault says the code could not be checked, so the typed code stays for another try. */
+function otpVerifyFailure(err: unknown): AccessErrorWhy {
+  const status = httpStatusOf(err);
+  if (status === 429) return otpThrottle(err);
+  if (status === undefined || status >= 500) return { key: 'checkFailed' };
+  return { key: 'wrongCode' };
+}
+
+/** A throttled code request or code check (429): the real wait from the server's `retryAfter` when it sends
+ *  one, otherwise "try again later". */
+function otpThrottle(err: unknown): AccessErrorWhy {
   const seconds = (err as { retryAfter?: unknown } | null)?.retryAfter;
-  if (typeof seconds !== 'number' || !(seconds > 0)) return t.tooManyLater;
+  if (typeof seconds !== 'number' || !(seconds > 0)) return { key: 'tooManyLater' };
+  return { key: 'tooManyWait', seconds };
+}
+
+function accessErrorText(why: AccessErrorWhy, lang: Lang): string {
+  const t = accessDict[lang];
+  if (why.key !== 'tooManyWait') return t[why.key];
+  const { seconds } = why;
   const minutes = Math.ceil(seconds / 60);
   const wait = seconds < 60
     ? t.waitSeconds.replace('{n}', String(Math.ceil(seconds)))
     : minutes === 1 ? t.waitMinute : t.waitMinutes.replace('{n}', String(minutes));
   return t.tooManyWait.replace('{wait}', wait);
+}
+
+function accessError(why: AccessErrorWhy, lang: Lang): AccessErrorKey {
+  return { ...why, text: accessErrorText(why, lang) };
+}
+
+/** The sign-in error to show, in the gate's current language (#886: a switch after a failure re-translates
+ *  it). A key left behind by a later, differently worded error is ignored. */
+export function shownAccessError(access: Pick<AccessState, 'error' | 'errorKey'>, lang: Lang): string | null {
+  const k = access.errorKey;
+  if (!access.error || !k || k.text !== access.error) return access.error;
+  return accessErrorText(k, lang);
 }
 
 /** How long a throttled (429) caller should wait, from the seconds the server says remain in its window
@@ -6187,10 +6219,13 @@ export const useStore = create<Store>()(
         .catch((e: unknown) => {
           if (get().access.generation !== generation) return;
           // a failure for a number the person has since changed says nothing about the number shown
-          const message = get().access.phone === phone ? otpRequestFailureMessage(e, get().lang) : null;
+          const failure = get().access.phone === phone ? accessError(otpRequestFailure(e), get().lang) : null;
           set((s) => {
             s.access.sending = false;
-            if (message) s.access.error = message;
+            if (failure) {
+              s.access.error = failure.text;
+              s.access.errorKey = failure;
+            }
           });
         });
     },
@@ -6261,10 +6296,13 @@ export const useStore = create<Store>()(
         })
         .catch((e: unknown) => {
           if (get().access.generation !== generation) return;
+          const failure = accessError(otpVerifyFailure(e), get().lang);
           set((s) => {
             s.access.sending = false;
-            s.access.otp = '';
-            s.access.error = httpStatusOf(e) === 429 ? otpThrottleMessage(e, get().lang) : 'Wrong or expired code — try again.';
+            // #886: a code that could not be checked is kept, so the person can tap Verify again
+            if (failure.key !== 'checkFailed') s.access.otp = '';
+            s.access.error = failure.text;
+            s.access.errorKey = failure;
           });
         });
     },
