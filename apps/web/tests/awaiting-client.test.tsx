@@ -65,6 +65,32 @@ describe('the read-only "Awaiting client" list', () => {
     await waitFor(() => expect(failing.r.getByTestId('awaiting-client-failed')).toBeTruthy());
   });
 
+  it('a failed refresh drops the earlier list rather than show it as current, and Try again reloads it', async () => {
+    let reply: () => Promise<unknown> = () => Promise.resolve(served);
+    const fetch = vi.fn(() => reply());
+    const { useStore, r } = await load('engineer', fetch);
+    await waitFor(() => expect(r.getByTestId('awaiting-client-D-1')).toBeTruthy());
+    reply = () => Promise.reject(new Error('503'));
+    // the client decides elsewhere; the refresh that follows the decisions slice fails
+    act(() => { useStore.setState({ decisions: [dec('D-9', { status: 'approved' })] } as never); });
+    await waitFor(() => expect(r.getByTestId('awaiting-client-failed')).toBeTruthy());
+    expect(r.queryByTestId('awaiting-client-D-1')).toBeNull();
+    reply = () => Promise.resolve([served[1]]);
+    act(() => { r.getByTestId('awaiting-client-retry').click(); });
+    await waitFor(() => expect(r.getByTestId('awaiting-client-D-2')).toBeTruthy());
+    expect(r.queryByTestId('awaiting-client-D-1')).toBeNull();
+    expect(r.queryByTestId('awaiting-client-failed')).toBeNull();
+  });
+
+  it('the waiting age moves on while the screen stays open', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    const since = new Date(Date.now() - 86_400_000 + 30 * 60_000).toISOString(); // a day less half an hour ago
+    const { r } = await load('engineer', () => Promise.resolve([{ ...served[0], waitingSince: since }]));
+    await waitFor(() => expect(r.getByTestId('awaiting-client-D-1').textContent).toContain('Waiting 0 days'));
+    act(() => { vi.advanceTimersByTime(31 * 60_000); });
+    expect(r.getByTestId('awaiting-client-D-1').textContent).toContain('Waiting 1 day');
+  });
+
   it('with no server (the demo) it reads the seeded client-held open decisions, never a draft or another decider\'s', async () => {
     const { r } = await load('engineer', () => Promise.resolve(null), {
       decisions: [

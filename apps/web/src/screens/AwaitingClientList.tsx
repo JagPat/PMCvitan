@@ -7,9 +7,12 @@ import { decisionRail } from '@vitan/shared';
 
 const DAY_MS = 86_400_000;
 
+/** The waiting age is re-read on this beat, so a screen left open past midnight does not lag a day behind. */
+const CLOCK_TICK_MS = 60_000;
+
 /** How long a row has waited, in whole days: from the server's `waitingSince`, or the demo seed's `ageDays`. */
-function waitingDays(row: AwaitingClientRow & { ageDays?: number }): number | null {
-  if (row.waitingSince) return Math.max(0, Math.floor((Date.now() - Date.parse(row.waitingSince)) / DAY_MS));
+function waitingDays(row: AwaitingClientRow & { ageDays?: number }, now: number): number | null {
+  if (row.waitingSince) return Math.max(0, Math.floor((now - Date.parse(row.waitingSince)) / DAY_MS));
   return row.ageDays ?? null;
 }
 
@@ -28,6 +31,13 @@ export function AwaitingClientList() {
     s.decisions.filter((d) => !d.draft && (d.deciderKind ?? 'client') === 'client' && (d.status === 'pending' || d.status === 'change'))));
   const [served, setServed] = useState<{ scope: string; rows: AwaitingClientRow[] | null } | null>(null);
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
+    return () => clearInterval(tick);
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -36,10 +46,16 @@ export function AwaitingClientList() {
         if (!live) return; // a reply for a screen or a project that is gone
         setServed({ scope, rows });
         setFailed(false);
+        setNow(Date.now());
       })
-      .catch(() => { if (live) setFailed(true); });
+      .catch(() => {
+        if (!live) return;
+        // an earlier list may no longer be true (the client may have just decided): show the failure, never stale rows
+        setServed(null);
+        setFailed(true);
+      });
     return () => { live = false; };
-  }, [fetchAwaitingClient, scope, decisions]);
+  }, [fetchAwaitingClient, scope, decisions, attempt]);
 
   const current = served?.scope === scope ? served : null;
   const rows: (AwaitingClientRow & { ageDays?: number })[] | null = !current
@@ -60,7 +76,17 @@ export function AwaitingClientList() {
 
       {rows === null && !failed && <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }}>Loading…</div>}
       {rows === null && failed && (
-        <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }} data-testid="awaiting-client-failed">Couldn't load what the client is deciding. Check your connection.</div>
+        <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }} data-testid="awaiting-client-failed">
+          Couldn't load what the client is deciding. Check your connection.{' '}
+          <button
+            type="button"
+            onClick={() => { setFailed(false); setAttempt((n) => n + 1); }}
+            style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--ink)', textDecoration: 'underline', cursor: 'pointer' }}
+            data-testid="awaiting-client-retry"
+          >
+            Try again
+          </button>
+        </div>
       )}
       {rows !== null && rows.length === 0 && (
         <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }} data-testid="awaiting-client-empty">Nothing is waiting on the client.</div>
@@ -68,7 +94,7 @@ export function AwaitingClientList() {
       {rows !== null && rows.length > 0 && (
         <ul style={{ listStyle: 'none', margin: '12px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {rows.map((r) => {
-            const days = waitingDays(r);
+            const days = waitingDays(r, now);
             return (
               <li
                 key={r.id}
