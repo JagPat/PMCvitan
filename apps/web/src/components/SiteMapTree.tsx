@@ -54,15 +54,18 @@ export function SiteMapTree({ nodes, active, onSelect, flag }: {
   const desktop = useDesktop();
   const navRef = useRef<HTMLElement>(null);
 
-  // a long tree scrolls inside its own column: bring the opened place into that column's view
+  // a long tree scrolls inside its own column: bring the opened place into the part of that column that is on
+  // screen (the column can start below the page header, so its own height is not what the user sees)
   useEffect(() => {
     const nav = navRef.current;
     const row = nav?.querySelector<HTMLElement>('[aria-current="true"]');
     if (!nav || !row) return;
-    const top = row.getBoundingClientRect().top - nav.getBoundingClientRect().top + nav.scrollTop;
-    if (top < nav.scrollTop || top + row.offsetHeight > nav.scrollTop + nav.clientHeight) {
-      nav.scrollTop = Math.max(0, top - nav.clientHeight / 2);
-    }
+    const box = nav.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    const top = Math.max(box.top, 0);
+    const bottom = Math.min(box.bottom, window.innerHeight);
+    if (bottom - top < r.height) return; // the column is off screen: moving within it would not show the row
+    if (r.top < top || r.bottom > bottom) nav.scrollTop += r.top + r.height / 2 - (top + bottom) / 2;
   }, [active, desktop]);
 
   if (!desktop) return null;

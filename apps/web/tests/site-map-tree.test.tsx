@@ -54,6 +54,7 @@ async function load(role: 'pmc' | 'client', routeItem: string | null) {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.resetModules();
 });
@@ -107,5 +108,30 @@ describe('the desktop places tree (#633 unit C)', () => {
     const { view } = await load('pmc', 'kit');
     expect(view.queryByTestId('site-map-tree')).toBeNull();
     expect(view.getByTestId('place-breadcrumb')).toBeTruthy();
+  });
+
+  // the column starts 400px down the page and runs past the window's 768px bottom; only 400..768 is on screen
+  const layout = (rowTop: number) => {
+    const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 260, width: 260, x: 0, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === 'site-map-tree') return rect(400, 700);
+      if (this.getAttribute('aria-current') === 'true') return rect(rowTop, 44);
+      return rect(0, 0);
+    });
+  };
+
+  it('scrolls its own column so the opened place sits in the part of the column on screen', async () => {
+    vi.stubGlobal('innerHeight', 768);
+    layout(900); // inside the column, but below the window's bottom
+    const { view } = await load('pmc', 'kit');
+    // centre of the row (922) moves to the centre of the visible part (584)
+    expect(view.getByTestId('site-map-tree').scrollTop).toBe(338);
+  });
+
+  it('leaves the column alone when the opened place is already on screen', async () => {
+    vi.stubGlobal('innerHeight', 768);
+    layout(600);
+    const { view } = await load('pmc', 'kit');
+    expect(view.getByTestId('site-map-tree').scrollTop).toBe(0);
   });
 });
