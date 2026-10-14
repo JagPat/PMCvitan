@@ -35,6 +35,10 @@ function isPlainSitePhoto(input: CreateMediaInput): boolean {
   return input.kind === 'progress' && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
 }
 
+/** What a clientKey replay must read to decide whether the caller may have the stored row back. */
+const REPLAY_SELECT = { id: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true } as const;
+type ReplayRow = { id: string; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null };
+
 export type MediaBytes = { mime: string; bytes: Buffer };
 export type MediaRedirect = { redirect: string };
 
@@ -66,6 +70,16 @@ export class MediaService {
     private readonly commercialParticipant: CommercialParticipant,
   ) {}
 
+  /** A clientKey replay returns the stored row only when the caller could have created it: for the roles
+   *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence. */
+  private replayed(user: AuthUser, row: ReplayRow): UploadedMedia {
+    if (!SITE_RECORD_ROLES.has(user.role)) {
+      const plain = row.kind === 'progress' && !row.decisionId && !row.dailyLogId && !row.inspectionId && !row.inspectionItemId;
+      if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
+    }
+    return { id: row.id, url: this.signed.mediaPath(row.id) };
+  }
+
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
    *  IDEMPOTENT per (projectId, clientKey): replaying the same key returns the
    *  already-stored row — an offline photo uploads exactly once (Phase 1 Task 4). */
@@ -82,12 +96,21 @@ export class MediaService {
     if (input.clientKey) {
       const existing = await this.prisma.media.findUnique({
         where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
-        select: { id: true },
+        select: REPLAY_SELECT,
       });
-      if (existing) return { id: existing.id, url: this.signed.mediaPath(existing.id) };
+      if (existing) return this.replayed(user, existing);
     }
     // Location spine: validate the place tag belongs to this project before storing.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
+    // A team-visible photo is never filed on a place the caller cannot see: another author's private draft
+    // (the snapshot's own rule — a draft is visible only to its author).
+    if (nodeId) {
+      const visible = await this.prisma.projectNode.findFirst({
+        where: { id: nodeId, OR: [{ publishedAt: { not: null } }, { authorId: user.sub }] },
+        select: { id: true },
+      });
+      if (!visible) throw new BadRequestException('Unknown location for this project');
+    }
     // Project-owned references: a photo may only point at THIS project's decision/log.
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     // Task 10 — a daily-log reference is validated through the daily-log module's query, not `project-ref`.
@@ -168,9 +191,15 @@ export class MediaService {
       if (input.clientKey && e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
         const winner = await this.prisma.media.findUniqueOrThrow({
           where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
-          select: { id: true },
+          select: REPLAY_SELECT,
         });
-        return { id: winner.id, url: this.signed.mediaPath(winner.id) };
+        try {
+          return this.replayed(user, winner);
+        } catch (refused) {
+          // the key is another member's: nothing references THIS request's object, so it goes
+          // through the same earned cleanup below rather than staying in the bucket
+          e = refused;
+        }
       }
       // THE ROLLBACK DOES NOT REACH THE BUCKET (#571 round 11, finding 3). The preflight above is
       // deliberately advisory, so the authoritative in-transaction check is the one that can refuse

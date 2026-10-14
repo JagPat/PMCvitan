@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
+import { NotFoundException, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { MediaService } from './media.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { OrgsParticipant } from '../orgs/orgs.participant';
@@ -49,6 +50,8 @@ function make(
     },
     projectNode: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null),
+      // the visibility read: these fixture nodes are all published
+      findFirst: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null),
     },
     // resolveActor (Task 3) + the platform event kernel (Task 4) now run inside these mutations
     user: { findUnique: vi.fn(async () => ({ name: 'Tester' })) },
@@ -259,6 +262,31 @@ describe('MediaService.remove — evidence deletion ordering', () => {
 
     expect(await svc.remove('m', user)).toBe(true);
     expect(prisma.media.delete).toHaveBeenCalledWith({ where: { id: 'm' } });
+  });
+});
+
+describe('MediaService — a replayed upload key (#482)', () => {
+  const contractor = { sub: 'c1', role: 'contractor', projectId: 'ambli' } as never;
+  const p2002 = () => new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'test' });
+
+  it('a concurrent replay onto another member\'s evidence is refused, and this request\'s object is cleaned up', async () => {
+    const { svc, prisma, storage } = make(null);
+    prisma.media.create.mockRejectedValueOnce(p2002());
+    Object.assign(prisma.media, {
+      findUniqueOrThrow: vi.fn(async () => ({ id: 'pmc-evidence', kind: 'material', uploadedBy: 'pmc-1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
+      findFirst: vi.fn(async () => null),
+    });
+    await expect(svc.create('ambli', contractor, { ...input, clientKey: 'k' })).rejects.toBeInstanceOf(ForbiddenException);
+    expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
+  });
+
+  it('a concurrent replay of the caller\'s own plain photo returns that row', async () => {
+    const { svc, prisma } = make(null);
+    prisma.media.create.mockRejectedValueOnce(p2002());
+    Object.assign(prisma.media, {
+      findUniqueOrThrow: vi.fn(async () => ({ id: 'own', kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
+    });
+    expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok' });
   });
 });
 

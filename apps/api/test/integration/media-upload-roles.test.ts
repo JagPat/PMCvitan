@@ -45,6 +45,7 @@ describe('who may add a site photo (live PG)', () => {
 
   afterAll(async () => {
     await t?.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+    await t?.prisma.projectNode.deleteMany({ where: { projectId: f.projectA.id, id: { startsWith: `${f.projectA.id}-roles-` } } });
     // this suite's own members go before the fixture's teardown, which deletes the project they point at
     await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'MembershipTransition'], { cascade: true });
     await t?.prisma.membership.deleteMany({ where: { userId: { in: extra } } });
@@ -76,6 +77,37 @@ describe('who may add a site photo (live PG)', () => {
     }
     // nothing was stored by a refusal
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: { startsWith: `refused-${role}` } } })).toBe(0);
+  });
+
+  it('a replayed upload key returns only the caller\'s own plain photo, never another member\'s evidence', async () => {
+    // the PMC's record-linked upload under a key the contractor learns
+    const evidence = await upload(tokens.pmc, { kind: 'material', clientKey: 'replay-pmc-evidence' });
+    expect(evidence.status).toBe(201);
+    const stolen = await upload(tokens.contractor, { kind: 'progress', clientKey: 'replay-pmc-evidence' });
+    expect(stolen.status).toBe(403);
+    expect(stolen.body.id).toBeUndefined();
+    // another member's plain photo is not theirs to replay either
+    expect((await upload(tokens.consultant, { kind: 'progress', clientKey: 'roles-client' })).status).toBe(403);
+    // their own key still replays to the same row (an offline photo uploads exactly once)
+    const first = await upload(tokens.contractor, { kind: 'progress', clientKey: 'replay-own' });
+    const again = await upload(tokens.contractor, { kind: 'progress', clientKey: 'replay-own' });
+    expect(first.status).toBe(201);
+    expect(again.status).toBe(201);
+    expect(again.body.id).toBe(first.body.id);
+  });
+
+  it('a photo is placed only on a location the caller can see, never on another author\'s private draft', async () => {
+    const node = (id: string, publishedAt: Date | null, authorId: string) =>
+      t.prisma.projectNode.create({ data: { id: `${f.projectA.id}-${id}`, projectId: f.projectA.id, name: id, kind: 'zone', publishedAt, authorId } });
+    const published = await node('roles-published', new Date(), f.memberUser.id);
+    const pmcDraft = await node('roles-pmc-draft', null, f.memberUser.id);
+    const placed = await upload(tokens.contractor, { kind: 'progress', nodeId: published.id, clientKey: 'place-published' });
+    expect(placed.status).toBe(201);
+    const hidden = await upload(tokens.contractor, { kind: 'progress', nodeId: pmcDraft.id, clientKey: 'place-hidden' });
+    expect(hidden.status).toBe(400);
+    expect(await t.prisma.media.count({ where: { clientKey: 'place-hidden' } })).toBe(0);
+    // the draft's own author still sees it
+    expect((await upload(tokens.pmc, { kind: 'progress', nodeId: pmcDraft.id, clientKey: 'place-own-draft' })).status).toBe(201);
   });
 
   it('an anonymous worker token adds nothing', async () => {
