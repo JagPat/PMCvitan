@@ -41,6 +41,9 @@ export type PasswordCredentialCompleteInput = z.infer<typeof passwordCredentialC
 export const otpRequestSchema = z.object({
   phone: z.string().min(8),
   projectId: z.string().min(1).default('ambli'),
+  // #827: the sign-in screen can tell the person the code went to their email (until SMS is live); a screen that
+  // does not send it keeps the SMS route
+  acceptEmailCode: z.boolean().optional(),
 });
 export type OtpRequestInput = z.infer<typeof otpRequestSchema>;
 
