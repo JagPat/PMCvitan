@@ -6,7 +6,7 @@ import { projectDataUsable } from '@/store/projectScope';
 import { guidesFor, type Guide } from './guides';
 import { readGuidesDone, markGuideDone } from './guideDone';
 import { useGuideState } from './guideState';
-import { findGuideTarget, findStepTarget, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
+import { findGuideTarget, findStepTarget, guideKeyMatches, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
 import { subscribeGuideOutcome } from './outcomes';
 import { GUIDE_TIPS, GUIDE_WORDS } from './words';
 import styles from './Guide.module.css';
@@ -26,7 +26,7 @@ function completeStep(doneKey: string, g: ReturnType<typeof useGuideState.getSta
 const enabled = (el: HTMLElement | null): el is HTMLElement => el !== null && !(el as HTMLButtonElement).disabled;
 
 function sameBox(a: Box | null, b: Box | null): boolean {
-  return a === b || (!!a && !!b && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height && a.dialog === b.dialog);
+  return a === b || (!!a && !!b && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height && a.dialog === b.dialog && a.vw === b.vw && a.vh === b.vh);
 }
 
 /**
@@ -104,9 +104,16 @@ export function GuideHost() {
           return;
         }
         const r = el.getBoundingClientRect();
-        const next = { top: r.top, left: r.left, width: r.width, height: r.height, dialog };
+        const next = { top: r.top, left: r.left, width: r.width, height: r.height, dialog, vw: window.innerWidth, vh: window.innerHeight };
         setBox((prev) => (sameBox(prev, next) ? prev : next));
       };
+      // a pressed action the store has since confirmed some other way (a live refresh that showed the
+      // checklist submitted before the request's own answer arrived) is done
+      const settled = guide.steps[step]!.settled;
+      if (g.run.waiting && settled?.(runKey)) {
+        completeStep(key, g, null);
+        return;
+      }
       const here = findStepTarget(guide.steps[step]!, runKey);
       if (here) {
         missing.current = null;
@@ -178,7 +185,7 @@ export function GuideHost() {
       const target = e.target instanceof Element ? e.target : null;
       const pressed = target?.closest(`[data-guide="${current.target}"]`);
       if (!pressed) return;
-      if (current.keyed && pressed.getAttribute('data-guide-key') !== g.run.key) return;
+      if (current.keyed && !guideKeyMatches(pressed.getAttribute('data-guide-key'), g.run.key)) return;
       // an action that can fail waits for the store's report (this runs before the control's own
       // handler, so even a report made at once, as in demo mode, finds the wait in place)
       if (current.until === 'outcome') {
@@ -195,11 +202,13 @@ export function GuideHost() {
   // control that went away (a dialog closed on a refusal) steps the guide back as usual
   useEffect(
     () =>
-      subscribeGuideOutcome((outcome) => {
+      subscribeGuideOutcome((outcome, outcomeKey) => {
         const g = useGuideState.getState();
         if (!g.run) return;
         const current = g.run.guide.steps[g.run.step]!;
         if (current.until !== 'outcome' || !current.outcome) return;
+        // a keyed step follows one record: another checklist's submit is not this guide's
+        if (current.keyed && !guideKeyMatches(outcomeKey, g.run.key)) return;
         if (outcome === current.outcome.ok) completeStep(key, g, null);
         else if (outcome === current.outcome.failed) g.setWait(false);
       }),
