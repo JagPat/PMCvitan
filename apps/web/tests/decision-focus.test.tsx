@@ -122,3 +122,48 @@ describe("U2b — the Pulse's way in opens that decision", () => {
     expect(useStore.getState()).toMatchObject({ screen: 'client-decisions', decisionFocus: 'D-1' });
   });
 });
+
+describe('#482 follow-up — Withdraw on the waiting card matches what the server accepts', () => {
+  async function card(d: Decision, overrides: Record<string, unknown> = {}) {
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const scope = await import('@/store/projectScope');
+    useStore.setState(getInitialState());
+    useStore.setState({
+      ...scope.emptyProjectData(), activeProjectId: 'ambli', projectLoadState: 'ready', role: 'pmc', lang: 'en',
+      short: 'Ambli', decisions: [d], sessionUserId: 'u-pmc', sessionToken: null, ...overrides,
+    });
+    const { WaitingCardActions } = await import('@/components');
+    return render(<WaitingCardActions d={d} />);
+  }
+
+  it('a plain pending decision has no change request, so even the PMC gets no Withdraw', async () => {
+    const r = await card(dec('D-1'));
+    expect(r.queryByTestId('withdraw-D-1')).toBeNull();
+  });
+
+  it('the PMC withdrawing someone else\'s request is told it is someone else\'s', async () => {
+    const r = await card(dec('D-2', { status: 'change', changeRequest: { reason: 'Darker', costImpact: 0, timeImpactDays: 0, requestedById: 'u-client' } } as Partial<Decision>));
+    expect(r.getByTestId('withdraw-D-2')).toBeTruthy();
+    expect(r.getByTestId('edit-state-D-2').textContent).toContain('Another member asked for this change');
+    expect(r.getByTestId('edit-state-D-2').textContent).not.toContain('You asked');
+  });
+
+  it('the requester sees their own request as theirs', async () => {
+    const r = await card(dec('D-3', { status: 'change', changeRequest: { reason: 'Darker', costImpact: 0, timeImpactDays: 0, requestedById: 'u-pmc' } } as Partial<Decision>));
+    expect(r.getByTestId('edit-state-D-3').textContent).toContain('You asked for this change');
+  });
+});
+
+describe('#482 follow-up — opening another decision starts its actions afresh (Codex 4277101136)', () => {
+  it('a Forward form left open on one decision does not carry over to the next one opened', async () => {
+    const { useStore, Screen, r } = await load({ decisionFocus: 'D-1', sessionUserId: 'u-client', phase6_4dRollout: 'open' });
+    fireEvent.click(r.getByTestId('forward-D-1'));
+    fireEvent.change(r.getByTestId('chain-reason-D-1'), { target: { value: 'meant for D-1' } });
+    useStore.getState().openDecision('D-2');
+    r.rerender(<Screen />);
+    expect(r.getByTestId('decision-focus').dataset.decision).toBe('D-2');
+    expect(r.queryByTestId('chain-panel-D-2')).toBeNull();
+    expect(r.queryByTestId('chain-reason-D-2')).toBeNull();
+  });
+});

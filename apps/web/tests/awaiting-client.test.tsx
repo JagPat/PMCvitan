@@ -92,6 +92,17 @@ describe('the read-only "Awaiting client" list', () => {
     expect(r.queryByTestId('awaiting-client-D-2')).toBeNull();
   });
 
+  it('a pending decision the viewer is consulted on shows once: in the register, not again in the summary (#888)', async () => {
+    const consulted = dec('D-1', {
+      title: 'Kitchen countertop', approvalCycle: 0,
+      consultations: [{ id: 'c1', consulteeMembershipId: 'm-u-con', consulteeUserId: 'u-con', requestedById: 'u-pmc', question: 'Lead time?', openCycle: 0, requestedAt: new Date().toISOString() }],
+    } as Partial<Decision>);
+    const { r } = await load('contractor', () => Promise.resolve(served), { decisions: [consulted], sessionUserId: 'u-con' });
+    await waitFor(() => expect(r.getByTestId('log-row-D-1')).toBeTruthy());
+    await waitFor(() => expect(r.getByTestId('awaiting-client-empty')).toBeTruthy());
+    expect(r.queryByTestId('awaiting-client-D-1')).toBeNull();
+  });
+
   it('the waiting age moves on while the screen stays open', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
     const since = new Date(Date.now() - 86_400_000 + 30 * 60_000).toISOString(); // a day less half an hour ago
