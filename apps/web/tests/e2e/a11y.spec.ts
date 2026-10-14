@@ -24,7 +24,7 @@ const PERSONA_SCREENS = [
   { role: 'Engineer', label: 'Daily Site Log', path: 'site/log' },
   { role: 'Engineer', label: "Today's Checklist", path: 'site/checklist' },
   { role: 'Engineer', label: 'Team Access & Login', path: 'access' },
-  { role: 'Client', label: 'Decisions Waiting', path: 'client/decisions' },
+  { role: 'Client', label: 'Decisions', path: 'client/decisions' },
   { role: 'Client', label: 'Project Health', path: 'client/health' },
 ];
 

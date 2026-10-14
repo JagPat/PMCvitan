@@ -40,7 +40,7 @@ export const SCREEN_META: Record<ScreenKey, ScreenMeta> = {
   'site-schedule': { key: 'site-schedule', label: 'Site Schedule', short: 'Schedule', path: '/schedule', icon: CalendarDays },
   'decision-log': { key: 'decision-log', label: 'Decision Log', short: 'Decision Log', path: '/decisions', icon: ClipboardList },
   'inspect-review': { key: 'inspect-review', label: 'Inspection Review', short: 'Review', path: '/review', icon: ClipboardCheck },
-  'client-decisions': { key: 'client-decisions', label: 'Decisions Waiting', short: 'Decisions', path: '/client/decisions', icon: BadgeCheck },
+  'client-decisions': { key: 'client-decisions', label: 'Decisions', short: 'Decisions', path: '/client/decisions', icon: BadgeCheck },
   'client-health': { key: 'client-health', label: 'Project Health', short: 'Health', path: '/client/health', icon: Activity },
   'daily-log': { key: 'daily-log', label: 'Daily Site Log', short: 'Daily', path: '/site/log', icon: NotebookPen },
   'engineer-check': { key: 'engineer-check', label: "Today's Checklist", short: 'Checklist', path: '/site/checklist', icon: ListChecks },
@@ -139,7 +139,9 @@ export function screensFor(role: Role): ScreenMeta[] {
   // everyone lands on it after login. For You (the live action queue) stays second.
   const keys: Record<Role, ScreenKey[]> = {
     pmc: ['dashboard', 'inbox', 'daily-log', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team', 'portfolio'],
-    client: ['dashboard', 'inbox', 'client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
+    // QA check 14 Oct 2026 (#482): one "Decisions" screen — what waits on the client, then the history. The
+    // Decision Log's own path stays reachable by link (ROUTE_ONLY_SCREENS) and opens the same screen.
+    client: ['dashboard', 'inbox', 'client-decisions', 'client-health', 'drawings', 'places'],
     // engineers hold activity.start/complete, so they get the Schedule (its authoring
     // controls stay behind activity.manage — pmc only). Materials and Labour (`labour.read` is
     // pmc/engineer) are pmc/engineer planning surfaces.
@@ -191,9 +193,13 @@ export const ITEM_SCREENS: ReadonlySet<ScreenKey> = new Set<ScreenKey>([
 ]);
 
 /** Top 10 #3 gap 12 (#798, owner decision 2026-10-12) — screens a role reaches by a LINK only (a brief task, a
- *  notice, a shared URL), never from its nav. None today: the PMC's Daily Site Log, once link-only, is in its nav
- *  since the Board decision of 14 Oct 2026 (#482). */
-export const ROUTE_ONLY_SCREENS: Partial<Record<Role, readonly ScreenKey[]>> = {};
+ *  notice, a shared URL), never from its nav. The PMC's Daily Site Log, once link-only, is in its nav since the Board
+ *  decision of 14 Oct 2026 (#482). */
+export const ROUTE_ONLY_SCREENS: Partial<Record<Role, readonly ScreenKey[]>> = {
+  // QA check 14 Oct 2026 (#482) — the client's Decision Log is the history half of their "Decisions" screen: old
+  // `/decisions` links and notices still land, on that screen.
+  client: ['decision-log'],
+};
 
 /** Every screen a role may be routed to: its nav, then its link-only screens (`ROUTE_ONLY_SCREENS`). The first is
  *  still the role's home. */

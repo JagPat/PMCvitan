@@ -7,6 +7,7 @@ import { Check } from '@/lib/icons';
 import { signed, type Decision } from '@vitan/shared';
 import { groupDecisions } from '@/lib/locationTree';
 import { DecisionFocus, ChangeRequestContext } from './DecisionFocus';
+import { DecisionLogScreen } from './DecisionLogScreen';
 import styles from './responsive.module.css';
 
 export function ClientDecisionsScreen() {
@@ -19,6 +20,10 @@ export function ClientDecisionsScreen() {
   const short = useStore((s) => s.short); // live project identity, not the seed
   const decisionFocus = useStore((s) => s.decisionFocus);
   const closeDecision = useStore((s) => s.closeDecision);
+  // QA check 14 Oct 2026 (#482): the client's one "Decisions" screen — what waits on them first, then the
+  // history (the register) below, in place of two menu entries. Other viewers who reach this approval route as
+  // a decider keep the list alone.
+  const withHistory = useStore((s) => s.role === 'client');
 
   // U2b — one decision on its own screen, while it still waits on THIS viewer. Once it is approved
   // (or is no longer theirs) the focus is let go and the list shows what is left.
@@ -80,7 +85,7 @@ export function ClientDecisionsScreen() {
         ))}
 
         {waiting === 0 && (
-          <div style={{ textAlign: 'center', padding: '48px 20px', color: 'var(--muted)' }}>
+          <div style={{ textAlign: 'center', padding: withHistory ? '20px 20px 8px' : '48px 20px', color: 'var(--muted)' }} data-testid="decisions-caught-up">
             <div style={{ width: 60, height: 60, margin: '0 auto', borderRadius: '50%', background: 'var(--green-chip)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <Check size={30} color="var(--green-solid)" strokeWidth={2.5} />
             </div>
@@ -89,6 +94,8 @@ export function ClientDecisionsScreen() {
           </div>
         )}
       </div>
+
+      {withHistory && <DecisionLogScreen variant="history" />}
     </div>
   );
 }
