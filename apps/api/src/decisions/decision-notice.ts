@@ -1,4 +1,4 @@
-import { viewerIsDecider } from '@vitan/shared';
+import { viewerIsDecider, type NoticeFacts } from '@vitan/shared';
 import {
   APPROVED_DECISION_NOTICE_COLOR,
   AWAITING_COUNTERSIGN_NOTICE_COLOR,
@@ -11,7 +11,8 @@ import {
   pendingDecisionNotice,
   provisionalApprovalNotice,
   recordedDecisionNotice,
-  withdrawnDecisionNotice, finalizedApprovalNotice, changeRequestedNotice, CHANGE_REQUESTED_NOTICE_COLOR } from '../domain/notifications';
+  withdrawnDecisionNotice, finalizedApprovalNotice, changeRequestedNotice, CHANGE_REQUESTED_NOTICE_COLOR,
+  approvalNoticeFacts, finalizedApprovalNoticeFacts, forwardedNoticeFacts } from '../domain/notifications';
 import type { DecisionDto } from '../snapshot/types';
 
 /**
@@ -129,7 +130,7 @@ export function renderKindedDecisionNotice(
    *  seal now refuses at commit for every new bundle, is refused here too for any row already
    *  committed). */
   decisionId?: string,
-): { text: string; color: string } | null {
+): { text: string; color: string; facts?: NoticeFacts } | null {
   if (event.eventType !== kind) return null; // the seal binds them; a reader never trusts one for the other
   switch (kind) {
     case 'decision.published': {
@@ -165,18 +166,15 @@ export function renderKindedDecisionNotice(
       if (finalization !== null) {
         if (finalization !== 'countersign' && finalization !== 'stranded_completed') return null;
         if (!revision.approvedByName || !revision.approvedByRole) return null;
+        const approver = { actorName: revision.approvedByName, actorRole: revision.approvedByRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf };
         return {
-          text: finalizedApprovalNotice(
-            { actorName: revision.approvedByName, actorRole: revision.approvedByRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf },
-            finalization, event.actorName,
-          ),
+          text: finalizedApprovalNotice(approver, finalization, event.actorName),
           color: APPROVED_DECISION_NOTICE_COLOR,
+          facts: finalizedApprovalNoticeFacts(approver, finalization, event.actorName),
         };
       }
-      return {
-        text: approvedDecisionNotice({ actorName: event.actorName, actorRole: event.actorRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf }),
-        color: APPROVED_DECISION_NOTICE_COLOR,
-      };
+      const approval = { actorName: event.actorName, actorRole: event.actorRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf };
+      return { text: approvedDecisionNotice(approval), color: APPROVED_DECISION_NOTICE_COLOR, facts: approvalNoticeFacts(approval) };
     }
     case 'decision.awaiting_countersign': {
       // A8a — the provisional approve's notice: the approver from the frozen envelope, the option and
@@ -189,9 +187,11 @@ export function renderKindedDecisionNotice(
       const revision = revisionId ? revisions?.get(revisionId) : undefined;
       if (!title || !deciderKind || !revision || !event.actorName || !event.actorRole) return null;
       if (!decisionId || revision.decisionId !== decisionId) return null;
+      const approval = { actorName: event.actorName, actorRole: event.actorRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf };
       return {
-        text: provisionalApprovalNotice({ actorName: event.actorName, actorRole: event.actorRole, title, material: revision.material, deciderKind, onBehalfOf: revision.onBehalfOf }),
+        text: provisionalApprovalNotice(approval),
         color: AWAITING_COUNTERSIGN_NOTICE_COLOR,
+        facts: approvalNoticeFacts(approval, { kind: 'provisional' }),
       };
     }
     case 'decision.forwarded': {
@@ -199,7 +199,10 @@ export function renderKindedDecisionNotice(
       const title = field(event.payload, 'title');
       const toLabel = field(event.payload, 'toLabel');
       if (!title || !toLabel) return null;
-      return { text: forwardedDecisionNotice(title, toLabel), color: FORWARDED_DECISION_NOTICE_COLOR };
+      // #839 — the target's kind, frozen on the event beside its label: a role is translated, a member's name never
+      const to = event.payload !== null && typeof event.payload === 'object' ? (event.payload as { to?: unknown }).to : undefined;
+      const toKind = to !== null && typeof to === 'object' ? field(to, 'kind') : null;
+      return { text: forwardedDecisionNotice(title, toLabel), color: FORWARDED_DECISION_NOTICE_COLOR, facts: forwardedNoticeFacts(title, toLabel, toKind) };
     }
     case 'decision.change_requested': {
       // A8b — the countersign REJECTION's notice (#673 round 1): the disagreement's two paths and the

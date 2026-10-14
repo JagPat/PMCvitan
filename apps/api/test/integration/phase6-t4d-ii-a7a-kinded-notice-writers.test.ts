@@ -101,7 +101,8 @@ describe('4d-ii-a / A7a — the decisions notice writers bind every notice to it
     // rendered from the event (and, for a green notice, the revision it names), as the feed reads it
     const events = await readFeedEvents(t.prisma, f.projectA.id, [event.eventId]);
     const revisions = await t.app.get(DecisionsQueryService).kindedNoticeRevisions(t.prisma, f.projectA.id, events);
-    expect(renderKindedDecisionNotice(notice.kind!, events.get(event.eventId)!, revisions, decisionId)).toEqual(cached);
+    // (#839: an approval or forward rendering also carries the facts its text was built from)
+    expect(renderKindedDecisionNotice(notice.kind!, events.get(event.eventId)!, revisions, decisionId)).toMatchObject(cached);
     return { event, notice };
   };
 

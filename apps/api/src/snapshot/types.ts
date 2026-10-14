@@ -1,6 +1,6 @@
 /** API response shapes — aligned with the frontend domain model so the client
  *  hydrates its store directly from a snapshot. */
-import type { Drawing, Checklist, Review, PlacedInspection, DecisionStatus } from '@vitan/shared';
+import type { Drawing, Checklist, Review, PlacedInspection, DecisionStatus, NoticeFacts } from '@vitan/shared';
 import type { Phase6_4dRollout } from '../platform/phase6-4d-rollout';
 
 /** Phase 2 Task 9 — the project-shell summary (identity + projection counts), the light payload the
@@ -447,7 +447,8 @@ export interface SnapshotDto {
    *  by id and renders the time from `at`; `time` is the legacy stored label, kept for older clients. */
   /** Top 10 #4b unit C (#778) — `unread`: this viewer holds no receipt for the notice (an additive key;
    *  a previous client ignores it). */
-  notifications: { id: string; at: string; text: string; time: string; color: string; decisionId?: string; inspectionId?: string; unread: boolean }[];
+  /** #827 (#839) — `facts`: what an approval or forward notice says, so the bell can translate it (an additive key). */
+  notifications: { id: string; at: string; text: string; time: string; color: string; decisionId?: string; inspectionId?: string; unread: boolean; facts?: NoticeFacts }[];
   /** Firms & consultants attached to the project (client company, contractor, MEP/structural consultants, …). */
   companies: CompanyDto[];
   /** The project location tree (zones → rooms → elements) the decision register groups by. */

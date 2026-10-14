@@ -673,7 +673,39 @@ export interface AppNotification {
   /** Top 10 #4b (#778) — the server's per-viewer read state: true while this viewer holds no receipt for the
    *  notice. Absent on a demo/local notice and from a server that predates it. */
   unread?: boolean;
+  /** #827 (#839) — the facts the server rendered this notice's English text from, so the bell can say it in
+   *  Hindi or Gujarati without reading names, titles or roles back out of the text. Absent on every notice
+   *  the server has no facts for (kind-less, demo, or from an older server): those are shown as before. */
+  facts?: NoticeFacts;
 }
+
+/**
+ * #827 (#839) — what an approval or forward notice says, as facts. Every string is shown as written except
+ * the ROLE fields (`actorRole`, `onBehalfOf`, `toRole`), which are role keys the bell translates.
+ */
+export type NoticeFacts =
+  | {
+      kind: 'approval';
+      /** true: the line names the client role ("Client approved …"), not the person */
+      byClient: boolean;
+      actorName: string;
+      /** the approver's role key; named only on an on-behalf approval ("Name (PMC) approved …") */
+      actorRole: string;
+      title: string;
+      material: string;
+      /** the holder kind a PMC approved on behalf of (`client`, `architect`, `member`…), or null */
+      onBehalfOf: string | null;
+      /** what follows the material: still awaiting the architect, countersigned by, or finalized by */
+      ending: null | { kind: 'provisional' } | { kind: 'countersigned' | 'finalized'; by: string };
+    }
+  | {
+      kind: 'forward';
+      title: string;
+      /** the new holder as the English line names it: a member's name, or the role's label */
+      to: string;
+      /** the new holder's role when it is a role; null when it is a named member */
+      toRole: 'client' | 'pmc' | 'architect' | null;
+    };
 
 export interface ModalState {
   type: ModalType;

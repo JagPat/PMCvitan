@@ -1,4 +1,4 @@
-import type { Lang } from '../domain/types';
+import type { Lang, NoticeFacts } from '../domain/types';
 
 /**
  * #827 (Top 10 #5, the bell) — a notification in the viewer's language.
@@ -27,17 +27,17 @@ const PREFIXED: readonly { en: string; hi: string; gu: string }[] = [
   { en: 'Mismatch resolved: ', hi: 'बेमेल सुलझाया गया: ', gu: 'મેળ ન ખાતું ઉકેલાયું: ' },
   { en: 'Drawing issued: ', hi: 'ड्रॉइंग जारी: ', gu: 'ડ્રોઇંગ જારી: ' },
   { en: 'New location added: ', hi: 'नई जगह जोड़ी गई: ', gu: 'નવી જગ્યા ઉમેરાઈ: ' },
-  // the target after " → " is a role label OR a member's name, and a member may be named "the client", so it is
-  // shown as written like the title (Codex 4264702275); translating a role target needs its kind in the feed (#839)
+  // the target after " → " is a role label OR a member's name, and a member may be named "the client", so the text
+  // alone shows it as written (Codex 4264702275); a served notice's facts say which it is (#839, `factsText`)
   { en: 'Decision forwarded: ', hi: 'निर्णय आगे भेजा गया: ', gu: 'નિર્ણય આગળ મોકલાયો: ' },
   // Site Visits SV1-b (#792): the visitor's name and the place are shown as written
   { en: 'Site visit started: ', hi: 'साइट विज़िट शुरू: ', gu: 'સાઇટ મુલાકાત શરૂ: ' },
   { en: 'Site visit ended: ', hi: 'साइट विज़िट पूरी: ', gu: 'સાઇટ મુલાકાત પૂરી: ' },
-  { en: 'Site visit closed by the PMC: ', hi: 'PMC ने साइट विज़िट बंद की: ', gu: 'PMC એ સાઇટ મુલાકાત બંધ કરી: ' },
+  { en: 'Site visit closed by the PMC: ', hi: 'प्रोजेक्ट मैनेजर (PMC) ने साइट विज़िट बंद की: ', gu: 'પ્રોજેક્ટ મેનેજર (PMC) એ સાઇટ મુલાકાત બંધ કરી: ' },
 ];
 
 /** The fixed endings some notices carry after the quoted part. */
-const SIGNOFF_AWAITING: Words = { en: " — awaiting the PMC's closing inspection", hi: ' — PMC के अंतिम निरीक्षण की राह', gu: ' — PMC ના અંતિમ નિરીક્ષણની રાહ' };
+const SIGNOFF_AWAITING: Words = { en: " — awaiting the PMC's closing inspection", hi: ' — प्रोजेक्ट मैनेजर (PMC) के अंतिम निरीक्षण की राह', gu: ' — પ્રોજેક્ટ મેનેજર (PMC) ના અંતિમ નિરીક્ષણની રાહ' };
 
 const APPROVED: Words = { en: '', hi: 'ने मंज़ूरी दी', gu: 'એ મંજૂરી આપી' };
 
@@ -54,6 +54,57 @@ function approvalNotice(text: string, lang: Exclude<Lang, 'en'>): string | null 
 }
 
 /**
+ * #827 (#839, Jagrut 13 Oct) — the role names a notice says, in each language: the server's role labels
+ * (`ROLE_LABEL`, the approver's role on an on-behalf approval) and the holder kinds an approval can be on
+ * behalf of or a decision forwarded to. A key this release does not know has no entry, and the line then
+ * falls back to the text as written.
+ */
+const NOTICE_ROLE: Record<string, Words> = {
+  pmc: { en: 'PMC', hi: 'प्रोजेक्ट मैनेजर (PMC)', gu: 'પ્રોજેક્ટ મેનેજર (PMC)' },
+  client: { en: 'Client', hi: 'क्लाइंट', gu: 'ક્લાયન્ટ' },
+  engineer: { en: 'Site Engineer', hi: 'साइट इंजीनियर', gu: 'સાઇટ ઇજનેર' },
+  contractor: { en: 'Contractor', hi: 'ठेकेदार', gu: 'કોન્ટ્રાક્ટર' },
+  consultant: { en: 'Consultant', hi: 'सलाहकार', gu: 'સલાહકાર' },
+  architect: { en: 'Architect', hi: 'आर्किटेक्ट', gu: 'આર્કિટેક્ટ' },
+  worker: { en: 'Worker', hi: 'मज़दूर', gu: 'મજૂર' },
+  member: { en: 'named decider', hi: 'तय किए गए निर्णयकर्ता', gu: 'નક્કી કરેલા નિર્ણયકર્તા' },
+};
+
+/**
+ * A notice built from the facts the server rendered its English from (`AppNotification.facts`): role words are
+ * translated, and every name, title and material is shown as written, never read out of the text. `null` when
+ * the facts name a role or shape this release does not know, so the caller shows the text instead.
+ */
+function factsText(f: NoticeFacts, lang: Exclude<Lang, 'en'>): string | null {
+  const hi = lang === 'hi';
+  if (f.kind === 'forward') {
+    const to = f.toRole === null ? f.to : NOTICE_ROLE[f.toRole]?.[lang];
+    if (!to) return null;
+    return `${hi ? 'निर्णय आगे भेजा गया' : 'નિર્ણય આગળ મોકલાયો'}: ${f.title} → ${to}`;
+  }
+  if (f.kind !== 'approval') return null;
+  let who: string;
+  if (f.onBehalfOf) {
+    const role = NOTICE_ROLE[f.actorRole]?.[lang];
+    const holder = NOTICE_ROLE[f.onBehalfOf]?.[lang];
+    if (!role || !holder) return null;
+    who = hi ? `${f.actorName} (${role}) ने ${holder} की ओर से` : `${f.actorName} (${role}) એ ${holder} વતી`;
+  } else {
+    who = `${f.byClient ? NOTICE_ROLE.client[lang] : f.actorName} ${hi ? 'ने' : 'એ'}`;
+  }
+  let ending = '';
+  if (f.ending?.kind === 'provisional') ending = hi ? ' — आर्किटेक्ट के प्रति-हस्ताक्षर की राह' : ' — આર્કિટેક્ટની પ્રતિ-સહીની રાહ';
+  else if (f.ending?.kind === 'countersigned') ending = hi ? ` — ${f.ending.by} ने प्रति-हस्ताक्षर किए` : ` — ${f.ending.by} એ પ્રતિ-સહી કરી`;
+  else if (f.ending?.kind === 'finalized') {
+    ending = hi ? ` — कोई सक्रिय आर्किटेक्ट न होने से ${f.ending.by} ने अंतिम किया` : ` — કોઈ સક્રિય આર્કિટેક્ટ ન હોવાથી ${f.ending.by} એ અંતિમ કર્યું`;
+  } else if (f.ending !== null) return null;
+  return `${who} ${hi ? 'मंज़ूरी दी' : 'મંજૂરી આપી'}: ${f.title} — ${f.material}${ending}`;
+}
+
+/**
+ * `facts`: the facts the server rendered the text from (#839). When present they are the line's only source in
+ * Hindi and Gujarati: role names are translated and the approver's name is never split out of the text (#840).
+ *
  * `decision`: the notice is stamped with the decision it is about (`AppNotification.decisionId`). A
  * "<who> approved <title> — <material>" notice has no fixed prefix, so it is read as an approval ONLY on a
  * stamped notice: every approval writer stamps one, and an unstamped text that happens to say "approved"
@@ -66,8 +117,10 @@ function approvalNotice(text: string, lang: Exclude<Lang, 'en'>): string | null 
  * unstamped sign-off notice has no ending, so its activity name is shown whole even when it imitates one
  * (Codex 4264702263).
  */
-export function noticeText(text: string, lang: Lang, opts: { decision?: boolean; inspection?: boolean } = {}): string {
+export function noticeText(text: string, lang: Lang, opts: { decision?: boolean; inspection?: boolean; facts?: NoticeFacts } = {}): string {
   if (lang === 'en') return text;
+  // a notice with facts is never read from its text: facts this release cannot say show the text as written
+  if (opts.facts) return factsText(opts.facts, lang) ?? text;
   for (const p of PREFIXED) {
     if (!text.startsWith(p.en) || text.length === p.en.length) continue;
     return p[lang] + text.slice(p.en.length);
