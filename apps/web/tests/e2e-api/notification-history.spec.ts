@@ -32,7 +32,6 @@ async function issueChecklist(request: APIRequestContext): Promise<{ id: string;
 
 async function signIn(page: Page, email: string): Promise<void> {
   await page.getByRole('button', { name: 'English', exact: true }).click();
-  await page.getByRole('button', { name: /team member/i }).click();
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(email);
   await page.getByTestId('login-password').fill(PASSWORD);

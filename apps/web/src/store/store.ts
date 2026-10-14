@@ -53,6 +53,7 @@ import {
   type PlacedInspection,
   type ItemState,
   type Lang,
+  accessDict,
   type ModalState,
   type Review,
   type ReservationPlan,
@@ -859,6 +860,33 @@ function httpStatusOf(err: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
+/**
+ * What a failed request for a phone sign-in code tells the person, in the gate's language (#827 one-screen
+ * sign-in). A throttle names the real wait when the server sends one and otherwise says "later", never a guessed
+ * minute. Any other failure (no SMS channel, or the email carrying the code could not be sent) points to the
+ * email sign-in below, so a broken send never looks like a code that is on its way.
+ */
+function otpRequestFailureMessage(err: unknown, lang: Lang): string {
+  const t = accessDict[lang];
+  const status = httpStatusOf(err);
+  if (status === 429) return otpThrottleMessage(err, lang);
+  if (status === undefined) return t.noServer;
+  return t.sendFailed;
+}
+
+/** A throttled code request or code check (429), in the gate's language: the real wait from the server's
+ *  `retryAfter` when it sends one, otherwise "try again later". */
+function otpThrottleMessage(err: unknown, lang: Lang): string {
+  const t = accessDict[lang];
+  const seconds = (err as { retryAfter?: unknown } | null)?.retryAfter;
+  if (typeof seconds !== 'number' || !(seconds > 0)) return t.tooManyLater;
+  const minutes = Math.ceil(seconds / 60);
+  const wait = seconds < 60
+    ? t.waitSeconds.replace('{n}', String(Math.ceil(seconds)))
+    : minutes === 1 ? t.waitMinute : t.waitMinutes.replace('{n}', String(minutes));
+  return t.tooManyWait.replace('{wait}', wait);
+}
+
 /** How long a throttled (429) caller should wait, from the seconds the server says remain in its window
  *  (#808: a fixed "10 minutes" overstated a window that may be seconds from resetting). */
 function throttleWait(err: unknown): string {
@@ -889,8 +917,10 @@ function signInFailureMessage(err: unknown): string {
 function freshAccess(generation = 0): AccessState {
   return {
     generation,
-    step: 'who',
-    who: null,
+    // #827 one-screen sign-in: a live build opens on the phone number (team members are the only ones who
+    // sign in there); the API-less demo keeps "Who are you?" for its trade and worker prototypes
+    step: API_BASE ? 'phone' : 'who',
+    who: API_BASE ? 'team' : null,
     trade: null,
     phone: '',
     email: '',
@@ -6130,30 +6160,41 @@ export const useStore = create<Store>()(
           s.access.otp = '';
           s.access.error = null;
           s.access.devCode = null;
+          s.access.channel = null;
+          s.access.codeLength = 4;
         });
         return;
       }
+      // round-2 Codex — "Sign in with email" stays tappable while this is in flight; a late answer must not
+      // pull the person back from the email sign-in (the same generation guard as the password flows)
+      const generation = get().access.generation;
       set((s) => { s.access.sending = true; s.access.error = null; });
       gateway
         .requestOtp(phone)
         .then((r) => {
+          if (get().access.generation !== generation) return;
+          // a code sent for a number the person has since changed is not the code screen for the number shown
+          if (get().access.phone !== phone) {
+            set((s) => { s.access.sending = false; });
+            return;
+          }
           set((s) => {
             s.access.sending = false;
             s.access.step = 'otp';
             s.access.otp = '';
             s.access.devCode = r.devCode ?? null;
+            // #827 one-screen sign-in: until SMS is live the code arrives by email, 4 digits long (the server says so in `codeLength`)
+            s.access.channel = r.channel ?? null;
+            s.access.codeLength = r.codeLength ?? 4;
           });
         })
         .catch((e: unknown) => {
-          const status = (e as { status?: number } | null)?.status;
+          if (get().access.generation !== generation) return;
+          // a failure for a number the person has since changed says nothing about the number shown
+          const message = get().access.phone === phone ? otpRequestFailureMessage(e, get().lang) : null;
           set((s) => {
             s.access.sending = false;
-            // 429 = throttled; anything else = the code couldn't be delivered to this
-            // number (e.g. no Telegram / SMS not provisioned) — steer office roles to email.
-            s.access.error =
-              status === 429
-                ? 'Too many attempts — wait a minute, then try again.'
-                : 'Couldn’t text a code to this number. Architect, client or contractor? Use “Sign in with email” below.';
+            if (message) s.access.error = message;
           });
         });
     },
@@ -6164,14 +6205,22 @@ export const useStore = create<Store>()(
         set((s) => { s.access.otp = cur.slice(0, -1); s.access.error = null; });
         return;
       }
-      if (cur.length >= 4) return;
+      const length = get().access.codeLength ?? 4;
+      if (cur.length >= length) return;
       const otp = cur + d;
       set((s) => { s.access.otp = otp; s.access.error = null; });
-      if (otp.length === 4) setTimeout(() => get().otpVerify(), 250);
+      if (otp.length === length) {
+        // the short pause lets the last digit show; if the person leaves, deletes or retypes in it, nothing is sent
+        const generation = get().access.generation;
+        setTimeout(() => {
+          const now = get().access;
+          if (now.generation === generation && now.step === 'otp' && now.otp === otp) get().otpVerify();
+        }, 250);
+      }
     },
     otpVerify: () => {
       const a = get().access;
-      if (a.otp.length < 4 || a.sending) return;
+      if (a.otp.length < (a.codeLength ?? 4) || a.sending) return;
 
       // team → sign in with the REAL role the server returns (a phone can belong to
       // any provisioned member — client / contractor / pmc / engineer), not always
@@ -6205,15 +6254,21 @@ export const useStore = create<Store>()(
         return;
       }
 
+      // round-2 Codex — a verify answer that lands after the person left for the email sign-in signs nothing in
+      const generation = a.generation;
       set((s) => { s.access.sending = true; s.access.error = null; });
       gateway
         .verifyOtp(a.phone, a.otp)
-        .then((res) => signIn(res.name ?? null, res.token, res.role, res.projectId))
-        .catch(() => {
+        .then((res) => {
+          if (get().access.generation !== generation) return;
+          signIn(res.name ?? null, res.token, res.role, res.projectId);
+        })
+        .catch((e: unknown) => {
+          if (get().access.generation !== generation) return;
           set((s) => {
             s.access.sending = false;
             s.access.otp = '';
-            s.access.error = 'Wrong or expired code — try again.';
+            s.access.error = httpStatusOf(e) === 429 ? otpThrottleMessage(e, get().lang) : 'Wrong or expired code — try again.';
           });
         });
     },
