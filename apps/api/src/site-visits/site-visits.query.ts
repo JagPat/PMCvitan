@@ -29,9 +29,42 @@ export interface SiteVisitDto {
   lateEndedAt: string | null;
   /** Whether the late end was recorded at its receipt instead of its claimed time; null when there is no late end. */
   lateEndTimeAdjusted: boolean | null;
+  /** The places walked, in the order added; a retired row stays, marked with when it was retired. */
+  places: SiteVisitPlaceDto[];
+  /** The people with the visitor, in the order added; a retired row stays, marked with when it was retired. */
+  attendees: SiteVisitAttendeeDto[];
 }
 
-type Row = Prisma.SiteVisitGetPayload<Record<string, never>>;
+export interface SiteVisitPlaceDto {
+  id: string;
+  /** null once the place was removed from the project; the name stays as it was when added. */
+  nodeId: string | null;
+  name: string;
+  addedAt: string;
+  addedTimeAdjusted: boolean;
+  /** Added after the visitor ended the visit, so recorded at its receipt. */
+  addedAfterEnd: boolean;
+  retiredAt: string | null;
+}
+
+export interface SiteVisitAttendeeDto {
+  id: string;
+  /** A project member (with the role they attended in) or a guest named by the visitor. */
+  kind: 'member' | 'guest';
+  userId: string | null;
+  role: string | null;
+  /** The member's account name when added, or the guest's name. */
+  name: string;
+  addedAt: string;
+  retiredAt: string | null;
+}
+
+const withChildren = {
+  places: { orderBy: [{ addedReceivedAt: 'asc' }, { id: 'asc' }] },
+  attendees: { orderBy: [{ addedAt: 'asc' }, { id: 'asc' }] },
+} satisfies Prisma.SiteVisitInclude;
+
+type Row = Prisma.SiteVisitGetPayload<{ include: typeof withChildren }>;
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
@@ -56,6 +89,14 @@ export function toSiteVisitDto(v: Row): SiteVisitDto {
     closeReason: v.closeReason,
     lateEndedAt: iso(v.lateEndedAt),
     lateEndTimeAdjusted: v.lateEndTimeAdjusted,
+    places: v.places.map((p) => ({
+      id: p.id, nodeId: p.nodeId, name: p.placeName, addedAt: p.addedAt.toISOString(), addedTimeAdjusted: p.addedTimeAdjusted,
+      addedAfterEnd: p.addedAfterEnd, retiredAt: iso(p.retiredAt),
+    })),
+    attendees: v.attendees.map((a) => ({
+      id: a.id, kind: a.userId !== null ? 'member' : 'guest', userId: a.userId, role: a.role, name: a.displayName,
+      addedAt: a.addedAt.toISOString(), retiredAt: iso(a.retiredAt),
+    })),
   };
 }
 
@@ -75,6 +116,7 @@ export class SiteVisitsQueryService {
     }
     const rows = await this.prisma.siteVisit.findMany({
       where: { projectId },
+      include: withChildren,
       orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
       take: page.limit ?? 50,
       ...(page.before !== undefined ? { cursor: { id: page.before }, skip: 1 } : {}),
@@ -83,7 +125,7 @@ export class SiteVisitsQueryService {
   }
 
   async get(projectId: string, visitId: string): Promise<SiteVisitDto> {
-    const row = await this.prisma.siteVisit.findFirst({ where: { projectId, id: visitId } });
+    const row = await this.prisma.siteVisit.findFirst({ where: { projectId, id: visitId }, include: withChildren });
     if (!row) throw new NotFoundException('Site visit not found');
     return toSiteVisitDto(row);
   }

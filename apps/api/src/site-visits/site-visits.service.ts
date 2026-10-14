@@ -8,9 +8,11 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import type { AuthUser } from '../common/auth';
 import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
-import { lockActorStanding, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
+import { lockActorStanding, lockIdentities, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
 import { executeCommand, hashRequest, peekReplay, type CommandScope, type CommandTx } from '../platform/commands';
-import type { CloseSiteVisitInput, EndSiteVisitInput, StartSiteVisitInput } from '../contracts';
+import type {
+  AddSiteVisitAttendeeInput, AddSiteVisitPlaceInput, CloseSiteVisitInput, EndSiteVisitInput, StartSiteVisitInput,
+} from '../contracts';
 import { SiteVisitsQueryService, type SiteVisitDto } from './site-visits.query';
 import { SITE_VISIT_NOTICE_COLOR, siteVisitClosedNotice, siteVisitEndedNotice, siteVisitStartedNotice } from './site-visit-notice';
 
@@ -37,7 +39,11 @@ interface LockedVisit {
  *   transition seal's operability check), the reverse of the order below; holding the readiness lock first, the two
  *   never interleave (#834, Codex 4260951386). No node writer takes the readiness lock, so it cannot meet the tree
  *   lock in the other order.
- * - The visit row next: every child write (SV1-b's next unit) locks it before its standing, as SV1-a's triggers do.
+ * - The visit row next: every child write locks it before its standing, as SV1-a's triggers do. A place add takes
+ *   the tree lock BEFORE the visit row, because a node removal holds the tree lock and then reaches the row of every
+ *   visit that started at that node (`startNodeId`, ON DELETE SET NULL).
+ * - A member attendee's registers follow the visitor's, and after the project row both identities are locked in
+ *   user-id order, the order SV1-a's attendee trigger takes them.
  * - The tree lock before the node (#834, Codex 4260951368): every node writer (create, rename, move, remove) takes
  *   the project's tree lock first and the actor's identity later, at its event. A start that locked the identity and
  *   then waited on the node it names deadlocked against the same PMC removing that node. Under the tree lock the two
@@ -157,6 +163,149 @@ export class SiteVisitsService {
     return this.query.get(projectId, visitId);
   }
 
+  /**
+   * The visitor adds a place they walked: a published place of the project, at a claimed time the database accepts
+   * after the start (or at its receipt, marked "after the end", once the visit has ended). A closed visit takes no edit.
+   *
+   * The tree lock comes BEFORE the visit row here: a node removal holds the tree lock and then, through the visit's
+   * `startNodeId` foreign key (ON DELETE SET NULL), the row of every visit that started at that node. Taking the visit
+   * row first and the tree lock second would close that cycle.
+   */
+  async addPlace(projectId: string, visitId: string, dto: AddSiteVisitPlaceInput, user: AuthUser, idempotencyKey?: string): Promise<SiteVisitDto> {
+    return this.visitorEdit(projectId, visitId, 'site-visits.add-place', { visitId, ...dto }, user, idempotencyKey, async (tx, actor) => {
+      await lockProjectTree(tx, projectId);
+      const visit = await this.lockEditableVisit(tx, projectId, visitId, user);
+      const placeName = await this.publishedPlace(tx, projectId, dto.nodeId);
+      const envelope = await this.visitorStanding(tx, projectId, actor, user, visit);
+      if (await tx.siteVisitPlace.findUnique({ where: { id: dto.id }, select: { id: true } })) {
+        throw new ConflictException('This place has already been added');
+      }
+      if (await tx.siteVisitPlace.findFirst({ where: { projectId, visitId, nodeId: dto.nodeId, retiredAt: null }, select: { id: true } })) {
+        throw new ConflictException('That place is already on this visit');
+      }
+      await tx.siteVisitPlace.create({
+        data: { id: dto.id, projectId, visitId, nodeId: dto.nodeId, addedById: user.sub, addedClaimedAt: new Date(dto.claimedAt) },
+      });
+      return this.announceRow(tx, projectId, actor, envelope, visitId, 'sitevisit.place_added', { rowId: dto.id, placeName });
+    });
+  }
+
+  /** The visitor retires a place added by mistake; the row stays in the record, marked retired. */
+  async retirePlace(projectId: string, visitId: string, placeId: string, user: AuthUser, idempotencyKey?: string): Promise<SiteVisitDto> {
+    return this.visitorEdit(projectId, visitId, 'site-visits.retire-place', { visitId, placeId }, user, idempotencyKey, async (tx, actor) => {
+      const visit = await this.lockEditableVisit(tx, projectId, visitId, user);
+      const envelope = await this.visitorStanding(tx, projectId, actor, user, visit);
+      const row = await tx.siteVisitPlace.findFirst({ where: { projectId, visitId, id: placeId }, select: { retiredAt: true } });
+      if (!row) throw new NotFoundException('Place not found on this visit');
+      if (row.retiredAt) throw new ConflictException('This place has already been removed');
+      await tx.siteVisitPlace.update({ where: { id: placeId }, data: { retiredById: user.sub } });
+      return this.announceRow(tx, projectId, actor, envelope, visitId, 'sitevisit.place_retired', { rowId: placeId });
+    });
+  }
+
+  /**
+   * The visitor names someone who was with them: a member of the project in a role they hold there, or a guest by
+   * name. The member's standing registers are locked after the visitor's and both identities in user-id order, the
+   * order SV1-a's trigger takes them, so two visitors adding each other on two projects cannot deadlock.
+   */
+  async addAttendee(projectId: string, visitId: string, dto: AddSiteVisitAttendeeInput, user: AuthUser, idempotencyKey?: string): Promise<SiteVisitDto> {
+    return this.visitorEdit(projectId, visitId, 'site-visits.add-attendee', { visitId, ...dto }, user, idempotencyKey, async (tx, actor) => {
+      const visit = await this.lockEditableVisit(tx, projectId, visitId, user);
+      const member = 'userId' in dto ? { userId: dto.userId, role: dto.role } : null;
+      const envelope = await this.visitorStanding(tx, projectId, actor, user, visit, member?.userId);
+      if (await tx.siteVisitAttendee.findUnique({ where: { id: dto.id }, select: { id: true } })) {
+        throw new ConflictException('This attendee has already been added');
+      }
+      if (member && await tx.siteVisitAttendee.findFirst({ where: { projectId, visitId, userId: member.userId, retiredAt: null }, select: { id: true } })) {
+        throw new ConflictException('That person is already on this visit');
+      }
+      try {
+        await tx.siteVisitAttendee.create({
+          data: member
+            ? { id: dto.id, projectId, visitId, userId: member.userId, role: member.role, addedById: user.sub }
+            : { id: dto.id, projectId, visitId, guestName: 'guestName' in dto ? dto.guestName : '', addedById: user.sub },
+        });
+      } catch (error) {
+        // SV1-a's trigger judges a member's standing under the locks taken above; its refusals become clear 400s
+        const message = String(error);
+        if (message.includes('cannot be the attendee')) throw new BadRequestException('That person is not on this project in that role');
+        if (message.includes('has no account name')) throw new BadRequestException('That person has no name on their account yet');
+        throw error;
+      }
+      return this.announceRow(tx, projectId, actor, envelope, visitId, 'sitevisit.attendee_added', { rowId: dto.id });
+    });
+  }
+
+  /** The visitor retires an attendee added by mistake; the row stays in the record, marked retired. */
+  async retireAttendee(projectId: string, visitId: string, attendeeId: string, user: AuthUser, idempotencyKey?: string): Promise<SiteVisitDto> {
+    return this.visitorEdit(projectId, visitId, 'site-visits.retire-attendee', { visitId, attendeeId }, user, idempotencyKey, async (tx, actor) => {
+      const visit = await this.lockEditableVisit(tx, projectId, visitId, user);
+      const envelope = await this.visitorStanding(tx, projectId, actor, user, visit);
+      const row = await tx.siteVisitAttendee.findFirst({ where: { projectId, visitId, id: attendeeId }, select: { retiredAt: true } });
+      if (!row) throw new NotFoundException('Attendee not found on this visit');
+      if (row.retiredAt) throw new ConflictException('This attendee has already been removed');
+      await tx.siteVisitAttendee.update({ where: { id: attendeeId }, data: { retiredById: user.sub } });
+      return this.announceRow(tx, projectId, actor, envelope, visitId, 'sitevisit.attendee_retired', { rowId: attendeeId });
+    });
+  }
+
+  // ── the visitor's edits ───────────────────────────────────────────────────────────────────────
+
+  /** One ledgered command under the readiness lock, as every visit act is; `run` takes the rest of the order. */
+  private async visitorEdit(
+    projectId: string, visitId: string, commandType: string, request: Record<string, unknown>, user: AuthUser,
+    idempotencyKey: string | undefined, run: (tx: CommandTx, actor: Actor) => Promise<{ resultRef: string; events: Awaited<ReturnType<typeof emitEvent>>[] }>,
+  ): Promise<SiteVisitDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest(request);
+    if (await peekReplay(this.prisma, scope, actor.actorId, commandType, idempotencyKey, requestHash)) {
+      return this.query.get(projectId, visitId);
+    }
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType, idempotencyKey, requestHash,
+      run: async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        return run(tx, actor);
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.query.get(projectId, visitId);
+  }
+
+  /** The visit row, locked; only its visitor edits it, and a closed visit takes no edit (SV1-a, V4). */
+  private async lockEditableVisit(tx: CommandTx, projectId: string, visitId: string, user: AuthUser): Promise<LockedVisit> {
+    const visit = await this.lockVisit(tx, projectId, visitId);
+    if (visit.visitorId !== user.sub) throw new ForbiddenException('Only the visitor can change their site visit');
+    if (visit.status === 'closed') throw new ConflictException('This site visit was closed by the PMC and takes no more changes');
+    return visit;
+  }
+
+  /**
+   * The visitor's standing in the visit's role. With a member attendee, that member's registers follow the visitor's,
+   * and after the project row both identities are locked in user-id order before the envelope re-locks the visitor's.
+   */
+  private async visitorStanding(
+    tx: CommandTx, projectId: string, actor: Actor, user: AuthUser, visit: LockedVisit, attendeeId?: string,
+  ): Promise<ActorEnvelope> {
+    const envelope = await this.standing(tx, projectId, actor, user, attendeeId);
+    if (envelope.actorRole !== visit.visitorRole) throw new ForbiddenException('Your role on this project has changed since this visit started');
+    return envelope;
+  }
+
+  /** A child change's one event on the visit's stream, naming its row (SV1-a, V6); child changes carry no notice. */
+  private async announceRow(
+    tx: CommandTx, projectId: string, actor: Actor, envelope: ActorEnvelope, visitId: string,
+    eventType: 'sitevisit.place_added' | 'sitevisit.place_retired' | 'sitevisit.attendee_added' | 'sitevisit.attendee_retired',
+    payload: Prisma.InputJsonObject & { rowId: string },
+  ) {
+    const ev = await emitEvent(tx, {
+      projectId, actor, eventId: randomUUID(), actorEnvelope: envelope, eventType, entityType: 'SiteVisit', entityId: visitId,
+      payload, effectKey: eventType, dispatch: {},
+    });
+    return { resultRef: payload.rowId, events: [ev] };
+  }
+
   // ── the lock order ────────────────────────────────────────────────────────────────────────────
 
   /** The visit row, FOR UPDATE: the first lock of every act on an existing visit. */
@@ -184,10 +333,12 @@ export class SiteVisitsService {
    * The actor's standing, under the envelope's register order with the project row before the identity: the two
    * registers FOR SHARE, the project row (the operability check), then the envelope (the identity FOR UPDATE).
    */
-  private async standing(tx: CommandTx, projectId: string, actor: Actor, user: AuthUser): Promise<ActorEnvelope> {
+  private async standing(tx: CommandTx, projectId: string, actor: Actor, user: AuthUser, attendeeId?: string): Promise<ActorEnvelope> {
     await lockActorStanding(tx, projectId, user.sub);
+    if (attendeeId !== undefined && attendeeId !== user.sub) await lockActorStanding(tx, projectId, attendeeId);
     const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${projectId}) AS "operable"`);
     if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
+    if (attendeeId !== undefined) await lockIdentities(tx, [user.sub, attendeeId]);
     const envelope = await resolveActorEnvelope(tx, projectId, actor);
     if (!envelope) throw new ForbiddenException('Your role on this project has changed; sign in again');
     return envelope;
