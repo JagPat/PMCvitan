@@ -113,7 +113,8 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // Phase 3 Task 5 (§E) — closing a mismatch is the PMC's attributable authority decision.
   'dailyLog.resolveMismatch': ['pmc'],
   'dailyLog.submit': ['engineer', 'pmc'],
-  'media.upload': ['pmc', 'engineer'],
+  // #482 (Board, 14 Oct 2026): every project member adds a site photo; worker tokens do not
+  'media.upload': ['pmc', 'engineer', 'contractor', 'consultant', 'client'],
   'media.delete': ['pmc', 'engineer'],
   'media.file': ['pmc', 'engineer'],
   'drawing.issue': ['pmc'],

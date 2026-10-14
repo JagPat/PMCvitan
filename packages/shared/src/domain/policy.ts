@@ -222,7 +222,10 @@ export const ROLE_POLICY = {
   // decision (the flag is engineer site work; the resolution disposes of the dispute)
   'dailyLog.resolveMismatch': ['pmc'],
   'dailyLog.submit': ['engineer', 'pmc'],
-  'media.upload': ['pmc', 'engineer'],
+  // Board decision 14 Oct 2026 (#482): every project member adds site photos (a foreman signs in as a contractor
+  // member). Anonymous worker tokens stay out. The service narrows the newly admitted roles to a plain site
+  // photo: linking one to a decision, a daily log or an inspection stays the PMC's and engineer's.
+  'media.upload': ['pmc', 'engineer', 'contractor', 'consultant', 'client'],
   'media.delete': ['pmc', 'engineer'],
   // re-file a photo onto a location-tree node (or unfile) — same authority as upload
   'media.file': ['pmc', 'engineer'],

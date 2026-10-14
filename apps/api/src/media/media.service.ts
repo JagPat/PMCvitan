@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
@@ -25,6 +25,14 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
 export interface UploadedMedia {
   id: string;
   url: string;
+}
+
+/** The roles that keep the record-linked uploads: evidence for a decision, a daily log or an inspection item. */
+const SITE_RECORD_ROLES: ReadonlySet<string> = new Set(['pmc', 'engineer']);
+
+/** A plain site photo: a progress photo, optionally placed on the location tree, linked to no record. */
+function isPlainSitePhoto(input: CreateMediaInput): boolean {
+  return input.kind === 'progress' && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
 }
 
 export type MediaBytes = { mime: string; bytes: Buffer };
@@ -63,6 +71,13 @@ export class MediaService {
    *  already-stored row — an offline photo uploads exactly once (Phase 1 Task 4). */
   async create(projectId: string, user: AuthUser, input: CreateMediaInput): Promise<UploadedMedia> {
     const uploadedBy = user.sub;
+    // #482 (Board, 14 Oct 2026) — every member may add a SITE photo; only the PMC and the engineer may add one
+    // that is evidence for something (a decision, a daily log, an inspection item) or a non-progress kind.
+    // Asked before the idempotency read and before any byte is stored, so a refused caller learns nothing
+    // about another photo's key and leaves nothing in the bucket.
+    if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input)) {
+      throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
+    }
     // idempotency fast-path: this exact photo already landed
     if (input.clientKey) {
       const existing = await this.prisma.media.findUnique({
