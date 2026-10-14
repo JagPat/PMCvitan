@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Role, ScreenKey } from '@vitan/shared';
 import { navLabelFor, splitMobileNav, MOBILE_MAX_TABS } from '@/lib/mobileNav';
 import { enabledScreensFor, routableScreensFor, screensFor } from '@/lib/screens';
@@ -75,15 +75,16 @@ describe('#482 QA role menus', () => {
     }
   });
 
-  it('the contractor’s five screens fit the bar with no More', () => {
+  it('the contractor’s bar is Dashboard · For You · Site Map · Drawings, with Decisions behind More', () => {
     const { primary, secondary } = splitMobileNav(enabledScreensFor('contractor', ALL_MODULES), 'contractor');
-    expect(keysOf(primary)).toEqual(['dashboard', 'inbox', 'drawings', 'places', 'decision-log']);
-    expect(secondary).toEqual([]);
+    expect(keysOf(primary)).toEqual(['dashboard', 'inbox', 'places', 'drawings']);
+    expect(keysOf(secondary)).toEqual(['decision-log']);
   });
 
   it('the contractor’s desktop sidebar reads "Decisions" and has no access screen', async () => {
     const LeftRail = await loadRail('contractor');
     const r = render(<LeftRail />);
+    fireEvent.click(r.getByTestId('rail-more'));
     expect(r.getByRole('button', { name: /^Decisions/ })).toBeInTheDocument();
     expect(r.queryByRole('button', { name: /Decision Log/ })).not.toBeInTheDocument();
     expect(r.queryByRole('button', { name: /Team Access/ })).not.toBeInTheDocument();
@@ -92,6 +93,7 @@ describe('#482 QA role menus', () => {
   it('the PMC’s desktop sidebar still reads "Decision Log"', async () => {
     const LeftRail = await loadRail('pmc');
     const r = render(<LeftRail />);
+    fireEvent.click(r.getByTestId('rail-more'));
     expect(r.getByRole('button', { name: /Decision Log/ })).toBeInTheDocument();
   });
 });

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNav } from './fixtures/nav';
 
 test('core loop: client approves & locks a decision → Decision Log → PMC dashboard count decrements', async ({ page }) => {
   await page.goto('/');
@@ -6,7 +7,7 @@ test('core loop: client approves & locks a decision → Decision Log → PMC das
   // every role lands on the Dashboard (#811) — switch to the Client
   // persona, then open their one Decisions screen (#482 QA, 14 Oct 2026) to drive the approval flow
   await page.getByRole('button', { name: 'Client', exact: true }).click();
-  await page.getByRole('navigation').getByRole('button', { name: /^Decisions( \d+)?$/ }).click();
+  await openNav(page, /^Decisions( \d+)?$/);
   await expect(page.getByText('Decisions waiting for you')).toBeVisible();
 
   // approve the architect's pick (Option B) on DL-014
