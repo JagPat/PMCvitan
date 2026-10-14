@@ -112,7 +112,9 @@ export type ScreenKey =
   // Phase 5 Task 7B-i (§M) — the ONE Commercial hub. 7B-i opens it on the MONEY POSITION (budget ·
   // commitments · cash forecast); the claim-lifecycle tabs land in 7B-ii and the write actions in
   // 7B-iii. Capability-gated: present ONLY on a project with `commercial`.
-  | 'commercial';
+  | 'commercial'
+  // Site Visits SV1-c (#792, QA item 6): every member reads the project's visits
+  | 'site-visits';
 
 export type Lang = 'en' | 'hi' | 'gu';
 

@@ -1432,7 +1432,77 @@ export class ApiGateway {
       body: JSON.stringify({ endpoint }),
     });
   }
+
+  // ── Site Visits SV1-c (#792): the screen's reads and the visitor's acts. Every act answers with the whole visit,
+  //    and carries its own key, so a retry after a lost response runs once. ──
+  /** A page of the project's visits, newest start first; `before` is the previous page's last visit. */
+  listSiteVisits(page: { before?: string; limit?: number } = {}): Promise<SiteVisit[]> {
+    const q = new URLSearchParams();
+    if (page.before) q.set('before', page.before);
+    if (page.limit) q.set('limit', String(page.limit));
+    const qs = q.toString();
+    return this.req<SiteVisit[]>(`/projects/${this.projectId}/site-visits${qs ? `?${qs}` : ''}`);
+  }
+  startSiteVisit(input: StartSiteVisitBody, idempotencyKey: string): Promise<SiteVisit> {
+    return this.visitAct('', input, idempotencyKey);
+  }
+  endSiteVisit(visitId: string, claimedAt: string, idempotencyKey: string): Promise<SiteVisit> {
+    return this.visitAct(`/${visitId}/end`, { claimedAt }, idempotencyKey);
+  }
+  closeSiteVisit(visitId: string, reason: string, idempotencyKey: string): Promise<SiteVisit> {
+    return this.visitAct(`/${visitId}/close`, { reason }, idempotencyKey);
+  }
+  addSiteVisitPlace(visitId: string, input: { id: string; nodeId: string; claimedAt: string }, idempotencyKey: string): Promise<SiteVisit> {
+    return this.visitAct(`/${visitId}/places`, input, idempotencyKey);
+  }
+  retireSiteVisitPlace(visitId: string, placeId: string, idempotencyKey: string): Promise<SiteVisit> {
+    return this.visitAct(`/${visitId}/places/${placeId}/retire`, undefined, idempotencyKey);
+  }
+  addSiteVisitAttendee(visitId: string, input: SiteVisitAttendeeBody, idempotencyKey: string): Promise<SiteVisit> {
+    return this.visitAct(`/${visitId}/attendees`, input, idempotencyKey);
+  }
+  retireSiteVisitAttendee(visitId: string, attendeeId: string, idempotencyKey: string): Promise<SiteVisit> {
+    return this.visitAct(`/${visitId}/attendees/${attendeeId}/retire`, undefined, idempotencyKey);
+  }
+  private visitAct(path: string, body: unknown, idempotencyKey: string): Promise<SiteVisit> {
+    return this.req<SiteVisit>(`/projects/${this.projectId}/site-visits${path}`, {
+      method: 'POST',
+      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: { 'Idempotency-Key': idempotencyKey },
+    });
+  }
 }
+
+/** A site visit as the server reads it (`SiteVisitDto`, apps/api site-visits.query.ts). Times are the accepted times. */
+export interface SiteVisit {
+  id: string;
+  visitorId: string;
+  visitorName: string;
+  visitorRole: string;
+  status: 'open' | 'ended' | 'closed';
+  startedAt: string;
+  startTimeAdjusted: boolean;
+  startPlace: { nodeId: string | null; name: string } | null;
+  location:
+    | { kind: 'none' }
+    | { kind: 'device'; lat: number; lng: number; accuracyM: number; at: string; approximate: boolean };
+  endedAt: string | null;
+  endTimeAdjusted: boolean | null;
+  closedAt: string | null;
+  closedById: string | null;
+  closeReason: string | null;
+  lateEndedAt: string | null;
+  lateEndTimeAdjusted: boolean | null;
+  places: { id: string; nodeId: string | null; name: string; addedAt: string; addedTimeAdjusted: boolean; addedAfterEnd: boolean; retiredAt: string | null }[];
+  attendees: { id: string; kind: 'member' | 'guest'; userId: string | null; role: string | null; name: string; addedAt: string; retiredAt: string | null }[];
+}
+export interface StartSiteVisitBody {
+  id: string;
+  claimedAt: string;
+  nodeId?: string;
+  location?: { lat: number; lng: number; accuracyM: number; at: string };
+}
+export type SiteVisitAttendeeBody = { id: string; userId: string; role: string } | { id: string; guestName: string };
 
 /**
  * A mutation captured while offline, replayed through the gateway on reconnect

@@ -103,6 +103,7 @@ export const navLabels: Record<ScreenKey, Record<Lang, string>> = {
   materials: { en: 'Materials', hi: 'सामान', gu: 'માલસામાન' },
   labour: { en: 'Labour', hi: 'मज़दूर', gu: 'મજૂરો' },
   commercial: { en: 'Money', hi: 'हिसाब', gu: 'હિસાબ' },
+  'site-visits': { en: 'Site Visits', hi: 'साइट विज़िट', gu: 'સાઇટ મુલાકાત' },
 };
 
 /** The engineer's two permanent tabs name the day, not the screen: For You is their "Today", and

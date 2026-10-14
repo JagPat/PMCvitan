@@ -821,6 +821,9 @@ export interface AppActions {
   /** Refetch the active project's snapshot after a load error (the boundary's Retry). */
   retryProjectLoad: () => void;
   _setGateway: (g: ApiGateway | null) => void;
+  /** Site Visits SV1-c (#792) — the gateway a screen that keeps its own state (the Site Visits screen) sends
+   *  through; null in the local demo. Read it at each send, with `captureProjectScope`, like the store's own paths. */
+  serverGateway: () => ApiGateway | null;
   /** Apply a delivered snapshot as the newest snapshot intent for the current scope
    *  (gate round 11 — begins a fresh lease, then routes through the coordinator).
    *  Models a pushed/socket-delivered snapshot; returns true only when `applied`, so
@@ -2570,6 +2573,7 @@ export const useStore = create<Store>()(
     _setGateway: (g) => {
       gateway = g;
     },
+    serverGateway: () => gateway,
     // gate round 11: the PUBLIC apply is a coordinator entry — it begins a FRESH
     // lease (a delivered snapshot is the newest intent) and routes through
     // acceptSnapshot, returning true only for `applied`. Internal command paths do
