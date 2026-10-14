@@ -33,7 +33,7 @@ export class ProjectController {
   @RolesFor('project.read')
   async shell(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser): Promise<ProjectShellDto> {
     const [summary, materials, labour, commercial, phase6_4d] = await Promise.all([
-      this.snapshot.shellSummary(projectId, user.role, user.sub),
+      this.snapshot.shellSummary(projectId, user.role, user.sub, user.decisionsContract),
       this.capabilities.isEnabled(projectId, MATERIALS_CAPABILITY),
       this.capabilities.isEnabled(projectId, LABOUR_CAPABILITY),
       this.capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY),
