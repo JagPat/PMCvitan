@@ -93,6 +93,7 @@ import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHe
 import { todayCivil } from '@/lib/civilDate';
 import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
+import { emitGuideOutcome } from '@/guide/outcomes';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -3312,6 +3313,7 @@ export const useStore = create<Store>()(
               if (!isThisAttempt()) return; // a newer submit/socket/session retired this command
               const result = acceptSnapshot(snap, lease);
               if (result === 'applied') {
+                emitGuideOutcome('inspection-submitted');
                 get().flash(CHT.submitted[get().lang]);
                 // Live bug 1b — the same rule as `consumeSnapshotResult`: an APPLIED snapshot carries no
                 // module slice, so under module ownership the submit still owes the read that shows it
@@ -3325,12 +3327,14 @@ export const useStore = create<Store>()(
                 // truth (not by a stale unsubmitted snapshot); if the mandatory reconcile
                 // fails or lands still-unconfirmed, a recoverable error/Retry is exposed
                 // instead of freezing forever.
+                emitGuideOutcome('inspection-submitted');
                 scheduleReconcile(scope, { kind: 'submit', inspectionId: c.id, attempt, createdAfterSequence: snapshotSeq });
               } else if (result === 'invalid-project') {
                 // manifestation 2: a rejected (wrong-project) payload must NOT report
                 // success and must NOT leave the checklist frozen forever — unlock the
                 // attempt and pull a fresh snapshot to recover current truth.
                 set((s) => { if (s.submission.attempt === attempt && s.submission.status === 'submitting') s.submission.status = 'idle'; });
+                emitGuideOutcome('inspection-submit-failed');
                 void requestFreshSnapshot();
               }
               // scope-moved: silent — the new scope owns its own truth.
@@ -3344,6 +3348,7 @@ export const useStore = create<Store>()(
                   s.submission.status = 'idle';
                 }
               });
+              emitGuideOutcome('inspection-submit-failed');
               get().flash(CHT.submitFailed[get().lang]);
             });
           return;
@@ -3356,6 +3361,7 @@ export const useStore = create<Store>()(
           s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued', attempt: 0 };
         });
         persistOutbox();
+        emitGuideOutcome('inspection-submitted');
         get().flash(CHT.savedOfflineSubmit[get().lang]);
         return;
       }
@@ -3406,6 +3412,7 @@ export const useStore = create<Store>()(
         // `current` first: `next` is an immer draft, and a draft proxy is not a cloneable source
         if (next) { s.checklist = structuredClone(current(next)) as Checklist; s.selectedChecklistId = next.id; }
       });
+      emitGuideOutcome('inspection-submitted');
       get().flash(CHT.submitted[get().lang]);
     },
 
@@ -4974,9 +4981,10 @@ export const useStore = create<Store>()(
     issueChecklist: (input) => {
       if (!gateway) {
         get().flash('Issuing checklists needs the server.');
+        emitGuideOutcome('checklist-issue-failed');
         return;
       }
-      runRemote(() => gateway!.createInspection(input), `Checklist issued: ${input.title} — the engineer has been notified.`);
+      void runRemote(() => gateway!.createInspection(input), `Checklist issued: ${input.title} — the engineer has been notified.`).then((ok) => emitGuideOutcome(ok ? 'checklist-issued' : 'checklist-issue-failed'));
     },
     startDailyLog: () => {
       if (!gateway) {
