@@ -79,6 +79,18 @@ export const GUIDES: readonly Guide[] = [
       { target: 'issue-checklist', tip: 'issueSend', until: 'outcome', outcome: { ok: 'checklist-issued', failed: 'checklist-issue-failed' } },
     ],
   },
+  {
+    // the PMC records a decision for the client: + → "Something to decide here" → Publish. It shares
+    // the Dashboard with the guide above, so it starts by itself on the next visit, not on top of it.
+    id: 'record-decision-pmc',
+    roles: ['pmc'],
+    screen: 'dashboard',
+    steps: [
+      { target: 'add', tip: 'decisionAdd' },
+      { target: 'create-decision', tip: 'decisionPick' },
+      { target: 'publish-decision', tip: 'decisionPublish', until: 'outcome', outcome: { ok: 'decision-published', failed: 'decision-publish-failed' } },
+    ],
+  },
 ];
 
 /** The run's key is `<checklist id>:<item>`: that checklist is submitted once it is no longer out on site. */

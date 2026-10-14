@@ -312,7 +312,6 @@ describe('the PMC is guided from + to issuing a check', () => {
   it('only one guide shows itself per visit: a second one waits for the next visit', async () => {
     const s = await setup('pmc', 'dashboard');
     const { CreateControl } = await import('@/layout/CreateControl');
-    (s.GUIDES as unknown as unknown[]).push({ id: 'second', roles: ['pmc'], screen: 'dashboard', steps: [{ target: 'add', tip: 'issueAdd' }] });
     const view = render(<><s.GuideHost /><CreateControl /></>);
     tick();
     expect(tip()?.getAttribute('data-guide-id')).toBe('raise-issue-pmc');
@@ -322,7 +321,8 @@ describe('the PMC is guided from + to issuing a check', () => {
     act(() => { s.useStore.setState({ screen: 'inbox' }); });
     act(() => { s.useStore.setState({ screen: 'dashboard' }); });
     tick();
-    expect(tip()?.getAttribute('data-guide-id')).toBe('second');
+    // the Dashboard's second guide, "record a decision"
+    expect(tip()?.getAttribute('data-guide-id')).toBe('record-decision-pmc');
   });
 });
 
@@ -583,5 +583,151 @@ describe('storage that refuses is never an error', () => {
     expect(tip()).not.toBeNull();
     press(view.getByTestId('guide-skip'));
     expect(tip()).toBeNull();
+  });
+});
+
+/** a PMC who has finished the "raise an issue" guide, so the Dashboard's next guide is "record a decision" */
+async function pmcForDecision(lang: Lang = 'en') {
+  const s = await setup('pmc', 'dashboard', lang);
+  localStorage.setItem(DONE_KEY, JSON.stringify(['raise-issue-pmc']));
+  s.useStore.setState({ nodes: [{ id: 'gf', parentId: null, name: 'Ground Floor', kind: 'zone', order: 0 }] } as never);
+  const { CreateControl } = await import('@/layout/CreateControl');
+  const view = render(<><s.GuideHost /><s.GuideMe /><CreateControl /></>);
+  return { ...s, view };
+}
+
+/** …on the guide's last step, inside a filled "New decision" form */
+async function pmcAtPublish() {
+  const p = await pmcForDecision();
+  act(() => { p.useStore.getState()._setGateway({ listMembers: vi.fn().mockResolvedValue([]), snapshot: vi.fn(() => new Promise(() => {})) } as never); });
+  tick();
+  press(p.view.getByTestId('create-fab'));
+  tick();
+  press(document.querySelector('[data-guide="create-decision"]')!);
+  tick();
+  expect(step()).toBe('2');
+  fireEvent.change(p.view.getByTestId('dec-title'), { target: { value: 'Veneer finish' } });
+  fireEvent.change(p.view.getByTestId('dec-opt-0'), { target: { value: 'Teak' } });
+  fireEvent.change(p.view.getByTestId('dec-opt-1'), { target: { value: 'Walnut' } });
+  fireEvent.change(document.querySelector('select[data-testid$="select-zone"]')!, { target: { value: 'gf' } });
+  expect(document.querySelector<HTMLButtonElement>('[data-guide="publish-decision"]')?.disabled).toBe(false);
+  return p;
+}
+
+describe('the PMC is guided from + to publishing a decision', () => {
+  it('starts on the Dashboard visit after "raise an issue" and walks + → "Something to decide here" → Publish', async () => {
+    const { view } = await pmcForDecision();
+    tick();
+    expect(tip()?.getAttribute('data-guide-id')).toBe('record-decision-pmc');
+    expect(tip()?.textContent).toContain('Something for the client to choose?');
+    press(view.getByTestId('create-fab'));
+    tick();
+    expect(step()).toBe('1');
+    expect(document.querySelector('[data-guide="create-decision"]')?.getAttribute('data-testid')).toBe('create-decision');
+    press(document.querySelector('[data-guide="create-decision"]')!);
+    tick();
+    expect(step()).toBe('2');
+    expect(document.querySelector('[data-guide="publish-decision"]')?.getAttribute('data-testid')).toBe('save-decision');
+    expect(tip()?.closest('[role="dialog"]')?.contains(document.querySelector('[data-guide="publish-decision"]'))).toBe(true);
+  });
+
+  it('Publish waits for the server: a slow answer never steps back, an accepted one finishes the guide', async () => {
+    const { useStore } = await pmcAtPublish();
+    const replies: Array<(v: unknown) => void> = [];
+    const createDecision = vi.fn(() => new Promise((resolve) => { replies.push(resolve); }));
+    act(() => { useStore.getState()._setGateway({ createDecision, listMembers: vi.fn().mockResolvedValue([]), snapshot: vi.fn(() => new Promise(() => {})) } as never); });
+    const { useGuideState } = await import('@/guide/guideState');
+    press(document.querySelector('[data-guide="publish-decision"]')!);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(createDecision).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-guide="publish-decision"]')).toBeNull();
+    tick(60_000);
+    expect(useGuideState.getState().run?.step).toBe(2);
+    expect(done()).toEqual(['raise-issue-pmc']);
+    // the server's answer for this project (overtaken by a newer pull, so it is not re-applied)
+    useStore.getState().issueDecision({ title: 'Other', nodeId: 'gf', publish: true, options: [] } as never);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { replies[0]!({ project: { id: 'project-a' } }); await Promise.resolve(); await Promise.resolve(); });
+    expect(useGuideState.getState().run).toBeNull();
+    expect(done()).toEqual(['raise-issue-pmc', 'record-decision-pmc']);
+  });
+
+  it('a refused Publish does not finish it: the wait ends and the guide steps back to +', async () => {
+    const { useStore } = await pmcAtPublish();
+    let refuse!: (e: Error) => void;
+    act(() => { useStore.getState()._setGateway({ createDecision: vi.fn(() => new Promise((_, reject) => { refuse = reject; })), listMembers: vi.fn().mockResolvedValue([]) } as never); });
+    const { useGuideState } = await import('@/guide/guideState');
+    press(document.querySelector('[data-guide="publish-decision"]')!);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    tick(2000);
+    expect(useGuideState.getState().run?.step).toBe(2);
+    await act(async () => { refuse(new Error('refused')); await Promise.resolve(); await Promise.resolve(); });
+    tick(400);
+    tick(1000);
+    expect(useGuideState.getState().run?.step).toBe(0);
+    expect(done()).toEqual(['raise-issue-pmc']);
+  });
+
+  it('"Save as draft" is not publishing: the guide steps back to + and is not done', async () => {
+    const { useStore, view } = await pmcAtPublish();
+    const createDecision = vi.fn().mockResolvedValue({ project: { id: 'project-a' } });
+    act(() => { useStore.getState()._setGateway({ createDecision, listMembers: vi.fn().mockResolvedValue([]), snapshot: vi.fn(() => new Promise(() => {})) } as never); });
+    press(view.getByTestId('save-draft'));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    tick(400);
+    tick(1000);
+    expect(step()).toBe('0');
+    expect(done()).toEqual(['raise-issue-pmc']);
+  });
+
+  it('the store reports a publish outcome: no server, a refusal and a wrong-project answer are failures; a draft reports nothing', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome } = await import('@/guide/outcomes');
+    const seen: string[] = [];
+    subscribeGuideOutcome((o) => seen.push(o));
+    const input = { title: 'T', nodeId: 'gf', publish: true, options: [] } as never;
+    s.useStore.getState().issueDecision(input);
+    expect(seen).toEqual(['decision-publish-failed']);
+    act(() => { s.useStore.getState()._setGateway({ createDecision: vi.fn().mockRejectedValue(new Error('no')) } as never); });
+    s.useStore.getState().issueDecision(input);
+    await vi.waitFor(() => expect(seen).toEqual(['decision-publish-failed', 'decision-publish-failed']));
+    act(() => { s.useStore.getState()._setGateway({ createDecision: vi.fn().mockResolvedValue({ project: { id: 'another-project' } }), snapshot: vi.fn(() => new Promise(() => {})) } as never); });
+    s.useStore.getState().issueDecision(input);
+    await vi.waitFor(() => expect(seen).toHaveLength(3));
+    expect(seen[2]).toBe('decision-publish-failed');
+    s.useStore.getState().issueDecision({ title: 'D', nodeId: 'gf', publish: false, options: [] } as never);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(seen).toHaveLength(3);
+  });
+
+  it('a wrong-project answer overtaken by a newer pull is still not a published decision', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome } = await import('@/guide/outcomes');
+    const seen: string[] = [];
+    subscribeGuideOutcome((o) => seen.push(o));
+    const replies: Array<(v: unknown) => void> = [];
+    act(() => {
+      s.useStore.getState()._setGateway({
+        createDecision: vi.fn(() => new Promise((resolve) => { replies.push(resolve); })),
+        snapshot: vi.fn(() => new Promise(() => {})),
+      } as never);
+    });
+    const input = { title: 'T', nodeId: 'gf', publish: true, options: [] } as never;
+    s.useStore.getState().issueDecision(input);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    s.useStore.getState().issueDecision(input);
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    replies[0]!({ project: { id: 'another-project' } });
+    await vi.waitFor(() => expect(seen).toEqual(['decision-publish-failed']));
+  });
+
+  it.each(['hi', 'gu'] as const)('speaks %s with no leftover English', async (lang) => {
+    const { view } = await pmcForDecision(lang);
+    tick();
+    expect(tip()?.getAttribute('data-guide-id')).toBe('record-decision-pmc');
+    expect(leftoverEnglish(tip()!)).toEqual([]);
+    press(view.getByTestId('create-fab'));
+    tick();
+    expect(leftoverEnglish(tip()!)).toEqual([]);
   });
 });

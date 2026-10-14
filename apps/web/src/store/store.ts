@@ -4722,6 +4722,7 @@ export const useStore = create<Store>()(
     issueDecision: (input) => {
       if (!gateway) {
         get().flash('Issuing decisions needs the server.');
+        if (input.publish) emitGuideOutcome('decision-publish-failed');
         return;
       }
       const gw = gateway;
@@ -4752,8 +4753,12 @@ export const useStore = create<Store>()(
             newIdempotencyKey(),
           );
           const record = input.deciderKind === 'none';
+          // `superseded` is returned before the project check, so a wrong-project reply a newer pull
+          // overtook is still not a published decision
+          const accepted = acceptSnapshot(snap, lease);
+          const result = accepted === 'superseded' && snap.project.id !== lease.scope.projectId ? 'invalid-project' : accepted;
           consumeSnapshotResult(
-            acceptSnapshot(snap, lease),
+            result,
             input.publish
               ? record
                 ? `Issue recorded: ${input.title} — filed for the team; no approval is required.`
@@ -4763,7 +4768,9 @@ export const useStore = create<Store>()(
               : `Draft saved: ${input.title} — visible only to you until you publish it.`,
             lease.scope,
           );
+          if (input.publish) emitGuideOutcome(result === 'applied' || result === 'superseded' ? 'decision-published' : 'decision-publish-failed');
         } catch {
+          if (input.publish) emitGuideOutcome('decision-publish-failed');
           // gate round 12: a failure that lands after a project switch must not toast
           // into the new project (the same stale-toast rule as the success path).
           if (scopeStillCurrent(scope)) get().flash(input.publish ? 'Could not issue the decision — check your access and try again.' : 'Could not save the draft — check your access and try again.');

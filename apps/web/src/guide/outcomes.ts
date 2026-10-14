@@ -5,7 +5,13 @@
  * press alone: the request can still fail or be refused. The store says the outcome here, the guide
  * listens, and nothing else in the app depends on it. Emitting with no listener is a no-op.
  */
-export type GuideOutcome = 'inspection-submitted' | 'inspection-submit-failed' | 'checklist-issued' | 'checklist-issue-failed';
+export type GuideOutcome =
+  | 'inspection-submitted'
+  | 'inspection-submit-failed'
+  | 'checklist-issued'
+  | 'checklist-issue-failed'
+  | 'decision-published'
+  | 'decision-publish-failed';
 
 /** `key`: which record the outcome is about (the submitted inspection's id), so a guide following one
  *  checklist ignores the submit of another */

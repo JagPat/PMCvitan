@@ -197,7 +197,7 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <Button variant="outline" onClick={onClose} style={{ flex: '0 0 auto', padding: '12px 16px' }}>Cancel</Button>
           <Button variant="light" onClick={() => save(false)} disabled={!ready} data-testid="save-draft" style={{ flex: 1, padding: 12 }}>Save as draft</Button>
-          <Button variant="ink" onClick={() => save(true)} disabled={!ready} data-testid="save-decision" style={{ flex: 1, padding: 12 }}>{record ? 'Publish record' : deciderKind === 'client' ? 'Publish to client' : 'Publish to decider'}</Button>
+          <Button variant="ink" onClick={() => save(true)} disabled={!ready} data-testid="save-decision" data-guide="publish-decision" style={{ flex: 1, padding: 12 }}>{record ? 'Publish record' : deciderKind === 'client' ? 'Publish to client' : 'Publish to decider'}</Button>
         </div>
       </div>
     </Modal>
