@@ -215,7 +215,7 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // Phase 3 Task 5 adds resolveMismatch (the inverse edge → clearMaterialMismatchBlock)
   'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, dispatch: 5 },
   // Site Visits SV1-b — start, end (or late end) and close each dispatch their committed event once
-  'site-visits/site-visits.service.ts': { domain: 'site-visits', foreign: {}, dispatch: 3 },
+  'site-visits/site-visits.service.ts': { domain: 'site-visits', foreign: {}, dispatch: 4 },
   // edge 7 (node unfiling across five domains) → FK SET NULL (nodeId); decisions stay a guarded NO ACTION
   'nodes/nodes.service.ts': { domain: 'nodes', foreign: {}, dispatch: 1 },
   'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 3 },
@@ -415,7 +415,11 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   // record conversion / options) under the new `decision.updateDraft` policy.
   'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Patch(':decisionId/draft')", "Post(':decisionId/approve')", "Post(':decisionId/forward')", "Post(':decisionId/countersign')", "Post(':decisionId/disagree')", "Post(':decisionId/stranded')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')", "Post(':decisionId/consultations')", "Post(':decisionId/consultations/respond')"],
   'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('resolve-mismatch')", "Post('submit')"],
-  'site-visits/site-visits.controller.ts': ['Post()', "Post(':visitId/end')", "Post(':visitId/close')"],
+  'site-visits/site-visits.controller.ts': [
+    'Post()', "Post(':visitId/end')", "Post(':visitId/close')",
+    "Post(':visitId/places')", "Post(':visitId/places/:placeId/retire')",
+    "Post(':visitId/attendees')", "Post(':visitId/attendees/:attendeeId/retire')",
+  ],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
   // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice binding route
@@ -615,7 +619,7 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
     it('84 external-effect dispatch sites total across the pillar services (82 + Phase-6 unit 4c-ii request/respond consultation)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(91); // +3: Site Visits SV1-b start, end, close
+      expect(total).toBe(92); // +3: Site Visits SV1-b start, end, close; +1: SV1-b unit 2's one shared site for the visitor's edits
     });
   });
 
@@ -626,12 +630,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close)', () => {
+    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(180);
+      expect(total).toBe(184);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(180);
+      expect(live).toBe(184);
     });
   });
 

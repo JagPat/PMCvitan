@@ -80,9 +80,32 @@ Built with tests (`apps/api/test/integration/site-visits-sv1b.test.ts`), the pat
   (a start against the same PMC's node removal; a visit act against the same PMC's membership change) are
   reproduced by barrier tests that fail without these locks.
 
+## SV1-b, unit 2: places and attendees through the server
+
+Built with tests (`apps/api/test/integration/site-visits-sv1b-children.test.ts`).
+
+- **Routes** (the visitor only, `siteVisit.edit`: the PMC or a consultant). `POST …/:visitId/places` (a published
+  place, a device-minted `id`, a claimed time); `POST …/places/:placeId/retire`; `POST …/:visitId/attendees` (a
+  member with the role they attended in, or a guest by name, up to 120 characters); `POST …/attendees/:attendeeId/retire`.
+  Each takes an optional `Idempotency-Key` and returns the visit.
+- **Refusals before the database's.** Another person's visit or a role changed since the start (403); a visit the
+  PMC closed (409); a draft, missing or other-project place, or a member not on the project in that role (400); the
+  same place or member already standing on the visit, a reused row id, or a second retire (409); an unknown row (404).
+  A place added after the visitor ended the visit is accepted at its receipt and marked "after the end" (V4).
+- **Events.** Each change is one `sitevisit.place_*` or `sitevisit.attendee_*` event on the visit's stream, naming
+  the row (`payload.rowId`); a place add also carries the place's name. Child changes carry no notice (V6).
+- **Read.** The visit returns its places and attendees by when the server took each add, to the millisecond (adds
+  in the same millisecond come in id order, not necessarily the order sent), retired rows included and marked.
+- **Lock order.** Every act on an existing visit (end, close and each edit) takes the project's tree lock before the
+  visit row. A node removal holds the tree lock and, once it has written an event, the event stream, and then reaches
+  visit and place rows through their ON DELETE SET NULL keys; two barrier tests reproduce the deadlock this prevents.
+- **Lock order.** The readiness lock; for a place add the tree lock, then the visit row, then the node (a node
+  removal holds the tree lock and then reaches the row of every visit that started at that node, so the visit row
+  before the tree lock deadlocked; a barrier test reproduces it); a member attendee's registers after the visitor's;
+  the project row; both identities in user-id order (the platform's `lockIdentities`), as SV1-a's trigger takes them.
+
 ## Left for later units
 
 | Finding | Where |
 | --- | --- |
-| Adding and retiring places and attendees through the server | SV1-b, unit 2 |
-| F53 queued offline actions survive a start conflict | SV1-c |
+| F53 queued offline actions survive a start conflict, and a queued retire whose add has not arrived | SV1-c |
