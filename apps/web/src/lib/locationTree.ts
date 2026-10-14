@@ -1,4 +1,4 @@
-import type { Activity, Decision, Drawing, Material, Phase, Photo, PlacedInspection, ProjectNode } from '@vitan/shared';
+import type { Activity, Decision, Drawing, Material, Phase, Photo, PlacedInspection, ProjectNode, Review } from '@vitan/shared';
 
 /** Direct children of a node (parentId=null → top-level zones), in display order. */
 export function childrenOf(nodes: ProjectNode[], parentId: string | null): ProjectNode[] {
@@ -244,6 +244,28 @@ export function openIssueCount(inspections: PlacedInspection[]): number | null {
     n += i.openIssues;
   }
   return n;
+}
+
+/**
+ * #847 — the API-less demo's inspections for the Site Map. The demo has no server to count open issues per
+ * inspection, and its Dashboard counts every review's failed items (`selectFailedCount`: FAIL items, plus
+ * rejected ones once a re-inspection was sent). Each review therefore stands on the map as its own row
+ * carrying exactly those items, so the map's total equals the Dashboard's, and every row is a record the
+ * reviewer can open. Placed rows with no review keep what the seed says.
+ */
+export function demoSiteMapInspections(placed: PlacedInspection[], reviews: Review[], reinspectionCreated: boolean): PlacedInspection[] {
+  const failedIn = (r: Review) => r.items.filter((it) => it.result === 'FAIL' || (reinspectionCreated && it.rejected)).length;
+  const byId = new Map(reviews.map((r) => [r.id, r]));
+  const rows = placed.map((p) => {
+    const r = byId.get(p.id);
+    return r ? { ...p, submitted: true, decided: r.decided, failedItems: failedIn(r), openIssues: failedIn(r) } : p;
+  });
+  for (const r of reviews) {
+    if (placed.some((p) => p.id === r.id)) continue;
+    const n = failedIn(r);
+    rows.push({ id: r.id, title: r.title, zone: r.zone, nodeId: r.nodeId, kind: 'review', submitted: true, decided: r.decided, failedItems: n, openIssues: n });
+  }
+  return rows;
 }
 
 export function placeContents(
