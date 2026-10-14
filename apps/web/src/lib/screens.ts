@@ -143,8 +143,10 @@ export function screensFor(role: Role): ScreenMeta[] {
     // engineers hold activity.start/complete, so they get the Schedule (its authoring
     // controls stay behind activity.manage — pmc only). Materials and Labour (`labour.read` is
     // pmc/engineer) are pmc/engineer planning surfaces.
-    engineer: ['dashboard', 'inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team-access', 'decision-log'],
-    contractor: ['dashboard', 'inbox', 'drawings', 'places', 'team-access', 'decision-log'],
+    // #482 QA (14 Oct 2026): no "Team Access & Login" for the engineer or the contractor — once signed in it
+    // was a dead end in their menu
+    engineer: ['dashboard', 'inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'materials', 'labour', 'commercial', 'places', 'decision-log'],
+    contractor: ['dashboard', 'inbox', 'drawings', 'places', 'decision-log'],
     // a discipline consultant: read-mostly reviewer — drawings, the register, the Site Map, project health
     consultant: ['dashboard', 'inbox', 'drawings', 'decision-log', 'places', 'client-health'],
     // Phase 6 task 4d-ii-b / B2 — the architect's screens, from the role's ROLE_POLICY rows: the
@@ -153,8 +155,21 @@ export function screensFor(role: Role): ScreenMeta[] {
     // No session can carry the role until 4d-iii drops the doors; the list is what such a session lands on.
     architect: ['dashboard', 'inbox', 'decision-log', 'drawings', 'places'],
   };
-  return keys[role].map((k) => SCREEN_META[k]);
+  return keys[role].map((k) => {
+    const own = ROLE_SCREEN_LABEL[role]?.[k];
+    return own ? { ...SCREEN_META[k], label: own, short: own } : SCREEN_META[k];
+  });
 }
+
+/** #482 QA (14 Oct 2026) — a screen a role knows by another English name in its menus. The engineer,
+ *  contractor and consultant read decisions (the "Awaiting client" list comes to the same screen), so theirs is
+ *  "Decisions"; the PMC and architect, who run the register, keep "Decision Log". Hindi and Gujarati already
+ *  read "decisions" for every role. */
+export const ROLE_SCREEN_LABEL: Partial<Record<Role, Partial<Record<ScreenKey, string>>>> = {
+  engineer: { 'decision-log': 'Decisions' },
+  contractor: { 'decision-log': 'Decisions' },
+  consultant: { 'decision-log': 'Decisions' },
+};
 
 /**
  * Phase 6 task 4b (§A.3 round 4) — the decision-approval ROUTE follows the decider: a viewer who
@@ -191,9 +206,13 @@ export const ITEM_SCREENS: ReadonlySet<ScreenKey> = new Set<ScreenKey>([
 ]);
 
 /** Top 10 #3 gap 12 (#798, owner decision 2026-10-12) — screens a role reaches by a LINK only (a brief task, a
- *  notice, a shared URL), never from its nav. None today: the PMC's Daily Site Log, once link-only, is in its nav
- *  since the Board decision of 14 Oct 2026 (#482). */
-export const ROUTE_ONLY_SCREENS: Partial<Record<Role, readonly ScreenKey[]>> = {};
+ *  notice, a shared URL), never from its nav. The PMC's Daily Site Log, once link-only, is in its nav since the
+ *  Board decision of 14 Oct 2026 (#482). The engineer's and contractor's access screen left their menus by the
+ *  #482 QA check of the same day; its URL still opens (an old bookmark, the demo's worker and trade flows). */
+export const ROUTE_ONLY_SCREENS: Partial<Record<Role, readonly ScreenKey[]>> = {
+  engineer: ['team-access'],
+  contractor: ['team-access'],
+};
 
 /** Every screen a role may be routed to: its nav, then its link-only screens (`ROUTE_ONLY_SCREENS`). The first is
  *  still the role's home. */
