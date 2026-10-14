@@ -29,7 +29,9 @@ describe('notificationTarget — role-aware jump from the bell', () => {
     expect(notificationTarget('Drawing issued: A-201', 'contractor')).toBe('drawings');
     expect(notificationTarget('Re-inspection due: X', 'pmc')).toBe('inspect-review');
     expect(notificationTarget('New checklist: X', 'engineer')).toBe('engineer-check');
-    expect(notificationTarget('Material mismatch: X', 'pmc')).toBe('site-schedule');
+    // the PMC's nav carries the Daily Site Log since 14 Oct 2026 (#482), so a material notice opens it, as for the engineer
+    expect(notificationTarget('Material mismatch: X', 'pmc')).toBe('daily-log');
+    expect(notificationTarget('Material mismatch: X', 'contractor')).toBeNull();
   });
 
   it('returns null when the role has no relevant screen (never a dangling link)', () => {
