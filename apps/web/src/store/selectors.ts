@@ -102,11 +102,12 @@ export function selectCountersignObligations(s: AppState): Decision[] {
  *  `DecisionsQuery.countPending`, the count Portfolio cards and the shell serve. The PMC manages every
  *  published pending decision plus every STRANDED countersign (`isStrandedCountersign`: no active architect
  *  can give it); anyone else counts the pending decisions they decide, and the architect also every
- *  decision awaiting their countersign. A reopened (`change`) decision is not counted, as on the server. One
- *  definition for the Dashboard tile and the Portfolio card, so the two reconcile. */
+ *  decision awaiting their countersign. A reopened (`change`) decision awaits its decider's re-approval and
+ *  is counted like a new one (#633), as on the server and as the decider's badge always did. One definition
+ *  for the Dashboard tile and the Portfolio card, so the two reconcile. */
 export function selectDecisionsAwaitingAction(s: AppState): Decision[] {
-  if (s.role === 'pmc') return [...selectPending(s), ...selectAwaitingCountersign(s).filter(isStrandedCountersign)];
-  return [...selectDeciderPending(s), ...(s.role === 'architect' ? selectAwaitingCountersign(s) : [])];
+  if (s.role === 'pmc') return [...selectReapproval(s), ...selectPending(s), ...selectAwaitingCountersign(s).filter(isStrandedCountersign)];
+  return [...selectDecisionsNeedingViewer(s), ...(s.role === 'architect' ? selectAwaitingCountersign(s) : [])];
 }
 
 /** Decision log is permission-filtered: a pending row is visible only to pmc and THE DECIDER
