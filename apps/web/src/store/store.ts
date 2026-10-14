@@ -93,7 +93,7 @@ import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHe
 import { todayCivil } from '@/lib/civilDate';
 import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
-import { emitGuideOutcome } from '@/guide/outcomes';
+import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -4730,22 +4730,24 @@ export const useStore = create<Store>()(
       }
       const gw = gateway;
       const scope = currentScope();
-      // The in-app guide's Publish step waits while ANY publish is on its way (outcomes carry no request
-      // identity): a second publish's quick failure must not end the wait for one still pending. A reply
-      // that lands after the project or person changed is not about the guide now on screen.
-      // Counted per scope, so a publish left pending in a project the person has left cannot hold back
-      // the current project's failure.
-      const scopeKey = `${scope.projectId}:${scope.generation}`;
-      const inFlight = () => decisionPublishesInFlight.get(scopeKey) ?? 0;
-      if (input.publish) decisionPublishesInFlight.set(scopeKey, inFlight() + 1);
+      // The in-app guide's Publish step waits while ANY publish of its run is on its way: a second
+      // publish's quick failure must not end the wait for one still pending. Each publish carries the
+      // guide run it was sent under, so a late reply cannot finish a later run (a replay), and is counted
+      // per scope and run, so a publish left pending in a project the person has left cannot hold back
+      // the current project's failure. A reply that lands after the project or person changed is not
+      // about the guide now on screen.
+      const guideRun = guideRunToken();
+      const pendingKey = `${scope.projectId}:${scope.generation}:${guideRun}`;
+      const inFlight = () => decisionPublishesInFlight.get(pendingKey) ?? 0;
+      if (input.publish) decisionPublishesInFlight.set(pendingKey, inFlight() + 1);
       const reportPublish = (ok: boolean) => {
         if (!input.publish) return;
         const left = inFlight() - 1;
-        if (left > 0) decisionPublishesInFlight.set(scopeKey, left);
-        else decisionPublishesInFlight.delete(scopeKey);
+        if (left > 0) decisionPublishesInFlight.set(pendingKey, left);
+        else decisionPublishesInFlight.delete(pendingKey);
         if (!scopeStillCurrent(scope)) return;
-        if (ok) emitGuideOutcome('decision-published');
-        else if (left <= 0) emitGuideOutcome('decision-publish-failed');
+        if (ok) emitGuideOutcome('decision-published', null, guideRun);
+        else if (left <= 0) emitGuideOutcome('decision-publish-failed', null, guideRun);
       };
       // Upload any captured option photos first, then create with their urls.
       void (async () => {

@@ -213,9 +213,11 @@ export function GuideHost() {
   // control that went away (a dialog closed on a refusal) steps the guide back as usual
   useEffect(
     () =>
-      subscribeGuideOutcome((outcome, outcomeKey) => {
+      subscribeGuideOutcome((outcome, outcomeKey, outcomeRun) => {
         const g = useGuideState.getState();
         if (!g.run) return;
+        // a reply to a request sent under an earlier run (before a replay) is not this run's
+        if (outcomeRun !== null && outcomeRun !== g.run.id) return;
         const current = g.run.guide.steps[g.run.step]!;
         if (current.until !== 'outcome' || !current.outcome) return;
         // a keyed step follows one record: another checklist's submit is not this guide's

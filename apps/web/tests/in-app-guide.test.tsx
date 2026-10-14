@@ -848,4 +848,60 @@ describe('review round 1 on "record a decision"', () => {
     await act(async () => { settle[1]!.no(new Error('refused')); await Promise.resolve(); await Promise.resolve(); });
     await vi.waitFor(() => expect(seen).toEqual(['decision-publish-failed']));
   });
+  it('a publish sent under an earlier run cannot finish a replay: its late success is not the replay\'s, and the replay\'s failure still counts', async () => {
+    const { useStore } = await pmcAtPublish();
+    const settle: Array<{ ok: (v: unknown) => void; no: (e: Error) => void }> = [];
+    act(() => {
+      useStore.getState()._setGateway({
+        createDecision: vi.fn(() => new Promise((ok, no) => { settle.push({ ok, no }); })),
+        listMembers: vi.fn().mockResolvedValue([]),
+        snapshot: vi.fn(() => new Promise(() => {})),
+      } as never);
+    });
+    const { useGuideState } = await import('@/guide/guideState');
+    const { GUIDES } = await import('@/guide/guides');
+    // A: the guided publish; B: another publish sent while A is on its way
+    press(document.querySelector('[data-guide="publish-decision"]')!);
+    await vi.waitFor(() => expect(settle).toHaveLength(1));
+    useStore.getState().issueDecision({ title: 'B', nodeId: 'gf', publish: true, options: [] } as never);
+    await vi.waitFor(() => expect(settle).toHaveLength(2));
+    await act(async () => { settle[0]!.ok({ project: { id: 'project-a' } }); await Promise.resolve(); await Promise.resolve(); });
+    expect(useGuideState.getState().run).toBeNull();
+    // the PMC replays the guide and sends C before B answers
+    const guide = GUIDES.find((g) => g.id === 'record-decision-pmc')!;
+    act(() => { useGuideState.getState().start(guide); useGuideState.getState().setStep(2); useGuideState.getState().setWait(true); });
+    useStore.getState().issueDecision({ title: 'C', nodeId: 'gf', publish: true, options: [] } as never);
+    await vi.waitFor(() => expect(settle).toHaveLength(3));
+    await act(async () => { settle[1]!.ok({ project: { id: 'project-a' } }); await Promise.resolve(); await Promise.resolve(); });
+    expect(useGuideState.getState().run?.step).toBe(2);
+    expect(useGuideState.getState().run?.waiting).toBe(true);
+    // C refused: B (an earlier run's) no longer pending anyway, and C's failure ends this run's wait
+    await act(async () => { settle[2]!.no(new Error('refused')); await Promise.resolve(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(useGuideState.getState().run?.waiting ?? false).toBe(false));
+  });
+
+  it('the pending count is per run: a publish still on its way from an earlier run does not hold back the replay\'s failure', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome, beginGuideRun } = await import('@/guide/outcomes');
+    const seen: Array<[string, number | null]> = [];
+    subscribeGuideOutcome((o, _k, run) => seen.push([o, run]));
+    const settle: Array<{ ok: (v: unknown) => void; no: (e: Error) => void }> = [];
+    act(() => {
+      s.useStore.getState()._setGateway({
+        createDecision: vi.fn(() => new Promise((ok, no) => { settle.push({ ok, no }); })),
+        snapshot: vi.fn(() => new Promise(() => {})),
+      } as never);
+    });
+    const input = { title: 'T', nodeId: 'gf', publish: true, options: [] } as never;
+    const first = beginGuideRun();
+    s.useStore.getState().issueDecision(input);
+    await vi.waitFor(() => expect(settle).toHaveLength(1));
+    const replay = beginGuideRun();
+    s.useStore.getState().issueDecision(input);
+    await vi.waitFor(() => expect(settle).toHaveLength(2));
+    await act(async () => { settle[1]!.no(new Error('refused')); await Promise.resolve(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(seen).toEqual([['decision-publish-failed', replay]]));
+    await act(async () => { settle[0]!.ok({ project: { id: 'project-a' } }); await Promise.resolve(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(seen).toEqual([['decision-publish-failed', replay], ['decision-published', first]]));
+  });
 });
