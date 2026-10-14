@@ -43,6 +43,33 @@ const WORKERS = [
   { name: 'Kishan', tradeKey: 'Electrician', color: '#31567F' },
 ];
 
+/** The sign-in gate's top: the Vitan mark and the language row. #827 one-screen sign-in: a live build opens
+ *  straight on the phone number, so the language pick sits there; the demo keeps it on "Who are you?". */
+function GateHeader({ label, lang, setLang }: { label: string; lang: Lang; setLang: (l: Lang) => void }) {
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ width: 30, height: 30, borderRadius: 7, background: 'var(--ink)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ color: '#fff', fontWeight: 700, fontSize: 13 }}>V</span>
+        </div>
+        <div style={{ fontWeight: 700, letterSpacing: '.14em', fontSize: 14 }}>VITAN PMC</div>
+      </div>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.18em', color: 'var(--faint)', marginTop: 22 }}>{label}</div>
+      <div style={{ display: 'flex', gap: 7, marginTop: 9 }}>
+        {LANGS.map((l) => (
+          <button key={l.key} data-testid={`gate-lang-${l.key}`} onClick={() => {
+            // a pick made at the gate, before anyone has signed in, never the console host's
+            noteLangChoice(l.key as Lang, 'guest');
+            setLang(l.key as Lang);
+          }} style={langStyle(lang === l.key)}>
+            {l.label}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function BackBtn({ onClick, label }: { onClick: () => void; label: string }) {
   return (
     // Wave 0 / F-1b round 7 — `padding: 0` made this a ~16px-tall text line, and it is the ONLY
@@ -63,6 +90,8 @@ export function TeamAccessScreen() {
   const sending = useStore((s) => s.access.sending);
   const error = useStore((s) => s.access.error);
   const devCode = useStore((s) => s.access.devCode);
+  const channel = useStore((s) => s.access.channel ?? null);
+  const codeLength = useStore((s) => s.access.codeLength ?? 4);
   const worker = useStore((s) => s.access.worker);
   const lang = useStore((s) => s.lang);
   const setLang = useStore((s) => s.setLang);
@@ -108,24 +137,7 @@ export function TeamAccessScreen() {
     ];
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 30, height: 30, borderRadius: 7, background: 'var(--ink)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <span style={{ color: '#fff', fontWeight: 700, fontSize: 13 }}>V</span>
-          </div>
-          <div style={{ fontWeight: 700, letterSpacing: '.14em', fontSize: 14 }}>VITAN PMC</div>
-        </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.18em', color: 'var(--faint)', marginTop: 22 }}>{t.pick}</div>
-        <div style={{ display: 'flex', gap: 7, marginTop: 9 }}>
-          {LANGS.map((l) => (
-            <button key={l.key} onClick={() => {
-              // a guest's pick: the worker or trade in-charge signing in, never the console host
-              noteLangChoice(l.key as Lang, 'guest');
-              setLang(l.key as Lang);
-            }} style={langStyle(lang === l.key)}>
-              {l.label}
-            </button>
-          ))}
-        </div>
+        <GateHeader label={t.pick} lang={lang} setLang={setLang} />
         <div style={{ fontSize: 24, fontWeight: 700, margin: '28px 0 16px' }}>{t.who}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {cards.map((c) => (
@@ -181,8 +193,8 @@ export function TeamAccessScreen() {
     const ready = phone.length === 10 && !sending;
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-        <BackBtn onClick={accReset} label={t.back} />
-        <div style={{ marginTop: 14 }}>
+        {API_BASE ? <GateHeader label={t.pick} lang={lang} setLang={setLang} /> : <BackBtn onClick={accReset} label={t.back} />}
+        <div style={{ marginTop: API_BASE ? 28 : 14 }}>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{t.phoneTitle}</div>
           <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{t.phoneSub}</div>
         </div>
@@ -218,7 +230,7 @@ export function TeamAccessScreen() {
           // bare text actions on this screen. Only the font size differs from the shared style.
           style={{ ...linkBtn, fontSize: 12.5 }}
         >
-          Architect / Client / Contractor? Sign in with email
+          {t.emailLink}
         </button>
       </div>
     );
@@ -493,21 +505,23 @@ export function TeamAccessScreen() {
 
   // ---- OTP ----
   if (step === 'otp') {
+    const byEmail = channel === 'email';
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
         <BackBtn onClick={accReset} label={t.back} />
         <div style={{ textAlign: 'center', marginTop: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>{t.otp}</div>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{t.sent} +91 {phone}</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{byEmail ? t.otpEmail : t.otp}</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }} data-testid="otp-sent-to">{byEmail ? t.sentEmail : t.sent} +91 {phone}</div>
+          {byEmail && <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 6 }}>{t.emailHint}</div>}
           {devCode && (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 12, padding: '6px 12px', borderRadius: 20, background: '#FBF3E4', color: 'var(--amber-text)', fontSize: 12.5, fontWeight: 600 }} data-testid="dev-code">
               {t.demoCode}: <span style={{ fontFamily: 'var(--font-mono)', letterSpacing: '.1em' }}>{devCode}</span>
             </div>
           )}
         </div>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 12, margin: '22px 0 6px' }}>
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} style={{ width: 52, height: 62, borderRadius: 12, border: `1.5px solid ${error ? 'var(--red-solid)' : 'rgba(35,33,28,.2)'}`, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-mono)', fontSize: 28, fontWeight: 600 }}>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: codeLength > 4 ? 8 : 12, margin: '22px 0 6px' }}>
+          {Array.from({ length: codeLength }, (_, i) => (
+            <div key={i} data-testid="otp-box" style={{ width: codeLength > 4 ? 42 : 52, height: 62, borderRadius: 12, border: `1.5px solid ${error ? 'var(--red-solid)' : 'rgba(35,33,28,.2)'}`, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-mono)', fontSize: 28, fontWeight: 600 }}>
               {otp[i] || ''}
             </div>
           ))}
@@ -524,6 +538,11 @@ export function TeamAccessScreen() {
         >
           {t.resend}
         </button>
+        {byEmail && (
+          <button onClick={accGoLogin} data-testid="otp-go-login" style={{ ...linkBtn, fontSize: 12.5 }}>
+            {t.emailLink}
+          </button>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginTop: 'auto', paddingTop: 16 }}>
           {pad.map((k) => (
             <button
