@@ -806,7 +806,6 @@ export interface AppActions {
   requestEmailOtp: () => void;
   accSetCode: (v: string) => void;
   emailOtpVerify: () => void;
-  googleSignIn: (idToken: string) => void;
   requestOtp: () => void;
   otpPress: (d: string) => void;
   otpVerify: () => void;
@@ -2465,7 +2464,7 @@ export const useStore = create<Store>()(
     };
 
     /** Adopt a server auth result as the real session — the ONE adoption path for
-     *  every API sign-in (password, email-OTP, Google, phone-OTP) AND the project
+     *  every API sign-in (password, email-OTP, phone-OTP) AND the project
      *  switch. The token is scoped to exactly the project the SERVER returns
      *  (never the caller's requested/URL project): leaving `activeProjectId`
      *  elsewhere would send this token to another project's routes and 403 every
@@ -6052,17 +6051,6 @@ export const useStore = create<Store>()(
         .emailOtpVerify(email.trim().toLowerCase(), otp)
         .then((res) => applyAuthResult(res))
         .catch(() => set((s) => { s.access.sending = false; s.access.otp = ''; s.access.error = 'Wrong or expired code — try again.'; }));
-    },
-    googleSignIn: (idToken) => {
-      if (!gateway) {
-        get().flash('Google sign-in needs the server — not available in the local demo.');
-        return;
-      }
-      set((s) => { s.access.sending = true; s.access.error = null; });
-      gateway
-        .googleSignIn(idToken)
-        .then((res) => applyAuthResult(res))
-        .catch(() => set((s) => { s.access.sending = false; s.access.error = 'Google sign-in failed — please try again.'; }));
     },
     requestOtp: () => {
       const { phone, sending } = get().access;

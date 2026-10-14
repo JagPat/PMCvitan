@@ -52,7 +52,7 @@ because only the engineer path has a working real sign-in:
 | Engineer | phone OTP → provisioned engineer | ✅ works (Telegram Gateway is live) |
 | PMC / client / contractor | email + password | ❌ `POST /auth/login` → 401 (demo accounts **not seeded** on the live DB) |
 | PMC / client / contractor | email OTP | 🟡 needs an account (invite-only, below) **and** SMTP; with no SMTP the code is shown on-screen (stub) — not a real gate |
-| PMC / client / contractor | Google sign-in | ⏳ needs an account (invite-only) + `GOOGLE_CLIENT_ID` |
+| PMC / client / contractor | Google sign-in | ✗ removed from the web app (#827, one way in) |
 
 So finish **one** of these first, then flip:
 
@@ -62,7 +62,7 @@ So finish **one** of these first, then flip:
    Password login then works; **or**
 2. **Configure Zoho SMTP** (`SMTP_HOST/PORT/SECURE/USER/PASS/FROM`) so email OTP delivers
    a real code — combined with the accounts from (1) this is a real gate; **or**
-3. **Enable Google sign-in** (`GOOGLE_CLIENT_ID` + `VITE_GOOGLE_CLIENT_ID`) — again against
+3. ~~**Enable Google sign-in**~~ (removed from the web app by #827, one way in) — formerly against
    the accounts from (1).
 
 ### Self-signup trust model (`AUTH_ALLOW_SIGNUP`)

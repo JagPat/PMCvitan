@@ -603,10 +603,6 @@ export class ApiGateway {
   emailOtpVerify(email: string, code: string): Promise<AuthResult> {
     return this.pub('/auth/email/verify', { email, code, projectId: this.projectId });
   }
-  /** Exchange a Google ID token for a role-scoped session token. */
-  googleSignIn(idToken: string): Promise<AuthResult> {
-    return this.pub('/auth/google', { idToken, projectId: this.projectId });
-  }
 
   /** The project this gateway is scoped to. */
   get activeProject(): string {
