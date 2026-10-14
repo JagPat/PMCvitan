@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useShallow } from 'zustand/react/shallow';
 import { pathForScreen } from '@/lib/screens';
 import { decisionsSliceSettled } from '@/lib/notifications';
+import { useMayWithdrawChange } from '@/lib/mayWithdrawChange';
 import { useStore } from '@/store/store';
 import { selectDecisionsNeedingViewer, selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, DecisionChip, Button, LocationContext, EditState, ConsultationThread, CountersignControls, ItemNotFound } from '@/components';
@@ -50,34 +51,14 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
   const role = useStore((s) => s.role);
   // exactly the list above it on the client's screen (re-approvals and new ones waiting on this viewer)
   const waiting = useStore(useShallow(selectDecisionsNeedingViewer));
-  const sessionToken = useStore((s) => s.sessionToken);
-  // who am I? — the JWT sub, for the requester-may-withdraw rule (null in demo mode)
-  const mySub = useMemo(() => {
-    if (!sessionToken) return null;
-    try {
-      return (JSON.parse(atob(sessionToken.split('.')[1])) as { sub?: string }).sub ?? null;
-    } catch {
-      return null;
-    }
-  }, [sessionToken]);
-  // the SERVICE narrows withdraw to the requester or the PMC — mirror it so the
-  // button only appears where the server would accept the call. Phase 6 task 4d-ii-b / B4 (P33's web
-  // arm): a request the ARCHITECT opened by rejecting a countersign (`origin: 'countersign_rejection'`)
-  // cannot be withdrawn by anyone — withdrawing it would complete an approval the architect refused —
-  // and the service 409s the call (4d-ii-a / A7b), so the affordance is not offered. Only that origin is
-  // named: a request with no origin is a standard one from any server, before or after 4d.
-  const mayWithdraw = (d: Decision): boolean =>
-    can('decision.withdrawChange', role)
-    && d.changeRequest?.origin !== 'countersign_rejection'
-    && (role === 'pmc' || (!!mySub && d.changeRequest?.requestedById === mySub));
-  // #857 Codex 4269224408 — a change the client requested on their own decision waits on them above AND is theirs
-  // to withdraw; the card above has no Withdraw, so that row stays in the history where the register offers it
+  const mayWithdraw = useMayWithdrawChange();
+  // #482 follow-up — a decision waiting on the viewer is answered on its card above, which now carries its advice
+  // thread and its "Withdraw request", so the history leaves every one of them out
   const rows = useMemo(() => {
     if (!history) return logRows;
     const above = new Set(waiting.map((d) => d.id));
-    return logRows.filter((d) => !above.has(d.id) || mayWithdraw(d));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mayWithdraw reads only role and mySub
-  }, [history, logRows, waiting, role, mySub]);
+    return logRows.filter((d) => !above.has(d.id));
+  }, [history, logRows, waiting]);
   // Phase 6 task 4a — withdrawing the DECISION itself: pmc only, and only a published,
   // never-approved pending row is eligible (the service refuses everything else with a 409)
   const mayWithdrawDecision = (d: Decision): boolean =>
