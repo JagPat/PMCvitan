@@ -11,6 +11,7 @@ import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { captureAtPlace } from '@/lib/captureContext';
 import { stampText } from '@/lib/captureStamp';
 import { PlaceStructure } from '@/screens/PlaceStructure';
+import { PlaceWorkRecords, PlaceRecordsEmpty, type PlaceRecordSection } from '@/components/PlaceWorkRecords';
 import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
@@ -142,6 +143,179 @@ export function PlacesScreen() {
   // whole-project view still lists unfiled items (e.g. the seeded demo).
   const nothingYet = nodes.length === 0 && total.decisions === 0 && total.drawings === 0 && total.photos === 0 && total.activities === 0 && total.materials === 0;
 
+  // #633 (mockup 7) — the place's records, open issues first: inspections, then decisions, work and drawings,
+  // then deliveries and photos. Each row opens its own record; a later kind of record is one more entry.
+  const recordSections: PlaceRecordSection[] = [
+    ...(canSeeInspections ? [{
+      key: 'inspections', icon: <CircleCheck size={13} />, title: 'Inspections', count: contents.inspections.length,
+      sub: "quality checks here",
+      body: (
+          contents.inspections.length === 0 ? (
+            <PlaceRecordsEmpty>No inspections here yet.</PlaceRecordsEmpty>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {issuesFirst(contents.inspections).map((i) => {
+                const st = inspectionStatus(i);
+                const screen = inspectionScreens[i.id];
+                const RowTag = screen ? 'button' : 'div';
+                return (
+                  <RowTag key={i.id} data-testid={`place-inspection-${i.id}`} style={screen ? rowCard : { ...rowCard, cursor: 'default' }} {...(screen ? { onClick: () => openItem(screen, i.id, { nodeId: sel }), 'aria-label': `Open inspection ${i.id}` } : {})}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{i.id}</span>
+                        <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.title}</span>
+                      </div>
+                    </div>
+                    {(i.openIssues ?? 0) > 0 && (
+                      <span data-testid={`place-inspection-issues-${i.id}`} style={{ ...countPill, ...alertTone, fontSize: 12 }}>
+                        {i.openIssues} open {i.openIssues === 1 ? 'issue' : 'issues'}
+                      </span>
+                    )}
+                    <span style={{ ...relChip, color: st.color, borderColor: st.color }}>{st.label}</span>
+                  </RowTag>
+                );
+              })}
+            </div>
+          )
+      ),
+    }] : []),
+    {
+      key: 'decisions', icon: <MapPin size={13} />, title: 'Decisions', count: contents.decisions.length,
+      sub: "choices recorded here",
+      body: (
+        contents.decisions.length === 0 ? (
+          <PlaceRecordsEmpty>No decisions recorded here yet.</PlaceRecordsEmpty>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+            {contents.decisions.map((d) => (
+              <button key={d.id} data-testid={`place-decision-${d.id}`} style={rowCard} onClick={() => openItem(decisionScreens[d.id] ?? 'decision-log', d.id, { nodeId: sel })} aria-label={`Open decision ${d.id}`}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{d.id}</span>
+                    <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.title}</span>
+                  </div>
+                  {d.approvedOption && <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{d.approvedOption}{d.material ? ` — ${d.material}` : ''}</div>}
+                </div>
+                <DecisionChip status={d.status} />
+              </button>
+            ))}
+          </div>
+        )
+      ),
+    },
+    {
+      key: 'work', icon: <Hammer size={13} />, title: 'Work', count: contents.activities.length,
+      sub: "site activities here",
+      body: (
+        contents.activities.length === 0 ? (
+          <PlaceRecordsEmpty>
+            {activityRead === 'unavailable'
+              ? 'The activities could not be loaded — open Schedule to retry.'
+              : activityRead === 'loading' ? 'Loading the activities…' : 'No activities planned here yet.'}
+          </PlaceRecordsEmpty>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+            {contents.activities.map((a) => {
+              // Audit F-02 — which phase this work belongs to and when it is planned, as the schedule says
+              const phase = phases.find((p) => p.id === a.phaseId);
+              return (
+                <div key={a.id} data-testid={`place-activity-${a.id}`} style={{ ...rowCard, cursor: 'default', flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{a.id}</span>
+                      <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name}</span>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }} data-testid={`place-activity-plan-${a.id}`}>
+                      {phase ? phase.name : 'Unphased'} · Plan {plannedWindow(a)}
+                    </div>
+                    {a.block && <div style={{ fontSize: 11.5, color: 'var(--red-solid)', marginTop: 2 }}>{a.block}</div>}
+                  </div>
+                  <ActivityChip status={a.status} />
+                  {canOpenSchedule && (
+                    <Button variant="light" onClick={() => openActivity(a.id, { nodeId: sel })} data-testid={`place-activity-open-${a.id}`} aria-label={`View ${a.name} in the schedule`} style={{ padding: '8px 11px', fontSize: 12 }}>
+                      View in schedule
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )
+      ),
+    },
+    {
+      key: 'drawings', icon: <FileText size={13} />, title: 'Drawings', count: contents.drawings.length,
+      sub: "what governs this place",
+      body: (
+        contents.drawings.length === 0 ? (
+          <PlaceRecordsEmpty>No drawings apply here yet.</PlaceRecordsEmpty>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {contents.drawings.map(({ drawing, relation }) => {
+              const cur = drawing.current;
+              const rm = RELATION_META[relation];
+              return (
+                <button key={drawing.id} onClick={() => openDrawing(drawing.id, { nodeId: sel })} data-testid={`place-drawing-${drawing.number}`} style={rowCard}>
+                  <div style={{ width: 38, height: 48, flex: 'none', borderRadius: 5, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {!cur && <FileText size={15} color="#b8b2a6" />}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 12 }}>{drawing.number}</span>
+                      {cur && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700, color: 'var(--accent)' }}>Rev {cur.rev}</span>}
+                      <span style={{ ...relChip, color: rm.color, borderColor: rm.color }}>{rm.label}</span>
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: 13.5, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{drawing.title}</div>
+                  </div>
+                  <ChevronRight size={16} color="#b8b2a6" />
+                </button>
+              );
+            })}
+          </div>
+        )
+      ),
+    },
+    {
+      key: 'materials', icon: <Blocks size={13} />, title: 'Materials', count: contents.materials.length,
+      sub: "delivered to this place",
+      body: (
+        contents.materials.length === 0 ? (
+          <PlaceRecordsEmpty>No materials delivered here yet.</PlaceRecordsEmpty>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+            {contents.materials.map((m) => (
+              <div key={m.id} data-testid={`place-material-${m.id}`} style={{ ...rowCard, cursor: 'default' }}>
+                <Swatch swatch={m.swatch as SwatchKey} size={30} radius={7} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{m.qty}</div>
+                </div>
+                {!m.matched && <span style={{ ...relChip, color: 'var(--red-solid)', borderColor: 'var(--red-solid)' }}>Mismatch</span>}
+              </div>
+            ))}
+          </div>
+        )
+      ),
+    },
+    {
+      key: 'photos', icon: <Camera size={13} />, title: 'Reality', count: contents.photos.length,
+      sub: photosCapped ? `among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} photos on record` : "photos of what's built",
+      body: (
+        contents.photos.length === 0 ? (
+          <PlaceRecordsEmpty>{photosCapped ? `No photos filed here among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} on record.` : 'No photos filed here yet.'}</PlaceRecordsEmpty>
+        ) : (
+          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+            {contents.photos.map((p, i) => (
+              <button key={p.id ?? i} onClick={() => setZoom(p.url)} data-testid="place-photo" aria-label={`Open site photo ${i + 1} of ${contents.photos.length}`} style={{ flex: 'none', width: 82, height: 82, borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+                <img src={p.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              </button>
+            ))}
+          </div>
+        )
+      ),
+    },
+  ];
+
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
       <Eyebrow>SITE MAP · BY LOCATION</Eyebrow>
@@ -213,7 +387,10 @@ export function PlacesScreen() {
             </div>
           )}
 
-          {/* drill-down: child zones/rooms/objects with per-place counts */}
+          {/* drill-down: child zones/rooms/objects with per-place counts — "Places inside" (mockup 7) */}
+          {children.length > 0 && (
+            <h2 data-testid="place-children-title" style={{ fontSize: 17, fontWeight: 700, margin: '0 0 10px' }}>Places inside</h2>
+          )}
           {children.length > 0 && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, marginBottom: 22 }}>
               {children.map((n) => {
@@ -244,10 +421,6 @@ export function PlacesScreen() {
             </div>
           )}
 
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.14em', color: 'var(--faint)', margin: '4px 0 12px' }}>
-            {activeNode ? `AT ${activeNode.name.toUpperCase()}${children.length ? ' AND BELOW' : ''}` : 'ACROSS THE WHOLE PROJECT'}
-          </div>
-
           {/* Intent vs Reality — the drawing that governs this place beside the photos of
               what's actually built. Only where a comparison is meaningful (a node with both). */}
           {active && contents.drawings.length > 0 && contents.photos.length > 0 && (
@@ -259,158 +432,10 @@ export function PlacesScreen() {
             />
           )}
 
-          {/* Work — activities happening here */}
-          <Section icon={<Hammer size={13} />} title="Work" count={contents.activities.length} sub="site activities here">
-            {contents.activities.length === 0 ? (
-              <Empty>
-                {activityRead === 'unavailable'
-                  ? 'The activities could not be loaded — open Schedule to retry.'
-                  : activityRead === 'loading' ? 'Loading the activities…' : 'No activities planned here yet.'}
-              </Empty>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                {contents.activities.map((a) => {
-                  // Audit F-02 — which phase this work belongs to and when it is planned, as the schedule says
-                  const phase = phases.find((p) => p.id === a.phaseId);
-                  return (
-                    <div key={a.id} data-testid={`place-activity-${a.id}`} style={{ ...rowCard, cursor: 'default', flexWrap: 'wrap' }}>
-                      <div style={{ flex: '1 1 180px', minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{a.id}</span>
-                          <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name}</span>
-                        </div>
-                        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }} data-testid={`place-activity-plan-${a.id}`}>
-                          {phase ? phase.name : 'Unphased'} · Plan {plannedWindow(a)}
-                        </div>
-                        {a.block && <div style={{ fontSize: 11.5, color: 'var(--red-solid)', marginTop: 2 }}>{a.block}</div>}
-                      </div>
-                      <ActivityChip status={a.status} />
-                      {canOpenSchedule && (
-                        <Button variant="light" onClick={() => openActivity(a.id, { nodeId: sel })} data-testid={`place-activity-open-${a.id}`} aria-label={`View ${a.name} in the schedule`} style={{ padding: '8px 11px', fontSize: 12 }}>
-                          View in schedule
-                        </Button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </Section>
-
-          {/* Inspections — quality checks here (pmc/engineer only) */}
-          {canSeeInspections && (
-            <Section icon={<CircleCheck size={13} />} title="Inspections" count={contents.inspections.length} sub="quality checks here">
-              {contents.inspections.length === 0 ? (
-                <Empty>No inspections here yet.</Empty>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                  {contents.inspections.map((i) => {
-                    const st = inspectionStatus(i);
-                    const screen = inspectionScreens[i.id];
-                    const RowTag = screen ? 'button' : 'div';
-                    return (
-                      <RowTag key={i.id} data-testid={`place-inspection-${i.id}`} style={screen ? rowCard : { ...rowCard, cursor: 'default' }} {...(screen ? { onClick: () => openItem(screen, i.id, { nodeId: sel }), 'aria-label': `Open inspection ${i.id}` } : {})}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{i.id}</span>
-                            <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.title}</span>
-                          </div>
-                        </div>
-                        <span style={{ ...relChip, color: st.color, borderColor: st.color }}>{st.label}</span>
-                      </RowTag>
-                    );
-                  })}
-                </div>
-              )}
-            </Section>
-          )}
-
-          {/* Reality — photos */}
-          <Section icon={<Camera size={13} />} title="Reality" count={contents.photos.length} sub={photosCapped ? `among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} photos on record` : "photos of what's built"}>
-            {contents.photos.length === 0 ? (
-              <Empty>{photosCapped ? `No photos filed here among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} on record.` : 'No photos filed here yet.'}</Empty>
-            ) : (
-              <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
-                {contents.photos.map((p, i) => (
-                  <button key={p.id ?? i} onClick={() => setZoom(p.url)} data-testid="place-photo" aria-label={`Open site photo ${i + 1} of ${contents.photos.length}`} style={{ flex: 'none', width: 82, height: 82, borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
-                    <img src={p.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  </button>
-                ))}
-              </div>
-            )}
-          </Section>
-
-          {/* Intent — drawings (filed here or inherited from above) */}
-          <Section icon={<FileText size={13} />} title="Drawings" count={contents.drawings.length} sub="what governs this place">
-            {contents.drawings.length === 0 ? (
-              <Empty>No drawings apply here yet.</Empty>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {contents.drawings.map(({ drawing, relation }) => {
-                  const cur = drawing.current;
-                  const rm = RELATION_META[relation];
-                  return (
-                    <button key={drawing.id} onClick={() => openDrawing(drawing.id, { nodeId: sel })} data-testid={`place-drawing-${drawing.number}`} style={rowCard}>
-                      <div style={{ width: 38, height: 48, flex: 'none', borderRadius: 5, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        {!cur && <FileText size={15} color="#b8b2a6" />}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-                          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 12 }}>{drawing.number}</span>
-                          {cur && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700, color: 'var(--accent)' }}>Rev {cur.rev}</span>}
-                          <span style={{ ...relChip, color: rm.color, borderColor: rm.color }}>{rm.label}</span>
-                        </div>
-                        <div style={{ fontWeight: 600, fontSize: 13.5, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{drawing.title}</div>
-                      </div>
-                      <ChevronRight size={16} color="#b8b2a6" />
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </Section>
-
-          {/* Materials delivered here */}
-          <Section icon={<Blocks size={13} />} title="Materials" count={contents.materials.length} sub="delivered to this place">
-            {contents.materials.length === 0 ? (
-              <Empty>No materials delivered here yet.</Empty>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                {contents.materials.map((m) => (
-                  <div key={m.id} data-testid={`place-material-${m.id}`} style={{ ...rowCard, cursor: 'default' }}>
-                    <Swatch swatch={m.swatch as SwatchKey} size={30} radius={7} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</div>
-                      <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{m.qty}</div>
-                    </div>
-                    {!m.matched && <span style={{ ...relChip, color: 'var(--red-solid)', borderColor: 'var(--red-solid)' }}>Mismatch</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </Section>
-
-          {/* Decisions made here */}
-          <Section icon={<MapPin size={13} />} title="Decisions" count={contents.decisions.length} sub="choices recorded here">
-            {contents.decisions.length === 0 ? (
-              <Empty>No decisions recorded here yet.</Empty>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                {contents.decisions.map((d) => (
-                  <button key={d.id} data-testid={`place-decision-${d.id}`} style={rowCard} onClick={() => openItem(decisionScreens[d.id] ?? 'decision-log', d.id, { nodeId: sel })} aria-label={`Open decision ${d.id}`}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{d.id}</span>
-                        <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.title}</span>
-                      </div>
-                      {d.approvedOption && <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{d.approvedOption}{d.material ? ` — ${d.material}` : ''}</div>}
-                    </div>
-                    <DecisionChip status={d.status} />
-                  </button>
-                ))}
-              </div>
-            )}
-          </Section>
+          <PlaceWorkRecords
+            where={activeNode ? `At ${activeNode.name}${children.length ? ' and the places inside it' : ''}` : 'Across the whole project'}
+            sections={recordSections}
+          />
         </>
       )}
 
@@ -510,23 +535,6 @@ function IntentReality({
   );
 }
 
-function Section({ icon, title, count, sub, children }: { icon: React.ReactNode; title: string; count: number; sub: string; children: React.ReactNode }) {
-  return (
-    <div style={{ marginBottom: 22 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700, fontSize: 14.5 }}>{icon} {title}</span>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--faint)' }}>{count}</span>
-        <span style={{ fontSize: 11.5, color: 'var(--faint)', marginLeft: 'auto' }}>{sub}</span>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 12.5, color: 'var(--faint)', padding: '6px 0' }}>{children}</div>;
-}
-
 /** #633 — a place's counts in words. On a card they read as one quiet line; above the opened place
  *  (`pills`) each is a pill. An open issue is always the warning colour. With no count to show, nothing is
  *  claimed: an empty line could be a read still loading, never proof the place is empty. */
@@ -548,6 +556,12 @@ function CountWords({ words, testId, pills = false }: { words: PlaceCountWord[];
 }
 const countPill: CSSProperties = { padding: '2px 8px', borderRadius: 999, background: 'rgba(35,33,28,.06)', fontWeight: 500 };
 const alertTone: CSSProperties = { background: '#f7e1df', color: '#8a2a25', fontWeight: 600 };
+
+/** #633 — the inspections with open issues lead, so the first row under "Work and records here" is what needs
+ *  doing; the order is otherwise unchanged. */
+function issuesFirst(list: PlacedInspection[]): PlacedInspection[] {
+  return [...list].sort((a, b) => Number((b.openIssues ?? 0) > 0) - Number((a.openIssues ?? 0) > 0));
+}
 
 /** A placed inspection's Site-Map status: open → in review → passed/failed. */
 function inspectionStatus(i: PlacedInspection): { label: string; color: string } {
