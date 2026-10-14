@@ -5,6 +5,7 @@ import { EMPTY_HINTS, type EmptyHintTask } from './words';
 /** the permission behind each task's button: the line shows only where that button does */
 const ACTION: Record<EmptyHintTask, PolicyAction> = {
   checklist: 'inspection.create',
+  decision: 'decision.create',
 };
 
 /**
