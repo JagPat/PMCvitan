@@ -531,6 +531,25 @@ describe('follow-ups from review (#858, #861, #862)', () => {
     s.useStore.getState().issueChecklist({ title: 'T', zone: 'Z', items: ['a'] });
     await vi.waitFor(() => expect(seen).toEqual(['checklist-issue-failed']));
   });
+
+  it('a wrong-project answer overtaken by a newer pull is still not an issued checklist', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome } = await import('@/guide/outcomes');
+    const seen: string[] = [];
+    subscribeGuideOutcome((o) => seen.push(o));
+    const replies: Array<(v: unknown) => void> = [];
+    act(() => {
+      s.useStore.getState()._setGateway({
+        createInspection: vi.fn(() => new Promise((resolve) => { replies.push(resolve); })),
+        snapshot: vi.fn(() => new Promise(() => {})),
+      } as never);
+    });
+    s.useStore.getState().issueChecklist({ title: 'T', zone: 'Z', items: ['a'] });
+    // a newer lease in the same project: the first reply comes back superseded
+    s.useStore.getState().issueChecklist({ title: 'T2', zone: 'Z', items: ['a'] });
+    replies[0]!({ project: { id: 'another-project' } });
+    await vi.waitFor(() => expect(seen).toEqual(['checklist-issue-failed']));
+  });
 });
 
 describe('a guide whose first control goes away ends instead of hanging (review round 2)', () => {

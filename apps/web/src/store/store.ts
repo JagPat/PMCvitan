@@ -4990,7 +4990,10 @@ export const useStore = create<Store>()(
       gateway
         .createInspection(input)
         .then((snap) => {
-          const result = acceptSnapshot(snap, lease);
+          // `superseded` is returned before the project check, so a delayed wrong-project reply that a
+          // newer pull overtook is still not an issued checklist
+          const accepted = acceptSnapshot(snap, lease);
+          const result = accepted === 'superseded' && snap.project.id !== lease.scope.projectId ? 'invalid-project' : accepted;
           consumeSnapshotResult(result, `Checklist issued: ${input.title} — the engineer has been notified.`, lease.scope);
           emitGuideOutcome(result === 'applied' || result === 'superseded' ? 'checklist-issued' : 'checklist-issue-failed');
         })
