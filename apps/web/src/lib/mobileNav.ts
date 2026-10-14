@@ -31,6 +31,9 @@ export const MOBILE_MAX_TABS = MOBILE_PRIMARY_SLOTS + 1;
  */
 export const MOBILE_ROLE_PRIMARY: Partial<Record<Role, readonly ScreenKey[]>> = {
   engineer: ['dashboard', 'inbox', 'daily-log'],
+  // Board decision 14 Oct 2026 (#482): the PMC reaches the Daily Site Log from its bar, beside the Site Map
+  // (#633, the main way around a project). Schedule and Portfolio stay one tap away behind More.
+  pmc: ['dashboard', 'inbox', 'daily-log', 'places'],
 };
 
 /** The bar/More label for a screen, in the viewer's language (the engineer's two fixed tabs carry

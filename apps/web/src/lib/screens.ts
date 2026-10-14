@@ -138,7 +138,7 @@ export function screensFor(role: Role): ScreenMeta[] {
   // #811 (Board decision 2026-10-13) — the Dashboard is the home for every role: first in the nav, so
   // everyone lands on it after login. For You (the live action queue) stays second.
   const keys: Record<Role, ScreenKey[]> = {
-    pmc: ['dashboard', 'inbox', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team', 'portfolio'],
+    pmc: ['dashboard', 'inbox', 'daily-log', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team', 'portfolio'],
     client: ['dashboard', 'inbox', 'client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
     // engineers hold activity.start/complete, so they get the Schedule (its authoring
     // controls stay behind activity.manage — pmc only). Materials and Labour (`labour.read` is
@@ -191,9 +191,9 @@ export const ITEM_SCREENS: ReadonlySet<ScreenKey> = new Set<ScreenKey>([
 ]);
 
 /** Top 10 #3 gap 12 (#798, owner decision 2026-10-12) — screens a role reaches by a LINK only (a brief task, a
- *  notice, a shared URL), never from its nav. The PMC holds every `dailyLog.*` command but its nav carries no Daily
- *  Log; a link to the site's log opens it rather than bouncing them home. */
-export const ROUTE_ONLY_SCREENS: Partial<Record<Role, readonly ScreenKey[]>> = { pmc: ['daily-log'] };
+ *  notice, a shared URL), never from its nav. None today: the PMC's Daily Site Log, once link-only, is in its nav
+ *  since the Board decision of 14 Oct 2026 (#482). */
+export const ROUTE_ONLY_SCREENS: Partial<Record<Role, readonly ScreenKey[]>> = {};
 
 /** Every screen a role may be routed to: its nav, then its link-only screens (`ROUTE_ONLY_SCREENS`). The first is
  *  still the role's home. */

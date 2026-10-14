@@ -28,6 +28,7 @@ export function NotificationPanel() {
   const lang = useStore((s) => s.lang);
   const toggleNotif = useStore((s) => s.toggleNotif);
   const role = useStore((s) => s.role);
+  const enabledModules = useStore((s) => s.enabledModules);
   // openItem also closes the panel (it clears notifOpen), so a notification tap is one call.
   const openItem = useStore((s) => s.openItem);
   // Codex 4206188363 — the rows the Decision Log shows this viewer (no drafts, no withdrawn or open-demand
@@ -108,7 +109,7 @@ export function NotificationPanel() {
             </div>
           )}
           {notifications.map((n, i) => {
-            const link = notificationLink(n, role, records);
+            const link = notificationLink(n, role, records, enabledModules);
             const body = (
               <>
                 <span className={styles.dot} style={{ background: n.color }} />

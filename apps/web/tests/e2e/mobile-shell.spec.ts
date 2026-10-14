@@ -22,8 +22,9 @@ test('journey 1 + 8 — the project is named on the bar, and More holds the seco
   // the bar holds four destinations plus More — never thirteen compressed tabs
   const tabs = page.getByTestId('bottom-tabs');
   await expect(tabs).toBeVisible();
-  // #811 — the Dashboard (every role's home) holds the first slot; Portfolio is in More
-  for (const key of ['dashboard', 'inbox', 'site-schedule', 'places', 'more']) {
+  // #811 — the Dashboard (every role's home) holds the first slot; #482 (14 Oct 2026) — the PMC's bar
+  // carries the Daily Site Log beside the Site Map, and Schedule and Portfolio are in More
+  for (const key of ['dashboard', 'inbox', 'daily-log', 'places', 'more']) {
     await expect(page.getByTestId(`tab-${key}`)).toBeVisible();
   }
   // and the bar itself never overflows the viewport
@@ -72,7 +73,8 @@ test('journey 5 — a nested place keeps a readable breadcrumb on a phone', asyn
 
 test('journey 6 — an activity on the Schedule shows where it belongs, and the crumb navigates there', async ({ page }) => {
   await page.goto('/');
-  await page.getByTestId('tab-site-schedule').click();
+  await page.getByTestId('tab-more').click(); // the PMC's bar holds Daily and Site Map; Schedule is behind More (#482)
+  await page.getByTestId('more-item-site-schedule').click();
 
   const place = page.getByTestId('sched-place-ACT-33');
   await expect(place).toContainText('Ground Floor');
