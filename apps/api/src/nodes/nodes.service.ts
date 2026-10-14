@@ -3,7 +3,7 @@ import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { lockProjectTree } from '../common/tree-lock';
-import { countMediaOnNodes } from '../media/media-visibility';
+import { MediaParticipant } from '../media/media.participant';
 import { MAX_TREE_DEPTH, ancestorIdsOf, depthOf, heightOf, normalizeNodeName, subtreeIdsOf, type TreeRow } from './tree-rules';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionParticipant } from '../inspections/inspection.participant';
@@ -61,6 +61,8 @@ export class NodesService {
     // daily-log.inbox bases, so a node delete must produce an owner-aligned signal for each.
     private readonly drawingParticipant: DrawingParticipant,
     private readonly dailyLogParticipant: DailyLogParticipant,
+    // #884 — the draft-photo guard asks the media participant (in-tx) rather than reading `Media` itself.
+    private readonly mediaParticipant: MediaParticipant,
   ) {}
 
   /** Create a zone/room/element under the right kind of parent. The tree invariants (depth,
@@ -238,7 +240,7 @@ export class NodesService {
       // delete is refused until those photos are moved or removed (#881 follow-up, owner's order).
       const subtreeSet = new Set(subtree);
       const draftIds = tree.filter((n) => subtreeSet.has(n.id) && n.publishedAt === null).map((n) => n.id);
-      const draftPhotos = await countMediaOnNodes(tx, projectId, draftIds);
+      const draftPhotos = await this.mediaParticipant.countOnPlaces(tx, { projectId, nodeIds: draftIds });
       if (draftPhotos > 0) {
         throw new BadRequestException(`Move or remove the ${draftPhotos} photo(s) on this unpublished place before deleting it.`);
       }

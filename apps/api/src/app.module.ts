@@ -119,6 +119,7 @@ import { InspectionParticipant } from './inspections/inspection.participant';
 import { NodeInitParticipant } from './nodes/node-init.participant';
 import { DrawingParticipant } from './drawings/drawing.participant';
 import { DailyLogParticipant } from './daily-log/daily-log.participant';
+import { MediaParticipant } from './media/media.participant';
 
 @Module({
   imports: [
@@ -268,6 +269,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     // serialized into module projections (drawings.inbox, daily-log.inbox).
     DrawingParticipant,
     DailyLogParticipant,
+    MediaParticipant,
     // Phase 6 task 4b (§A.1) — the decisions-owned open-holder answer the orgs membership
     // commands consult before a standing write (orgs ⇄ decisions participant channel).
     DecisionsParticipant,

@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
 import { InspectionsService } from './inspections.service';
 import { InspectionsQueryService } from './inspections.query';
+import { SnapshotService } from '../snapshot/snapshot.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
@@ -19,6 +20,7 @@ export class InspectionsController {
   constructor(
     private readonly inspections: InspectionsService,
     private readonly inspectionsQuery: InspectionsQueryService,
+    private readonly snapshot: SnapshotService,
   ) {}
 
   /** Phase 2 Task 10 (Module 3) — the MODULE-OWNED inspections read (XOR read-ownership): the frontend
@@ -27,8 +29,9 @@ export class InspectionsController {
    *  review queue, pmc/engineer placement) exactly as the snapshot slice, so it is never an RBAC bypass. */
   @Get()
   @RolesFor('project.read')
-  read(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
-    return this.inspectionsQuery.moduleInspections(projectId, user.role, user.sub);
+  async read(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    // #884 — evidence on someone else's private draft place gets no signed path; the read side names it
+    return this.inspectionsQuery.moduleInspections(projectId, user.role, user.sub, await this.snapshot.hiddenMediaFor(projectId, user.sub));
   }
 
   /** Issue a stage checklist — the PMC/architect defines what gets inspected. */
