@@ -106,6 +106,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // Site Visits (#792): the PMC or a consultant starts and ends their own visit; only the PMC closes one left open.
   'siteVisit.start': ['pmc', 'consultant'],
   'siteVisit.end': ['pmc', 'consultant'],
+  'siteVisit.edit': ['pmc', 'consultant'],
   'siteVisit.close': ['pmc'],
   'dailyLog.start': ['engineer', 'pmc'],
   'dailyLog.addMaterial': ['engineer', 'pmc'],

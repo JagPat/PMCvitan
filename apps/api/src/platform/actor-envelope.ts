@@ -131,6 +131,17 @@ export async function lockActorStanding(tx: Prisma.TransactionClient, projectId:
 }
 
 /**
+ * Several accounts' identity rows, locked `FOR UPDATE` in user-id order: the order a write that freezes more than one
+ * person's name takes them (a site visit's attendee, SV1-a), so two such writes naming the same people cannot deadlock.
+ * Called after the project row, as the identity always comes after it.
+ */
+export async function lockIdentities(tx: Prisma.TransactionClient, userIds: readonly string[]): Promise<void> {
+  const ids = [...new Set(userIds)].sort();
+  await tx.$queryRaw(Prisma.sql`
+    SELECT 1 FROM "UserIdentity" WHERE "userId" IN (${Prisma.join(ids)}) ORDER BY "userId" FOR UPDATE`);
+}
+
+/**
  * Phase 6 task 4d-iii / R0a-2 — a member command locks its TARGET's standing rows `FOR UPDATE` before
  * it emits. Every emitter takes the actor's `ProjectUserStanding` rows (FOR SHARE, above) and THEN the
  * project's event stream. The member commands emit before their membership write (the event carries
