@@ -3,6 +3,7 @@ import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 import { OtpStore } from './otp-store';
 import { isProduction } from '../config';
+import { randomInt } from 'node:crypto';
 
 const OTP_TTL_MS = 10 * 60_000;
 
@@ -16,6 +17,12 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/** The phone code's key: the number as given, never normalised (see `sendPhoneSignInCode`). The
+ *  prefix keeps it apart from the digits-only resend-wait keys in the same store. */
+function exactPhoneKey(phone: string): string {
+  return `exact:${phone}`;
 }
 
 export interface EmailOtpResult {
@@ -124,21 +131,23 @@ export class EmailService {
   }
 
   /** #827 one-screen sign-in: until SMS is live, a phone sign-in's code goes to the email on
-   *  the account that owns the number. Keyed by the number, under the same per-number resend
-   *  wait as an SMS code. `to` is null for a number with no account (or no email): the send is
-   *  recorded for throttling but nothing is mailed, so the caller's answer stays the same and
-   *  nobody can probe which numbers have accounts. */
+   *  the account that owns the number. The resend wait is per number (its digits, as for an SMS
+   *  code); the code itself is held under the number EXACTLY as the account lookup used it, so a
+   *  code mailed for "987-654-3210" can never sign in an account stored as "9876543210" (round-1
+   *  Codex: phones are stored verbatim, so digits alone don't name one account). `to` is null for
+   *  a number with no account (or no email): the send is recorded for throttling but nothing is
+   *  mailed, so the caller's answer stays the same and nobody can probe which numbers have
+   *  accounts. The code is 4 digits like an SMS code, so a web bundle from before this change
+   *  (a 4-box pad that submits on the fourth digit) can still type it (round-1 Codex). */
   async sendPhoneSignInCode(phone: string, to: string | null): Promise<void> {
-    const key = phone.replace(/\D/g, '');
-    if (!this.phoneOtp.canSend(key)) {
+    const throttleKey = phone.replace(/\D/g, '');
+    if (!this.phoneOtp.canSend(throttleKey)) {
       throw new HttpException('Please wait a moment before requesting another code.', HttpStatus.TOO_MANY_REQUESTS);
     }
-    if (!to) {
-      this.phoneOtp.markSent(key);
-      return;
-    }
-    const code = this.newCode();
-    this.phoneOtp.put(key, code);
+    this.phoneOtp.markSent(throttleKey);
+    if (!to) return;
+    const code = String(randomInt(1000, 10000));
+    this.phoneOtp.put(exactPhoneKey(phone), code);
     try {
       await this.tx().sendMail({
         from: this.from,
@@ -154,7 +163,7 @@ export class EmailService {
   }
 
   async verifyPhoneSignInCode(phone: string, code: string): Promise<boolean> {
-    return this.phoneOtp.verify(phone.replace(/\D/g, ''), code);
+    return this.phoneOtp.verify(exactPhoneKey(phone), code);
   }
 
   /** Deliver a code whose lifecycle is owned by the durable credential service.

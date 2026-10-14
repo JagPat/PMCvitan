@@ -6102,7 +6102,7 @@ export const useStore = create<Store>()(
             s.access.step = 'otp';
             s.access.otp = '';
             s.access.devCode = r.devCode ?? null;
-            // #827 one-screen sign-in: until SMS is live the code arrives by email, 6 digits long
+            // #827 one-screen sign-in: until SMS is live the code arrives by email, 4 digits long (the server says so in `codeLength`)
             s.access.channel = r.channel ?? null;
             s.access.codeLength = r.codeLength ?? 4;
           });

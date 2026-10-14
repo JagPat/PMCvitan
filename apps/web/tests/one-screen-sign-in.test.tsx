@@ -5,7 +5,7 @@ import type { ApiGateway } from '@/data/apiGateway';
 /**
  * #827 one-screen sign-in (approved mockup screens 1 and 2). A live build opens straight on the mobile number,
  * with the language row above it. Until SMS is live the server emails the code to the account that owns the
- * number, and it is 6 digits, so the code screen says so and waits for all six. A send that fails says so and
+ * number. It has 4 digits, like an SMS code, so a web bundle from before this change can still type it, and the code screen waits for all four. A send that fails says so and
  * points to "Sign in with email" instead of looking like a code on its way.
  *
  * API_BASE is resolved at module load, so each case resets the registry and imports fresh.
@@ -54,35 +54,35 @@ describe('#827 one-screen sign-in', () => {
     expect(r.getByText('हम आपको साइन-इन कोड भेजेंगे')).toBeInTheDocument();
   });
 
-  it('a code sent by email asks for 6 digits, says where it went, and signs in only after all six', async () => {
+  it('a code sent by email asks for 4 digits, says where it went, and signs in only after all four', async () => {
     const verifyOtp = vi.fn().mockResolvedValue({ token: 't', role: 'client', name: 'Priya', projectId: 'villa-b' });
-    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 6 });
+    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
     const { TeamAccessScreen, useStore } = await load({ requestOtp, verifyOtp } as Partial<ApiGateway>);
     const r = render(<TeamAccessScreen />);
     fireEvent.change(r.getByTestId('phone-input'), { target: { value: '9876543210' } });
     fireEvent.click(r.getByTestId('send-code'));
     await flush();
     expect(requestOtp).toHaveBeenCalledWith('9876543210');
-    expect(r.getByText('Enter the 6-digit code')).toBeInTheDocument();
+    expect(r.getByText('Enter the 4-digit code')).toBeInTheDocument();
     expect(r.getByTestId('otp-sent-to')).toHaveTextContent('We emailed a code to the address saved with +91 9876543210');
     expect(r.getByText('Not there? Check spam, or sign in with email below.')).toBeInTheDocument();
-    expect(r.getAllByTestId('otp-box')).toHaveLength(6);
+    expect(r.getAllByTestId('otp-box')).toHaveLength(4);
     expect(r.getByTestId('otp-go-login')).toHaveTextContent('Sign in with email');
 
     vi.useFakeTimers();
-    for (const d of ['1', '2', '3', '4']) fireEvent.click(r.getByTestId(`otp-${d}`));
+    for (const d of ['1', '2', '3']) fireEvent.click(r.getByTestId(`otp-${d}`));
     await act(async () => { vi.advanceTimersByTime(500); });
-    expect(verifyOtp).not.toHaveBeenCalled(); // the old 4-digit pad would have sent "1234" here
-    for (const d of ['5', '6']) fireEvent.click(r.getByTestId(`otp-${d}`));
+    expect(verifyOtp).not.toHaveBeenCalled();
+    fireEvent.click(r.getByTestId('otp-4'));
     await act(async () => { vi.advanceTimersByTime(500); });
-    expect(verifyOtp).toHaveBeenCalledWith('9876543210', '123456');
+    expect(verifyOtp).toHaveBeenCalledWith('9876543210', '1234');
     vi.useRealTimers();
     await flush();
     expect(useStore.getState().sessionToken).toBe('t');
   });
 
   it('the email link on the code screen opens the email sign-in', async () => {
-    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 6 });
+    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
     const { TeamAccessScreen, useStore } = await load({ requestOtp } as Partial<ApiGateway>);
     const r = render(<TeamAccessScreen />);
     fireEvent.change(r.getByTestId('phone-input'), { target: { value: '9876543210' } });
@@ -117,7 +117,7 @@ describe('#827 one-screen sign-in', () => {
   });
 
   it('a back tap from the code screen returns to the number, not to "Who are you?"', async () => {
-    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 6 });
+    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
     const { TeamAccessScreen, useStore } = await load({ requestOtp } as Partial<ApiGateway>);
     render(<TeamAccessScreen />);
     act(() => useStore.getState().accSetPhone('9876543210'));

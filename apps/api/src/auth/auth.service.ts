@@ -267,7 +267,7 @@ export class AuthService {
       // find out which numbers do; an unknown number is mailed nothing.
       const owner = await this.prisma.user.findUnique({ where: { phone: input.phone }, select: { email: true } });
       await this.email.sendPhoneSignInCode(input.phone, owner?.email ?? null);
-      return { sent: true, live: true, channel: 'email', codeLength: 6 };
+      return { sent: true, live: true, channel: 'email', codeLength: 4 };
     }
     const r = await this.sms.sendOtp(input.phone);
     return { sent: true, live: r.live, channel: r.channel, codeLength: 4, devCode: r.devCode };

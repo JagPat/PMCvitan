@@ -520,20 +520,20 @@ describe('AuthService — phone sign-in code by email (#827 one-screen sign-in)'
     });
     return sent;
   }
-  const codeIn = (text: string) => /\b(\d{6})\b/.exec(text)?.[1];
+  const codeIn = (text: string) => /\b(\d{4})\b/.exec(text)?.[1];
   const priya = { id: 'u1', projectId: 'ambli', role: 'client', name: 'Priya', email: 'priya@example.com', phone: '9876543210' };
   const priyaMember = { projectId: 'ambli', userId: 'u1', role: 'client', status: 'active' };
 
-  it('emails a 6-digit code to the account that owns the number, and the code signs that account in', async () => {
+  it('emails a 4-digit code (what an older web bundle can type) to the account that owns the number, and the code signs that account in', async () => {
     const prisma = fakePrisma([{ ...priya }], [{ ...priyaMember }]);
     const { auth, email } = make(prisma);
     const sent = withMailbox(email);
     const req = await auth.requestOtp({ phone: '9876543210', projectId: 'ambli' });
-    expect(req).toEqual({ sent: true, live: true, channel: 'email', codeLength: 6 });
+    expect(req).toEqual({ sent: true, live: true, channel: 'email', codeLength: 4 });
     expect(sent).toHaveLength(1);
     expect(sent[0].to).toBe('priya@example.com');
     const code = codeIn(sent[0].text);
-    expect(code).toMatch(/^\d{6}$/);
+    expect(code).toMatch(/^\d{4}$/);
     const res = await auth.verifyOtp({ phone: '9876543210', code: code!, projectId: 'ambli' });
     expect(res).toMatchObject({ role: 'client', name: 'Priya' });
   });
@@ -544,10 +544,24 @@ describe('AuthService — phone sign-in code by email (#827 one-screen sign-in)'
     const { auth, email } = make(prisma);
     const sent = withMailbox(email);
     const req = await auth.requestOtp({ phone: '9000000000', projectId: 'ambli' });
-    expect(req).toEqual({ sent: true, live: true, channel: 'email', codeLength: 6 });
+    expect(req).toEqual({ sent: true, live: true, channel: 'email', codeLength: 4 });
     expect(sent).toHaveLength(0);
-    await expect(auth.verifyOtp({ phone: '9000000000', code: '123456', projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.verifyOtp({ phone: '9000000000', code: '1234', projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
     expect(prisma.users).toHaveLength(0);
+  });
+
+  it('a code mailed for one way of writing a number cannot sign in an account stored with another', async () => {
+    // round-1 Codex — phones are stored verbatim, so "987-654-3210" and "9876543210" can be two accounts;
+    // the code is bound to the exact number its account was found by, not to the digits
+    const other = { id: 'u2', projectId: 'ambli', role: 'contractor', name: 'Ravi', email: 'ravi@example.com', phone: '987-654-3210' };
+    const prisma = fakePrisma([{ ...priya }, { ...other }], [{ ...priyaMember }, { projectId: 'ambli', userId: 'u2', role: 'contractor', status: 'active' }]);
+    const { auth, email } = make(prisma);
+    const sent = withMailbox(email);
+    await auth.requestOtp({ phone: '987-654-3210', projectId: 'ambli' });
+    expect(sent[0].to).toBe('ravi@example.com');
+    const code = codeIn(sent[0].text)!;
+    await expect(auth.verifyOtp({ phone: '9876543210', code, projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.verifyOtp({ phone: '987-654-3210', code, projectId: 'ambli' })).resolves.toMatchObject({ name: 'Ravi' });
   });
 
   it('keeps the per-number resend wait, for known and unknown numbers alike', async () => {
@@ -574,7 +588,7 @@ describe('AuthService — phone sign-in code by email (#827 one-screen sign-in)'
     const sent = withMailbox(email);
     await auth.requestOtp({ phone: '9876543210', projectId: 'ambli' });
     const code = codeIn(sent[0].text)!;
-    const wrong = code === '111111' ? '222222' : '111111';
+    const wrong = code === '1111' ? '2222' : '1111';
     for (let i = 0; i < 5; i += 1) {
       await expect(auth.verifyOtp({ phone: '9876543210', code: wrong, projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
     }
