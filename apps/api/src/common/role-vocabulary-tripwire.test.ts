@@ -79,6 +79,8 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     // shared
     'packages/shared/src/domain/types.ts :: union TokenRole': 'answered',
     'packages/shared/src/domain/types.ts :: list TOKEN_ROLES': 'answered',
+    // #827 — the For You eyebrow's role names in Hindi and Gujarati
+    'packages/shared/src/i18n/actionItems.ts :: map forYouRole': 'answered',
     'packages/shared/src/domain/policy.ts :: list decision.approve': 'answered',
     // 4d-ii-a / A8a — forward authority is the holder + pmc + architect: every holder-capable role at the route
     'packages/shared/src/domain/policy.ts :: list decision.forward': 'answered',
