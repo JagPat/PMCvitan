@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Checklist, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
+import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActionItemFacts, type ActivityReadiness, type Checklist, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
 import { decisionsSliceSettled, drawingsSliceSettled, inspectionsSliceSettled, projectSnapshotSettled } from '@/lib/notifications';
@@ -438,6 +438,8 @@ export interface ActionItem {
   tone: 'amber' | 'red' | 'green' | 'ink';
   /** how many things the item stands for, when it groups several the viewer acts on one by one */
   count?: number;
+  /** #827 — what the card says beyond its key, so Hindi and Gujarati are built from facts (`actionItemText`) */
+  facts?: ActionItemFacts;
   /** Top 10 #3 (#774) — the ONE record the item is about, opened on `screen` (`openItem`) instead of the list.
    *  Set only when the item names exactly one record that `screen` resolves. */
   item?: string;
@@ -552,11 +554,11 @@ export function selectActionItems(s: AppState): ActionItem[] {
   const settledDecisions = decisionsSliceSettled(s);
   const myChanges = changes.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
   if (myPending.length) {
-    items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber', count: myPending.length, item: settledDecisions ? only(myPending) : undefined });
+    items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), facts: { n: myPending.length }, screen: 'client-decisions', cta: 'Review & approve', tone: 'amber', count: myPending.length, item: settledDecisions ? only(myPending) : undefined });
   }
   if (myChanges.length) {
     // a reopened decision BLOCKS the work driven by it until the decider re-approves
-    items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red', count: myChanges.length, item: settledDecisions ? only(myChanges) : undefined });
+    items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), facts: { n: myChanges.length }, screen: 'client-decisions', cta: 'Re-approve', tone: 'red', count: myChanges.length, item: settledDecisions ? only(myChanges) : undefined });
   }
 
   // Phase 6 task 4d-ii-b / B3 (the plan's §A.2 Inbox arm) — the AWAITING branch. The architect's item is
@@ -567,33 +569,33 @@ export function selectActionItems(s: AppState): ActionItem[] {
   // actionable pending/change states (#677 review, finding 4145060024). Empty while the doors stand.
   const awaiting = selectAwaitingCountersign(s);
   if (s.role === 'architect' && awaiting.length) {
-    items.push({ key: 'arch-countersign', title: `${awaiting.length} decision${plural(awaiting.length)} awaiting your countersign`, detail: names(awaiting), screen: 'decision-log', cta: 'Review & countersign', tone: 'amber', count: awaiting.length, item: only(awaiting) });
+    items.push({ key: 'arch-countersign', title: `${awaiting.length} decision${plural(awaiting.length)} awaiting your countersign`, detail: names(awaiting), facts: { n: awaiting.length }, screen: 'decision-log', cta: 'Review & countersign', tone: 'amber', count: awaiting.length, item: only(awaiting) });
   }
   if (s.role === 'pmc' && awaiting.length) {
     const stranded = awaiting.filter(isStrandedCountersign);
     const held = awaiting.filter((d) => !isStrandedCountersign(d));
-    if (stranded.length) items.push({ key: 'pmc-stranded', title: `${stranded.length} decision${plural(stranded.length)} stranded — no architect to countersign`, detail: names(stranded), screen: 'decision-log', cta: 'Resolve', tone: 'red', count: stranded.length, item: only(stranded) });
-    if (held.length) items.push({ key: 'pmc-countersign', title: `${held.length} decision${plural(held.length)} awaiting the architect’s countersign`, detail: names(held), screen: 'decision-log', cta: 'View', tone: 'ink', item: only(held) });
+    if (stranded.length) items.push({ key: 'pmc-stranded', title: `${stranded.length} decision${plural(stranded.length)} stranded — no architect to countersign`, detail: names(stranded), facts: { n: stranded.length }, screen: 'decision-log', cta: 'Resolve', tone: 'red', count: stranded.length, item: only(stranded) });
+    if (held.length) items.push({ key: 'pmc-countersign', title: `${held.length} decision${plural(held.length)} awaiting the architect’s countersign`, detail: names(held), facts: { n: held.length }, screen: 'decision-log', cta: 'View', tone: 'ink', item: only(held) });
   }
 
   if (s.role === 'engineer') {
-    if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber', item: inspectionsSettledForLinks(s) ? s.checklist.id : undefined });
-    if (s.dailyLog && !s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', screen: 'daily-log', cta: 'Open daily log', tone: 'ink', item: dailyLogSettledForLinks(s) ? s.dailyLog.id : undefined });
-    if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: unackedItem(unacked) });
+    if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, facts: { title: s.checklist.title, items: s.checklist.items.length, zone: s.checklist.zone }, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber', item: inspectionsSettledForLinks(s) ? s.checklist.id : undefined });
+    if (s.dailyLog && !s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', facts: { checkedIn: s.dailyLog.checkedIn }, screen: 'daily-log', cta: 'Open daily log', tone: 'ink', item: dailyLogSettledForLinks(s) ? s.dailyLog.id : undefined });
+    if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), facts: { n: unacked.length }, screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: unackedItem(unacked) });
   }
 
   if (s.role === 'contractor') {
-    if (unacked.length) items.push({ key: 'con-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: unackedItem(unacked) });
-    if (changes.length) items.push({ key: 'con-change', title: `${changes.length} change request${plural(changes.length)} open`, detail: 'Awaiting the PMC', screen: 'decision-log', cta: 'View', tone: 'ink', item: only(changes) });
+    if (unacked.length) items.push({ key: 'con-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), facts: { n: unacked.length }, screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: unackedItem(unacked) });
+    if (changes.length) items.push({ key: 'con-change', title: `${changes.length} change request${plural(changes.length)} open`, detail: 'Awaiting the PMC', facts: { n: changes.length }, screen: 'decision-log', cta: 'View', tone: 'ink', item: only(changes) });
   }
 
   if (s.role === 'pmc') {
-    if (drafts.length) items.push({ key: 'pmc-drafts', title: `${drafts.length} draft${plural(drafts.length)} in progress`, detail: names(drafts), screen: 'drafts', cta: 'Review & publish', tone: 'ink' });
+    if (drafts.length) items.push({ key: 'pmc-drafts', title: `${drafts.length} draft${plural(drafts.length)} in progress`, detail: names(drafts), facts: { n: drafts.length }, screen: 'drafts', cta: 'Review & publish', tone: 'ink' });
     // only the UNDECIDED reviews: an approved or rejected one stays in `s.reviews` with `decided` set
     const toReview = s.reviews.filter((r) => !r.decided);
     // Top 10 #2 (#771) — each review is the PMC's own decision, so the item counts every one of them: the
     // For You badge then agrees with the Inspection Review badge and the Dashboard tile
-    if (toReview.length) items.push({ key: 'pmc-reviews', title: `${toReview.length} inspection${plural(toReview.length)} awaiting your review`, detail: names(toReview), screen: 'inspect-review', cta: 'Review', tone: 'amber', count: toReview.length, item: inspectionsSettledForLinks(s) ? only(toReview) : undefined });
+    if (toReview.length) items.push({ key: 'pmc-reviews', title: `${toReview.length} inspection${plural(toReview.length)} awaiting your review`, detail: names(toReview), facts: { n: toReview.length }, screen: 'inspect-review', cta: 'Review', tone: 'amber', count: toReview.length, item: inspectionsSettledForLinks(s) ? only(toReview) : undefined });
     // round-3 Codex F1 — the PMC MANAGEMENT summaries cover only decisions held by OTHER
     // deciders: a PMC-held row is the PMC's own approval task (the decider items above), not
     // something to describe as awaiting someone else. When every other-held decision is
@@ -604,12 +606,12 @@ export function selectActionItems(s: AppState): ActionItem[] {
     // countersigns (`pmc-stranded`) and every other published pending decision here (`pending` is that
     // selector's pending arm for the PMC, `selectPending`), each counted per record
     const otherPending = pending.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
-    if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), screen: 'decision-log', cta: 'Open', tone: 'red', count: otherChanges.length, item: only(otherChanges) });
-    if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red', item: activitiesSettledForLinks(s) ? only(blocked) : undefined });
+    if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), facts: { n: otherChanges.length }, screen: 'decision-log', cta: 'Open', tone: 'red', count: otherChanges.length, item: only(otherChanges) });
+    if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), facts: { n: blocked.length }, screen: 'site-schedule', cta: 'Open schedule', tone: 'red', item: activitiesSettledForLinks(s) ? only(blocked) : undefined });
     if (otherPending.length) {
       const allClientHeld = otherPending.every((d) => (d.deciderKind ?? 'client') === 'client');
       const who = allClientHeld ? 'the client' : otherPending.length === 1 ? 'its decider' : 'their deciders';
-      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', screen: 'decision-log', cta: 'View', tone: 'ink', count: otherPending.length, item: only(otherPending) });
+      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', facts: { n: otherPending.length, who: allClientHeld ? 'client' : 'decider' }, screen: 'decision-log', cta: 'View', tone: 'ink', count: otherPending.length, item: only(otherPending) });
     }
     // #771 PMC For You — the re-inspections a rejection sent back, still with the engineer (from the served lineage,
     // assignee and due date). With the re-inspections awaiting review, already counted in `pmc-reviews`, they make
@@ -619,7 +621,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
     const reinspecting = selectOpenReinspections(s).known ? selectReinspectionsAwaitingSubmission(s) : [];
     if (reinspecting.length) {
       const due = reinspecting.map((c) => c.dueDate).filter((d): d is string => typeof d === 'string').sort()[0];
-      items.push({ key: 'pmc-reinspections', title: `${reinspecting.length} re-inspection${plural(reinspecting.length)} with the engineer`, detail: [names(reinspecting), due ? `next due ${civilDayLabel(due)}` : ''].filter(Boolean).join(' · '), screen: 'inspect-review', cta: 'Follow up', tone: 'amber', count: reinspecting.length, item: inspectionsSettledForLinks(s) ? only(reinspecting) : undefined });
+      items.push({ key: 'pmc-reinspections', title: `${reinspecting.length} re-inspection${plural(reinspecting.length)} with the engineer`, detail: [names(reinspecting), due ? `next due ${civilDayLabel(due)}` : ''].filter(Boolean).join(' · '), facts: { n: reinspecting.length, names: names(reinspecting), ...(due ? { due } : {}) }, screen: 'inspect-review', cta: 'Follow up', tone: 'amber', count: reinspecting.length, item: inspectionsSettledForLinks(s) ? only(reinspecting) : undefined });
     }
     // Task 6: unstarted work whose DRAWING gate blocks it — the derived conclusion, surfaced
     const drawingBlocked = s.activities.filter((a) => {
@@ -627,7 +629,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
       const dr = readinessFor(s, a).drawing;
       return dr.v === 'wait' || dr.v === 'fail';
     });
-    if (drawingBlocked.length) items.push({ key: 'pmc-drawing-gate', title: `Blocked: drawing unacknowledged on ${drawingBlocked.length} activit${drawingBlocked.length === 1 ? 'y' : 'ies'}`, detail: names(drawingBlocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'amber', item: activitiesSettledForLinks(s) ? only(drawingBlocked) : undefined });
+    if (drawingBlocked.length) items.push({ key: 'pmc-drawing-gate', title: `Blocked: drawing unacknowledged on ${drawingBlocked.length} activit${drawingBlocked.length === 1 ? 'y' : 'ies'}`, detail: names(drawingBlocked), facts: { n: drawingBlocked.length }, screen: 'site-schedule', cta: 'Open schedule', tone: 'amber', item: activitiesSettledForLinks(s) ? only(drawingBlocked) : undefined });
     // Task 6: overrides lapsing within a week — the exception is about to end
     const soon = Date.now() + 7 * 24 * 3600 * 1000;
     // #777 Codex 4239561636 — the card is about ONE activity when every expiring override is that activity's,
@@ -635,7 +637,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
     const expiring = s.activities.flatMap((a) => (a.overrides ?? []).filter((o) => new Date(o.expiresAt).getTime() <= soon).map((o) => ({ a, o })));
     if (expiring.length) {
       const first = expiring[0];
-      items.push({ key: 'pmc-override-expiry', title: `Override expiring ${new Date(first.o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} — ${first.a.name}`, detail: expiring.length > 1 ? `${expiring.length} overrides lapse within a week` : first.o.reason, screen: 'site-schedule', cta: 'Review overrides', tone: 'amber', item: new Set(expiring.map((x) => x.a.id)).size === 1 && activitiesSettledForLinks(s) ? first.a.id : undefined });
+      items.push({ key: 'pmc-override-expiry', title: `Override expiring ${new Date(first.o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} — ${first.a.name}`, detail: expiring.length > 1 ? `${expiring.length} overrides lapse within a week` : first.o.reason, facts: { expiresAt: first.o.expiresAt, activity: first.a.name, expiring: expiring.length }, screen: 'site-schedule', cta: 'Review overrides', tone: 'amber', item: new Set(expiring.map((x) => x.a.id)).size === 1 && activitiesSettledForLinks(s) ? first.a.id : undefined });
     }
   }
 
@@ -656,6 +658,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
         key: 'material-shortage',
         title: `${shortages.length} material shortage${plural(shortages.length)} (${parts.join(', ')})`,
         detail: shortages[0].impactReason,
+        facts: { n: shortages.length, blocked: blockedN, atRisk: atRiskN },
         screen: 'materials',
         cta: 'Open materials',
         tone: hardImpact ? 'red' : 'amber',
@@ -689,6 +692,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
         detail: worst
           ? `${worst.costHeadName} is over by ${worst.headroom!.replace('-', '')} — committed money exceeds the authorised budget.`
           : 'Committed money exceeds the authorised budget.',
+        facts: { n: breaches, ...(worst ? { head: worst.costHeadName, over: worst.headroom!.replace('-', '') } : {}) },
         screen: 'commercial',
         cta: 'Open commercial',
         tone: 'red',
@@ -715,6 +719,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
         key: 'labour-shortage',
         title: `${shortfalls.length} labour shortfall${plural(shortfalls.length)} (${parts.join(', ')})`,
         detail: worst.reason,
+        facts: { n: shortfalls.length, blocked: blockedN, atRisk: atRiskN },
         screen: 'labour',
         cta: 'Open labour',
         tone: blockedN > 0 ? 'red' : 'amber',
@@ -729,7 +734,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
     if (disc) {
       const bucket = drawingDisciplineFor(disc);
       const mine = s.drawings.filter((d) => !d.draft && d.discipline === bucket && d.current && d.current.status === 'for_construction');
-      if (mine.length) items.push({ key: 'cons-review', title: `${mine.length} ${bucket} drawing${plural(mine.length)} in the current set`, detail: 'Review the issued set in your discipline', screen: 'drawings', cta: 'Review drawings', tone: 'ink' });
+      if (mine.length) items.push({ key: 'cons-review', title: `${mine.length} ${bucket} drawing${plural(mine.length)} in the current set`, detail: 'Review the issued set in your discipline', facts: { n: mine.length, bucket }, screen: 'drawings', cta: 'Review drawings', tone: 'ink' });
     }
   }
 
