@@ -5,6 +5,7 @@ import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { DecisionStatus } from '../domain/transitions';
 import type { DeciderKind } from '@vitan/shared';
 import type { Role } from '../common/auth';
+import { understandsCountersign, type DecisionsContract } from '../common/decisions-contract';
 import type { DecisionDto } from '../snapshot/types';
 import { serializeDecision, decisionVisibleToViewer, hydrateStoredDecisionDto } from './decision-serialize';
 import { kindedDecisionNoticeServed, kindedNoticeRevisionId, renderKindedDecisionNotice, type ApprovalRevisionFacts, type KindedNoticeEvent } from './decision-notice';
@@ -672,12 +673,20 @@ export class DecisionsQueryService {
     });
   }
 
-  async countPending(projectId: string, viewer: { role: Role; userId?: string }): Promise<number> {
+  async countPending(projectId: string, viewer: { role: Role; userId?: string; contract?: DecisionsContract }): Promise<number> {
     const published = { projectId, publishedAt: { not: null } };
     // #633 — a decision reopened by a change request (`change`) awaits its decider's mandatory re-approval, so it
     // is awaiting action exactly like a new one: the decider's badge, For You and the client's Pulse always
-    // counted it, and the Dashboard tile and this count (the Portfolio card, the shell) now do too
-    const base: Prisma.DecisionWhereInput = { ...published, status: { in: ['pending', 'change'] } };
+    // counted it, and the Dashboard tile and this count (the Portfolio card, the shell) now do too. A client
+    // below `countersign-v1` is never served a row reopened by a countersign rejection (the countersign
+    // interceptor strips it), so its count leaves that row out too (Codex 4267480469); an absent contract
+    // is such a client, as `understandsCountersign` fails closed
+    const hiddenReopened: Prisma.DecisionWhereInput = { status: 'change', changeRequests: { some: { status: 'open', origin: { not: 'standard' } } } };
+    const base: Prisma.DecisionWhereInput = {
+      ...published,
+      status: { in: ['pending', 'change'] },
+      ...(understandsCountersign(viewer.contract) ? {} : { NOT: hiddenReopened }),
+    };
     const awaiting: Prisma.DecisionWhereInput = { ...published, status: 'awaiting_countersign' };
     if (viewer.role === 'pmc') {
       const [pending, stranded] = await Promise.all([

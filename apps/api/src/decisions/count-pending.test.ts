@@ -52,3 +52,23 @@ describe('countPending — a reopened decision is awaiting action (#633)', () =>
     }
   });
 });
+
+describe('countPending — a client below countersign-v1 never counts a row it is not served (Codex 4267480469)', () => {
+  const whereOf = async (contract: 'none' | 'recorded-v1' | 'countersign-v1' | undefined) => {
+    const svc = make({ pendingByKind: { client: 1 }, awaiting: 0, architects: 1 });
+    await svc.countPending('p1', { role: 'pmc', userId: 'p1', contract });
+    const count = (svc as unknown as { prisma: { decision: { count: ReturnType<typeof vi.fn> } } }).prisma.decision.count;
+    return (count.mock.calls[0][0] as { where: Record<string, unknown> }).where;
+  };
+  const hidden = { status: 'change', changeRequests: { some: { status: 'open', origin: { not: 'standard' } } } };
+
+  it('a lesser client leaves out a decision reopened by a countersign rejection, as the interceptor strips it', async () => {
+    for (const contract of ['none', 'recorded-v1', undefined] as const) {
+      expect((await whereOf(contract)).NOT).toEqual(hidden);
+    }
+  });
+
+  it('a countersign-v1 client counts every reopened decision', async () => {
+    expect((await whereOf('countersign-v1')).NOT).toBeUndefined();
+  });
+});
