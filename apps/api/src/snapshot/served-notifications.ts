@@ -6,6 +6,7 @@ import { isPendingDecisionNotice, isWithdrawnDecisionNotice } from '../domain/no
 import { readFeedEvents, readNotificationFeed } from '../platform/notification-feed';
 import type { Role } from '../common/auth';
 import type { SnapshotDto } from './types';
+import { SITE_VISIT_NOTICE_KINDS, renderSiteVisitNotice } from '../site-visits/site-visit-notice';
 
 /**
  * Top 10 #4b unit B (#778) — THE one definition of which notices the authenticated viewer is served.
@@ -101,6 +102,12 @@ export function servedNotifications(
     // this release, or a notice about no decision, is omitted.
     if (n.kind !== null) {
       const event = n.eventId ? events.get(n.eventId) : undefined;
+      // Site Visits SV1-b (#792, F50) — a visit notice is the site-visits module's to render, from its event alone;
+      // every member of the project sees a visit (D1)
+      if (event && SITE_VISIT_NOTICE_KINDS.has(n.kind)) {
+        const visit = renderSiteVisitNotice(n.kind, event);
+        return visit ? [{ id: n.id, at: n.at.toISOString(), text: visit.text, time: n.time, color: visit.color, unread: !seen.has(n.id) }] : [];
+      }
       if (!event || !n.decisionId) return [];
       const rendered = decisionsQuery.renderKindedNotice(n.kind, event, visibleById.get(n.decisionId), role, userId, revisions);
       return rendered ? [{ id: n.id, at: n.at.toISOString(), text: rendered.text, time: n.time, color: rendered.color, ...noticeSubject(n.decisionId), unread: !seen.has(n.id) }] : [];
