@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectDeciderPending, selectDeciderReapproval, selectLogDecisions } from '@/store/selectors';
-import { Eyebrow, Swatch, Button, LocationContext } from '@/components';
+import { Eyebrow, Swatch, Button, LocationContext, WaitingCardActions } from '@/components';
 import { Check } from '@/lib/icons';
 import { signed, type Decision } from '@vitan/shared';
 import { groupDecisions } from '@/lib/locationTree';
@@ -147,6 +147,8 @@ function PendingCard({ d, subLabel, onApprove, current = false }: { d: Decision;
         <LocationContext nodeId={d.nodeId} fallback={subLabel || d.room} compact testId={`client-decision-place-${d.id}`} />
         <div style={{ fontWeight: 700, fontSize: 18, marginTop: 3 }}>{d.title}</div>
         {d.status === 'change' && d.changeRequest && <ChangeRequestContext d={d} />}
+        {/* #482 follow-up — the advice on this choice and the client's own change request, as on the one-decision screen */}
+        <WaitingCardActions d={d} />
       </div>
       <div style={{ padding: '12px 16px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {d.options.map((o, i) => {

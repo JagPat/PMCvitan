@@ -18,6 +18,7 @@ export { InheritedContext } from './InheritedContext';
 export { CreateMenu } from './CreateMenu';
 export { MoreDetails } from './MoreDetails';
 export { ConsultationThread } from './ConsultationThread';
+export { WaitingCardActions } from './WaitingCardActions';
 export { CountersignControls } from './CountersignControls';
 export { ItemNotFound } from './ItemNotFound';
 export { RecordBoundary } from './RecordBoundary';

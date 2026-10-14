@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
+import { selectLogDecisions } from '@/store/selectors';
 import type { AwaitingClientRow } from '@/data/apiGateway';
 import { LocationContext } from '@/components';
 import { decisionRail } from '@vitan/shared';
@@ -30,6 +31,9 @@ export function AwaitingClientList() {
   const decisions = useStore((s) => s.decisions);
   const seeded = useStore(useShallow((s) =>
     s.decisions.filter((d) => !d.draft && (d.deciderKind ?? 'client') === 'client' && d.status === 'pending')));
+  // #888 — a decision the register below already shows this viewer (a standing consultee on it, say) is listed there
+  // once, never again here
+  const inRegister = useStore(useShallow((s) => selectLogDecisions(s).map((d) => d.id)));
   const [served, setServed] = useState<{ scope: string; rows: AwaitingClientRow[] | null } | null>(null);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -59,11 +63,12 @@ export function AwaitingClientList() {
   }, [fetchAwaitingClient, scope, decisions, attempt]);
 
   const current = served?.scope === scope ? served : null;
-  const rows: (AwaitingClientRow & { ageDays?: number })[] | null = !current
+  const listed: (AwaitingClientRow & { ageDays?: number })[] | null = !current
     ? null
     // a reopened decision is already a row of the register below, read by these roles: listed once, there
     : current.rows?.filter((r) => r.status === 'pending')
       ?? seeded.map((d) => ({ id: d.id, title: d.title, room: d.room, nodeId: d.nodeId ?? null, status: 'pending' as const, waitingSince: '', ageDays: d.ageDays }));
+  const rows = listed && listed.filter((r) => !inRegister.includes(r.id));
 
   return (
     <section data-testid="awaiting-client" aria-labelledby="awaiting-client-title" style={{ margin: '4px 0 26px' }}>
