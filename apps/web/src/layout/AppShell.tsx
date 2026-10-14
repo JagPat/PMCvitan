@@ -12,6 +12,8 @@ import { RouteBridge } from './RouteBridge';
 import { ProjectLoadBoundary } from './ProjectLoadBoundary';
 import { AuthGate } from './AuthGate';
 import { LangPreference } from './LangPreference';
+import { GuideHost } from '@/guide/GuideHost';
+import { GuideMe } from '@/guide/GuideMe';
 import styles from './AppShell.module.css';
 
 export function AppShell() {
@@ -41,6 +43,7 @@ export function AppShell() {
                 failed transition shows a recoverable error — never stale records. */}
             <ProjectLoadBoundary state={projectLoadState} error={projectLoadError} label={short} onRetry={retryProjectLoad}>
               <ReturnToPlace />
+              <GuideMe />
               <ScreenView />
             </ProjectLoadBoundary>
           </div>
@@ -51,6 +54,8 @@ export function AppShell() {
           every screen; it gates ITSELF on project-load state, because the shell is outside
           `ProjectLoadBoundary` and nothing here unmounts it during a transition. */}
       <CreateControl />
+      {/* #482 — coach marks over the live screen; "Guide me" sits in the stage above */}
+      <GuideHost />
       <NotificationPanel />
       <ModalHost />
       {toast && <Toast message={toast} />}

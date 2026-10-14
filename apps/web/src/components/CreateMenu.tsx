@@ -53,6 +53,7 @@ export function CreateMenu({
                 onClick={() => onPick(o.kind)}
                 disabled={reason !== null}
                 data-testid={`create-${o.kind}`}
+                data-guide={`create-${o.kind}`}
                 style={reason ? { ...row, ...rowBlocked } : row}
               >
                 <o.icon size={18} style={{ flex: 'none', color: reason ? 'var(--faint)' : 'var(--accent)' }} />
