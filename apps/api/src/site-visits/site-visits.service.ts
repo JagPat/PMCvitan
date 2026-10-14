@@ -31,17 +31,20 @@ interface LockedVisit {
  * end) and close. PostgreSQL enforces every rule on the record (SV1-a); this service asks the same questions first so
  * a refusal is a clear 4xx, and takes the locks in ONE order so two valid acts never deadlock:
  *
- *   the project's readiness lock → the visit row (an act on an existing visit) → the project tree (a start that names
- *   a place) → the node → OrgUserAuthority → ProjectUserStanding → the project row → UserIdentity → the event stream.
+ *   the project's readiness lock → the project tree (every act on an existing visit, and a start that names a place)
+ *   → the visit row → the node → OrgUserAuthority → ProjectUserStanding → the project row → UserIdentity → the event
+ *   stream.
  *
  * - The readiness lock first, the protocol every membership change and archive already follows
  *   (`readiness-lock.ts`). A membership command locks its actor's identity and only then the project row (its
  *   transition seal's operability check), the reverse of the order below; holding the readiness lock first, the two
  *   never interleave (#834, Codex 4260951386). No node writer takes the readiness lock, so it cannot meet the tree
  *   lock in the other order.
- * - The visit row next: every child write locks it before its standing, as SV1-a's triggers do. A place add takes
- *   the tree lock BEFORE the visit row, because a node removal holds the tree lock and then reaches the row of every
- *   visit that started at that node (`startNodeId`, ON DELETE SET NULL).
+ * - The tree lock before the visit row, on every act on an existing visit: a node removal holds the tree lock (and,
+ *   once it has written an event, the event stream) and then reaches the row of every visit that started at that node
+ *   (`startNodeId`) and every place row at it (`nodeId`), both ON DELETE SET NULL. An act that held either row and
+ *   then waited on the stream deadlocked against it; under the tree lock it waits for the removal instead.
+ * - The visit row next: every child write locks it before its standing, as SV1-a's triggers do.
  * - A member attendee's registers follow the visitor's, and after the project row both identities are locked in
  *   user-id order, the order SV1-a's attendee trigger takes them.
  * - The tree lock before the node (#834, Codex 4260951368): every node writer (create, rename, move, remove) takes
@@ -166,14 +169,9 @@ export class SiteVisitsService {
   /**
    * The visitor adds a place they walked: a published place of the project, at a claimed time the database accepts
    * after the start (or at its receipt, marked "after the end", once the visit has ended). A closed visit takes no edit.
-   *
-   * The tree lock comes BEFORE the visit row here: a node removal holds the tree lock and then, through the visit's
-   * `startNodeId` foreign key (ON DELETE SET NULL), the row of every visit that started at that node. Taking the visit
-   * row first and the tree lock second would close that cycle.
    */
   async addPlace(projectId: string, visitId: string, dto: AddSiteVisitPlaceInput, user: AuthUser, idempotencyKey?: string): Promise<SiteVisitDto> {
     return this.visitorEdit(projectId, visitId, 'site-visits.add-place', { visitId, ...dto }, user, idempotencyKey, async (tx, actor) => {
-      await lockProjectTree(tx, projectId);
       const visit = await this.lockEditableVisit(tx, projectId, visitId, user);
       const placeName = await this.publishedPlace(tx, projectId, dto.nodeId);
       const envelope = await this.visitorStanding(tx, projectId, actor, user, visit);
@@ -308,8 +306,12 @@ export class SiteVisitsService {
 
   // ── the lock order ────────────────────────────────────────────────────────────────────────────
 
-  /** The visit row, FOR UPDATE: the first lock of every act on an existing visit. */
+  /**
+   * The project's tree lock, then the visit row FOR UPDATE: the first locks of every act on an existing visit. A node
+   * removal holds the tree lock before it reaches this row or a place row through their ON DELETE SET NULL keys.
+   */
   private async lockVisit(tx: CommandTx, projectId: string, visitId: string): Promise<LockedVisit> {
+    await lockProjectTree(tx, projectId);
     const [visit] = await tx.$queryRaw<LockedVisit[]>(Prisma.sql`
       SELECT "id", "visitorId", "visitorName", "visitorRole", "status", "lateEndClaimedAt"
         FROM "SiteVisit" WHERE "projectId" = ${projectId} AND "id" = ${visitId}

@@ -29,9 +29,11 @@ export interface SiteVisitDto {
   lateEndedAt: string | null;
   /** Whether the late end was recorded at its receipt instead of its claimed time; null when there is no late end. */
   lateEndTimeAdjusted: boolean | null;
-  /** The places walked, in the order added; a retired row stays, marked with when it was retired. */
+  /** The places walked, by when the server took each add (to the millisecond; adds in one millisecond by id); a retired
+   *  row stays, marked with when it was retired. */
   places: SiteVisitPlaceDto[];
-  /** The people with the visitor, in the order added; a retired row stays, marked with when it was retired. */
+  /** The people with the visitor, by when the server took each add (to the millisecond; adds in one millisecond by
+   *  id); a retired row stays, marked with when it was retired. */
   attendees: SiteVisitAttendeeDto[];
 }
 

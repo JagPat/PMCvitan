@@ -94,7 +94,11 @@ Built with tests (`apps/api/test/integration/site-visits-sv1b-children.test.ts`)
   A place added after the visitor ended the visit is accepted at its receipt and marked "after the end" (V4).
 - **Events.** Each change is one `sitevisit.place_*` or `sitevisit.attendee_*` event on the visit's stream, naming
   the row (`payload.rowId`); a place add also carries the place's name. Child changes carry no notice (V6).
-- **Read.** The visit returns its places and attendees in the order added, retired rows included and marked.
+- **Read.** The visit returns its places and attendees by when the server took each add, to the millisecond (adds
+  in the same millisecond come in id order, not necessarily the order sent), retired rows included and marked.
+- **Lock order.** Every act on an existing visit (end, close and each edit) takes the project's tree lock before the
+  visit row. A node removal holds the tree lock and, once it has written an event, the event stream, and then reaches
+  visit and place rows through their ON DELETE SET NULL keys; two barrier tests reproduce the deadlock this prevents.
 - **Lock order.** The readiness lock; for a place add the tree lock, then the visit row, then the node (a node
   removal holds the tree lock and then reaches the row of every visit that started at that node, so the visit row
   before the tree lock deadlocked; a barrier test reproduces it); a member attendee's registers after the visitor's;

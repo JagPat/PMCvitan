@@ -224,4 +224,47 @@ describe('Site Visits SV1-b unit 2 — places and attendees (live PG)', () => {
     expect(res.body.places[0]).toMatchObject({ nodeId: second.id, name: second.name });
     expect((await end(consultantToken, visitId)).status).toBe(201);
   });
+
+  // A node removal that has already written an event (an unfile of another record) holds the project's event stream
+  // when its ON DELETE SET NULL reaches a visit's rows. Every act on an existing visit takes the tree lock before the
+  // visit row, so it waits behind the removal instead of holding a row the removal needs while it waits on the stream.
+  const behindRemoval = async (visitId: string, rowSql: string, rowId: string, act: () => Promise<request.Response>) => {
+    const held = gate();
+    const release = gate();
+    const removal = t.prisma.$transaction(async (q) => {
+      await q.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, treeLockKey(f.projectA.id));
+      await q.$executeRawUnsafe(`SELECT 1 FROM "ProjectEventStream" WHERE "projectId" = $1 FOR UPDATE`, f.projectA.id);
+      held.open();
+      await release.p;
+      await q.$executeRawUnsafe(rowSql, rowId);
+    }, { timeout: 30_000 });
+    await held.p;
+    const acting = act().then((r) => r);
+    expect(await waitingOn(['advisory', 'transactionid', 'tuple'])).toBe(true);
+    release.open();
+    await removal;
+    return acting;
+  };
+
+  it('a place retire waits behind a node removal that holds the event stream, without deadlock', async () => {
+    const visitId = await startVisit(consultantToken);
+    const added = await addPlace(consultantToken, visitId, second.id);
+    expect(added.status).toBe(201);
+    const placeId = added.body.places[0].id as string;
+    const res = await behindRemoval(visitId, `SELECT 1 FROM "SiteVisitPlace" WHERE "id" = $1 FOR UPDATE`, placeId,
+      () => post(consultantToken, `/${visitId}/places/${placeId}/retire`));
+    expect(res.status).toBe(201);
+    expect(res.body.places[0].retiredAt).not.toBeNull();
+    expect((await end(consultantToken, visitId)).status).toBe(201);
+  });
+
+  it('an attendee add on a visit started at a node being removed waits behind the removal, without deadlock', async () => {
+    const visitId = randomUUID();
+    expect((await post(consultantToken, '', { id: visitId, claimedAt: ago(60), nodeId: place.id })).status).toBe(201);
+    const res = await behindRemoval(visitId, `SELECT 1 FROM "SiteVisit" WHERE "id" = $1 FOR UPDATE`, visitId,
+      () => addAttendee(consultantToken, visitId, { guestName: 'Ravi (supplier)' }));
+    expect(res.status).toBe(201);
+    expect(res.body.attendees[0]).toMatchObject({ kind: 'guest', name: 'Ravi (supplier)' });
+    expect((await end(consultantToken, visitId)).status).toBe(201);
+  });
 });
