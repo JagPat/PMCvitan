@@ -46,11 +46,6 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
   const role = useStore((s) => s.role);
   // exactly the list above it on the client's screen (re-approvals and new ones waiting on this viewer)
   const waiting = useStore(useShallow(selectDecisionsNeedingViewer));
-  const rows = useMemo(() => {
-    if (!history) return logRows;
-    const above = new Set(waiting.map((d) => d.id));
-    return logRows.filter((d) => !above.has(d.id));
-  }, [history, logRows, waiting]);
   const sessionToken = useStore((s) => s.sessionToken);
   // who am I? — the JWT sub, for the requester-may-withdraw rule (null in demo mode)
   const mySub = useMemo(() => {
@@ -71,6 +66,14 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
     can('decision.withdrawChange', role)
     && d.changeRequest?.origin !== 'countersign_rejection'
     && (role === 'pmc' || (!!mySub && d.changeRequest?.requestedById === mySub));
+  // #857 Codex 4269224408 — a change the client requested on their own decision waits on them above AND is theirs
+  // to withdraw; the card above has no Withdraw, so that row stays in the history where the register offers it
+  const rows = useMemo(() => {
+    if (!history) return logRows;
+    const above = new Set(waiting.map((d) => d.id));
+    return logRows.filter((d) => !above.has(d.id) || mayWithdraw(d));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mayWithdraw reads only role and mySub
+  }, [history, logRows, waiting, role, mySub]);
   // Phase 6 task 4a — withdrawing the DECISION itself: pmc only, and only a published,
   // never-approved pending row is eligible (the service refuses everything else with a 409)
   const mayWithdrawDecision = (d: Decision): boolean =>

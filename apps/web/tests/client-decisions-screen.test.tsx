@@ -106,6 +106,17 @@ describe('the client\'s one "Decisions" screen', () => {
     expect(again.r.getByText('Decisions waiting for you')).toBeTruthy();
   });
 
+  it('a change the client requested on their own decision keeps its Withdraw in the history (Codex 4269224408)', async () => {
+    const payload = btoa(JSON.stringify({ sub: 'u-client' }));
+    const mine = dec('D-5', { status: 'change', changeRequest: { reason: 'Darker grain', costImpact: 0, timeImpactDays: 0, requestedById: 'u-client' } } as Partial<Decision>);
+    const theirs = dec('D-6', { status: 'change', changeRequest: { reason: 'Lot rejected', costImpact: 0, timeImpactDays: 0, requestedById: 'u-eng' } } as Partial<Decision>);
+    const { r } = await load({ decisions: [mine, theirs, approved('D-9')], sessionToken: `h.${payload}.s` });
+    const history = r.getByTestId('decisions-history');
+    expect(history.querySelector('[data-testid="withdraw-D-5"]')).toBeTruthy();
+    // a re-approval someone else opened stays above alone, as before
+    expect(history.querySelector('[data-testid="log-row-D-6"]')).toBeNull();
+  });
+
   it('shows a short "all caught up" line above the history when nothing waits', async () => {
     const { r } = await load({ decisions: [approved('D-9')] });
     expect(r.getByTestId('decisions-caught-up').textContent).toContain('All caught up');
