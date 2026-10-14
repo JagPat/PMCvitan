@@ -378,7 +378,9 @@ export function DailyLogScreen() {
             <div style={{ fontWeight: 600, fontSize: 13.5 }}>{T.photos(dailyLog.progress, lang)}</div>
             <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>{L.stamped[lang]}</div>
           </div>
-          <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
+          {/* No `capture`: on Android it forces the camera and hides the gallery. The stamp comes from
+              the photo's own EXIF (lib/exif.ts), so a gallery pick is stamped just as honestly. */}
+          <input ref={fileRef} type="file" accept="image/*" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
           <button onClick={() => fileRef.current?.click()} disabled={sending} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <Camera size={14} /> {L.add[lang]}
           </button>
