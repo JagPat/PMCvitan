@@ -184,7 +184,8 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
     return (
       <div className={wrap}>
         {eyebrow}
-        <div style={{ ...titleStyle, margin: '6px 0 8px' }}>{title}</div>
+        {/* inside the client's screen this boundary stands alone (#857 Codex 4268290494), so it names the screen */}
+        <div style={{ ...titleStyle, margin: '6px 0 8px' }}>{history ? 'Decisions' : title}</div>
         <ItemNotFound what="Decision" id={missingItem} onShowAll={showAll} showAllLabel="Show all decisions" />
       </div>
     );

@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectDeciderPending, selectDeciderReapproval } from '@/store/selectors';
+import { selectDeciderPending, selectDeciderReapproval, selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, Swatch, Button, LocationContext } from '@/components';
 import { Check } from '@/lib/icons';
 import { signed, type Decision } from '@vitan/shared';
@@ -27,6 +27,10 @@ export function ClientDecisionsScreen() {
   // #857 Codex 4268120376 — an old `/decisions/<id>` link naming a decision that still waits on the client marks
   // that card here, since the history below leaves it out
   const linked = useStore((s) => (withHistory && s.screen === 'decision-log' ? s.routeItem : null));
+  // #857 Codex 4268290494 — a link naming a decision the register does not (yet) hold shows ONLY the register's
+  // loading or not-found boundary, as the standalone register did: never the waiting cards or "All caught up" as if
+  // they answered it. The same check the register makes on the same rows (`selectLogDecisions`).
+  const linkUnresolved = useStore((s) => linked !== null && !selectLogDecisions(s).some((d) => d.id === linked));
 
   // U2b — one decision on its own screen, while it still waits on THIS viewer. Once it is approved
   // (or is no longer theirs) the focus is let go and the list shows what is left.
@@ -39,6 +43,14 @@ export function ClientDecisionsScreen() {
   const countLabel = `${waiting} ${waiting === 1 ? 'decision waiting' : 'decisions waiting'}`;
   // group by location so the client can work through a zone/room at a time
   const groups = groupDecisions(pending, nodes, 'location');
+
+  if (linkUnresolved) {
+    return (
+      <div className={styles.clientScreen}>
+        <DecisionLogScreen variant="history" />
+      </div>
+    );
+  }
 
   if (focused) {
     return (

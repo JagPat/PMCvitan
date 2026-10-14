@@ -73,6 +73,26 @@ describe('the client\'s one "Decisions" screen', () => {
     expect(r.getByText('Decisions waiting for you')).toBeTruthy();
   });
 
+  it('a link naming a decision the register does not hold shows only the not-found boundary (Codex 4268290494)', async () => {
+    const { useStore, r } = await load({ screen: 'decision-log', routeItem: 'D-404' });
+    expect(r.getByText('Decisions')).toBeTruthy();
+    expect(r.getByText('Show all decisions')).toBeTruthy();
+    expect(r.queryByText('Decisions waiting for you')).toBeNull();
+    expect(r.queryByTestId('approve-D-1-A')).toBeNull();
+    expect(r.queryByTestId('decisions-caught-up')).toBeNull();
+    // "Show all decisions" brings the whole screen back
+    fireEvent.click(r.getByText('Show all decisions'));
+    expect(useStore.getState().routeItem).toBeNull();
+    expect(r.getByText('Decisions waiting for you')).toBeTruthy();
+  });
+
+  it('while the decisions are still loading, a named link shows only the loading boundary (Codex 4268290494)', async () => {
+    const { r } = await load({ screen: 'decision-log', routeItem: 'D-404', decisions: [], decisionsLoad: 'loading', projectLoadState: 'loading' });
+    expect(r.queryByTestId('decisions-loading') ?? r.queryByTestId('decisions-unavailable')).toBeTruthy();
+    expect(r.queryByText('Decisions waiting for you')).toBeNull();
+    expect(r.queryByTestId('decisions-caught-up')).toBeNull();
+  });
+
   it('shows a short "all caught up" line above the history when nothing waits', async () => {
     const { r } = await load({ decisions: [approved('D-9')] });
     expect(r.getByTestId('decisions-caught-up').textContent).toContain('All caught up');
@@ -93,6 +113,10 @@ describe('the client\'s one "Decisions" screen', () => {
     expect(entry.active).toBe(true);
     expect(nav.filter((m) => /decision/i.test(m.label))).toHaveLength(1);
     expect(useStore.getState().screen).toBe('decision-log');
+    // Hindi and Gujarati name it "decisions" too, as the register was named, not "approval" (Codex 4268290505)
+    const { navLabelFor } = await import('@/lib/mobileNav');
+    expect(navLabelFor('client-decisions', 'client', 'hi')).toBe(navLabelFor('decision-log', 'pmc', 'hi'));
+    expect(navLabelFor('client-decisions', 'client', 'gu')).toBe(navLabelFor('decision-log', 'pmc', 'gu'));
   });
 
   it('the PMC keeps the Decision Log as it was', async () => {
