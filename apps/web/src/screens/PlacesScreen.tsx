@@ -566,7 +566,7 @@ function issuesFirst(list: PlacedInspection[]): PlacedInspection[] {
 /** A placed inspection's Site-Map status: open → in review → passed/failed. */
 function inspectionStatus(i: PlacedInspection): { label: string; color: string } {
   if (!i.submitted) return { label: 'Open', color: 'var(--muted)' };
-  if (!i.decided) return { label: 'In review', color: 'var(--amber-solid)' };
+  if (!i.decided) return { label: 'In review', color: 'var(--amber-text)' };
   return i.failedItems > 0 ? { label: 'Failed', color: 'var(--red-solid)' } : { label: 'Passed', color: 'var(--green-solid)' };
 }
 
