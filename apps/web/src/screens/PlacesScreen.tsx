@@ -13,6 +13,8 @@ import { stampText } from '@/lib/captureStamp';
 import { PlaceStructure } from '@/screens/PlaceStructure';
 import { PlaceWorkRecords, PlaceRecordsEmpty, type PlaceRecordSection } from '@/components/PlaceWorkRecords';
 import { SiteMapLegend } from '@/components/SiteMapLegend';
+import { SiteMapTree } from '@/components/SiteMapTree';
+import treeCss from '@/components/SiteMapTree.module.css';
 import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus, Lock } from '@/lib/icons';
@@ -131,6 +133,14 @@ export function PlacesScreen() {
     placeContents(id, nodes, decisions, drawings, photos, activities, materials, inspections).counts;
   // a count is only as known as the read behind it: a module read not yet settled (or failed with nothing
   // retained) leaves its counts unknown, never 0 (Codex 4265796887); a full photo window counts recent photos
+  // #633 unit C — the one thing a place in the desktop tree needs to say: its open issues (where this viewer
+  // sees inspections and their read has settled), else that its work is blocked
+  const treeFlag = (id: string): string | null => {
+    const open = countsFor(id).openIssues ?? 0;
+    if (canSeeInspections && inspectionsKnown && open > 0) return `${open} open ${open === 1 ? 'issue' : 'issues'}`;
+    if (activityRead === 'known' && spaceStatus(nodes, activities, phases, id).state === 'blocked') return 'Blocked';
+    return null;
+  };
   const countOpts: PlaceCountOptions = {
     inspections: !canSeeInspections ? 'hidden' : inspectionsKnown ? 'known' : 'unknown',
     activitiesKnown: activityRead === 'known',
@@ -326,7 +336,7 @@ export function PlacesScreen() {
   ];
 
   return (
-    <div className={`${styles.screen} ${styles.mid}`}>
+    <div className={`${styles.screen} ${styles.wide}`}>
       <Eyebrow>SITE MAP · BY LOCATION</Eyebrow>
       <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em', marginTop: 4 }}>Site Map</div>
       <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, maxWidth: 560 }}>
@@ -357,98 +367,101 @@ export function PlacesScreen() {
           )}
         </div>
       ) : (
-        <>
-          {/* breadcrumb — click any crumb to jump up */}
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 3, margin: '18px 0 14px', fontSize: 13 }} data-testid="place-breadcrumb">
-            {trail.map((c, i) => {
-              const last = i === trail.length - 1;
-              return (
-                <span key={c.id ?? 'root'} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                  {i > 0 && <ChevronRight size={13} color="#b8b2a6" />}
-                  <button
-                    onClick={() => setSel(c.id)}
-                    disabled={last}
-                    style={{ background: 'transparent', border: 'none', cursor: last ? 'default' : 'pointer', padding: '2px 4px', fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: last ? 700 : 500, color: last ? 'var(--ink)' : 'var(--accent)' }}
-                  >
-                    {c.name}
-                  </button>
-                </span>
-              );
-            })}
-          </div>
-
-          {/* #633 (mockup 7) — what this place holds, in words, open issues first */}
-          {active && <CountWords words={placeCountWords(total, countOpts)} testId="place-counts-here" pills />}
-
-          {/* Build the tree HERE (audit B3): the PMC adds, renames and deletes locations at the
-              place they are standing on */}
-          <PlaceStructure active={activeNode} depth={trail.length - 1} />
-
-          {/* Create AT this place. The record inherits the coordinate the user is already
-              standing on, so the form never re-asks where — the point of the Site Map is
-              that this screen already knows. Same button, same options and same forms on a
-              phone and a desktop; only the entry point's placement differs. */}
-          {canCreateHere && (
-            <div style={{ marginBottom: 18 }}>
-              <Button variant="ink" onClick={() => setCreating(true)} data-testid="place-add" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 14px', fontSize: 13 }}>
-                <Plus size={15} /> Add here
-              </Button>
-            </div>
-          )}
-
-          {/* #633 unit B — what the status colours below mean, in words */}
-          <SiteMapLegend />
-
-          {/* drill-down: child zones/rooms/objects with per-place counts — "Places inside" (mockup 7) */}
-          {children.length > 0 && (
-            <h2 data-testid="place-children-title" style={{ fontSize: 17, fontWeight: 700, margin: '0 0 10px' }}>Places inside</h2>
-          )}
-          {children.length > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, marginBottom: 22 }}>
-              {children.map((n) => {
-                const c = countsFor(n.id);
-                const st = spaceStatus(nodes, activities, phases, n.id);
+        <div className={treeCss.layout}>
+          <SiteMapTree nodes={nodes} active={active} onSelect={setSel} flag={treeFlag} />
+          <div className={treeCss.main}>
+            {/* breadcrumb — click any crumb to jump up */}
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 3, margin: '18px 0 14px', fontSize: 13 }} data-testid="place-breadcrumb">
+              {trail.map((c, i) => {
+                const last = i === trail.length - 1;
                 return (
-                  <button key={n.id} onClick={() => setSel(n.id)} data-testid={`place-node-${n.id}`} style={nodeCard}>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.12em', color: 'var(--faint)' }}>{KIND_LABEL[n.kind] ?? n.kind.toUpperCase()}</div>
-                    <div style={{ fontWeight: 600, fontSize: 14.5, marginTop: 3, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
-                      <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.name}</span>
-                      <ChevronRight size={15} color="#b8b2a6" style={{ flex: 'none' }} />
-                    </div>
-                    <CountWords words={placeCountWords(c, countOpts)} testId={`place-counts-${n.id}`} />
-                    {/* B8 — where this space stands, derived from its work (never a stored flag) */}
-                    {activityRead !== 'known' ? (
-                      <div data-testid={`place-status-${n.id}`} data-state={activityRead} style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
-                        {activityRead === 'unavailable' ? 'Status unavailable — the activities could not be loaded' : 'Loading status…'}
-                      </div>
-                    ) : st.state !== 'none' && (
-                      <div data-testid={`place-status-${n.id}`} data-state={st.state} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11, color: 'var(--muted)', flexWrap: 'wrap' }}>
-                        <span style={{ ...statusChip, ...STATUS_TONE[st.state] }}>{STATUS_LABEL[st.state]}</span>
-                        <span>{[st.phase, `${st.done}/${st.total} done`, st.blocked ? `${st.blocked} blocked` : null].filter(Boolean).join(' · ')}</span>
-                      </div>
-                    )}
-                  </button>
+                  <span key={c.id ?? 'root'} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                    {i > 0 && <ChevronRight size={13} color="#b8b2a6" />}
+                    <button
+                      onClick={() => setSel(c.id)}
+                      disabled={last}
+                      style={{ background: 'transparent', border: 'none', cursor: last ? 'default' : 'pointer', padding: '2px 4px', fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: last ? 700 : 500, color: last ? 'var(--ink)' : 'var(--accent)' }}
+                    >
+                      {c.name}
+                    </button>
+                  </span>
                 );
               })}
             </div>
-          )}
 
-          {/* Intent vs Reality — the drawing that governs this place beside the photos of
-              what's actually built. Only where a comparison is meaningful (a node with both). */}
-          {active && contents.drawings.length > 0 && contents.photos.length > 0 && (
-            <IntentReality
-              placed={contents.drawings[0]}
-              photos={contents.photos}
-              onOpenDrawing={() => openDrawing(contents.drawings[0].drawing.id, { nodeId: sel })}
-              onZoom={setZoom}
+            {/* #633 (mockup 7) — what this place holds, in words, open issues first */}
+            {active && <CountWords words={placeCountWords(total, countOpts)} testId="place-counts-here" pills />}
+
+            {/* Build the tree HERE (audit B3): the PMC adds, renames and deletes locations at the
+                place they are standing on */}
+            <PlaceStructure active={activeNode} depth={trail.length - 1} />
+
+            {/* Create AT this place. The record inherits the coordinate the user is already
+                standing on, so the form never re-asks where — the point of the Site Map is
+                that this screen already knows. Same button, same options and same forms on a
+                phone and a desktop; only the entry point's placement differs. */}
+            {canCreateHere && (
+              <div style={{ marginBottom: 18 }}>
+                <Button variant="ink" onClick={() => setCreating(true)} data-testid="place-add" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 14px', fontSize: 13 }}>
+                  <Plus size={15} /> Add here
+                </Button>
+              </div>
+            )}
+
+            {/* #633 unit B — what the status colours below mean, in words */}
+            <SiteMapLegend />
+
+            {/* drill-down: child zones/rooms/objects with per-place counts — "Places inside" (mockup 7) */}
+            {children.length > 0 && (
+              <h2 data-testid="place-children-title" style={{ fontSize: 17, fontWeight: 700, margin: '0 0 10px' }}>Places inside</h2>
+            )}
+            {children.length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, marginBottom: 22 }}>
+                {children.map((n) => {
+                  const c = countsFor(n.id);
+                  const st = spaceStatus(nodes, activities, phases, n.id);
+                  return (
+                    <button key={n.id} onClick={() => setSel(n.id)} data-testid={`place-node-${n.id}`} style={nodeCard}>
+                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.12em', color: 'var(--faint)' }}>{KIND_LABEL[n.kind] ?? n.kind.toUpperCase()}</div>
+                      <div style={{ fontWeight: 600, fontSize: 14.5, marginTop: 3, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
+                        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.name}</span>
+                        <ChevronRight size={15} color="#b8b2a6" style={{ flex: 'none' }} />
+                      </div>
+                      <CountWords words={placeCountWords(c, countOpts)} testId={`place-counts-${n.id}`} />
+                      {/* B8 — where this space stands, derived from its work (never a stored flag) */}
+                      {activityRead !== 'known' ? (
+                        <div data-testid={`place-status-${n.id}`} data-state={activityRead} style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+                          {activityRead === 'unavailable' ? 'Status unavailable — the activities could not be loaded' : 'Loading status…'}
+                        </div>
+                      ) : st.state !== 'none' && (
+                        <div data-testid={`place-status-${n.id}`} data-state={st.state} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11, color: 'var(--muted)', flexWrap: 'wrap' }}>
+                          <span style={{ ...statusChip, ...STATUS_TONE[st.state] }}>{STATUS_LABEL[st.state]}</span>
+                          <span>{[st.phase, `${st.done}/${st.total} done`, st.blocked ? `${st.blocked} blocked` : null].filter(Boolean).join(' · ')}</span>
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Intent vs Reality — the drawing that governs this place beside the photos of
+                what's actually built. Only where a comparison is meaningful (a node with both). */}
+            {active && contents.drawings.length > 0 && contents.photos.length > 0 && (
+              <IntentReality
+                placed={contents.drawings[0]}
+                photos={contents.photos}
+                onOpenDrawing={() => openDrawing(contents.drawings[0].drawing.id, { nodeId: sel })}
+                onZoom={setZoom}
+              />
+            )}
+
+            <PlaceWorkRecords
+              where={activeNode ? `At ${activeNode.name}${children.length ? ' and the places inside it' : ''}` : 'Across the whole project'}
+              sections={recordSections}
             />
-          )}
-
-          <PlaceWorkRecords
-            where={activeNode ? `At ${activeNode.name}${children.length ? ' and the places inside it' : ''}` : 'Across the whole project'}
-            sections={recordSections}
-          />
-        </>
+          </div>
+        </div>
       )}
 
       {zoom && <PhotoViewer url={zoom} onClose={() => setZoom(null)} />}
