@@ -2,13 +2,14 @@ import { useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectDeciderPending, selectDeciderReapproval, selectLogDecisions } from '@/store/selectors';
-import { Eyebrow, Swatch, Button, LocationContext } from '@/components';
+import { Eyebrow, Swatch, Button, LocationContext, ConsultationThread, EditState } from '@/components';
 import { Check } from '@/lib/icons';
 import { signed, type Decision } from '@vitan/shared';
 import { groupDecisions } from '@/lib/locationTree';
 import { DecisionFocus, ChangeRequestContext } from './DecisionFocus';
 import { DecisionLogScreen } from './DecisionLogScreen';
 import { decisionsSliceSettled } from '@/lib/notifications';
+import { useMayWithdrawChange } from '@/lib/mayWithdrawChange';
 import styles from './responsive.module.css';
 
 export function ClientDecisionsScreen() {
@@ -21,6 +22,10 @@ export function ClientDecisionsScreen() {
   const short = useStore((s) => s.short); // live project identity, not the seed
   const decisionFocus = useStore((s) => s.decisionFocus);
   const closeDecision = useStore((s) => s.closeDecision);
+  const withdrawChange = useStore((s) => s.withdrawChange);
+  // #482 follow-up — a change the viewer asked for on a decision they hold is theirs to withdraw, on its card here
+  const mayWithdraw = useMayWithdrawChange();
+  const withdrawFor = (d: Decision) => (mayWithdraw(d) ? () => withdrawChange(d.id) : undefined);
   // QA check 14 Oct 2026 (#482): the client's one "Decisions" screen — what waits on them first, then the
   // history (the register) below, in place of two menu entries. Other viewers who reach this approval route as
   // a decider keep the list alone.
@@ -94,7 +99,7 @@ export function ClientDecisionsScreen() {
               </span>
             </div>
             {reapprovals.map((d) => (
-              <PendingCard key={d.id} d={d} subLabel={d.room} onApprove={(i) => openApprove(d.id, i)} current={linked === d.id} />
+              <PendingCard key={d.id} d={d} subLabel={d.room} onApprove={(i) => openApprove(d.id, i)} onWithdraw={withdrawFor(d)} current={linked === d.id} />
             ))}
           </div>
         )}
@@ -108,7 +113,7 @@ export function ClientDecisionsScreen() {
               </div>
             )}
             {g.rows.map(({ decision, subLabel }) => (
-              <PendingCard key={decision.id} d={decision} subLabel={subLabel} onApprove={(i) => openApprove(decision.id, i)} current={linked === decision.id} />
+              <PendingCard key={decision.id} d={decision} subLabel={subLabel} onApprove={(i) => openApprove(decision.id, i)} onWithdraw={withdrawFor(decision)} current={linked === decision.id} />
             ))}
           </div>
         ))}
@@ -130,7 +135,7 @@ export function ClientDecisionsScreen() {
 }
 
 /** One pending decision the client acts on — full location breadcrumb + option cards. */
-function PendingCard({ d, subLabel, onApprove, current = false }: { d: Decision; subLabel: string; onApprove: (optionIndex: number) => void; current?: boolean }) {
+function PendingCard({ d, subLabel, onApprove, onWithdraw, current = false }: { d: Decision; subLabel: string; onApprove: (optionIndex: number) => void; onWithdraw?: () => void; current?: boolean }) {
   useEffect(() => {
     if (current) document.querySelector(`[data-testid="pending-card-${CSS.escape(d.id)}"]`)?.scrollIntoView({ block: 'center' });
   }, [current, d.id]);
@@ -147,6 +152,19 @@ function PendingCard({ d, subLabel, onApprove, current = false }: { d: Decision;
         <LocationContext nodeId={d.nodeId} fallback={subLabel || d.room} compact testId={`client-decision-place-${d.id}`} />
         <div style={{ fontWeight: 700, fontSize: 18, marginTop: 3 }}>{d.title}</div>
         {d.status === 'change' && d.changeRequest && <ChangeRequestContext d={d} />}
+        {/* #482 follow-up — the advice on this choice, where the client decides it: asking a team member, and the
+            reply box when the client was the one asked. Renders nothing when there is no thread and nothing to do. */}
+        <ConsultationThread decision={d} />
+        {onWithdraw && (
+          <div style={{ marginTop: 10 }}>
+            <EditState
+              state="workflow"
+              reason="You asked for this change. Withdraw it to keep the approved choice."
+              action={{ label: 'Withdraw request', onClick: onWithdraw, testId: `withdraw-${d.id}` }}
+              testId={`edit-state-${d.id}`}
+            />
+          </div>
+        )}
       </div>
       <div style={{ padding: '12px 16px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {d.options.map((o, i) => {
