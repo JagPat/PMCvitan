@@ -185,6 +185,22 @@ describe('Site Visits SV1-b — start, end and close (live PG)', () => {
     await finish(consultantToken, open);
   });
 
+  it('an open page continues past a visit that ended between pages (Codex 4276569151)', async () => {
+    const older = randomUUID();
+    expect((await start(consultantToken, { id: older, claimedAt: ago(60 * 24 * 4) })).status).toBe(201);
+    const newer = randomUUID();
+    expect((await start(pmcToken, { id: newer, claimedAt: ago(60 * 24 * 2) })).status).toBe(201);
+    const page = (query: string) => http().get(`${base()}${query}`).set('Authorization', `Bearer ${clientToken}`);
+    const first: string[] = (await page('?status=open&limit=200')).body.map((v: { id: string }) => v.id);
+    expect(first.indexOf(newer)).toBeLessThan(first.indexOf(older));
+    // the last row of the previous page ends before the next page is asked for
+    await finish(pmcToken, newer);
+    const next = await page(`?status=open&before=${newer}`);
+    expect(next.status).toBe(200);
+    expect(next.body.map((v: { id: string }) => v.id)).toContain(older);
+    await finish(consultantToken, older);
+  });
+
   it('a retried start with the same Idempotency-Key lands once', async () => {
     const id = randomUUID();
     const key = `sv1b-${randomUUID()}`;
