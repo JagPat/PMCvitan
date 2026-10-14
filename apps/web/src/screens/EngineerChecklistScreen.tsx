@@ -397,8 +397,6 @@ export function EngineerChecklistScreen() {
           disabled={frozen}
           data-testid="submit-inspection"
           data-guide="submit-inspection"
-          // the guide finishes only once the submit is accepted or queued, never on a refused press
-          data-guide-done={checklist.submitted || submissionStatus !== 'idle' ? 'true' : undefined}
           data-submission={checklist.submitted ? 'submitted' : submissionStatus}
           style={{
             width: '100%',

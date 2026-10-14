@@ -6,7 +6,8 @@ import { projectDataUsable } from '@/store/projectScope';
 import { guidesFor, type Guide } from './guides';
 import { readGuidesDone, markGuideDone } from './guideDone';
 import { useGuideState } from './guideState';
-import { findGuideTarget, findStepTarget, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
+import { findGuideTarget, findStepTarget, GUIDE_OUTCOME_WAIT_MS, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
+import { subscribeGuideOutcome } from './outcomes';
 import { GUIDE_TIPS, GUIDE_WORDS } from './words';
 import styles from './Guide.module.css';
 
@@ -33,8 +34,8 @@ function sameBox(a: Box | null, b: Box | null): boolean {
  *
  * Mounted once in the shell. While a guide runs it dims the screen around the step's real control,
  * shows one short tip beside it with a one-tap Skip, and moves to the next step when the person
- * presses that control, or, for a step that must really happen (a photo attached, a submit accepted),
- * when the control marks itself `data-guide-done`. Nothing blocks the screen: the dimming lets every tap through, so the person
+ * presses that control; for a step that must really happen, only once it has: a photo attached (the
+ * control marks itself `data-guide-done`), or a submit or issue the store reports as accepted. Nothing blocks the screen: the dimming lets every tap through, so the person
  * is always doing the real task, never a demo of it.
  *
  * - The first time a person reaches a guided screen, its first unfinished guide starts by itself,
@@ -44,7 +45,9 @@ function sameBox(a: Box | null, b: Box | null): boolean {
  * - Leaving the screen, signing out or a project reload ends the run without marking it done, so it
  *   comes back next time.
  * - When a step's control goes away (a menu closed, a modal cancelled) the guide steps back to the
- *   latest earlier step whose control is still there, so the person can pick the task up again.
+ *   latest earlier step whose control is still there, so the person can pick the task up again; with
+ *   none left (the first control itself went away) the run ends, not done, and "Guide me" offers it.
+ *   While a pressed action's outcome is awaited it neither steps back nor ends.
  */
 export function GuideHost() {
   const role = useStore((s) => s.role);
@@ -119,6 +122,11 @@ export function GuideHost() {
       // earlier step whose control is still there. Hidden meanwhile.
       setBox(null);
       const now = Date.now();
+      // a pressed action is on its way: its control may leave while it is (a submitted checklist)
+      if (g.run.waitUntil !== null && now < g.run.waitUntil) {
+        missing.current = null;
+        return;
+      }
       if (!missing.current || missing.current.step !== step || missing.current.guideId !== guide.id) {
         missing.current = { guideId: guide.id, step, since: now };
         return;
@@ -132,6 +140,9 @@ export function GuideHost() {
         show(el);
         return;
       }
+      // nothing of this guide is on screen any more: end the run (not done) so "Guide me" can offer it
+      missing.current = null;
+      g.stop();
     };
     tick();
     const id = window.setInterval(tick, GUIDE_TICK_MS);
@@ -167,11 +178,32 @@ export function GuideHost() {
       const pressed = target?.closest(`[data-guide="${current.target}"]`);
       if (!pressed) return;
       if (current.keyed && pressed.getAttribute('data-guide-key') !== g.run.key) return;
+      // an action that can fail waits for the store's report (this runs before the control's own
+      // handler, so even a report made at once, as in demo mode, finds the wait in place)
+      if (current.until === 'outcome') {
+        if (!(pressed as HTMLButtonElement).disabled) g.setWait(Date.now() + GUIDE_OUTCOME_WAIT_MS);
+        return;
+      }
       completeStep(key, g, pressed.getAttribute('data-guide-key'));
     };
     document.addEventListener('click', onClick, true);
     return () => document.removeEventListener('click', onClick, true);
   }, [key]);
+
+  // the store's report on an `outcome` step: success moves the guide on; failure ends the wait, so a
+  // control that went away (a dialog closed on a refusal) steps the guide back as usual
+  useEffect(
+    () =>
+      subscribeGuideOutcome((outcome) => {
+        const g = useGuideState.getState();
+        if (!g.run) return;
+        const current = g.run.guide.steps[g.run.step]!;
+        if (current.until !== 'outcome' || !current.outcome) return;
+        if (outcome === current.outcome.ok) completeStep(key, g, null);
+        else if (outcome === current.outcome.failed) g.setWait(null);
+      }),
+    [key],
+  );
 
   // "Guide me" replays a guide: that is this visit's one start, so nothing auto-starts after it
   useEffect(() => {

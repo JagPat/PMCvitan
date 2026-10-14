@@ -11,6 +11,8 @@ export interface GuideRun {
   step: number;
   /** the `data-guide-key` of the control pressed in an earlier step, for a `keyed` step */
   key: string | null;
+  /** after an `outcome` step's press: wait for the store's report until this time (ms), not stepping back */
+  waitUntil: number | null;
 }
 
 interface GuideState {
@@ -20,14 +22,17 @@ interface GuideState {
   start: (guide: Guide) => void;
   setStep: (step: number, key?: string | null) => void;
   stop: () => void;
+  /** start (a time in ms) or end (null) the wait for an `outcome` step's report */
+  setWait: (until: number | null) => void;
   setOffer: (guide: Guide | null) => void;
 }
 
 export const useGuideState = create<GuideState>()((set) => ({
   run: null,
   offer: null,
-  start: (guide) => set({ run: { guide, step: 0, key: null } }),
-  setStep: (step, key) => set((s) => (s.run ? { run: { ...s.run, step, key: key === undefined ? s.run.key : key } } : s)),
+  start: (guide) => set({ run: { guide, step: 0, key: null, waitUntil: null } }),
+  setStep: (step, key) => set((s) => (s.run ? { run: { ...s.run, step, key: key === undefined ? s.run.key : key, waitUntil: null } } : s)),
   stop: () => set({ run: null }),
+  setWait: (waitUntil) => set((s) => (s.run ? { run: { ...s.run, waitUntil } } : s)),
   setOffer: (offer) => set((s) => (s.offer === offer ? s : { offer })),
 }));

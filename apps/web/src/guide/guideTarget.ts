@@ -6,6 +6,9 @@ export const GUIDE_TICK_MS = 300;
 /** how long a step's control may be missing before the guide steps back (a menu still opening is not gone) */
 export const GUIDE_REWIND_MS = 900;
 
+/** how long the guide waits for a pressed action's outcome before treating it as not coming */
+export const GUIDE_OUTCOME_WAIT_MS = 15_000;
+
 export interface Box {
   top: number;
   left: number;

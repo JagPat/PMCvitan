@@ -1,12 +1,13 @@
 import type { Role, ScreenKey } from '@vitan/shared';
 import type { GuideTip } from './words';
+import type { GuideOutcome } from './outcomes';
 
 /**
  * #482 (board decision 14 Oct) — the in-app guide: coach marks on the live screen.
  *
  * A guide is a short list of steps. Each step points at ONE real control, found by its stable
  * `data-guide` attribute (never a CSS class), and says one short line about it. The guide moves on
- * when the person presses that control, so it follows the work instead of describing it.
+ * when the person presses that control (or, for an action that can fail, when it succeeds), so it follows the work instead of describing it.
  *
  * `screen` is where the guide shows itself the first time and where "Guide me" offers it again.
  * `roles` keeps each guide to the people who can actually do the task (the policy decides that;
@@ -18,10 +19,16 @@ export interface GuideStep {
   tip: GuideTip;
   /**
    * When the step is complete: `press` (default) when the control is pressed; `done` when the control
-   * says so with `data-guide-done="true"` (a photo actually attached, a submit actually accepted or
-   * queued), so a cancelled picker or a refused submit does not move the guide on.
+   * says so with `data-guide-done="true"` (a photo actually attached), so a cancelled picker does not
+   * move the guide on; `outcome` when the store reports the action really succeeded (see `outcome`).
    */
-  until?: 'press' | 'done';
+  until?: 'press' | 'done' | 'outcome';
+  /**
+   * For `until: 'outcome'`: the store's report that the pressed action succeeded (`ok`) or did not
+   * (`failed`). Between the press and the report the guide waits instead of stepping back, because the
+   * control may leave the screen while the request is on its way; a failure ends that wait.
+   */
+  outcome?: { ok: GuideOutcome; failed: GuideOutcome };
   /** point at the control carrying the same `data-guide-key` as the one pressed in an earlier step
    *  (the photo button of the item just failed, not of another failed item) */
   keyed?: boolean;
@@ -43,7 +50,7 @@ export const GUIDES: readonly Guide[] = [
     steps: [
       { target: 'mark-fail', tip: 'issueMarkFail' },
       { target: 'fail-photo', tip: 'issueFailPhoto', keyed: true, until: 'done' },
-      { target: 'submit-inspection', tip: 'issueSubmit', until: 'done' },
+      { target: 'submit-inspection', tip: 'issueSubmit', until: 'outcome', outcome: { ok: 'inspection-submitted', failed: 'inspection-submit-failed' } },
     ],
   },
   {
@@ -54,7 +61,7 @@ export const GUIDES: readonly Guide[] = [
     steps: [
       { target: 'add', tip: 'issueAdd' },
       { target: 'create-inspection', tip: 'issueAskCheck' },
-      { target: 'issue-checklist', tip: 'issueSend' },
+      { target: 'issue-checklist', tip: 'issueSend', until: 'outcome', outcome: { ok: 'checklist-issued', failed: 'checklist-issue-failed' } },
     ],
   },
 ];

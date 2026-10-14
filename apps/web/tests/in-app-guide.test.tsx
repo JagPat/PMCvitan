@@ -323,6 +323,152 @@ describe('the PMC is guided from + to issuing a check', () => {
   });
 });
 
+/** an engineer whose checklist is ready to submit, on the guide's Submit step */
+async function engineerAtSubmit() {
+  const e = await engineer();
+  tick();
+  press(e.view.container.querySelectorAll('[data-guide="mark-fail"]')[1]!);
+  tick();
+  attachPhoto(e.useStore, 1);
+  tick();
+  act(() => {
+    e.useStore.setState((st) => ({
+      checklist: st.checklist && { ...st.checklist, items: st.checklist.items.map((it, j) => ({ ...it, state: it.state ?? 'pass', note: j === 1 ? 'Gap at the corner' : it.note })) },
+    }));
+  });
+  expect(step()).toBe('2');
+  return e;
+}
+
+/** a PMC on the guide's last step, inside a filled "Issue checklist" form */
+async function pmcAtIssue() {
+  const s = await setup('pmc', 'dashboard');
+  s.useStore.setState({ nodes: [{ id: 'gf', parentId: null, name: 'Ground Floor', kind: 'zone', order: 0 }] } as never);
+  const { CreateControl } = await import('@/layout/CreateControl');
+  const view = render(<><s.GuideHost /><CreateControl /></>);
+  tick();
+  press(view.getByTestId('create-fab'));
+  tick();
+  press(document.querySelector('[data-guide="create-inspection"]')!);
+  tick();
+  expect(step()).toBe('2');
+  fireEvent.change(view.getByTestId('chk-title'), { target: { value: 'Waterproofing' } });
+  fireEvent.change(view.getByTestId('chk-item-0'), { target: { value: 'Second coat' } });
+  // the form opened from the + inherits no place: pick the one zone
+  fireEvent.change(view.getByTestId('chk-loc-select-zone'), { target: { value: 'gf' } });
+  expect(document.querySelector<HTMLButtonElement>('[data-guide="issue-checklist"]')?.disabled).toBe(false);
+  return { ...s, view };
+}
+
+describe('a step that can fail finishes only when it really succeeds (review round 2)', () => {
+  it('an online submit that fails keeps the engineer on Submit; the guide waits while it is on its way', async () => {
+    const { useStore } = await engineerAtSubmit();
+    let fail!: (e: Error) => void;
+    const gw = { submitInspection: vi.fn(() => new Promise((_, reject) => { fail = reject; })) };
+    act(() => {
+      useStore.getState()._setGateway(gw as never);
+      useStore.setState({ online: true });
+    });
+    press(document.querySelector('[data-testid="submit-inspection"]')!);
+    expect(gw.submitInspection).toHaveBeenCalledTimes(1);
+    tick(2000);
+    // sending: not finished, and not given up on
+    expect(done()).toEqual([]);
+    const { useGuideState } = await import('@/guide/guideState');
+    expect(useGuideState.getState().run?.step).toBe(2);
+    await act(async () => { fail(new Error('offline')); await Promise.resolve(); });
+    tick();
+    expect(done()).toEqual([]);
+    expect(step()).toBe('2');
+    expect(useStore.getState().submission.status).toBe('idle');
+  });
+
+  it('a submit saved offline (queued) finishes the guide', async () => {
+    const { useStore } = await engineerAtSubmit();
+    act(() => {
+      useStore.getState()._setGateway({} as never);
+      useStore.setState({ online: false });
+    });
+    press(document.querySelector('[data-testid="submit-inspection"]')!);
+    expect(useStore.getState().submission.status).toBe('queued');
+    tick();
+    expect(tip()).toBeNull();
+    expect(done()).toEqual(['raise-issue-engineer']);
+  });
+
+  it('"Issue to engineer" refused (no server in demo) does not finish the PMC guide; it steps back to +', async () => {
+    const { useStore } = await pmcAtIssue();
+    expect(useStore.getState().nodes).toHaveLength(1);
+    press(document.querySelector('[data-guide="issue-checklist"]')!);
+    tick(400);
+    tick(1000);
+    expect(done()).toEqual([]);
+    expect(step()).toBe('0');
+  });
+
+  it('"Issue to engineer" online: the guide waits while it is sent, a failure steps back, a success finishes', async () => {
+    const { useStore } = await pmcAtIssue();
+    let refuse!: (e: Error) => void;
+    const gw = { createInspection: vi.fn(() => new Promise((_, reject) => { refuse = reject; })) };
+    act(() => { useStore.getState()._setGateway(gw as never); });
+    const { useGuideState } = await import('@/guide/guideState');
+    // the form closes at once, whatever the server will say
+    press(document.querySelector('[data-guide="issue-checklist"]')!);
+    expect(gw.createInspection).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-guide="issue-checklist"]')).toBeNull();
+    tick(2000);
+    expect(useGuideState.getState().run?.step).toBe(2);
+    expect(done()).toEqual([]);
+    // refused: the wait ends and, with the form gone, the guide steps back to +
+    await act(async () => { refuse(new Error('refused')); await Promise.resolve(); await Promise.resolve(); });
+    tick(400);
+    tick(1000);
+    expect(useGuideState.getState().run?.step).toBe(0);
+    expect(done()).toEqual([]);
+    // accepted on another go (what the store reports when the server takes it): done
+    const { emitGuideOutcome } = await import('@/guide/outcomes');
+    act(() => { useGuideState.getState().setStep(2); });
+    act(() => { emitGuideOutcome('checklist-issued'); });
+    expect(useGuideState.getState().run).toBeNull();
+    expect(done()).toEqual(['raise-issue-pmc']);
+  });
+
+  it('the store reports a real issue outcome: refused without a server, and the server\'s answer when there is one', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome } = await import('@/guide/outcomes');
+    const seen: string[] = [];
+    subscribeGuideOutcome((o) => seen.push(o));
+    const input = { title: 'T', zone: 'Z', items: ['a'] };
+    s.useStore.getState().issueChecklist(input);
+    expect(seen).toEqual(['checklist-issue-failed']);
+    act(() => { s.useStore.getState()._setGateway({ createInspection: vi.fn().mockRejectedValue(new Error('no')) } as never); });
+    s.useStore.getState().issueChecklist(input);
+    await vi.waitFor(() => expect(seen).toEqual(['checklist-issue-failed', 'checklist-issue-failed']));
+  });
+});
+
+describe('a guide whose first control goes away ends instead of hanging (review round 2)', () => {
+  it('the checklist leaves while on the first step: the run ends, not done, and "Guide me" offers it when it is back', async () => {
+    const { useStore, view } = await engineer();
+    tick();
+    expect(step()).toBe('0');
+    const c = useStore.getState().checklist;
+    act(() => { useStore.setState({ checklist: null, openChecklists: [] }); });
+    tick(400);
+    tick(1000);
+    const { useGuideState } = await import('@/guide/guideState');
+    expect(useGuideState.getState().run).toBeNull();
+    expect(done()).toEqual([]);
+    act(() => { useStore.setState({ checklist: c, openChecklists: c ? [c] : [] }); });
+    tick();
+    // this visit's automatic start is used up; the replay is one tap away
+    expect(tip()).toBeNull();
+    press(view.getByTestId('guide-me'));
+    tick();
+    expect(step()).toBe('0');
+  });
+});
+
 describe('storage that refuses is never an error', () => {
   it('a throwing localStorage still shows the guide and Skip still closes it', async () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
