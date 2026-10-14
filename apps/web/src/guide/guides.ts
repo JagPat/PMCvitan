@@ -1,6 +1,7 @@
 import type { Role, ScreenKey } from '@vitan/shared';
 import type { GuideTip } from './words';
 import type { GuideOutcome } from './outcomes';
+import { useStore } from '@/store/store';
 
 /**
  * #482 (board decision 14 Oct) — the in-app guide: coach marks on the live screen.
@@ -29,8 +30,15 @@ export interface GuideStep {
    * control may leave the screen while the request is on its way; a failure ends that wait.
    */
   outcome?: { ok: GuideOutcome; failed: GuideOutcome };
+  /**
+   * For `until: 'outcome'`: true when the store already shows the pressed action done, however that
+   * became known (a live refresh can show a checklist submitted before the request's own answer comes
+   * back, and that answer is then dropped). Checked only while the guide is waiting after the press.
+   */
+  settled?: (key: string | null) => boolean;
   /** point at the control carrying the same `data-guide-key` as the one pressed in an earlier step
-   *  (the photo button of the item just failed, not of another failed item) */
+   *  (the photo button of the item just failed, not of another failed item), or the key of the record
+   *  it belongs to (that checklist's Submit); an `outcome` for another record does not count */
   keyed?: boolean;
 }
 
@@ -50,7 +58,14 @@ export const GUIDES: readonly Guide[] = [
     steps: [
       { target: 'mark-fail', tip: 'issueMarkFail' },
       { target: 'fail-photo', tip: 'issueFailPhoto', keyed: true, until: 'done' },
-      { target: 'submit-inspection', tip: 'issueSubmit', until: 'outcome', outcome: { ok: 'inspection-submitted', failed: 'inspection-submit-failed' } },
+      {
+        target: 'submit-inspection',
+        tip: 'issueSubmit',
+        keyed: true,
+        until: 'outcome',
+        outcome: { ok: 'inspection-submitted', failed: 'inspection-submit-failed' },
+        settled: checklistSubmitted,
+      },
     ],
   },
   {
@@ -65,6 +80,15 @@ export const GUIDES: readonly Guide[] = [
     ],
   },
 ];
+
+/** The run's key is `<checklist id>:<item>`: that checklist is submitted once it is no longer out on site. */
+function checklistSubmitted(key: string | null): boolean {
+  if (key === null) return false;
+  const id = key.split(':')[0];
+  const s = useStore.getState();
+  const open = s.openChecklists.some((c) => c.id === id) || (s.checklist?.id === id && !s.checklist.submitted);
+  return !open;
+}
 
 /** The guides this role can be shown on this screen, in order. */
 export function guidesFor(role: Role, screen: ScreenKey): readonly Guide[] {

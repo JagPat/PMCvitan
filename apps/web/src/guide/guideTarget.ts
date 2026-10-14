@@ -13,13 +13,27 @@ export interface Box {
   height: number;
   /** the dialog the control is in, if any: it already dims the page, and its focus trap must reach Skip */
   dialog: HTMLElement | null;
+  /** the viewport when measured: the tip goes below or above the control by the room left in it, so a
+   *  resize (or an on-screen keyboard) that leaves the control where it was still re-places the tip */
+  vw: number;
+  vh: number;
+}
+
+/**
+ * Does a control's `data-guide-key` belong to the run's key? Equal keys match, and so does a control
+ * keyed by the record the run's key is part of: the Submit of checklist `C` (key `C`) belongs to a run
+ * that failed item `C:3`.
+ */
+export function guideKeyMatches(elKey: string | null, runKey: string | null): boolean {
+  if (elKey === null || runKey === null) return false;
+  return elKey === runKey || runKey.startsWith(`${elKey}:`);
 }
 
 /** The first SHOWN control carrying this `data-guide` value: the phone and desktop shells each render
  *  their own Add button and hide the other with CSS, so the hidden twin must not win. */
 export function findGuideTarget(name: string, key: string | null = null): HTMLElement | null {
   for (const el of document.querySelectorAll<HTMLElement>(`[data-guide="${name}"]`)) {
-    if (key !== null && el.getAttribute('data-guide-key') !== key) continue;
+    if (key !== null && !guideKeyMatches(el.getAttribute('data-guide-key'), key)) continue;
     if (el.getClientRects().length > 0) return el;
   }
   return null;
