@@ -257,6 +257,10 @@ export interface NewActivityInput {
   zone?: string;
   plannedStart: number;
   plannedEnd: number;
+  // #827: the real civil dates the picker chose (YYYY-MM-DD). When sent, the server stores them and
+  // derives the day offsets from the project's schedule anchor; the offsets above are sent to match
+  plannedStartDate?: string;
+  plannedEndDate?: string;
   phaseId?: string | null;
   decisionId?: string | null;
   nodeId?: string | null; // location spine: where this work happens
