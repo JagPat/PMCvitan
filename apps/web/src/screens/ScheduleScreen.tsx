@@ -2,10 +2,11 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type C
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { gatesFor, activityReady, activitiesSettledForLinks, scheduleStatusCounts, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions, type GateVM } from '@/store/selectors';
-import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext, EditState, ConfirmDialog, ItemNotFound } from '@/components';
+import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext, EditState, ConfirmDialog, ItemNotFound, DatePicker, inclusiveDays } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
-import { gateColor, can, diffCivilDays, type Activity, type Phase, type Gate } from '@vitan/shared';
+import { gateColor, can, diffCivilDays, addCivilDays, type Activity, type Phase, type Gate } from '@vitan/shared';
+import { todayCivil } from '@/lib/civilDate';
 import type { AppState } from '@/store/store';
 import { activitiesReadMode, type NewActivityInput } from '@/data/apiGateway';
 import { labelOf, plannedWindow } from '@/lib/activityDates';
@@ -714,6 +715,21 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
   const [zone, setZone] = useState(activity?.zone ?? '');
   const [ps, setPs] = useState(String(activity?.ps ?? 0));
   const [pe, setPe] = useState(String(activity?.pe ?? 7));
+  // #827 (mockup "PlanDates"): with a schedule anchor the plan window is picked on a calendar as real
+  // dates; a project without one keeps the day-number boxes, the only unit it can store
+  const anchor = useStore((s) => s.scheduleStartDate);
+  const timeZone = useStore((s) => s.timeZone);
+  const today = todayCivil(timeZone);
+  const [startIso, setStartIso] = useState(() => {
+    if (!anchor) return '';
+    if (activity) return activity.plannedStartDate ?? addCivilDays(anchor, activity.ps);
+    return today > anchor ? today : anchor;
+  });
+  const [endIso, setEndIso] = useState(() => {
+    if (!anchor) return '';
+    if (activity) return activity.plannedEndDate ?? addCivilDays(anchor, activity.pe);
+    return addCivilDays(today > anchor ? today : anchor, 7);
+  });
   const [phaseId, setPhaseId] = useState(activity?.phaseId ?? '');
   const [decisionId, setDecisionId] = useState(activity?.decisionId ?? '');
   const [nodeId, setNodeId] = useState<string | null>(activity?.nodeId ?? null);
@@ -721,8 +737,8 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
   const [gt, setGt] = useState<Gate>(activity?.gt ?? 'na');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
-  const psN = parseInt(ps, 10);
-  const peN = parseInt(pe, 10);
+  const psN = anchor ? diffCivilDays(anchor, startIso) : parseInt(ps, 10);
+  const peN = anchor ? diffCivilDays(anchor, endIso) : parseInt(pe, 10);
   const ready = name.trim() && Number.isFinite(psN) && Number.isFinite(peN) && peN >= psN && psN >= 0;
 
   const save = () => {
@@ -732,6 +748,7 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
       zone: zone.trim(),
       plannedStart: psN,
       plannedEnd: peN,
+      ...(anchor ? { plannedStartDate: startIso, plannedEndDate: endIso } : {}),
       phaseId: phaseId || null,
       decisionId: decisionId || null,
       nodeId: nodeId,
@@ -763,17 +780,32 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
     <Modal onClose={onClose} maxWidth={480} labelledBy="plan-act-title">
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
         <div id="plan-act-title" style={{ fontWeight: 700, fontSize: 17 }}>{activity ? `Edit ${activity.id}` : 'Plan activity'}</div>
-        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          Planned dates are day numbers on the schedule timeline; the bar renders from them.
-        </div>
+        {!anchor && (
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
+            Planned dates are day numbers on the schedule timeline; the bar renders from them.
+          </div>
+        )}
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Activity (e.g. Master Bath Tiling)" style={{ ...fldS, marginTop: 14, width: '100%' }} data-testid="act-name" />
         <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone (free text — or pick a location below)" style={{ ...fldS, marginTop: 10, width: '100%' }} />
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', color: 'var(--muted)', margin: '12px 0 6px' }}>LOCATION (OPTIONAL)</div>
         <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="act-loc" />
-        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-          <label style={lblS}>Plan start (day)<input value={ps} onChange={(e) => setPs(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
-          <label style={lblS}>Plan end (day)<input value={pe} onChange={(e) => setPe(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
-        </div>
+        {anchor ? (
+          <>
+            <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'flex-start' }}>
+              <DatePicker label="Starts" value={startIso} min={anchor} today={today} testId="act-start"
+                onChange={(iso) => { setStartIso(iso); if (endIso < iso) setEndIso(iso); }} />
+              <DatePicker label="Ends" value={endIso} min={startIso} today={today} testId="act-end" onChange={setEndIso} />
+            </div>
+            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 6 }} data-testid="act-span">
+              {inclusiveDays(startIso, endIso) === 1 ? '1 day' : `${inclusiveDays(startIso, endIso)} days`}
+            </div>
+          </>
+        ) : (
+          <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+            <label style={lblS}>Plan start (day)<input value={ps} onChange={(e) => setPs(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
+            <label style={lblS}>Plan end (day)<input value={pe} onChange={(e) => setPe(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
           <label style={lblS}>Phase
             <select value={phaseId} onChange={(e) => setPhaseId(e.target.value)} style={{ ...fldS, width: '100%' }}>
