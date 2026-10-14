@@ -135,6 +135,19 @@ describe('the client\'s one "Decisions" screen', () => {
     expect(card.querySelector('[data-testid="consultation-respond-D-7"]')).toBeTruthy();
   });
 
+  it('a decision opened on its own (a notice or a link) carries the same advice thread and Withdraw request', async () => {
+    const mine = dec('D-5', {
+      status: 'change', approvalCycle: 0,
+      changeRequest: { reason: 'Darker grain', costImpact: 0, timeImpactDays: 0, requestedById: 'u-client' },
+      consultations: [{ id: 'c1', consulteeMembershipId: 'm-u-client', consulteeUserId: 'u-client', requestedById: 'u-pmc', question: 'Keep the veneer?', openCycle: 0, requestedAt: new Date().toISOString() }],
+    } as Partial<Decision>);
+    // the DEV_AUTH connection records the signed-in identity as sessionUserId and leaves sessionToken empty
+    const { r } = await load({ decisions: [mine], sessionUserId: 'u-client', sessionToken: null, decisionFocus: 'D-5' });
+    const focus = r.getByTestId('decision-focus');
+    expect(focus.querySelector('[data-testid="consultation-respond-D-5"]')).toBeTruthy();
+    expect(focus.querySelector('[data-testid="withdraw-D-5"]')?.textContent).toContain('Withdraw request');
+  });
+
   it('shows a short "all caught up" line above the history when nothing waits', async () => {
     const { r } = await load({ decisions: [approved('D-9')] });
     expect(r.getByTestId('decisions-caught-up').textContent).toContain('All caught up');

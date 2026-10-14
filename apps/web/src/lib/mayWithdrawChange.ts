@@ -14,16 +14,19 @@ import { can, type Decision } from '@vitan/shared';
  */
 export function useMayWithdrawChange(): (d: Decision) => boolean {
   const role = useStore((s) => s.role);
+  const sessionUserId = useStore((s) => s.sessionUserId);
   const sessionToken = useStore((s) => s.sessionToken);
-  // who am I? — the JWT sub, for the requester-may-withdraw rule (null in demo mode)
+  // who am I? — the signed-in identity the audience and consultation rules read (`sessionUserId`, which the
+  // DEV_AUTH connection also records), else the session token's subject; null in demo mode
   const mySub = useMemo(() => {
+    if (sessionUserId) return sessionUserId;
     if (!sessionToken) return null;
     try {
       return (JSON.parse(atob(sessionToken.split('.')[1])) as { sub?: string }).sub ?? null;
     } catch {
       return null;
     }
-  }, [sessionToken]);
+  }, [sessionUserId, sessionToken]);
   return useMemo(
     () => (d: Decision): boolean =>
       can('decision.withdrawChange', role)

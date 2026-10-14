@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/store';
-import { Swatch, LocationContext } from '@/components';
+import { Swatch, LocationContext, ConsultationThread, EditState } from '@/components';
+import { useMayWithdrawChange } from '@/lib/mayWithdrawChange';
 import { ChevronLeft, Lock } from '@/lib/icons';
 import {
   clientDecisionApprove,
@@ -50,6 +51,7 @@ export function DecisionFocus({ d, reopened }: { d: Decision; reopened: boolean 
           {d.changeRequest && <ChangeRequestContext d={d} />}
         </>
       )}
+      <WaitingCardActions d={d} />
 
       <div className={styles.options} role="radiogroup" aria-label={d.title}>
         {d.options.map((o, i) => (
@@ -107,5 +109,28 @@ export function ChangeRequestContext({ d }: { d: Decision }) {
         {cr.timeImpactDays === 0 ? 'no schedule impact' : `${cr.timeImpactDays} day${cr.timeImpactDays === 1 ? '' : 's'}`}
       </div>
     </div>
+  );
+}
+
+/** #482 follow-up — what the client may do on a decision waiting on them besides approving it, the same on its card
+ *  in the list and on the one-decision screen: read the advice thread and answer a question put to them (the
+ *  component offers asking only to the roles allowed to ask), and withdraw a change they asked for themselves. */
+export function WaitingCardActions({ d }: { d: Decision }) {
+  const withdrawChange = useStore((s) => s.withdrawChange);
+  const mayWithdraw = useMayWithdrawChange();
+  return (
+    <>
+      <ConsultationThread decision={d} />
+      {mayWithdraw(d) && (
+        <div style={{ marginTop: 10 }}>
+          <EditState
+            state="workflow"
+            reason="You asked for this change. Withdraw it to keep the approved choice."
+            action={{ label: 'Withdraw request', onClick: () => withdrawChange(d.id), testId: `withdraw-${d.id}` }}
+            testId={`edit-state-${d.id}`}
+          />
+        </div>
+      )}
+    </>
   );
 }
