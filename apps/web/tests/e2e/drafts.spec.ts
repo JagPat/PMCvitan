@@ -67,8 +67,11 @@ test('drafts: the client never sees an unpublished draft (no Drafts screen, abse
   // the client has no Drafts workspace at all
   await expect(page.getByRole('button', { name: 'Drafts' })).toHaveCount(0);
 
-  // and the draft is absent from their Decision Log — while published decisions show
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  // and the draft is absent from their Decisions history — while published decisions show
+  await page.getByRole('navigation').getByRole('button', { name: /^Decisions( \d+)?$/ }).click();
   await expect(page.getByTestId('log-row-DL-015')).toHaveCount(0);
-  await expect(page.getByTestId('log-row-DL-014')).toBeVisible();
+  await expect(page.getByTestId('approve-DL-015-A')).toHaveCount(0);
+  // DL-014 waits on the client, so it is listed above the history; an approved one is in the history
+  await expect(page.getByTestId('approve-DL-014-B')).toBeVisible();
+  await expect(page.getByTestId('log-row-DL-009')).toBeVisible();
 });

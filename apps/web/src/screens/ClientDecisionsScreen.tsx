@@ -1,12 +1,14 @@
 import { useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectDeciderPending, selectDeciderReapproval } from '@/store/selectors';
+import { selectDeciderPending, selectDeciderReapproval, selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, Swatch, Button, LocationContext } from '@/components';
 import { Check } from '@/lib/icons';
 import { signed, type Decision } from '@vitan/shared';
 import { groupDecisions } from '@/lib/locationTree';
 import { DecisionFocus, ChangeRequestContext } from './DecisionFocus';
+import { DecisionLogScreen } from './DecisionLogScreen';
+import { decisionsSliceSettled } from '@/lib/notifications';
 import styles from './responsive.module.css';
 
 export function ClientDecisionsScreen() {
@@ -19,6 +21,21 @@ export function ClientDecisionsScreen() {
   const short = useStore((s) => s.short); // live project identity, not the seed
   const decisionFocus = useStore((s) => s.decisionFocus);
   const closeDecision = useStore((s) => s.closeDecision);
+  // QA check 14 Oct 2026 (#482): the client's one "Decisions" screen — what waits on them first, then the
+  // history (the register) below, in place of two menu entries. Other viewers who reach this approval route as
+  // a decider keep the list alone.
+  const withHistory = useStore((s) => s.role === 'client');
+  // #857 Codex 4268120376 — an old `/decisions/<id>` link naming a decision that still waits on the client marks
+  // that card here, since the history below leaves it out
+  const linked = useStore((s) => (withHistory && s.screen === 'decision-log' ? s.routeItem : null));
+  // #857 Codex 4268290494 — a link naming a decision the register does not (yet) hold shows ONLY the register's
+  // loading or not-found boundary, as the standalone register did: never the waiting cards or "All caught up" as if
+  // they answered it. The same check the register makes on the same rows (`selectLogDecisions`).
+  const linkUnresolved = useStore((s) => linked !== null && !selectLogDecisions(s).some((d) => d.id === linked));
+  // #857 Codex 4269078179 — the `/decisions` path is where an UNSETTLED slice routes the client on purpose (failed
+  // read, owed reconcile: `decisionRecordLink`, the bell), so retained rows cannot offer live Approve buttons. There
+  // the client gets the whole read-only register alone until the slice settles, as before the merge.
+  const readOnlyRoute = useStore((s) => withHistory && s.screen === 'decision-log' && !decisionsSliceSettled(s));
 
   // U2b — one decision on its own screen, while it still waits on THIS viewer. Once it is approved
   // (or is no longer theirs) the focus is let go and the list shows what is left.
@@ -31,6 +48,23 @@ export function ClientDecisionsScreen() {
   const countLabel = `${waiting} ${waiting === 1 ? 'decision waiting' : 'decisions waiting'}`;
   // group by location so the client can work through a zone/room at a time
   const groups = groupDecisions(pending, nodes, 'location');
+
+  if (readOnlyRoute) {
+    // the whole register, waiting rows included and read-only, exactly as the client's Decision Log was
+    return (
+      <div className={styles.clientScreen}>
+        <DecisionLogScreen />
+      </div>
+    );
+  }
+
+  if (linkUnresolved) {
+    return (
+      <div className={styles.clientScreen}>
+        <DecisionLogScreen variant="history" />
+      </div>
+    );
+  }
 
   if (focused) {
     return (
@@ -60,7 +94,7 @@ export function ClientDecisionsScreen() {
               </span>
             </div>
             {reapprovals.map((d) => (
-              <PendingCard key={d.id} d={d} subLabel={d.room} onApprove={(i) => openApprove(d.id, i)} />
+              <PendingCard key={d.id} d={d} subLabel={d.room} onApprove={(i) => openApprove(d.id, i)} current={linked === d.id} />
             ))}
           </div>
         )}
@@ -74,13 +108,13 @@ export function ClientDecisionsScreen() {
               </div>
             )}
             {g.rows.map(({ decision, subLabel }) => (
-              <PendingCard key={decision.id} d={decision} subLabel={subLabel} onApprove={(i) => openApprove(decision.id, i)} />
+              <PendingCard key={decision.id} d={decision} subLabel={subLabel} onApprove={(i) => openApprove(decision.id, i)} current={linked === decision.id} />
             ))}
           </div>
         ))}
 
         {waiting === 0 && (
-          <div style={{ textAlign: 'center', padding: '48px 20px', color: 'var(--muted)' }}>
+          <div style={{ textAlign: 'center', padding: withHistory ? '20px 20px 8px' : '48px 20px', color: 'var(--muted)' }} data-testid="decisions-caught-up">
             <div style={{ width: 60, height: 60, margin: '0 auto', borderRadius: '50%', background: 'var(--green-chip)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <Check size={30} color="var(--green-solid)" strokeWidth={2.5} />
             </div>
@@ -89,14 +123,23 @@ export function ClientDecisionsScreen() {
           </div>
         )}
       </div>
+
+      {withHistory && <DecisionLogScreen variant="history" />}
     </div>
   );
 }
 
 /** One pending decision the client acts on — full location breadcrumb + option cards. */
-function PendingCard({ d, subLabel, onApprove }: { d: Decision; subLabel: string; onApprove: (optionIndex: number) => void }) {
+function PendingCard({ d, subLabel, onApprove, current = false }: { d: Decision; subLabel: string; onApprove: (optionIndex: number) => void; current?: boolean }) {
+  useEffect(() => {
+    if (current) document.querySelector(`[data-testid="pending-card-${CSS.escape(d.id)}"]`)?.scrollIntoView({ block: 'center' });
+  }, [current, d.id]);
   return (
-    <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.12)', borderRadius: 16, overflow: 'hidden', boxShadow: 'var(--sh-card)' }}>
+    <div
+      data-testid={`pending-card-${d.id}`}
+      aria-current={current ? 'true' : undefined}
+      style={{ background: '#fff', border: '1px solid rgba(35,33,28,.12)', borderRadius: 16, overflow: 'hidden', boxShadow: 'var(--sh-card)', outline: current ? '2px solid var(--accent)' : undefined, outlineOffset: 2 }}
+    >
       <div style={{ padding: '15px 16px 12px', borderBottom: '1px solid rgba(35,33,28,.08)' }}>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)' }}>{d.id}</div>
         {/* WHERE this choice applies — the same trail the PMC's register shows, so the client

@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { pathForScreen } from '@/lib/screens';
 import { decisionsSliceSettled } from '@/lib/notifications';
 import { useStore } from '@/store/store';
-import { selectLogDecisions } from '@/store/selectors';
+import { selectDecisionsNeedingViewer, selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, DecisionChip, Button, LocationContext, EditState, ConsultationThread, CountersignControls, ItemNotFound } from '@/components';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { Lock, Plus, ChevronRight } from '@/lib/icons';
@@ -33,13 +33,19 @@ const STATUS_FILTERS: { key: Decision['status']; label: string }[] = [
   { key: 'awaiting_countersign', label: 'Awaiting countersign' },
 ];
 
-export function DecisionLogScreen() {
-  const rows = useStore(useShallow(selectLogDecisions));
+/** `history` (QA check 14 Oct 2026, #482) — the register as the lower half of the client's one "Decisions"
+ *  screen: the decisions still waiting on the viewer are listed above it, so they are left out here, and it
+ *  sits inside that screen instead of being a page of its own. */
+export function DecisionLogScreen({ variant = 'register' }: { variant?: 'register' | 'history' } = {}) {
+  const history = variant === 'history';
+  const logRows = useStore(useShallow(selectLogDecisions));
   const nodes = useStore(useShallow((s) => s.nodes));
   const openChange = useStore((s) => s.openChange);
   const withdrawChange = useStore((s) => s.withdrawChange);
   const openWithdraw = useStore((s) => s.openWithdraw);
   const role = useStore((s) => s.role);
+  // exactly the list above it on the client's screen (re-approvals and new ones waiting on this viewer)
+  const waiting = useStore(useShallow(selectDecisionsNeedingViewer));
   const sessionToken = useStore((s) => s.sessionToken);
   // who am I? — the JWT sub, for the requester-may-withdraw rule (null in demo mode)
   const mySub = useMemo(() => {
@@ -60,6 +66,14 @@ export function DecisionLogScreen() {
     can('decision.withdrawChange', role)
     && d.changeRequest?.origin !== 'countersign_rejection'
     && (role === 'pmc' || (!!mySub && d.changeRequest?.requestedById === mySub));
+  // #857 Codex 4269224408 — a change the client requested on their own decision waits on them above AND is theirs
+  // to withdraw; the card above has no Withdraw, so that row stays in the history where the register offers it
+  const rows = useMemo(() => {
+    if (!history) return logRows;
+    const above = new Set(waiting.map((d) => d.id));
+    return logRows.filter((d) => !above.has(d.id) || mayWithdraw(d));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mayWithdraw reads only role and mySub
+  }, [history, logRows, waiting, role, mySub]);
   // Phase 6 task 4a — withdrawing the DECISION itself: pmc only, and only a published,
   // never-approved pending row is eligible (the service refuses everything else with a 409)
   const mayWithdrawDecision = (d: Decision): boolean =>
@@ -73,7 +87,7 @@ export function DecisionLogScreen() {
   const settled = useStore(decisionsSliceSettled);
   const loadFailed = useStore((s) => s.decisionsLoad === 'error' || s.projectLoadState === 'error');
   const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
-  const routedAbsent = routeItem !== null && !rows.some((d) => d.id === routeItem);
+  const routedAbsent = routeItem !== null && !logRows.some((d) => d.id === routeItem);
   const missingItem = routedAbsent && settled ? routeItem : null;
   // Codex 4204448863 — a named decision not (yet) in the slice while the read is unsettled shows the
   // load boundary, never the whole register standing in for it under its URL
@@ -146,12 +160,18 @@ export function DecisionLogScreen() {
     setCollapsed(new Set());
     setRouteItem(null);
   };
+  const wrap = history ? undefined : `${styles.screen} ${styles.narrow}`;
+  const eyebrow = history ? null : <Eyebrow>CLIENT DECISION LOG</Eyebrow>;
+  const title = history ? 'History' : 'Decision Register';
+  const titleStyle: CSSProperties = history
+    ? { fontFamily: 'var(--font-serif)', fontSize: 21, fontWeight: 500, marginTop: 28 }
+    : { fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' };
   // Codex 4203544331 — a link to a decision this register does not hold shows ONLY that: the register
   // is not rendered beneath it as if it were the answer, and "Show all decisions" reveals it.
   if (unsettledItem) {
     return (
-      <div className={`${styles.screen} ${styles.narrow}`} data-testid={loadFailed ? 'decisions-unavailable' : 'decisions-loading'}>
-        <Eyebrow>CLIENT DECISION LOG</Eyebrow>
+      <div className={wrap} data-testid={loadFailed ? 'decisions-unavailable' : 'decisions-loading'}>
+        {eyebrow}
         {loadFailed ? (
           <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
             <span>Couldn't load decisions — check your connection and access.</span>
@@ -165,19 +185,20 @@ export function DecisionLogScreen() {
   }
   if (missingItem) {
     return (
-      <div className={`${styles.screen} ${styles.narrow}`}>
-        <Eyebrow>CLIENT DECISION LOG</Eyebrow>
-        <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em', margin: '6px 0 8px' }}>Decision Register</div>
+      <div className={wrap}>
+        {eyebrow}
+        {/* inside the client's screen this boundary stands alone (#857 Codex 4268290494), so it names the screen */}
+        <div style={{ ...titleStyle, margin: '6px 0 8px' }}>{history ? 'Decisions' : title}</div>
         <ItemNotFound what="Decision" id={missingItem} onShowAll={showAll} showAllLabel="Show all decisions" />
       </div>
     );
   }
 
   return (
-    <div className={`${styles.screen} ${styles.narrow}`}>
-      <Eyebrow>CLIENT DECISION LOG</Eyebrow>
+    <div className={wrap} data-testid={history ? 'decisions-history' : undefined}>
+      {eyebrow}
       <div className={styles.headRule} style={{ margin: '6px 0 8px' }}>
-        <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' }}>Decision Register</div>
+        <div style={titleStyle}>{title}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)' }}>{filtered.length} {filtered.length === 1 ? 'DECISION' : 'DECISIONS'}</div>
           {can('decision.create', role) && (
@@ -280,6 +301,10 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
   // a real link, so the register entry can be bookmarked or shared.
   const focused = useStore((st) => st.routeItem === d.id);
   const setRouteItem = useStore((st) => st.setRouteItem);
+  const openItem = useStore((st) => st.openItem);
+  // the client's history sits inside their approval screen, where the item setter means the approval FOCUS
+  // (#857 Codex 4268120369): there a register link opens the register's own path, which renders the same screen
+  const onRegister = useStore((st) => st.screen === 'decision-log');
   const activeProjectId = useStore((st) => st.activeProjectId);
   useEffect(() => {
     if (focused) document.querySelector(`[data-testid="log-row-${CSS.escape(d.id)}"]`)?.scrollIntoView({ block: 'center' });
@@ -337,7 +362,8 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
                     // keeps the browser's own behaviour (open the shared link in a new tab/window)
                     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
                     e.preventDefault();
-                    setRouteItem(d.id);
+                    if (onRegister) setRouteItem(d.id);
+                    else openItem('decision-log', d.id);
                   }}
                   data-testid={`log-link-${d.id}`}
                   aria-label={`Link to decision ${d.id}`}
