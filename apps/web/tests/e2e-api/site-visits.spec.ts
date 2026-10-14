@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
-import { loginTo } from './landing';
+import { loginTo, signIn } from './landing';
 
 /**
  * Site Visits SV1-c (#792, QA item 6) — the screen over the real server. The PMC starts a visit, names a guest
@@ -8,7 +8,6 @@ import { loginTo } from './landing';
  */
 
 const API = 'http://localhost:3000';
-const PASSWORD = 'vitan123';
 const PROJECT = 'ambli';
 
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
@@ -31,11 +30,7 @@ async function endOpenVisits(request: APIRequestContext): Promise<void> {
 async function openVisits(page: Page, request: APIRequestContext, email: string): Promise<void> {
   await loginTo(request, email, PROJECT); // sign-in opens the project last used
   await page.goto(`/projects/${PROJECT}/site-visits`);
-  await page.getByRole('button', { name: /team member/i }).click();
-  await page.getByTestId('go-login').click();
-  await page.getByTestId('login-email').fill(email);
-  await page.getByTestId('login-password').fill(PASSWORD);
-  await page.getByTestId('login-submit').click();
+  await signIn(page, email);
   await expect(page.getByRole('heading', { name: 'Site Visits' })).toBeVisible();
 }
 
