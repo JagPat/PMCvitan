@@ -1,4 +1,4 @@
-import type { Activity, Decision, Drawing, Material, Phase, Photo, PlacedInspection, ProjectNode } from '@vitan/shared';
+import type { Activity, Decision, Drawing, Material, Phase, Photo, PlacedInspection, ProjectNode, Review } from '@vitan/shared';
 
 /** Direct children of a node (parentId=null → top-level zones), in display order. */
 export function childrenOf(nodes: ProjectNode[], parentId: string | null): ProjectNode[] {
@@ -244,6 +244,37 @@ export function openIssueCount(inspections: PlacedInspection[]): number | null {
     n += i.openIssues;
   }
   return n;
+}
+
+/**
+ * #847 — a demo review's failed items still open: its FAIL items while it awaits the PMC's decision; none
+ * once the PMC approved it; once the PMC sent its re-inspection, the FAIL items plus those the PMC rejected.
+ * The Dashboard's demo count (`selectFailedCount`) and the Site Map both read this one rule.
+ */
+export function demoReviewOpenIssues(r: Review): number {
+  if (r.decided && !r.reinspectionSent) return 0;
+  return r.items.filter((it) => it.result === 'FAIL' || (r.reinspectionSent && it.rejected)).length;
+}
+
+/**
+ * #847 — the API-less demo's inspections for the Site Map, for the PMC (the one demo role whose record link
+ * opens a review). The demo has no server to count open issues per inspection, so each review stands on the
+ * map as its own row carrying `demoReviewOpenIssues`, and the map's total equals the Dashboard's. Placed rows
+ * with no review keep what the seed says.
+ */
+export function demoSiteMapInspections(placed: PlacedInspection[], reviews: Review[]): PlacedInspection[] {
+  // failedItems as the server serializes it (FAIL or rejected, decided or not); openIssues by the demo rule
+  const row = (r: Review) => ({ submitted: true, decided: r.decided, failedItems: r.items.filter((it) => it.result === 'FAIL' || it.rejected).length, openIssues: demoReviewOpenIssues(r) });
+  const byId = new Map(reviews.map((r) => [r.id, r]));
+  const rows = placed.map((p) => {
+    const r = byId.get(p.id);
+    return r ? { ...p, ...row(r) } : p;
+  });
+  for (const r of reviews) {
+    if (placed.some((p) => p.id === r.id)) continue;
+    rows.push({ id: r.id, title: r.title, zone: r.zone, nodeId: r.nodeId, kind: 'review', ...row(r) });
+  }
+  return rows;
 }
 
 export function placeContents(

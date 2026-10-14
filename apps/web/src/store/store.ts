@@ -3499,7 +3499,7 @@ export const useStore = create<Store>()(
       set((s) => {
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);
-        if (j >= 0) s.reviews[j].decided = true;
+        if (j >= 0) Object.assign(s.reviews[j], { decided: true, reinspectionSent: true });
         if (review.closing && review.activityId) {
           // Task 5: rejecting the closing sign-off returns the activity to execution
           const a = s.activities.find((x) => x.id === review.activityId);
