@@ -57,6 +57,25 @@ describe('the calendar picker', () => {
     expect(document.activeElement).toBe(field);
   });
 
+  it('the day grid is one tab stop: opening focuses the chosen day and arrows move across months', () => {
+    const r = render(<DatePicker label="Starts" value="2026-10-30" onChange={() => {}} min="2026-10-05" testId="p" />);
+    fireEvent.click(r.getByTestId('p'));
+    const tabbable = Array.from(r.getByTestId('p-calendar').querySelectorAll('[data-day]')).filter((b) => (b as HTMLElement).tabIndex === 0);
+    expect(tabbable.map((b) => b.getAttribute('data-day'))).toEqual(['2026-10-30']);
+    expect(document.activeElement).toBe(r.getByTestId('p-day-2026-10-30'));
+    fireEvent.keyDown(document.activeElement as Element, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(r.getByTestId('p-day-2026-11-06'));
+    fireEvent.keyDown(document.activeElement as Element, { key: 'ArrowLeft' });
+    expect(document.activeElement).toBe(r.getByTestId('p-day-2026-11-05'));
+    fireEvent.keyDown(document.activeElement as Element, { key: 'ArrowUp' });
+    fireEvent.keyDown(document.activeElement as Element, { key: 'ArrowUp' });
+    fireEvent.keyDown(document.activeElement as Element, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(r.getByTestId('p-day-2026-10-15'));
+    fireEvent.keyDown(document.activeElement as Element, { key: 'ArrowUp' });
+    fireEvent.keyDown(document.activeElement as Element, { key: 'ArrowUp' }); // 1 Oct is before `min`: stays put
+    expect(document.activeElement).toBe(r.getByTestId('p-day-2026-10-08'));
+  });
+
   it('an open calendar follows its value when it changes from outside', () => {
     const r = render(<DatePicker label="Ends" value="2026-10-20" onChange={() => {}} testId="p" />);
     fireEvent.click(r.getByTestId('p'));

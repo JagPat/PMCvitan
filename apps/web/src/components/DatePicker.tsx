@@ -1,5 +1,5 @@
-import { useId, useRef, useState, type CSSProperties } from 'react';
-import { parseCivilDate } from '@vitan/shared';
+import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { addCivilDays, parseCivilDate } from '@vitan/shared';
 
 /**
  * #827 (approved mockup "PlanDates") — a real date picker in place of typed day numbers. The field
@@ -73,9 +73,30 @@ export function DatePicker({
     setMonth(monthStart(value));
   }
   const toggleRef = useRef<HTMLButtonElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   const panelId = useId();
   const cells = monthCells(month);
   const canGoBack = !min || shiftMonth(month, -1) >= monthStart(min);
+
+  // The day grid is one tab stop (roving tabIndex): arrows move between days, crossing months as
+  // needed, and opening the calendar puts focus on the chosen day (or `min`, if that is later).
+  const [focusDay, setFocusDay] = useState<string | null>(null);
+  const enabled = (iso: string) => !min || iso >= min;
+  const inMonth = (iso: string | null): iso is string => !!iso && iso.startsWith(month.slice(0, 8)) && enabled(iso);
+  const tabStop = inMonth(focusDay) ? focusDay : inMonth(value) ? value : cells.find((c): c is string => !!c && enabled(c));
+  useEffect(() => {
+    if (open && focusDay) gridRef.current?.querySelector<HTMLButtonElement>(`[data-day="${focusDay}"]`)?.focus();
+  }, [open, focusDay]);
+  const DAY_STEPS: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
+  const onGridKey = (e: KeyboardEvent) => {
+    const step = DAY_STEPS[e.key];
+    if (step === undefined || !tabStop) return;
+    e.preventDefault();
+    const next = addCivilDays(tabStop, step);
+    if (!enabled(next)) return;
+    setFocusDay(next);
+    if (monthStart(next) !== month) setMonth(monthStart(next));
+  };
 
   return (
     // an open calendar takes the whole row, so its days stay tappable on a phone
@@ -84,7 +105,11 @@ export function DatePicker({
       <button
         ref={toggleRef}
         type="button"
-        onClick={() => { setMonth(monthStart(value)); setOpen((o) => !o); }}
+        onClick={() => {
+          setMonth(monthStart(value));
+          setFocusDay(min && value < min ? min : value);
+          setOpen((o) => !o);
+        }}
         aria-expanded={open}
         aria-controls={panelId}
         aria-label={`${label}: ${pickerLabel(value)}`}
@@ -106,7 +131,7 @@ export function DatePicker({
           <div aria-hidden="true" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', textAlign: 'center', fontSize: 11.5, fontWeight: 600, color: 'var(--muted)' }}>
             {WEEKDAYS.map((w) => <div key={w}>{w}</div>)}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 2, marginTop: 4 }}>
+          <div ref={gridRef} onKeyDown={onGridKey} style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 2, marginTop: 4 }}>
             {cells.map((iso, i) => {
               if (!iso) return <div key={`b${i}`} />;
               const selected = iso === value;
@@ -116,6 +141,8 @@ export function DatePicker({
                   key={iso}
                   type="button"
                   disabled={disabled}
+                  tabIndex={iso === tabStop ? 0 : -1}
+                  data-day={iso}
                   aria-pressed={selected}
                   aria-label={DAY_NAME_FMT.format(parseCivilDate(iso))}
                   aria-current={iso === today ? 'date' : undefined}
