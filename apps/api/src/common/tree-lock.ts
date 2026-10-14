@@ -29,3 +29,10 @@ export async function lockProjectTree(tx: Prisma.TransactionClient, projectId: s
 export function treeLockKey(projectId: string): string {
   return 'project-tree:' + projectId;
 }
+
+/** The SHARED side of the same lock, for a write that only READS the tree's visibility (filing a record on a
+ *  place): it waits out an in-flight create/move/publish/delete, so its read sees that write's outcome, while
+ *  concurrent readers never wait on each other. Taken first in its transaction, like the exclusive side. */
+export async function lockProjectTreeShared(tx: Prisma.TransactionClient, projectId: string): Promise<void> {
+  await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${treeLockKey(projectId)}, 0))`);
+}
