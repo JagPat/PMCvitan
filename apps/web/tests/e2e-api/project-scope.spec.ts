@@ -25,12 +25,11 @@ const PASSWORD = 'vitan123';
 const A = 'ambli';
 const B = 'test-empty-site';
 
-/** Drive the real sign-in gate: who-are-you → team member → password login. */
+/** Drive the real sign-in gate: phone number screen → "Sign in with email" → password login. */
 async function signIn(page: Page, email: string): Promise<void> {
   // an engineer lands in Gujarati; these journeys name English screens, so the member chooses
   // English on the gate's own picker, which is carried into their session and saved
   await page.getByRole('button', { name: 'English', exact: true }).click();
-  await page.getByRole('button', { name: /team member/i }).click();
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(email);
   await page.getByTestId('login-password').fill(PASSWORD);
@@ -214,7 +213,8 @@ test('removed membership revokes token', async ({ page, request }) => {
 
   // the UI's next full fetch clears the project: back to the gate, no A records
   await page.reload();
-  await expect(page.getByText('Who are you?')).toBeVisible();
+  // #827 one-screen sign-in: the gate opens on the phone number
+  await expect(page.getByTestId('phone-input')).toBeVisible();
   await expect(page.getByText('DL-014')).toHaveCount(0);
   await expect(page.getByTestId('project-switcher')).toHaveCount(0);
 });

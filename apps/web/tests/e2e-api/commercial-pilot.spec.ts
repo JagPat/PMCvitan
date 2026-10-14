@@ -56,7 +56,6 @@ async function get(request: APIRequestContext, token: string, path: string): Pro
 /** Verbatim from the cleared materials/labour pilots: the switcher may already show the target. */
 async function signInToProject(page: Page, email: string, projectName: string): Promise<void> {
   await page.goto('/');
-  await page.getByRole('button', { name: /team member/i }).click();
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(email);
   await page.getByTestId('login-password').fill(PASSWORD);
