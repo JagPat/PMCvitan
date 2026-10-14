@@ -236,6 +236,20 @@ describe('#827 one-screen sign-in', () => {
     expect(r.getByText('Too many tries. Try again later.')).toBeInTheDocument();
   });
 
+  it('a code check that is throttled names the real wait the server sends', async () => {
+    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
+    const verifyOtp = vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/verify 429'), { status: 429, retryAfter: 540 }));
+    const { TeamAccessScreen, useStore } = await load({ requestOtp, verifyOtp } as Partial<ApiGateway>);
+    const r = render(<TeamAccessScreen />);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    useStore.setState((s) => { s.access.otp = '1234'; });
+    act(() => useStore.getState().otpVerify());
+    await flush();
+    expect(r.getByText('Too many tries. Wait 9 minutes, then try again.')).toBeInTheDocument();
+  });
+
   it('a back tap from the code screen returns to the number, not to "Who are you?"', async () => {
     const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
     const { TeamAccessScreen, useStore } = await load({ requestOtp } as Partial<ApiGateway>);

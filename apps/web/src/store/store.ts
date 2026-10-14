@@ -866,17 +866,22 @@ function httpStatusOf(err: unknown): number | undefined {
 function otpRequestFailureMessage(err: unknown, lang: Lang): string {
   const t = accessDict[lang];
   const status = httpStatusOf(err);
-  if (status === 429) {
-    const seconds = (err as { retryAfter?: unknown } | null)?.retryAfter;
-    if (typeof seconds !== 'number' || !(seconds > 0)) return t.tooManyLater;
-    const minutes = Math.ceil(seconds / 60);
-    const wait = seconds < 60
-      ? t.waitSeconds.replace('{n}', String(Math.ceil(seconds)))
-      : minutes === 1 ? t.waitMinute : t.waitMinutes.replace('{n}', String(minutes));
-    return t.tooManyWait.replace('{wait}', wait);
-  }
+  if (status === 429) return otpThrottleMessage(err, lang);
   if (status === undefined) return t.noServer;
   return t.sendFailed;
+}
+
+/** A throttled code request or code check (429), in the gate's language: the real wait from the server's
+ *  `retryAfter` when it sends one, otherwise "try again later". */
+function otpThrottleMessage(err: unknown, lang: Lang): string {
+  const t = accessDict[lang];
+  const seconds = (err as { retryAfter?: unknown } | null)?.retryAfter;
+  if (typeof seconds !== 'number' || !(seconds > 0)) return t.tooManyLater;
+  const minutes = Math.ceil(seconds / 60);
+  const wait = seconds < 60
+    ? t.waitSeconds.replace('{n}', String(Math.ceil(seconds)))
+    : minutes === 1 ? t.waitMinute : t.waitMinutes.replace('{n}', String(minutes));
+  return t.tooManyWait.replace('{wait}', wait);
 }
 
 /** How long a throttled (429) caller should wait, from the seconds the server says remain in its window
@@ -6259,7 +6264,7 @@ export const useStore = create<Store>()(
           set((s) => {
             s.access.sending = false;
             s.access.otp = '';
-            s.access.error = httpStatusOf(e) === 429 ? accessDict[get().lang].tooManyLater : 'Wrong or expired code — try again.';
+            s.access.error = httpStatusOf(e) === 429 ? otpThrottleMessage(e, get().lang) : 'Wrong or expired code — try again.';
           });
         });
     },
