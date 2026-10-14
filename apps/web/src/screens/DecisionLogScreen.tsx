@@ -7,6 +7,7 @@ import { selectDecisionsNeedingViewer, selectLogDecisions } from '@/store/select
 import { Eyebrow, DecisionChip, Button, LocationContext, EditState, ConsultationThread, CountersignControls, ItemNotFound } from '@/components';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { AwaitingClientList } from './AwaitingClientList';
+import { EmptyHint } from '@/guide/EmptyHint';
 import { Lock, Plus, ChevronRight } from '@/lib/icons';
 import { deciderNoun, signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
 import { groupDecisions, locationSegments, type GroupBy } from '@/lib/locationTree';
@@ -242,7 +243,10 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
       </div>
 
       {groups.length === 0 && (
-        <div style={{ color: 'var(--muted)', fontSize: 13.5, padding: '10px 0' }}>No decisions match your filters.</div>
+        <div style={{ color: 'var(--muted)', fontSize: 13.5, padding: '10px 0' }}>
+          No decisions match your filters.
+          {rows.length === 0 && <EmptyHint task="decision" />}
+        </div>
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
