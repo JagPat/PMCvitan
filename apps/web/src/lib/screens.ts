@@ -237,7 +237,7 @@ function screenAndItemForPath(path: string): { screen: ScreenKey | null; item: s
 
 /** Which persona owns each screen — for the temporary role switcher / route guard. */
 export const ROLE_LABEL: Record<Role, string> = {
-  pmc: 'PMC',
+  pmc: 'Project manager (PMC)', // #827 decision: the role reads in full; "PMC" stays in brackets
   client: 'Client',
   engineer: 'Engineer',
   contractor: 'Contractor',

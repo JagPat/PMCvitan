@@ -223,7 +223,7 @@ export const forYouLabels = {
 
 /** The role on the eyebrow ("FOR YOU · ENGINEER"). */
 export const forYouRole: Record<Role, Words> = {
-  pmc: { en: 'PMC', hi: 'PMC', gu: 'PMC' },
+  pmc: { en: 'Project manager (PMC)', hi: 'प्रोजेक्ट मैनेजर (PMC)', gu: 'પ્રોજેક્ટ મેનેજર (PMC)' },
   client: { en: 'Client', hi: 'क्लाइंट', gu: 'ક્લાયન્ટ' },
   engineer: { en: 'Engineer', hi: 'इंजीनियर', gu: 'ઇજનેર' },
   contractor: { en: 'Contractor', hi: 'ठेकेदार', gu: 'કોન્ટ્રાક્ટર' },
