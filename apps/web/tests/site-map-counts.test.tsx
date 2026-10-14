@@ -126,7 +126,7 @@ describe('the API-less demo keeps open issues on the Site Map (#847)', () => {
     useStore.setState({ ...getInitialState(), role: 'pmc', activeReviewId: 'INSP-21' });
     const map = () => {
       const s = useStore.getState();
-      return demoSiteMapInspections(s.placedInspections, s.reviews, s.reinspectionCreated);
+      return demoSiteMapInspections(s.placedInspections, s.reviews);
     };
     return { useStore, selectFailedCount, inspectionRecordLink, map };
   }
@@ -159,5 +159,32 @@ describe('the API-less demo keeps open issues on the Site Map (#847)', () => {
     expect(withIssues.length).toBeGreaterThan(0);
     for (const row of withIssues) expect(inspectionRecordLink(s, row.id)).not.toBeNull();
     expect(map().map((r) => r.id)).not.toContain('INSP-21-R');
+  });
+
+  it('an approved review leaves no open issue on the map or the Dashboard (Codex 4271005424)', async () => {
+    const { useStore, selectFailedCount, map } = await demo();
+    expect(openIssueCount(map())).toBe(1);
+    useStore.getState().approveInspection();
+    const s = useStore.getState();
+    expect(selectFailedCount(s)).toBe(0);
+    expect(openIssueCount(map())).toBe(0);
+    // the row still reads as the server serializes it: the failed item stays failed, only the issue closed
+    expect(map().find((r) => r.id === 'INSP-21')).toMatchObject({ decided: true, failedItems: 1, openIssues: 0 });
+  });
+
+  it('an engineer sees no review rows the engineer cannot open (Codex 4271005431)', async () => {
+    const { useStore } = await demo();
+    const seed = useStore.getState().reviews[0];
+    useStore.setState((s) => ({
+      reviews: [...s.reviews, { ...structuredClone(seed), id: 'INSP-22', title: 'Second check', nodeId: 'z-terrace', decided: false }],
+      routeItem: 'z-terrace',
+    }));
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    useStore.setState({ role: 'engineer' });
+    const asEngineer = render(<PlacesScreen />);
+    expect(asEngineer.queryByTestId('place-inspection-INSP-22')).toBeNull();
+    asEngineer.unmount();
+    useStore.setState({ role: 'pmc' });
+    expect(render(<PlacesScreen />).getByTestId('place-inspection-INSP-22').tagName).toBe('BUTTON');
   });
 });

@@ -65,12 +65,13 @@ export function PlacesScreen() {
   // in the demo where the store is shared across the persona switcher).
   const canSeeInspections = useStore((s) => s.role === 'pmc' || s.role === 'engineer');
   const placedInspections = useStore(useShallow((s) => (s.role === 'pmc' || s.role === 'engineer' ? s.placedInspections : [])));
-  // #847 — the API-less demo counts its own open issues from its reviews, by the Dashboard's rule
+  // #847 — the API-less demo counts its own open issues from its reviews, by the Dashboard's rule; only for
+  // the PMC, the one demo role whose record link opens a review (an engineer keeps the placed rows)
+  const demoReviewsForMap = useStore((s) => s.role === 'pmc');
   const demoReviews = useStore((s) => s.reviews);
-  const reinspectionCreated = useStore((s) => s.reinspectionCreated);
   const inspections = useMemo(
-    () => (API_BASE || !canSeeInspections ? placedInspections : demoSiteMapInspections(placedInspections, demoReviews, reinspectionCreated)),
-    [placedInspections, demoReviews, reinspectionCreated, canSeeInspections],
+    () => (API_BASE || !demoReviewsForMap ? placedInspections : demoSiteMapInspections(placedInspections, demoReviews)),
+    [placedInspections, demoReviews, demoReviewsForMap],
   );
   const inspectionsKnown = useStore((s) => inspectionsSettledForLinks(s)
     && !(inspectionsReadMode() === 'moduleQuery' && s.inspectionsLoad === 'error' && s.placedInspections.length === 0));
@@ -95,7 +96,7 @@ export function PlacesScreen() {
   const openItem = useStore((s) => s.openItem);
   // id → the screen that opens it for this viewer (plain strings, so the shallow compare holds)
   const inspectionScreens = useStore(useShallow((s) => Object.fromEntries(
-    [...s.placedInspections.map((i) => i.id), ...(API_BASE ? [] : s.reviews.map((r) => r.id))].flatMap((id) => { const l = inspectionRecordLink(s, id); return l ? [[id, l.screen]] : []; }),
+    [...s.placedInspections.map((i) => i.id), ...(API_BASE || s.role !== 'pmc' ? [] : s.reviews.map((r) => r.id))].flatMap((id) => { const l = inspectionRecordLink(s, id); return l ? [[id, l.screen]] : []; }),
   ) as Record<string, ScreenKey>));
   const decisionScreens = useStore(useShallow((s) => Object.fromEntries(
     selectVisibleDecisions(s).map((d) => [d.id, decisionRecordLink(s, d).screen]),
