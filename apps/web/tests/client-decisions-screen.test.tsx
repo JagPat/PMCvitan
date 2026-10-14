@@ -106,15 +106,46 @@ describe('the client\'s one "Decisions" screen', () => {
     expect(again.r.getByText('Decisions waiting for you')).toBeTruthy();
   });
 
-  it('a change the client requested on their own decision keeps its Withdraw in the history (Codex 4269224408)', async () => {
+  it('a change the client requested is withdrawn from its card above, and the history does not repeat it', async () => {
     const payload = btoa(JSON.stringify({ sub: 'u-client' }));
     const mine = dec('D-5', { status: 'change', changeRequest: { reason: 'Darker grain', costImpact: 0, timeImpactDays: 0, requestedById: 'u-client' } } as Partial<Decision>);
     const theirs = dec('D-6', { status: 'change', changeRequest: { reason: 'Lot rejected', costImpact: 0, timeImpactDays: 0, requestedById: 'u-eng' } } as Partial<Decision>);
-    const { r } = await load({ decisions: [mine, theirs, approved('D-9')], sessionToken: `h.${payload}.s` });
+    const spy = vi.fn();
+    const { r } = await load({ decisions: [mine, theirs, approved('D-9')], sessionToken: `h.${payload}.s`, withdrawChange: spy });
+    const card = r.getByTestId('pending-card-D-5');
+    const withdraw = card.querySelector('[data-testid="withdraw-D-5"]') as HTMLElement;
+    expect(withdraw.textContent).toContain('Withdraw request');
+    // someone else's request is not the client's to withdraw
+    expect(r.getByTestId('pending-card-D-6').querySelector('[data-testid="withdraw-D-6"]')).toBeNull();
     const history = r.getByTestId('decisions-history');
-    expect(history.querySelector('[data-testid="withdraw-D-5"]')).toBeTruthy();
-    // a re-approval someone else opened stays above alone, as before
+    expect(history.querySelector('[data-testid="log-row-D-5"]')).toBeNull();
     expect(history.querySelector('[data-testid="log-row-D-6"]')).toBeNull();
+    fireEvent.click(withdraw);
+    expect(spy).toHaveBeenCalledWith('D-5');
+  });
+
+  it('the waiting card carries its advice thread, and the client answers a question put to them there', async () => {
+    const asked = dec('D-7', {
+      approvalCycle: 0,
+      consultations: [{ id: 'c1', consulteeMembershipId: 'm-u-client', consulteeUserId: 'u-client', requestedById: 'u-pmc', question: 'Is the darker stone fine?', openCycle: 0, requestedAt: new Date().toISOString() }],
+    } as Partial<Decision>);
+    const { r } = await load({ decisions: [asked], sessionUserId: 'u-client' });
+    const card = r.getByTestId('pending-card-D-7');
+    expect(card.querySelector('[data-testid="consultation-thread-D-7"]')?.textContent).toContain('Is the darker stone fine?');
+    expect(card.querySelector('[data-testid="consultation-respond-D-7"]')).toBeTruthy();
+  });
+
+  it('a decision opened on its own (a notice or a link) carries the same advice thread and Withdraw request', async () => {
+    const mine = dec('D-5', {
+      status: 'change', approvalCycle: 0,
+      changeRequest: { reason: 'Darker grain', costImpact: 0, timeImpactDays: 0, requestedById: 'u-client' },
+      consultations: [{ id: 'c1', consulteeMembershipId: 'm-u-client', consulteeUserId: 'u-client', requestedById: 'u-pmc', question: 'Keep the veneer?', openCycle: 0, requestedAt: new Date().toISOString() }],
+    } as Partial<Decision>);
+    // the DEV_AUTH connection records the signed-in identity as sessionUserId and leaves sessionToken empty
+    const { r } = await load({ decisions: [mine], sessionUserId: 'u-client', sessionToken: null, decisionFocus: 'D-5' });
+    const focus = r.getByTestId('decision-focus');
+    expect(focus.querySelector('[data-testid="consultation-respond-D-5"]')).toBeTruthy();
+    expect(focus.querySelector('[data-testid="withdraw-D-5"]')?.textContent).toContain('Withdraw request');
   });
 
   it('shows a short "all caught up" line above the history when nothing waits', async () => {
@@ -141,6 +172,15 @@ describe('the client\'s one "Decisions" screen', () => {
     const { navLabelFor } = await import('@/lib/mobileNav');
     expect(navLabelFor('client-decisions', 'client', 'hi')).toBe(navLabelFor('decision-log', 'pmc', 'hi'));
     expect(navLabelFor('client-decisions', 'client', 'gu')).toBe(navLabelFor('decision-log', 'pmc', 'gu'));
+  });
+
+  it('the client\'s own reopened decision keeps Forward on its card once the countersign chain is open (Codex 4276536575)', async () => {
+    const mine = dec('D-5', { status: 'change', changeRequest: { reason: 'Darker grain', costImpact: 0, timeImpactDays: 0, requestedById: 'u-client' } } as Partial<Decision>);
+    const { r } = await load({ decisions: [mine], sessionUserId: 'u-client', sessionToken: null, phase6_4dRollout: 'open' });
+    const card = r.getByTestId('pending-card-D-5');
+    expect(card.querySelector('[data-testid="forward-D-5"]')).toBeTruthy();
+    expect(card.querySelector('[data-testid="withdraw-D-5"]')).toBeTruthy();
+    expect(r.getByTestId('decisions-history').querySelector('[data-testid="log-row-D-5"]')).toBeNull();
   });
 
   it('the PMC keeps the Decision Log as it was', async () => {
