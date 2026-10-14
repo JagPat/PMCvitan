@@ -619,7 +619,7 @@ describe('the PMC is guided from + to publishing a decision', () => {
     const { view } = await pmcForDecision();
     tick();
     expect(tip()?.getAttribute('data-guide-id')).toBe('record-decision-pmc');
-    expect(tip()?.textContent).toContain('Something for the client to choose?');
+    expect(tip()?.textContent).toContain('Something to be decided?');
     press(view.getByTestId('create-fab'));
     tick();
     expect(step()).toBe('1');
@@ -715,7 +715,7 @@ describe('the PMC is guided from + to publishing a decision', () => {
     const input = { title: 'T', nodeId: 'gf', publish: true, options: [] } as never;
     s.useStore.getState().issueDecision(input);
     await vi.waitFor(() => expect(replies).toHaveLength(1));
-    s.useStore.getState().issueDecision(input);
+    s.useStore.getState().issueDecision({ title: 'Draft', nodeId: 'gf', publish: false, options: [] } as never); // a draft: a newer lease, no guide report
     await vi.waitFor(() => expect(replies).toHaveLength(2));
     replies[0]!({ project: { id: 'another-project' } });
     await vi.waitFor(() => expect(seen).toEqual(['decision-publish-failed']));
@@ -755,12 +755,12 @@ describe('review round 1 on "record a decision"', () => {
     const { subscribeGuideOutcome } = await import('@/guide/outcomes');
     const seen: string[] = [];
     subscribeGuideOutcome((o) => seen.push(o));
-    // a second publish takes a newer lease, so the record's reply comes back superseded (not re-applied)
+    // a draft saved after it takes a newer lease, so the record's reply comes back superseded (not re-applied)
     const replies: Array<(v: unknown) => void> = [];
     act(() => { s.useStore.getState()._setGateway({ createDecision: vi.fn(() => new Promise((resolve) => { replies.push(resolve); })), snapshot: vi.fn(() => new Promise(() => {})) } as never); });
     s.useStore.getState().issueDecision({ title: 'R', nodeId: 'gf', publish: true, options: [], deciderKind: 'none' } as never);
     await vi.waitFor(() => expect(replies).toHaveLength(1));
-    s.useStore.getState().issueDecision({ title: 'D', nodeId: 'gf', publish: true, options: [] } as never);
+    s.useStore.getState().issueDecision({ title: 'D', nodeId: 'gf', publish: false, options: [] } as never);
     await vi.waitFor(() => expect(replies).toHaveLength(2));
     replies[0]!({ project: { id: 'project-a' } });
     await vi.waitFor(() => expect(seen).toEqual(['decision-publish-failed']));
@@ -786,5 +786,44 @@ describe('review round 1 on "record a decision"', () => {
     await act(async () => { refuseDecision(new Error('no')); refuseIssue(new Error('no')); await Promise.resolve(); await Promise.resolve(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(seen).toEqual([]);
+  });
+
+  it('a second publish that fails fast does not end the wait for the guided one still on its way', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome } = await import('@/guide/outcomes');
+    const seen: string[] = [];
+    subscribeGuideOutcome((o) => seen.push(o));
+    const settle: Array<{ ok: (v: unknown) => void; no: (e: Error) => void }> = [];
+    act(() => {
+      s.useStore.getState()._setGateway({
+        createDecision: vi.fn(() => new Promise((ok, no) => { settle.push({ ok, no }); })),
+        snapshot: vi.fn(() => new Promise(() => {})),
+      } as never);
+    });
+    const input = { title: 'T', nodeId: 'gf', publish: true, options: [] } as never;
+    s.useStore.getState().issueDecision(input);
+    await vi.waitFor(() => expect(settle).toHaveLength(1));
+    s.useStore.getState().issueDecision(input);
+    await vi.waitFor(() => expect(settle).toHaveLength(2));
+    await act(async () => { settle[1]!.no(new Error('refused')); await Promise.resolve(); await Promise.resolve(); });
+    expect(seen).toEqual([]);
+    // the guided one is accepted (superseded by the second's newer lease, same project)
+    await act(async () => { settle[0]!.ok({ project: { id: 'project-a' } }); await Promise.resolve(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(seen).toEqual(['decision-published']));
+  });
+
+  it('a decision put to another decider (the practice, a member, the architect) is the guided task too', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome } = await import('@/guide/outcomes');
+    const seen: string[] = [];
+    subscribeGuideOutcome((o) => seen.push(o));
+    const replies: Array<(v: unknown) => void> = [];
+    act(() => { s.useStore.getState()._setGateway({ createDecision: vi.fn(() => new Promise((resolve) => { replies.push(resolve); })), snapshot: vi.fn(() => new Promise(() => {})) } as never); });
+    s.useStore.getState().issueDecision({ title: 'P', nodeId: 'gf', publish: true, options: [], deciderKind: 'pmc' } as never);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    s.useStore.getState().issueDecision({ title: 'D', nodeId: 'gf', publish: false, options: [] } as never);
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    await act(async () => { replies[0]!({ project: { id: 'project-a' } }); await Promise.resolve(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(seen).toEqual(['decision-published']));
   });
 });

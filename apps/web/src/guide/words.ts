@@ -38,9 +38,9 @@ export const GUIDE_TIPS = {
     gu: 'શું અને ક્યાં તપાસવું તે લખો, પછી અહીં દબાવો.',
   },
   decisionAdd: {
-    en: 'Something for the client to choose? Tap +.',
-    hi: 'क्लाइंट को कुछ चुनना है? + दबाएँ।',
-    gu: 'ક્લાયન્ટે કંઈ પસંદ કરવાનું છે? + દબાવો.',
+    en: 'Something to be decided? Tap +.',
+    hi: 'कुछ तय करना है? + दबाएँ।',
+    gu: 'કંઈ નક્કી કરવાનું છે? + દબાવો.',
   },
   decisionPick: {
     en: 'Tap here to set out the choices.',

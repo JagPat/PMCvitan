@@ -80,7 +80,7 @@ export const GUIDES: readonly Guide[] = [
     ],
   },
   {
-    // the PMC records a decision for the client: + → "Something to decide here" → Publish. It shares
+    // the PMC puts a decision to its decider (the client, by default): + → "Something to decide here" → Publish. It shares
     // the Dashboard with the guide above, so it starts by itself on the next visit, not on top of it.
     id: 'record-decision-pmc',
     roles: ['pmc'],

@@ -1317,6 +1317,8 @@ export const useStore = create<Store>()(
     // When present, mutating actions persist through the API and reconcile from
     // the returned snapshot; when null, they mutate the seeded local store.
     let gateway: ApiGateway | null = null;
+    // #482 — decision publishes still on their way, for the in-app guide's Publish step (see `issueDecision`)
+    let decisionPublishesInFlight = 0;
 
     /** Latest-request ownership for the Materials bundle (correction finding 2). Each `loadMaterials()`
      *  claims the next token; only the newest same-project load may write the view or change its load
@@ -4727,6 +4729,17 @@ export const useStore = create<Store>()(
       }
       const gw = gateway;
       const scope = currentScope();
+      // The in-app guide's Publish step waits while ANY publish is on its way (outcomes carry no request
+      // identity): a second publish's quick failure must not end the wait for one still pending. A reply
+      // that lands after the project or person changed is not about the guide now on screen.
+      if (input.publish) decisionPublishesInFlight += 1;
+      const reportPublish = (ok: boolean) => {
+        if (!input.publish) return;
+        decisionPublishesInFlight -= 1;
+        if (!scopeStillCurrent(scope)) return;
+        if (ok) emitGuideOutcome('decision-published');
+        else if (decisionPublishesInFlight === 0) emitGuideOutcome('decision-publish-failed');
+      };
       // Upload any captured option photos first, then create with their urls.
       void (async () => {
         try {
@@ -4768,13 +4781,10 @@ export const useStore = create<Store>()(
               : `Draft saved: ${input.title} — visible only to you until you publish it.`,
             lease.scope,
           );
-          // the guide teaches putting choices to a decider: a record-only issue is not that task. A reply
-          // that lands after the project or person changed is not about the guide now on screen.
-          if (input.publish && scopeStillCurrent(scope)) {
-            emitGuideOutcome(!record && (result === 'applied' || result === 'superseded') ? 'decision-published' : 'decision-publish-failed');
-          }
+          // the guide teaches putting choices to a decider: a record-only issue is not that task
+          reportPublish(!record && (result === 'applied' || result === 'superseded'));
         } catch {
-          if (input.publish && scopeStillCurrent(scope)) emitGuideOutcome('decision-publish-failed');
+          reportPublish(false);
           // gate round 12: a failure that lands after a project switch must not toast
           // into the new project (the same stale-toast rule as the success path).
           if (scopeStillCurrent(scope)) get().flash(input.publish ? 'Could not issue the decision — check your access and try again.' : 'Could not save the draft — check your access and try again.');
