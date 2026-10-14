@@ -13,6 +13,8 @@ import type { Role } from '../common/auth';
 import type { DecisionsContract } from '../common/decisions-contract';
 import type { ProjectShellCounts, SnapshotDto } from './types';
 import { readViewerFeed, servedNotifications } from './served-notifications';
+import { hiddenDraftNodeIds } from '../nodes/node-scope';
+import { hiddenMediaIds, mediaOnNodes } from './hidden-media';
 
 @Injectable()
 export class SnapshotService {
@@ -66,6 +68,12 @@ export class SnapshotService {
     };
   }
 
+  /** #884 — the photos hidden from `viewerId` (on someone else's private draft place), for a module read the
+   *  read side serves outside the snapshot (`GET …/inspections`): handed in, never read by that module. */
+  hiddenMediaFor(projectId: string, viewerId: string): Promise<ReadonlySet<string>> {
+    return hiddenMediaIds(this.prisma, projectId, viewerId);
+  }
+
   /** Build the full project snapshot the frontend hydrates its store from.
    *  Permission-filtered: only PMC & client see pending decisions; every other
    *  role (contractor, engineer, worker) is restricted to decided ones. */
@@ -81,6 +89,9 @@ export class SnapshotService {
     // judged against the decision slice of the same snapshot.
     const feedSnapshot = readViewerFeed(this.prisma, this.decisionsQuery, projectId, role, userId);
     const decisionSlicePromise = feedSnapshot.then((f) => f.slice);
+    // #884 — the viewer's hidden drafts (someone else's private places), read once: their photos leave the
+    // photo layer, and inspection evidence on them gets no signed path.
+    const hiddenNodes = hiddenDraftNodeIds(this.prisma, projectId, userId);
     const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, viewerFeed, siteMedia, drawingDtos, companies, nodes] = await Promise.all([
       decisionSlicePromise,
       // Task 10 (Module 4) — the activity spine (`activities` + `phases`) comes from the activities
@@ -91,20 +102,24 @@ export class SnapshotService {
       decisionSlicePromise.then((s) => this.activitiesQuery.snapshotSlice(projectId, { decisionStatuses: s.statuses, decisionDrafts: s.drafts, decisionDeciders: s.deciders, withdrawnReasonVisible: role === 'pmc' })),
       // Task 10 (Module 3) — the role-gated inspection slices come from the module's query (the same
       // per-viewer/role serialization moved there verbatim, so byte-identical), never a direct read.
-      this.inspectionsQuery.snapshotSlice(projectId, role, userId),
+      hiddenNodes.then((ids) => mediaOnNodes(this.prisma, projectId, ids)).then((hidden) => this.inspectionsQuery.snapshotSlice(projectId, role, userId, hidden)),
       // Task 10 — the daily-log slice (latest log core + project-wide materials) comes from the
       // module's query, never a direct `prisma.dailyLog`/`prisma.siteMaterial` read. The progress
       // PHOTOS remain the snapshot's to compose from media (below), so the DTO stays byte-identical.
       this.dailyLogQuery.snapshotSlice(projectId),
       feedSnapshot,
       // Site-reality photos for the daily-log gallery AND the Place view. One query,
-      // capped, newest first; carries nodeId so a photo can be shown at its location.
-      this.prisma.media.findMany({
-        where: { projectId, kind: { in: ['progress', 'inspection', 'material'] } },
-        orderBy: { createdAt: 'desc' },
-        take: SNAPSHOT_SITE_PHOTO_LIMIT,
-        select: { id: true, kind: true, url: true, takenAt: true, nodeId: true },
-      }),
+      // capped, newest first; carries nodeId so a photo can be shown at its location. A photo filed
+      // on someone else's private draft (before #881) is as private as the place: the nodes module
+      // names the viewer's hidden drafts, and their photos are left out (unfiled photos stay).
+      hiddenNodes.then((hidden) =>
+        this.prisma.media.findMany({
+          where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...(hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {}) },
+          orderBy: { createdAt: 'desc' },
+          take: SNAPSHOT_SITE_PHOTO_LIMIT,
+          select: { id: true, kind: true, url: true, takenAt: true, nodeId: true },
+        }),
+      ),
       // Task 10 — the drawings register comes from the module's query (the baked per-viewer register:
       // draft-author visibility + the viewer's ack/recipient state + fresh signed urls), never a direct
       // `prisma.drawing` read. Byte-identical to the pre-extraction inline shaping.

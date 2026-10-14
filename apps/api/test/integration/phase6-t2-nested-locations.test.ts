@@ -363,6 +363,7 @@ describe('phase-6-task-2 — nested locations (§A, live PG)', () => {
     const bare = new NodesService(
       stub as never, null as never, null as never, null as never,
       null as never, null as never, null as never, null as never,
+      null as never,
     );
     const outcome = await capture(bare.publish('p1', 'n1', { sub: 'u1', role: 'pmc', projectId: 'p1' } as AuthUser));
     expect(outcome.ok).toBe(false); // the sentinel stopped the write after the first tree read

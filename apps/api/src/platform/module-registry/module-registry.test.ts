@@ -139,7 +139,8 @@ describe('Phase 2 Task 7 — module registry', () => {
       // Task 10 Module 4 (+ correction): node deletion unfiles placed inspections, filed activities,
       // filed drawings AND staged site materials — each through its owning module's participant,
       // appending inspection.unfiled / activity.unfiled / drawing.unfiled / material.unfiled
-      nodes: ['inspections', 'activities', 'drawings', 'daily-log'],
+      // #884 — and its draft-photo guard counts photos through MediaParticipant (no Media read)
+      nodes: ['inspections', 'activities', 'drawings', 'daily-log', 'media'],
       // Phase 6 task 4b (§A.1) adds `decisions`: the membership/org-membership standing writes
       // consult the decisions-owned open-holder answer (DecisionsParticipant.holdsOpenDecisions)
       // inside their own transaction — the orgs → decisions half of the bidirectional
