@@ -273,11 +273,13 @@ describe('MediaService — location spine (nodeId)', () => {
     expect(prisma.media.create.mock.calls[0][0].data.nodeId).toBe('r1');
   });
 
-  it('rejects a photo filed on another author\'s private draft, and stores nothing', async () => {
+  it('rejects a photo filed on another author\'s private draft, keeps no row and cleans up the object', async () => {
     const { svc, prisma, storage } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'someone-else' }]);
+    Object.assign(prisma.media, { findFirst: vi.fn(async () => null) });
     await expect(svc.create('ambli', uploader, { ...input, nodeId: 'd1' })).rejects.toBeInstanceOf(BadRequestException);
-    expect(storage.put).not.toHaveBeenCalled();
+    // decided inside the transaction (after the bytes are stored), so the earned cleanup removes them
     expect(prisma.media.create).not.toHaveBeenCalled();
+    expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
   });
 
   it('files a photo on the uploader\'s own private draft', async () => {

@@ -13,7 +13,7 @@ import { InventoryParticipant } from '../inventory/inventory.participant';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialParticipant } from '../commercial/commercial.participant';
-import { resolveVisibleProjectNode } from '../nodes/node-scope';
+import { resolveProjectNode, resolveVisibleProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
@@ -71,9 +71,9 @@ export class MediaService {
       });
       if (existing) return { id: existing.id, url: this.signed.mediaPath(existing.id) };
     }
-    // Location spine: the place tag belongs to this project AND is one the uploader can see (never another
-    // author's private draft) — validated before storing.
-    const nodeId = await resolveVisibleProjectNode(this.prisma, projectId, input.nodeId, user.sub);
+    // Location spine: validate the place tag belongs to this project before storing. Whether the uploader
+    // can SEE it (never another author's private draft) is the tree's state, decided inside the transaction.
+    const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
     // Project-owned references: a photo may only point at THIS project's decision/log.
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     // Task 10 — a daily-log reference is validated through the daily-log module's query, not `project-ref`.
@@ -109,6 +109,9 @@ export class MediaService {
       // the row and its `media.uploaded` event commit together (a replay of the same
       // clientKey lands on the unique below and records NO second event)
       row = await this.prisma.$transaction(async (tx) => {
+        // first statement: the place's visibility under the tree lock's shared side (a refusal here
+        // rolls back and goes through the earned object cleanup below)
+        await resolveVisibleProjectNode(tx, projectId, nodeId, user.sub);
         const created = await tx.media.create({
           data: {
             projectId,
@@ -195,9 +198,10 @@ export class MediaService {
   async setNode(id: string, projectId: string, nodeId: string | null, user: AuthUser): Promise<SnapshotDto> {
     const row = await this.prisma.media.findUnique({ where: { id } });
     if (!row || row.projectId !== projectId) throw new NotFoundException('Media not found');
-    const resolved = await resolveVisibleProjectNode(this.prisma, projectId, nodeId, user.sub);
     const actor = await resolveActor(this.prisma, user);
     const ev = await this.prisma.$transaction(async (tx) => {
+      // first statement: the place's visibility under the tree lock's shared side
+      const resolved = await resolveVisibleProjectNode(tx, projectId, nodeId, user.sub);
       await tx.media.update({ where: { id }, data: { nodeId: resolved } });
       return emitEvent(tx, { projectId, actor, eventType: 'media.refiled', entityType: 'Media', entityId: id, payload: { nodeId: resolved }, effectKey: 'media.refiled', dispatch: {} });
     });

@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { lockProjectTree } from '../../src/common/tree-lock';
 
 /**
  * #482 — a photo is filed only on a place its uploader can see: a published place, or a private draft the
@@ -81,5 +82,35 @@ describe('a photo goes only on a place its uploader can see (live PG)', () => {
     expect((await t.prisma.media.findUniqueOrThrow({ where: { id: photo.body.id } })).nodeId).toBe(nodeId('published'));
     // the draft's author may re-file it there
     expect((await refile(pmc, photo.body.id, nodeId('pmc-draft'))).status).toBe(200);
+  });
+
+  it('an upload racing a publish waits for it and files the photo on the now-published place', async () => {
+    await t.prisma.projectNode.create({ data: { id: nodeId('racing'), projectId: f.projectA.id, name: 'racing', kind: 'zone', publishedAt: null, authorId: f.memberUser.id } });
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const holding = new Promise<void>((r) => { locked = r; });
+    // a publish in flight: the tree write holds the exclusive tree lock with the place published but not committed
+    const publish = t.prisma.$transaction(async (tx) => {
+      await lockProjectTree(tx, f.projectA.id);
+      await tx.projectNode.update({ where: { id: nodeId('racing') }, data: { publishedAt: new Date() } });
+      locked();
+      await released;
+    }, { timeout: 20_000 });
+    await holding;
+    const upload$ = upload(engineer, { nodeId: nodeId('racing'), clientKey: 'vp-race' }).then((r) => r);
+    // barrier: the upload is queued on the tree lock (an ungranted advisory lock), not merely slow
+    let waiting = 0;
+    for (let i = 0; i < 100 && waiting === 0; i++) {
+      const [row] = await t.prisma.$queryRaw<Array<{ n: number }>>`SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`;
+      waiting = row.n;
+      if (!waiting) await new Promise((r) => setTimeout(r, 50));
+    }
+    release();
+    await publish;
+    const res = await upload$;
+    expect(waiting).toBeGreaterThan(0);
+    expect(res.status).toBe(201);
+    expect((await t.prisma.media.findUniqueOrThrow({ where: { id: res.body.id } })).nodeId).toBe(nodeId('racing'));
   });
 });
