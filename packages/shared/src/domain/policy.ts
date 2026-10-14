@@ -214,6 +214,7 @@ export const ROLE_POLICY = {
   // PMC closes a visit left open (S1).
   'siteVisit.start': ['pmc', 'consultant'],
   'siteVisit.end': ['pmc', 'consultant'],
+  'siteVisit.edit': ['pmc', 'consultant'],
   'siteVisit.close': ['pmc'],
   'dailyLog.start': ['engineer', 'pmc'],
   'dailyLog.addMaterial': ['engineer', 'pmc'],
