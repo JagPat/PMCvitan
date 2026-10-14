@@ -17,8 +17,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: site-map-633
-reviewed_merge: 6564494
-open_pr: 877
+reviewed_merge: 4a60d1a
+open_pr: 879
 next_task: phase-6-task-4d-iii
 blocking_directive: none
 updated: 2026-10-14
@@ -26,10 +26,9 @@ updated: 2026-10-14
 
 ### Current unit
 
-**#633 unit A: "Places inside" and "Work and records here"** (#877, on `claude/project-thread-cm4aq9`): an opened
-place lists its child places, then one panel with a section per kind of record, inspections with open issues first.
-#847 merged as `6564494` (#865); #876 holds its deferred notes. Lane 1; units B (lock reasons, "Colours mean" key)
-and C (desktop tree layout) follow.
+**#633 unit B: "Colours mean" key and lock reasons** (#879, on `claude/project-thread-cm4aq9`): the Site Map names
+each status colour in words, and a locked decision's row says why and how to change it. Unit A merged as `4a60d1a`
+(#877). Lane 1; unit C (desktop tree layout) follows.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.
