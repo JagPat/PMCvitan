@@ -151,12 +151,12 @@ describe('Top 10 #4b unit B — the notices each role is served (live PG)', () =
   ];
 
   /** One served notice as pinned: labels for the run-random titles and ids, everything else verbatim. */
-  interface Pinned { notice: string; text: string; color: string; decisionId?: string; inspectionId?: string }
+  interface Pinned { notice: string; text: string; color: string; decisionId?: string; inspectionId?: string; facts?: string }
 
   /**
    * The feed each role is served, captured on `cb9386d` before the filter moved. Every notice is
    * served with `time: 'just now'` (its stored value) and with exactly the keys shown plus `id`, `at`,
-   * `text`, `time` and `color`.
+   * `text`, `time` and `color`. (#839: `facts` is pinned as a one-line reading of the served facts.)
    */
   const PINNED: Record<Role, Pinned[]> = {
     pmc: [
@@ -169,7 +169,7 @@ describe('Top 10 #4b unit B — the notices each role is served (live PG)', () =
       { notice: 'pending-unlinked', text: "Decision awaiting approval: legacy RUN", color: '#C08A2D' },
       { notice: 'plain', text: "Site note RUN", color: '#3F7A54' },
       { notice: 'decision.withdrawn:D4', text: "Decision withdrawn: D4 — Scope changed", color: '#6B665C', decisionId: 'D4' },
-      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3' },
+      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3', facts: 'approval by the client: D3 — Granite' },
       { notice: 'decision.published:D3', text: "Decision awaiting approval: D3", color: '#C08A2D', decisionId: 'D3' },
       { notice: 'decision.published:D2', text: "Decision awaiting approval: D2", color: '#C08A2D', decisionId: 'D2' },
       { notice: 'decision.published:D1', text: "Decision awaiting approval: D1", color: '#C08A2D', decisionId: 'D1' },
@@ -181,7 +181,7 @@ describe('Top 10 #4b unit B — the notices each role is served (live PG)', () =
       { notice: 'pending-D1', text: "Decision awaiting approval: D1", color: '#C08A2D', decisionId: 'D1' },
       { notice: 'pending-unlinked', text: "Decision awaiting approval: legacy RUN", color: '#C08A2D' },
       { notice: 'plain', text: "Site note RUN", color: '#3F7A54' },
-      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3' },
+      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3', facts: 'approval by the client: D3 — Granite' },
       { notice: 'decision.published:D3', text: "Decision awaiting approval: D3", color: '#C08A2D', decisionId: 'D3' },
       { notice: 'decision.published:D1', text: "Decision awaiting approval: D1", color: '#C08A2D', decisionId: 'D1' },
     ],
@@ -191,7 +191,7 @@ describe('Top 10 #4b unit B — the notices each role is served (live PG)', () =
       { notice: 'note-D3', text: "Note on D3", color: '#6B665C', decisionId: 'D3' },
       { notice: 'pending-D2', text: "Decision awaiting approval: D2", color: '#C08A2D', decisionId: 'D2' },
       { notice: 'plain', text: "Site note RUN", color: '#3F7A54' },
-      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3' },
+      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3', facts: 'approval by the client: D3 — Granite' },
       { notice: 'decision.published:D2', text: "Decision awaiting approval: D2", color: '#C08A2D', decisionId: 'D2' },
     ],
     contractor: [
@@ -199,28 +199,28 @@ describe('Top 10 #4b unit B — the notices each role is served (live PG)', () =
       { notice: 'note-D5', text: "Note on D5", color: '#6B665C' },
       { notice: 'note-D3', text: "Note on D3", color: '#6B665C', decisionId: 'D3' },
       { notice: 'plain', text: "Site note RUN", color: '#3F7A54' },
-      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3' },
+      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3', facts: 'approval by the client: D3 — Granite' },
     ],
     consultant: [
       { notice: 'inspection', text: "New checklist issued: RUN", color: '#C08A2D', inspectionId: 'insp-RUN' },
       { notice: 'note-D5', text: "Note on D5", color: '#6B665C' },
       { notice: 'note-D3', text: "Note on D3", color: '#6B665C', decisionId: 'D3' },
       { notice: 'plain', text: "Site note RUN", color: '#3F7A54' },
-      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3' },
+      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3', facts: 'approval by the client: D3 — Granite' },
     ],
     architect: [
       { notice: 'inspection', text: "New checklist issued: RUN", color: '#C08A2D', inspectionId: 'insp-RUN' },
       { notice: 'note-D5', text: "Note on D5", color: '#6B665C' },
       { notice: 'note-D3', text: "Note on D3", color: '#6B665C', decisionId: 'D3' },
       { notice: 'plain', text: "Site note RUN", color: '#3F7A54' },
-      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3' },
+      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3', facts: 'approval by the client: D3 — Granite' },
     ],
     worker: [
       { notice: 'inspection', text: "New checklist issued: RUN", color: '#C08A2D', inspectionId: 'insp-RUN' },
       { notice: 'note-D5', text: "Note on D5", color: '#6B665C' },
       { notice: 'note-D3', text: "Note on D3", color: '#6B665C', decisionId: 'D3' },
       { notice: 'plain', text: "Site note RUN", color: '#3F7A54' },
-      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3' },
+      { notice: 'decision.approved:D3', text: "Client approved D3 — Granite", color: '#3F7A54', decisionId: 'D3', facts: 'approval by the client: D3 — Granite' },
     ],
   };
 
@@ -235,7 +235,8 @@ describe('Top 10 #4b unit B — the notices each role is served (live PG)', () =
       expect(n.at, 'served at is the stored instant').toBe(row!.at.toISOString());
       expect(n.time).toBe(row!.time);
       // unit C adds `unread`; this suite writes no receipt, so every served notice is unread
-      const { id, at: _at, time: _time, text, color, decisionId, inspectionId, unread, ...unexpected } = n;
+      // #839 adds `facts` beside an approval or forward notice's text (pinned below as a one-line reading)
+      const { id, at: _at, time: _time, text, color, decisionId, inspectionId, unread, facts, ...unexpected } = n;
       expect(unexpected, 'no key beyond the delivered shape').toStrictEqual({});
       expect(unread).toBe(true);
       return {
@@ -244,6 +245,8 @@ describe('Top 10 #4b unit B — the notices each role is served (live PG)', () =
         color,
         ...(decisionId !== undefined ? { decisionId: labelOf.get(decisionId) } : {}),
         ...(inspectionId !== undefined ? { inspectionId: unrun(inspectionId) } : {}),
+        ...(facts?.kind === 'approval' ? { facts: `approval by ${facts.byClient ? 'the client' : facts.actorName}: ${unrun(facts.title)} — ${facts.material}` } : {}),
+        ...(facts?.kind === 'forward' ? { facts: `forward to ${facts.toRole ?? facts.to}: ${unrun(facts.title)}` } : {}),
       };
     });
   };

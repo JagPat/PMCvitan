@@ -8,6 +8,7 @@
  * feed for every other role — otherwise the decision's title leaks through the bell
  * even though the decision itself is hidden.
  */
+import type { NoticeFacts } from '@vitan/shared';
 import { ROLE_LABEL } from '../common/actor';
 
 const PENDING_DECISION_PREFIX = 'Decision awaiting approval';
@@ -164,4 +165,36 @@ export function finalizedApprovalNotice(f: ApprovedDecisionNoticeFacts, finaliza
     ? ` — countersigned by ${finalizerName}`
     : ` — finalized by ${finalizerName} with no active architect`;
   return `${approvedDecisionNotice(f)}${suffix}`;
+}
+
+/**
+ * #827 (#839) — the facts each approval and forward notice above is built from, served beside the text so the
+ * bell can say the line in Hindi or Gujarati (role names included) without reading names, titles, materials or
+ * roles back out of the English. Built from the SAME arguments as the text, by the same callers, so the two
+ * cannot disagree (pinned in `notice-facts.test.ts`).
+ */
+export function approvalNoticeFacts(
+  f: ApprovedDecisionNoticeFacts,
+  ending: Extract<NoticeFacts, { kind: 'approval' }>['ending'] = null,
+): NoticeFacts {
+  return {
+    kind: 'approval',
+    byClient: !f.onBehalfOf && f.deciderKind === 'client',
+    actorName: f.actorName,
+    actorRole: f.actorRole,
+    title: f.title,
+    material: f.material,
+    onBehalfOf: f.onBehalfOf,
+    ending,
+  };
+}
+
+export function finalizedApprovalNoticeFacts(f: ApprovedDecisionNoticeFacts, finalization: ApprovalFinalization, finalizerName: string): NoticeFacts {
+  return approvalNoticeFacts(f, { kind: finalization === 'countersign' ? 'countersigned' : 'finalized', by: finalizerName });
+}
+
+/** `toKind` is the forward's target designation kind (`member`, or a role in {@link DESIGNATION_ROLE_LABEL}). */
+export function forwardedNoticeFacts(title: string, toLabel: string, toKind: string | null): NoticeFacts {
+  const toRole = toKind === 'client' || toKind === 'pmc' || toKind === 'architect' ? toKind : null;
+  return { kind: 'forward', title, to: toLabel, toRole };
 }
