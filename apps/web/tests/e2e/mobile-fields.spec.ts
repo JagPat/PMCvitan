@@ -1166,8 +1166,8 @@ test('phone and worker OTP recovery actions meet the target floor', async ({ pag
   await page.getByTestId('lang-switch').click();
   await sweepActionTargets(page, 'Language sheet');
   await page.getByTestId('lang-option-en').click();
-  await page.getByTestId('tab-more').click();
-  await page.getByTestId('more-item-team-access').click();
+  // #482 QA: the access screen left the engineer's menu; its route still opens it
+  await page.evaluate(() => (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed({ screen: 'team-access' }));
   for (const step of ['phone', 'otp']) {
     await page.evaluate((step) => {
       (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed({
