@@ -14,6 +14,22 @@ import { consultationOpen } from './consultation-open';
 import { RoleStandingQuery, type KernelReadClient } from '../platform/role-standing.query';
 import { readServableGeneration, stillServableAfterRead } from '../platform/projections/generation';
 
+/** The published, client-held decisions open for the client's decision, new or reopened: what the PMC brief counts
+ *  (`waitingOnClient`) and the "Awaiting client" summary lists. */
+function waitingOnClientWhere(projectId: string): Prisma.DecisionWhereInput {
+  return { projectId, publishedAt: { not: null }, deciderKind: 'client', status: { in: ['pending', 'change'] } };
+}
+
+/** One row of the "Awaiting client" summary (`awaitingClientSummary`): what waits on the client and where. */
+export interface AwaitingClientSummaryRow {
+  id: string;
+  title: string;
+  room: string;
+  nodeId: string | null;
+  status: 'pending' | 'change';
+  waitingSince: string;
+}
+
 /**
  * Phase 2 Task 8 — the decisions module's PUBLIC READ boundary (its query contract).
  *
@@ -647,7 +663,7 @@ export class DecisionsQueryService {
    *  that are open (pending, or reopened for re-approval), and when the longest-waiting one was
    *  published. A draft is weightless, as everywhere. */
   async waitingOnClient(projectId: string): Promise<{ count: number; oldestPublishedAt: Date | null; onlyId: string | null }> {
-    const where: Prisma.DecisionWhereInput = { projectId, publishedAt: { not: null }, deciderKind: 'client', status: { in: ['pending', 'change'] } };
+    const where = waitingOnClientWhere(projectId);
     // Top 10 #3 gap 13 (#799) — the first two waiting, oldest first: the oldest dates the wait, and when it is the
     // only one the brief names it. #803 Codex 4246569457 — the count and the rows are ONE snapshot (REPEATABLE
     // READ, read-only), so a decision approved and another published between them can never pass as "the one"
@@ -656,6 +672,27 @@ export class DecisionsQueryService {
       this.prisma.decision.findMany({ where, orderBy: [{ publishedAt: 'asc' }, { id: 'asc' }], take: 2, select: { id: true, publishedAt: true } }),
     ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     return { count, oldestPublishedAt: firstTwo[0]?.publishedAt ?? null, onlyId: firstTwo.length === 1 ? firstTwo[0].id : null };
+  }
+
+  /** #482 QA check (14 Oct 2026) — the read-only "Awaiting client" list an engineer, contractor or consultant
+   *  plans by: the SAME open, published, client-held decisions `waitingOnClient` counts, oldest first, as a
+   *  SUMMARY only. Those roles never receive the pending rows themselves (`decisionVisibleToViewer` keeps an open
+   *  demand to its decider), so this names what waits and where, never the options, prices or approval controls.
+   *  `waitingSince` is the publication: for a reopened (`change`) row it dates the decision, not the reopening. */
+  async awaitingClientSummary(projectId: string): Promise<AwaitingClientSummaryRow[]> {
+    const rows = await this.prisma.decision.findMany({
+      where: waitingOnClientWhere(projectId),
+      orderBy: [{ publishedAt: 'asc' }, { id: 'asc' }],
+      select: { id: true, title: true, room: true, nodeId: true, status: true, publishedAt: true },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      room: r.room,
+      nodeId: r.nodeId,
+      status: r.status as AwaitingClientSummaryRow['status'], // the filter admits these two only
+      waitingSince: (r.publishedAt as Date).toISOString(),
+    }));
   }
 
   /** U3a — the client approvals recorded at or after `since` (the PMC brief's "client approvals"):
