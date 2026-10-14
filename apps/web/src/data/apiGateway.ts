@@ -349,6 +349,17 @@ export function decisionsReadMode(): 'snapshot' | 'moduleQuery' {
 }
 
 /** Phase 2 Task 9 — the module-owned decisions read payload (projection-served, with live fallback). */
+/** One row of `GET /projects/:id/decisions/awaiting-client`: a client-held open decision, without its options,
+ *  prices or controls. `waitingSince` is when it was issued (ISO). */
+export interface AwaitingClientRow {
+  id: string;
+  title: string;
+  room: string;
+  nodeId: string | null;
+  status: 'pending' | 'change';
+  waitingSince: string;
+}
+
 export interface ModuleDecisions {
   decisions: Decision[];
   source: 'projection' | 'live';
@@ -882,6 +893,12 @@ export class ApiGateway {
    *  under the snapshot's scope lease when `DECISIONS_READ_MODE === 'moduleQuery'` (XOR read-ownership). */
   decisions(): Promise<ModuleDecisions> {
     return this.req<ModuleDecisions>(`/projects/${this.projectId}/decisions`);
+  }
+
+  /** #482 QA (14 Oct 2026) — what waits on the CLIENT, as a summary any project member may read: the engineer,
+   *  contractor and consultant plan around it without receiving the decisions themselves. */
+  awaitingClient(): Promise<AwaitingClientRow[]> {
+    return this.req<AwaitingClientRow[]>(`/projects/${this.projectId}/decisions/awaiting-client`);
   }
 
   /** Phase 2 Task 10 — the MODULE-OWNED daily-log read (projection-served, live fallback). Fetched

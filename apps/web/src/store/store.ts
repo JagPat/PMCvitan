@@ -583,6 +583,9 @@ export interface AppActions {
   loadPortfolio: () => void;
   /** U3b — load the PMC's daily brief (session-scoped, like the portfolio) */
   loadBrief: () => void;
+  /** #482 QA — the "Awaiting client" summary from the server; null with no server (the local demo), where the
+   *  caller reads the seeded decisions instead. The caller keeps the rows and drops a reply from another scope. */
+  fetchAwaitingClient: () => Promise<Awaited<ReturnType<ApiGateway['awaitingClient']>> | null>;
   loadShell: () => void;
   /** Phase 3 Task 7 — fetch the pilot Materials bundle (readiness + requirements + procurement + POs +
    *  stock + issues) together, ONLY when the active project has the `materials` capability. Scope-guarded
@@ -3807,6 +3810,7 @@ export const useStore = create<Store>()(
         }))
         .catch(() => {});
     },
+    fetchAwaitingClient: () => (gateway ? gateway.awaitingClient() : Promise.resolve(null)),
     // Phase 2 Task 9 — the project-shell summary: populate `enabledModules` for the manifest-driven
     // nav. Project-scoped — a reply that lands after a switch / re-auth is dropped (guarded by scope).
     loadShell: () => {
