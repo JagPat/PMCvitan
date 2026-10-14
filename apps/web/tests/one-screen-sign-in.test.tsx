@@ -278,8 +278,25 @@ describe('#827 one-screen sign-in', () => {
     expect(r.queryByText('Could not send a sign-in code right now. Use “Sign in with email” below.')).not.toBeInTheDocument();
   });
 
+  it('an email sign-in error after a phone error is never shown as the phone error re-worded (#886 round 1)', async () => {
+    const offline = () => Promise.reject(new TypeError('Failed to fetch'));
+    const { useStore } = await load({ requestOtp: offline, login: offline } as unknown as Partial<ApiGateway>);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    const { shownAccessError } = await import('@/store/store');
+    expect(useStore.getState().access.error).toBe('Could not reach the server. Check your connection and try again.');
+    useStore.setState({ lang: 'hi' });
+    act(() => useStore.getState().accGoLogin());
+    act(() => useStore.getState().login('pmc@vitan.in', 'secret'));
+    await flush();
+    // the email sign-in is English-only: its own offline message, not the phone message in Hindi
+    expect(shownAccessError(useStore.getState().access, 'hi')).toBe('Could not reach the server. Check your connection and try again.');
+  });
+
   for (const [label, failure] of [
     ['no connection', new TypeError('Failed to fetch')],
+    ['a timeout', Object.assign(new Error('/auth/otp/verify 408'), { status: 408 })],
     ['a server fault', Object.assign(new Error('/auth/otp/verify 502'), { status: 502 })],
   ] as const) {
     it(`a code check that fails with ${label} keeps the code and checks it again on Verify (#886)`, async () => {

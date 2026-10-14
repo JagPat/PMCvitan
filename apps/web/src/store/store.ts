@@ -884,7 +884,8 @@ function otpRequestFailure(err: unknown): AccessErrorWhy {
 function otpVerifyFailure(err: unknown): AccessErrorWhy {
   const status = httpStatusOf(err);
   if (status === 429) return otpThrottle(err);
-  if (status === undefined || status >= 500) return { key: 'checkFailed' };
+  // 408: the check timed out on the way (a server or proxy), so the code was never judged
+  if (status === undefined || status === 408 || status >= 500) return { key: 'checkFailed' };
   return { key: 'wrongCode' };
 }
 
@@ -912,10 +913,10 @@ function accessError(why: AccessErrorWhy, lang: Lang): AccessErrorKey {
 }
 
 /** The sign-in error to show, in the gate's current language (#886: a switch after a failure re-translates
- *  it). A key left behind by a later, differently worded error is ignored. */
+ *  it). Every other write of `access.error` clears `errorKey`, so a key is always the current error's own. */
 export function shownAccessError(access: Pick<AccessState, 'error' | 'errorKey'>, lang: Lang): string | null {
   const k = access.errorKey;
-  if (!access.error || !k || k.text !== access.error) return access.error;
+  if (!access.error || !k) return access.error;
   return accessErrorText(k, lang);
 }
 
@@ -5966,7 +5967,7 @@ export const useStore = create<Store>()(
         // team → phone+OTP; trade → pick trade first; worker → tap-photo badge
         s.access.step = who === 'worker' ? 'badge' : who === 'trade' ? 'trade' : 'phone';
         s.access.otp = '';
-        s.access.error = null;
+        s.access.errorKey = null; s.access.error = null;
         s.access.devCode = null;
       }),
     accTrade: (t) =>
@@ -5974,19 +5975,19 @@ export const useStore = create<Store>()(
         s.access.trade = t;
         s.access.step = 'phone';
         s.access.otp = '';
-        s.access.error = null;
+        s.access.errorKey = null; s.access.error = null;
         s.access.devCode = null;
       }),
     accSetPhone: (v) =>
       set((s) => {
         s.access.phone = v.replace(/\D/g, '').slice(0, 10);
-        s.access.error = null;
+        s.access.errorKey = null; s.access.error = null;
       }),
     accGoLogin: () =>
       set((s) => {
         s.access.generation += 1;
         s.access.step = 'login';
-        s.access.error = null;
+        s.access.errorKey = null; s.access.error = null;
         s.access.sending = false;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
@@ -5994,21 +5995,21 @@ export const useStore = create<Store>()(
     login: (email, password) => {
       const em = email.trim().toLowerCase();
       if (!em || !password) {
-        set((s) => { s.access.error = 'Enter your email and password.'; });
+        set((s) => { s.access.errorKey = null; s.access.error = 'Enter your email and password.'; });
         return;
       }
       if (gateway) {
-        set((s) => { s.access.sending = true; s.access.error = null; });
+        set((s) => { s.access.sending = true; s.access.errorKey = null; s.access.error = null; });
         gateway
           .login(em, password)
           .then((res) => applyAuthResult(res))
-          .catch((err: unknown) => set((s) => { s.access.sending = false; s.access.error = signInFailureMessage(err); }));
+          .catch((err: unknown) => set((s) => { s.access.sending = false; s.access.errorKey = null; s.access.error = signInFailureMessage(err); }));
         return;
       }
       // local demo: map the seeded demo emails to their role (any password)
       const role = em.startsWith('pmc@') ? 'pmc' : em.startsWith('client@') ? 'client' : em.startsWith('contractor@') ? 'contractor' : null;
       if (!role) {
-        set((s) => { s.access.error = 'Demo: use pmc@ / client@ / contractor@vitan.in.'; });
+        set((s) => { s.access.errorKey = null; s.access.error = 'Demo: use pmc@ / client@ / contractor@vitan.in.'; });
         return;
       }
       set((s) => {
@@ -6019,13 +6020,13 @@ export const useStore = create<Store>()(
       get().flash('Signed in as ' + role + ' (demo).');
     },
     accSetEmail: (v) =>
-      set((s) => { s.access.email = v; s.access.error = null; }),
+      set((s) => { s.access.email = v; s.access.errorKey = null; s.access.error = null; }),
     accGoPasswordSetup: () =>
       set((s) => {
         s.access.generation += 1;
         s.access.step = 'password-email';
         s.access.otp = '';
-        s.access.error = null;
+        s.access.errorKey = null; s.access.error = null;
         s.access.sending = false;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
@@ -6034,11 +6035,11 @@ export const useStore = create<Store>()(
       const email = get().access.email.trim().toLowerCase();
       if (get().access.sending) return;
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-        set((s) => { s.access.error = 'Enter a valid invited email address.'; });
+        set((s) => { s.access.errorKey = null; s.access.error = 'Enter a valid invited email address.'; });
         return;
       }
       if (!gateway) {
-        set((s) => { s.access.error = 'Password setup needs the live server.'; });
+        set((s) => { s.access.errorKey = null; s.access.error = 'Password setup needs the live server.'; });
         return;
       }
       let generation = 0;
@@ -6046,7 +6047,7 @@ export const useStore = create<Store>()(
         s.access.generation += 1;
         generation = s.access.generation;
         s.access.sending = true;
-        s.access.error = null;
+        s.access.errorKey = null; s.access.error = null;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
       });
@@ -6064,7 +6065,7 @@ export const useStore = create<Store>()(
           if (get().access.generation !== generation) return;
           set((s) => {
             s.access.sending = false;
-            s.access.error = httpStatusOf(err) === 429
+            s.access.errorKey = null; s.access.error = httpStatusOf(err) === 429
               ? `Too many code requests. ${throttleWait(err)}, then try again.`
               : 'Could not send the code. Please try again.';
           });
@@ -6080,7 +6081,7 @@ export const useStore = create<Store>()(
         s.access.generation += 1;
         generation = s.access.generation;
         s.access.sending = true;
-        s.access.error = null;
+        s.access.errorKey = null; s.access.error = null;
       });
       gateway.passwordCredentialVerify(requestId, code)
         .then((result) => {
@@ -6094,22 +6095,22 @@ export const useStore = create<Store>()(
         })
         .catch(() => {
           if (get().access.generation !== generation) return;
-          set((s) => { s.access.sending = false; s.access.otp = ''; s.access.error = 'Wrong or expired code. Request a new code and try again.'; });
+          set((s) => { s.access.sending = false; s.access.otp = ''; s.access.errorKey = null; s.access.error = 'Wrong or expired code. Request a new code and try again.'; });
         });
     },
     completePasswordSetup: (password, confirmation) => {
       const access = get().access;
       if (access.sending) return;
       if (password !== confirmation) {
-        set((s) => { s.access.error = 'Passwords do not match.'; });
+        set((s) => { s.access.errorKey = null; s.access.error = 'Passwords do not match.'; });
         return;
       }
       if (password.length < 12 || password.length > 128) {
-        set((s) => { s.access.error = 'Use a password between 12 and 128 characters.'; });
+        set((s) => { s.access.errorKey = null; s.access.error = 'Use a password between 12 and 128 characters.'; });
         return;
       }
       if (!gateway || !access.passwordSetupToken) {
-        set((s) => { s.access.error = 'This setup link expired. Request a new code.'; });
+        set((s) => { s.access.errorKey = null; s.access.error = 'This setup link expired. Request a new code.'; });
         return;
       }
       const setupToken = access.passwordSetupToken;
@@ -6118,7 +6119,7 @@ export const useStore = create<Store>()(
         s.access.generation += 1;
         generation = s.access.generation;
         s.access.sending = true;
-        s.access.error = null;
+        s.access.errorKey = null; s.access.error = null;
       });
       gateway.passwordCredentialComplete(setupToken, password)
         .then((result) => {
@@ -6127,7 +6128,7 @@ export const useStore = create<Store>()(
         })
         .catch(() => {
           if (get().access.generation !== generation) return;
-          set((s) => { s.access.sending = false; s.access.error = 'Could not save the password. Request a new code and try again.'; });
+          set((s) => { s.access.sending = false; s.access.errorKey = null; s.access.error = 'Could not save the password. Request a new code and try again.'; });
         });
     },
     accGoEmailOtp: () =>
@@ -6135,7 +6136,7 @@ export const useStore = create<Store>()(
         s.access.generation += 1;
         s.access.step = 'emailentry';
         s.access.otp = '';
-        s.access.error = null;
+        s.access.errorKey = null; s.access.error = null;
         s.access.devCode = null;
         s.access.sending = false;
       }),
@@ -6143,14 +6144,14 @@ export const useStore = create<Store>()(
       const email = get().access.email.trim().toLowerCase();
       if (get().access.sending) return;
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-        set((s) => { s.access.error = 'Enter a valid email address.'; });
+        set((s) => { s.access.errorKey = null; s.access.error = 'Enter a valid email address.'; });
         return;
       }
       if (!gateway) {
-        set((s) => { s.access.step = 'emailcode'; s.access.otp = ''; s.access.error = null; s.access.devCode = null; });
+        set((s) => { s.access.step = 'emailcode'; s.access.otp = ''; s.access.errorKey = null; s.access.error = null; s.access.devCode = null; });
         return;
       }
-      set((s) => { s.access.sending = true; s.access.error = null; });
+      set((s) => { s.access.sending = true; s.access.errorKey = null; s.access.error = null; });
       gateway
         .emailOtpRequest(email)
         .then((r) => {
@@ -6161,10 +6162,10 @@ export const useStore = create<Store>()(
             s.access.devCode = r.devCode ?? null;
           });
         })
-        .catch(() => set((s) => { s.access.sending = false; s.access.error = 'Could not send the code — please try again.'; }));
+        .catch(() => set((s) => { s.access.sending = false; s.access.errorKey = null; s.access.error = 'Could not send the code — please try again.'; }));
     },
     accSetCode: (v) =>
-      set((s) => { s.access.otp = v.replace(/\D/g, '').slice(0, 6); s.access.error = null; }),
+      set((s) => { s.access.otp = v.replace(/\D/g, '').slice(0, 6); s.access.errorKey = null; s.access.error = null; }),
     emailOtpVerify: () => {
       const { email, otp, sending } = get().access;
       if (otp.length < 4 || sending) return;
@@ -6172,17 +6173,17 @@ export const useStore = create<Store>()(
         localEmailSignIn(email.trim().toLowerCase());
         return;
       }
-      set((s) => { s.access.sending = true; s.access.error = null; });
+      set((s) => { s.access.sending = true; s.access.errorKey = null; s.access.error = null; });
       gateway
         .emailOtpVerify(email.trim().toLowerCase(), otp)
         .then((res) => applyAuthResult(res))
-        .catch(() => set((s) => { s.access.sending = false; s.access.otp = ''; s.access.error = 'Wrong or expired code — try again.'; }));
+        .catch(() => set((s) => { s.access.sending = false; s.access.otp = ''; s.access.errorKey = null; s.access.error = 'Wrong or expired code — try again.'; }));
     },
     requestOtp: () => {
       const { phone, sending } = get().access;
       if (sending) return;
       if (phone.length < 10) {
-        set((s) => { s.access.error = 'Enter a 10-digit mobile number.'; });
+        set((s) => { s.access.errorKey = null; s.access.error = 'Enter a 10-digit mobile number.'; });
         return;
       }
       // local demo (no API): skip straight to the code screen
@@ -6190,7 +6191,7 @@ export const useStore = create<Store>()(
         set((s) => {
           s.access.step = 'otp';
           s.access.otp = '';
-          s.access.error = null;
+          s.access.errorKey = null; s.access.error = null;
           s.access.devCode = null;
           s.access.channel = null;
           s.access.codeLength = 4;
@@ -6200,7 +6201,7 @@ export const useStore = create<Store>()(
       // round-2 Codex — "Sign in with email" stays tappable while this is in flight; a late answer must not
       // pull the person back from the email sign-in (the same generation guard as the password flows)
       const generation = get().access.generation;
-      set((s) => { s.access.sending = true; s.access.error = null; });
+      set((s) => { s.access.sending = true; s.access.errorKey = null; s.access.error = null; });
       gateway
         .requestOtp(phone)
         .then((r) => {
@@ -6237,13 +6238,13 @@ export const useStore = create<Store>()(
       const cur = get().access.otp;
       if (get().access.sending) return;
       if (d === 'del') {
-        set((s) => { s.access.otp = cur.slice(0, -1); s.access.error = null; });
+        set((s) => { s.access.otp = cur.slice(0, -1); s.access.errorKey = null; s.access.error = null; });
         return;
       }
       const length = get().access.codeLength ?? 4;
       if (cur.length >= length) return;
       const otp = cur + d;
-      set((s) => { s.access.otp = otp; s.access.error = null; });
+      set((s) => { s.access.otp = otp; s.access.errorKey = null; s.access.error = null; });
       if (otp.length === length) {
         // the short pause lets the last digit show; if the person leaves, deletes or retypes in it, nothing is sent
         const generation = get().access.generation;
@@ -6291,7 +6292,7 @@ export const useStore = create<Store>()(
 
       // round-2 Codex — a verify answer that lands after the person left for the email sign-in signs nothing in
       const generation = a.generation;
-      set((s) => { s.access.sending = true; s.access.error = null; });
+      set((s) => { s.access.sending = true; s.access.errorKey = null; s.access.error = null; });
       gateway
         .verifyOtp(a.phone, a.otp)
         .then((res) => {
