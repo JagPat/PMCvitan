@@ -359,20 +359,8 @@ describe('password setup and recovery', () => {
   });
 });
 
-describe('Google sign-in', () => {
-  it('API mode: exchanges the ID token for a session', async () => {
-    const gw = { googleSignIn: vi.fn().mockResolvedValue({ token: 'JWT-g', role: 'client', projectId: 'ambli', name: 'Mr. Shah' }) };
-    s()._setGateway(gw as unknown as ApiGateway);
-    s().googleSignIn('id-token-abc');
-    expect(gw.googleSignIn).toHaveBeenCalledWith('id-token-abc');
-    await flush();
-    expect(s().role).toBe('client');
-    expect(s().sessionToken).toBe('JWT-g');
-  });
-
-  it('no gateway (demo): flashes that it needs the server', () => {
-    s().googleSignIn('id-token-abc');
-    expect(s().toast).toMatch(/server/i);
-    expect(s().sessionToken).toBeNull();
+describe('Google sign-in is gone (#827: one way in)', () => {
+  it('the store has no Google sign-in action', () => {
+    expect('googleSignIn' in s()).toBe(false);
   });
 });
