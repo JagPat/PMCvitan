@@ -12,7 +12,7 @@ import { addCivilDays, parseCivilDate } from '@vitan/shared';
  */
 
 const FIELD_FMT = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
-const DAY_NAME_FMT = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+const DAY_NAME_FMT = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 const MONTH_FMT = new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -100,7 +100,16 @@ export function DatePicker({
 
   return (
     // an open calendar takes the whole row, so its days stay tappable on a phone
-    <div style={{ flex: open ? '1 1 100%' : '1 1 0', minWidth: 0 }}>
+    // Escape closes an open calendar only, never the form around it
+    <div
+      style={{ flex: open ? '1 1 100%' : '1 1 0', minWidth: 0 }}
+      onKeyDown={(e) => {
+        if (!open || e.key !== 'Escape') return;
+        e.stopPropagation();
+        setOpen(false);
+        toggleRef.current?.focus();
+      }}
+    >
       <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>{label}</div>
       <button
         ref={toggleRef}

@@ -32,7 +32,7 @@ describe('the calendar picker', () => {
     expect((r.getByTestId('p-day-2026-10-04') as HTMLButtonElement).disabled).toBe(true); // before `min`
     expect(r.getByTestId('p-day-2026-10-20').getAttribute('aria-pressed')).toBe('true');
     expect(r.getByTestId('p-day-2026-10-13').getAttribute('aria-current')).toBe('date');
-    expect(r.getByRole('button', { name: '25 October 2026' })).toBeTruthy();
+    expect(r.getByRole('button', { name: 'Sunday, 25 October 2026' })).toBeTruthy();
     fireEvent.click(r.getByTestId('p-day-2026-10-25'));
     expect(onChange).toHaveBeenCalledWith('2026-10-25');
     expect(r.queryByTestId('p-calendar')).toBeNull();
@@ -74,6 +74,18 @@ describe('the calendar picker', () => {
     fireEvent.keyDown(document.activeElement as Element, { key: 'ArrowUp' });
     fireEvent.keyDown(document.activeElement as Element, { key: 'ArrowUp' }); // 1 Oct is before `min`: stays put
     expect(document.activeElement).toBe(r.getByTestId('p-day-2026-10-08'));
+  });
+
+  it('Escape closes an open calendar and returns to its field, without closing the form', () => {
+    const onModalKey = vi.fn();
+    window.addEventListener('keydown', onModalKey);
+    const r = render(<DatePicker label="Starts" value="2026-10-20" onChange={() => {}} testId="p" />);
+    fireEvent.click(r.getByTestId('p'));
+    fireEvent.keyDown(document.activeElement as Element, { key: 'Escape' });
+    window.removeEventListener('keydown', onModalKey);
+    expect(r.queryByTestId('p-calendar')).toBeNull();
+    expect(document.activeElement).toBe(r.getByTestId('p'));
+    expect(onModalKey).not.toHaveBeenCalled();
   });
 
   it('an open calendar follows its value when it changes from outside', () => {
