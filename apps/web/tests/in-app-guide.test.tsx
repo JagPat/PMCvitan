@@ -731,3 +731,60 @@ describe('the PMC is guided from + to publishing a decision', () => {
     expect(leftoverEnglish(tip()!)).toEqual([]);
   });
 });
+
+describe('review round 1 on "record a decision"', () => {
+  it('"Guide me" reaches both Dashboard guides: one not done first, then each in turn', async () => {
+    const { view } = await pmcForDecision();
+    tick();
+    expect(tip()?.getAttribute('data-guide-id')).toBe('record-decision-pmc');
+    press(view.getByTestId('guide-skip'));
+    tick();
+    // both done; the guide started last was "record a decision", so the replay offers the other one
+    press(view.getByTestId('guide-me'));
+    tick();
+    expect(tip()?.getAttribute('data-guide-id')).toBe('raise-issue-pmc');
+    press(view.getByTestId('guide-skip'));
+    tick();
+    press(view.getByTestId('guide-me'));
+    tick();
+    expect(tip()?.getAttribute('data-guide-id')).toBe('record-decision-pmc');
+  });
+
+  it('a record-only publish ("Nobody — record only") is not the guided task', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome } = await import('@/guide/outcomes');
+    const seen: string[] = [];
+    subscribeGuideOutcome((o) => seen.push(o));
+    // a second publish takes a newer lease, so the record's reply comes back superseded (not re-applied)
+    const replies: Array<(v: unknown) => void> = [];
+    act(() => { s.useStore.getState()._setGateway({ createDecision: vi.fn(() => new Promise((resolve) => { replies.push(resolve); })), snapshot: vi.fn(() => new Promise(() => {})) } as never); });
+    s.useStore.getState().issueDecision({ title: 'R', nodeId: 'gf', publish: true, options: [], deciderKind: 'none' } as never);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    s.useStore.getState().issueDecision({ title: 'D', nodeId: 'gf', publish: true, options: [] } as never);
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    replies[0]!({ project: { id: 'project-a' } });
+    await vi.waitFor(() => expect(seen).toEqual(['decision-publish-failed']));
+  });
+
+  it('a publish or issue that answers after a project switch reports nothing to the guide now on screen', async () => {
+    const s = await setup('pmc', 'dashboard');
+    const { subscribeGuideOutcome } = await import('@/guide/outcomes');
+    const seen: string[] = [];
+    subscribeGuideOutcome((o) => seen.push(o));
+    let refuseDecision!: (e: Error) => void;
+    let refuseIssue!: (e: Error) => void;
+    act(() => {
+      s.useStore.getState()._setGateway({
+        createDecision: vi.fn(() => new Promise((_, reject) => { refuseDecision = reject; })),
+        createInspection: vi.fn(() => new Promise((_, reject) => { refuseIssue = reject; })),
+      } as never);
+    });
+    s.useStore.getState().issueDecision({ title: 'T', nodeId: 'gf', publish: true, options: [] } as never);
+    s.useStore.getState().issueChecklist({ title: 'T', zone: 'Z', items: ['a'] });
+    await vi.waitFor(() => expect(refuseDecision).toBeTypeOf('function'));
+    act(() => { s.useStore.setState({ activeProjectId: 'project-b', projectScopeGeneration: 2 }); });
+    await act(async () => { refuseDecision(new Error('no')); refuseIssue(new Error('no')); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(seen).toEqual([]);
+  });
+});

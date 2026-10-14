@@ -4768,9 +4768,13 @@ export const useStore = create<Store>()(
               : `Draft saved: ${input.title} — visible only to you until you publish it.`,
             lease.scope,
           );
-          if (input.publish) emitGuideOutcome(result === 'applied' || result === 'superseded' ? 'decision-published' : 'decision-publish-failed');
+          // the guide teaches putting choices to a decider: a record-only issue is not that task. A reply
+          // that lands after the project or person changed is not about the guide now on screen.
+          if (input.publish && scopeStillCurrent(scope)) {
+            emitGuideOutcome(!record && (result === 'applied' || result === 'superseded') ? 'decision-published' : 'decision-publish-failed');
+          }
         } catch {
-          if (input.publish) emitGuideOutcome('decision-publish-failed');
+          if (input.publish && scopeStillCurrent(scope)) emitGuideOutcome('decision-publish-failed');
           // gate round 12: a failure that lands after a project switch must not toast
           // into the new project (the same stale-toast rule as the success path).
           if (scopeStillCurrent(scope)) get().flash(input.publish ? 'Could not issue the decision — check your access and try again.' : 'Could not save the draft — check your access and try again.');
@@ -5002,11 +5006,13 @@ export const useStore = create<Store>()(
           const accepted = acceptSnapshot(snap, lease);
           const result = accepted === 'superseded' && snap.project.id !== lease.scope.projectId ? 'invalid-project' : accepted;
           consumeSnapshotResult(result, `Checklist issued: ${input.title} — the engineer has been notified.`, lease.scope);
-          emitGuideOutcome(result === 'applied' || result === 'superseded' ? 'checklist-issued' : 'checklist-issue-failed');
+          // a reply that lands after the project or person changed is not about the guide now on screen
+          if (scopeStillCurrent(lease.scope)) emitGuideOutcome(result === 'applied' || result === 'superseded' ? 'checklist-issued' : 'checklist-issue-failed');
         })
         .catch(() => {
+          if (!scopeStillCurrent(lease.scope)) return;
           emitGuideOutcome('checklist-issue-failed');
-          if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
+          get().flash('Could not reach the server — please try again.');
         });
     },
     startDailyLog: () => {

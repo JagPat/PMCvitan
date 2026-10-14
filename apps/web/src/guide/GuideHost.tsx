@@ -23,6 +23,17 @@ function completeStep(doneKey: string, g: ReturnType<typeof useGuideState.getSta
   }
 }
 
+/**
+ * The guide "Guide me" starts when a screen has several ready: one not done yet first, else the one
+ * after the guide started last, so pressing it again in later visits reaches each in turn.
+ */
+function replayOffer(ready: readonly Guide[], done: ReadonlySet<string>, lastStarted: string | null): Guide | null {
+  const notDone = ready.find((g) => !done.has(g.id));
+  if (notDone) return notDone;
+  const last = ready.findIndex((g) => g.id === lastStarted);
+  return ready[(last + 1) % ready.length] ?? null;
+}
+
 const enabled = (el: HTMLElement | null): el is HTMLElement => el !== null && !(el as HTMLButtonElement).disabled;
 
 function sameBox(a: Box | null, b: Box | null): boolean {
@@ -85,9 +96,9 @@ export function GuideHost() {
         setBox(null);
         missing.current = null;
         const startable = (guide: Guide) => enabled(findGuideTarget(guide.steps[0]!.target));
-        g.setOffer(guides.find(startable) ?? null);
-        if (autoUsed.current) return;
         const done = readGuidesDone(key);
+        g.setOffer(replayOffer(guides.filter(startable), done, g.lastStarted));
+        if (autoUsed.current) return;
         const next = guides.find((guide) => !done.has(guide.id));
         if (next && startable(next)) {
           autoUsed.current = true;
