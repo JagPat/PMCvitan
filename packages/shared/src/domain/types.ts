@@ -409,6 +409,9 @@ export interface Review {
   decided: boolean;
   /** set when this review IS a reinspection — the predecessor it re-checks (Task 4) */
   reinspectionOfId?: string;
+  /** #847 — API-less demo only: the PMC sent this review's re-inspection (the demo creates no linked
+   *  re-inspection row, so this is how it tells a rejected review from an approved one). */
+  reinspectionSent?: boolean;
   /** #771 read contract — as {@link Checklist.assigneeId}: stored, not an authority; `null` none, ABSENT unknown. */
   assigneeId?: string | null;
   /** #771 read contract — as {@link Checklist.dueDate}: civil `YYYY-MM-DD`; `null` none, ABSENT unknown. */
@@ -595,7 +598,8 @@ export interface PlacedInspection {
   submitted: boolean;
   decided: boolean;
   /** count of failed/rejected items — a passed inspection has 0 */
-  failedItems: number;  /** #633 — open issues here: the items on a re-inspection not yet decided (0 otherwise).
+  failedItems: number;
+  /** #633 — open issues here: the items on a re-inspection not yet decided (0 otherwise).
    *  Absent from a server older than the field: the count is then unknown, never shown as 0. */
   openIssues?: number;
 }
