@@ -6,7 +6,7 @@ import { projectDataUsable } from '@/store/projectScope';
 import { guidesFor, type Guide } from './guides';
 import { readGuidesDone, markGuideDone } from './guideDone';
 import { useGuideState } from './guideState';
-import { findGuideTarget, findStepTarget, GUIDE_OUTCOME_WAIT_MS, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
+import { findGuideTarget, findStepTarget, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
 import { subscribeGuideOutcome } from './outcomes';
 import { GUIDE_TIPS, GUIDE_WORDS } from './words';
 import styles from './Guide.module.css';
@@ -122,8 +122,9 @@ export function GuideHost() {
       // earlier step whose control is still there. Hidden meanwhile.
       setBox(null);
       const now = Date.now();
-      // a pressed action is on its way: its control may leave while it is (a submitted checklist)
-      if (g.run.waitUntil !== null && now < g.run.waitUntil) {
+      // a pressed action is on its way: its control may leave while it is (the issue form closes on
+      // save). Wait for its outcome however long it takes; stepping back now would guide a second send.
+      if (g.run.waiting) {
         missing.current = null;
         return;
       }
@@ -181,7 +182,7 @@ export function GuideHost() {
       // an action that can fail waits for the store's report (this runs before the control's own
       // handler, so even a report made at once, as in demo mode, finds the wait in place)
       if (current.until === 'outcome') {
-        if (!(pressed as HTMLButtonElement).disabled) g.setWait(Date.now() + GUIDE_OUTCOME_WAIT_MS);
+        if (!(pressed as HTMLButtonElement).disabled) g.setWait(true);
         return;
       }
       completeStep(key, g, pressed.getAttribute('data-guide-key'));
@@ -200,7 +201,7 @@ export function GuideHost() {
         const current = g.run.guide.steps[g.run.step]!;
         if (current.until !== 'outcome' || !current.outcome) return;
         if (outcome === current.outcome.ok) completeStep(key, g, null);
-        else if (outcome === current.outcome.failed) g.setWait(null);
+        else if (outcome === current.outcome.failed) g.setWait(false);
       }),
     [key],
   );

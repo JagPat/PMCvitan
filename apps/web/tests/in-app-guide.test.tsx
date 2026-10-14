@@ -416,8 +416,13 @@ describe('a step that can fail finishes only when it really succeeds (review rou
     press(document.querySelector('[data-guide="issue-checklist"]')!);
     expect(gw.createInspection).toHaveBeenCalledTimes(1);
     expect(document.querySelector('[data-guide="issue-checklist"]')).toBeNull();
+    // however slow the server is, the guide never steps back to + while the request is still on its
+    // way (review round 3): following it then would send the same checklist twice
     tick(2000);
     expect(useGuideState.getState().run?.step).toBe(2);
+    tick(60_000);
+    expect(useGuideState.getState().run?.step).toBe(2);
+    expect(gw.createInspection).toHaveBeenCalledTimes(1);
     expect(done()).toEqual([]);
     // refused: the wait ends and, with the form gone, the guide steps back to +
     await act(async () => { refuse(new Error('refused')); await Promise.resolve(); await Promise.resolve(); });
