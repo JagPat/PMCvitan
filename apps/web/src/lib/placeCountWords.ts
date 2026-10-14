@@ -18,34 +18,46 @@ const NOUNS: Record<PlaceCountWord['key'], [string, string]> = {
   materials: ['material', 'materials'],
 };
 
+export interface PlaceCountOptions {
+  /** AUTH-02: `hidden` for a viewer who never sees inspections (no inspection or issue count, not even a
+   *  zero); `unknown` while a viewer who does see them has no settled read yet; `known` once it has */
+  inspections: 'hidden' | 'unknown' | 'known';
+  /** false while the activities are still loading or failed to load: their count is then unknown */
+  activitiesKnown: boolean;
+  /** the snapshot carries only the newest site photos once that window is full: a count read from it is a
+   *  count of RECENT photos, never the place's whole record */
+  photosCapped: boolean;
+}
+
 /**
  * #633 (mockups 7 and 10) — a place's counts as words, open issues first, zeros left out. A child card and
  * the place it opens read the SAME `placeContents` counts, so the two can never disagree.
  *
- * - `inspections`: whether this viewer sees inspections at all (AUTH-02, pmc/engineer). Others never see an
- *   inspection or open-issue count, not even a zero.
- * - `activitiesKnown`: false while the activities are still loading or failed to load — their count is then
- *   unknown and left out rather than shown as none.
- * An unknown open-issue count (`null`, an older server) is left out, never shown as 0.
+ * An unknown count is left out, never shown as 0, and `complete` says whether every count the viewer may see
+ * is known and whole. Only a complete, empty result may be read as "nothing filed here".
  */
 export function placeCountWords(
   counts: PlaceContents['counts'],
-  opts: { inspections: boolean; activitiesKnown: boolean },
-): PlaceCountWord[] {
-  const n: Partial<Record<PlaceCountWord['key'], number | null>> = {
-    openIssues: opts.inspections ? counts.openIssues : null,
-    inspections: opts.inspections ? counts.inspections : null,
+  opts: PlaceCountOptions,
+): { words: PlaceCountWord[]; complete: boolean } {
+  const inspectionsKnown = opts.inspections === 'known';
+  const n: Record<PlaceCountWord['key'], number | null> = {
+    openIssues: inspectionsKnown ? counts.openIssues : null,
+    inspections: inspectionsKnown ? counts.inspections : null,
     decisions: counts.decisions,
     drawings: counts.drawings,
     photos: counts.photos,
     activities: opts.activitiesKnown ? counts.activities : null,
     materials: counts.materials,
   };
-  const out: PlaceCountWord[] = [];
+  const complete = opts.inspections !== 'unknown' && (opts.inspections === 'hidden' || counts.openIssues !== null)
+    && opts.activitiesKnown && !opts.photosCapped;
+  const words: PlaceCountWord[] = [];
   for (const key of Object.keys(NOUNS) as PlaceCountWord['key'][]) {
     const v = n[key];
     if (typeof v !== 'number' || v <= 0) continue;
-    out.push({ key, text: `${v} ${NOUNS[key][v === 1 ? 0 : 1]}`, alert: key === 'openIssues' });
+    const noun = NOUNS[key][v === 1 ? 0 : 1];
+    words.push({ key, text: `${v} ${key === 'photos' && opts.photosCapped ? `recent ${noun}` : noun}`, alert: key === 'openIssues' });
   }
-  return out;
+  return { words, complete };
 }

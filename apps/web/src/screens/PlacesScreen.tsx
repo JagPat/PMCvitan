@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { decisionRecordLink, inspectionRecordLink, selectVisibleDecisions } from '@/store/selectors';
-import { activitiesReadMode, resolveDrawingUrl } from '@/data/apiGateway';
+import { decisionRecordLink, inspectionRecordLink, inspectionsSettledForLinks, selectVisibleDecisions } from '@/store/selectors';
+import { activitiesReadMode, inspectionsReadMode, resolveDrawingUrl } from '@/data/apiGateway';
 import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer, Button, CreateMenu } from '@/components';
 import { createOptionsFor, type CreateKind } from '@/lib/createOptions';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
@@ -14,7 +14,7 @@ import { PlaceStructure } from '@/screens/PlaceStructure';
 import { useNavItems } from '@/layout/useNavItems';
 import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
-import { placeCountWords, type PlaceCountWord } from '@/lib/placeCountWords';
+import { placeCountWords, type PlaceCountOptions, type PlaceCountWord } from '@/lib/placeCountWords';
 import { childrenOf, trailOf, placeContents, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
 import { can, SNAPSHOT_SITE_PHOTO_LIMIT, type Photo, type PlacedInspection, type ScreenKey, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
@@ -65,6 +65,8 @@ export function PlacesScreen() {
   // in the demo where the store is shared across the persona switcher).
   const canSeeInspections = useStore((s) => s.role === 'pmc' || s.role === 'engineer');
   const inspections = useStore(useShallow((s) => (s.role === 'pmc' || s.role === 'engineer' ? s.placedInspections : [])));
+  const inspectionsKnown = useStore((s) => inspectionsSettledForLinks(s)
+    && !(inspectionsReadMode() === 'moduleQuery' && s.inspectionsLoad === 'error' && s.placedInspections.length === 0));
 
   // B6 — the place on show is the URL's item (`/places/<nodeId>`), so it survives a refresh, can be
   // shared, and back/forward walks the places visited. null = whole project.
@@ -117,7 +119,13 @@ export function PlacesScreen() {
   // so the card and the opened place can never disagree
   const countsFor = (id: string) =>
     placeContents(id, nodes, decisions, drawings, photos, activities, materials, inspections).counts;
-  const countOpts = { inspections: canSeeInspections, activitiesKnown: activityRead === 'known' };
+  // a count is only as known as the read behind it: a module read not yet settled (or failed with nothing
+  // retained) leaves its counts unknown, never 0 (Codex 4265796887); a full photo window counts recent photos
+  const countOpts: PlaceCountOptions = {
+    inspections: !canSeeInspections ? 'hidden' : inspectionsKnown ? 'known' : 'unknown',
+    activitiesKnown: activityRead === 'known',
+    photosCapped,
+  };
 
   const activeNode = nodes.find((n) => n.id === active);
   const canManagePlaces = can('node.manage', role);
@@ -179,7 +187,7 @@ export function PlacesScreen() {
           </div>
 
           {/* #633 (mockup 7) — what this place holds, in words, open issues first */}
-          {active && <CountWords words={placeCountWords(total, countOpts)} testId="place-counts-here" pills />}
+          {active && <CountWords counts={placeCountWords(total, countOpts)} testId="place-counts-here" pills />}
 
           {/* Build the tree HERE (audit B3): the PMC adds, renames and deletes locations at the
               place they are standing on */}
@@ -210,7 +218,7 @@ export function PlacesScreen() {
                       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.name}</span>
                       <ChevronRight size={15} color="#b8b2a6" style={{ flex: 'none' }} />
                     </div>
-                    <CountWords words={placeCountWords(c, countOpts)} testId={`place-counts-${n.id}`} />
+                    <CountWords counts={placeCountWords(c, countOpts)} testId={`place-counts-${n.id}`} />
                     {/* B8 — where this space stands, derived from its work (never a stored flag) */}
                     {activityRead !== 'known' ? (
                       <div data-testid={`place-status-${n.id}`} data-state={activityRead} style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
@@ -512,8 +520,11 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 /** #633 — a place's counts in words. On a card they read as one quiet line; above the opened place
- *  (`pills`) each is a pill. An open issue is always the warning colour. Nothing filed reads as such. */
-function CountWords({ words, testId, pills = false }: { words: PlaceCountWord[]; testId: string; pills?: boolean }) {
+ *  (`pills`) each is a pill. An open issue is always the warning colour. "Nothing filed" is said only when
+ *  every count is known; with nothing known yet, nothing is claimed. */
+function CountWords({ counts, testId, pills = false }: { counts: { words: PlaceCountWord[]; complete: boolean }; testId: string; pills?: boolean }) {
+  const { words, complete } = counts;
+  if (words.length === 0 && !complete) return null;
   return (
     <div data-testid={testId} style={{ display: 'flex', gap: pills ? 6 : 4, marginTop: pills ? 0 : 8, marginBottom: pills ? 14 : 0, flexWrap: 'wrap', fontSize: pills ? 12 : 11.5, color: 'var(--muted)' }}>
       {words.length === 0 ? (
