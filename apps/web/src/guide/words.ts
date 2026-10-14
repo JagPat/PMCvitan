@@ -37,6 +37,21 @@ export const GUIDE_TIPS = {
     hi: 'क्या और कहाँ जाँचना है लिखें, फिर यहाँ दबाएँ।',
     gu: 'શું અને ક્યાં તપાસવું તે લખો, પછી અહીં દબાવો.',
   },
+  decisionAdd: {
+    en: 'Something to be decided? Tap +.',
+    hi: 'कुछ तय करना है? + दबाएँ।',
+    gu: 'કંઈ નક્કી કરવાનું છે? + દબાવો.',
+  },
+  decisionPick: {
+    en: 'Tap here to set out the choices.',
+    hi: 'विकल्प लिखने के लिए यहाँ दबाएँ।',
+    gu: 'વિકલ્પો લખવા અહીં દબાવો.',
+  },
+  decisionPublish: {
+    en: 'Add a title, place and options, then tap here.',
+    hi: 'शीर्षक, जगह और विकल्प भरें, फिर यहाँ दबाएँ।',
+    gu: 'શીર્ષક, જગ્યા અને વિકલ્પો ભરો, પછી અહીં દબાવો.',
+  },
 } satisfies Record<string, Words>;
 
 export type GuideTip = keyof typeof GUIDE_TIPS;
