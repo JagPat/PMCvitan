@@ -297,6 +297,10 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
   // a real link, so the register entry can be bookmarked or shared.
   const focused = useStore((st) => st.routeItem === d.id);
   const setRouteItem = useStore((st) => st.setRouteItem);
+  const openItem = useStore((st) => st.openItem);
+  // the client's history sits inside their approval screen, where the item setter means the approval FOCUS
+  // (#857 Codex 4268120369): there a register link opens the register's own path, which renders the same screen
+  const onRegister = useStore((st) => st.screen === 'decision-log');
   const activeProjectId = useStore((st) => st.activeProjectId);
   useEffect(() => {
     if (focused) document.querySelector(`[data-testid="log-row-${CSS.escape(d.id)}"]`)?.scrollIntoView({ block: 'center' });
@@ -354,7 +358,8 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
                     // keeps the browser's own behaviour (open the shared link in a new tab/window)
                     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
                     e.preventDefault();
-                    setRouteItem(d.id);
+                    if (onRegister) setRouteItem(d.id);
+                    else openItem('decision-log', d.id);
                   }}
                   data-testid={`log-link-${d.id}`}
                   aria-label={`Link to decision ${d.id}`}

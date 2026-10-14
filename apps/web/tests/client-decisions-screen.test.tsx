@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, renderHook } from '@testing-library/react';
+import { render, cleanup, renderHook, fireEvent } from '@testing-library/react';
 import type { Decision } from '@vitan/shared';
 
 /**
@@ -55,6 +55,22 @@ describe('the client\'s one "Decisions" screen', () => {
     const { r } = await load({ screen: 'decision-log', routeItem: 'D-9' });
     expect(r.getByText('Decisions waiting for you')).toBeTruthy();
     expect(r.getByTestId('log-row-D-9').getAttribute('aria-current')).toBe('true');
+  });
+
+  it('an old /decisions link to a decision still waiting on the client marks its card above the history (Codex 4268120376)', async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const { r } = await load({ screen: 'decision-log', routeItem: 'D-1' });
+    expect(r.getByTestId('pending-card-D-1').getAttribute('aria-current')).toBe('true');
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('a history link on /client/decisions opens that record on the register path and marks it (Codex 4268120369)', async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const { useStore, r } = await load();
+    fireEvent.click(r.getByTestId('log-link-D-9'));
+    expect(useStore.getState()).toMatchObject({ screen: 'decision-log', routeItem: 'D-9', decisionFocus: null });
+    expect(r.getByTestId('log-row-D-9').getAttribute('aria-current')).toBe('true');
+    expect(r.getByText('Decisions waiting for you')).toBeTruthy();
   });
 
   it('shows a short "all caught up" line above the history when nothing waits', async () => {
