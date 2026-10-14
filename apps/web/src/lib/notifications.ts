@@ -1,5 +1,5 @@
 import { noticeTimeText, type AppNotification, type Lang, type Role, type ScreenKey } from '@vitan/shared';
-import { screensFor } from './screens';
+import { SCREEN_MODULE, screensFor } from './screens';
 import { API_BASE } from '@/data/apiGateway';
 
 /**
@@ -22,10 +22,17 @@ export function notificationKind(text: string): NotificationKind | null {
 }
 
 /** The screen a notice of `kind` opens for `role`, validated against the role's own nav, so a tap can
- *  never land somewhere the role can't go (RouteBridge would bounce it). */
-function screenForKind(kind: NotificationKind, role: Role): ScreenKey | null {
+ *  never land somewhere the role can't go (RouteBridge would bounce it). #855 (Codex 4267468088, 4267658021) —
+ *  and against the project's enabled modules, as the nav is: a screen whose module is switched off is skipped
+ *  for the next one the role holds. An empty `enabledModules` (not loaded yet, or the local demo) filters
+ *  nothing, as in `enabledScreensFor`. */
+function screenForKind(kind: NotificationKind, role: Role, enabledModules: readonly string[] = []): ScreenKey | null {
   const allowed = new Set(screensFor(role).map((m) => m.key));
-  const pick = (...keys: ScreenKey[]): ScreenKey | null => keys.find((k) => allowed.has(k)) ?? null;
+  const moduleOn = (k: ScreenKey): boolean => {
+    const mod = SCREEN_MODULE[k];
+    return !enabledModules.length || mod === null || enabledModules.includes(mod);
+  };
+  const pick = (...keys: ScreenKey[]): ScreenKey | null => keys.find((k) => allowed.has(k) && moduleOn(k)) ?? null;
   switch (kind) {
     case 'decision':
       return role === 'client' ? pick('client-decisions', 'decision-log') : pick('decision-log');
@@ -34,10 +41,7 @@ function screenForKind(kind: NotificationKind, role: Role): ScreenKey | null {
     case 'inspection':
       return pick('inspect-review', 'engineer-check');
     case 'material':
-      // the PMC keeps its Schedule landing (#855, Codex 4267468088): its nav now lists the Daily Site Log too, but
-      // this rule reads the role's unfiltered screens, so preferring Daily Log here would open it even on a
-      // project that switched the daily-log module off
-      return role === 'pmc' ? pick('site-schedule', 'daily-log') : pick('daily-log', 'site-schedule');
+      return pick('daily-log', 'site-schedule');
   }
 }
 
@@ -46,9 +50,9 @@ function screenForKind(kind: NotificationKind, role: Role): ScreenKey | null {
  * the "For You" world. Returns null when the role has no relevant screen (the notification is
  * then not a link).
  */
-export function notificationTarget(text: string, role: Role): ScreenKey | null {
+export function notificationTarget(text: string, role: Role, enabledModules: readonly string[] = []): ScreenKey | null {
   const kind = notificationKind(text);
-  return kind ? screenForKind(kind, role) : null;
+  return kind ? screenForKind(kind, role, enabledModules) : null;
 }
 
 /**
@@ -198,7 +202,12 @@ export function inspectionIdOf(n: AppNotification): string | null {
   return n.inspectionId || null;
 }
 
-export function notificationLink(n: AppNotification, role: Role, records: NotificationRecords): NotificationLink | null {
+export function notificationLink(
+  n: AppNotification,
+  role: Role,
+  records: NotificationRecords,
+  enabledModules: readonly string[] = [],
+): NotificationLink | null {
   // structure decides the kind before any wording does: a decision id, or a decision template — a
   // quoted title may itself contain another kind's keyword ("…: Material selection") (Codex 4206188328)
   // and a stamped inspection is an inspection notice whatever its title says ("Material receiving") —
@@ -208,7 +217,7 @@ export function notificationLink(n: AppNotification, role: Role, records: Notifi
     : inspectionIdOf(n) !== null ? 'inspection' : notificationKind(n.text);
   if (!kind) return null;
   if (kind === 'decision') return decisionLink(n, role, records);
-  const screen = screenForKind(kind, role);
+  const screen = screenForKind(kind, role, enabledModules);
   if (!screen) return null;
   // an inspection notice opens the inspection it names on whichever inspection screen the role holds — but
   // only one the viewer's own settled slice holds (owner decision 2026-10-08: the stamp is validated when it

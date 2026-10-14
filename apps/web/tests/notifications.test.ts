@@ -29,10 +29,24 @@ describe('notificationTarget — role-aware jump from the bell', () => {
     expect(notificationTarget('Drawing issued: A-201', 'contractor')).toBe('drawings');
     expect(notificationTarget('Re-inspection due: X', 'pmc')).toBe('inspect-review');
     expect(notificationTarget('New checklist: X', 'engineer')).toBe('engineer-check');
-    // the PMC's nav carries the Daily Site Log since 14 Oct 2026 (#482), but a material notice still opens its
-    // Schedule (#855, Codex 4267468088): this rule cannot see a project's disabled modules
-    expect(notificationTarget('Material mismatch: X', 'pmc')).toBe('site-schedule');
+    // the PMC's nav carries the Daily Site Log since 14 Oct 2026 (#482): a material notice opens it, as the engineer's does
+    expect(notificationTarget('Material mismatch: X', 'pmc')).toBe('daily-log');
     expect(notificationTarget('Material mismatch: X', 'contractor')).toBeNull();
+  });
+
+  it('skips a screen whose module the project switched off (#855, Codex 4267468088, 4267658021)', () => {
+    // daily-log off: the material notice falls back to the Schedule the role still holds
+    expect(notificationTarget('Material mismatch: X', 'pmc', ['activities', 'drawings'])).toBe('site-schedule');
+    expect(notificationTarget('Material mismatch: X', 'engineer', ['activities', 'drawings'])).toBe('site-schedule');
+    // activities off: it opens the Daily Site Log, not the hidden Schedule
+    expect(notificationTarget('Material mismatch: X', 'pmc', ['daily-log', 'drawings'])).toBe('daily-log');
+    // both off: no link at all rather than a screen the nav hides
+    expect(notificationTarget('Material mismatch: X', 'pmc', ['drawings'])).toBeNull();
+    // the same gate holds for the other kinds
+    expect(notificationTarget('Drawing issued: A-201', 'contractor', ['activities'])).toBeNull();
+    expect(notificationTarget('Re-inspection due: X', 'pmc', ['activities'])).toBeNull();
+    // modules not loaded yet (empty list): nothing is filtered
+    expect(notificationTarget('Drawing issued: A-201', 'contractor', [])).toBe('drawings');
   });
 
   it('returns null when the role has no relevant screen (never a dangling link)', () => {
