@@ -19,7 +19,7 @@ test('contractor acknowledges building to the current revision (Drawings Slice 2
 
 test('the schedule links each activity to the drawing it builds from', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'PMC', exact: true }).click();
+  await page.getByRole('button', { name: 'Project manager (PMC)', exact: true }).click();
   await page.getByRole('button', { name: 'Site Schedule' }).click();
   // ACT-31 (Living Room Flooring) is governed by A-201
   await expect(page.getByTestId('sched-dwg-ACT-31')).toContainText('A-201');
