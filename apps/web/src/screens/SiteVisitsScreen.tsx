@@ -25,21 +25,26 @@ export function SiteVisitsScreen() {
   const [startNode, setStartNode] = useState('');
   const members = useStore(useShallow((s) => s.members));
   const loadTeam = useStore((s) => s.loadTeam);
-  const [team, setTeam] = useState<'idle' | 'loading' | 'done'>('idle');
+  const [team, setTeam] = useState<'loading' | 'done'>('loading');
+  // bumped by Try again on a failed team read
+  const [teamAsk, setTeamAsk] = useState(0);
 
   const placeOptions = useMemo(
     () => nodes.map((n) => ({ id: n.id, label: trailOf(nodes, n.id).map((t) => t.name).join(' › ') })).sort((a, b) => a.label.localeCompare(b.label)),
     [nodes],
   );
   const mineOpen = sv.visits.some((v) => v.visitorId === me && v.status === 'open');
-  // the member list is the Team screen's; read it when this viewer can name someone on a visit. The viewer is a
-  // member, so a list still empty after the read means it failed, and the picker offers a retry
+  // the member list is the Team screen's; read it when this viewer can name someone on a visit, and again whenever
+  // the server says the project changed (a member removed, re-roled or newly joined). The viewer is a member, so a
+  // list still empty after the read means it failed, and the picker offers a retry
   const namesPeople = sv.visits.some((v) => editable(v, role, me));
   useEffect(() => {
-    if (!namesPeople || members.length || team !== 'idle') return;
+    if (!namesPeople) return;
+    let on = true;
     setTeam('loading');
-    void loadTeam().finally(() => setTeam('done'));
-  }, [namesPeople, members.length, team, loadTeam]);
+    void loadTeam().finally(() => { if (on) setTeam('done'); });
+    return () => { on = false; };
+  }, [namesPeople, sv.pings, teamAsk, loadTeam]);
   const teamFailed = team === 'done' && members.length === 0;
 
   if (!hasServer) {
@@ -54,7 +59,8 @@ export function SiteVisitsScreen() {
   return (
     <div className={styles.screen}>
       <Header lang={lang} />
-      {can('siteVisit.start', role) && !mineOpen && (
+      {/* only once the open visits are read: until then the viewer's own open visit is not known */}
+      {can('siteVisit.start', role) && sv.load === 'ready' && !mineOpen && (
         <section className={styles.card} aria-label={SV.start[lang]}>
           <label className={styles.label} htmlFor="sv-start-place">{SV.startPlace[lang]}</label>
           <select id="sv-start-place" className={styles.field} value={startNode} onChange={(e) => setStartNode(e.target.value)}>
@@ -78,7 +84,7 @@ export function SiteVisitsScreen() {
       <div className={styles.list}>
         {sv.visits.map((v) => (
           <VisitCard key={v.id} visit={v} lang={lang} role={role} me={me} placeOptions={placeOptions} sv={sv}
-            members={members} teamFailed={teamFailed} retryTeam={() => setTeam('idle')} />
+            members={members} teamFailed={teamFailed} retryTeam={() => setTeamAsk((n) => n + 1)} />
         ))}
       </div>
       {sv.hasMore && <Button variant="light" fullWidth onClick={sv.more}>{SV.older[lang]}</Button>}

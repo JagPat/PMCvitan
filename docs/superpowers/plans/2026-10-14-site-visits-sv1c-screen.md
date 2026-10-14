@@ -31,11 +31,14 @@ Gujarati.
    status, 401, 408, 429, 5xx: `isTerminalOutboxError` false) keeps all three, so pressing again is the same act
    and the server runs it once; a definite refusal settles it, so the next press is a new act. The key is bound to
    the project scope, and a start whose location wait outlives that scope is never sent. Row ids are version 4
-   UUIDs even where the browser has no `randomUUID`.
+   UUIDs even where the browser has no `randomUUID`. A read that shows the row an act minted settles that act too,
+   so adding the same thing again after removing it is a new act.
 4. **Open visits always known; live like the other screens.** Beside the first page the screen reads every open
-   visit (`?status=open`, a read-only filter added to SV1-b's list for this), so the viewer's own open visit
-   decides Start however old it is, and open visits show first. The realtime ping that refreshes the snapshot
-   (`useApiSync`) also re-reads the visits on a screen that is showing them.
+   visit (`?status=open`, a read-only filter added to SV1-b's list for this, followed page by page to its end), so
+   the viewer's own open visit decides Start however old it is, and open visits show first; Start shows only once
+   that read has answered. The realtime ping that refreshes the snapshot (`useApiSync`) also re-reads every page
+   the screen shows, and the team for the attendee picker. A read that an act or a later read has overtaken is
+   dropped, so an older answer never puts back a state already replaced.
 5. **Online only.** With no signal, nothing is saved and the screen says so. The offline queue (F53: queued acts
    survive a start conflict, a queued remove waits for its add) is unit 2.
 6. **Refusals in the viewer's language.** In English the server's own reason is shown after "This was not saved.";

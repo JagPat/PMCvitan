@@ -314,4 +314,89 @@ describe('Site Visits screen', () => {
     expect(card.textContent).not.toContain('Could not load the team.');
     expect(within(within(card).getByLabelText('Choose a team member')).getByText(/Ramesh Patel/)).toBeTruthy();
   });
+  it('offers Start only once the open visits are known (Codex 4275589690)', async () => {
+    const listSiteVisits = vi.fn(() => new Promise<SiteVisit[]>(() => {}));
+    await mount('pmc', PMC, fakeGateway([], { listSiteVisits }));
+    expect(screen.queryByTestId('sv-start')).toBeNull();
+    cleanup();
+    await mount('pmc', PMC, fakeGateway([], { listSiteVisits: vi.fn().mockRejectedValue(new Error('network')) }));
+    expect(screen.queryByTestId('sv-start')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
+  it('reads every open visit, past the open read’s page ceiling (Codex 4275589710)', async () => {
+    const others = Array.from({ length: 200 }, (_, i) => visit({ id: `v-o-${i}`, visitorId: `u-${i}`, startedAt: `2026-10-14T04:${String(i % 60).padStart(2, '0')}:00.000Z` }));
+    const mine = visit({ id: 'v-mine', visitorId: PMC, visitorName: 'Priya Shah', visitorRole: 'pmc', startedAt: '2026-10-01T04:30:00.000Z' });
+    const listSiteVisits = vi.fn(async (q?: { status?: string; before?: string }) => {
+      if (q?.status !== 'open') return [];
+      return q.before === undefined ? others : q.before === 'v-o-199' ? [mine] : [];
+    });
+    await mount('pmc', PMC, fakeGateway([], { listSiteVisits }));
+    expect(listSiteVisits).toHaveBeenCalledWith(expect.objectContaining({ status: 'open', before: 'v-o-199' }));
+    expect(screen.queryByTestId('sv-start')).toBeNull();
+    expect(within(screen.getByTestId('sv-visit-v-mine')).getByRole('button', { name: 'End visit' })).toBeTruthy();
+  });
+
+  it('never lets an older read overwrite a newer act or read (Codex 4275589722)', async () => {
+    const gw = fakeGateway([visit()], { endSiteVisit: vi.fn().mockResolvedValue(visit({ status: 'ended', endedAt: '2026-10-14T05:30:00.000Z' })) });
+    await mount('consultant', CONSULTANT, gw);
+    // a refresh that read the visit as open before the End landed answers only after it
+    let late!: () => void;
+    gw.listSiteVisits!.mockImplementation((q?: { status?: string }) => new Promise<SiteVisit[]>((r) => {
+      const prev = late;
+      late = () => { prev?.(); r(q?.status === 'open' ? [visit()] : [visit()]); };
+    }));
+    await act(async () => { refreshSiteVisits(); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'End visit' })); });
+    expect(screen.getByTestId('sv-visit-v-1').textContent).toContain('Ended');
+    await act(async () => { late(); });
+    expect(screen.getByTestId('sv-visit-v-1').textContent).toContain('Ended');
+    expect(screen.queryByRole('button', { name: 'End visit' })).toBeNull();
+  });
+
+  it('reads the team again when the server says the project changed, even with one already loaded (Codex 4275589729)', async () => {
+    const loadTeam = vi.fn(async () => {});
+    await mount('consultant', CONSULTANT, fakeGateway([visit()]), 'en', MEMBERS, loadTeam);
+    expect(loadTeam).toHaveBeenCalledTimes(1);
+    loadTeam.mockImplementation(async () => { useStore.setState({ members: MEMBERS.filter((m) => m.userId !== 'u-eng') }); });
+    await act(async () => { refreshSiteVisits(); });
+    expect(loadTeam).toHaveBeenCalledTimes(2);
+    const picker = within(screen.getByTestId('sv-visit-v-1')).getByLabelText('Choose a team member');
+    expect(within(picker).queryByText(/Ramesh Patel/)).toBeNull();
+  });
+
+  it('settles an add a fresh read has confirmed, so adding it again later is a new act (Codex 4275589736)', async () => {
+    const addSiteVisitAttendee = vi.fn().mockRejectedValueOnce(new Error('network'));
+    const gw = fakeGateway([visit()], { addSiteVisitAttendee });
+    await mount('consultant', CONSULTANT, gw);
+    const card = screen.getByTestId('sv-visit-v-1');
+    fireEvent.change(within(card).getByLabelText('Guest’s name'), { target: { value: 'Mr Mehta' } });
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Add guest' })); });
+    const [, b1, k1] = addSiteVisitAttendee.mock.calls[0];
+    // the add committed though its answer was lost; the next read shows it, already removed again
+    const guest = { id: b1.id, kind: 'guest' as const, userId: null, role: null, name: 'Mr Mehta', addedAt: '2026-10-14T04:45:00.000Z', retiredAt: '2026-10-14T04:50:00.000Z' };
+    gw.listSiteVisits!.mockImplementation(async () => [visit({ attendees: [guest] })]);
+    await act(async () => { refreshSiteVisits(); });
+    addSiteVisitAttendee.mockResolvedValue(visit({ attendees: [guest] }));
+    fireEvent.change(within(card).getByLabelText('Guest’s name'), { target: { value: 'Mr Mehta' } });
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Add guest' })); });
+    const [, b2, k2] = addSiteVisitAttendee.mock.calls[1];
+    expect(k2).not.toBe(k1);
+    expect(b2.id).not.toBe(b1.id);
+  });
+
+  it('reads the older pages already shown again when the server says the project changed (Codex 4275589742)', async () => {
+    const newer = Array.from({ length: VISIT_PAGE }, (_, i) => visit({ id: `v-new-${i}`, status: 'ended', startedAt: `2026-10-14T0${9 - (i % 10)}:${String(59 - i).padStart(2, '0')}:00.000Z` }));
+    let old = visit({ id: 'v-old', status: 'ended', startedAt: '2026-10-01T04:30:00.000Z' });
+    const listSiteVisits = vi.fn(async (q?: { status?: string; before?: string }) => {
+      if (q?.status === 'open') return [];
+      return q?.before === undefined ? newer : q.before === `v-new-${VISIT_PAGE - 1}` ? [old] : [];
+    });
+    await mount('client', 'u-client', fakeGateway([], { listSiteVisits }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Show older visits' })); });
+    expect(screen.getByTestId('sv-visit-v-old').textContent).not.toContain('Kitchen');
+    old = visit({ ...old, places: [{ id: 'p-1', nodeId: 'n-kit', name: 'Kitchen', addedAt: '2026-10-01T05:00:00.000Z', addedTimeAdjusted: false, addedAfterEnd: true, retiredAt: null }] });
+    await act(async () => { refreshSiteVisits(); });
+    expect(screen.getByTestId('sv-visit-v-old').textContent).toContain('Kitchen');
+  });
 });

@@ -7,17 +7,20 @@ import { SV } from './siteVisitWords';
 
 /**
  * Site Visits SV1-c (#792, QA item 6): the screen's own state. The visits are read a page at a time from the
- * server, with every open visit beside the first page, and read again when the server says the project changed;
- * every act answers with the whole visit, which replaces the row shown. Online only in this unit: an act sent with
- * no signal is not queued and says so (the offline queue is unit 2).
+ * server, with every open visit beside them, and every page already shown is read again when the server says the
+ * project changed; every act answers with the whole visit, which replaces the row shown. A read that an act or a
+ * later read has overtaken is dropped, so an older answer never puts back a state already replaced (one overtaken
+ * only by an act is sent again). Online only in this unit: an act sent with no signal is not queued and says so
+ * (the offline queue is unit 2).
  *
  * An ACT keeps its idempotency key, the id it minted and the body it first sent until it settles (a success or a
  * definite refusal), so pressing the button again after a lost answer or a passing fault is the same act and the
- * server runs it once. A reply for a project the viewer has left is dropped, and a start whose location wait outlives
- * the project or sign-in it was pressed in is never sent.
+ * server runs it once; a read that shows the row the act minted settles it too, so the same press later is a new
+ * act. A reply for a project the viewer has left is dropped, and a start whose location wait outlives the project or
+ * sign-in it was pressed in is never sent.
  */
 export const VISIT_PAGE = 20;
-/** The most open visits read at once: the server's page ceiling, far above the people on one site. */
+/** The open visits read per request: the server's page ceiling. The open read follows its cursor to the end. */
 const OPEN_LIMIT = 200;
 
 type Load = 'loading' | 'ready' | 'error';
@@ -91,6 +94,32 @@ function ordered(list: SiteVisit[]): SiteVisit[] {
   });
 }
 
+/** The pages of `query`, newest first, until a short page (the list ended) or a page `enough` accepts: the rows
+ *  read and whether the list ended. */
+async function readPages(
+  gw: ApiGateway, query: { limit: number; status?: 'open' }, enough: (page: SiteVisit[]) => boolean,
+): Promise<{ rows: SiteVisit[]; ended: boolean }> {
+  const rows: SiteVisit[] = [];
+  for (let before: string | undefined; ;) {
+    const page = await gw.listSiteVisits({ ...query, ...(before ? { before } : {}) });
+    rows.push(...page);
+    if (page.length < query.limit) return { rows, ended: true };
+    if (enough(page)) return { rows, ended: false };
+    before = page[page.length - 1].id;
+  }
+}
+
+/** The ids of every row in these visits: the visits, their places and their people. */
+function rowIds(list: SiteVisit[]): Set<string> {
+  const ids = new Set<string>();
+  for (const v of list) {
+    ids.add(v.id);
+    for (const p of v.places) ids.add(p.id);
+    for (const a of v.attendees) ids.add(a.id);
+  }
+  return ids;
+}
+
 /** `old` with every row in `fresh` put in its place (the fresher read wins). */
 function merged(old: SiteVisit[], fresh: SiteVisit[]): SiteVisit[] {
   const ids = new Set(fresh.map((v) => v.id));
@@ -101,8 +130,14 @@ export function useSiteVisits() {
   const projectId = useStore((s) => s.activeProjectId);
   const generation = useStore((s) => s.projectScopeGeneration);
   const [rows, setRows] = useState<SiteVisit[]>([]);
-  // the last visit of the newest-first pages read so far; older pages continue from it
-  const [cursor, setCursor] = useState<string | undefined>(undefined);
+  // the last visit of the newest-first pages read so far; older pages continue from it, and a refresh reads to it
+  const cursor = useRef<string | undefined>(undefined);
+  // bumped by every read sent and every act answered: a read answers only if nothing has happened since it was sent
+  const turn = useRef(0);
+  // the turn of the last read sent
+  const lastRead = useRef(0);
+  // bumped on every ping from the server, so the screen can read its own lists again too
+  const [pings, setPings] = useState(0);
   const [load, setLoad] = useState<Load>('loading');
   const [hasMore, setHasMore] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -114,24 +149,42 @@ export function useSiteVisits() {
     return isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
   };
 
-  /** The newest page and every open visit, together. `fresh` starts over (a new project or sign-in); otherwise it is
-   *  a refresh that keeps the older pages already read. Every open visit is in the open read, so a row shown as open
-   *  that it no longer lists has ended or closed since. */
-  const readHead = useCallback((fresh: boolean) => {
+  /** Every page shown and every open visit, together. `fresh` starts over from the first page (a new project or
+   *  sign-in); otherwise it is a refresh that reads again every page already shown. Every open visit is in the open
+   *  read and every shown page in the page read, so the two replace the rows shown; only a row an act answered with
+   *  from beyond the pages read is kept. */
+  const readHead = useCallback(function readHead(fresh: boolean) {
     const gw = useStore.getState().serverGateway();
     if (!gw) return;
     const scope = projectScopeOf(useStore.getState());
+    const mine = (turn.current += 1);
+    lastRead.current = mine;
     if (fresh) setLoad('loading');
-    Promise.all([gw.listSiteVisits({ limit: VISIT_PAGE }), gw.listSiteVisits({ status: 'open', limit: OPEN_LIMIT })])
-      .then(([page, open]) => {
+    // the first page alone when starting over; otherwise down to the page holding the last visit shown
+    const upTo = fresh ? undefined : cursor.current;
+    Promise.all([
+      readPages(gw, { limit: VISIT_PAGE }, (page) => upTo === undefined || page.some((v) => v.id === upTo)),
+      readPages(gw, { status: 'open', limit: OPEN_LIMIT }, () => false),
+    ])
+      .then(([shown, open]) => {
         if (!live(scope)) return;
-        const openIds = new Set(open.map((v) => v.id));
-        setRows((old) => merged(fresh ? [] : old.filter((v) => v.status !== 'open' || openIds.has(v.id)), [...open, ...page.filter((v) => !openIds.has(v.id))]));
-        setCursor((c) => (fresh || c === undefined ? page[page.length - 1]?.id : c));
-        setHasMore((more) => (fresh ? page.length === VISIT_PAGE : more || page.length === VISIT_PAGE));
+        if (mine !== turn.current) {
+          // overtaken by an act alone: what else changed is still unread, so read again after it
+          if (lastRead.current === mine) readHead(fresh);
+          return;
+        }
+        const read = [...open.rows, ...shown.rows.filter((v) => !open.rows.some((o) => o.id === v.id))];
+        const last = shown.rows[shown.rows.length - 1];
+        setRows((old) => merged(fresh || !last ? [] : old.filter((v) => v.status !== 'open' && v.startedAt < last.startedAt), read));
+        if (fresh || cursor.current === undefined) {
+          cursor.current = last?.id;
+          setHasMore(!shown.ended);
+        }
+        const confirmed = rowIds(read);
+        for (const [bound, held] of pending.current) if (confirmed.has(held.rowId)) pending.current.delete(bound);
         setLoad('ready');
       })
-      .catch(() => { if (live(scope) && fresh) setLoad('error'); });
+      .catch(() => { if (live(scope) && fresh && mine === turn.current) setLoad('error'); });
   }, []);
 
   const readOlder = useCallback((before: string) => {
@@ -142,7 +195,7 @@ export function useSiteVisits() {
       .then((page) => {
         if (!live(scope)) return;
         setRows((old) => merged(page, old));
-        if (page.length) setCursor(page[page.length - 1].id);
+        if (page.length) cursor.current = page[page.length - 1].id;
         setHasMore(page.length === VISIT_PAGE);
       })
       .catch(() => {});
@@ -152,7 +205,7 @@ export function useSiteVisits() {
   useEffect(() => {
     pending.current.clear();
     setRows([]);
-    setCursor(undefined);
+    cursor.current = undefined;
     setBusy(false);
     setError(null);
     readHead(true);
@@ -160,7 +213,7 @@ export function useSiteVisits() {
 
   // another device started, changed, ended or closed a visit
   useEffect(() => {
-    const listener = () => readHead(false);
+    const listener = () => { readHead(false); setPings((n) => n + 1); };
     listeners.add(listener);
     return () => { listeners.delete(listener); };
   }, [readHead]);
@@ -188,6 +241,7 @@ export function useSiteVisits() {
       const visit = await send(gw, held.key, held.body as B);
       pending.current.delete(bound);
       if (!live(scope)) return false;
+      turn.current += 1;
       setRows((old) => merged(old, [visit]));
       return true;
     } catch (err) {
@@ -204,9 +258,9 @@ export function useSiteVisits() {
   const visits = useMemo(() => ordered(rows), [rows]);
 
   return {
-    visits, load, hasMore, busy, error,
+    visits, load, hasMore, busy, error, pings,
     retry: () => readHead(true),
-    more: () => { if (cursor) readOlder(cursor); },
+    more: () => { if (cursor.current) readOlder(cursor.current); },
     start: (nodeId: string | null) => act(`start:${nodeId ?? ''}`,
       async (id): Promise<StartSiteVisitBody> => {
         const location = await deviceLocation();
