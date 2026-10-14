@@ -97,18 +97,7 @@ export async function resolveActorEnvelope(
   const role = actor.actorRole;
   if (typeof role !== 'string' || ASCII_BLANK.test(role)) return null;
 
-  // `Prisma.sql` objects rather than tagged-template calls, as the kernel's other raw reads are, so
-  // every bind value is carried on the one argument.
-  // OrgUserAuthority BEFORE ProjectUserStanding: the OrgMembership projection writers' order.
-  await tx.$queryRaw(Prisma.sql`
-    SELECT 1 FROM "OrgUserAuthority" a
-      JOIN "ProjectOrg" po ON po."orgId" = a."orgId"
-     WHERE po."projectId" = ${projectId} AND a."userId" = ${actor.actorId}
-       FOR SHARE OF a`);
-  await tx.$queryRaw(Prisma.sql`
-    SELECT 1 FROM "ProjectUserStanding"
-     WHERE "projectId" = ${projectId} AND "userId" = ${actor.actorId}
-       FOR SHARE`);
+  await lockActorStanding(tx, projectId, actor.actorId);
   const standing = await tx.$queryRaw<Array<{ holds: boolean }>>(Prisma.sql`
     SELECT platform_user_holds_role_windowed(${projectId}, ${actor.actorId}, ${role}) AS "holds"`);
   if (!Array.isArray(standing) || standing[0]?.holds !== true) return null;
@@ -119,6 +108,26 @@ export async function resolveActorEnvelope(
   if (typeof name !== 'string' || ASCII_BLANK.test(name)) return null;
 
   return { actorRole: role, actorName: name };
+}
+
+/**
+ * The actor's standing registers, locked `FOR SHARE` in the order {@link resolveActorEnvelope} takes them:
+ * `OrgUserAuthority` BEFORE `ProjectUserStanding`, the OrgMembership projection writers' order. A command that must
+ * take another lock between the registers and the identity (a module's project-row check) calls this first; the
+ * envelope's own re-lock of rows this transaction already holds is then a no-op.
+ */
+export async function lockActorStanding(tx: Prisma.TransactionClient, projectId: string, userId: string): Promise<void> {
+  // `Prisma.sql` objects rather than tagged-template calls, as the kernel's other raw reads are, so
+  // every bind value is carried on the one argument.
+  await tx.$queryRaw(Prisma.sql`
+    SELECT 1 FROM "OrgUserAuthority" a
+      JOIN "ProjectOrg" po ON po."orgId" = a."orgId"
+     WHERE po."projectId" = ${projectId} AND a."userId" = ${userId}
+       FOR SHARE OF a`);
+  await tx.$queryRaw(Prisma.sql`
+    SELECT 1 FROM "ProjectUserStanding"
+     WHERE "projectId" = ${projectId} AND "userId" = ${userId}
+       FOR SHARE`);
 }
 
 /**
