@@ -1,5 +1,6 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
 import { loginTo, openProject } from './landing';
+import { openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 0 Task 8 — the two-project acceptance proof, over the REAL stack:
@@ -70,7 +71,7 @@ test('populated A to empty B is atomic', async ({ page }) => {
     await optionA.click({ timeout: 2000 });
   }).toPass();
   await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  await openNav(page, /^Decision Log( \d+)?$/);
   await expect(page.getByText('DL-014').first()).toBeVisible();
 
   // switch back to B with its snapshot artificially delayed
@@ -92,7 +93,7 @@ test('populated A to empty B is atomic', async ({ page }) => {
 
   // …and after the empty B snapshot lands, still no A records anywhere
   await expect(page.getByTestId('project-switching')).toHaveCount(0, { timeout: 15_000 });
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  await openNav(page, /^Decision Log( \d+)?$/);
   await expect(page).toHaveURL(new RegExp(`/projects/${B}/decisions`));
   await expect(page.getByText('DL-014')).toHaveCount(0);
   await expect(page.getByText(/Residence at Ambli/)).toHaveCount(0);
@@ -138,9 +139,9 @@ test('history preserves scope and screen', async ({ page }) => {
   // the switcher shows the target's name the moment the switch STARTS; B's role home becomes a
   // history entry only once B has loaded, and the walk back below expects that entry, so wait for it
   await expect(page).toHaveURL(new RegExp(`/projects/${B}/`));
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  await openNav(page, /^Decision Log( \d+)?$/);
   await expect(page).toHaveURL(new RegExp(`/projects/${B}/decisions`));
-  await page.getByRole('button', { name: 'Drawings' }).click();
+  await openNav(page, /^Drawings( \d+)?$/);
   await expect(page).toHaveURL(new RegExp(`/projects/${B}/drawings`));
 
   // back through history: every entry restores MATCHING project identity + path
@@ -261,7 +262,7 @@ test('empty project is truthful', async ({ page, browser }) => {
   await expect(page.getByText(/report generated/i)).toHaveCount(0);
 
   // the portfolio stays truthful: B's card reports its real (zero) rollup
-  await page.getByRole('button', { name: 'Portfolio' }).click();
+  await openNav(page, /^Portfolio( \d+)?$/);
   await expect(page.getByTestId(`portfolio-${B}`)).toContainText('0/0 activities done');
 
   // client surfaces on B (fresh context, B-only client): recorded stage, honest absence
@@ -269,7 +270,7 @@ test('empty project is truthful', async ({ page, browser }) => {
   const client = await ctx.newPage();
   await client.goto('/');
   await signIn(client, 'test-client-b@vitan.in');
-  await client.getByRole('button', { name: 'Project Health' }).click();
+  await openNav(client, /^Project Health( \d+)?$/);
   await expect(client.getByText('Mobilisation', { exact: true })).toBeVisible();
   await expect(client.getByText('No progress photos recorded')).toBeVisible();
   await expect(client.getByText(/Ambli/)).toHaveCount(0);

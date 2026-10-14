@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNav } from './fixtures/nav';
 
 test('consultant: the Drawings register defaults to their discipline, with an all-disciplines escape', async ({ page }) => {
   await page.goto('/');
@@ -6,7 +7,7 @@ test('consultant: the Drawings register defaults to their discipline, with an al
   // become a consultant (the demo persona maps to a representative discipline → structural)
   await page.getByRole('button', { name: 'Consultant', exact: true }).click();
   // 'Drawings' is exact here: the "For You" home also shows a "Review drawings" CTA
-  await page.getByRole('button', { name: 'Drawings', exact: true }).click();
+  await openNav(page, /^Drawings( \d+)?$/);
 
   // scoped by default: the structural sheet shows, the architectural one is hidden
   await expect(page.getByTestId('scope-mine')).toBeVisible();

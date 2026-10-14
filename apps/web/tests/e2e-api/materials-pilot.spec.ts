@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import { execSync } from 'node:child_process';
+import { navButton, openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 3 Task 7 (correction 2) — the pilot MATERIALS acceptance chain, in a REAL browser over live
@@ -70,7 +71,7 @@ async function signInToProject(page: Page, email: string, projectName: string): 
 
 async function openMaterials(page: Page): Promise<void> {
   // scope to the navigation landmark — `/Materials/i` also matches the project-switcher button
-  await page.getByRole('navigation').getByRole('button', { name: /Materials/ }).click();
+  await openNav(page, /Materials/);
   await expect(page.getByTestId('materials-summary')).toBeVisible();
 }
 
@@ -225,7 +226,7 @@ test('PILOT: the §E stock-issues read surfaces a browser-issuable material — 
 
 test('INERT: a non-pilot project has NO Materials nav and the Phase-3 read 404s', async ({ page, request }) => {
   await signInToProject(page, PMC, PLAIN_NAME);
-  await expect(page.getByRole('navigation').getByRole('button', { name: /Materials/ })).toHaveCount(0);
+  await expect(await navButton(page, /Materials/)).toHaveCount(0);
   const res = await request.get(`${API}/projects/${plainId}/activities/material-readiness`, { headers: bearer(pmcPlain) });
   expect(res.status()).toBe(404);
 });

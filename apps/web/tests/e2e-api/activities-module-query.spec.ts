@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { openNav } from '../e2e/fixtures/nav';
 
 /**
  * Phase 2 Task 10 (Module 4 — Activities) — the activities MODULE-OWNED read, proven end-to-end over
@@ -75,7 +76,7 @@ test.describe('activities module-owned read (moduleQuery)', () => {
 
     // onto the Site Schedule screen — the module-served spine renders: the seeded activity row
     // (ACT-28) and its phase group ("Services & Waterproofing") are ALWAYS present in the seed.
-    await page.getByRole('button', { name: 'Site Schedule' }).click();
+    await openNav(page, /^Site Schedule( \d+)?$/);
     await expect(page.getByTestId('sched-ACT-28'), 'the seeded activity renders from the module read').toBeVisible();
     await expect(page.getByText('Services & Waterproofing')).toBeVisible();
 

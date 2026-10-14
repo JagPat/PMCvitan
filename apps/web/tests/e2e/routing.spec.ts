@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNav } from './fixtures/nav';
 
 test('the URL is project-scoped: root redirects, and navigating carries the project id', async ({ page }) => {
   await page.goto('/');
@@ -6,7 +7,7 @@ test('the URL is project-scoped: root redirects, and navigating carries the proj
   await expect(page).toHaveURL(/\/projects\/ambli\/dashboard$/);
 
   // navigating to a screen keeps the project in the path
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  await openNav(page, /^Decision Log( \d+)?$/);
   await expect(page).toHaveURL(/\/projects\/ambli\/decisions$/);
   await expect(page.getByText('Decision Register')).toBeVisible();
 });
