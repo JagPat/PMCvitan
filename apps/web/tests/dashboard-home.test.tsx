@@ -85,6 +85,18 @@ describe('the Dashboard shows each role only what it can open', () => {
     expect(s().screen).toBe('decision-log');
   });
 
+  it('while the decisions are unsettled, the client\'s approvals tile opens the read-only /decisions path (#857 Codex 4269224400)', () => {
+    useStore.setState((st) => { st.role = 'client'; st.commandReconcileOwed.decisions = true; });
+    let r = render(<DashboardScreen />);
+    fireEvent.click(r.getByTestId('tile-pending'));
+    expect(s().screen).toBe('decision-log');
+    // ...but not into a Decisions module the project switched off (#822)
+    cleanup();
+    useStore.setState((st) => { st.screen = 'dashboard'; st.enabledModules = ['daily-log', 'drawings', 'orgs', 'nodes']; });
+    r = render(<DashboardScreen />);
+    expect(r.getByTestId('tile-pending').tagName).toBe('DIV');
+  });
+
   it('a module the project switched off offers no Dashboard way in (#822)', () => {
     // the shell's enabledModules omit activities, inspections, decisions and nodes: the nav hides their screens,
     // so the Dashboard shows no Schedule button, no review-queue tiles, and its decisions and photos tiles are

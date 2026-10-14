@@ -91,7 +91,8 @@ export const navLabels: Record<ScreenKey, Record<Lang, string>> = {
   'site-schedule': { en: 'Schedule', hi: 'समय-सारणी', gu: 'સમયપત્રક' },
   'decision-log': { en: 'Decision Log', hi: 'निर्णय', gu: 'નિર્ણયો' },
   'inspect-review': { en: 'Review', hi: 'जाँच', gu: 'ચકાસણી' },
-  'client-decisions': { en: 'Decisions', hi: 'मंज़ूरी', gu: 'મંજૂરી' },
+  // #482 QA (14 Oct 2026): the client's one Decisions screen (waiting first, then the history), no longer approvals only
+  'client-decisions': { en: 'Decisions', hi: 'निर्णय', gu: 'નિર્ણયો' },
   'client-health': { en: 'Health', hi: 'प्रगति', gu: 'પ્રગતિ' },
   'daily-log': { en: 'Daily', hi: 'रोज़ का लॉग', gu: 'રોજનો લોગ' },
   'engineer-check': { en: 'Checklist', hi: 'चेकलिस्ट', gu: 'ચેકલિસ્ટ' },
