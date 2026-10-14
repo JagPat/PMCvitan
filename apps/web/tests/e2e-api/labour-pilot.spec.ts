@@ -56,7 +56,6 @@ async function get(request: APIRequestContext, token: string, path: string): Pro
 
 async function signInToProject(page: Page, email: string, projectName: string): Promise<void> {
   await page.goto('/');
-  await page.getByRole('button', { name: /team member/i }).click();
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(email);
   await page.getByTestId('login-password').fill(PASSWORD);
@@ -268,7 +267,6 @@ test('INERT: a non-pilot project has NO Labour nav, a direct /labour deep link i
   // "authentication lands on the server project" behaviour — so the eject may land on the home
   // project's role default; the finding's claim is only that the dead hub is never served.)
   await page.goto(`/projects/${plainId}/labour`);
-  await page.getByRole('button', { name: /team member/i }).click();
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(PMC);
   await page.getByTestId('login-password').fill(PASSWORD);
