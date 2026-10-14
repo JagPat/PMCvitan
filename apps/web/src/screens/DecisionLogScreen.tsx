@@ -6,6 +6,7 @@ import { useStore } from '@/store/store';
 import { selectDecisionsNeedingViewer, selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, DecisionChip, Button, LocationContext, EditState, ConsultationThread, CountersignControls, ItemNotFound } from '@/components';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
+import { AwaitingClientList } from './AwaitingClientList';
 import { Lock, Plus, ChevronRight } from '@/lib/icons';
 import { deciderNoun, signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
 import { groupDecisions, locationSegments, type GroupBy } from '@/lib/locationTree';
@@ -24,6 +25,8 @@ const GROUP_OPTIONS: { key: GroupBy; label: string }[] = [
 // record is a filed fact the reader may want alone, and a decision awaiting the architect's countersign is
 // its own state between approval and lock. Neither new chip matches a row while the doors stand (no row can
 // be awaiting) unless the project files records.
+/** The roles who decide nothing the client holds but plan their work around it (#482 QA check, 14 Oct 2026). */
+const PLANS_AROUND_CLIENT: ReadonlySet<string> = new Set(['engineer', 'contractor', 'consultant']);
 const STATUS_FILTERS: { key: Decision['status']; label: string }[] = [
   { key: 'pending', label: 'Pending' },
   { key: 'approved', label: 'Approved' },
@@ -209,6 +212,9 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
         </div>
       </div>
       {issuing && <IssueDecisionModal onClose={() => setIssuing(false)} />}
+
+      {/* #482 QA check (14 Oct 2026) — the engineer, contractor and consultant see what waits on the client, read-only */}
+      {!history && PLANS_AROUND_CLIENT.has(role) && <AwaitingClientList />}
 
       {/* controls: group-by, search, status filter */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', margin: '12px 0 4px' }}>
