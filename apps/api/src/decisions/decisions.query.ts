@@ -680,18 +680,26 @@ export class DecisionsQueryService {
     // counted it, and the Dashboard tile and this count (the Portfolio card, the shell) now do too. A client
     // below `countersign-v1` is never served a row reopened by a countersign rejection (the countersign
     // interceptor strips it), so its count leaves that row out too (Codex 4267480469); an absent contract
-    // is such a client, as `understandsCountersign` fails closed
-    const hiddenReopened: Prisma.DecisionWhereInput = { status: 'change', changeRequests: { some: { status: 'open', origin: { not: 'standard' } } } };
+    // is such a client, as `understandsCountersign` fails closed. The same interceptor strips every row
+    // `isCountersignShape` names (an architect-designated row, an `awaiting_countersign` row), so a lesser
+    // client counts none of those either (Codex 4268126498)
+    const aware = understandsCountersign(viewer.contract);
+    const hiddenFromLesser: Prisma.DecisionWhereInput = {
+      OR: [
+        { deciderKind: 'architect' },
+        { status: 'change', changeRequests: { some: { status: 'open', origin: { not: 'standard' } } } },
+      ],
+    };
     const base: Prisma.DecisionWhereInput = {
       ...published,
       status: { in: ['pending', 'change'] },
-      ...(understandsCountersign(viewer.contract) ? {} : { NOT: hiddenReopened }),
+      ...(aware ? {} : { NOT: hiddenFromLesser }),
     };
     const awaiting: Prisma.DecisionWhereInput = { ...published, status: 'awaiting_countersign' };
     if (viewer.role === 'pmc') {
       const [pending, stranded] = await Promise.all([
         this.prisma.decision.count({ where: base }),
-        this.countStranded(projectId, awaiting),
+        aware ? this.countStranded(projectId, awaiting) : Promise.resolve(0),
       ]);
       return pending + stranded;
     }
@@ -701,7 +709,7 @@ export class DecisionsQueryService {
     if (viewer.userId) decides.push({ deciderKind: 'member', deciderMembership: { userId: viewer.userId } });
     const [pending, countersigns] = await Promise.all([
       decides.length === 0 ? Promise.resolve(0) : this.prisma.decision.count({ where: { ...base, OR: decides } }),
-      viewer.role === 'architect' ? this.prisma.decision.count({ where: awaiting }) : Promise.resolve(0),
+      viewer.role === 'architect' && aware ? this.prisma.decision.count({ where: awaiting }) : Promise.resolve(0),
     ]);
     return pending + countersigns;
   }
