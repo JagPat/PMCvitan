@@ -245,7 +245,9 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
       {groups.length === 0 && (
         <div style={{ color: 'var(--muted)', fontSize: 13.5, padding: '10px 0' }}>
           No decisions match your filters.
-          {rows.length === 0 && <EmptyHint task="decision" />}
+          {/* only once the decision slice has settled: a load, a failed read or a command still reconciling
+              can show an empty register that is not empty on the server */}
+          {rows.length === 0 && settled && <EmptyHint task="decision" />}
         </div>
       )}
 

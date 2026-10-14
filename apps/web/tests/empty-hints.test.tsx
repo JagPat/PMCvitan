@@ -58,13 +58,13 @@ describe('empty-screen lines', () => {
   });
 });
 
-async function decisionLog(role: string, lang: 'en' | 'hi' | 'gu', decisions: unknown[] = []) {
+async function decisionLog(role: string, lang: 'en' | 'hi' | 'gu', decisions: unknown[] = [], extra: Record<string, unknown> = {}) {
   const { useStore, getInitialState } = await import('@/store/store');
   const scope = await import('@/store/projectScope');
   useStore.setState(getInitialState());
   useStore.setState({
     ...scope.emptyProjectData(), activeProjectId: 'ambli', projectLoadState: 'ready', role, lang,
-    screen: 'decision-log', decisions, fetchAwaitingClient: () => Promise.resolve([]),
+    screen: 'decision-log', decisions, fetchAwaitingClient: () => Promise.resolve([]), ...extra,
   } as never);
   const { DecisionLogScreen } = await import('@/screens/DecisionLogScreen');
   return render(<DecisionLogScreen />);
@@ -99,6 +99,15 @@ describe('the Decision Log with no decisions', () => {
   it.each(['engineer', 'contractor', 'consultant'] as const)('a %s, who has no Issue decision button, is shown no line', async (role) => {
     const view = await decisionLog(role, 'en');
     expect(view.queryByTestId('issue-decision')).toBeNull();
+    expect(view.queryByTestId('empty-hint')).toBeNull();
+  });
+
+  it.each([
+    ['while the decisions are still loading', { decisionsLoad: 'loading' }],
+    ['when the decisions read failed (an empty last-good register)', { decisionsLoad: 'error' }],
+    ['while a published decision is still reconciling', { commandReconcileOwed: { decisions: true, dailyLog: false, drawings: false, inspections: false, activities: false } }],
+  ])('no line %s: the register may not really be empty', async (_label, extra) => {
+    const view = await decisionLog('pmc', 'en', [], extra);
     expect(view.queryByTestId('empty-hint')).toBeNull();
   });
 });
