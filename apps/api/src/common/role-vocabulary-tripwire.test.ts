@@ -109,6 +109,7 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     'apps/web/src/lib/screens.ts :: map keys': 'answered',
     'apps/web/src/lib/screens.ts :: map ROLE_LABEL': 'answered',
     'apps/web/src/lib/screens.ts :: map ROLE_SUBTITLE': 'answered',
+    'apps/web/src/lib/screens.ts :: map ROLE_SCREEN_LABEL': 'excludes: the architect runs the register with the PMC and keeps "Decision Log"; only its readers rename it (#482 QA, #857)',
     // 4d-ii-b / B2 — the Team screen's list and label map are gone: its pickers read the store's
     // rollout-aware `selectRoles` and the shared `ROLE_LABEL` (registered above), so nothing there is a
     // hand-written vocabulary any more

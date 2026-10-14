@@ -23,7 +23,7 @@ const PMC_SCREENS = ['for-you', 'dashboard', 'drafts', 'schedule', 'decisions', 
 const PERSONA_SCREENS = [
   { role: 'Engineer', label: 'Daily Site Log', path: 'site/log' },
   { role: 'Engineer', label: "Today's Checklist", path: 'site/checklist' },
-  { role: 'Client', label: 'Decisions Waiting', path: 'client/decisions' },
+  { role: 'Client', label: 'Decisions', path: 'client/decisions' },
   { role: 'Client', label: 'Project Health', path: 'client/health' },
 ];
 

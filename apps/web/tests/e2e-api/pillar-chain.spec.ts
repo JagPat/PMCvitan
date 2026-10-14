@@ -250,7 +250,7 @@ test('the chain is AUTHORED: decision, linked activity, frozen drawing, linked c
 test('the CLIENT approves in the browser — attributed, and the decision gate flips', async ({ page, request }) => {
   await ensureIds(request);
   await signInToChain(page, CLIENT, chainName);
-  await page.getByRole('button', { name: 'Decisions Waiting' }).click();
+  await page.getByRole('navigation').getByRole('button', { name: /^Decisions( \d+)?$/ }).click();
   await expect(page.getByText('Chain floor finish')).toBeVisible();
   await page.getByTestId(`approve-${decisionId}-a`).click();
   await page.getByTestId('approve-lock').click();
@@ -386,7 +386,7 @@ test('the CHANGE LOOP: a change request reverts readiness; the client re-approve
   await pollGate(request, 'decision', 'wait'); // the reopening reverts readiness automatically
 
   await signInToChain(page, CLIENT, chainName);
-  await page.getByRole('button', { name: 'Decisions Waiting' }).click();
+  await page.getByRole('navigation').getByRole('button', { name: /^Decisions( \d+)?$/ }).click();
   await page.getByTestId(`approve-${decisionId}-a`).click();
   await page.getByTestId('approve-lock').click();
   await expect(page.getByText(/approved/i).first()).toBeVisible();

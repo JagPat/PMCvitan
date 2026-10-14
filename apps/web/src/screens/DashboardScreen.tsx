@@ -4,6 +4,7 @@ import { decisionRecordLink, inspectionsSettledForLinks, selectDecisionsAwaiting
 import { API_BASE, dailyLogReadMode } from '@/data/apiGateway';
 import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
 import { useNavItems } from '@/layout/useNavItems';
+import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
@@ -23,7 +24,13 @@ export function DashboardScreen() {
   // offers no Dashboard way in either
   const role = useStore((s) => s.role);
   const navScreens = new Set<ScreenKey>(useNavItems().map((n) => n.key));
-  const canOpen = (screen: ScreenKey): boolean => navScreens.has(screen);
+  // #857 Codex 4269224400 — plus the role's link-only screens (the client's `/decisions`, where an unsettled
+  // slice sends the approvals tile so retained rows never offer live controls), while their module is on (#822)
+  const enabledModules = useStore((s) => s.enabledModules);
+  const canOpen = (screen: ScreenKey): boolean =>
+    navScreens.has(screen)
+    || ((ROUTE_ONLY_SCREENS[role] ?? []).includes(screen)
+      && (!enabledModules.length || enabledModules.includes(SCREEN_MODULE[screen] ?? '')));
   // Top 10 #2 (#771) — the decisions awaiting action, the server's `countPending` definition (the Portfolio
   // card's number for this project), never a second definition of "pending"
   const pending = useStore(useShallow(selectDecisionsAwaitingAction));

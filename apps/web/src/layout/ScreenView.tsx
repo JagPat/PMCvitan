@@ -20,6 +20,7 @@ import { CommercialScreen } from '@/screens/CommercialScreen';
 
 export function ScreenView() {
   const screen = useStore((s) => s.screen);
+  const role = useStore((s) => s.role);
   switch (screen) {
     case 'inbox':
       return <InboxScreen />;
@@ -30,7 +31,8 @@ export function ScreenView() {
     case 'site-schedule':
       return <ScheduleScreen />;
     case 'decision-log':
-      return <DecisionLogScreen />;
+      // QA check 14 Oct 2026 (#482) — the client's register is the history half of their one "Decisions" screen
+      return role === 'client' ? <ClientDecisionsScreen /> : <DecisionLogScreen />;
     case 'inspect-review':
       return <InspectionReviewScreen />;
     case 'client-decisions':
