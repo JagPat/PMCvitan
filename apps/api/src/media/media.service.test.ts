@@ -273,11 +273,23 @@ describe('MediaService — location spine (nodeId)', () => {
     expect(prisma.media.create.mock.calls[0][0].data.nodeId).toBe('r1');
   });
 
-  it('rejects a photo filed on another author\'s private draft, keeps no row and cleans up the object', async () => {
+  it('refuses another author\'s private draft BEFORE storing any bytes', async () => {
     const { svc, prisma, storage } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'someone-else' }]);
-    Object.assign(prisma.media, { findFirst: vi.fn(async () => null) });
     await expect(svc.create('ambli', uploader, { ...input, nodeId: 'd1' })).rejects.toBeInstanceOf(BadRequestException);
-    // decided inside the transaction (after the bytes are stored), so the earned cleanup removes them
+    // the early no: nothing reaches the bucket, so nothing can be orphaned
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(prisma.media.create).not.toHaveBeenCalled();
+  });
+
+  it('still decides inside the transaction: a place hidden after the early check is refused and its object cleaned up', async () => {
+    const { svc, prisma, storage } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: new Date(), authorId: 'someone-else' }]);
+    Object.assign(prisma.media, { findFirst: vi.fn(async () => null) });
+    // the preflight sees it published; by the locked read it is another author's draft again
+    prisma.projectNode.findUnique
+      .mockResolvedValueOnce({ id: 'd1', projectId: 'ambli', publishedAt: new Date(), authorId: 'someone-else' })
+      .mockResolvedValueOnce({ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'someone-else' });
+    await expect(svc.create('ambli', uploader, { ...input, nodeId: 'd1' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(storage.put).toHaveBeenCalledTimes(1);
     expect(prisma.media.create).not.toHaveBeenCalled();
     expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
   });

@@ -13,7 +13,7 @@ import { InventoryParticipant } from '../inventory/inventory.participant';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialParticipant } from '../commercial/commercial.participant';
-import { resolveProjectNode, resolveVisibleProjectNode } from '../nodes/node-scope';
+import { previewVisibleProjectNode, resolveVisibleProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
@@ -71,9 +71,10 @@ export class MediaService {
       });
       if (existing) return { id: existing.id, url: this.signed.mediaPath(existing.id) };
     }
-    // Location spine: validate the place tag belongs to this project before storing. Whether the uploader
-    // can SEE it (never another author's private draft) is the tree's state, decided inside the transaction.
-    const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
+    // Location spine: the place must be this project's and one the uploader can SEE (never another author's
+    // private draft). Checked here BEFORE the bytes are stored, as a cheap early no; the tree's state is
+    // decided again under its lock inside the transaction below, which is the authority.
+    const nodeId = await previewVisibleProjectNode(this.prisma, projectId, input.nodeId, user.sub);
     // Project-owned references: a photo may only point at THIS project's decision/log.
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     // Task 10 — a daily-log reference is validated through the daily-log module's query, not `project-ref`.

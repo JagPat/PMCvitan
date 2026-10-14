@@ -13,6 +13,7 @@ import type { Role } from '../common/auth';
 import type { DecisionsContract } from '../common/decisions-contract';
 import type { ProjectShellCounts, SnapshotDto } from './types';
 import { readViewerFeed, servedNotifications } from './served-notifications';
+import { isNodeVisibleTo, visibleNodeWhere } from '../nodes/node-scope';
 
 @Injectable()
 export class SnapshotService {
@@ -100,7 +101,9 @@ export class SnapshotService {
       // Site-reality photos for the daily-log gallery AND the Place view. One query,
       // capped, newest first; carries nodeId so a photo can be shown at its location.
       this.prisma.media.findMany({
-        where: { projectId, kind: { in: ['progress', 'inspection', 'material'] } },
+        // a photo on a private draft place is as private as the place (Draft -> Publish), so only the
+        // viewer's visible places, or none, are returned
+        where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, OR: [{ nodeId: null }, { node: visibleNodeWhere(userId) }] },
         orderBy: { createdAt: 'desc' },
         take: SNAPSHOT_SITE_PHOTO_LIMIT,
         select: { id: true, kind: true, url: true, takenAt: true, nodeId: true },
@@ -198,7 +201,7 @@ export class SnapshotService {
       // Draft → Publish: an unpublished location is author-private — delivered only to its
       // creator, hidden from the team's Site Map and the filing pickers until published.
       nodes: nodes
-        .filter((n) => n.publishedAt !== null || (Boolean(userId) && n.authorId === userId))
+        .filter((n) => isNodeVisibleTo(n, userId))
         .map((n) => ({ id: n.id, parentId: n.parentId ?? null, name: n.name, kind: n.kind as 'zone' | 'room' | 'element', order: n.order, draft: n.publishedAt === null })),
       // The location spine's reality layer: placed (and unplaced) site photos for the Place view.
       photos: photoDtos,

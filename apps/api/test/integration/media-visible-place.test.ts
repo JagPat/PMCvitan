@@ -11,7 +11,8 @@ import { lockProjectTree } from '../../src/common/tree-lock';
  * unknown place, on upload and on re-filing, and nothing is stored. Proven through the real routes against
  * PostgreSQL.
  *
- * Reproduce-first: the "another author's draft" probes are 201/200 at the base and 400 here.
+ * Reproduce-first: the "another author's draft" probes are 201/200 at the base and 400 here; the snapshot
+ * probe (a photo on a private draft reaches only its author) fails on fdabb16.
  */
 describe('a photo goes only on a place its uploader can see (live PG)', () => {
   let t: TestApp;
@@ -73,6 +74,22 @@ describe('a photo goes only on a place its uploader can see (live PG)', () => {
   it('files a photo on the uploader\'s own private draft', async () => {
     const res = await upload(pmc, { nodeId: nodeId('pmc-draft'), clientKey: 'vp-own-draft' });
     expect(res.status).toBe(201);
+  });
+
+  it('a photo on a private draft place is as private as the place: only the draft\'s author gets it in the snapshot', async () => {
+    const photo = await upload(pmc, { nodeId: nodeId('pmc-draft'), clientKey: 'vp-draft-private' });
+    expect(photo.status).toBe(201);
+    const snap = (token: string) => request(t.app.getHttpServer()).get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${token}`);
+    const ids = (body: { photos: Array<{ id: string }> }) => body.photos.map((p) => p.id);
+    const mine = await snap(pmc);
+    expect(mine.status).toBe(200);
+    expect(ids(mine.body)).toContain(photo.body.id);
+    const theirs = await snap(engineer);
+    expect(theirs.status).toBe(200);
+    expect(ids(theirs.body)).not.toContain(photo.body.id);
+    // nor in the daily-log gallery, nor any trace of the hidden place
+    expect(JSON.stringify(theirs.body)).not.toContain(photo.body.id);
+    expect(JSON.stringify(theirs.body)).not.toContain(nodeId('pmc-draft'));
   });
 
   it('re-filing onto another author\'s private draft is refused and the photo stays where it was', async () => {

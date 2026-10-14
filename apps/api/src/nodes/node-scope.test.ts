@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
-import { resolveProjectNode, resolveVisibleProjectNode } from './node-scope';
+import { isNodeVisibleTo, previewVisibleProjectNode, resolveProjectNode, resolveVisibleProjectNode, visibleNodeWhere } from './node-scope';
 import type { Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma.service';
 
@@ -73,5 +73,35 @@ describe('resolveVisibleProjectNode — filing on a place the caller can see', (
   it('keeps the project guard and the unfiled case', async () => {
     await expect(resolveVisibleProjectNode(tx([{ ...published, projectId: 'other' }]), 'ambli', 'p1', 'pmc-1')).rejects.toBeInstanceOf(BadRequestException);
     expect(await resolveVisibleProjectNode(tx([]), 'ambli', null, 'pmc-1')).toBeNull();
+  });
+});
+
+describe('previewVisibleProjectNode — the early no before an upload stores bytes', () => {
+  const draft = { id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'pmc-1' };
+
+  it('applies the same rule in its own transaction, under the same shared tree lock', async () => {
+    const db = prismaWith([draft]) as unknown as { $executeRaw: { mock: { calls: unknown[][] } }; $transaction: unknown };
+    db.$transaction = vi.fn(async (fn: (t: unknown) => Promise<unknown>) => fn(db));
+    expect(await previewVisibleProjectNode(db as unknown as PrismaService, 'ambli', 'd1', 'pmc-1')).toBe('d1');
+    expect(String((db.$executeRaw.mock.calls[0][0] as { strings: string[] }).strings.join('?'))).toContain('pg_advisory_xact_lock_shared');
+    const err = await previewVisibleProjectNode(db as unknown as PrismaService, 'ambli', 'd1', 'engineer-1').catch((e) => e);
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(err.message).toBe('Unknown location for this project');
+    expect(await previewVisibleProjectNode(db as unknown as PrismaService, 'ambli', null, 'pmc-1')).toBeNull();
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('the one place-visibility rule', () => {
+  it('a published place is everyone\'s; a draft only its author\'s; no viewer sees no draft', () => {
+    expect(isNodeVisibleTo({ publishedAt: new Date(), authorId: 'a' }, 'b')).toBe(true);
+    expect(isNodeVisibleTo({ publishedAt: null, authorId: 'a' }, 'a')).toBe(true);
+    expect(isNodeVisibleTo({ publishedAt: null, authorId: 'a' }, 'b')).toBe(false);
+    expect(isNodeVisibleTo({ publishedAt: null, authorId: null }, undefined)).toBe(false);
+  });
+
+  it('the query form says the same', () => {
+    expect(visibleNodeWhere('a')).toEqual({ OR: [{ publishedAt: { not: null } }, { authorId: 'a' }] });
+    expect(visibleNodeWhere(undefined)).toEqual({ publishedAt: { not: null } });
   });
 });
