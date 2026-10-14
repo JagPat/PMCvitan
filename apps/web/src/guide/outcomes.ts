@@ -7,19 +7,23 @@
  */
 export type GuideOutcome = 'inspection-submitted' | 'inspection-submit-failed' | 'checklist-issued' | 'checklist-issue-failed';
 
-const listeners = new Set<(outcome: GuideOutcome) => void>();
+/** `key`: which record the outcome is about (the submitted inspection's id), so a guide following one
+ *  checklist ignores the submit of another */
+type Listener = (outcome: GuideOutcome, key: string | null) => void;
 
-export function emitGuideOutcome(outcome: GuideOutcome): void {
+const listeners = new Set<Listener>();
+
+export function emitGuideOutcome(outcome: GuideOutcome, key: string | null = null): void {
   for (const listener of [...listeners]) {
     try {
-      listener(outcome);
+      listener(outcome, key);
     } catch {
       // the guide must never break the action it is watching
     }
   }
 }
 
-export function subscribeGuideOutcome(listener: (outcome: GuideOutcome) => void): () => void {
+export function subscribeGuideOutcome(listener: Listener): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
