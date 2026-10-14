@@ -124,7 +124,7 @@ export function TeamScreen() {
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 22, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" aria-label="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="member-name" />
           <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" aria-label="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="member-contact" />
-          <select value={role} onChange={(e) => setRole(e.target.value as Role)} style={{ ...fld, flex: '0 0 130px' }} aria-label="Role" data-testid="member-role">
+          <select value={role} onChange={(e) => setRole(e.target.value as Role)} style={{ ...fld, flex: '0 0 220px' }} aria-label="Role" data-testid="member-role">
             {roleOptions.map((r) => <option key={r} value={r}>{MEMBER_ROLE_LABEL[r]}</option>)}
           </select>
           {role === 'consultant' && (
@@ -153,10 +153,11 @@ export function TeamScreen() {
             </div>
             {canManage ? (
               <>
+                {/* #827: the role select is wide enough for "Project manager (PMC)" and gives way on a phone */}
                 {/* Wave 0 / F-1b round 8 — 38 -> 44 on every role/discipline select here. These
                     override the shared `fld` height downward, so raising the token alone would
                     have left them short: an override is a second spelling of the rule. */}
-                <select value={m.role} onChange={(e) => { const r = e.target.value as Role; updateMemberRole(m.userId, r, r === 'consultant' ? (m.discipline ?? 'architect') : undefined); }} style={{ ...fld, flex: '0 0 120px', height: 44 }} aria-label={`Role for ${m.name}`} data-testid={`member-role-${m.userId}`}>
+                <select value={m.role} onChange={(e) => { const r = e.target.value as Role; updateMemberRole(m.userId, r, r === 'consultant' ? (m.discipline ?? 'architect') : undefined); }} style={{ ...fld, flex: '0 1 220px', minWidth: 120, height: 44 }} aria-label={`Role for ${m.name}`} data-testid={`member-role-${m.userId}`}>
                   {optionsFor(m.role).map((r) => <option key={r} value={r}>{MEMBER_ROLE_LABEL[r]}</option>)}
                 </select>
                 {m.role === 'consultant' && (
