@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent, act, screen, within } from '@testing-librar
 import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
+import { refreshSiteVisits, uuidV4, VISIT_PAGE } from '@/lib/useSiteVisits';
 import type { ApiGateway, SiteVisit } from '@/data/apiGateway';
 import { leftoverEnglish } from './leftover-english';
 
@@ -40,14 +41,15 @@ type Fake = { [K in keyof ApiGateway]?: ReturnType<typeof vi.fn> };
 
 function fakeGateway(list: SiteVisit[], over: Fake = {}): Fake {
   return {
-    listSiteVisits: vi.fn().mockResolvedValue(list),
+    // the open read lists every open visit; the page read lists the newest
+    listSiteVisits: vi.fn(async (q?: { status?: string }) => (q?.status === 'open' ? list.filter((v) => v.status === 'open') : list)),
     startSiteVisit: vi.fn(async (input: { id: string; nodeId?: string }) => visit({ id: input.id, visitorId: PMC, visitorName: 'Priya Shah', visitorRole: 'pmc', startPlace: input.nodeId ? { nodeId: input.nodeId, name: 'Kitchen' } : null })),
     ...over,
   };
 }
 
-async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en') {
-  useStore.setState({ ...getInitialState(), role, lang, sessionUserId: me, nodes: NODES, members: MEMBERS, loadTeam: async () => {} });
+async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en', members: ProjectMember[] = MEMBERS, loadTeam: () => Promise<void> = async () => {}) {
+  useStore.setState({ ...getInitialState(), role, lang, sessionUserId: me, nodes: NODES, members, loadTeam });
   useStore.getState()._setGateway(gw as unknown as ApiGateway);
   const view = render(<SiteVisitsScreen />);
   await act(async () => {});
@@ -190,7 +192,8 @@ describe('Site Visits screen', () => {
     const [[b1, k1], [b2, k2], [b3, k3]] = startSiteVisit.mock.calls;
     // the retry after the lost response is the same act; after a refusal the next press is a new one
     expect(k2).toBe(k1);
-    expect(b2.id).toBe(b1.id);
+    // the whole first body, its time included, so the server's ledger sees the same act (Codex 4274234568)
+    expect(b2).toEqual(b1);
     expect(k3).not.toBe(k2);
     expect(b3.id).not.toBe(b2.id);
   });
@@ -199,7 +202,7 @@ describe('Site Visits screen', () => {
     let answer!: (v: SiteVisit) => void;
     const gw = fakeGateway([visit()], { endSiteVisit: vi.fn(() => new Promise<SiteVisit>((r) => { answer = r; })) });
     await mount('consultant', CONSULTANT, gw);
-    fireEvent.click(screen.getByRole('button', { name: 'End visit' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'End visit' })); });
     gw.listSiteVisits!.mockResolvedValue([]);
     await act(async () => { useStore.setState((s) => ({ projectScopeGeneration: s.projectScopeGeneration + 1 })); });
     await act(async () => { answer(visit({ status: 'ended' })); });
@@ -223,5 +226,92 @@ describe('Site Visits screen', () => {
     });
     const { container } = await mount('consultant', CONSULTANT, fakeGateway([v, visit({ id: 'v-2', status: 'closed', closeReason: 'Left open', lateEndedAt: '2026-10-14T06:00:00.000Z' })]), lang);
     expect(leftoverEnglish(container, ['Kiran Rao', 'Ramesh Patel', 'Priya Shah', 'Kitchen', 'Ground floor', 'Left open', 'PMC'])).toEqual([]);
+  });
+  it('keeps the key and the body after a passing server fault, and settles them on a definite refusal (Codex 4274234578)', async () => {
+    const fault = Object.assign(new Error('503'), { status: 503 });
+    const refused = Object.assign(new Error('409'), { status: 409, serverMessage: 'Visit already ended' });
+    const addSiteVisitAttendee = vi.fn().mockRejectedValueOnce(fault).mockRejectedValueOnce(refused).mockResolvedValue(visit());
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { addSiteVisitAttendee }));
+    const card = screen.getByTestId('sv-visit-v-1');
+    fireEvent.change(within(card).getByLabelText('Guest’s name'), { target: { value: 'Mr Mehta' } });
+    const press = () => act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Add guest' })); });
+    await press();
+    expect(screen.getByRole('alert').textContent).toBe('The server did not confirm this. Try again; it is saved only once.');
+    await press();
+    await press();
+    const [[, b1, k1], [, b2, k2], [, b3, k3]] = addSiteVisitAttendee.mock.calls;
+    expect(k2).toBe(k1);
+    expect(b2).toEqual(b1);
+    expect(k3).not.toBe(k2);
+    expect(b3.id).not.toBe(b2.id);
+  });
+
+  it('never sends a start whose location wait outlives the project it was pressed in (Codex 4274234657)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.stubGlobal('navigator', { ...navigator, geolocation: { getCurrentPosition: vi.fn() } });
+    const gw = fakeGateway([]);
+    await mount('pmc', PMC, gw);
+    await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
+    await act(async () => { useStore.setState((s) => ({ projectScopeGeneration: s.projectScopeGeneration + 1 })); });
+    await act(async () => { vi.advanceTimersByTime(5000); });
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    expect(gw.startSiteVisit).not.toHaveBeenCalled();
+  });
+
+  it('mints a version 4 UUID for each row even where the browser has no randomUUID (Codex 4274234621)', async () => {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    vi.stubGlobal('crypto', { getRandomValues: (b: Uint8Array) => globalThis.Array.from(b, (_, i) => (b[i] = (i * 37) % 256)) && b });
+    expect(uuidV4()).toMatch(uuid);
+    vi.stubGlobal('crypto', undefined);
+    expect(uuidV4()).toMatch(uuid);
+    const gw = fakeGateway([]);
+    await mount('pmc', PMC, gw);
+    await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
+    vi.unstubAllGlobals();
+    expect(gw.startSiteVisit!.mock.calls[0][0].id).toMatch(uuid);
+  });
+
+  it('knows the viewer’s own open visit even when it is older than the first page (Codex 4274234592)', async () => {
+    const newer = Array.from({ length: VISIT_PAGE }, (_, i) => visit({ id: `v-new-${i}`, status: 'ended', startedAt: `2026-10-14T0${i % 10}:00:00.000Z` }));
+    const mine = visit({ id: 'v-mine', visitorId: PMC, visitorName: 'Priya Shah', visitorRole: 'pmc', startedAt: '2026-10-01T04:30:00.000Z' });
+    const listSiteVisits = vi.fn(async (q?: { status?: string }) => (q?.status === 'open' ? [mine] : newer));
+    await mount('pmc', PMC, fakeGateway([], { listSiteVisits }));
+    expect(screen.queryByTestId('sv-start')).toBeNull();
+    const cards = screen.getAllByTestId(/^sv-visit-/);
+    expect(cards[0].getAttribute('data-testid')).toBe('sv-visit-v-mine');
+    expect(within(cards[0]).getByRole('button', { name: 'End visit' })).toBeTruthy();
+  });
+
+  it('reads the visits again when the server says the project changed (Codex 4274234605)', async () => {
+    const gw = fakeGateway([visit()]);
+    await mount('client', 'u-client', gw);
+    expect(screen.getByTestId('sv-visit-v-1').textContent).toContain('On site now');
+    const closed = visit({ status: 'closed', closedAt: '2026-10-14T09:00:00.000Z', closeReason: 'Left open' });
+    gw.listSiteVisits!.mockImplementation(async (q?: { status?: string }) => (q?.status === 'open' ? [] : [closed]));
+    await act(async () => { refreshSiteVisits(); });
+    const card = screen.getByTestId('sv-visit-v-1');
+    expect(card.textContent).toContain('Closed');
+    // a closed visit says when it was closed, not only why (Codex 4274234615)
+    expect(card.textContent).toContain('Closed 14 Oct, 14:30');
+  });
+
+  it('offers only active members, and a retry when the team could not be read (Codex 4274234633, 4274234646)', async () => {
+    const invited = { userId: 'u-inv', name: 'Neha Joshi', role: 'engineer', email: null, phone: null, status: 'invited' } as ProjectMember;
+    await mount('consultant', CONSULTANT, fakeGateway([visit()]), 'en', [...MEMBERS, invited]);
+    const picker = within(screen.getByTestId('sv-visit-v-1')).getByLabelText('Choose a team member');
+    expect(within(picker).queryByText(/Neha Joshi/)).toBeNull();
+    expect(within(picker).getByText(/Ramesh Patel/)).toBeTruthy();
+    cleanup();
+
+    const loadTeam = vi.fn().mockResolvedValueOnce(undefined).mockImplementation(async () => { useStore.setState({ members: MEMBERS }); });
+    await mount('consultant', CONSULTANT, fakeGateway([visit()]), 'en', [], loadTeam);
+    expect(loadTeam).toHaveBeenCalledTimes(1);
+    const card = screen.getByTestId('sv-visit-v-1');
+    expect(card.textContent).toContain('Could not load the team.');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Try again' })); });
+    expect(loadTeam).toHaveBeenCalledTimes(2);
+    expect(card.textContent).not.toContain('Could not load the team.');
+    expect(within(within(card).getByLabelText('Choose a team member')).getByText(/Ramesh Patel/)).toBeTruthy();
   });
 });

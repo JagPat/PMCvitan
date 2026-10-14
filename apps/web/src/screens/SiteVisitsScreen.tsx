@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { can, forYouRole, type Lang, type Role } from '@vitan/shared';
+import { can, forYouRole, type Lang, type ProjectMember, type Role } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { Button } from '@/components';
 import { trailOf } from '@/lib/locationTree';
@@ -23,12 +23,24 @@ export function SiteVisitsScreen() {
   const nodes = useStore(useShallow((s) => s.nodes.filter((n) => !n.draft)));
   const sv = useSiteVisits();
   const [startNode, setStartNode] = useState('');
+  const members = useStore(useShallow((s) => s.members));
+  const loadTeam = useStore((s) => s.loadTeam);
+  const [team, setTeam] = useState<'idle' | 'loading' | 'done'>('idle');
 
   const placeOptions = useMemo(
     () => nodes.map((n) => ({ id: n.id, label: trailOf(nodes, n.id).map((t) => t.name).join(' › ') })).sort((a, b) => a.label.localeCompare(b.label)),
     [nodes],
   );
   const mineOpen = sv.visits.some((v) => v.visitorId === me && v.status === 'open');
+  // the member list is the Team screen's; read it when this viewer can name someone on a visit. The viewer is a
+  // member, so a list still empty after the read means it failed, and the picker offers a retry
+  const namesPeople = sv.visits.some((v) => editable(v, role, me));
+  useEffect(() => {
+    if (!namesPeople || members.length || team !== 'idle') return;
+    setTeam('loading');
+    void loadTeam().finally(() => setTeam('done'));
+  }, [namesPeople, members.length, team, loadTeam]);
+  const teamFailed = team === 'done' && members.length === 0;
 
   if (!hasServer) {
     return (
@@ -65,7 +77,8 @@ export function SiteVisitsScreen() {
       {sv.load === 'ready' && sv.visits.length === 0 && <p className={styles.note}>{SV.empty[lang]}</p>}
       <div className={styles.list}>
         {sv.visits.map((v) => (
-          <VisitCard key={v.id} visit={v} lang={lang} role={role} me={me} placeOptions={placeOptions} sv={sv} />
+          <VisitCard key={v.id} visit={v} lang={lang} role={role} me={me} placeOptions={placeOptions} sv={sv}
+            members={members} teamFailed={teamFailed} retryTeam={() => setTeam('idle')} />
         ))}
       </div>
       {sv.hasMore && <Button variant="light" fullWidth onClick={sv.more}>{SV.older[lang]}</Button>}
@@ -82,37 +95,42 @@ function Header({ lang }: { lang: Lang }) {
   );
 }
 
+/** Whether the viewer may add or remove places and people on this visit: the server narrows every edit to the
+ *  visitor, in the role they started in (SV1-b). */
+function editable(v: SiteVisit, role: Role, me: string | null): boolean {
+  return v.visitorId === me && v.visitorRole === role && can('siteVisit.edit', role) && v.status !== 'closed';
+}
+
 function roleName(role: string | null, lang: Lang): string {
   return role && role in forYouRole ? forYouRole[role as Role][lang] : '';
 }
 
-function VisitCard({ visit: v, lang, role, me, placeOptions, sv }: {
+function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFailed, retryTeam }: {
   visit: SiteVisit;
   lang: Lang;
   role: Role;
   me: string | null;
   placeOptions: { id: string; label: string }[];
   sv: ReturnType<typeof useSiteVisits>;
+  members: ProjectMember[];
+  teamFailed: boolean;
+  retryTeam: () => void;
 }) {
-  const members = useStore(useShallow((s) => s.members));
-  const loadTeam = useStore((s) => s.loadTeam);
   const [place, setPlace] = useState('');
   const [person, setPerson] = useState('');
   const [guest, setGuest] = useState('');
   const [closing, setClosing] = useState(false);
   const [reason, setReason] = useState('');
 
-  // the server narrows every edit to the visitor, in the role they started in (SV1-b)
   const mine = v.visitorId === me && v.visitorRole === role;
-  const canEdit = mine && can('siteVisit.edit', role) && v.status !== 'closed';
+  const canEdit = editable(v, role, me);
   const canEnd = mine && can('siteVisit.end', role) && (v.status === 'open' || (v.status === 'closed' && v.lateEndedAt === null));
   const canClose = can('siteVisit.close', role) && v.status === 'open';
   const standingPlaces = new Set(v.places.filter((p) => !p.retiredAt && p.nodeId).map((p) => p.nodeId));
   const standingPeople = new Set(v.attendees.filter((a) => !a.retiredAt && a.userId).map((a) => `${a.userId}:${a.role}`));
   const freePlaces = placeOptions.filter((p) => !standingPlaces.has(p.id));
-  const freeMembers = members.filter((m) => m.userId !== v.visitorId && !standingPeople.has(`${m.userId}:${m.role}`));
-  // the member list is the Team screen's; read it once when this visitor can name someone
-  useEffect(() => { if (canEdit && !members.length) void loadTeam(); }, [canEdit, members.length, loadTeam]);
+  // only a member whose membership is active can be named: an invitation not yet taken is refused by the server
+  const freeMembers = members.filter((m) => m.status === 'active' && m.userId !== v.visitorId && !standingPeople.has(`${m.userId}:${m.role}`));
   const status = v.status === 'open' ? SV.open[lang] : v.status === 'ended' ? SV.ended[lang] : SV.closed[lang];
 
   return (
@@ -125,6 +143,7 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv }: {
       <div className={styles.meta}>
         {SV.startedAt[lang]} {visitTime(v.startedAt, lang)}
         {v.endedAt && <> · {SV.endedAt[lang]} {visitTime(v.endedAt, lang)}</>}
+        {v.closedAt && <> · {SV.closedAt[lang]} {visitTime(v.closedAt, lang)}</>}
         {v.startPlace && <> · {v.startPlace.name}</>}
       </div>
       {v.location.kind === 'device' && (
@@ -179,6 +198,11 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv }: {
               void sv.addMember(v.id, userId, memberRole).then((ok) => ok && setPerson(''));
             }}>{SV.addPerson[lang]}</Button>
           </div>
+          {teamFailed && (
+            <div className={styles.meta}>
+              {SV.teamFailed[lang]} <Button variant="light" onClick={retryTeam}>{SV.retry[lang]}</Button>
+            </div>
+          )}
           <div className={styles.add}>
             <input aria-label={SV.guestName[lang]} placeholder={SV.guestName[lang]} className={styles.field} value={guest} maxLength={120} onChange={(e) => setGuest(e.target.value)} />
             <Button variant="light" disabled={sv.busy || !guest.trim()} onClick={() => { void sv.addGuest(v.id, guest.trim()).then((ok) => ok && setGuest('')); }}>{SV.addGuest[lang]}</Button>

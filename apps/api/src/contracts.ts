@@ -1914,9 +1914,11 @@ export const addSiteVisitAttendeeSchema = z.union([
   z.object({ id: siteVisitIdSchema, guestName: z.string().trim().min(1).max(120) }).strict(),
 ]);
 export type AddSiteVisitAttendeeInput = z.infer<typeof addSiteVisitAttendeeSchema>;
-// The visit list's page: newest start first, `before` naming the last visit of the previous page.
+// The visit list's page: newest start first, `before` naming the last visit of the previous page; `status=open`
+// narrows it to the visits still open, so a screen knows who is on site however far back they started (#874).
 export const listSiteVisitsSchema = z.object({
   before: siteVisitIdSchema.optional(),
+  status: z.literal('open').optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
 }).strict();
 export type ListSiteVisitsInput = z.infer<typeof listSiteVisitsSchema>;

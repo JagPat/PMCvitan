@@ -1435,10 +1435,12 @@ export class ApiGateway {
 
   // ── Site Visits SV1-c (#792): the screen's reads and the visitor's acts. Every act answers with the whole visit,
   //    and carries its own key, so a retry after a lost response runs once. ──
-  /** A page of the project's visits, newest start first; `before` is the previous page's last visit. */
-  listSiteVisits(page: { before?: string; limit?: number } = {}): Promise<SiteVisit[]> {
+  /** A page of the project's visits, newest start first; `before` is the previous page's last visit; `status: 'open'`
+   *  reads every visit still open, however old. */
+  listSiteVisits(page: { before?: string; limit?: number; status?: 'open' } = {}): Promise<SiteVisit[]> {
     const q = new URLSearchParams();
     if (page.before) q.set('before', page.before);
+    if (page.status) q.set('status', page.status);
     if (page.limit) q.set('limit', String(page.limit));
     const qs = q.toString();
     return this.req<SiteVisit[]>(`/projects/${this.projectId}/site-visits${qs ? `?${qs}` : ''}`);

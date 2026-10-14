@@ -12,7 +12,9 @@ the starting place, whether a location was saved, the places walked and the peop
 marked "removed"). The PMC and consultants start a visit (with an optional starting place; the phone's location is
 saved when it offers one within five seconds and never blocks), add and remove places, team members and guests on
 their own visit, and end it. The PMC closes someone else's visit left open, with a reason. Client, engineer and
-contractor read only. Every word is in English, Hindi and Gujarati.
+contractor read only. Only active members can be named (an invitation not yet taken is refused by the server), and a team list that
+could not be read offers a retry. A closed visit says when it was closed. Every word is in English, Hindi and
+Gujarati.
 
 ## Hard choices
 
@@ -24,14 +26,21 @@ contractor read only. Every word is in English, Hindi and Gujarati.
 2. **No store slice.** The screen keeps its visits in its own hook (`useSiteVisits`) and sends through the store's
    gateway (`serverGateway()`, one new accessor). A reply is applied only while the project scope it was sent for
    is current, the same guard the store uses.
-3. **One act, one key.** An act keeps its idempotency key and the row id it minted until it settles. A lost
-   response (no status) keeps both, so pressing again is the same act and the server runs it once; a refusal
-   settles it, so the next press is a new act. The key is bound to the project scope.
-4. **Online only.** With no signal, nothing is saved and the screen says so. The offline queue (F53: queued acts
+3. **One act, one key, one body.** An act keeps its idempotency key, the row id it minted and the exact body it
+   first sent (its claimed time and location included) until it settles. A lost answer or a passing fault (no
+   status, 401, 408, 429, 5xx: `isTerminalOutboxError` false) keeps all three, so pressing again is the same act
+   and the server runs it once; a definite refusal settles it, so the next press is a new act. The key is bound to
+   the project scope, and a start whose location wait outlives that scope is never sent. Row ids are version 4
+   UUIDs even where the browser has no `randomUUID`.
+4. **Open visits always known; live like the other screens.** Beside the first page the screen reads every open
+   visit (`?status=open`, a read-only filter added to SV1-b's list for this), so the viewer's own open visit
+   decides Start however old it is, and open visits show first. The realtime ping that refreshes the snapshot
+   (`useApiSync`) also re-reads the visits on a screen that is showing them.
+5. **Online only.** With no signal, nothing is saved and the screen says so. The offline queue (F53: queued acts
    survive a start conflict, a queued remove waits for its add) is unit 2.
-5. **Refusals in the viewer's language.** In English the server's own reason is shown after "This was not saved.";
+6. **Refusals in the viewer's language.** In English the server's own reason is shown after "This was not saved.";
    Hindi and Gujarati show the translated line only, because the server's reasons are English.
-6. **Photo later.** "Add photo" (unit 3) reuses the site photos button once it is on main and files the photo as
+7. **Photo later.** "Add photo" (unit 3) reuses the site photos button once it is on main and files the photo as
    a normal site photo; tying a photo to the visit record is SV2.
-7. **Entry points later.** "Start visit" from the PMC Brief and "Visit this area" on the Site Map (plan, SV1 row)
+8. **Entry points later.** "Start visit" from the PMC Brief and "Visit this area" on the Site Map (plan, SV1 row)
    wait for Lane 1's Site Map units.
