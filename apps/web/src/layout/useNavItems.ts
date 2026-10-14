@@ -58,6 +58,8 @@ export function useNavItems(): NavItem[] {
     if (m.key === 'inspect-review') badge = reviewPending;
     if (m.key === 'materials') badge = shortageCount;
     if (m.key === 'labour') badge = labourShortfallCount;
-    return { ...m, badge, active: screen === m.key };
+    // QA check 14 Oct 2026 (#482) — a client on a `/decisions` link is on their "Decisions" screen
+    const onScreen = screen === m.key || (role === 'client' && m.key === 'client-decisions' && screen === 'decision-log');
+    return { ...m, badge, active: onScreen };
   });
 }

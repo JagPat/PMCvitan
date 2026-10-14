@@ -4,9 +4,9 @@ test('core loop: client approves & locks a decision → Decision Log → PMC das
   await page.goto('/');
 
   // every role lands on the Dashboard (#811) — switch to the Client
-  // persona, then open their Decisions Waiting screen to drive the approval flow
+  // persona, then open their one Decisions screen (#482 QA, 14 Oct 2026) to drive the approval flow
   await page.getByRole('button', { name: 'Client', exact: true }).click();
-  await page.getByRole('button', { name: 'Decisions Waiting' }).click();
+  await page.getByRole('navigation').getByRole('button', { name: /^Decisions( \d+)?$/ }).click();
   await expect(page.getByText('Decisions waiting for you')).toBeVisible();
 
   // approve the architect's pick (Option B) on DL-014
@@ -19,8 +19,7 @@ test('core loop: client approves & locks a decision → Decision Log → PMC das
   // toast confirms the lock
   await expect(page.getByText(/Approved & locked/)).toBeVisible();
 
-  // open the Decision Log — DL-014 is now approved & locked
-  await page.getByRole('button', { name: 'Decision Log' }).click();
+  // the same screen's history below — DL-014 is now approved & locked
   const row = page.getByTestId('log-row-DL-014');
   await expect(row).toContainText('APPROVED & LOCKED');
   await expect(page.getByTestId('lock-DL-014')).toBeVisible();

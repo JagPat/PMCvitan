@@ -30,7 +30,7 @@ test('with the doors standing, the client’s confirmation reads the delivered c
   await page.goto('/');
   await signIn(page, CLIENT);
   await openProject(page, 'Residence at Ambli');
-  await page.getByRole('button', { name: 'Decisions Waiting' }).click();
+  await page.getByRole('navigation').getByRole('button', { name: /^Decisions( \d+)?$/ }).click();
   // the first option of the first pending card opens the confirmation; nothing is approved here
   const approve = page.locator('[data-testid^="approve-DL-"]').first();
   await expect(approve).toBeVisible();
