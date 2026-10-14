@@ -174,6 +174,15 @@ describe('the client\'s one "Decisions" screen', () => {
     expect(navLabelFor('client-decisions', 'client', 'gu')).toBe(navLabelFor('decision-log', 'pmc', 'gu'));
   });
 
+  it('the client\'s own reopened decision keeps Forward on its card once the countersign chain is open (Codex 4276536575)', async () => {
+    const mine = dec('D-5', { status: 'change', changeRequest: { reason: 'Darker grain', costImpact: 0, timeImpactDays: 0, requestedById: 'u-client' } } as Partial<Decision>);
+    const { r } = await load({ decisions: [mine], sessionUserId: 'u-client', sessionToken: null, phase6_4dRollout: 'open' });
+    const card = r.getByTestId('pending-card-D-5');
+    expect(card.querySelector('[data-testid="forward-D-5"]')).toBeTruthy();
+    expect(card.querySelector('[data-testid="withdraw-D-5"]')).toBeTruthy();
+    expect(r.getByTestId('decisions-history').querySelector('[data-testid="log-row-D-5"]')).toBeNull();
+  });
+
   it('the PMC keeps the Decision Log as it was', async () => {
     const { r } = await load({ role: 'pmc', screen: 'decision-log' });
     const { screensFor } = await import('@/lib/screens');
