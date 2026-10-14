@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { decisionRecordLink, inspectionRecordLink, inspectionsSettledForLinks, selectVisibleDecisions } from '@/store/selectors';
@@ -527,9 +527,13 @@ function CountWords({ words, testId, pills = false }: { words: PlaceCountWord[];
   return (
     <div data-testid={testId} style={{ display: 'flex', gap: pills ? 6 : 4, marginTop: pills ? 0 : 8, marginBottom: pills ? 14 : 0, flexWrap: 'wrap', fontSize: pills ? 12 : 11.5, color: 'var(--muted)' }}>
       {words.map((w, i) => (
-        <span key={w.key} data-count={w.key} style={w.alert ? { ...countPill, ...alertTone } : pills ? countPill : undefined}>
-          {w.text}{!pills && !w.alert && i < words.length - 1 ? ' ·' : ''}
-        </span>
+        <Fragment key={w.key}>
+          <span data-count={w.key} style={w.alert ? { ...countPill, ...alertTone } : pills ? countPill : undefined}>
+            {w.text}{!pills && !w.alert && i < words.length - 1 ? ' ·' : ''}
+          </span>
+          {/* #847 — a space between counts keeps copied and read-aloud text apart; the flex gap hides it */}
+          {i < words.length - 1 ? ' ' : null}
+        </Fragment>
       ))}
     </div>
   );

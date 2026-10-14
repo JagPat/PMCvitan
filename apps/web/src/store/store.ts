@@ -3467,6 +3467,14 @@ export const useStore = create<Store>()(
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) s.reviews[j].decided = true;
+        // #847 — mirror the server's placed rows so the Site Map shows the new open issues, as the Dashboard
+        // does: the rejected inspection is decided with its failed items, and its re-inspection carries them
+        const placed = s.placedInspections.find((p) => p.id === review.id);
+        if (placed) { placed.decided = true; placed.failedItems = n; }
+        const reId = review.id + '-R';
+        if (!s.placedInspections.some((p) => p.id === reId)) {
+          s.placedInspections.push({ id: reId, title: 'Re-inspection: ' + review.title, zone: placed?.zone ?? review.zone, nodeId: placed?.nodeId ?? review.nodeId, kind: 'checklist', submitted: false, decided: false, failedItems: 0, openIssues: n });
+        }
         if (review.closing && review.activityId) {
           // Task 5: rejecting the closing sign-off returns the activity to execution
           const a = s.activities.find((x) => x.id === review.activityId);

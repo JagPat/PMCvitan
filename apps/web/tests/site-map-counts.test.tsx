@@ -87,7 +87,7 @@ describe('Site Map cards match the place they open', () => {
     useStore.setState({ routeItem: 'gf' });
     const { getByTestId, unmount } = render(<PlacesScreen />);
     const card = getByTestId('place-counts-kit');
-    expect(card.textContent).toBe('1 open issue1 inspection ·2 decisions ·2 drawings');
+    expect(card.textContent).toBe('1 open issue 1 inspection · 2 decisions · 2 drawings');
     expect(card.querySelector('[data-count="openIssues"]')).not.toBeNull();
     unmount();
     useStore.setState({ routeItem: 'kit' });
@@ -113,6 +113,25 @@ describe('Site Map cards match the place they open', () => {
   it('a client sees no inspection or issue count on a card', async () => {
     const { PlacesScreen, useStore } = await load({ role: 'client', decisions: [decision('DL-1', 'kit'), decision('DL-2', 'kit')].map((d) => ({ ...d, status: 'approved' })) });
     useStore.setState({ routeItem: 'gf' });
-    expect(render(<PlacesScreen />).getByTestId('place-counts-kit').textContent).toBe('2 decisions ·2 drawings');
+    expect(render(<PlacesScreen />).getByTestId('place-counts-kit').textContent).toBe('2 decisions · 2 drawings');
+  });
+});
+
+describe('the API-less demo keeps open issues on the Site Map (#847)', () => {
+  it('sending a re-inspection puts its open issues on the place, as the Dashboard counts them', async () => {
+    vi.stubEnv('VITE_API_URL', '');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const { selectFailedCount } = await import('@/store/selectors');
+    useStore.setState({ ...getInitialState(), role: 'pmc', activeReviewId: 'INSP-21' });
+    const before = useStore.getState();
+    expect(openIssueCount(before.placedInspections)).toBe(0);
+    before.sendReinspection();
+    const s = useStore.getState();
+    const terrace = s.placedInspections.filter((i) => i.nodeId === 'z-terrace');
+    expect(openIssueCount(terrace)).toBe(1);
+    expect(openIssueCount(terrace)).toBe(selectFailedCount(s));
+    s.sendReinspection(); // a second send adds no second row
+    expect(useStore.getState().placedInspections.filter((i) => i.id === 'INSP-21-R')).toHaveLength(1);
   });
 });
