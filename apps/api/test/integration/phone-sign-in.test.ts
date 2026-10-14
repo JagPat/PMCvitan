@@ -51,7 +51,12 @@ describe('phone sign-in code by email (live PostgreSQL)', () => {
     }
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    // each case starts with no live codes (a delivered code stays live until it is used or expires)
+    await t.prisma.passwordCredentialChallenge.updateMany({
+      where: { purpose: PHONE_SIGN_IN_PURPOSE, consumedAt: null, userId: { in: [f.memberUser.id, f.otherUser.id] } },
+      data: { consumedAt: new Date() },
+    });
     vi.restoreAllMocks();
     mailbox.length = 0;
     mailFails = false;
@@ -60,7 +65,7 @@ describe('phone sign-in code by email (live PostgreSQL)', () => {
   });
 
   const http = () => request(t.app.getHttpServer());
-  const ask = (phone: string) => http().post('/auth/otp/request').send({ phone });
+  const ask = (phone: string) => http().post('/auth/otp/request').send({ phone, acceptEmailCode: true });
   const redeem = (phone: string, code: string) => http().post('/auth/otp/verify').send({ phone, code });
   const liveChallenges = (userId: string) =>
     t.prisma.passwordCredentialChallenge.count({ where: { userId, purpose: PHONE_SIGN_IN_PURPOSE, consumedAt: null } });
@@ -107,13 +112,24 @@ describe('phone sign-in code by email (live PostgreSQL)', () => {
     await redeem(PHONE.member, first).expect(201);
   });
 
-  it('a newer code retires the older one', async () => {
+  it('a newer code leaves the older delivered one working, each signs in once, and at most three are live', async () => {
     (t.app.get(PhoneSignInService) as unknown as { resendWait: ResendWait }).resendWait = new ResendWait(0);
-    await ask(PHONE.member).expect(201);
-    await ask(PHONE.member).expect(201);
-    const [older, newer] = mailbox.map((m) => m.code);
-    if (older !== newer) await redeem(PHONE.member, older).expect(401);
+    for (let i = 0; i < 4; i += 1) await ask(PHONE.member).expect(201);
+    expect(mailbox).toHaveLength(3); // the fourth request mails nothing while three codes are live
+    expect(await liveChallenges(f.memberUser.id)).toBe(3);
+    const [older, , newer] = mailbox.map((m) => m.code);
     await redeem(PHONE.member, newer).expect(201);
+    if (older !== newer) {
+      await redeem(PHONE.member, older).expect(201); // an earlier delivered code is not retired by a later one
+      await redeem(PHONE.member, older).expect(401);
+    }
+  });
+
+  it('a screen that does not say it can show an emailed code keeps the SMS route, and nothing is mailed', async () => {
+    const asked = await http().post('/auth/otp/request').send({ phone: PHONE.member }).expect(201);
+    expect(asked.body.channel).not.toBe('email');
+    expect(mailbox).toEqual([]);
+    expect(await liveChallenges(f.memberUser.id)).toBe(0);
   });
 
   it('five wrong tries burn the code', async () => {

@@ -256,17 +256,31 @@ export class AuthService {
 
   /** #827 one-screen sign-in: with no SMS channel but working mail, a phone sign-in's code is emailed to the
    *  account that owns the number (Board, 13 Oct: "code arrives by email until SMS is live"). Production has no SMS
-   *  provider today, so this is the live path. */
+   *  provider today. Only a screen that says it can show an emailed code (`acceptEmailCode`) gets this route, so a
+   *  screen that still reads "SMS code" never sends someone to the wrong place. */
   private get phoneCodeByEmail(): boolean {
     return !this.sms.live && this.email.configured;
   }
 
+  /** The sign-in access rule a token is issued under (`signInAccess`), as a yes/no for an account id. */
+  private readonly canSignIn = async (userId: string): Promise<boolean> => {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return false;
+    try {
+      await this.signInAccess(user);
+      return true;
+    } catch (err) {
+      if (err instanceof UnauthorizedException) return false;
+      throw err;
+    }
+  };
+
   /** Start a phone-OTP sign-in. `devCode` only with no provider; `channel` names the delivery route; `codeLength`
    *  is how many digits the code has (4 on both routes). */
   async requestOtp(input: OtpRequestInput): Promise<{ sent: boolean; live: boolean; channel: string; codeLength: number; devCode?: string }> {
-    if (this.phoneCodeByEmail) {
+    if (input.acceptEmailCode && this.phoneCodeByEmail) {
       // the same answer whether or not the number has an account that can be mailed (PhoneSignInService)
-      await this.phoneSignIn.request(input.phone);
+      await this.phoneSignIn.request(input.phone, this.canSignIn);
       return { sent: true, live: true, channel: 'email', codeLength: 4 };
     }
     const r = await this.sms.sendOtp(input.phone);
@@ -277,7 +291,7 @@ export class AuthService {
    *  redeemable whatever the providers are now (SMS switched on, or another replica's settings): the durable
    *  emailed challenge is checked first, and the SMS route answers whatever it does not redeem. */
   async verifyOtp(input: OtpVerifyInput): Promise<TokenResult> {
-    const emailed = await this.phoneSignIn.verify(input.phone, input.code);
+    const emailed = await this.phoneSignIn.verify(input.phone, input.code, this.canSignIn);
     if (emailed.kind === 'ok') {
       // an emailed code signs in exactly the account it was redeemed for, and never provisions one
       const user = await this.prisma.user.findUnique({ where: { id: emailed.userId } });
@@ -285,7 +299,6 @@ export class AuthService {
       const access = await this.signInAccess(user);
       return { token: this.issueNamedUser(user, access.role, access.projectId), role: access.role, projectId: access.projectId, name: user.name };
     }
-    if (this.phoneCodeByEmail) throw new UnauthorizedException('Invalid or expired code');
     if (!(await this.sms.verifyOtp(input.phone, input.code))) {
       throw new UnauthorizedException('Invalid or expired code');
     }

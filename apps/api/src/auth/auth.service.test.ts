@@ -518,8 +518,24 @@ describe('AuthService — phone sign-in code by email routing (#827 one-screen s
   it('with mail and no SMS, a request goes by email and answers channel "email" with a 4-digit code', async () => {
     const { auth, phoneSignIn } = make(fakePrisma());
     const request = vi.spyOn(phoneSignIn, 'request').mockResolvedValue();
-    await expect(auth.requestOtp({ phone: '9000000000', projectId: 'ambli' })).resolves.toEqual({ sent: true, live: true, channel: 'email', codeLength: 4 });
-    expect(request).toHaveBeenCalledWith('9000000000');
+    await expect(auth.requestOtp({ phone: '9000000000', projectId: 'ambli', acceptEmailCode: true })).resolves.toEqual({ sent: true, live: true, channel: 'email', codeLength: 4 });
+    expect(request).toHaveBeenCalledWith('9000000000', expect.any(Function));
+  });
+
+  it('a screen that does not say it can show an emailed code keeps the SMS route, even with mail and no SMS', async () => {
+    const { auth, phoneSignIn } = make(fakePrisma());
+    const request = vi.spyOn(phoneSignIn, 'request');
+    await expect(auth.requestOtp({ phone: '9000000000', projectId: 'ambli' })).resolves.toMatchObject({ channel: 'stub' });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('the eligibility rule handed to the code service is the sign-in access rule', async () => {
+    const { auth, phoneSignIn } = make(fakePrisma([{ ...priya }], [{ ...priyaMember }]));
+    const request = vi.spyOn(phoneSignIn, 'request').mockResolvedValue();
+    await auth.requestOtp({ phone: '9876543210', projectId: 'ambli', acceptEmailCode: true });
+    const eligible = request.mock.calls[0][1];
+    await expect(eligible('u1')).resolves.toBe(true);
+    await expect(eligible('nobody')).resolves.toBe(false);
   });
 
   it('a redeemed code signs in exactly that account', async () => {
@@ -542,7 +558,7 @@ describe('AuthService — phone sign-in code by email routing (#827 one-screen s
     const { auth, sms, phoneSignIn } = make(fakePrisma());
     const request = vi.spyOn(phoneSignIn, 'request');
     (sms as unknown as { sendViaTelegram: () => Promise<void> }).sendViaTelegram = async () => {};
-    await expect(auth.requestOtp({ phone: '9876543210', projectId: 'ambli' })).resolves.toMatchObject({ channel: 'telegram', codeLength: 4 });
+    await expect(auth.requestOtp({ phone: '9876543210', projectId: 'ambli', acceptEmailCode: true })).resolves.toMatchObject({ channel: 'telegram', codeLength: 4 });
     expect(request).not.toHaveBeenCalled();
   });
 
