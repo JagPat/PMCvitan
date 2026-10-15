@@ -45,3 +45,4 @@ export * from './i18n/createForms';
 export * from './i18n/notices';
 export * from './i18n/actionItems';
 export * from './i18n/drawings';
+export * from './i18n/decisions';

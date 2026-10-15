@@ -10,17 +10,14 @@ import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { AwaitingClientList } from './AwaitingClientList';
 import { EmptyHint } from '@/guide/EmptyHint';
 import { Lock, Plus, ChevronRight } from '@/lib/icons';
-import { deciderNoun, signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
+import {
+  swatch as swatchGradient, decisionRail, can, decisionLogLabels as L, decisionGroupByLabels, decisionStatusWords, decisionLogText as T,
+  type Decision, type Lang,
+} from '@vitan/shared';
 import { groupDecisions, locationSegments, type GroupBy } from '@/lib/locationTree';
 import styles from './responsive.module.css';
 
-const GROUP_OPTIONS: { key: GroupBy; label: string }[] = [
-  { key: 'location', label: 'Location' },
-  { key: 'room', label: 'Room' },
-  { key: 'element', label: 'Object' },
-  { key: 'status', label: 'Status' },
-  { key: 'flat', label: 'All' },
-];
+const GROUP_OPTIONS: GroupBy[] = ['location', 'room', 'element', 'status', 'flat'];
 // Phase 6 task 4a — the register keeps withdrawn rows (pmc-only; the server filters them out of every
 // other role's snapshot, so that chip simply never matches for them).
 // Phase 6 task 4d-ii-b / B3 — the filter set answers EVERY status (the API's status tripwire pins it): a
@@ -29,14 +26,28 @@ const GROUP_OPTIONS: { key: GroupBy; label: string }[] = [
 // be awaiting) unless the project files records.
 /** The roles who decide nothing the client holds but plan their work around it (#482 QA check, 14 Oct 2026). */
 const PLANS_AROUND_CLIENT: ReadonlySet<string> = new Set(['engineer', 'contractor', 'consultant']);
-const STATUS_FILTERS: { key: Decision['status']; label: string }[] = [
-  { key: 'pending', label: 'Pending' },
-  { key: 'approved', label: 'Approved' },
-  { key: 'change', label: 'Change' },
-  { key: 'withdrawn', label: 'Withdrawn' },
-  { key: 'recorded', label: 'Recorded' },
-  { key: 'awaiting_countersign', label: 'Awaiting countersign' },
+// (#482 QA item 3 — each chip's words are the shared `decisionStatusWords`, in the viewer's language)
+const STATUS_FILTERS: { key: Decision['status'] }[] = [
+  { key: 'pending' },
+  { key: 'approved' },
+  { key: 'change' },
+  { key: 'withdrawn' },
+  { key: 'recorded' },
+  { key: 'awaiting_countersign' },
 ];
+
+/** A group heading in the viewer's language: a status, or a group the register itself names ("No room");
+ *  a place is project data and is shown as recorded. English is the grouping's own label. */
+function groupLabel(g: { key: string; label: string }, groupBy: GroupBy, lang: Lang): string {
+  if (lang === 'en') return g.label;
+  if (groupBy === 'status') return (decisionStatusWords as Record<string, { group: Record<Lang, string> } | undefined>)[g.key]?.group[lang] ?? g.label;
+  if (g.key === 'room:~none') return L.noRoom[lang];
+  if (g.key === 'el:~none') return L.noObject[lang];
+  if (g.key === 'all') return L.allDecisions[lang];
+  // a decision filed nowhere, with no free-text room
+  if (g.label === 'Unfiled' && (g.key === 'loc:Unfiled' || g.key === 'room:Unfiled')) return L.unfiled[lang];
+  return g.label;
+}
 
 /** `history` (QA check 14 Oct 2026, #482) — the register as the lower half of the client's one "Decisions"
  *  screen: the decisions still waiting on the viewer are listed above it, so they are left out here, and it
@@ -49,6 +60,7 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
   const withdrawChange = useStore((s) => s.withdrawChange);
   const openWithdraw = useStore((s) => s.openWithdraw);
   const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   // exactly the list above it on the client's screen (re-approvals and new ones waiting on this viewer)
   const waiting = useStore(useShallow(selectDecisionsNeedingViewer));
   const mayWithdraw = useMayWithdrawChange();
@@ -146,8 +158,8 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
     setRouteItem(null);
   };
   const wrap = history ? undefined : `${styles.screen} ${styles.narrow}`;
-  const eyebrow = history ? null : <Eyebrow>CLIENT DECISION LOG</Eyebrow>;
-  const title = history ? 'History' : 'Decision Register';
+  const eyebrow = history ? null : <Eyebrow>{L.eyebrow[lang]}</Eyebrow>;
+  const title = history ? L.history[lang] : L.register[lang];
   const titleStyle: CSSProperties = history
     ? { fontFamily: 'var(--font-serif)', fontSize: 21, fontWeight: 500, marginTop: 28 }
     : { fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' };
@@ -159,11 +171,11 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
         {eyebrow}
         {loadFailed ? (
           <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
-            <span>Couldn't load decisions — check your connection and access.</span>
-            <Button data-testid="decisions-retry" onClick={() => requestFreshSnapshot()}>Retry</Button>
+            <span>{L.loadFailed[lang]}</span>
+            <Button data-testid="decisions-retry" onClick={() => requestFreshSnapshot()}>{L.retry[lang]}</Button>
           </div>
         ) : (
-          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading decisions…</div>
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{L.loading[lang]}</div>
         )}
       </div>
     );
@@ -173,8 +185,8 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
       <div className={wrap}>
         {eyebrow}
         {/* inside the client's screen this boundary stands alone (#857 Codex 4268290494), so it names the screen */}
-        <div style={{ ...titleStyle, margin: '6px 0 8px' }}>{history ? 'Decisions' : title}</div>
-        <ItemNotFound what="Decision" id={missingItem} onShowAll={showAll} showAllLabel="Show all decisions" />
+        <div style={{ ...titleStyle, margin: '6px 0 8px' }}>{history ? L.decisions[lang] : title}</div>
+        <ItemNotFound what={L.what[lang]} id={missingItem} onShowAll={showAll} showAllLabel={L.showAll[lang]} lang={lang} />
       </div>
     );
   }
@@ -185,10 +197,10 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
       <div className={styles.headRule} style={{ margin: '6px 0 8px' }}>
         <div style={titleStyle}>{title}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)' }}>{filtered.length} {filtered.length === 1 ? 'DECISION' : 'DECISIONS'}</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)' }}>{T.count(filtered.length, lang)}</div>
           {can('decision.create', role) && (
             <Button variant="ink" onClick={() => setIssuing(true)} data-testid="issue-decision" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5 }}>
-              <Plus size={15} /> Issue decision
+              <Plus size={15} /> {L.issue[lang]}
             </Button>
           )}
         </div>
@@ -200,24 +212,24 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
 
       {/* controls: group-by, search, status filter */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', margin: '12px 0 4px' }}>
-        <div role="group" aria-label="Group by" style={{ display: 'inline-flex', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 10, padding: 2 }}>
-          {GROUP_OPTIONS.map((g) => {
-            const on = groupBy === g.key;
+        <div role="group" aria-label={L.groupBy[lang]} style={{ display: 'inline-flex', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 10, padding: 2 }}>
+          {GROUP_OPTIONS.map((key) => {
+            const on = groupBy === key;
             return (
-              <button key={g.key} onClick={() => setGroupBy(g.key)} aria-pressed={on} data-testid={`groupby-${g.key}`} style={{ padding: '6px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, background: on ? 'var(--ink)' : 'transparent', color: on ? '#fff' : 'var(--muted)' }}>
-                {g.label}
+              <button key={key} onClick={() => setGroupBy(key)} aria-pressed={on} data-testid={`groupby-${key}`} style={{ padding: '6px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, background: on ? 'var(--ink)' : 'transparent', color: on ? '#fff' : 'var(--muted)' }}>
+                {decisionGroupByLabels[key][lang]}
               </button>
             );
           })}
         </div>
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search decisions…" aria-label="Search decisions" type="search" data-testid="decision-search" style={{ ...fldD, flex: '1 1 160px', minWidth: 44 }} />
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={L.searchHint[lang]} aria-label={L.search[lang]} type="search" data-testid="decision-search" style={{ ...fldD, flex: '1 1 160px', minWidth: 44 }} />
       </div>
       <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', margin: '8px 0 20px' }}>
         {STATUS_FILTERS.map((s) => {
           const on = statuses.has(s.key);
           return (
             <button key={s.key} onClick={() => toggleStatus(s.key)} aria-pressed={on} data-testid={`filter-${s.key}`} style={{ padding: '5px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 20, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'var(--ink)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }}>
-              {s.label}
+              {decisionStatusWords[s.key].filter[lang]}
             </button>
           );
         })}
@@ -225,7 +237,7 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
 
       {groups.length === 0 && (
         <div style={{ color: 'var(--muted)', fontSize: 13.5, padding: '10px 0' }}>
-          No decisions match your filters.
+          {L.noMatch[lang]}
           {/* only once the decision slice has settled: a load, a failed read or a command still reconciling
               can show an empty register that is not empty on the server */}
           {rows.length === 0 && settled && <EmptyHint task="decision" />}
@@ -245,15 +257,15 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
                   style={{ width: '100%', minHeight: 44, display: 'flex', alignItems: 'center', gap: 9, padding: '9px 4px', background: 'transparent', border: 'none', borderBottom: '1px solid var(--hairline)', cursor: 'pointer', textAlign: 'left', marginBottom: isCollapsed ? 0 : 12 }}
                 >
                   <ChevronRight size={15} style={{ transform: isCollapsed ? 'none' : 'rotate(90deg)', transition: 'transform .15s', color: 'var(--muted)' }} />
-                  <span style={{ fontWeight: 700, fontSize: 15 }}>{g.label}</span>
+                  <span style={{ fontWeight: 700, fontSize: 15 }}>{groupLabel(g, groupBy, lang)}</span>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--faint)' }}>{g.counts.total}</span>
                   <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                    {g.counts.pending > 0 && <RollupChip n={g.counts.pending} color="var(--amber-solid)" label="pending" />}
-                    {g.counts.change > 0 && <RollupChip n={g.counts.change} color="var(--red-solid)" label="change" />}
-                    {g.counts.awaiting_countersign > 0 && <RollupChip n={g.counts.awaiting_countersign} color={decisionRail.awaiting_countersign} label="awaiting countersign" />}
-                    {g.counts.approved > 0 && <RollupChip n={g.counts.approved} color="var(--green-solid)" label="approved" />}
-                    {g.counts.withdrawn > 0 && <RollupChip n={g.counts.withdrawn} color="var(--muted)" label="withdrawn" />}
-                    {g.counts.recorded > 0 && <RollupChip n={g.counts.recorded} color="var(--muted)" label="recorded" />}
+                    {g.counts.pending > 0 && <RollupChip n={g.counts.pending} color="var(--amber-solid)" label={decisionStatusWords.pending.rollup[lang]} />}
+                    {g.counts.change > 0 && <RollupChip n={g.counts.change} color="var(--red-solid)" label={decisionStatusWords.change.rollup[lang]} />}
+                    {g.counts.awaiting_countersign > 0 && <RollupChip n={g.counts.awaiting_countersign} color={decisionRail.awaiting_countersign} label={decisionStatusWords.awaiting_countersign.rollup[lang]} />}
+                    {g.counts.approved > 0 && <RollupChip n={g.counts.approved} color="var(--green-solid)" label={decisionStatusWords.approved.rollup[lang]} />}
+                    {g.counts.withdrawn > 0 && <RollupChip n={g.counts.withdrawn} color="var(--muted)" label={decisionStatusWords.withdrawn.rollup[lang]} />}
+                    {g.counts.recorded > 0 && <RollupChip n={g.counts.recorded} color="var(--muted)" label={decisionStatusWords.recorded.rollup[lang]} />}
                   </span>
                 </button>
               )}
@@ -262,6 +274,7 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
                   {g.rows.map(({ decision, subLabel }) => (
                     <DecisionRowCard
                       key={decision.id}
+                      lang={lang}
                       d={decision}
                       subLabel={subLabel}
                       onChange={can('decision.change', role) ? () => openChange(decision.id) : undefined}
@@ -281,7 +294,7 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
 
 function RollupChip({ n, color, label }: { n: number; color: string; label: string }) {
   return (
-    <span title={`${n} ${label}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)' }}>
+    <span title={T.rollup(n, label)} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)' }}>
       <span style={{ width: 7, height: 7, borderRadius: '50%', background: color }} />
       {n}
     </span>
@@ -289,7 +302,7 @@ function RollupChip({ n, color, label }: { n: number; color: string; label: stri
 }
 
 /** One decision card — the register row, with its finer location shown as a caption. */
-function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision }: { d: Decision; subLabel: string; onChange?: () => void; onWithdraw?: () => void; onWithdrawDecision?: () => void }) {
+function DecisionRowCard({ d, subLabel, lang, onChange, onWithdraw, onWithdrawDecision }: { d: Decision; subLabel: string; lang: Lang; onChange?: () => void; onWithdraw?: () => void; onWithdrawDecision?: () => void }) {
   // B6 — `/decisions/<id>` names this decision: it is brought into view and marked, and its id is
   // a real link, so the register entry can be bookmarked or shared.
   const focused = useStore((st) => st.routeItem === d.id);
@@ -317,22 +330,24 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
   // `deciderNoun`): a pmc- or member-held row must not direct its own decider at the client.
   // The client-held text stays byte-identical (the legacy default).
   const kind = d.deciderKind ?? 'client';
+  // #482 QA item 3 — every line in the viewer's language (English byte-identical); names, dates' digits,
+  // options and materials are project data
   const attribution = recorded
-    ? 'Issue recorded — no approval required'
+    ? L.recorded[lang]
     : d.status === 'withdrawn'
-      ? `Withdrawn by ${d.withdrawnBy ?? 'the PMC'}${d.withdrawnAt ? ` · ${new Date(d.withdrawnAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}`
+      ? T.withdrawnBy(d.withdrawnBy, d.withdrawnAt ? new Date(d.withdrawnAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : null, lang)
       : awaiting
-        ? `Approved by ${d.approver ?? deciderNoun(kind)} — awaiting the architect’s countersign`
+        ? T.approvedAwaiting(d.approver, kind, lang)
         : d.approver
-          ? `Approved by ${d.approver}${d.onBehalfOf ? ` (on behalf of the ${d.onBehalfOf})` : ''} · ${d.date}`
-          : `Ageing ${d.ageDays} days · ${kind === 'client' ? 'awaiting client' : `awaiting ${deciderNoun(kind)}`}`;
+          ? T.approvedBy(d.approver, d.onBehalfOf, d.date, lang)
+          : T.ageing(d.ageDays, kind, lang);
   const approvedLine = recorded
-    ? 'Filed on the register — nothing approvable'
-    : neverLocked ? `${d.options.length} options presented` : `${d.approvedOption} — ${d.material}`;
+    ? L.recordedLine[lang]
+    : neverLocked ? T.optionsPresented(d.options.length, lang) : `${d.approvedOption} — ${d.material}`;
   const costStr = recorded
     ? '—'
-    : neverLocked ? 'up to ' + signed(Math.max(...d.options.map((o) => o.delta))) : signed(d.cost ?? 0);
-  const photoLabel = recorded ? 'RECORDED' : neverLocked ? 'OPTIONS' : awaiting ? 'PROVISIONAL' : 'APPROVED';
+    : neverLocked ? T.costUpTo(Math.max(...d.options.map((o) => o.delta)), lang) : T.cost(d.cost ?? 0, lang);
+  const photoLabel = (recorded ? L.tagRecorded : neverLocked ? L.tagOptions : awaiting ? L.tagProvisional : L.tagApproved)[lang];
 
   return (
     <div
@@ -359,7 +374,7 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
                     else openItem('decision-log', d.id);
                   }}
                   data-testid={`log-link-${d.id}`}
-                  aria-label={`Link to decision ${d.id}`}
+                  aria-label={T.link(d.id, lang)}
                   // 44px hit area (WAVE_0 floor) without growing the title line: the negative
                   // margin gives the extra height back to the layout
                   style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)', display: 'inline-flex', alignItems: 'center', minHeight: 44, minWidth: 44, margin: '-12px 0' }}
@@ -371,24 +386,25 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
                   `subLabel` (the finer location under the group header) stays the fallback for a
                   legacy free-text decision that never got a node. */}
               <div style={{ marginTop: 3 }}>
-                <LocationContext nodeId={d.nodeId} fallback={subLabel || d.room} compact testId={`decision-place-${d.id}`} />
+                <LocationContext nodeId={d.nodeId} fallback={subLabel === 'Unfiled' && !d.room ? L.unfiled[lang] : subLabel || d.room} compact testId={`decision-place-${d.id}`} lang={lang} />
               </div>
             </div>
-            <DecisionChip status={d.status} />
+            <DecisionChip status={d.status} lang={lang} />
           </div>
           {d.status === 'withdrawn' && d.withdrawReason && (
             <div style={{ marginTop: 12, padding: '9px 12px', borderRadius: 10, background: 'rgba(35,33,28,.05)', border: '1px solid rgba(35,33,28,.14)' }} data-testid={`withdraw-detail-${d.id}`}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted)' }}>Withdrawn: {d.withdrawReason}</div>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted)' }}>{L.withdrawn[lang]} {d.withdrawReason}</div>
             </div>
           )}
           {/* Phase 6 unit 4c-ii — the consultation thread and its affordances. Renders nothing at
               all off-pilot (the component reads the same per-project capability the server does),
               and nothing for a decision with no thread and no action available to this viewer. */}
-          <ConsultationThread decision={d} />
+          <ConsultationThread decision={d} lang={lang} />
           {/* Phase 6 task 4d-ii-b / B5b — the countersign chain's affordances and controls: Forward while the
               rollout is open, the architect's Countersign / Reject back / Forward on, the PMC's stranded
               resolution. Renders nothing for a delivered role while the doors stand. */}
-          <CountersignControls decision={d} />
+          {/* English renders exactly as before (the component's default); another language is passed on */}
+          <CountersignControls decision={d} lang={lang} />
           {d.status === 'change' && d.changeRequest && (
             <div style={{ marginTop: 12, padding: '9px 12px', borderRadius: 10, background: 'rgba(180,70,46,.07)', border: '1px solid rgba(180,70,46,.2)' }} data-testid={`cr-detail-${d.id}`}>
               {/* Phase 6 task 4d-ii-b / B4 — a request the architect opened by REJECTING the countersign names
@@ -396,14 +412,14 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
                   colleague asked for a change. A standard request reads exactly as it always did. */}
               <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--red-text)' }}>
                 {d.changeRequest.origin === 'countersign_rejection'
-                  ? <span data-testid={`cr-origin-${d.id}`}>Sent back by the architect: {d.changeRequest.reason}</span>
-                  : <>Change requested: {d.changeRequest.reason}</>}
+                  ? <span data-testid={`cr-origin-${d.id}`}>{L.sentBack[lang]} {d.changeRequest.reason}</span>
+                  : <>{L.changeRequested[lang]} {d.changeRequest.reason}</>}
               </div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
-                {d.changeRequest.costImpact === 0 ? 'No cost change' : signed(d.changeRequest.costImpact)}
+                {T.cost(d.changeRequest.costImpact, lang)}
                 {' · '}
-                {d.changeRequest.timeImpactDays === 0 ? 'no schedule impact' : `${d.changeRequest.timeImpactDays} day${d.changeRequest.timeImpactDays === 1 ? '' : 's'}`}
-                {` · awaiting ${deciderNoun(kind)}’s re-approval`}
+                {T.scheduleImpact(d.changeRequest.timeImpactDays, lang)}
+                {T.awaitingReapproval(kind, lang)}
               </div>
             </div>
           )}
@@ -416,7 +432,7 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 600, color: (d.cost ?? 0) > 0 ? 'var(--ink)' : 'var(--muted)' }}>{costStr}</div>
               {onWithdrawDecision && (
                 <Button variant="outline" onClick={onWithdrawDecision} data-testid={`withdraw-decision-${d.id}`} style={{ marginTop: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 500 }}>
-                  Withdraw decision
+                  {L.withdrawDecision[lang]}
                 </Button>
               )}
             </div>
@@ -430,8 +446,8 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
             <div style={{ marginTop: 10 }}>
               <EditState
                 state="locked"
-                reason="Locked after approval — the approved choice is the record."
-                action={onChange ? { label: 'Request change', onClick: onChange, testId: `request-change-${d.id}` } : undefined}
+                reason={L.locked[lang]}
+                action={onChange ? { label: L.requestChange[lang], onClick: onChange, testId: `request-change-${d.id}` } : undefined}
                 testId={`edit-state-${d.id}`}
               />
             </div>
@@ -440,8 +456,8 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
             <div style={{ marginTop: 10 }}>
               <EditState
                 state="workflow"
-                reason={`A change request is with ${deciderNoun(kind)} — the decision reopens when they answer.`}
-                action={onWithdraw ? { label: 'Withdraw request', onClick: onWithdraw, testId: `withdraw-${d.id}` } : undefined}
+                reason={T.changeWithDecider(kind, lang)}
+                action={onWithdraw ? { label: L.withdrawRequest[lang], onClick: onWithdraw, testId: `withdraw-${d.id}` } : undefined}
                 testId={`edit-state-${d.id}`}
               />
             </div>

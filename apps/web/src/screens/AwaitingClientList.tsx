@@ -4,7 +4,7 @@ import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import type { AwaitingClientRow } from '@/data/apiGateway';
 import { LocationContext } from '@/components';
-import { decisionRail } from '@vitan/shared';
+import { decisionRail, awaitingClientLabels as L, awaitingClientWaited, decisionLogText } from '@vitan/shared';
 
 const DAY_MS = 86_400_000;
 
@@ -26,6 +26,7 @@ function waitingDays(row: AwaitingClientRow & { ageDays?: number }, now: number)
  */
 export function AwaitingClientList() {
   const fetchAwaitingClient = useStore((s) => s.fetchAwaitingClient);
+  const lang = useStore((s) => s.lang);
   const scope = useStore((s) => `${s.activeProjectId}:${s.projectScopeGeneration}`);
   // any reconcile (an approval, a reopening) may change what waits; a fresh read follows the decisions slice
   const decisions = useStore((s) => s.decisions);
@@ -73,31 +74,31 @@ export function AwaitingClientList() {
   return (
     <section data-testid="awaiting-client" aria-labelledby="awaiting-client-title" style={{ margin: '4px 0 26px' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-        <h2 id="awaiting-client-title" style={{ fontFamily: 'var(--font-serif)', fontSize: 21, fontWeight: 500, margin: 0 }}>Awaiting client</h2>
+        <h2 id="awaiting-client-title" style={{ fontFamily: 'var(--font-serif)', fontSize: 21, fontWeight: 500, margin: 0 }}>{L.title[lang]}</h2>
         {rows && rows.length > 0 && (
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)' }} data-testid="awaiting-client-count">
-            {rows.length} {rows.length === 1 ? 'DECISION' : 'DECISIONS'}
+            {decisionLogText.count(rows.length, lang)}
           </span>
         )}
       </div>
-      <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>New decisions the client still has to make, shown so you can plan around them. Reopened ones are in the list below.</div>
+      <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>{L.intro[lang]}</div>
 
-      {rows === null && !failed && <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }}>Loading…</div>}
+      {rows === null && !failed && <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }}>{L.loading[lang]}</div>}
       {rows === null && failed && (
         <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }} data-testid="awaiting-client-failed">
-          Couldn't load what the client is deciding. Check your connection.{' '}
+          {L.failed[lang]}{' '}
           <button
             type="button"
             onClick={() => { setFailed(false); setAttempt((n) => n + 1); }}
             style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--ink)', textDecoration: 'underline', cursor: 'pointer' }}
             data-testid="awaiting-client-retry"
           >
-            Try again
+            {L.tryAgain[lang]}
           </button>
         </div>
       )}
       {rows !== null && rows.length === 0 && (
-        <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }} data-testid="awaiting-client-empty">No new decision is waiting on the client.</div>
+        <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 12 }} data-testid="awaiting-client-empty">{L.empty[lang]}</div>
       )}
       {rows !== null && rows.length > 0 && (
         <ul style={{ listStyle: 'none', margin: '12px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -112,11 +113,11 @@ export function AwaitingClientList() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 600, fontSize: 15 }}>{r.title}</span>
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                    {days === null ? 'Waiting on the client' : `Waiting ${days} ${days === 1 ? 'day' : 'days'}`}
+                    {days === null ? L.waiting[lang] : awaitingClientWaited(days, lang)}
                   </span>
                 </div>
                 <div style={{ marginTop: 3 }}>
-                  <LocationContext nodeId={r.nodeId ?? undefined} fallback={r.room} compact testId={`awaiting-client-place-${r.id}`} />
+                  <LocationContext nodeId={r.nodeId ?? undefined} fallback={r.room} compact testId={`awaiting-client-place-${r.id}`} lang={lang} />
                 </div>
               </li>
             );

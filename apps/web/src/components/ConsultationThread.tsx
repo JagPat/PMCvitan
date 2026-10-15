@@ -5,7 +5,7 @@ import { useStore } from '@/store/store';
 // barrel, so importing through it closes an index → ConsultationThread → index cycle (the
 // `LocationPicker` convention).
 import { Button } from './Button';
-import { can, viewerIsConsultee, type Decision } from '@vitan/shared';
+import { can, viewerIsConsultee, consultationLabels as L, consultationText, memberRoleIn, type Decision, type Lang } from '@vitan/shared';
 
 /**
  * Phase 6 unit 4c-ii (§A) — the consultation thread under a decision.
@@ -19,8 +19,11 @@ import { can, viewerIsConsultee, type Decision } from '@vitan/shared';
  * of every project's existence and 4c-iv retired the reads — server and client in ONE unit, so the
  * gate went in one place, not two. What remains is the shared `ROLE_POLICY` and the decision's own
  * openness, which are the same eligibility the server enforces.
+ *
+ * `lang` is the caller's (#482 QA item 3): its own words follow it, English unless it says otherwise. Names,
+ * questions and advice are what people wrote, shown as recorded.
  */
-export function ConsultationThread({ decision }: { decision: Decision }) {
+export function ConsultationThread({ decision, lang = 'en' }: { decision: Decision; lang?: Lang }) {
   const role = useStore((s) => s.role);
   const sessionUserId = useStore((s) => s.sessionUserId);
   const members = useStore(useShallow((s) => s.members));
@@ -53,33 +56,34 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
       ? thread.find((c) => c.consulteeUserId === sessionUserId && c.openCycle === cycle && !c.response)
       : undefined;
 
-  const nameOf = (userId: string): string => members.find((m) => m.userId === userId)?.name ?? 'a team member';
+  const nameOf = (userId: string): string => members.find((m) => m.userId === userId)?.name ?? L.someone[lang];
   // only ACTIVE members can be asked, and asking yourself records nothing
   const askable = members.filter((m) => m.status === 'active' && m.membershipId && m.userId !== sessionUserId);
 
   if (thread.length === 0 && !mayAsk && !mine) return null;
+  const asked = consultationText.asked(lang);
 
   return (
     <div
       data-testid={`consultation-thread-${decision.id}`}
       style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(35,33,28,.035)', border: '1px solid rgba(35,33,28,.12)' }}
     >
-      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--faint)' }}>Advice</div>
+      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--faint)' }}>{L.advice[lang]}</div>
 
       {thread.map((c) => (
         <div key={c.id} data-testid={`consultation-${c.id}`} style={{ marginTop: 8 }}>
           <div style={{ fontSize: 12.5 }}>
-            <strong>{nameOf(c.requestedById)}</strong> asked <strong>{nameOf(c.consulteeUserId)}</strong>: {c.question}
+            <strong>{nameOf(c.requestedById)}</strong>{asked.between}<strong>{nameOf(c.consulteeUserId)}</strong>{asked.after}{c.question}
           </div>
           {c.response ? (
             <div style={{ fontSize: 12.5, marginTop: 4, paddingLeft: 10, borderLeft: '2px solid rgba(35,33,28,.18)' }} data-testid={`consultation-answer-${c.id}`}>
               <strong>{nameOf(c.response.respondedById)}</strong>: {c.response.response}
               {c.response.recommendedOptionKey && (
-                <span style={{ color: 'var(--muted)' }}> · leans to option {c.response.recommendedOptionKey.toUpperCase()}</span>
+                <span style={{ color: 'var(--muted)' }}>{consultationText.leansTo(c.response.recommendedOptionKey.toUpperCase(), lang)}</span>
               )}
             </div>
           ) : (
-            <div style={{ fontSize: 11.5, color: 'var(--faint)', marginTop: 3 }}>Awaiting their advice</div>
+            <div style={{ fontSize: 11.5, color: 'var(--faint)', marginTop: 3 }}>{L.awaiting[lang]}</div>
           )}
         </div>
       ))}
@@ -88,7 +92,7 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
       {mine && (
         <div style={{ marginTop: 10 }} data-testid={`consultation-respond-${decision.id}`}>
           <textarea
-            aria-label="Your advice"
+            aria-label={L.yourAdvice[lang]}
             value={advice}
             onChange={(e) => setAdvice(e.target.value)}
             rows={2}
@@ -97,7 +101,7 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
             {decision.options.length > 0 && (
               <select
-                aria-label="Recommend an option"
+                aria-label={L.recommend[lang]}
                 value={recommend}
                 onChange={(e) => setRecommend(e.target.value === '' ? '' : Number(e.target.value))}
                 // #584 review round 14 — the SIBLING of the "Who to ask" select round 13 fixed,
@@ -107,7 +111,7 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
                 // state no persona in the sweep ever occupies.
                 style={{ fontSize: 12, minHeight: 44, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--hairline)' }}
               >
-                <option value="">No recommendation</option>
+                <option value="">{L.noRecommendation[lang]}</option>
                 {decision.options.map((o, i) => (
                   <option key={o.key ?? i} value={i}>{o.label}</option>
                 ))}
@@ -122,7 +126,7 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
                 setRecommend('');
               }}
             >
-              Send advice
+              {L.sendAdvice[lang]}
             </Button>
           </div>
         </div>
@@ -140,26 +144,26 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
           onClick={() => { setAsking(true); if (!members.length) void loadTeam(); }}
           style={{ marginTop: 10 }}
         >
-          Ask a member
+          {L.askMember[lang]}
         </Button>
       )}
       {mayAsk && asking && (
         <div style={{ marginTop: 10 }} data-testid={`consultation-ask-form-${decision.id}`}>
           <select
-            aria-label="Who to ask"
+            aria-label={L.whoToAsk[lang]}
             value={consultee}
             onChange={(e) => setConsultee(e.target.value)}
             // #584 review round 13 — the compose state is reached by pressing a DISCLOSURE, not by
             // navigating, so no sweep had rendered it.
             style={{ fontSize: 12, minHeight: 44, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--hairline)', width: '100%' }}
           >
-            <option value="">Choose a member…</option>
+            <option value="">{L.chooseMember[lang]}</option>
             {askable.map((m) => (
-              <option key={m.membershipId} value={m.membershipId}>{m.name} · {m.role}</option>
+              <option key={m.membershipId} value={m.membershipId}>{m.name} · {memberRoleIn(m.role, lang)}</option>
             ))}
           </select>
           <textarea
-            aria-label="Your question"
+            aria-label={L.yourQuestion[lang]}
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             rows={2}
@@ -176,9 +180,9 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
                 setAsking(false);
               }}
             >
-              Ask
+              {L.ask[lang]}
             </Button>
-            <Button onClick={() => setAsking(false)}>Cancel</Button>
+            <Button onClick={() => setAsking(false)}>{L.cancel[lang]}</Button>
           </div>
         </div>
       )}
