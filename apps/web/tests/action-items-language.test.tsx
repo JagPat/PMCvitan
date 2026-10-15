@@ -25,7 +25,7 @@ const SAMPLE: Record<string, ActionItemFacts> = {
   'eng-checklist': { title: 'Slab casting', items: 4, zone: 'Ground floor' },
   'eng-log': { checkedIn: true },
   'pmc-pending': { n: 2, who: 'decider' },
-  'pmc-reinspections': { n: 2, names: 'Slab casting', due: '2026-10-14' },
+  'pmc-reinspections': { n: 2, names: 'Slab casting', issues: 3, due: '2026-10-14' },
   'pmc-override-expiry': { expiresAt: '2026-10-14T06:00:00Z', activity: 'Slab casting', expiring: 2 },
   'material-shortage': { n: 3, blocked: 1, atRisk: 2 },
   'labour-shortage': { n: 1, blocked: 1 },
@@ -112,5 +112,15 @@ describe('the For You screen in Hindi and Gujarati', () => {
       expect(text).toContain(it.cta);
     }
     expect(text).toContain('FOR YOU · CONTRACTOR');
+  });
+});
+
+describe('the PMC re-inspection card names its open issues in every language', () => {
+  const item = (issues: number) => ({ key: 'pmc-reinspections', title: 'English title', detail: 'x', cta: 'Follow up', facts: { n: 2, names: 'Slab casting', issues } });
+  it('Hindi and Gujarati carry the same number as the English card', () => {
+    expect(actionItemText(item(3), 'hi').detail).toBe('3 खुली समस्याएँ · Slab casting');
+    expect(actionItemText(item(1), 'hi').detail).toBe('1 खुली समस्या · Slab casting');
+    expect(actionItemText(item(3), 'gu').detail).toBe('3 ખુલ્લી સમસ્યાઓ · Slab casting');
+    expect(actionItemText(item(1), 'gu').detail).toBe('1 ખુલ્લી સમસ્યા · Slab casting');
   });
 });
