@@ -149,3 +149,46 @@ describe('the read-only "Awaiting client" list', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+describe('#888 — a stalled "Awaiting client" read gives up and offers Try again', () => {
+  it('the read carries a time limit, and a read that runs past it fails instead of hanging', async () => {
+    const { ApiGateway, AWAITING_CLIENT_TIMEOUT_MS } = await import('@/data/apiGateway');
+    expect(AWAITING_CLIENT_TIMEOUT_MS).toBe(15_000);
+    // the limit is AbortSignal.timeout's; stand it in with a signal the test fires, as the clock would
+    const limit = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(limit.signal);
+    // a server that never answers: the request only ends when its signal aborts it
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+    })));
+    try {
+      const read = new ApiGateway('http://api.test', 'ambli').awaitingClient();
+      expect(timeout).toHaveBeenCalledWith(AWAITING_CLIENT_TIMEOUT_MS);
+      limit.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+      await expect(read).rejects.toMatchObject({ name: 'TimeoutError' });
+    } finally {
+      timeout.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a browser without AbortSignal.timeout still gets the time limit, from a timer', async () => {
+    const { ApiGateway, AWAITING_CLIENT_TIMEOUT_MS } = await import('@/data/apiGateway');
+    vi.useFakeTimers();
+    const original = AbortSignal.timeout;
+    // Mobile Safari before 16.4 has no AbortSignal.timeout
+    Object.defineProperty(AbortSignal, 'timeout', { value: undefined, configurable: true, writable: true });
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+    })));
+    try {
+      const read = new ApiGateway('http://api.test', 'ambli').awaitingClient();
+      const outcome = expect(read).rejects.toMatchObject({ name: 'TimeoutError' });
+      await vi.advanceTimersByTimeAsync(AWAITING_CLIENT_TIMEOUT_MS);
+      await outcome;
+    } finally {
+      Object.defineProperty(AbortSignal, 'timeout', { value: original, configurable: true, writable: true });
+      vi.unstubAllGlobals();
+    }
+  });
+});
