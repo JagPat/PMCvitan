@@ -114,25 +114,21 @@ function displayTime(exifLocal: string): string | null {
  */
 const STAMP_DISPLAY_MAX = 64;
 
-const NON_SPACE = /\S/g;
-
-/** Where the first non-space character at or after `from` is, or -1; scans without copying. */
-function nonSpaceFrom(value: string, from: number): number {
-  NON_SPACE.lastIndex = from;
-  return NON_SPACE.test(value) ? NON_SPACE.lastIndex - 1 : -1;
-}
+/** How far display looks for the start of the text, and past the shown window for more text. */
+const STAMP_SCAN_MAX = 256;
 
 /**
  * A `takenAt` as it should be shown: bounded, and empty when there is nothing to show.
- * Spaces are found by native scans that copy nothing; only the display-sized window is copied and
- * trimmed, so padding of any length never builds a large string. A value that is only spaces reads
- * as no time, and the ellipsis appears exactly when non-space text lies beyond the window.
+ * Only fixed-size windows are copied and searched, so a value of any length costs the same.
+ * Text that starts beyond the first `STAMP_SCAN_MAX` characters reads as no time, and the
+ * ellipsis appears when more text follows the shown window or the value runs past what was looked at.
  */
 export function stampText(takenAt: string | null | undefined): string {
   if (!takenAt) return '';
-  const start = nonSpaceFrom(takenAt, 0);
+  const start = takenAt.slice(0, STAMP_SCAN_MAX).search(/\S/);
   if (start < 0) return '';
   const end = start + STAMP_DISPLAY_MAX;
   const shown = takenAt.slice(start, end).trimEnd();
-  return nonSpaceFrom(takenAt, end) >= 0 ? `${shown}…` : shown;
+  const more = /\S/.test(takenAt.slice(end, end + STAMP_SCAN_MAX)) || takenAt.length > end + STAMP_SCAN_MAX;
+  return more ? `${shown}…` : shown;
 }

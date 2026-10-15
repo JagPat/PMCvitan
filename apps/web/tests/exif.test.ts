@@ -384,7 +384,7 @@ describe('a rendered stamp is bounded', () => {
     for (const v of [null, undefined, '']) expect(stampText(v)).toBe('');
   });
 
-  it('E: reads spaces as no time, copying and trimming only the displayed window of a padded value', () => {
+  it('E: reads spaces as no time, copying and searching only fixed-size windows of a padded value', () => {
     const copied: number[] = [];
     const trimmed: number[] = [];
     const { slice, trim, trimStart, trimEnd } = String.prototype;
@@ -411,6 +411,7 @@ describe('a rendered stamp is bounded', () => {
         stampText(`${pad}11 Aug 2026 · 9:15 AM`),
         stampText(`${' '.repeat(100)}${'x'.repeat(100)}`),
         stampText(`${'x'.repeat(64)} y`),
+        stampText(`${'x'.repeat(64)}${' '.repeat(100)}`),
         stampText(`${'x'.repeat(64)}${pad}`),
       ];
     } finally {
@@ -419,14 +420,15 @@ describe('a rendered stamp is bounded', () => {
     expect(results).toEqual([
       '',
       '',
-      '11 Aug 2026 · 9:15 AM',
-      '11 Aug 2026 · 9:15 AM',
+      '11 Aug 2026 · 9:15 AM…',
+      '',
       `${'x'.repeat(64)}…`,
       `${'x'.repeat(64)}…`,
       'x'.repeat(64),
+      `${'x'.repeat(64)}…`,
     ]);
     expect(trimmed.length).toBeGreaterThan(0);
     expect(Math.max(...trimmed)).toBeLessThanOrEqual(64);
-    expect(Math.max(...copied)).toBeLessThanOrEqual(64);
+    expect(Math.max(...copied)).toBeLessThanOrEqual(256);
   });
 });
