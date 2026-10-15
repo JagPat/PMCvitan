@@ -1865,6 +1865,16 @@ export type OutboxOp =
   | { t: 'reversePayment'; input: ReversePaymentInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'amendVendorBill'; input: AmendVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'rejectVendorBill'; input: RejectVendorBillInput; idempotencyKey: string; coalesceKey: string }
+  // Site Visits SV1-c unit 2 (#792, F53): every act on a visit is WRITE-AHEAD with its key and the exact body first
+  // sent, so a press with no signal is kept, a reload replays the SAME act, and acts reach the server in the order
+  // made (a remove always follows the add it removes). `name`/`visitor` are for the screen only, never sent.
+  | { t: 'siteVisitStart'; body: StartSiteVisitBody; visitor: { name: string; role: string; placeName: string | null }; idempotencyKey: string }
+  | { t: 'siteVisitEnd'; visitId: string; claimedAt: string; idempotencyKey: string }
+  | { t: 'siteVisitClose'; visitId: string; reason: string; idempotencyKey: string }
+  | { t: 'siteVisitAddPlace'; visitId: string; body: { id: string; nodeId: string; claimedAt: string }; name: string; idempotencyKey: string }
+  | { t: 'siteVisitRetirePlace'; visitId: string; placeId: string; idempotencyKey: string }
+  | { t: 'siteVisitAddAttendee'; visitId: string; body: SiteVisitAttendeeBody; name: string; idempotencyKey: string }
+  | { t: 'siteVisitRetireAttendee'; visitId: string; attendeeId: string; idempotencyKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
@@ -1907,9 +1917,67 @@ export function refusalMessage(err: unknown): string | null {
   return typeof m === 'string' && m.trim() ? m : null;
 }
 
-/** Replay one queued mutation; resolves to the fresh snapshot. */
-export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapshot> {
+export type SiteVisitOp = Extract<OutboxOp, { t: `siteVisit${string}` }>;
+export function isSiteVisitOp(op: OutboxOp): op is SiteVisitOp {
+  return op.t.startsWith('siteVisit');
+}
+/** The visit a queued site-visit act is on (a start is on the visit it makes). */
+export function siteVisitOf(op: SiteVisitOp): string {
+  return op.t === 'siteVisitStart' ? op.body.id : op.visitId;
+}
+
+/** What the outbox tells a Site Visits screen on show: a replayed act's answer (the whole visit), a refusal in the
+ *  server's words, or the acts of a refused start moved onto the visitor's open visit. */
+/** Each names the project and scope generation (sign-in) its flush ran in: a screen takes only its own. */
+export type SiteVisitEvent =
+  | { kind: 'answer'; project: string; generation: number; visit: SiteVisit }
+  | { kind: 'refused'; project: string; generation: number; message: string | null }
+  | { kind: 'moved'; project: string; generation: number; to: string; count: number };
+export const siteVisitListeners = new Set<(e: SiteVisitEvent) => void>();
+export function tellSiteVisits(e: SiteVisitEvent): void {
+  for (const l of siteVisitListeners) l(e);
+}
+
+/** Whether a refused start was refused because the visitor already has a visit open (SV1-b's one-open rule). */
+export function isOpenVisitConflict(err: unknown): boolean {
+  return (err as { status?: unknown } | null)?.status === 409 && /already have a site visit open/i.test(refusalMessage(err) ?? '');
+}
+/** The visitor's own open visit on this project, read from the server; null when they have none. */
+export async function ownOpenVisit(gw: ApiGateway, userId: string): Promise<SiteVisit | null> {
+  for (let before: string | undefined; ;) {
+    const page = await gw.listSiteVisits({ status: 'open', limit: 200, ...(before ? { before } : {}) });
+    const own = page.find((v) => v.visitorId === userId);
+    if (own) return own;
+    if (page.length < 200) return null;
+    before = page[page.length - 1].id;
+  }
+}
+/** These ops with every act on visit `from` moved onto visit `to` (F53: a queued start refused because the visitor
+ *  already had a visit open; its places, people and End go onto that visit instead of being lost). */
+export function moveSiteVisitOps(ops: OutboxOp[], from: string, to: string): OutboxOp[] {
+  return ops.map((o) => (isSiteVisitOp(o) && o.t !== 'siteVisitStart' && o.visitId === from ? { ...o, visitId: to } : o));
+}
+
+/** Replay one queued mutation; resolves to the fresh snapshot, or null for an act whose answer is not a snapshot
+ *  and needs none (a site visit's answer goes to the Site Visits screen). */
+export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): Promise<ApiSnapshot | null> {
+  const visit = (sent: Promise<SiteVisit>): Promise<null> =>
+    sent.then((v) => { tellSiteVisits({ kind: 'answer', project: gw.project, generation, visit: v }); return null; });
   switch (op.t) {
+    case 'siteVisitStart':
+      return visit(gw.startSiteVisit(op.body, op.idempotencyKey));
+    case 'siteVisitEnd':
+      return visit(gw.endSiteVisit(op.visitId, op.claimedAt, op.idempotencyKey));
+    case 'siteVisitClose':
+      return visit(gw.closeSiteVisit(op.visitId, op.reason, op.idempotencyKey));
+    case 'siteVisitAddPlace':
+      return visit(gw.addSiteVisitPlace(op.visitId, op.body, op.idempotencyKey));
+    case 'siteVisitRetirePlace':
+      return visit(gw.retireSiteVisitPlace(op.visitId, op.placeId, op.idempotencyKey));
+    case 'siteVisitAddAttendee':
+      return visit(gw.addSiteVisitAttendee(op.visitId, op.body, op.idempotencyKey));
+    case 'siteVisitRetireAttendee':
+      return visit(gw.retireSiteVisitAttendee(op.visitId, op.attendeeId, op.idempotencyKey));
     case 'approve':
       return gw.approveDecision(op.decisionId, op.optionIndex, op.idempotencyKey);
     // Phase 6 task 4d-ii-b / B5a — the countersign-chain commands replay their full act under the SAME key

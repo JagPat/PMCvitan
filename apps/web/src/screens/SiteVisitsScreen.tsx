@@ -25,7 +25,7 @@ export function SiteVisitsScreen() {
   const [startNode, setStartNode] = useState('');
   const members = useStore(useShallow((s) => s.members));
   const loadTeam = useStore((s) => s.loadTeam);
-  const [team, setTeam] = useState<'loading' | 'done'>('loading');
+  const [team, setTeam] = useState<'loading' | 'done' | 'failed'>('loading');
   // bumped by Try again on a failed team read
   const [teamAsk, setTeamAsk] = useState(0);
 
@@ -35,17 +35,17 @@ export function SiteVisitsScreen() {
   );
   const mineOpen = sv.visits.some((v) => v.visitorId === me && v.status === 'open');
   // the member list is the Team screen's; read it when this viewer can name someone on a visit, and again whenever
-  // the server says the project changed (a member removed, re-roled or newly joined). The viewer is a member, so a
-  // list still empty after the read means it failed, and the picker offers a retry
+  // the server says the project changed (a member removed, re-roled or newly joined). A read that failed, even
+  // with an older list on hand, makes the picker offer a retry
   const namesPeople = sv.visits.some((v) => editable(v, role, me));
   useEffect(() => {
     if (!namesPeople) return;
     let on = true;
     setTeam('loading');
-    void loadTeam().finally(() => { if (on) setTeam('done'); });
+    void loadTeam().then((ok) => { if (on) setTeam(ok === false ? 'failed' : 'done'); });
     return () => { on = false; };
   }, [namesPeople, sv.pings, teamAsk, loadTeam]);
-  const teamFailed = team === 'done' && members.length === 0;
+  const teamFailed = team === 'failed';
 
   if (!hasServer) {
     return (
@@ -59,8 +59,9 @@ export function SiteVisitsScreen() {
   return (
     <div className={styles.screen}>
       <Header lang={lang} />
-      {/* only once the open visits are read: until then the viewer's own open visit is not known */}
-      {can('siteVisit.start', role) && sv.load === 'ready' && !mineOpen && (
+      {/* once the open visits are read, or the read failed (no signal): a start queued then, while the viewer
+          already had a visit open, is moved onto that visit when the server refuses it (F53, Codex 4278908034) */}
+      {can('siteVisit.start', role) && sv.load !== 'loading' && !mineOpen && (
         <section className={styles.card} aria-label={SV.start[lang]}>
           <label className={styles.label} htmlFor="sv-start-place">{SV.startPlace[lang]}</label>
           <select id="sv-start-place" className={styles.field} value={startNode} onChange={(e) => setStartNode(e.target.value)}>
@@ -68,12 +69,21 @@ export function SiteVisitsScreen() {
             {placeOptions.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
           <p className={styles.note}>{SV.locationNote[lang]}</p>
-          <Button variant="ink" fullWidth disabled={sv.busy} data-testid="sv-start" onClick={() => { void sv.start(startNode || null).then((ok) => ok && setStartNode('')); }}>
+          <Button variant="ink" fullWidth disabled={sv.busy} data-testid="sv-start" onClick={() => {
+            const name = placeOptions.find((p) => p.id === startNode)?.label ?? null;
+            void sv.start(startNode || null, name).then((ok) => ok && setStartNode(''));
+          }}>
             {SV.start[lang]}
           </Button>
         </section>
       )}
       {sv.error && <p role="alert" className={styles.error}>{sv.error}</p>}
+      {sv.notice && <p role="status" className={styles.note}>{sv.notice}</p>}
+      {sv.queued > 0 && (
+        <div className={styles.note} data-testid="sv-waiting">
+          {SV.waitingCount[lang]} {sv.queued} <Button variant="light" onClick={sv.sendNow}>{SV.sendNow[lang]}</Button>
+        </div>
+      )}
       {sv.load === 'loading' && sv.visits.length === 0 && <p className={styles.note}>{SV.loading[lang]}</p>}
       {sv.load === 'error' && (
         <div className={styles.note}>
@@ -133,22 +143,28 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
   const canEnd = mine && can('siteVisit.end', role) && (v.status === 'open' || (v.status === 'closed' && v.lateEndedAt === null));
   const canClose = can('siteVisit.close', role) && v.status === 'open';
   const standingPlaces = new Set(v.places.filter((p) => !p.retiredAt && p.nodeId).map((p) => p.nodeId));
-  const standingPeople = new Set(v.attendees.filter((a) => !a.retiredAt && a.userId).map((a) => `${a.userId}:${a.role}`));
+  // a person stands on the visit once, whatever their role (the server refuses the same person again, re-roled or not)
+  const standingPeople = new Set(v.attendees.filter((a) => !a.retiredAt && a.userId).map((a) => a.userId));
   const freePlaces = placeOptions.filter((p) => !standingPlaces.has(p.id));
   // only a member whose membership is active can be named: an invitation not yet taken is refused by the server
-  const freeMembers = members.filter((m) => m.status === 'active' && m.userId !== v.visitorId && !standingPeople.has(`${m.userId}:${m.role}`));
+  const freeMembers = members.filter((m) => m.status === 'active' && m.userId !== v.visitorId && !standingPeople.has(m.userId));
   const status = v.status === 'open' ? SV.open[lang] : v.status === 'ended' ? SV.ended[lang] : SV.closed[lang];
+  // the close form stays only while closing is still possible: the visitor may end it, or another PMC close it, first
+  const mayClose = canClose && !mine;
+  useEffect(() => { if (!mayClose) setClosing(false); }, [mayClose]);
+  const wait = (id: string) => (sv.waiting.has(id) ? ` · ${SV.waiting[lang]}` : '');
+  const adjusted = (flag: boolean | null) => (flag ? ` (${SV.adjusted[lang]})` : '');
 
   return (
     <article className={styles.card} data-testid={`sv-visit-${v.id}`} aria-label={`${v.visitorName} · ${status}`}>
       <div className={styles.row}>
         <strong>{v.visitorName}</strong>
-        <span className={styles.chip} data-status={v.status}>{status}</span>
+        <span className={styles.chip} data-status={v.status}>{status}{wait(v.id)}</span>
       </div>
       <div className={styles.meta}>{roleName(v.visitorRole, lang)}</div>
       <div className={styles.meta}>
-        {SV.startedAt[lang]} {visitTime(v.startedAt, lang)}
-        {v.endedAt && <> · {SV.endedAt[lang]} {visitTime(v.endedAt, lang)}</>}
+        {SV.startedAt[lang]} {visitTime(v.startedAt, lang)}{adjusted(v.startTimeAdjusted)}
+        {v.endedAt && <> · {SV.endedAt[lang]} {visitTime(v.endedAt, lang)}{adjusted(v.endTimeAdjusted)}</>}
         {v.closedAt && <> · {SV.closedAt[lang]} {visitTime(v.closedAt, lang)}</>}
         {v.startPlace && <> · {v.startPlace.name}</>}
       </div>
@@ -156,14 +172,14 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
         <div className={styles.meta}>{SV.location[lang]}{v.location.approximate ? ` (${SV.approximate[lang]})` : ''}</div>
       )}
       {v.status === 'closed' && v.closeReason && <div className={styles.meta}>{SV.closedBecause[lang]} {v.closeReason}</div>}
-      {v.lateEndedAt && <div className={styles.meta}>{SV.lateEnd[lang]} · {visitTime(v.lateEndedAt, lang)}</div>}
+      {v.lateEndedAt && <div className={styles.meta}>{SV.lateEnd[lang]} · {visitTime(v.lateEndedAt, lang)}{adjusted(v.lateEndTimeAdjusted)}</div>}
 
       <h2 className={styles.sub}>{SV.places[lang]}</h2>
       {v.places.length === 0 && <div className={styles.meta}>{SV.none[lang]}</div>}
       <ul className={styles.items}>
         {v.places.map((p) => (
           <li key={p.id} className={p.retiredAt ? styles.retired : undefined}>
-            <span>{p.name}{p.addedAfterEnd ? ` · ${SV.addedAfterEnd[lang]}` : ''}{p.retiredAt ? ` · ${SV.removed[lang]}` : ''}</span>
+            <span>{p.name}{adjusted(p.addedTimeAdjusted)}{p.addedAfterEnd ? ` · ${SV.addedAfterEnd[lang]}` : ''}{p.retiredAt ? ` · ${SV.removed[lang]}` : ''}{wait(p.id)}</span>
             {canEdit && !p.retiredAt && (
               <Button variant="ghost" disabled={sv.busy} aria-label={`${SV.remove[lang]}: ${p.name}`} onClick={() => void sv.retirePlace(v.id, p.id)}>{SV.remove[lang]}</Button>
             )}
@@ -176,7 +192,10 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             <option value="">{SV.choosePlace[lang]}</option>
             {freePlaces.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
-          <Button variant="light" disabled={sv.busy || !place} onClick={() => { void sv.addPlace(v.id, place).then((ok) => ok && setPlace('')); }}>{SV.addPlace[lang]}</Button>
+          <Button variant="light" disabled={sv.busy || !place} onClick={() => {
+            const name = placeOptions.find((p) => p.id === place)?.label ?? '';
+            void sv.addPlace(v.id, place, name).then((ok) => ok && setPlace(''));
+          }}>{SV.addPlace[lang]}</Button>
         </div>
       )}
 
@@ -185,7 +204,7 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
       <ul className={styles.items}>
         {v.attendees.map((a) => (
           <li key={a.id} className={a.retiredAt ? styles.retired : undefined}>
-            <span>{a.name} · {a.kind === 'guest' ? SV.guest[lang] : roleName(a.role, lang)}{a.retiredAt ? ` · ${SV.removed[lang]}` : ''}</span>
+            <span>{a.name} · {a.kind === 'guest' ? SV.guest[lang] : roleName(a.role, lang)}{a.retiredAt ? ` · ${SV.removed[lang]}` : ''}{wait(a.id)}</span>
             {canEdit && !a.retiredAt && (
               <Button variant="ghost" disabled={sv.busy} aria-label={`${SV.remove[lang]}: ${a.name}`} onClick={() => void sv.retireAttendee(v.id, a.id)}>{SV.remove[lang]}</Button>
             )}
@@ -201,7 +220,8 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             </select>
             <Button variant="light" disabled={sv.busy || !person} onClick={() => {
               const [userId, memberRole] = person.split(':');
-              void sv.addMember(v.id, userId, memberRole).then((ok) => ok && setPerson(''));
+              const name = members.find((m) => m.userId === userId && m.role === memberRole)?.name ?? '';
+              void sv.addMember(v.id, userId, memberRole, name).then((ok) => ok && setPerson(''));
             }}>{SV.addPerson[lang]}</Button>
           </div>
           {teamFailed && (
@@ -219,10 +239,10 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
       {(canEnd || canClose) && (
         <div className={styles.actions}>
           {canEnd && <Button variant="ink" disabled={sv.busy} onClick={() => void sv.end(v.id)}>{SV.end[lang]}</Button>}
-          {canClose && !mine && !closing && <Button variant="dangerOutline" disabled={sv.busy} onClick={() => setClosing(true)}>{SV.close[lang]}</Button>}
+          {mayClose && !closing && <Button variant="dangerOutline" disabled={sv.busy} onClick={() => setClosing(true)}>{SV.close[lang]}</Button>}
         </div>
       )}
-      {closing && (
+      {closing && mayClose && (
         <div className={styles.add}>
           <input aria-label={SV.closeReason[lang]} placeholder={SV.closeReason[lang]} className={styles.field} value={reason} maxLength={500} onChange={(e) => setReason(e.target.value)} />
           <Button variant="danger" disabled={sv.busy || !reason.trim()} onClick={() => { void sv.close(v.id, reason.trim()).then((ok) => { if (ok) { setClosing(false); setReason(''); } }); }}>{SV.closeConfirm[lang]}</Button>
