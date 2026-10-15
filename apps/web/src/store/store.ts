@@ -1629,12 +1629,23 @@ export const useStore = create<Store>()(
         /* storage unavailable — the in-session draft still works */
       }
     };
+    /** A progress photo taken offline is queued, not yet the server's (#482). Until it is sent it stays on
+     *  screen and in an unsent log's count, rebuilt from the durable outbox on every server read, so a reload
+     *  before reconnecting keeps it. Once sent, the server's photos and count hold it and the queue does not. */
+    const withQueuedProgressPhotos = (log: DailyLog | null, outbox: readonly OutboxOp[]): DailyLog | null => {
+      if (!log || log.submitted) return log;
+      const queued = outbox.flatMap((o) => (o.t === 'uploadMedia' && o.input.kind === 'progress' ? [o.input] : []));
+      if (queued.length === 0) return log;
+      // newest first, as the photos are shown
+      const previews = queued.map((i) => ({ url: `data:${i.mime};base64,${i.data}` })).reverse();
+      return { ...log, photos: [...previews, ...log.photos], progress: log.progress + queued.length };
+    };
     /** Land the SERVER's log on the store with the engineer's unsent draft laid over it; the draft
      *  that no longer applies (the log was sent, a new day replaced it, or there is no log) is dropped
      *  in the same update. The one place `s.dailyLog` takes a server log. */
     const applyServerDailyLog = (s: AppState, serverLog: DailyLog | null, projectId: string): void => {
       const r = overlayDailyLogDraft(serverLog, s.dailyLogDraft, projectId);
-      s.dailyLog = r.log;
+      s.dailyLog = withQueuedProgressPhotos(r.log, s.outbox);
       s.dailyLogDraft = r.draft;
       // a draft written before the log carried an id is kept aside, never laid over it (#692)
       if (r.legacy) s.legacyDailyLogDraft = r.legacy;

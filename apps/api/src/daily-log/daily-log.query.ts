@@ -81,6 +81,24 @@ export class DailyLogQueryService {
    * legacy project never rebuilt) — additive and correct, never empty during warm-up. `source` tells
    * the client which path served it (observability; the slice is byte-identical either way).
    */
+  /**
+   * #482 site photos — the bounds of the photos a log holds. A log holds the photos taken while it was the open
+   * log: from the previous log's send to its own, so each photo belongs to one log. Both sends are the
+   * database's stamps (migration 20280113000000). `previousSentAt` is the latest send stamped no later than this
+   * log's creation (null when there is none, or it was sent before the migration); `sentAt` is this log's own
+   * (null while it is unsent, and on a log sent before the migration). `null` when the log is not this project's.
+   */
+  async photoWindow(projectId: string, logId: string): Promise<{ previousSentAt: Date | null; sentAt: Date | null } | null> {
+    const log = await this.prisma.dailyLog.findFirst({ where: { projectId, id: logId }, select: { createdAt: true, submittedAt: true } });
+    if (!log) return null;
+    const previous = await this.prisma.dailyLog.findFirst({
+      where: { projectId, id: { not: logId }, submittedAt: { not: null, lte: log.createdAt } },
+      orderBy: { submittedAt: 'desc' },
+      select: { submittedAt: true },
+    });
+    return { previousSentAt: previous?.submittedAt ?? null, sentAt: log.submittedAt };
+  }
+
   async moduleDailyLog(projectId: string): Promise<DailyLogModuleResult> {
     const proj = await this.projectionSlice(projectId);
     if (proj.generation !== null) {

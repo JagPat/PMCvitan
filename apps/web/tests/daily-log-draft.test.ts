@@ -313,6 +313,44 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     expectTheMorningKept();
   });
 
+  it('a photo taken offline survives a reload before reconnecting: rebuilt from the queued upload, counted once (#920 review)', async () => {
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog())) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    useStore.setState((st) => { st.online = false; });
+    s().addProgressPhoto('data:image/jpeg;base64,AAAA');
+    expect(s().dailyLog).toMatchObject({ progress: 3 });
+
+    // a fresh boot, still offline: the queue comes back from storage, and the cached read is laid over it
+    useStore.setState(getInitialState());
+    useStore.setState((st) => { st.online = false; st.activeProjectId = 'ambli'; st.projectScopeGeneration = 1; st.dailyLog = null; });
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().hydrateOutbox();
+    expect(s().outbox.filter((o) => o.t === 'uploadMedia')).toHaveLength(1);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(3);
+    expect(s().dailyLog?.photos[0]?.url).toBe('data:image/jpeg;base64,AAAA');
+
+    // sent: the server's count holds it and the queue no longer does, so it is counted once
+    useStore.setState((st) => { st.outbox = []; });
+    gw.snapshot.mockResolvedValue(makeSnapshot(serverLog({ progress: 3, photos: [{ id: 'm1', url: '/media/m1' }] })));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(3);
+    expect(s().dailyLog?.photos.map((p) => p.id)).toEqual(['m1']);
+  });
+
+  it('a queued photo is not laid over a sent log: it belongs to the next one', async () => {
+    useStore.setState((st) => { st.outbox = [{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA' } }]; });
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog({ submitted: true, progress: 2 }))) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog).toMatchObject({ submitted: true, progress: 2 });
+  });
+
   it('the send lands: the server’s sent log replaces the draft, and nothing is counted twice', async () => {
     const sentLog = serverLog({ submitted: true, checkedIn: true, checkinTime: '8:12 AM', progress: 3, crew: [{ trade: 'Flooring mason', count: 3 }, { trade: 'Plumber', count: 1 }, { trade: 'Electrician', count: 0 }, { trade: 'Waterproofing', count: 2 }, { trade: 'Helper / Beldar', count: 5 }] });
     const gw = {

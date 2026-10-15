@@ -34,6 +34,8 @@ export const DAILY_LOG_QUERIES = [
   'daily-log.projectionSlice',
   'daily-log.existsInProject',
   'daily-log.resolveRef',
+  // #482 site photos — the sends that bound the photos a log holds (the snapshot counts them)
+  'daily-log.photoWindow',
 ] as const;
 export type DailyLogQuery = (typeof DAILY_LOG_QUERIES)[number];
 

@@ -3073,6 +3073,9 @@ model DailyLog {
   checkedIn   Boolean        @default(false)
   checkinTime String?
   submitted   Boolean        @default(false)
+  // #482 site photos — the instant the log was sent, stamped by the database's trigger (never written by the
+  // app; migration 20280113000000). Null while unsent and on logs sent before the migration.
+  submittedAt DateTime?
   progress    Int            @default(0)
   crew        CrewRow[]
   materials   SiteMaterial[]

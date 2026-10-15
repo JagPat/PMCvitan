@@ -9,11 +9,12 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * progress photo from the start of the log's civil day on the site's calendar, whoever added it. Before,
  * the count was a number the engineer's device kept and sent, so a photo another member added never
  * reached it (#916 review). A sent log shows the count it was sent with. Proven through the real snapshot
- * route against PostgreSQL.
+ * route against PostgreSQL. A log's photos run to its send, and the next log's begin there (#920 review).
  *
- * Reproduce-first: on ee345e3 the snapshot serves the stored `progress` (7) in the unsent probes below.
+ * Reproduce-first: on ee345e3 the snapshot serves the stored `progress` (7) in every probe below but the last; on
+ * e2e540f a sent log serves 7 and a later log counts the earlier one's photos.
  */
-describe('an unsent log\'s photo count is the photos taken since its day began (live PG)', () => {
+describe('a log\'s photo count is the photos taken while it was the open log (live PG)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
   let pmc: string;
@@ -54,13 +55,37 @@ describe('an unsent log\'s photo count is the photos taken since its day began (
     expect((await snapshot()).dailyLog.progress).toBe(3);
   });
 
-  it('shows a sent log\'s count as it was sent', async () => {
+  it('counts a sent log\'s photos up to its send, read from the photos, never the number the device sent', async () => {
     await t.prisma.dailyLog.update({ where: { id: logId() }, data: { submitted: true } });
-    expect((await snapshot()).dailyLog.progress).toBe(7);
+    const { submittedAt } = await t.prisma.dailyLog.findUniqueOrThrow({ where: { id: logId() }, select: { submittedAt: true } });
+    // the device sent 7; the photos say 3
+    expect((await snapshot()).dailyLog.progress).toBe(3);
+    // an upload that began before the send and committed after it is still this log's
+    await photo('during-send', new Date(submittedAt!.getTime() - 1).toISOString());
+    // a photo taken after the send waits for the next log
+    await photo('after-send', new Date(submittedAt!.getTime() + 1000).toISOString());
+    expect((await snapshot()).dailyLog.progress).toBe(4);
+  });
+
+  it('starts a later log on the same day at the earlier log\'s send, so no photo counts on both', async () => {
+    const { submittedAt } = await t.prisma.dailyLog.findUniqueOrThrow({ where: { id: logId() }, select: { submittedAt: true } });
+    await t.prisma.dailyLog.create({
+      data: { id: `${pid()}-pc-log-2`, projectId: pid(), date: '02 Jun 2026', logDate: new Date('2026-06-02'), createdAt: new Date(submittedAt!.getTime() + 2000), checkedIn: true, submitted: false, progress: 7 },
+    });
+    // only the photo taken after the first log was sent; the 2 Jun photos before it are the first log's
+    expect((await snapshot()).dailyLog).toMatchObject({ id: `${pid()}-pc-log-2`, progress: 1 });
+  });
+
+  it('starts today\'s log at the day\'s start when the earlier log was sent the evening before', async () => {
+    await t.prisma.dailyLog.update({ where: { id: `${pid()}-pc-log-2` }, data: { submitted: true } });
+    await t.prisma.dailyLog.create({ data: { id: `${pid()}-pc-log-3`, projectId: pid(), date: '05 Jun 2099', logDate: new Date('2099-06-05'), checkedIn: true, submitted: false, progress: 7 } });
+    await photo('jun-5-morning', '2099-06-04T18:30:00Z'); // 5 Jun 2099, 00:00 IST
+    expect((await snapshot()).dailyLog).toMatchObject({ id: `${pid()}-pc-log-3`, progress: 1 });
   });
 
   it('keeps the stored count for a log with no civil day, which no window can be drawn for', async () => {
-    await t.prisma.dailyLog.update({ where: { id: logId() }, data: { submitted: false, logDate: null } });
+    await t.prisma.dailyLog.update({ where: { id: `${pid()}-pc-log-3` }, data: { logDate: null, createdAt: new Date('2099-06-05T00:00:00Z') } });
+    await t.prisma.dailyLog.updateMany({ where: { projectId: pid(), id: { not: `${pid()}-pc-log-3` } }, data: { logDate: null } });
     expect((await snapshot()).dailyLog.progress).toBe(7);
   });
 });

@@ -128,20 +128,23 @@ export class SnapshotService {
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
     ]);
 
-    // #482 site photos: an unsent log's photo count has ONE owner, the photos this project holds: every
-    // progress photo from the start of the log's civil day (on the site's calendar), whoever added it, the
-    // same photos this viewer's photo layer may show. A count kept on the engineer's device never saw a photo
-    // another member added (#916 review). The log is open until it is sent, so a photo added while an
-    // earlier day's log is still unsent counts on it, as it did when the device counted. A SENT log shows
-    // the count it was sent with; a log without a civil day keeps the stored column.
-    const openLog = dailyLogSlice.dailyLog && !dailyLogSlice.dailyLog.submitted ? dailyLogSlice.dailyLog : null;
+    // #482 site photos: a log's photo count has ONE owner, the photos this project holds. A log holds the
+    // progress photos taken while it was the open log, whoever added them: from the later of its civil day's start
+    // (on the site's calendar) and the previous log's send, up to its own send. Both sends are the database's
+    // stamps, so each photo belongs to one log, and the count is read here on every read, never frozen from a
+    // device's number (#916, #920 review). The viewer's photo layer filter applies. A log without a civil day, or
+    // sent before the stamp existed, keeps the stored column.
+    const log = dailyLogSlice.dailyLog;
     const hidden = await hiddenNodes;
-    const dayPhotoCount = openLog?.logDate
+    const window = log?.id && log.logDate ? await this.dailyLogQuery.photoWindow(projectId, log.id) : null;
+    const dayStart = log?.logDate ? civilDayStartInstant(log.logDate, project.timeZone) : null;
+    const from = dayStart && window?.previousSentAt && window.previousSentAt > dayStart ? window.previousSentAt : dayStart;
+    const dayPhotoCount = log && window && from && (!log.submitted || window.sentAt)
       ? await this.prisma.media.count({
           where: {
             projectId,
             kind: 'progress',
-            createdAt: { gte: civilDayStartInstant(openLog.logDate, project.timeZone) },
+            createdAt: { gte: from, ...(window.sentAt ? { lt: window.sentAt } : {}) },
             ...(hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {}),
           },
         })
