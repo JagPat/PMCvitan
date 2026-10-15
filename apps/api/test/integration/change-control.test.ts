@@ -20,6 +20,8 @@ describe('decision change-control (integration)', () => {
   let pmcToken: string;
   let engToken: string;
   let clientToken: string;
+  // run-unique like the fixture's own identities, so leftovers from an interrupted run cannot collide
+  const siteUserId = (role: (typeof SITE_ROLES)[number]) => `cc-${role}-${f.projectA.id}`;
 
   beforeAll(async () => {
     t = await createTestApp();
@@ -37,7 +39,7 @@ describe('decision change-control (integration)', () => {
     // #482 QA: one ACTIVE member per site role, so live project authorization admits each
     // token and a 403 on /change comes from the decision.change role guard, not from access
     for (const role of SITE_ROLES) {
-      const id = `cc-${role}`;
+      const id = siteUserId(role);
       await t.prisma.user.create({ data: { id, projectId: f.projectA.id, role, name: `CC ${role}`, email: `${id}@test.local` } });
       await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: id, role, status: 'active' } });
     }
@@ -71,8 +73,8 @@ describe('decision change-control (integration)', () => {
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_evidence_no_delete"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
     ]);
-    await t.prisma.membership.deleteMany({ where: { userId: { in: SITE_ROLES.map((r) => `cc-${r}`) } } });
-    await t.prisma.user.deleteMany({ where: { id: { in: SITE_ROLES.map((r) => `cc-${r}`) } } });
+    await t.prisma.membership.deleteMany({ where: { userId: { in: SITE_ROLES.map(siteUserId) } } });
+    await t.prisma.user.deleteMany({ where: { id: { in: SITE_ROLES.map(siteUserId) } } });
     await f?.cleanup();
     await t?.close();
   });
@@ -192,7 +194,7 @@ describe('decision change-control (integration)', () => {
     const id = await issueDecision('Kitchen shutters');
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
     for (const role of SITE_ROLES) {
-      const token = t.issueProjectToken(`cc-${role}`, f.projectA.id, role);
+      const token = t.issueProjectToken(siteUserId(role), f.projectA.id, role);
       // the member is admitted to the project (a read succeeds) …
       expect((await http().get(`/projects/${f.projectA.id}/decisions`).set('Authorization', `Bearer ${token}`)).status, role).toBe(200);
       // … and refused only the change request
