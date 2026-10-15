@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
@@ -26,6 +26,18 @@ export interface UploadedMedia {
   id: string;
   url: string;
 }
+
+/** The roles that keep the record-linked uploads: evidence for a decision, a daily log or an inspection item. */
+const SITE_RECORD_ROLES: ReadonlySet<string> = new Set(['pmc', 'engineer']);
+
+/** A plain site photo: a progress photo, optionally placed on the location tree, linked to no record. */
+function isPlainSitePhoto(input: CreateMediaInput): boolean {
+  return input.kind === 'progress' && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
+}
+
+/** What a clientKey replay must read to decide whether the caller may have the stored row back. */
+const REPLAY_SELECT = { id: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true } as const;
+type ReplayRow = { id: string; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null };
 
 export type MediaBytes = { mime: string; bytes: Buffer };
 export type MediaRedirect = { redirect: string };
@@ -58,18 +70,40 @@ export class MediaService {
     private readonly commercialParticipant: CommercialParticipant,
   ) {}
 
+  /** A clientKey replay returns the stored row only when the caller could have created it: for the roles
+   *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence.
+   *  And never a photo the caller cannot see now: one filed (before #881) on another member's private
+   *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884). */
+  private async replayed(projectId: string, user: AuthUser, row: ReplayRow): Promise<UploadedMedia> {
+    if (!SITE_RECORD_ROLES.has(user.role)) {
+      const plain = row.kind === 'progress' && !row.decisionId && !row.dailyLogId && !row.inspectionId && !row.inspectionItemId;
+      if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
+    }
+    if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
+      throw new NotFoundException('Media not found');
+    }
+    return { id: row.id, url: this.signed.mediaPath(row.id) };
+  }
+
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
    *  IDEMPOTENT per (projectId, clientKey): replaying the same key returns the
    *  already-stored row — an offline photo uploads exactly once (Phase 1 Task 4). */
   async create(projectId: string, user: AuthUser, input: CreateMediaInput): Promise<UploadedMedia> {
     const uploadedBy = user.sub;
+    // #482 (Board, 14 Oct 2026) — every member may add a SITE photo; only the PMC and the engineer may add one
+    // that is evidence for something (a decision, a daily log, an inspection item) or a non-progress kind.
+    // Asked before the idempotency read and before any byte is stored, so a refused caller learns nothing
+    // about another photo's key and leaves nothing in the bucket.
+    if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input)) {
+      throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
+    }
     // idempotency fast-path: this exact photo already landed
     if (input.clientKey) {
       const existing = await this.prisma.media.findUnique({
         where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
-        select: { id: true },
+        select: REPLAY_SELECT,
       });
-      if (existing) return { id: existing.id, url: this.signed.mediaPath(existing.id) };
+      if (existing) return this.replayed(projectId, user, existing);
     }
     // Location spine: the place must be this project's and PUBLISHED (a team photo never goes on a draft).
     // Checked here BEFORE the bytes are stored, as an early no; the tree's state is decided again under its
@@ -153,14 +187,24 @@ export class MediaService {
       });
     } catch (e) {
       // a concurrent replay of the same clientKey landed first — return ITS row
-      // (the unique is the DB proof the photo persisted exactly once). The winner's object IS
-      // this key's bytes for the same clientKey, so nothing is orphaned on this path.
+      // (the unique is the DB proof the photo persisted exactly once). The winner's row points at
+      // the WINNER's object: every request stores under its own random key, so this request's
+      // object is unreferenced either way and goes through the earned cleanup below (#482).
       if (input.clientKey && e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
         const winner = await this.prisma.media.findUniqueOrThrow({
           where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
-          select: { id: true },
+          select: REPLAY_SELECT,
         });
-        return { id: winner.id, url: this.signed.mediaPath(winner.id) };
+        let replay: { id: string; url: string } | undefined;
+        try {
+          replay = await this.replayed(projectId, user, winner);
+        } catch (refused) {
+          // the key is another member's, or its photo is hidden from the caller: refused, after the same cleanup
+          e = refused;
+        }
+        await this.removeIfUnreferenced(projectId, key);
+        if (replay) return replay;
+        throw e;
       }
       // THE ROLLBACK DOES NOT REACH THE BUCKET (#571 round 11, finding 3). The preflight above is
       // deliberately advisory, so the authoritative in-transaction check is the one that can refuse
@@ -179,12 +223,7 @@ export class MediaService {
       // no row references its key. A read that itself fails leaves the object alone — an orphan to
       // sweep is a cost; a deleted photo behind a committed row is not recoverable, and where the two
       // are not distinguishable the harmless one is the only admissible guess.
-      if (key) {
-        const persisted = await this.prisma.media
-          .findFirst({ where: { projectId, storageKey: key }, select: { id: true } })
-          .catch(() => ({ id: 'unknown' }) as { id: string });
-        if (!persisted) await this.storage.remove(key).catch(() => {});
-      }
+      await this.removeIfUnreferenced(projectId, key);
       throw e;
     }
 
@@ -192,6 +231,16 @@ export class MediaService {
     if (events.length) await this.dispatcher.dispatchCommitted(events);
     // a short-lived, signed path resolved against the API base by the frontend
     return { id: row.id, url: this.signed.mediaPath(row.id) };
+  }
+
+  /** The earned cleanup (#571 round 12): remove this request's stored object only once a fresh read
+   *  proves no row references its key. A read that fails leaves the object alone. */
+  private async removeIfUnreferenced(projectId: string, key: string | null | undefined): Promise<void> {
+    if (!key) return;
+    const persisted = await this.prisma.media
+      .findFirst({ where: { projectId, storageKey: key }, select: { id: true } })
+      .catch(() => ({ id: 'unknown' }) as { id: string });
+    if (!persisted) await this.storage.remove(key).catch(() => {});
   }
 
   /** Re-file a photo onto a location-tree node (or null to unfile). Scoped to the

@@ -15,8 +15,8 @@ export class MediaController {
   ) {}
 
   /** Upload a site photo (base64). Returns { id, url } — url is absolute (S3/R2) or /media/:id (dev stub).
-   *  PMC or site engineer only — progress photos come from the engineer's daily-log flow; this keeps
-   *  anonymously-minted worker tokens from writing arbitrary blobs, matching the DELETE gate below. */
+   *  Every project member (#482, Board 14 Oct 2026); the service keeps record-linked evidence to the PMC and
+   *  the engineer. Anonymously-minted worker tokens hold no grant, so they cannot write arbitrary blobs. */
   @Post('projects/:projectId/media')
   @UseGuards(JwtGuard, RolesGuard)
   @RolesFor('media.upload')
