@@ -487,6 +487,8 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
   const [rev, setRev] = useState('A');
   const [nodeId, setNodeId] = useState<string | null>(null);
   const [file, setFile] = useState<{ mime: string; data: string; name: string } | null>(null);
+  // Codex #902 — the hidden native input still takes keyboard focus, so the app's own button shows it
+  const [fileFocused, setFileFocused] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const onPick = (f: File | undefined) => {
@@ -539,12 +541,14 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
             type="file"
             accept=".pdf,.dwg,.dxf,image/*,application/pdf"
             onChange={(e) => onPick(e.target.files?.[0])}
+            onFocus={() => setFileFocused(true)}
+            onBlur={() => setFileFocused(false)}
             data-testid="issue-drawing-file"
             style={lang === 'en' ? { fontSize: 13, display: 'block', width: '100%', minHeight: 44 } : visuallyHidden}
           />
           {lang !== 'en' && (
             <>
-              <span style={{ flex: 'none', padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontSize: 13, fontWeight: 600 }}>{L.chooseFile[lang]}</span>
+              <span data-testid="issue-drawing-file-button" style={{ flex: 'none', padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontSize: 13, fontWeight: 600, outline: fileFocused ? '2px solid var(--accent)' : undefined, outlineOffset: 2 }}>{L.chooseFile[lang]}</span>
               <span data-testid="issue-drawing-file-status" style={{ fontSize: 12.5, color: 'var(--muted)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file ? file.name : L.noFile[lang]}</span>
             </>
           )}
