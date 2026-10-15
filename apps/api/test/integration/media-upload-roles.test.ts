@@ -11,8 +11,8 @@ import { StorageService } from '../../src/media/storage.service';
  * consultant, a contractor (and the foreman, who signs in as a contractor member) and the client. Proven per role through the real route, guard and service against PostgreSQL.
  *
  * Reproduce-first: every non-PMC/engineer "may add a site photo" probe is 403 at the base and 201 here.
- * Linking a photo to a record (a decision, a daily log, an inspection item) stays the PMC's and engineer's,
- * and an anonymous worker token stays out.
+ * Every member's site photo may be filed on the day's log it was taken for; linking a photo to any other record
+ * (a decision, an inspection item) stays the PMC's and engineer's, and an anonymous worker token stays out.
  */
 describe('who may add a site photo (live PG)', () => {
   let t: TestApp;
@@ -69,7 +69,6 @@ describe('who may add a site photo (live PG)', () => {
   it.each(['contractor', 'consultant', 'client'] as Role[])('a %s may not link a photo to a record', async (role) => {
     for (const body of [
       { kind: 'inspection', inspectionId: 'any', inspectionItemId: 'any' },
-      { kind: 'progress', dailyLogId: 'any' },
       { kind: 'progress', decisionId: 'any' },
       { kind: 'material' },
     ]) {
@@ -78,6 +77,29 @@ describe('who may add a site photo (live PG)', () => {
     }
     // nothing was stored by a refusal
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: { startsWith: `refused-${role}` } } })).toBe(0);
+  });
+
+  it.each(ROLES)('a %s files a site photo on the day\'s log it was taken for, and its replay is the same photo', async (role) => {
+    const log = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: 'roles log', logDate: new Date('2026-10-15') } });
+    try {
+      const first = await upload(tokens[role], { kind: 'progress', dailyLogId: log.id, clientKey: `log-${role}` });
+      expect(first.status).toBe(201);
+      expect(await t.prisma.media.findUniqueOrThrow({ where: { id: first.body.id } })).toMatchObject({ dailyLogId: log.id, kind: 'progress' });
+      const again = await upload(tokens[role], { kind: 'progress', dailyLogId: log.id, clientKey: `log-${role}` });
+      expect(again.status).toBe(201);
+      expect(again.body.id).toBe(first.body.id);
+      // another project's log is never theirs to file on
+      const otherLog = await t.prisma.dailyLog.create({ data: { projectId: f.projectB.id, date: 'other log' } });
+      try {
+        expect((await upload(tokens[role], { kind: 'progress', dailyLogId: otherLog.id, clientKey: `log-other-${role}` })).status).toBe(400);
+        expect(await t.prisma.media.count({ where: { clientKey: `log-other-${role}` } })).toBe(0);
+      } finally {
+        await t.prisma.dailyLog.delete({ where: { id: otherLog.id } });
+      }
+    } finally {
+      await t.prisma.media.deleteMany({ where: { dailyLogId: log.id } });
+      await t.prisma.dailyLog.delete({ where: { id: log.id } });
+    }
   });
 
   it('a replayed upload key returns only the caller\'s own plain photo, never another member\'s evidence', async () => {
