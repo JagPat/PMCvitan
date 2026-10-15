@@ -1,6 +1,6 @@
 import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore } from '@/store/store';
+import { shownAccessError, useStore } from '@/store/store';
 import { API_BASE } from '@/data/apiGateway';
 import { useT } from '@/i18n/useT';
 import { discardLangChoice, noteLangChoice } from '@/lib/langPreference';
@@ -88,7 +88,8 @@ export function TeamAccessScreen() {
   const otpEmail = useStore((s) => s.access.email);
   const otp = useStore((s) => s.access.otp);
   const sending = useStore((s) => s.access.sending);
-  const error = useStore((s) => s.access.error);
+  // #886: worded in the gate's current language, so a language switch after a failure re-translates it
+  const error = useStore((s) => shownAccessError(s.access, s.lang));
   const devCode = useStore((s) => s.access.devCode);
   const channel = useStore((s) => s.access.channel ?? null);
   const codeLength = useStore((s) => s.access.codeLength ?? 4);
@@ -110,6 +111,7 @@ export function TeamAccessScreen() {
   const emailOtpVerify = useStore((s) => s.emailOtpVerify);
   const requestOtp = useStore((s) => s.requestOtp);
   const otpPress = useStore((s) => s.otpPress);
+  const otpVerify = useStore((s) => s.otpVerify);
   const accReset = useStore((s) => s.accReset);
   const pickWorker = useStore((s) => s.pickWorker);
   const speakJob = useStore((s) => s.speakJob);
@@ -530,6 +532,12 @@ export function TeamAccessScreen() {
           {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
           {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
         </div>
+        {/* #886: a code that could not be checked is kept on screen; this checks it again */}
+        {error && !sending && otp.length === codeLength && (
+          <button onClick={() => otpVerify()} data-testid="otp-retry" style={{ ...linkBtn, marginTop: 8, fontWeight: 600 }}>
+            {t.verify}
+          </button>
+        )}
         <button
           onClick={requestOtp}
           disabled={sending}

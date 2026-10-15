@@ -99,7 +99,8 @@ describe('team access — API mode', () => {
   it('otpVerify failure clears the code and shows an error, session untouched', async () => {
     const gw = {
       requestOtp: vi.fn().mockResolvedValue({ sent: true, live: true }),
-      verifyOtp: vi.fn().mockRejectedValue(new Error('/auth/otp/verify 401')),
+      // the gateway puts the HTTP status on the error; only a refusal (4xx) clears the code (#886)
+      verifyOtp: vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/verify 401'), { status: 401 })),
     };
     s()._setGateway(gw as unknown as ApiGateway);
 
