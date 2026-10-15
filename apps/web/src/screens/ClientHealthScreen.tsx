@@ -60,7 +60,6 @@ export function ClientHealthScreen() {
                 <div style={{ height: 170, position: 'relative', background: '#000' }}>
                   <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 </div>
-                {/* #482 QA 8: no caption bar when there is no capture time to show */}
                 {stampText(p.takenAt) && (
                   <div data-testid="health-photo-caption" style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{stampText(p.takenAt)}</div>
                 )}

@@ -225,9 +225,8 @@ export function DashboardScreen() {
           {[
             { v: logPending ? UNKNOWN : workers, l: 'WORKERS ON SITE' },
             { v: logPending ? UNKNOWN : materialsCount, l: 'MATERIALS LOGGED' },
-            // #482 QA 9: no photo figure here. The daily log's self-reported count (DailyLog.progress,
-            // not linked to media) read as a contradiction beside the tile below, so the Dashboard keeps
-            // ONE photo count: "Site photos on record", the photos the latest-photos list shows.
+            // no photo figure here: the daily log's self-reported count (DailyLog.progress, not linked
+            // to media) read as a contradiction beside the "Site photos on record" tile below
           ].map((s) => (
             <div key={s.l} style={{ textAlign: 'center' }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 22 }}>{s.v}</div>

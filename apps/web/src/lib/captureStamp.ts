@@ -116,6 +116,7 @@ const STAMP_DISPLAY_MAX = 64;
 
 /** A `takenAt` as it should be shown: bounded, and empty when there is nothing to show. */
 export function stampText(takenAt: string | null | undefined): string {
-  if (!takenAt) return '';
-  return takenAt.length > STAMP_DISPLAY_MAX ? `${takenAt.slice(0, STAMP_DISPLAY_MAX)}…` : takenAt;
+  const text = takenAt?.trim();
+  if (!text) return '';
+  return text.length > STAMP_DISPLAY_MAX ? `${text.slice(0, STAMP_DISPLAY_MAX)}…` : text;
 }

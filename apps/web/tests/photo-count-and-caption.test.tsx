@@ -53,14 +53,15 @@ describe('#482 QA 9: one photo count on the Dashboard', () => {
 });
 
 describe('#482 QA 8: no empty caption bar on Project Health photos', () => {
-  it('omits the caption when a photo has no capture time, and keeps it when it has one', async () => {
+  it('omits the caption when a photo has no capture time (or only spaces), and keeps it when it has one', async () => {
     await loadApiMode([
       { id: 'm1', url: 'http://api.test/m1.jpg', kind: 'progress' },
       { id: 'm2', url: 'http://api.test/m2.jpg', kind: 'progress', takenAt: '14 Oct 2026, 10:02' },
+      { id: 'm3', url: 'http://api.test/m3.jpg', kind: 'progress', takenAt: '   ' },
     ]);
     const { ClientHealthScreen } = await import('@/screens/ClientHealthScreen');
     const r = render(<ClientHealthScreen />);
-    expect(r.getAllByAltText(/^Site photo \d+$/)).toHaveLength(2);
+    expect(r.getAllByAltText(/^Site photo \d+$/)).toHaveLength(3);
     const captions = r.getAllByTestId('health-photo-caption');
     expect(captions).toHaveLength(1);
     expect(captions[0].textContent).toBe('14 Oct 2026, 10:02');
