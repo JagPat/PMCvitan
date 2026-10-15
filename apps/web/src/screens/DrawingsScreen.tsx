@@ -248,11 +248,13 @@ export function DrawingsScreen() {
   );
 }
 
-/** A role chip in the reader's language; a role with no label is shown as served. */
-const roleShort = (role: string, lang: Lang): string =>
-  role === 'worker'
-    ? { en: 'Worker', hi: 'कारीगर', gu: 'કારીગર' }[lang]
-    : (forYouRole as Record<string, Record<Lang, string>>)[role]?.[lang] ?? role;
+/** A role chip in the reader's language (the member roles' words are For You's); a role with no label is
+ *  shown as served. */
+const ROLE_SHORT: Record<string, Record<Lang, string>> = {
+  pmc: forYouRole.pmc, client: forYouRole.client, engineer: forYouRole.engineer, contractor: forYouRole.contractor,
+  consultant: forYouRole.consultant, architect: forYouRole.architect, worker: { en: 'Worker', hi: 'कारीगर', gu: 'કારીગર' },
+};
+const roleShort = (role: string, lang: Lang): string => ROLE_SHORT[role]?.[lang] ?? role;
 
 /** The build-acknowledgement block for the current revision (Slice 2). Contractor/
  *  engineer confirm they're building to it; the PMC/everyone sees who has. Reads
