@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { addCivilDays, civilDayStartInstant, toIsoCivilDate } from '../common/civil-date';
+import { civilDayStartInstant, toIsoCivilDate } from '../common/civil-date';
 import { ActivitiesQueryService } from '../activities/activities.query';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
@@ -128,18 +128,20 @@ export class SnapshotService {
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
     ]);
 
-    // #482 site photos: the log's photo count has ONE owner, the photos this project holds. It is every
-    // progress photo of the log's civil day (on the site's calendar), whoever added it, the same photos
-    // this viewer's photo layer may show. A count kept on the engineer's device never saw a photo another
-    // member added, and the stored column stays only for a log without a civil day (#916 review).
-    const logDay = dailyLogSlice.dailyLog?.logDate ?? null;
+    // #482 site photos: an unsent log's photo count has ONE owner, the photos this project holds: every
+    // progress photo from the start of the log's civil day (on the site's calendar), whoever added it, the
+    // same photos this viewer's photo layer may show. A count kept on the engineer's device never saw a photo
+    // another member added (#916 review). The log is open until it is sent, so a photo added while an
+    // earlier day's log is still unsent counts on it, as it did when the device counted. A SENT log shows
+    // the count it was sent with; a log without a civil day keeps the stored column.
+    const openLog = dailyLogSlice.dailyLog && !dailyLogSlice.dailyLog.submitted ? dailyLogSlice.dailyLog : null;
     const hidden = await hiddenNodes;
-    const dayPhotoCount = logDay
+    const dayPhotoCount = openLog?.logDate
       ? await this.prisma.media.count({
           where: {
             projectId,
             kind: 'progress',
-            createdAt: { gte: civilDayStartInstant(logDay, project.timeZone), lt: civilDayStartInstant(addCivilDays(logDay, 1), project.timeZone) },
+            createdAt: { gte: civilDayStartInstant(openLog.logDate, project.timeZone) },
             ...(hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {}),
           },
         })

@@ -3,7 +3,8 @@ import { loginTo, openProject } from './landing';
 
 /**
  * #669 — the engineer's Today flow over the REAL stack (Field Lab QA 2026-09-30 regression). The server
- * persists check-in, crew and the photo count only with the SEND; until then they are the client's. Every
+ * persists check-in and crew only with the SEND; until then they are the client's. The photo count of an
+ * unsent log is the server's, from the photos taken since its day began (#482). Every
  * other write on the way to Send — a material recorded, a progress photo uploaded — reconciles the store
  * from the server, and before this correction that reconcile REPLACED the log with the server's unsent
  * values: the engineer was back at "Check in", the crew back to the seed, and Today never reached Send.
@@ -14,7 +15,7 @@ import { loginTo, openProject } from './landing';
  * every api-e2e mode (snapshot + moduleQuery, legacy + outbox senders).
  *
  * Fixtures (scripts/test-api-e2e.sh seed): `test-eng@vitan.in` is an active engineer on `ambli`, whose
- * seeded log is UNSENT and not checked in, with 10 workers across five trades and 2 progress photos.
+ * seeded log is UNSENT and not checked in, with 10 workers across five trades and the seed's progress photo.
  */
 
 const API = 'http://localhost:3000';
@@ -48,6 +49,10 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   const seeded = await serverSnapshot(request, eng.token);
   expect(seeded.dailyLog, 'the seeded ambli log').toMatchObject({ checkedIn: false, submitted: false });
   const seededPhotos = seeded.dailyLog!.photos.length;
+  // #482: the unsent log counts the progress photos taken since its day began (the seed's), not a stored number
+  const seededCount = seeded.dailyLog!.progress;
+  expect(seededCount, 'the seed has a progress photo on the log').toBeGreaterThan(0);
+  const photosText = (n: number) => `${n} progress photos`;
 
   await page.goto('/');
   await signIn(page, ENG);
@@ -62,7 +67,7 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   // the seed's log carries an EARLIER civil date than the site's today, so Today names it as overdue
   await expect(page.getByTestId('today-overdue')).toBeVisible();
 
-  // 1. check in from Today. The seed's crew (10 workers) and photos (2) already count, so Send is what's left.
+  // 1. check in from Today. The seed's crew (10 workers) and photo already count, so Send is what's left.
   await page.getByTestId('today-action').click();
   await expect(page.getByTestId('today-step-checkIn')).toHaveAttribute('data-state', 'done');
   await expect(now).toHaveAttribute('data-action', 'send');
@@ -75,7 +80,7 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   await expect(page.getByTestId('crew-total')).toHaveText('10 workers');
   await page.getByRole('button', { name: 'Add Flooring mason' }).click();
   await expect(page.getByTestId('crew-total')).toHaveText('11 workers');
-  await expect(page.getByText('2 progress photos')).toBeVisible();
+  await expect(page.getByText(photosText(seededCount))).toBeVisible();
 
   await page.getByTestId('add-material').click();
   await page.getByTestId('mat-name').fill(MAT);
@@ -91,17 +96,17 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   // …and the screen kept the morning (the regression: "Check in" again, 10 workers)
   await expect(page.getByTestId('check-out')).toBeVisible();
   await expect(page.getByTestId('crew-total')).toHaveText('11 workers');
-  await expect(page.getByText('2 progress photos')).toBeVisible();
+  await expect(page.getByText(photosText(seededCount))).toBeVisible();
 
   // 3. a progress photo: the upload's own `changed` broadcast refreshes the snapshot from the server too
   await page.getByTestId('progress-file').setInputFiles({ name: 'site.jpg', mimeType: 'image/jpeg', buffer: JPEG });
-  await expect(page.getByText('3 progress photos')).toBeVisible();
+  await expect(page.getByText(photosText(seededCount + 1))).toBeVisible();
   await expect
     .poll(async () => (await serverSnapshot(request, eng.token)).dailyLog!.photos.length, { timeout: 10_000, message: 'the server holds the photo' })
     .toBe(seededPhotos + 1);
-  // the server's own count is still the seed's 2 (persisted only with the send) — the screen keeps 3
-  expect((await serverSnapshot(request, eng.token)).dailyLog).toMatchObject({ progress: 2, checkedIn: false });
-  await expect(page.getByText('3 progress photos')).toBeVisible();
+  // the server counts the new photo on the unsent log itself, so the refresh and the screen agree, once
+  expect((await serverSnapshot(request, eng.token)).dailyLog).toMatchObject({ progress: seededCount + 1, checkedIn: false });
+  await expect(page.getByText(photosText(seededCount + 1))).toBeVisible();
   await expect(page.getByTestId('crew-total')).toHaveText('11 workers');
   await expect(page.getByTestId('check-out')).toBeVisible();
 
@@ -112,7 +117,7 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   await openProject(page, 'Residence at Ambli');
   await expect(page.getByTestId('check-out')).toBeVisible();
   await expect(page.getByTestId('crew-total')).toHaveText('11 workers');
-  await expect(page.getByText('3 progress photos')).toBeVisible();
+  await expect(page.getByText(photosText(seededCount + 1))).toBeVisible();
   await page.getByRole('button', { name: 'For You' }).click();
   await expect(now).toHaveAttribute('data-action', 'send');
   await expect(page.getByTestId('today-step-checkIn')).toHaveAttribute('data-state', 'done');
@@ -121,12 +126,12 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   // 5. Send from Today — the fourth step, which the regression never let the engineer reach
   await page.getByTestId('today-action').click();
   // proven against the server: the send carried exactly the engineer's day — checked in, 11 workers
-  // (Flooring mason 3), 3 photos — and nothing was counted twice
+  // (Flooring mason 3), the seed's photos and the new one — and nothing was counted twice
   await expect
     .poll(async () => (await serverSnapshot(request, eng.token)).dailyLog?.submitted, { timeout: 10_000 })
     .toBe(true);
   const sent = (await serverSnapshot(request, eng.token)).dailyLog!;
-  expect(sent).toMatchObject({ submitted: true, checkedIn: true, progress: 3 });
+  expect(sent).toMatchObject({ submitted: true, checkedIn: true, progress: seededCount + 1 });
   expect(sent.crew.find((c) => c.trade === 'Flooring mason')?.count).toBe(3);
   expect(sent.crew.reduce((n, c) => n + c.count, 0)).toBe(11);
   // the log sent was an EARLIER day's, so once it is with PMC it is history: Today offers to start

@@ -60,14 +60,10 @@ export function sentOnEarlierDay(latest: Pick<DailyLog, 'submitted' | 'logDate'>
 
 /**
  * Photos taken for THIS log: the log's own `progress` count, and nothing else. The log's `photos`
- * list is the project's recent progress media — not linked to any log, and a second log can start
- * on the same civil day — so no date rule can say which log a photo belongs to, and it is never
- * counted. The server persists `progress` only with the send; until then the store's pending draft
- * (store/dailyLogDraft.ts, #669) carries the photos taken on this device for this log across every
- * reconcile and a reload, so the step reads as done where they were taken. Photos taken on ANOTHER
- * device for the same unsent log are not known here; that never withholds anything, because crew
- * and photos are suggestions and the card always offers Send for a checked-in log. Exact per-log
- * evidence needs the upload to carry its `dailyLogId` (an API change for a later unit).
+ * list is the project's recent progress media, not linked to any log, so it is never counted. For an
+ * unsent log the server composes `progress` from the progress photos taken since the log's civil day
+ * began, whoever took them (#482), so the step reads as done on every member's device alike; a sent
+ * log carries the count it was sent with.
  */
 function hasPhotoEvidence(log: DailyLog): boolean {
   return log.progress > 0;

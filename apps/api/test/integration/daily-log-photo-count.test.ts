@@ -5,14 +5,15 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
- * #482 site photos — the day's log photo count has one owner, the photos the project holds: every
- * progress photo of the log's civil day on the site's calendar, whoever added it. Before, the count was
- * a number the engineer's device kept and sent, so a photo another member added never reached it (#916
- * review). Proven through the real snapshot route against PostgreSQL.
+ * #482 site photos — an unsent log's photo count has one owner, the photos the project holds: every
+ * progress photo from the start of the log's civil day on the site's calendar, whoever added it. Before,
+ * the count was a number the engineer's device kept and sent, so a photo another member added never
+ * reached it (#916 review). A sent log shows the count it was sent with. Proven through the real snapshot
+ * route against PostgreSQL.
  *
- * Reproduce-first: on ee345e3 the snapshot serves the stored `progress` (7) in every probe below.
+ * Reproduce-first: on ee345e3 the snapshot serves the stored `progress` (7) in the unsent probes below.
  */
-describe('the day\'s log photo count is the day\'s photos (live PG)', () => {
+describe('an unsent log\'s photo count is the photos taken since its day began (live PG)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
   let pmc: string;
@@ -39,26 +40,27 @@ describe('the day\'s log photo count is the day\'s photos (live PG)', () => {
     await t?.close();
   });
 
-  it('counts the progress photos of the log\'s civil day, by the site\'s clock, from any member', async () => {
-    // 2 Jun in India runs from 1 Jun 18:30Z to 2 Jun 18:30Z
+  it('counts the progress photos from the start of the log\'s civil day, by the site\'s clock, from any member', async () => {
+    // 2 Jun in India begins at 1 Jun 18:30Z
     await photo('before', '2026-06-01T18:29:00Z'); // 1 Jun, 23:59 IST
     await photo('first', '2026-06-01T18:30:00Z'); // 2 Jun, 00:00 IST
     await photo('noon', '2026-06-02T06:30:00Z');
-    await photo('late', '2026-06-02T18:29:00Z'); // 2 Jun, 23:59 IST
-    await photo('after', '2026-06-02T18:30:00Z'); // 3 Jun, 00:00 IST
     await photo('inspection', '2026-06-02T06:30:00Z', 'inspection');
-    const snap = await snapshot();
-    expect(snap.dailyLog.progress).toBe(3);
+    expect((await snapshot()).dailyLog.progress).toBe(2);
   });
 
-  it('keeps counting after the log is sent: a photo added later that day is still on the day\'s record', async () => {
+  it('keeps counting while the log is unsent: a photo taken the next day, before it is sent, is on it', async () => {
+    await photo('next-day', '2026-06-03T04:00:00Z');
+    expect((await snapshot()).dailyLog.progress).toBe(3);
+  });
+
+  it('shows a sent log\'s count as it was sent', async () => {
     await t.prisma.dailyLog.update({ where: { id: logId() }, data: { submitted: true } });
-    await photo('after-send', '2026-06-02T12:00:00Z');
-    expect((await snapshot()).dailyLog.progress).toBe(4);
+    expect((await snapshot()).dailyLog.progress).toBe(7);
   });
 
   it('keeps the stored count for a log with no civil day, which no window can be drawn for', async () => {
-    await t.prisma.dailyLog.update({ where: { id: logId() }, data: { logDate: null } });
+    await t.prisma.dailyLog.update({ where: { id: logId() }, data: { submitted: false, logDate: null } });
     expect((await snapshot()).dailyLog.progress).toBe(7);
   });
 });

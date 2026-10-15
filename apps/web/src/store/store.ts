@@ -5473,8 +5473,9 @@ export const useStore = create<Store>()(
               // its count, read from the photos the server holds, already includes it
               if (!s.dailyLog || s.dailyLog.photos.some((p) => p.id === res.id)) return;
               s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
-              // until the next refresh: the photo is on today's record, so only today's log counts it
-              if (!s.dailyLog.logDate || s.dailyLog.logDate === todayCivil(s.timeZone)) s.dailyLog.progress += 1;
+              // until the next refresh: an unsent log counts the photos taken since its day began, as the server
+              // does; a sent log shows the count it was sent with
+              if (!s.dailyLog.submitted) s.dailyLog.progress += 1;
             });
             // say what the photo actually carried, not what the feature is called
             get().flash(
