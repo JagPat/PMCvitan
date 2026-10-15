@@ -59,8 +59,9 @@ export function SiteVisitsScreen() {
   return (
     <div className={styles.screen}>
       <Header lang={lang} />
-      {/* only once the open visits are read: until then the viewer's own open visit is not known */}
-      {can('siteVisit.start', role) && sv.load === 'ready' && !mineOpen && (
+      {/* once the open visits are read, or the read failed (no signal): a start queued then, while the viewer
+          already had a visit open, is moved onto that visit when the server refuses it (F53, Codex 4278908034) */}
+      {can('siteVisit.start', role) && sv.load !== 'loading' && !mineOpen && (
         <section className={styles.card} aria-label={SV.start[lang]}>
           <label className={styles.label} htmlFor="sv-start-place">{SV.startPlace[lang]}</label>
           <select id="sv-start-place" className={styles.field} value={startNode} onChange={(e) => setStartNode(e.target.value)}>

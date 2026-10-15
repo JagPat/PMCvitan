@@ -389,13 +389,14 @@ describe('Site Visits screen', () => {
     expect(card.textContent).not.toContain('Could not load the team.');
     expect(within(within(card).getByLabelText('Choose a team member')).getByText(/Ramesh Patel/)).toBeTruthy();
   });
-  it('offers Start only once the open visits are known (Codex 4275589690)', async () => {
+  it('offers Start once the open visits are read or the read has failed, not while it is out (Codex 4275589690, 4278908034)', async () => {
     const listSiteVisits = vi.fn(() => new Promise<SiteVisit[]>(() => {}));
     await mount('pmc', PMC, fakeGateway([], { listSiteVisits }));
     expect(screen.queryByTestId('sv-start')).toBeNull();
     cleanup();
+    // a failed read (no signal) still lets the visitor start: a start refused for an open visit is moved onto it (F53)
     await mount('pmc', PMC, fakeGateway([], { listSiteVisits: vi.fn().mockRejectedValue(new Error('network')) }));
-    expect(screen.queryByTestId('sv-start')).toBeNull();
+    expect(screen.getByTestId('sv-start')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 
@@ -507,6 +508,19 @@ describe('Site Visits screen', () => {
     expect(useStore.getState().outbox).toHaveLength(0);
     expect(screen.getByRole('status').textContent).toContain('You already had a visit open');
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+    it('offers Start when the first read fails for want of signal, and queues it (Codex 4278908034)', async () => {
+    const startSiteVisit = signal((body: { id: string }) => own({ id: body.id }));
+    const gw = fakeGateway([], { startSiteVisit, listSiteVisits: signal((): SiteVisit[] => []) });
+    await mount('pmc', PMC, gw);
+    expect(screen.getByText(/could not/i)).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
+    const id = startSiteVisit.mock.calls[0][0].id;
+    expect(screen.getByTestId(`sv-visit-${id}`).textContent).toContain('waiting to send');
+    // the queued visit is the viewer's own open visit: no second start
+    expect(screen.queryByTestId('sv-start')).toBeNull();
+    expect(useStore.getState().outbox.map((o) => o.t)).toEqual(['siteVisitStart']);
   });
 
     it('keeps a start refused for an open visit that is gone by the lookup, and sends it again with its acts (Codex 4278681348)', async () => {
@@ -654,7 +668,6 @@ describe('Site Visits screen', () => {
     await mount('pmc', PMC, fakeGateway([], { listSiteVisits }));
     await act(async () => { refreshSiteVisits(); });
     await act(async () => { first(); });
-    expect(screen.queryByTestId('sv-start')).toBeNull();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 });

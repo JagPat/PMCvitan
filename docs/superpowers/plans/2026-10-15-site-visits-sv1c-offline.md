@@ -29,7 +29,9 @@ word is in English, Hindi and Gujarati.
    visit, and the screen says so. If that read fails, or finds no open visit (another device ended it after the
    refusal), the start and its acts wait for the next send, under the same key: the refused start changed
    nothing, so it can go again. Answers to the moved acts are shown on the open visit even before a read lists
-   it. Any other
+   it. Start is offered once the open visits are read or that read has failed: with no signal the viewer's own
+   open visit is not known, and a start queued then over an open visit is moved onto it by this rule (this
+   replaces SV1-c unit 1's "only once the open visits are known", which had no queue behind it). Any other
    refused start takes its queued acts with it, and the screen gives the server's reason once. The starting place
    and location of a refused start are not carried over: the open visit already has its own.
 4. **Shown at once, from the queue.** Until an act is answered, the screen applies the queued acts in order on top
