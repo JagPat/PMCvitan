@@ -56,16 +56,24 @@ export const SV = {
   retry: { en: 'Try again', hi: 'फिर कोशिश करें', gu: 'ફરી પ્રયત્ન કરો' },
   older: { en: 'Show older visits', hi: 'पुरानी विज़िट दिखाएँ', gu: 'જૂની મુલાકાતો બતાવો' },
   needsServer: { en: 'Site visits need the server.', hi: 'साइट विज़िट के लिए सर्वर चाहिए।', gu: 'સાઇટ મુલાકાત માટે સર્વર જોઈએ.' },
-  offline: {
-    en: 'No signal, so this is not confirmed. Try again when you are online; it is saved only once.',
-    hi: 'नेटवर्क नहीं है, इसलिए यह पक्का नहीं हुआ। ऑनलाइन होने पर फिर कोशिश करें; यह एक ही बार सहेजा जाएगा।',
-    gu: 'નેટવર્ક નથી, તેથી આ પાકું થયું નથી. ઓનલાઇન થાઓ ત્યારે ફરી પ્રયત્ન કરો; તે એક જ વાર સચવાશે.',
+  queued: {
+    en: 'No signal: saved on this phone. It is sent when you are back online.',
+    hi: 'नेटवर्क नहीं: इस फ़ोन पर सहेजा गया। ऑनलाइन होने पर भेजा जाएगा।',
+    gu: 'નેટવર્ક નથી: આ ફોન પર સાચવ્યું. ઓનલાઇન થશો ત્યારે મોકલાશે.',
   },
-  unconfirmed: {
-    en: 'The server did not confirm this. Try again; it is saved only once.',
-    hi: 'सर्वर ने इसकी पुष्टि नहीं की। फिर कोशिश करें; यह एक ही बार सहेजा जाएगा।',
-    gu: 'સર્વરે આની પુષ્ટિ કરી નથી. ફરી પ્રયત્ન કરો; તે એક જ વાર સચવાશે.',
+  waiting: { en: 'waiting to send', hi: 'भेजना बाकी', gu: 'મોકલવાનું બાકી' },
+  waitingCount: {
+    en: 'Changes waiting to send:',
+    hi: 'भेजने के लिए बाकी बदलाव:',
+    gu: 'મોકલવાના બાકી ફેરફારો:',
   },
+  sendNow: { en: 'Send now', hi: 'अभी भेजें', gu: 'હમણાં મોકલો' },
+  moved: {
+    en: 'You already had a visit open, so the places, people and end from the visit started without signal were put on it.',
+    hi: 'आपकी एक विज़िट पहले से खुली थी, इसलिए बिना नेटवर्क शुरू की गई विज़िट की जगहें, लोग और ख़त्म करना उसी में जोड़े गए।',
+    gu: 'તમારી એક મુલાકાત પહેલેથી ખુલ્લી હતી, તેથી નેટવર્ક વગર શરૂ કરેલી મુલાકાતની જગ્યાઓ, લોકો અને પૂરી કરવાનું તેમાં ઉમેર્યું.',
+  },
+  adjusted: { en: 'time set by the server', hi: 'समय सर्वर ने रखा', gu: 'સમય સર્વરે રાખ્યો' },
   refused: { en: 'This was not saved.', hi: 'यह सहेजा नहीं गया।', gu: 'આ સચવાયું નથી.' },
 } satisfies Record<string, Words>;
 

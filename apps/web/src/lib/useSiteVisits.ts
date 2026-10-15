@@ -1,32 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import type { Lang } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { isCurrentProjectScope, projectScopeOf, type ProjectScope } from '@/store/projectScope';
-import { isTerminalOutboxError, newIdempotencyKey, type ApiGateway, type SiteVisit, type SiteVisitAttendeeBody, type StartSiteVisitBody } from '@/data/apiGateway';
+import {
+  isSiteVisitOp, newIdempotencyKey, siteVisitListeners, siteVisitOf,
+  type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
+} from '@/data/apiGateway';
 import { SV } from './siteVisitWords';
 
 /**
  * Site Visits SV1-c (#792, QA item 6): the screen's own state. The visits are read a page at a time from the
  * server, with every open visit beside them, and every page already shown is read again when the server says the
- * project changed; every act answers with the whole visit, which replaces the row shown. A read that an act or a
- * later read has overtaken is dropped, so an older answer never puts back a state already replaced (one overtaken
- * only by an act is sent again). Online only in this unit: an act sent with no signal is not queued and says so
- * (the offline queue is unit 2).
+ * project changed. A read that an act's answer or a later read has overtaken is dropped, so an older answer never
+ * puts back a state already replaced (one overtaken only by an answer is sent again).
  *
- * An ACT keeps its idempotency key, the id it minted and the body it first sent until it settles (a success or a
- * definite refusal), so pressing the button again after a lost answer or a passing fault is the same act and the
- * server runs it once; a read that shows the row the act minted settles it too, so the same press later is a new
- * act. A reply for a project the viewer has left is dropped, and a start whose location wait outlives the project or
- * sign-in it was pressed in is never sent.
+ * Unit 2 (F53): every ACT goes into the store's durable outbox first, with its idempotency key, the id it minted
+ * and the exact body, and is sent from there (as the Daily Log's acts are). So an act made with no signal is kept,
+ * even across a reload, and sent when the screen next hears the server (a realtime ping or reconnect, the browser
+ * coming online, the next act, or Send now); a lost answer or a passing fault keeps it for the next try under the
+ * same key, so the server runs it once; acts reach the server in the order made, so a remove follows its add. Until
+ * an act is answered the screen shows it on top of what the server last read, marked as waiting. A start whose
+ * location wait outlives the project or sign-in it was pressed in is never queued.
  */
 export const VISIT_PAGE = 20;
 /** The open visits read per request: the server's page ceiling. The open read follows its cursor to the end. */
 const OPEN_LIMIT = 200;
 
 type Load = 'loading' | 'ready' | 'error';
-/** An unsettled act: its key, the id minted for its row, and the exact body first sent, resent unchanged on a retry
- *  (the server keys an act on its whole body, so a fresh time or location would be a different act). */
-interface Pending { key: string; rowId: string; body?: unknown }
 
 /** A version 4 UUID, as the server requires of every row id, from whatever randomness the browser has. */
 export function uuidV4(): string {
@@ -41,10 +42,18 @@ export function uuidV4(): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
-/** The screens on show, told when the server says the project changed (the realtime ping `useApiSync` hears). */
+/** Send the queued site-visit acts, if there are any. */
+function sendQueued(): void {
+  const s = useStore.getState();
+  if (s.outbox.some(isSiteVisitOp)) void s.flushOutbox();
+}
+
+/** The screens on show, told when the server says the project changed (the realtime ping `useApiSync` hears, which
+ *  also comes on every reconnect): each reads again, and any acts still queued are sent. */
 const listeners = new Set<() => void>();
 export function refreshSiteVisits(): void {
   for (const l of listeners) l();
+  if (listeners.size > 0) sendQueued();
 }
 
 /** How long a start waits for the phone's position before it goes without one. */
@@ -71,19 +80,9 @@ function deviceLocation(): Promise<{ lat: number; lng: number; accuracyM: number
   });
 }
 
-function statusOf(err: unknown): number | undefined {
-  const s = (err as { status?: unknown } | null)?.status;
-  return typeof s === 'number' ? s : undefined;
-}
-
-/** What a failed act tells the viewer: the server's own reason for a refusal in English (its gist in Hindi and
- *  Gujarati); for an answer that never came or a passing server fault, that the act is not confirmed yet. */
-function failureText(err: unknown, lang: Lang): string {
-  const status = statusOf(err);
-  if (status === undefined) return SV.offline[lang];
-  if (!isTerminalOutboxError(err)) return SV.unconfirmed[lang];
-  const said = (err as { serverMessage?: unknown }).serverMessage;
-  return lang === 'en' && typeof said === 'string' && said ? `${SV.refused.en} ${said}` : SV.refused[lang];
+/** What a refusal tells the viewer: the server's own reason in English (its gist in Hindi and Gujarati). */
+function refusedText(message: string | null, lang: Lang): string {
+  return lang === 'en' && message ? `${SV.refused.en} ${message}` : SV.refused[lang];
 }
 
 /** The visits as shown: those still open first, then newest start first. */
@@ -109,26 +108,84 @@ async function readPages(
   }
 }
 
-/** The ids of every row in these visits: the visits, their places and their people. */
-function rowIds(list: SiteVisit[]): Set<string> {
-  const ids = new Set<string>();
-  for (const v of list) {
-    ids.add(v.id);
-    for (const p of v.places) ids.add(p.id);
-    for (const a of v.attendees) ids.add(a.id);
-  }
-  return ids;
-}
-
 /** `old` with every row in `fresh` put in its place (the fresher read wins). */
 function merged(old: SiteVisit[], fresh: SiteVisit[]): SiteVisit[] {
   const ids = new Set(fresh.map((v) => v.id));
   return [...fresh, ...old.filter((v) => !ids.has(v.id))];
 }
 
+/** The visits as they will be once the queued acts are sent: each act, in the order made, applied on top of the
+ *  rows the server last read (an act already applied there changes nothing), and the ids of what is still waiting
+ *  (a visit for a start, end or close; a place or person for an add or remove). */
+export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | null): { visits: SiteVisit[]; waiting: Set<string> } {
+  const byId = new Map(rows.map((v) => [v.id, v]));
+  const waiting = new Set<string>();
+  const at = new Date().toISOString();
+  for (const op of ops) {
+    const id = siteVisitOf(op);
+    if (op.t === 'siteVisitStart') {
+      waiting.add(id);
+      if (byId.has(id)) continue;
+      const { body, visitor } = op;
+      byId.set(id, {
+        id, visitorId: me ?? '', visitorName: visitor.name, visitorRole: visitor.role, status: 'open',
+        startedAt: body.claimedAt, startTimeAdjusted: false,
+        startPlace: body.nodeId ? { nodeId: body.nodeId, name: visitor.placeName ?? '' } : null,
+        location: body.location ? { kind: 'device', ...body.location, approximate: false } : { kind: 'none' },
+        endedAt: null, endTimeAdjusted: null, closedAt: null, closedById: null, closeReason: null,
+        lateEndedAt: null, lateEndTimeAdjusted: null, places: [], attendees: [],
+      });
+      continue;
+    }
+    const v = byId.get(id);
+    if (!v) continue;
+    switch (op.t) {
+      case 'siteVisitEnd':
+        waiting.add(id);
+        if (v.status === 'open') byId.set(id, { ...v, status: 'ended', endedAt: op.claimedAt, endTimeAdjusted: false });
+        else if (v.status === 'closed' && v.lateEndedAt === null) byId.set(id, { ...v, lateEndedAt: op.claimedAt, lateEndTimeAdjusted: false });
+        break;
+      case 'siteVisitClose':
+        waiting.add(id);
+        if (v.status === 'open') byId.set(id, { ...v, status: 'closed', closeReason: op.reason });
+        break;
+      case 'siteVisitAddPlace':
+        waiting.add(op.body.id);
+        if (!v.places.some((p) => p.id === op.body.id)) {
+          byId.set(id, { ...v, places: [...v.places, {
+            id: op.body.id, nodeId: op.body.nodeId, name: op.name, addedAt: op.body.claimedAt,
+            addedTimeAdjusted: false, addedAfterEnd: false, retiredAt: null,
+          }] });
+        }
+        break;
+      case 'siteVisitRetirePlace':
+        waiting.add(op.placeId);
+        byId.set(id, { ...v, places: v.places.map((p) => (p.id === op.placeId && !p.retiredAt ? { ...p, retiredAt: at } : p)) });
+        break;
+      case 'siteVisitAddAttendee': {
+        const body = op.body;
+        waiting.add(body.id);
+        if (!v.attendees.some((a) => a.id === body.id)) {
+          byId.set(id, { ...v, attendees: [...v.attendees, 'guestName' in body
+            ? { id: body.id, kind: 'guest', userId: null, role: null, name: body.guestName, addedAt: at, retiredAt: null }
+            : { id: body.id, kind: 'member', userId: body.userId, role: body.role, name: op.name, addedAt: at, retiredAt: null }] });
+        }
+        break;
+      }
+      case 'siteVisitRetireAttendee':
+        waiting.add(op.attendeeId);
+        byId.set(id, { ...v, attendees: v.attendees.map((a) => (a.id === op.attendeeId && !a.retiredAt ? { ...a, retiredAt: at } : a)) });
+        break;
+    }
+  }
+  return { visits: ordered([...byId.values()]), waiting };
+}
+
 export function useSiteVisits() {
   const projectId = useStore((s) => s.activeProjectId);
   const generation = useStore((s) => s.projectScopeGeneration);
+  const me = useStore((s) => s.sessionUserId);
+  const queued = useStore(useShallow((s) => s.outbox.filter(isSiteVisitOp)));
   const [rows, setRows] = useState<SiteVisit[]>([]);
   // the last visit of the newest-first pages read so far; older pages continue from it, and a refresh reads to it
   const cursor = useRef<string | undefined>(undefined);
@@ -136,13 +193,18 @@ export function useSiteVisits() {
   const turn = useRef(0);
   // the turn of the last read sent
   const lastRead = useRef(0);
+  // whether a read has answered since the screen last started over
+  const answered = useRef(false);
   // bumped on every ping from the server, so the screen can read its own lists again too
   const [pings, setPings] = useState(0);
   const [load, setLoad] = useState<Load>('loading');
   const [hasMore, setHasMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const pending = useRef(new Map<string, Pending>());
+  const [notice, setNotice] = useState<string | null>(null);
+  // the rows and queued acts as last rendered, for the outbox's answers: an answer replaces only a visit this screen
+  // shows or is waiting to start, so one that lands after a project switch or a new sign-in is not shown there
+  const known = useRef(new Set<string>());
 
   const live = (scope: ProjectScope): boolean => {
     const s = useStore.getState();
@@ -159,7 +221,7 @@ export function useSiteVisits() {
     const scope = projectScopeOf(useStore.getState());
     const mine = (turn.current += 1);
     lastRead.current = mine;
-    if (fresh) setLoad('loading');
+    if (fresh) { answered.current = false; setLoad('loading'); }
     // the first page alone when starting over; otherwise down to the page holding the last visit shown
     const upTo = fresh ? undefined : cursor.current;
     Promise.all([
@@ -169,7 +231,7 @@ export function useSiteVisits() {
       .then(([shown, open]) => {
         if (!live(scope)) return;
         if (mine !== turn.current) {
-          // overtaken by an act alone: what else changed is still unread, so read again after it
+          // overtaken by an answer alone: what else changed is still unread, so read again after it
           if (lastRead.current === mine) readHead(fresh);
           return;
         }
@@ -180,11 +242,11 @@ export function useSiteVisits() {
           cursor.current = last?.id;
           setHasMore(!shown.ended);
         }
-        const confirmed = rowIds(read);
-        for (const [bound, held] of pending.current) if (confirmed.has(held.rowId)) pending.current.delete(bound);
+        answered.current = true;
         setLoad('ready');
       })
-      .catch(() => { if (live(scope) && fresh && mine === turn.current) setLoad('error'); });
+      // the latest read failed before any read answered (an overtaken first read included): offer Try again
+      .catch(() => { if (live(scope) && mine === lastRead.current && !answered.current) setLoad('error'); });
   }, []);
 
   const readOlder = useCallback((before: string) => {
@@ -201,86 +263,96 @@ export function useSiteVisits() {
       .catch(() => {});
   }, []);
 
-  // a new project, or a new sign-in on it, starts from its own first page
+  // a new project, or a new sign-in on it, starts from its own first page, and sends what it has queued
   useEffect(() => {
-    pending.current.clear();
     setRows([]);
     cursor.current = undefined;
     setBusy(false);
     setError(null);
+    setNotice(null);
     readHead(true);
+    sendQueued();
   }, [projectId, generation, readHead]);
 
-  // another device started, changed, ended or closed a visit
+  // another device started, changed, ended or closed a visit; and what the outbox says about the acts it sent
   useEffect(() => {
-    const listener = () => { readHead(false); setPings((n) => n + 1); };
-    listeners.add(listener);
-    return () => { listeners.delete(listener); };
+    const ping = () => { readHead(false); setPings((n) => n + 1); };
+    listeners.add(ping);
+    const told = (e: SiteVisitEvent) => {
+      if (e.project !== useStore.getState().activeProjectId) return;
+      const lang = useStore.getState().lang;
+      if (e.kind === 'answer') {
+        if (!known.current.has(e.visit.id)) return;
+        turn.current += 1;
+        setRows((old) => merged(old, [e.visit]));
+      } else if (e.kind === 'refused') {
+        setError(refusedText(e.message, lang));
+        readHead(false);
+      } else {
+        setNotice(SV.moved[lang]);
+        readHead(false);
+      }
+    };
+    siteVisitListeners.add(told);
+    // the browser says the network is back
+    const online = () => sendQueued();
+    globalThis.addEventListener?.('online', online);
+    return () => {
+      listeners.delete(ping);
+      siteVisitListeners.delete(told);
+      globalThis.removeEventListener?.('online', online);
+    };
   }, [readHead]);
 
-  /** Send one act. `signature` names the act (the same press again is the same act); `build` makes its body once,
-   *  from the row id minted for it, and `send` sends that body under the act's key. */
-  const act = useCallback(async <B,>(
-    signature: string,
-    build: (rowId: string) => B | Promise<B>,
-    send: (gw: ApiGateway, key: string, body: B) => Promise<SiteVisit>,
-  ): Promise<boolean> => {
+  /** Queue one act. `make` builds it once, under a fresh key; it is queued only if the viewer is still on the
+   *  project and sign-in it was pressed in (a start waits for the phone's location first). */
+  const act = useCallback(async (make: (key: string) => OutboxOp | Promise<OutboxOp>): Promise<boolean> => {
     const state = useStore.getState();
-    const gw = state.serverGateway();
-    if (!gw) { setError(SV.needsServer[state.lang]); return false; }
+    if (!state.serverGateway()) { setError(SV.needsServer[state.lang]); return false; }
     const scope = projectScopeOf(state);
-    const bound = `${scope.projectId}:${scope.generation}:${signature}`;
-    const held = pending.current.get(bound) ?? { key: newIdempotencyKey(), rowId: uuidV4() };
-    pending.current.set(bound, held);
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      if (held.body === undefined) held.body = await build(held.rowId);
-      // the viewer may have left the project, or signed out, while the body was made (the start's location wait)
+      const op = await make(newIdempotencyKey());
       if (!live(scope)) return false;
-      const visit = await send(gw, held.key, held.body as B);
-      pending.current.delete(bound);
-      if (!live(scope)) return false;
-      turn.current += 1;
-      setRows((old) => merged(old, [visit]));
-      return true;
-    } catch (err) {
-      // a definite refusal settles the act; an answer that never came, or a passing fault, keeps its key and body
-      if (isTerminalOutboxError(err)) pending.current.delete(bound);
-      if (live(scope)) setError(failureText(err, useStore.getState().lang));
-      return false;
+      return useStore.getState().queueSiteVisitAct(op, SV.queued[useStore.getState().lang]);
     } finally {
       if (live(scope)) setBusy(false);
     }
   }, []);
 
   const now = () => new Date().toISOString();
-  const visits = useMemo(() => ordered(rows), [rows]);
+  const shown = useMemo(() => withQueued(rows, queued, me), [rows, queued, me]);
+  known.current = new Set(shown.visits.map((v) => v.id));
 
   return {
-    visits, load, hasMore, busy, error, pings,
+    visits: shown.visits, waiting: shown.waiting, queued: queued.length, load, hasMore, busy, error, notice, pings,
     retry: () => readHead(true),
+    sendNow: sendQueued,
     more: () => { if (cursor.current) readOlder(cursor.current); },
-    start: (nodeId: string | null) => act(`start:${nodeId ?? ''}`,
-      async (id): Promise<StartSiteVisitBody> => {
-        const location = await deviceLocation();
-        return { id, claimedAt: now(), ...(nodeId ? { nodeId } : {}), ...(location ? { location } : {}) };
-      },
-      (gw, key, body) => gw.startSiteVisit(body, key)),
-    end: (visitId: string) => act(`end:${visitId}`, () => now(), (gw, key, claimedAt) => gw.endSiteVisit(visitId, claimedAt, key)),
-    close: (visitId: string, reason: string) => act(`close:${visitId}:${reason}`, () => reason, (gw, key, r) => gw.closeSiteVisit(visitId, r, key)),
-    addPlace: (visitId: string, nodeId: string) => act(`place:${visitId}:${nodeId}`,
-      (id) => ({ id, nodeId, claimedAt: now() }),
-      (gw, key, body) => gw.addSiteVisitPlace(visitId, body, key)),
-    retirePlace: (visitId: string, placeId: string) =>
-      act(`retire-place:${visitId}:${placeId}`, () => placeId, (gw, key, id) => gw.retireSiteVisitPlace(visitId, id, key)),
-    addMember: (visitId: string, userId: string, role: string) => act(`member:${visitId}:${userId}:${role}`,
-      (id): SiteVisitAttendeeBody => ({ id, userId, role }),
-      (gw, key, body) => gw.addSiteVisitAttendee(visitId, body, key)),
-    addGuest: (visitId: string, guestName: string) => act(`guest:${visitId}:${guestName}`,
-      (id): SiteVisitAttendeeBody => ({ id, guestName }),
-      (gw, key, body) => gw.addSiteVisitAttendee(visitId, body, key)),
+    start: (nodeId: string | null, placeName: string | null) => act(async (idempotencyKey): Promise<OutboxOp> => {
+      const location = await deviceLocation();
+      const s = useStore.getState();
+      return {
+        t: 'siteVisitStart', idempotencyKey,
+        body: { id: uuidV4(), claimedAt: now(), ...(nodeId ? { nodeId } : {}), ...(location ? { location } : {}) },
+        visitor: { name: s.userName ?? '', role: s.role, placeName },
+      };
+    }),
+    end: (visitId: string) => act((idempotencyKey) => ({ t: 'siteVisitEnd', visitId, claimedAt: now(), idempotencyKey })),
+    close: (visitId: string, reason: string) => act((idempotencyKey) => ({ t: 'siteVisitClose', visitId, reason, idempotencyKey })),
+    addPlace: (visitId: string, nodeId: string, name: string) => act((idempotencyKey) => ({
+      t: 'siteVisitAddPlace', visitId, body: { id: uuidV4(), nodeId, claimedAt: now() }, name, idempotencyKey,
+    })),
+    retirePlace: (visitId: string, placeId: string) => act((idempotencyKey) => ({ t: 'siteVisitRetirePlace', visitId, placeId, idempotencyKey })),
+    addMember: (visitId: string, userId: string, role: string, name: string) => act((idempotencyKey) => ({
+      t: 'siteVisitAddAttendee', visitId, body: { id: uuidV4(), userId, role } satisfies SiteVisitAttendeeBody, name, idempotencyKey,
+    })),
+    addGuest: (visitId: string, guestName: string) => act((idempotencyKey) => ({
+      t: 'siteVisitAddAttendee', visitId, body: { id: uuidV4(), guestName } satisfies SiteVisitAttendeeBody, name: guestName, idempotencyKey,
+    })),
     retireAttendee: (visitId: string, attendeeId: string) =>
-      act(`retire-person:${visitId}:${attendeeId}`, () => attendeeId, (gw, key, id) => gw.retireSiteVisitAttendee(visitId, id, key)),
+      act((idempotencyKey) => ({ t: 'siteVisitRetireAttendee', visitId, attendeeId, idempotencyKey })),
   };
 }
