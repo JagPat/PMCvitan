@@ -2,12 +2,14 @@ import type { CSSProperties } from 'react';
 import {
   activityChip,
   activityLabel,
+  activityStatusLabels,
   decisionChip,
   decisionChipLabel,
   resultChip,
   type ActivityStatus,
   type DecisionStatus,
   type InspectionResult,
+  type Lang,
 } from '@vitan/shared';
 
 const base: CSSProperties = {
@@ -31,11 +33,12 @@ export function DecisionChip({ status, style }: { status: DecisionStatus; style?
   );
 }
 
-export function ActivityChip({ status }: { status: ActivityStatus }) {
+/** `lang` is the caller's (English when not given, the chip's long-standing words). */
+export function ActivityChip({ status, lang = 'en' }: { status: ActivityStatus; lang?: Lang }) {
   const c = activityChip[status];
   return (
     <span style={{ ...base, fontSize: 8.5, padding: '2px 7px', background: c.bg, color: c.color, border: `1px solid ${c.border}` }}>
-      {activityLabel[status]}
+      {lang === 'en' ? activityLabel[status] : activityStatusLabels[status][lang]}
     </span>
   );
 }

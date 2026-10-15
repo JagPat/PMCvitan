@@ -1,6 +1,8 @@
 import { useId, type ReactNode } from 'react';
 import { Modal } from './Modal';
 import { Button } from './Button';
+import { confirmDialogLabels } from '@vitan/shared';
+import { useStore } from '@/store/store';
 
 /**
  * Audit B4 — the one confirmation every destructive action goes through: it names the thing,
@@ -25,6 +27,7 @@ export function ConfirmDialog({
   testId?: string;
 }) {
   const titleId = useId();
+  const lang = useStore((s) => s.lang);
   return (
     <Modal onClose={onCancel} maxWidth={400} labelledBy={titleId}>
       <div style={{ padding: '18px 20px' }} data-testid={testId}>
@@ -33,7 +36,7 @@ export function ConfirmDialog({
         {blocked && <div style={{ fontSize: 13, color: 'var(--red-solid)', marginTop: 10, lineHeight: 1.5 }} data-testid={`${testId}-blocked`}>{blocked}</div>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
           <Button variant="outline" onClick={onCancel} data-testid={`${testId}-cancel`} style={{ padding: '10px 16px' }}>
-            {blocked ? 'Close' : 'Cancel'}
+            {blocked ? confirmDialogLabels.close[lang] : confirmDialogLabels.cancel[lang]}
           </Button>
           {!blocked && (
             <Button variant="danger" onClick={() => { onConfirm(); onCancel(); }} data-testid={`${testId}-confirm`} style={{ padding: '10px 16px' }}>

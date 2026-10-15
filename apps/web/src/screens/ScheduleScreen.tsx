@@ -5,7 +5,7 @@ import { gatesFor, activityReady, activitiesSettledForLinks, scheduleStatusCount
 import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext, EditState, ConfirmDialog, ItemNotFound, DatePicker, inclusiveDays } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
-import { gateColor, can, diffCivilDays, addCivilDays, type Activity, type Phase, type Gate } from '@vitan/shared';
+import { gateColor, can, diffCivilDays, addCivilDays, scheduleLabels as L, scheduleText as T, phaseCountLabels, gateNames, gateLineIn, gateReasonIn, overrideGateNames, gateValueNames, servedDayIn, type Activity, type Phase, type Gate, type Lang } from '@vitan/shared';
 import { todayCivil } from '@/lib/civilDate';
 import type { AppState } from '@/store/store';
 import { activitiesReadMode, type NewActivityInput } from '@/data/apiGateway';
@@ -17,24 +17,25 @@ import styles from './responsive.module.css';
 function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
   const startActivity = useStore((s) => s.startActivity);
   const completeActivity = useStore((s) => s.completeActivity);
+  const lang = useStore((s) => s.lang);
 
   if (a.status === 'done') {
-    return <Button variant="light" disabled style={{ opacity: 0.5, background: '#EAE5DA', color: 'var(--muted)', border: '1px solid rgba(35,33,28,.12)', fontSize: 12.5, padding: '9px 14px' }}>Completed</Button>;
+    return <Button variant="light" disabled style={{ opacity: 0.5, background: '#EAE5DA', color: 'var(--muted)', border: '1px solid rgba(35,33,28,.12)', fontSize: 12.5, padding: '9px 14px' }}>{L.completed[lang]}</Button>;
   }
   if (a.status === 'blocked') {
-    return <Button variant="dangerOutline" disabled style={{ background: '#fff', fontSize: 12.5, padding: '9px 14px' }}>Blocked</Button>;
+    return <Button variant="dangerOutline" disabled style={{ background: '#fff', fontSize: 12.5, padding: '9px 14px' }}>{L.blockedButton[lang]}</Button>;
   }
   if (a.status === 'awaiting-signoff') {
     // the claim is with the PMC — only their closing-inspection approval makes it done
-    return <Button variant="light" disabled style={{ background: '#E6ECF3', color: '#31567F', border: '1px solid #C4D3E4', fontSize: 12.5, padding: '9px 14px' }}>Awaiting sign-off</Button>;
+    return <Button variant="light" disabled style={{ background: '#E6ECF3', color: '#31567F', border: '1px solid #C4D3E4', fontSize: 12.5, padding: '9px 14px' }}>{L.awaitingSignoff[lang]}</Button>;
   }
   if (a.status === 'in-progress') {
-    return <Button variant="success" onClick={() => completeActivity(a.id)} style={{ fontSize: 12.5, padding: '9px 14px' }}>Mark complete</Button>;
+    return <Button variant="success" onClick={() => completeActivity(a.id)} style={{ fontSize: 12.5, padding: '9px 14px' }}>{L.markComplete[lang]}</Button>;
   }
   if (ready) {
-    return <Button variant="ink" onClick={() => startActivity(a.id)} data-testid={`start-${a.id}`} style={{ fontSize: 12.5, padding: '9px 14px' }}>Start activity</Button>;
+    return <Button variant="ink" onClick={() => startActivity(a.id)} data-testid={`start-${a.id}`} style={{ fontSize: 12.5, padding: '9px 14px' }}>{L.startActivity[lang]}</Button>;
   }
-  return <Button variant="light" disabled style={{ background: 'var(--amber-chip)', color: 'var(--amber-text)', border: '1px solid var(--amber-border)', fontSize: 12.5, padding: '9px 14px' }}>Waiting</Button>;
+  return <Button variant="light" disabled style={{ background: 'var(--amber-chip)', color: 'var(--amber-text)', border: '1px solid var(--amber-border)', fontSize: 12.5, padding: '9px 14px' }}>{L.waiting[lang]}</Button>;
 }
 
 /**
@@ -44,17 +45,15 @@ function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
  * `gatesFor` derived, the sign-off the PMC still owes — and names the next valid step. It
  * grants nothing: `activityReady` and the server still decide what may start.
  */
-function restrictionOf(a: Activity, gates: GateVM[], ready: boolean): string | null {
+function restrictionOf(a: Activity, gates: GateVM[], ready: boolean, lang: Lang): string | null {
   if (a.status === 'blocked') {
     // NOT an override: that records a GateOverride and nothing else, while `start` refuses
     // every status but not_started — so a blocked activity stays unstartable and the PMC is
     // left with an audited override that changed nothing. Resolving the blocker is the path.
-    return a.block
-      ? `Blocked — ${a.block}. Resolve the blocker on site; the activity returns to the schedule once it clears.`
-      : 'Blocked on site. Resolve the recorded blocker; the activity returns to the schedule once it clears.';
+    return a.block ? T.blockedWith(a.block, lang) : L.blockedOnSite[lang];
   }
   if (a.status === 'awaiting-signoff') {
-    return 'Completion is claimed — the PMC\u2019s closing inspection sign-off is what marks it done.';
+    return L.claimed[lang];
   }
   if (a.status === 'not-started' && !ready) {
     const holding = gates.filter((g) => g.v === 'fail' || g.v === 'wait');
@@ -62,9 +61,8 @@ function restrictionOf(a: Activity, gates: GateVM[], ready: boolean): string | n
     // ONE blocker is the actionable case, so it carries its full derived reason. Several
     // blockers are named but not explained: four reasons is a paragraph on a phone, and the
     // gate dots keep the detail for anyone who wants it.
-    if (holding.length === 1) return `Cannot start yet — ${holding[0]!.label.toLowerCase()}: ${holding[0]!.reason}`;
-    const labels = holding.map((g) => g.label.toLowerCase());
-    return `Cannot start yet — waiting on ${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}.`;
+    if (holding.length === 1) return T.cannotStartOne(gateNames[holding[0]!.k].label[lang], gateReasonIn(holding[0]!.reason, holding[0]!.source, lang), lang);
+    return T.cannotStartMany(holding.map((g) => gateNames[g.k].label[lang]), lang);
   }
   return null;
 }
@@ -78,21 +76,22 @@ function offsetOf(anchor: string | null, iso: string | null | undefined, legacy:
 /** Audit F-02 — the activity opened from a place, outlined for a moment once it scrolls into view. */
 const HighlightContext = createContext<string | null>(null);
 
-function gateText(g: GateVM): string {
-  return `${g.label} — ${g.reason}${g.source === 'override' ? ' (OVERRIDE)' : g.source === 'stored' ? ' (stored flag)' : ''}`;
+function gateText(g: GateVM, lang: Lang): string {
+  return gateLineIn(g.k, g.reason, g.source, lang);
 }
 
 function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPct: number; onEdit?: (a: Activity) => void; onOverride?: (a: Activity) => void }) {
   const state = useStore((s) => s) as AppState;
   const revokeOverride = useStore((s) => s.revokeOverride);
   const openDrawing = useStore((s) => s.openDrawing);
+  const lang = state.lang;
   const gates = gatesFor(state, a);
   // B5 (F-18): the gate reasons in words — `title` alone is unreachable by keyboard and touch. ONE
   // disclosure over the whole dot group (it fits the 136px column; five 44px buttons did not) lists
   // every gate's reason below the row.
   const [gatesOpen, setGatesOpen] = useState(false);
   const ready = activityReady(state, a);
-  const restriction = restrictionOf(a, gates, ready);
+  const restriction = restrictionOf(a, gates, ready, lang);
   // the controlled drawing this activity builds from (Drawings Slice 2 linkage)
   const linkedDrawing = state.drawings.find((d) => !d.draft && d.activityId === a.id);
   const anchor = state.scheduleStartDate;
@@ -100,8 +99,8 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
   const pe = offsetOf(anchor, a.plannedEndDate, a.pe) ?? a.pe;
   const as_ = offsetOf(anchor, a.actualStartDate, a.as);
   const ae_ = offsetOf(anchor, a.actualEndDate, a.ae);
-  const plannedLine = `Plan ${plannedWindow(a)}`;
-  const actualLine = as_ == null ? 'Not started' : `Actual ${labelOf(a.actualStartDate, a.as)} → ${ae_ == null ? 'ongoing' : labelOf(a.actualEndDate, a.ae)}`;
+  const plannedLine = T.plan(plannedWindow(a, lang), lang);
+  const actualLine = as_ == null ? L.notStarted[lang] : T.actual(labelOf(a.actualStartDate, a.as, lang), ae_ == null ? null : labelOf(a.actualEndDate, a.ae, lang), lang);
   const actualColor = a.status === 'blocked' ? 'var(--red-solid)' : a.status === 'done' ? 'var(--green-solid)' : 'var(--accent)';
   const highlighted = useContext(HighlightContext) === a.id;
 
@@ -117,9 +116,9 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
         <div style={{ width: 210, flex: 'none' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)' }}>{a.id}</span>
-            <ActivityChip status={a.status} />
+            <ActivityChip status={a.status} lang={lang} />
             {onEdit && (
-              <button onClick={() => onEdit(a)} aria-label={`Edit ${a.name}`} data-testid={`edit-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, flex: 'none', width: 44, height: 44 }}>
+              <button onClick={() => onEdit(a)} aria-label={T.editAria(a.name, lang)} data-testid={`edit-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, flex: 'none', width: 44, height: 44 }}>
                 <Pencil size={12} />
               </button>
             )}
@@ -128,20 +127,20 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
           {/* WHERE this work belongs — the filed location trail (a zone-filed activity shows the
               zone itself, never an invented room). Falls back to the legacy free-text `zone`. */}
           <div style={{ marginTop: 2 }}>
-            <LocationContext nodeId={a.nodeId} fallback={a.zone} compact testId={`sched-place-${a.id}`} />
+            <LocationContext nodeId={a.nodeId} fallback={a.zone} lang={lang} compact testId={`sched-place-${a.id}`} />
           </div>
           {linkedDrawing?.current && (
             <button
               onClick={() => openDrawing(linkedDrawing.id)}
               data-testid={`sched-dwg-${a.id}`}
-              title={`Governed by ${linkedDrawing.number} — open this drawing`}
+              title={T.governedTitle(linkedDrawing.number, lang)}
               // minHeight 44 (#584 review round 5): this opens the Drawings register, so it is a
               // thumb target and owes the floor. The label stays 9.5px mono — the FLOOR is about
               // the hit area, not the type size, and shrinking a governing drawing number would
               // trade one rule for another.
               style={{ marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 6, padding: '3px 7px', minHeight: 44, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--muted)' }}
             >
-              <PencilRuler size={11} /> {linkedDrawing.number} · Rev {linkedDrawing.current.rev}
+              <PencilRuler size={11} /> {linkedDrawing.number} · {T.rev(linkedDrawing.current.rev, lang)}
             </button>
           )}
         </div>
@@ -168,16 +167,16 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
             onClick={() => setGatesOpen((o) => !o)}
             aria-expanded={gatesOpen}
             aria-controls={`gate-reasons-${a.id}`}
-            aria-label={`Readiness gates for ${a.name} — ${gatesOpen ? 'hide' : 'show'} reasons`}
+            aria-label={T.gatesAria(a.name, gatesOpen, lang)}
             data-testid={`gates-${a.id}`}
             // Task 6: the tooltip still carries every derived CONCLUSION and its source for a mouse
-            title={gates.map(gateText).join('\n')}
+            title={gates.map((g) => gateText(g, lang)).join('\n')}
             style={{ display: 'flex', gap: 9, alignItems: 'flex-start', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', minWidth: 0 }}
           >
             {gates.map((g) => (
               <span key={g.k} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
                 <GateDot v={g.v} />
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: g.source === 'override' ? '#31567F' : 'var(--muted)', fontWeight: g.source === 'override' ? 700 : 400 }}>{g.k}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: g.source === 'override' ? '#31567F' : 'var(--muted)', fontWeight: g.source === 'override' ? 700 : 400 }}>{gateNames[g.k].short[lang]}</span>
               </span>
             ))}
           </button>
@@ -187,7 +186,7 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
               below states the blocked reason and the next valid step. Revoking an override
               already recorded stays available on its chip. */}
           {onOverride && a.status !== 'blocked' && (
-            <button onClick={() => onOverride(a)} title="Record a gate override (expires automatically)" aria-label={`Override a gate on ${a.name}`} data-testid={`override-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, marginTop: 1, flex: 'none', width: 44, height: 44 }}>
+            <button onClick={() => onOverride(a)} title={L.overrideTitle[lang]} aria-label={T.overrideAria(a.name, lang)} data-testid={`override-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, marginTop: 1, flex: 'none', width: 44, height: 44 }}>
               <ShieldCheck size={13} />
             </button>
           )}
@@ -201,7 +200,7 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
           running or finished row gets no banner. */}
       {gatesOpen && (
         <ul id={`gate-reasons-${a.id}`} data-testid={`gate-reasons-${a.id}`} style={{ margin: '8px 0 0', padding: '0 0 0 18px', fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>
-          {gates.map((g) => <li key={g.k}>{gateText(g)}</li>)}
+          {gates.map((g) => <li key={g.k}>{gateText(g, lang)}</li>)}
         </ul>
       )}
       {restriction && (
@@ -213,12 +212,12 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 9 }}>
           {a.overrides!.map((o) => (
             <span key={o.id} data-testid={`override-chip-${o.id}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 9.5, padding: '3px 8px', borderRadius: 8, background: '#E6ECF3', color: '#31567F', border: '1px solid #C4D3E4' }}>
-              OVERRIDE · {o.gate} → {o.state} · {o.actorName} · expires {new Date(o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} · {o.reason}
+              {T.overrideChip(o.gate, o.state, o.actorName, new Date(o.expiresAt).toLocaleDateString(LOCALE[lang], { day: '2-digit', month: 'short' }), o.reason, lang)}
               {/* 44x44 (#584 review round 6): revoking an override is a live gate change made with
                   a thumb, and it was an 11px glyph with zero padding. `alignSelf: 'center'` keeps
                   the taller control from stretching the chip it sits in. */}
               {onOverride && (
-                <button onClick={() => revokeOverride(a.id, o.id)} title="Revoke this override now" aria-label="Revoke override" data-testid={`revoke-override-${o.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#31567F', display: 'flex', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', minWidth: 44, minHeight: 44, padding: 0 }}>
+                <button onClick={() => revokeOverride(a.id, o.id)} title={L.revokeTitle[lang]} aria-label={L.revokeAria[lang]} data-testid={`revoke-override-${o.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#31567F', display: 'flex', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', minWidth: 44, minHeight: 44, padding: 0 }}>
                   <X size={11} />
                 </button>
               )}
@@ -231,11 +230,14 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
 }
 
 const OVERRIDE_GATES = ['decision', 'material', 'team', 'inspection', 'drawing'] as const;
+/** the override chip's expiry day: English keeps its day-month form, the others the reader's month names */
+const LOCALE: Record<Lang, string> = { en: 'en-GB', hi: 'hi-IN', gu: 'gu-IN' };
 
 /** PMC records a manual readiness exception: one gate, a reason, an expiry —
  *  never a silent flag-flip. The server stores it attributably (Task 6). */
 function OverrideModal({ activity, onClose }: { activity: Activity; onClose: () => void }) {
   const overrideGate = useStore((s) => s.overrideGate);
+  const lang = useStore((s) => s.lang);
   const [gate, setGate] = useState<(typeof OVERRIDE_GATES)[number]>('drawing');
   const [state, setState] = useState<Gate>('ok');
   const [reason, setReason] = useState('');
@@ -257,29 +259,29 @@ function OverrideModal({ activity, onClose }: { activity: Activity; onClose: () 
   return (
     <Modal onClose={onClose} maxWidth={440} labelledBy="override-title">
       <div style={{ padding: '18px 20px' }}>
-        <div id="override-title" style={{ fontWeight: 700, fontSize: 17 }}>Override a gate — {activity.name}</div>
+        <div id="override-title" style={{ fontWeight: 700, fontSize: 17 }}>{T.overrideTitle(activity.name, lang)}</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          An override is a recorded exception in your name: it needs a reason, it always expires, and the derived value returns when it does.
+          {L.overrideIntro[lang]}
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-          <label style={lblS}>Gate
+          <label style={lblS}>{L.gate[lang]}
             <select value={gate} onChange={(e) => setGate(e.target.value as (typeof OVERRIDE_GATES)[number])} style={{ ...fldS, width: '100%' }} data-testid="override-gate">
-              {OVERRIDE_GATES.map((g) => <option key={g} value={g}>{g}</option>)}
+              {OVERRIDE_GATES.map((g) => <option key={g} value={g}>{overrideGateNames[g][lang]}</option>)}
             </select>
           </label>
-          <label style={lblS}>Set to
+          <label style={lblS}>{L.setTo[lang]}
             <select value={state} onChange={(e) => setState(e.target.value as Gate)} style={{ ...fldS, width: '100%' }} data-testid="override-state">
-              {GATE_VALUES.map((g) => <option key={g} value={g}>{g}</option>)}
+              {GATE_VALUES.map((g) => <option key={g} value={g}>{gateValueNames[g][lang]}</option>)}
             </select>
           </label>
-          <label style={lblS}>Expires in (days)
+          <label style={lblS}>{L.expiresInDays[lang]}
             <input value={days} onChange={(e) => setDays(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} data-testid="override-days" />
           </label>
         </div>
-        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason (required — e.g. construction set carried on site in print)" style={{ ...fldS, marginTop: 10, width: '100%' }} data-testid="override-reason" />
+        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder={L.reasonPlaceholder[lang]} style={{ ...fldS, marginTop: 10, width: '100%' }} data-testid="override-reason" />
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
-          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-override" style={{ flex: 1, padding: 12 }}>Record override</Button>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>{L.cancel[lang]}</Button>
+          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-override" style={{ flex: 1, padding: 12 }}>{L.recordOverride[lang]}</Button>
         </div>
       </div>
     </Modal>
@@ -289,20 +291,21 @@ function OverrideModal({ activity, onClose }: { activity: Activity; onClose: () 
 /** A phase header + its activities. Rollup counts are recomputed live from the
  *  activities so Start / Mark-complete move the phase's progress immediately. */
 function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase, onOverride }: { phase: Phase; activities: Activity[]; todayPct: number; onEdit?: (a: Activity) => void; onDeletePhase?: (phaseId: string) => void; onOverride?: (a: Activity) => void }) {
+  const lang = useStore((s) => s.lang);
   const acts = activitiesInPhase(activities, [phase], phase.id);
   if (acts.length === 0 && !onDeletePhase) return null;
   const r = phaseRollup(activities, phase.id);
-  const window = `${labelOf(phase.plannedStartDate, phase.plannedStart)} → ${labelOf(phase.plannedEndDate, phase.plannedEnd)}`;
+  const window = `${labelOf(phase.plannedStartDate, phase.plannedStart, lang)} → ${labelOf(phase.plannedEndDate, phase.plannedEnd, lang)}`;
 
   return (
     <div style={{ marginBottom: 4 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 10 }}>
         <div style={{ minWidth: 200 }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.1em', color: 'var(--faint)' }}>PHASE · {window}</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.1em', color: 'var(--faint)' }}>{T.phaseWindow(window, lang)}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ fontWeight: 700, fontSize: 17, letterSpacing: '-.01em' }}>{phase.name}</div>
             {onDeletePhase && (
-              <button onClick={() => onDeletePhase(phase.id)} aria-label={`Remove phase ${phase.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, flex: 'none', width: 44, height: 44 }}>
+              <button onClick={() => onDeletePhase(phase.id)} aria-label={T.removePhaseAria(phase.name, lang)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, flex: 'none', width: 44, height: 44 }}>
                 <X size={14} />
               </button>
             )}
@@ -313,15 +316,15 @@ function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase, onOver
             <div style={{ width: `${r.donePct}%`, height: '100%', background: 'var(--green-solid)', transition: 'width .3s' }} />
           </div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>
-            {r.done}/{r.activityTotal} done · {r.donePct}%
+            {T.phaseDone(r.done, r.activityTotal, r.donePct, lang)}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
           {[
-            { v: r.inProgress, l: 'running', c: 'var(--amber-text)' },
-            { v: r.awaitingSignoff, l: 'awaiting sign-off', c: '#31567F' },
-            { v: r.blocked, l: 'blocked', c: 'var(--red-solid)' },
-            { v: r.notStarted, l: 'to start', c: 'var(--muted)' },
+            { v: r.inProgress, l: phaseCountLabels.running[lang], c: 'var(--amber-text)' },
+            { v: r.awaitingSignoff, l: phaseCountLabels.awaitingSignoff[lang], c: '#31567F' },
+            { v: r.blocked, l: phaseCountLabels.blocked[lang], c: 'var(--red-solid)' },
+            { v: r.notStarted, l: phaseCountLabels.toStart[lang], c: 'var(--muted)' },
           ].filter((x) => x.v > 0).map((x) => (
             <span key={x.l} style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: x.c, border: '1px solid var(--hairline)', borderRadius: 6, padding: '3px 8px', background: 'var(--panel)' }}>
               {x.v} {x.l}
@@ -344,6 +347,7 @@ export function ScheduleScreen() {
   const projEnd = useStore((s) => s.projEnd);
   const elapsedPct = useStore((s) => s.elapsedPct);
   const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   const deletePhase = useStore((s) => s.deletePhase);
   // Phase 2 Task 10 (Module 4 — Activities): under module read-ownership the activity spine is a
   // SEPARATE async surface from the project snapshot, with its own honest load state. Never claim an
@@ -495,9 +499,9 @@ export function ScheduleScreen() {
   const onOverride = canPlan ? (a: Activity) => setOverrideFor(a) : undefined;
 
   const legend: { c: string; label: string }[] = [
-    { c: gateColor.ok, label: 'Ready' },
-    { c: gateColor.wait, label: 'Waiting' },
-    { c: gateColor.fail, label: 'Failed' },
+    { c: gateColor.ok, label: L.ready[lang] },
+    { c: gateColor.wait, label: L.waiting[lang] },
+    { c: gateColor.fail, label: L.failed[lang] },
   ];
 
   // finding-4 parity — these fire only when there is no last-good schedule to show; a failed refresh
@@ -505,24 +509,24 @@ export function ScheduleScreen() {
   if (activities.length === 0 && reading) {
     return (
       <div className={`${styles.screen} ${styles.wide}`} data-testid="activities-loading">
-        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
-        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the schedule…</div>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{L.loading[lang]}</div>
       </div>
     );
   }
   if (adopting) {
     return (
       <div className={`${styles.screen} ${styles.wide}`} data-testid="activities-opening">
-        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
-        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Opening {adopting}…</div>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{T.opening(adopting, lang)}</div>
       </div>
     );
   }
   if (released || clearing) {
     return (
       <div className={`${styles.screen} ${styles.wide}`} data-testid="activities-returning">
-        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
-        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Returning to the whole schedule…</div>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{L.returning[lang]}</div>
       </div>
     );
   }
@@ -532,14 +536,14 @@ export function ScheduleScreen() {
     const failed = unavailable || projectLoadState === 'error';
     return (
       <div className={`${styles.screen} ${styles.wide}`} data-testid={failed ? 'activities-unavailable' : 'activities-loading'}>
-        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
         {failed ? (
           <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
-            <span>Couldn't load the schedule — check your connection and access.</span>
-            <Button data-testid="activities-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+            <span>{L.loadFailed[lang]}</span>
+            <Button data-testid="activities-retry" onClick={() => void requestFreshSnapshot()}>{L.retry[lang]}</Button>
           </div>
         ) : (
-          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the schedule…</div>
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{L.loading[lang]}</div>
         )}
       </div>
     );
@@ -547,18 +551,18 @@ export function ScheduleScreen() {
   if (missingActivity) {
     return (
       <div className={`${styles.screen} ${styles.wide}`}>
-        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
-        <ItemNotFound what="Activity" id={missingActivity} onShowAll={() => setRouteItem(null)} showAllLabel="Show the whole schedule" />
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <ItemNotFound what={L.what[lang]} id={missingActivity} onShowAll={() => setRouteItem(null)} showAllLabel={L.showAll[lang]} lang={lang} />
       </div>
     );
   }
   if (activities.length === 0 && unavailable) {
     return (
       <div className={`${styles.screen} ${styles.wide}`} data-testid="activities-unavailable">
-        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
-          <span>Couldn't load the schedule — check your connection and access.</span>
-          <Button data-testid="activities-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+          <span>{L.loadFailed[lang]}</span>
+          <Button data-testid="activities-retry" onClick={() => void requestFreshSnapshot()}>{L.retry[lang]}</Button>
         </div>
       </div>
     );
@@ -566,24 +570,24 @@ export function ScheduleScreen() {
 
   return (
     <div className={`${styles.screen} ${styles.wide}`}>
-      <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
+      <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
       <div className={styles.headRule} style={{ margin: '6px 0 20px' }}>
         <div>
-          <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' }}>What is starting, running &amp; ending on site</div>
+          <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' }}>{L.title[lang]}</div>
           <div style={{ display: 'flex', gap: 12, marginTop: 7, fontSize: 12.5, color: 'var(--muted)', flexWrap: 'wrap' }}>
-            <span>Project {projStart} → {projEnd}</span>
+            <span>{T.projectSpan(servedDayIn(projStart, lang), servedDayIn(projEnd, lang), lang)}</span>
             <span>·</span>
-            <span>{elapsedPct}% time elapsed</span>
+            <span>{T.elapsed(elapsedPct, lang)}</span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           {[
-            { v: sch.inProgress, l: 'RUNNING', c: 'var(--amber-text)' },
-            { v: sch.doneWeek, l: 'DONE', c: 'var(--green-text)' },
-            { v: sch.blocked, l: 'BLOCKED', c: 'var(--red-solid)' },
+            { k: 'running', v: sch.inProgress, l: L.running[lang], c: 'var(--amber-text)' },
+            { k: 'done', v: sch.doneWeek, l: L.done[lang], c: 'var(--green-text)' },
+            { k: 'blocked', v: sch.blocked, l: L.blocked[lang], c: 'var(--red-solid)' },
           ].map((s) => (
-            <div key={s.l} style={{ textAlign: 'center', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 10, padding: '9px 14px' }}>
-              <div data-testid={`sch-${s.l.toLowerCase()}`} style={{ fontWeight: 700, fontSize: 19, color: s.c }}>{s.v}</div>
+            <div key={s.k} style={{ textAlign: 'center', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 10, padding: '9px 14px' }}>
+              <div data-testid={`sch-${s.k}`} style={{ fontWeight: 700, fontSize: 19, color: s.c }}>{s.v}</div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, color: 'var(--muted)', letterSpacing: '.08em' }}>{s.l}</div>
             </div>
           ))}
@@ -592,7 +596,7 @@ export function ScheduleScreen() {
 
       {/* legend */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 14, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', flexWrap: 'wrap' }}>
-        <span style={{ fontWeight: 600, letterSpacing: '.1em', color: 'var(--ink)' }}>GATES TO START:</span>
+        <span style={{ fontWeight: 600, letterSpacing: '.1em', color: 'var(--ink)' }}>{L.gatesToStart[lang]}</span>
         {legend.map((g) => (
           <span key={g.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ width: 9, height: 9, borderRadius: '50%', background: g.c }} />
@@ -600,21 +604,21 @@ export function ScheduleScreen() {
           </span>
         ))}
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 9, height: 9, borderRadius: '50%', boxShadow: 'inset 0 0 0 1px rgba(35,33,28,.25)' }} />N/A
+          <span style={{ width: 9, height: 9, borderRadius: '50%', boxShadow: 'inset 0 0 0 1px rgba(35,33,28,.25)' }} />{L.na[lang]}
         </span>
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 14, height: 2, background: 'rgba(35,33,28,.3)' }} />Planned
-          <span style={{ width: 14, height: 3, background: 'var(--accent)', marginLeft: 8 }} />Actual
+          <span style={{ width: 14, height: 2, background: 'rgba(35,33,28,.3)' }} />{L.planned[lang]}
+          <span style={{ width: 14, height: 3, background: 'var(--accent)', marginLeft: 8 }} />{L.actual[lang]}
         </span>
       </div>
 
       {canPlan && (
         <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
           <Button variant="ink" onClick={() => setPlan('new')} data-testid="plan-activity" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5 }}>
-            <Plus size={15} /> Plan activity
+            <Plus size={15} /> {L.planActivity[lang]}
           </Button>
           <Button variant="outline" onClick={() => setAddingPhase(true)} data-testid="add-phase" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5 }}>
-            <Plus size={15} /> Add phase
+            <Plus size={15} /> {L.addPhase[lang]}
           </Button>
         </div>
       )}
@@ -623,26 +627,26 @@ export function ScheduleScreen() {
       {overrideFor && <OverrideModal activity={overrideFor} onClose={() => setOverrideFor(null)} />}
       {phaseToDelete && (
         <ConfirmDialog
-          title={`Remove the ${phaseToDelete.name} phase?`}
-          confirmLabel="Remove phase"
+          title={T.removePhaseTitle(phaseToDelete.name, lang)}
+          confirmLabel={L.removePhase[lang]}
           onConfirm={() => deletePhase(phaseToDelete.id)}
           onCancel={() => setPhaseToDelete(null)}
           testId="confirm-phase-delete"
         >
-          {PHASE_DELETE_NOTE}
+          {L.phaseDeleteNote[lang]}
         </ConfirmDialog>
       )}
 
       {placeOptions.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
-          <label htmlFor="sched-place-filter" style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', color: 'var(--muted)' }}>PLACE</label>
+          <label htmlFor="sched-place-filter" style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', color: 'var(--muted)' }}>{L.place[lang]}</label>
           <select id="sched-place-filter" value={placeFilter} onChange={(e) => setPlaceFilter(e.target.value)} data-testid="sched-place-filter" style={{ minHeight: 44, padding: '0 10px', borderRadius: 9, border: '1px solid var(--hairline)', background: 'var(--panel)', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)' }}>
-            <option value="">All places</option>
+            <option value="">{L.allPlaces[lang]}</option>
             {placeOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
           </select>
           {filtering && (
             <span style={{ fontSize: 12, color: 'var(--muted)' }} data-testid="sched-place-count">
-              {shown.length} {shown.length === 1 ? 'activity' : 'activities'} at {filterName} and inside it
+              {T.placeCount(shown.length, filterName, lang)}
             </span>
           )}
         </div>
@@ -652,7 +656,7 @@ export function ScheduleScreen() {
 
       {filtering && shown.length === 0 ? (
         <div data-testid="sched-place-empty" style={{ padding: '22px 16px', border: '1px dashed rgba(35,33,28,.2)', borderRadius: 12, fontSize: 13, color: 'var(--muted)', textAlign: 'center' }}>
-          No activities are placed at {filterName} yet.
+          {T.placeEmpty(filterName, lang)}
         </div>
       ) : phases.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
@@ -665,7 +669,7 @@ export function ScheduleScreen() {
           {/* unphased activities (if any) render under their own group */}
           {activitiesInPhase(shown, phases, null).length > 0 && (
             <div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.1em', color: 'var(--faint)', marginBottom: 10 }}>UNPHASED</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.1em', color: 'var(--faint)', marginBottom: 10 }}>{L.unphased[lang]}</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {activitiesInPhase(shown, phases, null).map((a) => (
                   <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} onOverride={onOverride} />
@@ -685,18 +689,15 @@ export function ScheduleScreen() {
       </HighlightContext.Provider>
 
       <div style={{ marginTop: 16, fontSize: 11.5, color: 'var(--faint)', lineHeight: 1.5, maxWidth: 760 }}>
-        Each activity can only <strong>Start</strong> when its four gates align — the <strong>Decision</strong> is locked, the approved{' '}
-        <strong>Material</strong> is on site, the <strong>Team</strong> is present, and the pre-work <strong>Inspection</strong> has passed.
-        It can only be marked <strong>Done</strong> after its closing inspection.
+        {T.footer(lang).map(([text, bold], i) => (bold ? <strong key={i}>{text}</strong> : <span key={i}>{text}</span>))}
       </div>
     </div>
   );
 }
 
-/** What removing a phase does (`PhasesService.remove`): its activities stay, unphased. Stated as the
- *  server's rule, never as a count of the activities this browser holds, which a failed or stale
- *  read can leave short (#699 Codex 4174270527). */
-const PHASE_DELETE_NOTE = 'Its activities stay in the schedule, under Unphased.';
+/* What removing a phase does (`PhasesService.remove`, `scheduleLabels.phaseDeleteNote`): its activities stay,
+ * unphased. Stated as the server's rule, never as a count of the activities this browser holds, which a failed
+ * or stale read can leave short (#699 Codex 4174270527). */
 
 const GATE_VALUES: Gate[] = ['na', 'wait', 'ok', 'fail'];
 
@@ -706,6 +707,7 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
   const createActivity = useStore((s) => s.createActivity);
   const updateActivity = useStore((s) => s.updateActivity);
   const deleteActivity = useStore((s) => s.deleteActivity);
+  const lang = useStore((s) => s.lang);
   const phases = useStore(useShallow((s) => s.phases));
   // only a published decision can be linked to an activity — never an unpublished draft
   // …and a WITHDRAWN decision is terminal: no new work links to it (re-issue instead), so the
@@ -765,13 +767,13 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
   if (activity && confirmingDelete) {
     return (
       <ConfirmDialog
-        title={`Delete ${activity.id} · ${activity.name}?`}
-        confirmLabel="Delete activity"
+        title={T.deleteTitle(activity.id, activity.name, lang)}
+        confirmLabel={L.deleteActivity[lang]}
         onConfirm={() => { const outcome = deleteActivity(activity.id); onDeleted?.(activity.id, outcome); onClose(); }}
         onCancel={() => setConfirmingDelete(false)}
         testId="confirm-activity-delete"
       >
-        It is removed from the schedule for everyone. A drawing that governs it is kept and no longer linked to it. Once other records refer to it (an inspection, a material record, a gate override, a schedule link, recorded work or anything else), it can&apos;t be deleted: the server refuses and nothing changes.
+        {L.deleteNote[lang]}
       </ConfirmDialog>
     );
   }
@@ -779,65 +781,65 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
   return (
     <Modal onClose={onClose} maxWidth={480} labelledBy="plan-act-title">
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
-        <div id="plan-act-title" style={{ fontWeight: 700, fontSize: 17 }}>{activity ? `Edit ${activity.id}` : 'Plan activity'}</div>
+        <div id="plan-act-title" style={{ fontWeight: 700, fontSize: 17 }}>{activity ? T.editTitle(activity.id, lang) : L.planActivity[lang]}</div>
         {!anchor && (
           <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-            Planned dates are day numbers on the schedule timeline; the bar renders from them.
+            {L.dayNumbersNote[lang]}
           </div>
         )}
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Activity (e.g. Master Bath Tiling)" style={{ ...fldS, marginTop: 14, width: '100%' }} data-testid="act-name" />
-        <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone (free text — or pick a location below)" style={{ ...fldS, marginTop: 10, width: '100%' }} />
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', color: 'var(--muted)', margin: '12px 0 6px' }}>LOCATION (OPTIONAL)</div>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder={L.namePlaceholder[lang]} style={{ ...fldS, marginTop: 14, width: '100%' }} data-testid="act-name" />
+        <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder={L.zonePlaceholder[lang]} style={{ ...fldS, marginTop: 10, width: '100%' }} />
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', color: 'var(--muted)', margin: '12px 0 6px' }}>{L.locationOptional[lang]}</div>
         <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="act-loc" />
         {anchor ? (
           <>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 10, alignItems: 'flex-start' }}>
-              <DatePicker label="Starts" value={startIso} min={anchor} today={today} testId="act-start"
+              <DatePicker label={L.starts[lang]} lang={lang} value={startIso} min={anchor} today={today} testId="act-start"
                 onChange={(iso) => { setStartIso(iso); if (endIso < iso) setEndIso(iso); }} />
-              <DatePicker label="Ends" value={endIso} min={startIso} today={today} testId="act-end" onChange={setEndIso} />
+              <DatePicker label={L.ends[lang]} lang={lang} value={endIso} min={startIso} today={today} testId="act-end" onChange={setEndIso} />
             </div>
             <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 6 }} data-testid="act-span">
-              {inclusiveDays(startIso, endIso) === 1 ? '1 day' : `${inclusiveDays(startIso, endIso)} days`}
+              {T.days(inclusiveDays(startIso, endIso), lang)}
             </div>
           </>
         ) : (
           <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-            <label style={lblS}>Plan start (day)<input value={ps} onChange={(e) => setPs(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
-            <label style={lblS}>Plan end (day)<input value={pe} onChange={(e) => setPe(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
+            <label style={lblS}>{L.planStartDay[lang]}<input value={ps} onChange={(e) => setPs(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
+            <label style={lblS}>{L.planEndDay[lang]}<input value={pe} onChange={(e) => setPe(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
           </div>
         )}
         <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-          <label style={lblS}>Phase
+          <label style={lblS}>{L.phase[lang]}
             <select value={phaseId} onChange={(e) => setPhaseId(e.target.value)} style={{ ...fldS, width: '100%' }}>
-              <option value="">— unphased —</option>
+              <option value="">{L.unphasedOption[lang]}</option>
               {phases.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </label>
-          <label style={lblS}>Linked decision
+          <label style={lblS}>{L.linkedDecision[lang]}
             <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldS, width: '100%' }}>
-              <option value="">— none —</option>
+              <option value="">{L.noneOption[lang]}</option>
               {decisions.map((d) => <option key={d.id} value={d.id}>{d.id} · {d.title}</option>)}
             </select>
           </label>
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-          {([['Material', gm, setGm], ['Team', gt, setGt]] as const).map(([label, v, set]) => (
-            <label key={label} style={lblS}>{label} gate
+          {([['material', L.materialGate[lang], gm, setGm], ['team', L.teamGate[lang], gt, setGt]] as const).map(([key, label, v, set]) => (
+            <label key={key} style={lblS}>{label}
               <select value={v} onChange={(e) => set(e.target.value as Gate)} style={{ ...fldS, width: '100%' }}>
-                {GATE_VALUES.map((g) => <option key={g} value={g}>{g}</option>)}
+                {GATE_VALUES.map((g) => <option key={g} value={g}>{gateValueNames[g][lang]}</option>)}
               </select>
             </label>
           ))}
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>
-          The Decision, Inspection and Drawing gates are derived from the linked records — they cannot be set by hand (a PMC can record an expiring override from the schedule row).
+          {L.derivedNote[lang]}
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           {activity && (
-            <Button variant="dangerOutline" onClick={() => setConfirmingDelete(true)} data-testid="activity-delete" style={{ padding: 12 }}>Delete</Button>
+            <Button variant="dangerOutline" onClick={() => setConfirmingDelete(true)} data-testid="activity-delete" style={{ padding: 12 }}>{L.delete[lang]}</Button>
           )}
-          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
-          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-activity" style={{ flex: 1, padding: 12 }}>{activity ? 'Save' : 'Add to plan'}</Button>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>{L.cancel[lang]}</Button>
+          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-activity" style={{ flex: 1, padding: 12 }}>{activity ? L.save[lang] : L.addToPlan[lang]}</Button>
         </div>
       </div>
     </Modal>
@@ -846,6 +848,7 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
 
 function AddPhaseModal({ onClose }: { onClose: () => void }) {
   const createPhase = useStore((s) => s.createPhase);
+  const lang = useStore((s) => s.lang);
   const [name, setName] = useState('');
   const save = () => {
     if (!name.trim()) return;
@@ -855,11 +858,11 @@ function AddPhaseModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal onClose={onClose} maxWidth={380} labelledBy="add-phase-title">
       <div style={{ padding: '18px 20px' }}>
-        <div id="add-phase-title" style={{ fontWeight: 700, fontSize: 17 }}>Add phase</div>
-        <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && save()} placeholder="Phase name (e.g. Finishing)" style={{ ...fldS, marginTop: 14, width: '100%' }} data-testid="phase-name" />
+        <div id="add-phase-title" style={{ fontWeight: 700, fontSize: 17 }}>{L.addPhase[lang]}</div>
+        <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && save()} placeholder={L.phaseNamePlaceholder[lang]} style={{ ...fldS, marginTop: 14, width: '100%' }} data-testid="phase-name" />
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
-          <Button variant="ink" onClick={save} disabled={!name.trim()} data-testid="save-phase" style={{ flex: 1, padding: 12 }}>Add</Button>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>{L.cancel[lang]}</Button>
+          <Button variant="ink" onClick={save} disabled={!name.trim()} data-testid="save-phase" style={{ flex: 1, padding: 12 }}>{L.add[lang]}</Button>
         </div>
       </div>
     </Modal>
