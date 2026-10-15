@@ -188,9 +188,15 @@ export function bakeInspections(
      *  changed, with no `inspection.*` event to refresh it). REQUIRED, not defaulted: a caller that
      *  forgot it would silently serve the pre-round-7 behaviour, which is the defect itself. */
     bindingAssignees: ReadonlySet<string>;
+    /** Evidence photos this viewer may not see (filed on someone else's private draft place before #881),
+     *  from the media module's `mediaHiddenFrom`. REQUIRED for the same reason as `bindingAssignees`: a
+     *  live, per-viewer fact a caller must not forget, or a private photo gets a signed path. */
+    hiddenEvidence: ReadonlySet<string>;
   },
 ): InspectionsSlices {
-  const { role, evidencePath, viewerId, bindingAssignees } = opts;
+  const { role, viewerId, bindingAssignees, hiddenEvidence } = opts;
+  // no signed path is ever minted for a hidden photo; the evidence list simply omits it
+  const evidencePath = (mediaIds: string[]): string[] => mediaIds.filter((m) => !hiddenEvidence.has(m)).map(opts.evidencePath);
   const isPmc = role === 'pmc';
   const canSeeInspections = role === 'pmc' || role === 'engineer';
   const all = base.inspections;
@@ -225,7 +231,7 @@ export function bakeInspections(
         state: it.state as ItemState,
         photos: it.photos,
         note: it.note,
-        evidence: it.mediaIds.map(evidencePath),
+        evidence: evidencePath(it.mediaIds),
       }),
     ),
   });
@@ -302,7 +308,7 @@ export function bakeInspections(
             swatch: (it.swatch ?? 'concrete') as SwatchKey,
             note: it.note,
             rejected: it.rejected,
-            evidence: it.mediaIds.map(evidencePath),
+            evidence: evidencePath(it.mediaIds),
           }),
         ),
       }),

@@ -1915,7 +1915,7 @@ export const addSiteVisitAttendeeSchema = z.union([
 ]);
 export type AddSiteVisitAttendeeInput = z.infer<typeof addSiteVisitAttendeeSchema>;
 // The visit list's page: newest start first, `before` naming the last visit of the previous page; `status=open`
-// narrows it to the visits still open, so a screen knows who is on site however far back they started (#874).
+// narrows it to the visits still open, so a screen knows who is on site however far back they started.
 export const listSiteVisitsSchema = z.object({
   before: siteVisitIdSchema.optional(),
   status: z.literal('open').optional(),

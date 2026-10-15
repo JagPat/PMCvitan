@@ -289,6 +289,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/web/src/components/ConsultationThread.tsx :: decision.status === 'pending' || decision.status === 'change' || decision.status === 'awaiting_countersign'": 'answered',
     // 4d-ii-b / B5b — the chain's controls: Forward hands over an OPEN decision (an awaiting one is the architect's,
     // handed on through `disagree` / `forward_on`); the architect's countersign controls sit on the awaiting row
+    "apps/web/src/screens/AwaitingClientList.tsx :: d.status === 'pending'": 'excludes: the demo-seed fallback of the "Awaiting client" list keeps only a NEW decision open for the CLIENT; an awaiting one waits on the architect (#482 QA)',
+    "apps/web/src/screens/AwaitingClientList.tsx :: r.status === 'pending'": 'excludes: the list keeps only a NEW summary row; a reopened one is already in the register below (#482 QA)',
     "apps/web/src/components/CountersignControls.tsx :: d.status === 'pending' || d.status === 'change'": 'excludes: the Forward affordance offers an OPEN decision; an awaiting one is forwarded on by the architect’s disagreement (its own arm below)',
     "apps/web/src/components/CountersignControls.tsx :: d.status === 'awaiting_countersign'": 'answered',
     // the approval route opens on ACTIONABLE states only: an awaiting decision is not one its decider can
@@ -296,6 +298,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     // (#677 review, finding 4145060024); awaiting rows are read on the Decision Log and acted on through B5b
     "apps/web/src/layout/RouteBridge.tsx :: d.status === 'pending' || d.status === 'change'": 'excludes: the approval route opens on actionable states only; an awaiting row is the Decision Log’s (#677 review, finding 4145060024)',
     "apps/web/src/layout/NotificationPanel.tsx :: d.status === 'pending' || d.status === 'change'": 'excludes: a notice opens the client’s approval screen only for a decision awaiting them, the same states that screen shows; an awaiting-countersign or any other row opens in the Decision Log (live bug 1, Codex 4203544271)',
+    // #891 Codex 4276170377 — Withdraw is offered only where the service accepts it (`d.status !== 'change'` → 409 above)
+    "apps/web/src/lib/mayWithdrawChange.ts :: d.status === 'change'": 'excludes: only an open change request can be withdrawn',
     "apps/web/src/screens/ClientDecisionsScreen.tsx :: d.status === 'change'": 'excludes: the open change request’s panel, shown only while reopened',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'pending'": 'excludes: withdrawing the DECISION is refused after any approval act; a provisional approval is one (the phase6_t4a seal)',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'approved'": 'excludes: the lock icon marks a FINAL approval; an uncountersigned one is provisional',

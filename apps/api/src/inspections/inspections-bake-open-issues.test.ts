@@ -16,7 +16,7 @@ const entry = (over: Partial<InspectionBaseEntry> & { id: string }): InspectionB
   reinspectionOfId: null, assigneeId: null, dueDate: null, items: [item(`${over.id}-i1`)], ...over,
 });
 const placed = (inspections: InspectionBaseEntry[], role = 'pmc') =>
-  bakeInspections({ inspections } as InspectionsBase, { role, evidencePath: (id) => id, bindingAssignees: new Set() }).placedInspections;
+  bakeInspections({ inspections } as InspectionsBase, { role, evidencePath: (id) => id, bindingAssignees: new Set(), hiddenEvidence: new Set() }).placedInspections;
 const issues = (inspections: InspectionBaseEntry[], role = 'pmc') =>
   Object.fromEntries(placed(inspections, role).map((p) => [p.id, p.openIssues]));
 

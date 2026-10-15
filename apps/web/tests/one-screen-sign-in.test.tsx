@@ -250,6 +250,131 @@ describe('#827 one-screen sign-in', () => {
     expect(r.getByText('Too many tries. Wait 9 minutes, then try again.')).toBeInTheDocument();
   });
 
+  it('a send failure shown before a language switch is re-worded in the new language (#886)', async () => {
+    const requestOtp = vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/request 429'), { status: 429, retryAfter: 30 }));
+    const { TeamAccessScreen } = await load({ requestOtp } as Partial<ApiGateway>);
+    const r = render(<TeamAccessScreen />);
+    fireEvent.change(r.getByTestId('phone-input'), { target: { value: '9876543210' } });
+    fireEvent.click(r.getByTestId('send-code'));
+    await flush();
+    expect(r.getByText('Too many tries. Wait 30 seconds, then try again.')).toBeInTheDocument();
+    fireEvent.click(r.getByTestId('gate-lang-gu'));
+    expect(r.getByText('ઘણી વાર પ્રયાસ થયો. 30 સેકન્ડ રાહ જુઓ, પછી ફરી પ્રયાસ કરો.')).toBeInTheDocument();
+    fireEvent.click(r.getByTestId('gate-lang-hi'));
+    expect(r.getByText('बहुत बार कोशिश हुई। 30 सेकंड रुकें, फिर कोशिश करें।')).toBeInTheDocument();
+    expect(r.queryByText('Too many tries. Wait 30 seconds, then try again.')).not.toBeInTheDocument();
+  });
+
+  it('a later error in other words is shown as written, not as the earlier re-worded one (#886)', async () => {
+    const requestOtp = vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/request 503'), { status: 503 }));
+    const { TeamAccessScreen, useStore } = await load({ requestOtp } as Partial<ApiGateway>);
+    const r = render(<TeamAccessScreen />);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    act(() => useStore.getState().accSetPhone('123'));
+    act(() => useStore.getState().requestOtp());
+    expect(r.getByText('Enter a 10-digit mobile number.')).toBeInTheDocument();
+    expect(r.queryByText('Could not send a sign-in code right now. Use “Sign in with email” below.')).not.toBeInTheDocument();
+  });
+
+  it('an email sign-in error after a phone error is never shown as the phone error re-worded (#886 round 1)', async () => {
+    const offline = () => Promise.reject(new TypeError('Failed to fetch'));
+    const { useStore } = await load({ requestOtp: offline, login: offline } as unknown as Partial<ApiGateway>);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    const { shownAccessError } = await import('@/store/store');
+    expect(useStore.getState().access.error).toBe('Could not reach the server. Check your connection and try again.');
+    useStore.setState({ lang: 'hi' });
+    act(() => useStore.getState().accGoLogin());
+    act(() => useStore.getState().login('pmc@vitan.in', 'secret'));
+    await flush();
+    // the email sign-in is English-only: its own offline message, not the phone message in Hindi
+    expect(shownAccessError(useStore.getState().access, 'hi')).toBe('Could not reach the server. Check your connection and try again.');
+  });
+
+  for (const [label, failure] of [
+    ['no connection', new TypeError('Failed to fetch')],
+    ['a timeout', Object.assign(new Error('/auth/otp/verify 408'), { status: 408 })],
+    ['a server fault', Object.assign(new Error('/auth/otp/verify 502'), { status: 502 })],
+  ] as const) {
+    it(`a code check that fails with ${label} keeps the code and checks it again on Verify (#886)`, async () => {
+      const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
+      const verifyOtp = vi.fn()
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValueOnce({ token: 't', role: 'client', name: 'Priya', projectId: 'villa-b' });
+      const { TeamAccessScreen, useStore } = await load({ requestOtp, verifyOtp } as Partial<ApiGateway>);
+      const r = render(<TeamAccessScreen />);
+      act(() => useStore.getState().accSetPhone('9876543210'));
+      act(() => useStore.getState().requestOtp());
+      await flush();
+      useStore.setState((s) => { s.access.otp = '1234'; });
+      act(() => useStore.getState().otpVerify());
+      await flush();
+      expect(useStore.getState().access.otp).toBe('1234');
+      expect(r.getByText('Could not check the code right now. Check your connection, then tap Verify.')).toBeInTheDocument();
+      expect(r.queryByText('Wrong code — try again')).not.toBeInTheDocument();
+      fireEvent.click(r.getByTestId('otp-retry'));
+      await flush();
+      expect(verifyOtp).toHaveBeenCalledTimes(2);
+      expect(verifyOtp).toHaveBeenLastCalledWith('9876543210', '1234');
+      expect(useStore.getState().sessionToken).toBe('t');
+    });
+  }
+
+  it('a throttled code check keeps the code, since the code was never looked at (#886 round 2)', async () => {
+    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
+    const verifyOtp = vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/verify 429'), { status: 429, retryAfter: 30 }));
+    const { useStore } = await load({ requestOtp, verifyOtp } as Partial<ApiGateway>);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    useStore.setState((s) => { s.access.otp = '1234'; });
+    act(() => useStore.getState().otpVerify());
+    await flush();
+    expect(useStore.getState().access.otp).toBe('1234');
+    expect(useStore.getState().access.error).toBe('Too many tries. Wait 30 seconds, then try again.');
+  });
+
+  it('a retry refused after "could not check" asks for a new code instead of calling it wrong (#886 round 2)', async () => {
+    // the first check may have reached the server and used the code before its answer was lost
+    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
+    const verifyOtp = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(Object.assign(new Error('/auth/otp/verify 401'), { status: 401 }));
+    const { TeamAccessScreen, useStore } = await load({ requestOtp, verifyOtp } as Partial<ApiGateway>);
+    const r = render(<TeamAccessScreen />);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    useStore.setState((s) => { s.access.otp = '1234'; });
+    act(() => useStore.getState().otpVerify());
+    await flush();
+    fireEvent.click(r.getByTestId('otp-retry'));
+    await flush();
+    expect(useStore.getState().access.otp).toBe('');
+    expect(r.getByText('That code could not be used. Tap “Resend code” for a new one.')).toBeInTheDocument();
+    expect(r.queryByText('Wrong code — try again')).not.toBeInTheDocument();
+  });
+
+  it('a code the server refuses is cleared and called wrong, in the gate language (#886)', async () => {
+    const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
+    const verifyOtp = vi.fn().mockRejectedValue(Object.assign(new Error('/auth/otp/verify 401'), { status: 401 }));
+    const { TeamAccessScreen, useStore } = await load({ requestOtp, verifyOtp } as Partial<ApiGateway>);
+    useStore.setState({ lang: 'hi' });
+    const r = render(<TeamAccessScreen />);
+    act(() => useStore.getState().accSetPhone('9876543210'));
+    act(() => useStore.getState().requestOtp());
+    await flush();
+    useStore.setState((s) => { s.access.otp = '1234'; });
+    act(() => useStore.getState().otpVerify());
+    await flush();
+    expect(useStore.getState().access.otp).toBe('');
+    expect(r.getByText('गलत कोड — फिर से')).toBeInTheDocument();
+    expect(r.queryByTestId('otp-retry')).not.toBeInTheDocument();
+  });
+
   it('a back tap from the code screen returns to the number, not to "Who are you?"', async () => {
     const requestOtp = vi.fn().mockResolvedValue({ sent: true, live: true, channel: 'email', codeLength: 4 });
     const { TeamAccessScreen, useStore } = await load({ requestOtp } as Partial<ApiGateway>);
