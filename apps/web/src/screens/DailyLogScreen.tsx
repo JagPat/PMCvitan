@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { API_BASE, CONNECTIVITY_SIMULATOR, dailyLogReadMode } from '@/data/apiGateway';
@@ -11,6 +11,8 @@ import { captureStamp } from '@/lib/captureStamp';
 import { projectScopeOf } from '@/store/projectScope';
 import { dailyLogCommandInFlight, dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { pathOf } from '@/lib/locationTree';
+import { todayCivil } from '@/lib/civilDate';
+import { sentOnEarlierDay } from '@/lib/engineerToday';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
 import { can, dailyLogLabels as L, dailyLogText as T, labourLabels, type ScreenKey, type Lang } from '@vitan/shared';
 import styles from './responsive.module.css';
@@ -79,6 +81,16 @@ export function DailyLogScreen() {
   const short = useStore((s) => s.short);
   const location = useStore((s) => s.location);
   const siteLabel = location || short;
+
+  // #482 (QA 15 Oct, item 1) — the site's civil day (the project's zone, IST for most), the same day the
+  // Today card and the PMC brief judge. A minute tick moves a screen left open across midnight on.
+  const timeZone = useStore((s) => s.timeZone);
+  const [, setMinute] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setMinute((m) => m + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const today = todayCivil(timeZone);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState<string | null>(null);
@@ -183,6 +195,28 @@ export function DailyLogScreen() {
           ) : undefined
         }
       />
+    );
+  }
+
+  // #482 (QA 15 Oct, item 1) — the latest log was sent on an EARLIER day: it is not today's, so the screen
+  // says what the Today card and the brief say — no log yet today — instead of showing yesterday's log as
+  // "Submitted". A link that names that log (`/site/log/<id>`) still opens it as a record, and a read that
+  // has not settled (or failed) keeps the last-known log with its warning: today's may already exist.
+  if (record.state === 'list' && !actionsLocked && sentOnEarlierDay(dailyLog, today)) {
+    return (
+      <div data-testid="daily-log-no-today">
+        <EmptyState
+          title={L.noLogToday[lang]}
+          detail={`${T.lastLogSent(dailyLog.logDate ? logDateIn(dailyLog, lang) : null, lang)} ${L.noLogDetail[lang]}`}
+          action={
+            can('dailyLog.start', role) ? (
+              <Button variant="ink" onClick={startNewDay} disabled={inFlight} data-testid="start-new-day">
+                <Plus size={15} /> {starting ? L.starting[lang] : L.startToday[lang]}
+              </Button>
+            ) : undefined
+          }
+        />
+      </div>
     );
   }
 

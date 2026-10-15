@@ -582,6 +582,7 @@ export const dailyLogLabels = {
   },
   starting: { en: 'Starting today’s log…', hi: 'आज का लॉग शुरू हो रहा है…', gu: 'આજનો લૉગ શરૂ થઈ રહ્યો છે…' },
   startToday: { en: "Start today's log", hi: 'आज का लॉग शुरू करें', gu: 'આજનો લૉગ શરૂ કરો' },
+  noLogToday: { en: 'No site log yet today', hi: 'आज अभी साइट लॉग नहीं', gu: 'આજે હજી સાઇટ લૉગ નથી' },
   stale: {
     en: "Showing the last-known log — the latest couldn't load. Actions are paused until it refreshes.",
     hi: 'पिछला मिला हुआ लॉग दिख रहा है — नया नहीं खुला। ताज़ा होने तक बटन रुके हैं।',
@@ -641,6 +642,11 @@ export const dailyLogText = {
     lang === 'hi' ? `काम की ${n} फ़ोटो` : lang === 'gu' ? `કામના ${n} ફોટા` : `${n} progress photos`,
   photoAlt: (i: number, lang: Lang): string =>
     lang === 'hi' ? `काम की फ़ोटो ${i}` : lang === 'gu' ? `કામનો ફોટો ${i}` : `Progress photo ${i}`,
+  // the last log was sent on an earlier day (or has no day): today has none yet
+  lastLogSent: (day: string | null, lang: Lang): string =>
+    day
+      ? lang === 'hi' ? `पिछला लॉग (${day}) भेजा जा चुका है।` : lang === 'gu' ? `છેલ્લો લૉગ (${day}) મોકલાઈ ગયો છે.` : `The last log (${day}) was sent.`
+      : lang === 'hi' ? 'पिछला लॉग भेजा जा चुका है।' : lang === 'gu' ? 'છેલ્લો લૉગ મોકલાઈ ગયો છે.' : 'The last log was sent.',
 };
 
 /** The place picker (zone → room → object) the daily log, drawings and plan forms share. English keeps the
