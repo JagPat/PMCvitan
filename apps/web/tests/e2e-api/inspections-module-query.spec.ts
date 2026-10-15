@@ -81,6 +81,8 @@ test.describe('inspections module-owned read (moduleQuery)', () => {
     const getsBefore = inspectionGETs.length;
     const decideDone = page.waitForResponse((r) => r.url().includes(`/projects/${A}/inspections/`) && r.url().endsWith('/decide') && r.request().method() === 'POST' && r.status() < 400);
     await approve.click();
+    // #482 QA item 2 — INSP-21 carries a FAILED item, so Approve is the secondary action and asks first
+    await page.getByTestId('confirm-approve-confirm').click();
     await decideDone;
 
     // the decide command executed and carried the Task-5 Idempotency-Key
