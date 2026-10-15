@@ -95,6 +95,13 @@ describe('the Drawings register in Hindi and Gujarati', () => {
       // the browser's own file button speaks the browser's language: the app draws its own (Codex, #902)
       expect(r2.getByTestId('issue-drawing-file').style.position).toBe('absolute');
       expect(r2.getByTestId('issue-drawing-file-status').textContent).not.toMatch(/[A-Za-z]/);
+      // a keyboard user tabbing to the hidden input sees the focus on the app's own button (Codex, #902)
+      const button = r2.getByTestId('issue-drawing-file-button');
+      expect(button.style.outline).toBe('');
+      fireEvent.focus(r2.getByTestId('issue-drawing-file'));
+      expect(button.style.outline).toContain('2px solid');
+      fireEvent.blur(r2.getByTestId('issue-drawing-file'));
+      expect(button.style.outline).toBe('');
     });
 
     it(`${lang}: a revision the API-less demo issued says who issued it in the language (Codex, #902)`, async () => {
