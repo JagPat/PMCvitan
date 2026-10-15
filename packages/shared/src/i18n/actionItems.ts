@@ -238,16 +238,28 @@ export function forYouCount(n: number, lang: Lang): string {
   return `${n} thing${n === 1 ? ' needs' : 's need'} you`;
 }
 
-/** QA item 6 (#482) — a contractor's and a consultant's For You holds only decisions and drawings (drawing
- *  acknowledgements or reviews, change requests), so their words never promise inspections or the site log. */
-function decisionsAndDrawingsOnly(role: Role | undefined): boolean {
-  return role === 'contractor' || role === 'consultant';
+/** QA item 6 (#482) — what this role's For You can hold. A contractor's and a consultant's holds only decisions
+ *  and drawings (drawing acknowledgements or reviews, change requests); an architect's only decisions (approvals,
+ *  re-approvals, countersigns). Their words never promise inspections or the site log. */
+function forYouScope(role: Role | undefined): 'all' | 'decisionsAndDrawings' | 'decisions' {
+  if (role === 'contractor' || role === 'consultant') return 'decisionsAndDrawings';
+  if (role === 'architect') return 'decisions';
+  return 'all';
 }
 
 /** The intro line under the heading, split around the project's short name (data, shown bold between them).
  *  It names only the kinds of work this role's For You can hold (QA item 6). */
 export function forYouIntro(lang: Lang, role?: Role): { before: string; after: string } {
-  if (decisionsAndDrawingsOnly(role)) {
+  const scope = forYouScope(role);
+  if (scope === 'decisions') {
+    if (lang === 'hi') return { before: '', after: ' में आपकी राह देख रहे निर्णय — एक जगह। सीधे वहाँ जाने के लिए कार्ड दबाएँ। दूसरा प्रोजेक्ट देखने के लिए प्रोजेक्ट बदलें।' };
+    if (lang === 'gu') return { before: '', after: ' માં તમારી રાહ જોતા નિર્ણય — એક જગ્યાએ. સીધા ત્યાં જવા કાર્ડ દબાવો. બીજો પ્રોજેક્ટ જોવા પ્રોજેક્ટ બદલો.' };
+    return {
+      before: 'Decisions waiting on you in ',
+      after: ', in one place. Tap a card to go straight there. Use the project switcher to see another project.',
+    };
+  }
+  if (scope === 'decisionsAndDrawings') {
     if (lang === 'hi') return { before: '', after: ' में आपकी राह देख रहे निर्णय और ड्रॉइंग — एक जगह। सीधे वहाँ जाने के लिए कार्ड दबाएँ। दूसरा प्रोजेक्ट देखने के लिए प्रोजेक्ट बदलें।' };
     if (lang === 'gu') return { before: '', after: ' માં તમારી રાહ જોતા નિર્ણય અને ડ્રોઇંગ — એક જગ્યાએ. સીધા ત્યાં જવા કાર્ડ દબાવો. બીજો પ્રોજેક્ટ જોવા પ્રોજેક્ટ બદલો.' };
     return {
@@ -265,7 +277,13 @@ export function forYouIntro(lang: Lang, role?: Role): { before: string; after: s
 
 /** The empty list's second line, naming only what this role's For You can hold (QA item 6). */
 export function forYouNothingDetail(lang: Lang, role?: Role): string {
-  if (!decisionsAndDrawingsOnly(role)) return forYouLabels.nothingDetail[lang];
+  const scope = forYouScope(role);
+  if (scope === 'all') return forYouLabels.nothingDetail[lang];
+  if (scope === 'decisions') {
+    if (lang === 'hi') return 'जब कोई निर्णय आपकी राह देखेगा, वह यहाँ दिखेगा।';
+    if (lang === 'gu') return 'જ્યારે કોઈ નિર્ણય તમારી રાહ જોશે, તે અહીં દેખાશે.';
+    return 'When a decision is waiting on you, it’ll show up here.';
+  }
   if (lang === 'hi') return 'जब कोई निर्णय या ड्रॉइंग आपकी राह देखेगा, वह यहाँ दिखेगा।';
   if (lang === 'gu') return 'જ્યારે કોઈ નિર્ણય કે ડ્રોઇંગ તમારી રાહ જોશે, તે અહીં દેખાશે.';
   return 'When a decision or drawing is waiting on you, it’ll show up here.';

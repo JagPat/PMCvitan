@@ -4,8 +4,8 @@ import { forYouIntro, forYouNothingDetail, type Lang, type Role } from '@vitan/s
 
 /**
  * #482 live QA item 6 — the For You subtitle depends on the role. A contractor's and a consultant's For You holds
- * only decisions and drawings, so neither the intro nor the empty-list line mentions inspections or the site log,
- * in any language. The architect (and the PMC when the list shows) keep the full wording.
+ * only decisions and drawings, and an architect's only decisions, so neither the intro nor the empty-list line
+ * mentions inspections or the site log, in any language. The PMC (when the list shows) keeps the full wording.
  */
 
 afterEach(() => {
@@ -30,7 +30,7 @@ async function inbox(role: Role, lang: Lang, empty: boolean) {
 }
 
 describe('the For You subtitle names only what the role can find there', () => {
-  for (const role of ['contractor', 'consultant'] as const) {
+  for (const role of ['contractor', 'consultant', 'architect'] as const) {
     for (const lang of ['en', 'hi', 'gu'] as const) {
       it(`${role}, ${lang}: no inspections or site log, on the list and on the empty screen`, async () => {
         const intro = forYouIntro(lang, role);
@@ -48,10 +48,20 @@ describe('the For You subtitle names only what the role can find there', () => {
     expect(text).toContain('When a decision or drawing is waiting on you, it’ll show up here.');
   });
 
-  it('the architect keeps the full wording', async () => {
+  it('the architect reads decisions only, since countersigns and approvals are all their list holds', async () => {
     const text = await inbox('architect', 'en', true);
-    expect(text).toContain('— decisions, drawings, inspections and the site log —');
-    expect(text).toContain('When a decision, drawing or inspection is waiting on you, it’ll show up here.');
+    expect(text).toContain('Decisions waiting on you in ');
+    expect(text).toContain('When a decision is waiting on you, it’ll show up here.');
+    for (const lang of ['en', 'hi', 'gu'] as const) {
+      expect(forYouNothingDetail(lang, 'architect')).not.toMatch(/drawing|ड्रॉइंग|ડ્રોઇંગ/i);
+      const intro = forYouIntro(lang, 'architect');
+      expect(`${intro.before}${intro.after}`).not.toMatch(/drawing|ड्रॉइंग|ડ્રોઇંગ/i);
+    }
+  });
+
+  it('the PMC and an unknown role keep the full wording', () => {
+    expect(`${forYouIntro('en', 'pmc').before}${forYouIntro('en', 'pmc').after}`).toContain('— decisions, drawings, inspections and the site log —');
+    expect(forYouNothingDetail('en', 'pmc')).toBe('When a decision, drawing or inspection is waiting on you, it’ll show up here.');
     expect(forYouIntro('en')).toEqual(forYouIntro('en', 'pmc'));
   });
 });
