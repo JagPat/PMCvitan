@@ -1,4 +1,5 @@
 import { type CSSProperties } from 'react';
+import { returnToPlaceText } from '@vitan/shared';
 import { useStore } from '@/store/store';
 
 /**
@@ -23,13 +24,14 @@ export function ReturnToPlace({ inViewer = false }: { inViewer?: boolean }) {
   const placeName = useStore((s) =>
     s.returnPlace?.nodeId ? s.nodes.find((n) => n.id === s.returnPlace?.nodeId)?.name ?? null : null);
   const openPlace = useStore((s) => s.openPlace);
+  const lang = useStore((s) => s.lang);
   if (!returnPlace || returnPlace.screen !== screen || returnPlace.item !== item || screen === 'places') return null;
   if (drawingViewerUp !== inViewer) return null;
   // a place removed meanwhile: return to the Site Map itself rather than to a node it can't open
   const target = placeName ? returnPlace.nodeId : null;
   return (
     <button type="button" style={inViewer ? inModal : stuck} data-testid="return-to-place" onClick={() => openPlace(target)}>
-      ← Back to {placeName ?? 'the Site Map'}
+      {returnToPlaceText(placeName, lang)}
     </button>
   );
 }
