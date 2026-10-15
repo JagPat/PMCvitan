@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readExif } from '@/lib/exif';
 import { captureStamp, hasStamp, stampText } from '@/lib/captureStamp';
 
@@ -382,5 +382,22 @@ describe('a rendered stamp is bounded', () => {
   it('E: leaves a normal stamp exactly as it is, and empty stays empty', () => {
     expect(stampText('11 Aug 2026 · 9:15 AM')).toBe('11 Aug 2026 · 9:15 AM');
     for (const v of [null, undefined, '']) expect(stampText(v)).toBe('');
+  });
+
+  it('E: reads spaces as no time, examining only the displayable head of a padded value', () => {
+    const trimmed: number[] = [];
+    const trim = String.prototype.trim;
+    const spy = vi.spyOn(String.prototype, 'trim').mockImplementation(function (this: string) {
+      trimmed.push(this.length);
+      return trim.call(this);
+    });
+    try {
+      expect(stampText('   ')).toBe('');
+      expect(stampText(' '.repeat(2_000_000))).toBe('');
+      expect(stampText(`  11 Aug 2026 · 9:15 AM${' '.repeat(2_000_000)}`).startsWith('11 Aug 2026 · 9:15 AM')).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(Math.max(...trimmed)).toBeLessThanOrEqual(65);
   });
 });

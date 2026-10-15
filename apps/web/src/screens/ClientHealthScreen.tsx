@@ -55,16 +55,19 @@ export function ClientHealthScreen() {
           </div>
         ) : (
           <div className={`${styles.carousel} vscroll`} tabIndex={0} role="region" aria-label="Progress photos" style={{ margin: '6px 0 14px' }}>
-            {sitePhotos.slice(-6).reverse().map((p, i) => (
-              <div key={p.id} style={{ width: 250, borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(35,33,28,.12)' }}>
-                <div style={{ height: 170, position: 'relative', background: '#000' }}>
-                  <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            {sitePhotos.slice(-6).reverse().map((p, i) => {
+              const caption = stampText(p.takenAt);
+              return (
+                <div key={p.id} style={{ width: 250, borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(35,33,28,.12)' }}>
+                  <div style={{ height: 170, position: 'relative', background: '#000' }}>
+                    <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  </div>
+                  {caption && (
+                    <div data-testid="health-photo-caption" style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{caption}</div>
+                  )}
                 </div>
-                {stampText(p.takenAt) && (
-                  <div data-testid="health-photo-caption" style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{stampText(p.takenAt)}</div>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )
       ) : (

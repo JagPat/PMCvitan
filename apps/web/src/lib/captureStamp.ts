@@ -114,9 +114,14 @@ function displayTime(exifLocal: string): string | null {
  */
 const STAMP_DISPLAY_MAX = 64;
 
-/** A `takenAt` as it should be shown: bounded, and empty when there is nothing to show. */
+/**
+ * A `takenAt` as it should be shown: bounded, and empty when there is nothing to show.
+ * Only the displayable head is examined, so a value padded with megabytes of spaces costs no
+ * more than a normal one; whitespace-only reads as no time.
+ */
 export function stampText(takenAt: string | null | undefined): string {
-  const text = takenAt?.trim();
-  if (!text) return '';
-  return text.length > STAMP_DISPLAY_MAX ? `${text.slice(0, STAMP_DISPLAY_MAX)}…` : text;
+  if (!takenAt) return '';
+  const head = takenAt.slice(0, STAMP_DISPLAY_MAX + 1).trim();
+  if (!head) return '';
+  return takenAt.length > STAMP_DISPLAY_MAX ? `${head.slice(0, STAMP_DISPLAY_MAX)}…` : head;
 }

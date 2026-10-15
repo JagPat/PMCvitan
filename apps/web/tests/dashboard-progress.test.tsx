@@ -101,7 +101,7 @@ describe('Dashboard progress', () => {
 
   it('shows one photo figure, the on-record total, computed in demo mode too', () => {
     const r = render(<DashboardScreen />);
-    expect(r.queryByText('PROGRESS PHOTOS · DAILY LOG')).toBeNull(); // #482 QA 9: one photo count
+    expect(r.queryByText('PROGRESS PHOTOS · DAILY LOG')).toBeNull();
     expect(r.queryByText("PHOTOS IN TODAY'S LOG")).toBeNull(); // the log's count is not a daily media count
     expect(r.getByText('SITE PHOTOS ON RECORD')).toBeTruthy();
     expect(r.queryByText('PROGRESS PHOTOS THIS WEEK')).toBeNull();
