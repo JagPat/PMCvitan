@@ -3076,7 +3076,8 @@ model DailyLog {
   progress    Int            @default(0)
   // #482 site photos — the photos this log counts that are NOT Media rows filed on it (Media.dailyLogId): ones
   // taken before photos were filed on their log. The day's photo count is this plus the progress photos filed on
-  // the log; `progress` stays the count the sender saw. Backfilled once by its migration; 0 for every new log.
+  // the log; `progress` stays the count the sender saw. Set by its migration's backfill and, by a trigger, at the log's
+  // send (progress minus the filed photos, for previous-release apps); frozen otherwise. 0 for every new log.
   legacyPhotos Int           @default(0)
   crew        CrewRow[]
   materials   SiteMaterial[]
