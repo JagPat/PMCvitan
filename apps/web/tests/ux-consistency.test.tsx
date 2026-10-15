@@ -379,7 +379,7 @@ describe('the schedule says WHY an activity cannot be acted on', () => {
     // type carries `env` alone and `import.meta.url` is not a file URL under the runner, so the
     // bundler is the one thing here that already knows where the file is.
     const src = scheduleSource;
-    const revoke = src.slice(src.indexOf('aria-label="Revoke override"'));
+    const revoke = src.slice(src.indexOf('aria-label={L.revokeAria[lang]}'));
     const decl = revoke.slice(0, revoke.indexOf('>'));
     expect(decl, 'the revoke control must declare minWidth: 44').toContain('minWidth: 44');
     expect(decl, 'the revoke control must declare minHeight: 44').toContain('minHeight: 44');

@@ -76,7 +76,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -5049,53 +5049,53 @@ export const useStore = create<Store>()(
     },
     createActivity: (input) => {
       if (!gateway) {
-        get().flash('Planning needs the server.');
+        get().flash(SCT.planningNeedsServer[get().lang]);
         return;
       }
-      runRemote(() => gateway!.createActivity(input, newIdempotencyKey()), `Planned: ${input.name}.`);
+      runRemote(() => gateway!.createActivity(input, newIdempotencyKey()), () => SCX.planned(input.name, get().lang), undefined, () => DTX.unreachable[get().lang]);
     },
     updateActivity: (activityId, input) => {
       if (!gateway) {
-        get().flash('Planning needs the server.');
+        get().flash(SCT.planningNeedsServer[get().lang]);
         return;
       }
-      runRemote(() => gateway!.updateActivity(activityId, input, newIdempotencyKey()), 'Schedule updated.');
+      runRemote(() => gateway!.updateActivity(activityId, input, newIdempotencyKey()), () => SCT.updated[get().lang], undefined, () => DTX.unreachable[get().lang]);
     },
     deleteActivity: (activityId) => {
       if (!gateway) {
-        get().flash('Planning needs the server.');
+        get().flash(SCT.planningNeedsServer[get().lang]);
         return Promise.resolve(false);
       }
-      return runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), 'Activity removed from the plan.', (why) => `Couldn't delete this activity — ${why}`);
+      return runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), () => SCT.removed[get().lang], (why) => SCX.deleteRefused(why, get().lang), () => DTX.unreachable[get().lang]);
     },
     // Task 6: a manual readiness exception — attributable, reasoned, expiring (server records it)
     overrideGate: (activityId, input) => {
       if (!gateway) {
-        get().flash('Gate overrides need the server.');
+        get().flash(SCT.overridesNeedServer[get().lang]);
         return;
       }
-      runRemote(() => gateway!.overrideGate(activityId, input, newIdempotencyKey()), 'Override recorded — it expires automatically.');
+      runRemote(() => gateway!.overrideGate(activityId, input, newIdempotencyKey()), () => SCT.overrideRecorded[get().lang], undefined, () => DTX.unreachable[get().lang]);
     },
     revokeOverride: (activityId, overrideId) => {
       if (!gateway) {
-        get().flash('Gate overrides need the server.');
+        get().flash(SCT.overridesNeedServer[get().lang]);
         return;
       }
-      runRemote(() => gateway!.revokeOverride(activityId, overrideId, newIdempotencyKey()), 'Override revoked — derived readiness applies again.');
+      runRemote(() => gateway!.revokeOverride(activityId, overrideId, newIdempotencyKey()), () => SCT.overrideRevoked[get().lang], undefined, () => DTX.unreachable[get().lang]);
     },
     createPhase: (name) => {
       if (!gateway) {
-        get().flash('Planning needs the server.');
+        get().flash(SCT.planningNeedsServer[get().lang]);
         return;
       }
-      runRemote(() => gateway!.createPhase({ name }, newIdempotencyKey()), `Phase added: ${name}.`);
+      runRemote(() => gateway!.createPhase({ name }, newIdempotencyKey()), () => SCX.phaseAdded(name, get().lang), undefined, () => DTX.unreachable[get().lang]);
     },
     deletePhase: (phaseId) => {
       if (!gateway) {
-        get().flash('Planning needs the server.');
+        get().flash(SCT.planningNeedsServer[get().lang]);
         return;
       }
-      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), 'Phase removed — its activities stay in the flat list.', (why) => `Couldn't remove this phase — ${why}`);
+      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), () => SCT.phaseRemoved[get().lang], (why) => SCX.phaseRefused(why, get().lang), () => DTX.unreachable[get().lang]);
     },
     issueChecklist: (input) => {
       if (!gateway) {
@@ -5287,7 +5287,7 @@ export const useStore = create<Store>()(
       // Task 10 (Module 4): one key for the online call AND the queued op — a lost-response retry or
       // an offline replay reaches the ledger under the SAME key, so the start applies exactly once.
       const startKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'startActivity', activityId: id, idempotencyKey: startKey }, 'Start ' + id, () => gateway!.startActivity(id, startKey), 'Activity started — planned dates now tracking against actual.')) return;
+      if (runRemoteOrQueue({ t: 'startActivity', activityId: id, idempotencyKey: startKey }, 'Start ' + id, () => gateway!.startActivity(id, startKey), () => SCT.started[get().lang], DLX.savedOffline(SCX.startCommand(id, get().lang), get().lang))) return;
       set((s) => {
         const a = s.activities.find((x) => x.id === id);
         if (a) {
@@ -5295,13 +5295,13 @@ export const useStore = create<Store>()(
           a.as = s.todayDay;
         }
       });
-      get().flash('Activity started — planned dates now tracking against actual.');
+      get().flash(SCT.started[get().lang]);
     },
     completeActivity: (id) => {
       // Task 5: completion is a CLAIM — the activity parks in awaiting-signoff and
       // only the PMC's approval of the linked closing inspection makes it done
       const completeKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'completeActivity', activityId: id, idempotencyKey: completeKey }, 'Complete ' + id, () => gateway!.completeActivity(id, completeKey), 'Completion claimed — the PMC’s closing sign-off will mark it done.')) return;
+      if (runRemoteOrQueue({ t: 'completeActivity', activityId: id, idempotencyKey: completeKey }, 'Complete ' + id, () => gateway!.completeActivity(id, completeKey), () => SCT.claimed[get().lang], DLX.savedOffline(SCX.completeCommand(id, get().lang), get().lang))) return;
       const act = get().activities.find((a) => a.id === id);
       set((s) => {
         const a = s.activities.find((x) => x.id === id);
@@ -5331,7 +5331,7 @@ export const useStore = create<Store>()(
         });
         s.notifications.unshift({ text: 'Sign-off requested: ' + (act ? act.name : id), time: 'just now', color: '#C08A2D' });
       });
-      get().flash('Completion claimed — the PMC’s closing sign-off will mark it done.');
+      get().flash(SCT.claimed[get().lang]);
     },
 
     // ---- daily log (phone = attendance device) ----
