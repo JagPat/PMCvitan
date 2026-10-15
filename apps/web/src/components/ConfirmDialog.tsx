@@ -1,6 +1,7 @@
 import { useId, type ReactNode } from 'react';
 import { Modal } from './Modal';
 import { Button } from './Button';
+import { confirmDialogLabels, type Lang } from '@vitan/shared';
 
 /**
  * Audit B4 — the one confirmation every destructive action goes through: it names the thing,
@@ -15,6 +16,7 @@ export function ConfirmDialog({
   onCancel,
   blocked,
   testId = 'confirm-dialog',
+  lang = 'en',
 }: {
   title: string;
   children?: ReactNode;
@@ -23,6 +25,8 @@ export function ConfirmDialog({
   onCancel: () => void;
   blocked?: string;
   testId?: string;
+  /** #482 — the Cancel/Close word; English unless the caller's own words are translated */
+  lang?: Lang;
 }) {
   const titleId = useId();
   return (
@@ -33,7 +37,7 @@ export function ConfirmDialog({
         {blocked && <div style={{ fontSize: 13, color: 'var(--red-solid)', marginTop: 10, lineHeight: 1.5 }} data-testid={`${testId}-blocked`}>{blocked}</div>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
           <Button variant="outline" onClick={onCancel} data-testid={`${testId}-cancel`} style={{ padding: '10px 16px' }}>
-            {blocked ? 'Close' : 'Cancel'}
+            {blocked ? confirmDialogLabels.close[lang] : confirmDialogLabels.cancel[lang]}
           </Button>
           {!blocked && (
             <Button variant="danger" onClick={() => { onConfirm(); onCancel(); }} data-testid={`${testId}-confirm`} style={{ padding: '10px 16px' }}>

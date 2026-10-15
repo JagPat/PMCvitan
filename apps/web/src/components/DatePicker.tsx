@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { addCivilDays, parseCivilDate } from '@vitan/shared';
+import { addCivilDays, datePickerText, parseCivilDate, type Lang } from '@vitan/shared';
 
 /**
  * #827 (approved mockup "PlanDates") — a real date picker in place of typed day numbers. The field
@@ -11,14 +11,17 @@ import { addCivilDays, parseCivilDate } from '@vitan/shared';
  * button with its full date as its name, so a keyboard or screen-reader user picks a day the same way.
  */
 
-const FIELD_FMT = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
-const DAY_NAME_FMT = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
-const MONTH_FMT = new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+// #482 QA item 3 — every label follows the reader's language; English keeps its en-GB forms
+const LOCALE: Record<Lang, string> = { en: 'en-GB', hi: 'hi-IN', gu: 'gu-IN' };
+const fmt = (lang: Lang, o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(LOCALE[lang], { ...o, timeZone: 'UTC' });
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+/** Monday-first weekday heads: English's fixed three letters, else the reader's own short names */
+const weekdays = (lang: Lang): string[] =>
+  lang === 'en' ? WEEKDAYS : Array.from({ length: 7 }, (_, i) => fmt(lang, { weekday: 'short' }).format(new Date(Date.UTC(2026, 9, 12 + i))));
 
 /** "Tue 20 Oct 2026" — the field's text for a civil date. */
-export function pickerLabel(iso: string): string {
-  return FIELD_FMT.format(parseCivilDate(iso)).replace(',', '');
+export function pickerLabel(iso: string, lang: Lang = 'en'): string {
+  return fmt(lang, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }).format(parseCivilDate(iso)).replace(',', '');
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -56,6 +59,7 @@ export function DatePicker({
   min,
   today,
   testId,
+  lang = 'en',
 }: {
   label: string;
   value: string;
@@ -63,6 +67,8 @@ export function DatePicker({
   min?: string;
   today?: string;
   testId: string;
+  /** the caller's language (English when not given) */
+  lang?: Lang;
 }) {
   const [open, setOpen] = useState(false);
   const [month, setMonth] = useState(() => monthStart(value));
@@ -121,24 +127,24 @@ export function DatePicker({
         }}
         aria-expanded={open}
         aria-controls={panelId}
-        aria-label={`${label}: ${pickerLabel(value)}`}
+        aria-label={`${label}: ${pickerLabel(value, lang)}`}
         data-testid={testId}
         style={{ ...fieldStyle, ...(open ? { border: '2px solid var(--accent)' } : {}) }}
       >
-        <span>{pickerLabel(value)}</span>
+        <span>{pickerLabel(value, lang)}</span>
         <span aria-hidden="true">▾</span>
       </button>
       {open && (
-        <div id={panelId} role="group" aria-label={`${label} calendar`} data-testid={`${testId}-calendar`}
+        <div id={panelId} role="group" aria-label={datePickerText.calendar(label, lang)} data-testid={`${testId}-calendar`}
           style={{ marginTop: 8, borderRadius: 12, background: '#fff', border: '1px solid rgba(35,33,28,.12)', padding: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <button type="button" aria-label="Previous month" disabled={!canGoBack} onClick={() => setMonth((m) => shiftMonth(m, -1))}
+            <button type="button" aria-label={datePickerText.previous[lang]} disabled={!canGoBack} onClick={() => setMonth((m) => shiftMonth(m, -1))}
               style={{ ...navStyle, opacity: canGoBack ? 1 : 0.3 }}>‹</button>
-            <div style={{ fontWeight: 700, fontSize: 14 }} aria-live="polite">{MONTH_FMT.format(parseCivilDate(month))}</div>
-            <button type="button" aria-label="Next month" onClick={() => setMonth((m) => shiftMonth(m, 1))} style={navStyle}>›</button>
+            <div style={{ fontWeight: 700, fontSize: 14 }} aria-live="polite">{fmt(lang, { month: 'long', year: 'numeric' }).format(parseCivilDate(month))}</div>
+            <button type="button" aria-label={datePickerText.next[lang]} onClick={() => setMonth((m) => shiftMonth(m, 1))} style={navStyle}>›</button>
           </div>
           <div aria-hidden="true" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', textAlign: 'center', fontSize: 11.5, fontWeight: 600, color: 'var(--muted)' }}>
-            {WEEKDAYS.map((w) => <div key={w}>{w}</div>)}
+            {weekdays(lang).map((w) => <div key={w}>{w}</div>)}
           </div>
           <div ref={gridRef} onKeyDown={onGridKey} style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 2, marginTop: 4 }}>
             {cells.map((iso, i) => {
@@ -153,7 +159,7 @@ export function DatePicker({
                   tabIndex={iso === tabStop ? 0 : -1}
                   data-day={iso}
                   aria-pressed={selected}
-                  aria-label={DAY_NAME_FMT.format(parseCivilDate(iso))}
+                  aria-label={fmt(lang, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(parseCivilDate(iso))}
                   aria-current={iso === today ? 'date' : undefined}
                   onClick={() => { onChange(iso); setOpen(false); toggleRef.current?.focus(); }}
                   data-testid={`${testId}-day-${iso}`}
