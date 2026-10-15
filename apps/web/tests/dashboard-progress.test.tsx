@@ -99,9 +99,9 @@ describe('Dashboard progress', () => {
     expect(r.getByTestId('milestone-PH-services').getAttribute('data-state')).toBe('started');
   });
 
-  it('names the two photo figures apart and computes the on-record total in demo mode too', () => {
+  it('shows one photo figure, the on-record total, computed in demo mode too', () => {
     const r = render(<DashboardScreen />);
-    expect(r.getByText('PROGRESS PHOTOS · DAILY LOG')).toBeTruthy();
+    expect(r.queryByText('PROGRESS PHOTOS · DAILY LOG')).toBeNull(); // #482 QA 9: one photo count
     expect(r.queryByText("PHOTOS IN TODAY'S LOG")).toBeNull(); // the log's count is not a daily media count
     expect(r.getByText('SITE PHOTOS ON RECORD')).toBeTruthy();
     expect(r.queryByText('PROGRESS PHOTOS THIS WEEK')).toBeNull();

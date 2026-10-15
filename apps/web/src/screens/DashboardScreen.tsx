@@ -48,7 +48,6 @@ export function DashboardScreen() {
   const failedCount = API_BASE ? reinspections.items : demoFailedCount;
   const workers = useStore(selectTotalWorkers);
   const materialsCount = useStore((s) => s.dailyLog?.materials.length ?? 0);
-  const progress = useStore((s) => s.dailyLog?.progress ?? 0);
   const checkedIn = useStore((s) => s.dailyLog?.checkedIn ?? false);
   const submitted = useStore((s) => s.dailyLog?.submitted ?? false);
   // #818 Codex 4255945769 — under the daily-log module read, the strip shows the log's facts only once that read
@@ -226,9 +225,9 @@ export function DashboardScreen() {
           {[
             { v: logPending ? UNKNOWN : workers, l: 'WORKERS ON SITE' },
             { v: logPending ? UNKNOWN : materialsCount, l: 'MATERIALS LOGGED' },
-            // the daily log's own reported count (DailyLog.progress — not linked to media, so no
-            // "today" claim); named apart from the photos-on-record tile below (F-13)
-            { v: logPending ? UNKNOWN : progress, l: 'PROGRESS PHOTOS · DAILY LOG' },
+            // #482 QA 9: no photo figure here. The daily log's self-reported count (DailyLog.progress,
+            // not linked to media) read as a contradiction beside the tile below, so the Dashboard keeps
+            // ONE photo count: "Site photos on record", the photos the latest-photos list shows.
           ].map((s) => (
             <div key={s.l} style={{ textAlign: 'center' }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 22 }}>{s.v}</div>
