@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useStore } from '@/store/store';
 import { countActionItems, selectActionItems, type ActionItem } from '@/store/selectors';
-import { actionItemText, forYouCount, forYouIntro, forYouLabels as FY, forYouRole } from '@vitan/shared';
+import { actionItemText, forYouCount, forYouIntro, forYouLabels as FY, forYouNothingDetail, forYouRole } from '@vitan/shared';
 import { Eyebrow, Button } from '@/components';
 import { ArrowRight, CircleCheck } from '@/lib/icons';
 import { EngineerToday } from './EngineerToday';
@@ -114,7 +114,7 @@ export function InboxScreen() {
         {total ? forYouCount(total, lang) : FY.caughtUp[lang]}
       </div>
       <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, maxWidth: 560 }}>
-        {forYouIntro(lang).before}<b>{short}</b>{forYouIntro(lang).after}
+        {forYouIntro(lang, role).before}<b>{short}</b>{forYouIntro(lang, role).after}
       </div>
 
       {items.length === 0 ? (
@@ -124,7 +124,7 @@ export function InboxScreen() {
         >
           <CircleCheck size={28} color="var(--green-solid)" />
           <div style={{ marginTop: 10, fontWeight: 600, color: 'var(--ink)' }}>{FY.nothing[lang]}</div>
-          <div style={{ marginTop: 4 }}>{FY.nothingDetail[lang]}</div>
+          <div style={{ marginTop: 4 }}>{forYouNothingDetail(lang, role)}</div>
         </div>
       ) : (
         <div style={{ marginTop: 22 }}>
