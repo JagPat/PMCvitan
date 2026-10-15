@@ -490,7 +490,7 @@ export function PlacesScreen() {
 
 /** Intent vs Reality — the governing drawing beside the site photos of what's built, so
  *  "does it match?" is a glance. Shows the build-acknowledgement state on the drawing. */
-function IntentReality({
+export function IntentReality({
   placed,
   photos,
   onOpenDrawing,
@@ -510,6 +510,7 @@ function IntentReality({
       ? `Building to Rev ${cur.rev} · ${acks.length} acknowledged`
       : `Rev ${cur.rev} · not yet acknowledged`;
   const hero = photos[0];
+  const heroStamp = stampText(hero?.takenAt);
   const rm = RELATION_META[relation];
 
   return (
@@ -553,7 +554,7 @@ function IntentReality({
             ))}
             {photos.length > 4 && <span style={{ fontSize: 11, color: 'var(--faint)' }}>+{photos.length - 4}</span>}
           </div>
-          {hero?.takenAt && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Latest · {stampText(hero.takenAt)}</div>}
+          {heroStamp && <div data-testid="ir-photo-stamp" style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Latest · {heroStamp}</div>}
         </div>
       </div>
     </div>

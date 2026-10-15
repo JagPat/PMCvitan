@@ -59,3 +59,19 @@ describe('#482 QA 8: no empty caption bar on Project Health photos', () => {
     expect(captions[0].textContent).toBe('14 Oct 2026, 10:02');
   });
 });
+
+describe('#482 QA 8: no dangling "Latest ·" on the Site Map', () => {
+  const placed = { drawing: { id: 'd1', number: 'A-101', title: 'Ground floor plan', current: null }, relation: 'here' } as never;
+  it.each([
+    ['no capture time', undefined, null],
+    ['only spaces', '   ', null],
+    ['text past the scan window', `${' '.repeat(300)}14 Oct 2026, 10:02`, null],
+    ['a capture time', '14 Oct 2026, 10:02', 'Latest · 14 Oct 2026, 10:02'],
+  ])('%s', async (_name, takenAt, expected) => {
+    const { IntentReality } = await import('@/screens/PlacesScreen');
+    const r = render(
+      <IntentReality placed={placed} photos={[{ id: 'm1', url: 'http://api.test/m1.jpg', kind: 'progress', takenAt } as never]} onOpenDrawing={() => {}} onZoom={() => {}} />,
+    );
+    expect(r.queryByTestId('ir-photo-stamp')?.textContent ?? null).toBe(expected);
+  });
+});
