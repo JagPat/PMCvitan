@@ -624,9 +624,10 @@ export function selectActionItems(s: AppState): ActionItem[] {
       const due = reinspecting.map((c) => c.dueDate).filter((d): d is string => typeof d === 'string').sort()[0];
       // UX brief (#633 rule, #771) — the same open-issue count as the Site Map and the Dashboard: an undecided
       // re-inspection's open issues are its items (the server's `openIssues`), so these cards' issues plus the
-      // in-review re-inspections' items are the Dashboard's failed items. The card's own count stays per record
+      // in-review re-inspections' items are the Dashboard's failed items. The card's own count stays per record.
+      // The number leads the one-line detail, which clips long names with an ellipsis (Codex on #897)
       const issues = reinspecting.reduce((n, c) => n + c.items.length, 0);
-      items.push({ key: 'pmc-reinspections', title: `${reinspecting.length} re-inspection${plural(reinspecting.length)} with the engineer`, detail: [names(reinspecting), `${issues} open issue${plural(issues)}`, due ? `next due ${civilDayLabel(due)}` : ''].filter(Boolean).join(' · '), facts: { n: reinspecting.length, names: names(reinspecting), issues, ...(due ? { due } : {}) }, screen: 'inspect-review', cta: 'Follow up', tone: 'amber', count: reinspecting.length, item: inspectionsSettledForLinks(s) ? only(reinspecting) : undefined });
+      items.push({ key: 'pmc-reinspections', title: `${reinspecting.length} re-inspection${plural(reinspecting.length)} with the engineer`, detail: [`${issues} open issue${plural(issues)}`, names(reinspecting), due ? `next due ${civilDayLabel(due)}` : ''].filter(Boolean).join(' · '), facts: { n: reinspecting.length, names: names(reinspecting), issues, ...(due ? { due } : {}) }, screen: 'inspect-review', cta: 'Follow up', tone: 'amber', count: reinspecting.length, item: inspectionsSettledForLinks(s) ? only(reinspecting) : undefined });
     }
     // Task 6: unstarted work whose DRAWING gate blocks it — the derived conclusion, surfaced
     const drawingBlocked = s.activities.filter((a) => {

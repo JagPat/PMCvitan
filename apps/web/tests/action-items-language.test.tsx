@@ -118,9 +118,9 @@ describe('the For You screen in Hindi and Gujarati', () => {
 describe('the PMC re-inspection card names its open issues in every language', () => {
   const item = (issues: number) => ({ key: 'pmc-reinspections', title: 'English title', detail: 'x', cta: 'Follow up', facts: { n: 2, names: 'Slab casting', issues } });
   it('Hindi and Gujarati carry the same number as the English card', () => {
-    expect(actionItemText(item(3), 'hi').detail).toBe('Slab casting · 3 खुली समस्याएँ');
-    expect(actionItemText(item(1), 'hi').detail).toBe('Slab casting · 1 खुली समस्या');
-    expect(actionItemText(item(3), 'gu').detail).toBe('Slab casting · 3 ખુલ્લી સમસ્યાઓ');
-    expect(actionItemText(item(1), 'gu').detail).toBe('Slab casting · 1 ખુલ્લી સમસ્યા');
+    expect(actionItemText(item(3), 'hi').detail).toBe('3 खुली समस्याएँ · Slab casting');
+    expect(actionItemText(item(1), 'hi').detail).toBe('1 खुली समस्या · Slab casting');
+    expect(actionItemText(item(3), 'gu').detail).toBe('3 ખુલ્લી સમસ્યાઓ · Slab casting');
+    expect(actionItemText(item(1), 'gu').detail).toBe('1 ખુલ્લી સમસ્યા · Slab casting');
   });
 });

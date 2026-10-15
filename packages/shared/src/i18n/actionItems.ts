@@ -166,7 +166,7 @@ function translated(key: string, f: ActionItemFacts, detail: string | undefined,
       const issues = typeof k !== 'number' ? '' : hi ? `${k} खुली ${k === 1 ? 'समस्या' : 'समस्याएँ'}` : `${k} ખુલ્લી ${k === 1 ? 'સમસ્યા' : 'સમસ્યાઓ'}`;
       return {
         title: hi ? `${n} दोबारा निरीक्षण इंजीनियर के पास` : `${n} ફરી નિરીક્ષણ ઇજનેર પાસે`,
-        detail: [f.names ?? '', issues, due].filter(Boolean).join(' · '),
+        detail: [issues, f.names ?? '', due].filter(Boolean).join(' · '),
       };
     }
     case 'pmc-drawing-gate':
