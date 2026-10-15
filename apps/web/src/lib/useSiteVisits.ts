@@ -108,6 +108,9 @@ async function readPages(
   }
 }
 
+/** The server's Q6 line (site-visits.query.ts): a device fix less accurate than this reads as approximate. */
+const APPROXIMATE_ACCURACY_M = 100;
+
 /** `old` with every row in `fresh` put in its place (the fresher read wins). */
 function merged(old: SiteVisit[], fresh: SiteVisit[]): SiteVisit[] {
   const ids = new Set(fresh.map((v) => v.id));
@@ -131,7 +134,7 @@ export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | n
         id, visitorId: me ?? '', visitorName: visitor.name, visitorRole: visitor.role, status: 'open',
         startedAt: body.claimedAt, startTimeAdjusted: false,
         startPlace: body.nodeId ? { nodeId: body.nodeId, name: visitor.placeName ?? '' } : null,
-        location: body.location ? { kind: 'device', ...body.location, approximate: false } : { kind: 'none' },
+        location: body.location ? { kind: 'device', ...body.location, approximate: body.location.accuracyM > APPROXIMATE_ACCURACY_M } : { kind: 'none' },
         endedAt: null, endTimeAdjusted: null, closedAt: null, closedById: null, closeReason: null,
         lateEndedAt: null, lateEndTimeAdjusted: null, places: [], attendees: [],
       });
@@ -154,7 +157,7 @@ export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | n
         if (!v.places.some((p) => p.id === op.body.id)) {
           byId.set(id, { ...v, places: [...v.places, {
             id: op.body.id, nodeId: op.body.nodeId, name: op.name, addedAt: op.body.claimedAt,
-            addedTimeAdjusted: false, addedAfterEnd: false, retiredAt: null,
+            addedTimeAdjusted: false, addedAfterEnd: v.status !== 'open', retiredAt: null,
           }] });
         }
         break;
@@ -205,6 +208,8 @@ export function useSiteVisits() {
   // the rows and queued acts as last rendered, for the outbox's answers: an answer replaces only a visit this screen
   // shows or is waiting to start, so one that lands after a project switch or a new sign-in is not shown there
   const known = useRef(new Set<string>());
+  // visits a refused start's acts were moved onto: their answers belong here even before a read shows the visit
+  const movedTo = useRef(new Set<string>());
 
   const live = (scope: ProjectScope): boolean => {
     const s = useStore.getState();
@@ -270,6 +275,7 @@ export function useSiteVisits() {
     setBusy(false);
     setError(null);
     setNotice(null);
+    movedTo.current = new Set();
     readHead(true);
     sendQueued();
   }, [projectId, generation, readHead]);
@@ -282,13 +288,14 @@ export function useSiteVisits() {
       if (e.project !== useStore.getState().activeProjectId) return;
       const lang = useStore.getState().lang;
       if (e.kind === 'answer') {
-        if (!known.current.has(e.visit.id)) return;
+        if (!known.current.has(e.visit.id) && !movedTo.current.has(e.visit.id)) return;
         turn.current += 1;
         setRows((old) => merged(old, [e.visit]));
       } else if (e.kind === 'refused') {
         setError(refusedText(e.message, lang));
         readHead(false);
       } else {
+        movedTo.current.add(e.to); // the moved acts' answers carry the open visit's id
         setNotice(SV.moved[lang]);
         readHead(false);
       }

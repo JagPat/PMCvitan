@@ -5617,7 +5617,9 @@ export const useStore = create<Store>()(
       // lease, so if a newer socket/mutation lease begins while a replay is in flight
       // the flush's (older) snapshot is `superseded` and discarded instead of stomping
       // the newer checklist. This is the reviewer's manifestation #1 — the core bug.
-      const flushLease = beginSnapshotLease(flushScope);
+      // A batch of site visit acts alone reads no snapshot (each answer goes to its own screen), so it takes no
+      // lease: one taken and never used would discard a snapshot already in flight as superseded.
+      const flushLease = ops.some((o) => !isSiteVisitOp(o)) ? beginSnapshotLease(flushScope) : null;
 
       // Replay in order, one at a time, committing progress as we go so a later failure
       // never re-runs an op that already succeeded. A permanently-rejected op (terminal
@@ -5703,6 +5705,9 @@ export const useStore = create<Store>()(
                   stoppedAt = i; // the open visit could not be read: the start and its acts replay next time
                   break;
                 }
+                // no open visit by now (another device ended it after the refusal): the refused start changed
+                // nothing, so the same start, under the same key, is sent again next time with its acts
+                if (!open) { stoppedAt = i; break; }
               }
               if (op.t === 'siteVisitStart') {
                 const rest = ops.slice(i + 1);
@@ -5794,7 +5799,7 @@ export const useStore = create<Store>()(
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).
-      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg, flushLease.scope);
+      if (lastSnap && flushLease) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg, flushLease.scope);
 
       const parts: string[] = [];
       const lang = get().lang;

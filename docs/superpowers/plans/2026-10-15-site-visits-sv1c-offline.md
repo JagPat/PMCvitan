@@ -26,7 +26,10 @@ word is in English, Hindi and Gujarati.
 3. **A start refused because a visit is already open keeps its acts (F53).** The visitor may have started a visit
    on another device and forgotten it. When a queued start meets the server's one-open-visit refusal, the flush
    reads the visitor's own open visit. It moves the places, people and End queued for the refused visit onto that
-   visit, and the screen says so. If that read fails, the start and its acts wait for the next send. Any other
+   visit, and the screen says so. If that read fails, or finds no open visit (another device ended it after the
+   refusal), the start and its acts wait for the next send, under the same key: the refused start changed
+   nothing, so it can go again. Answers to the moved acts are shown on the open visit even before a read lists
+   it. Any other
    refused start takes its queued acts with it, and the screen gives the server's reason once. The starting place
    and location of a refused start are not carried over: the open visit already has its own.
 4. **Shown at once, from the queue.** Until an act is answered, the screen applies the queued acts in order on top

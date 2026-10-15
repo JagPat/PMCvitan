@@ -3,8 +3,8 @@ import { render, cleanup, fireEvent, act, screen, within } from '@testing-librar
 import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
-import { refreshSiteVisits, uuidV4, VISIT_PAGE } from '@/lib/useSiteVisits';
-import type { ApiGateway, SiteVisit } from '@/data/apiGateway';
+import { refreshSiteVisits, uuidV4, VISIT_PAGE, withQueued } from '@/lib/useSiteVisits';
+import type { ApiGateway, ApiSnapshot, SiteVisit } from '@/data/apiGateway';
 import { leftoverEnglish } from './leftover-english';
 
 /**
@@ -471,6 +471,49 @@ describe('Site Visits screen', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+    it('keeps a start refused for an open visit that is gone by the lookup, and sends it again with its acts (Codex 4278681348)', async () => {
+    const conflict = Object.assign(new Error('409'), { status: 409, serverMessage: 'You already have a site visit open on this project; end it first' });
+    let refuse = true;
+    const startSiteVisit = signal((body: { id: string }): SiteVisit => { if (refuse) throw conflict; return own({ id: body.id }); });
+    const addSiteVisitAttendee = signal(() => visit());
+    // another device ended the open visit after the refusal: the open read finds none
+    await mount('pmc', PMC, fakeGateway([], { startSiteVisit, addSiteVisitAttendee }));
+    await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
+    const id = startSiteVisit.mock.calls[0][0].id;
+    const card = screen.getByTestId(`sv-visit-${id}`);
+    fireEvent.change(within(card).getByLabelText('Guest’s name'), { target: { value: 'Mr Mehta' } });
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Add guest' })); });
+    net.down = false;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send now' })); });
+    expect(useStore.getState().outbox.map((o) => o.t)).toEqual(['siteVisitStart', 'siteVisitAddAttendee']);
+    expect(screen.queryByRole('alert')).toBeNull();
+    // next time the same start, under the same key, goes, and its guest after it
+    refuse = false;
+    addSiteVisitAttendee.mockClear();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send now' })); });
+    expect(startSiteVisit.mock.calls.at(-1)).toEqual(startSiteVisit.mock.calls[0]);
+    expect(addSiteVisitAttendee).toHaveBeenCalledWith(id, expect.objectContaining({ guestName: 'Mr Mehta' }), expect.any(String));
+    expect(useStore.getState().outbox).toHaveLength(0);
+  });
+
+    it('shows the answers of acts moved onto the open visit before a read shows that visit (Codex 4278681356)', async () => {
+    const already = own({ id: 'v-open', startedAt: '2026-10-14T03:00:00.000Z' });
+    const conflict = Object.assign(new Error('409'), { status: 409, serverMessage: 'You already have a site visit open on this project; end it first' });
+    const startSiteVisit = signal((_body: { id: string }): SiteVisit => { throw conflict; });
+    const endSiteVisit = signal((): SiteVisit => ({ ...already, status: 'ended', endedAt: '2026-10-14T06:00:00.000Z' }));
+    const gw = fakeGateway([], { startSiteVisit, endSiteVisit });
+    await mount('pmc', PMC, gw);
+    await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
+    const card = screen.getByTestId(`sv-visit-${startSiteVisit.mock.calls[0][0].id}`);
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'End visit' })); });
+    net.down = false;
+    // the outbox's lookup finds the open visit; the screen's own reads have not answered yet
+    gw.listSiteVisits!.mockImplementationOnce(async () => [already]).mockImplementation(() => new Promise(() => {}));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send now' })); });
+    expect(endSiteVisit).toHaveBeenCalledWith('v-open', expect.any(String), expect.any(String));
+    expect(screen.getByTestId('sv-visit-v-open').textContent).toContain('Ended');
+  });
+
     it('takes the queued acts of a start refused for any other reason with it, and says why once', async () => {
     const refused = Object.assign(new Error('400'), { status: 400, serverMessage: 'That place is not a published place on this project' });
     const startSiteVisit = signal((_body: { id: string }): SiteVisit => { throw refused; });
@@ -575,5 +618,50 @@ describe('Site Visits screen', () => {
     await act(async () => { first(); });
     expect(screen.queryByTestId('sv-start')).toBeNull();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+});
+
+describe('queued acts drawn as the server will read them', () => {
+  const start = (accuracyM: number) => ({
+    t: 'siteVisitStart' as const, idempotencyKey: 'k', visitor: { name: 'Priya Shah', role: 'pmc', placeName: null },
+    body: { id: 'v-new', claimedAt: '2026-10-14T04:30:00.000Z', location: { lat: 23, lng: 72, accuracyM, at: '2026-10-14T04:30:00.000Z' } },
+  });
+
+  it('marks a coarse queued location approximate, as the server will (Codex 4278681374)', () => {
+    const loc = (m: number) => withQueued([], [start(m)], PMC).visits[0].location;
+    expect(loc(250)).toMatchObject({ kind: 'device', approximate: true });
+    expect(loc(100)).toMatchObject({ kind: 'device', approximate: false });
+  });
+
+  it('marks a place queued on an ended visit as added after the end (Codex 4278681369)', () => {
+    const add = (v: SiteVisit) => withQueued([v], [{
+      t: 'siteVisitAddPlace', visitId: 'v-1', idempotencyKey: 'k', name: 'Kitchen', body: { id: 'p-new', nodeId: 'n-kit', claimedAt: '2026-10-14T05:00:00.000Z' },
+    }], CONSULTANT).visits[0].places[0].addedAfterEnd;
+    expect(add(visit({ status: 'ended', endedAt: '2026-10-14T04:50:00.000Z' }))).toBe(true);
+    expect(add(visit())).toBe(false);
+  });
+});
+
+describe('a flush of site visit acts alone', () => {
+  it('leaves a snapshot already being read to land (Codex 4278681363)', async () => {
+    let release!: (s: ApiSnapshot) => void;
+    const snap = {
+      project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: 'G+2', stage: 'Finishing', siteCode: 'AMB', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+      decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+      drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+    } as unknown as ApiSnapshot;
+    const gw = {
+      snapshot: vi.fn(() => new Promise<ApiSnapshot>((r) => { release = r; })),
+      endSiteVisit: vi.fn(async () => visit({ status: 'ended', endedAt: '2026-10-14T06:00:00.000Z' })),
+    };
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT });
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    const read = Promise.resolve(useStore.getState().requestFreshSnapshot());
+    useStore.setState({ outbox: [{ t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-14T06:00:00.000Z', idempotencyKey: 'k' }] });
+    await useStore.getState().flushOutbox();
+    expect(gw.endSiteVisit).toHaveBeenCalledTimes(1);
+    release(snap);
+    await read;
+    await vi.waitFor(() => expect(useStore.getState().projectLoadState).toBe('ready'));
   });
 });
