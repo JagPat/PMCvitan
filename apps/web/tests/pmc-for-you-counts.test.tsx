@@ -99,7 +99,7 @@ describe('the re-inspections a rejection sent back reach the PMC’s For You', (
       role: 'pmc', sessionUserId: 'u-pmc', decisions: [], activities: [], drawings: [],
       openChecklists: [
         checklist('RE-1', { reinspectionOfId: 'INSP-1', dueDate: '2026-10-14', title: 'Re-inspection: Terrace' }),
-        checklist('RE-4', { reinspectionOfId: 'INSP-4', dueDate: '2026-10-13', title: 'Re-inspection: Stair' }),
+        checklist('RE-4', { reinspectionOfId: 'INSP-4', dueDate: '2026-10-13', title: 'Re-inspection: Stair', items: [item('RE-4-a'), item('RE-4-b')] }),
         checklist('RE-5', { reinspectionOfId: 'INSP-5', dueDate: null, title: 'Re-inspection: Lift' }),
         checklist('RE-SUB', { reinspectionOfId: 'INSP-6', submitted: true }),
         checklist('CK-9', { reinspectionOfId: null }),
@@ -114,14 +114,19 @@ describe('the re-inspections a rejection sent back reach the PMC’s For You', (
     const items = sel.selectActionItems(s);
     const re = items.find((i) => i.key === 'pmc-reinspections')!;
     expect(re).toMatchObject({ count: 3, title: '3 re-inspections with the engineer', screen: 'inspect-review', tone: 'amber' });
-    // the earliest stored civil due date, read from its parts
-    expect(re.detail).toBe('Re-inspection: Terrace, Re-inspection: Stair, Re-inspection: Lift · next due 13 Oct');
+    // the open issues are the re-inspections' items (the server's `openIssues`, the Site Map's count); the earliest
+    // stored civil due date, read from its parts
+    expect(re.detail).toBe('4 open issues · Re-inspection: Terrace, Re-inspection: Stair, Re-inspection: Lift · next due 13 Oct');
+    expect(re.facts).toMatchObject({ n: 3, issues: 4 });
     expect(re.item).toBeUndefined(); // three records: the card opens the list
     // the Dashboard's open re-inspections are exactly these plus the re-inspection already in the review queue
     const reviewsItem = items.find((i) => i.key === 'pmc-reviews')!;
     expect(reviewsItem.count).toBe(sel.selectReviewPending(s));
     const inReview = s.reviews.filter((r) => r.reinspectionOfId && !r.decided).length;
     expect(sel.selectOpenReinspections(s).count).toBe(re.count! + inReview);
+    // and the open issues: this card's plus the in-review re-inspections' items are the Dashboard's failed items
+    const inReviewItems = s.reviews.filter((r) => r.reinspectionOfId && !r.decided).reduce((n, r) => n + r.items.length, 0);
+    expect(sel.selectOpenReinspections(s).items).toBe(re.facts!.issues! + inReviewItems);
   });
 
   it('a single open re-inspection opens at that record; no due date stored says none', async () => {
@@ -129,7 +134,7 @@ describe('the re-inspections a rejection sent back reach the PMC’s For You', (
     const sel = await import('@/store/selectors');
     useStore.setState({ role: 'pmc', reviews: [], openChecklists: [checklist('RE-1', { reinspectionOfId: 'INSP-1', dueDate: null, title: 'Re-inspection: Terrace' })] });
     const re = sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-reinspections')!;
-    expect(re).toMatchObject({ count: 1, title: '1 re-inspection with the engineer', detail: 'Re-inspection: Terrace', item: 'RE-1' });
+    expect(re).toMatchObject({ count: 1, title: '1 re-inspection with the engineer', detail: '1 open issue · Re-inspection: Terrace', item: 'RE-1' });
     expect(sel.inspectionRecordLink(useStore.getState(), 'RE-1')).toEqual({ screen: 'inspect-review', item: 'RE-1' });
   });
 
