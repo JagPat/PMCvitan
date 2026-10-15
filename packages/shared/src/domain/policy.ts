@@ -31,8 +31,9 @@ export const ROLE_POLICY = {
   // (a pmc who authored a draft and was later re-roled must still reach their own private
   // draft); the identity narrowing lives in the service, exactly like `decision.withdrawChange`.
   'decision.updateDraft': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
-  // consultants raise change requests to flag a conflict in their discipline (read-mostly otherwise)
-  'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  // #482 QA (Jagrut, 15 Oct 2026) — reopening an approved decision is the client's call, and the PMC's
+  // on their behalf; the engineer, contractor and consultant raise concerns with the PMC instead
+  'decision.change': ['pmc', 'client'],
   // withdraw an open change request — endpoint allowlist; the SERVICE narrows it to the
   // actual requester or the PMC, so the UI must also check requestedById (Phase 1 Task 2)
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
