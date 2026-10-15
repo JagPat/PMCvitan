@@ -102,10 +102,11 @@ export function CreateControl() {
 export function CreateRailButton() {
   const canCreate = useCanCreateNow();
   const openCreate = useStore((s) => s.openCreate);
+  const lang = useStore((s) => s.lang);
   if (!canCreate) return null;
   return (
     <button className={styles.railButton} onClick={openCreate} aria-haspopup="dialog" data-testid="create-rail" data-guide="add">
-      <Plus size={15} /> Add
+      <Plus size={15} /> {createMenuLabels.add[lang]}
     </button>
   );
 }

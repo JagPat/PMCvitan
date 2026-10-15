@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import {
-  locationDeleteText, photoTakenAtIn, placeToastText, siteMapText,
+  createMenuLabels, locationDeleteText, photoTakenAtIn, placeToastText, siteMapText,
   type Activity, type Decision, type Drawing, type Lang, type Material, type Phase, type Photo, type PlacedInspection, type ProjectNode,
 } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
@@ -184,6 +184,50 @@ describe.each(['hi', 'gu'] as const)('the Site Map in %s (#482 QA item 3)', (lan
     expect(photoTakenAtIn('03 Jul 2026 · 9:12 PM', lang)).not.toMatch(/[A-Za-z]/);
     expect(photoTakenAtIn('12 Dec 2026 · 12:05 AM', lang)).toMatch(/· 00:05$/);
     expect(photoTakenAtIn('yesterday', lang)).toBe('yesterday');
+  });
+});
+
+describe.each(['hi', 'gu'] as const)('the Site Map in %s, Codex review of #922', (lang) => {
+  it('the All locations editor, with a draft and an add-inside form, shows no English', async () => {
+    const nodes = [...NODES, { id: 'draft', parentId: 'gf', name: 'Store', kind: 'room', order: 3, draft: true } as ProjectNode];
+    const { r } = await load(lang, { routeItem: 'kit', nodes });
+    fireEvent.click(r.getByTestId('manage-locations'));
+    expect(r.getByTestId('manage-new-zone')).toBeTruthy();
+    expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+    fireEvent.click(r.getByTestId('loc-add-room-gf'));
+    expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+  });
+
+  it('the desktop Add button reads in the language', async () => {
+    await load(lang, { routeItem: 'kit' });
+    const { CreateRailButton } = await import('@/layout/CreateControl');
+    const rail = render(<CreateRailButton />);
+    expect(rail.getByTestId('create-rail').textContent?.trim()).toBe(createMenuLabels.add[lang]);
+  });
+
+  it('a blocker the server wrote reads in the language; a typed one is kept', async () => {
+    const activities = [act({ id: 'ACT-1', status: 'blocked', block: 'Material ≠ approved' }), act({ id: 'ACT-2', status: 'blocked', block: 'Pump failure' })];
+    await load(lang, { routeItem: 'kit', activities });
+    expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+    expect(document.body.textContent).toContain('Pump failure');
+  });
+
+  it('the server\'s refusals to delete a place read in the language; an unknown one is kept', () => {
+    for (const why of [
+      'Move or remove the 2 decision(s) under this location before deleting it.',
+      'Move or remove the 3 photo(s) on this unpublished place before deleting it.',
+      'Location not found in this project',
+      'the server refused it',
+    ]) expect(placeToastText.deleteRefused(why, lang).match(/[A-Za-z]{2,}/g) ?? []).toEqual([]);
+    expect(placeToastText.deleteRefused('Move or remove the 2 decision(s) under this location before deleting it.', lang)).toContain('2');
+    expect(placeToastText.deleteRefused('Something newer', lang)).toContain('Something newer');
+  });
+
+  it('a recorded photo time the calendar or clock does not have is shown as recorded', () => {
+    for (const bad of ['31 Feb 2026 · 9:12 AM', '03 Jul 0099 · 9:12 AM', '03 Jul 2026 · 13:12 PM', '03 Jul 2026 · 0:12 AM', '03 Jul 2026 · 9:75 AM']) {
+      expect(photoTakenAtIn(bad, lang)).toBe(bad);
+    }
+    expect(photoTakenAtIn('28 Feb 2026 · 9:12 AM', lang)).not.toMatch(/[A-Za-z]/);
   });
 });
 

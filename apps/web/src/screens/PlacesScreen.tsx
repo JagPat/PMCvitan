@@ -22,7 +22,7 @@ import { placeCountWords, type PlaceCountOptions, type PlaceCountWord } from '@/
 import { childrenOf, trailOf, placeContents, demoSiteMapInspections, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
 import {
   can, navLabels, SNAPSHOT_SITE_PHOTO_LIMIT, siteMapLabels as L, siteMapText as T, placeSectionLabels as SEC, placeKindTag, drawingRelationLabels,
-  placeInspectionStatusLabels, spaceStatusLabels, photoTakenAtIn,
+  placeInspectionStatusLabels, spaceStatusLabels, photoTakenAtIn, systemBlockIn,
   type Lang, type Photo, type PlacedInspection, type ScreenKey, type SwatchKey,
 } from '@vitan/shared';
 import styles from './responsive.module.css';
@@ -247,7 +247,7 @@ export function PlacesScreen() {
                     <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }} data-testid={`place-activity-plan-${a.id}`}>
                       {phase ? phase.name : L.unphased[lang]} · {L.plan[lang]} {plannedWindow(a, lang)}
                     </div>
-                    {a.block && <div style={{ fontSize: 11.5, color: 'var(--red-solid)', marginTop: 2 }}>{a.block}</div>}
+                    {a.block && <div style={{ fontSize: 11.5, color: 'var(--red-solid)', marginTop: 2 }}>{systemBlockIn(a.block, lang)}</div>}
                   </div>
                   <ActivityChip status={a.status} lang={lang} />
                   {canOpenSchedule && (

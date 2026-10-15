@@ -317,7 +317,7 @@ const SYSTEM_BLOCK: Record<string, { hi: string; gu: string }> = {
   'Crew ≠ allocated': { hi: 'टीम तय से अलग', gu: 'ટીમ ફાળવણીથી અલગ' },
 };
 
-function blockIn(block: string, lang: Lang): string {
+export function systemBlockIn(block: string, lang: Lang): string {
   if (lang === 'en') return block;
   return SYSTEM_BLOCK[block]?.[lang] ?? block;
 }
@@ -325,8 +325,8 @@ function blockIn(block: string, lang: Lang): string {
 export const scheduleText = {
   blockedWith: (block: string, lang: Lang): string => pick(lang,
     `Blocked — ${block}. Resolve the blocker on site; the activity returns to the schedule once it clears.`,
-    `रुका हुआ — ${blockIn(block, lang)}। साइट पर रुकावट दूर करें; दूर होते ही काम फिर से शेड्यूल में आ जाएगा।`,
-    `અટકેલું — ${blockIn(block, lang)}. સાઇટ પર અડચણ દૂર કરો; દૂર થતાં કામ ફરી શેડ્યૂલમાં આવશે.`),
+    `रुका हुआ — ${systemBlockIn(block, lang)}। साइट पर रुकावट दूर करें; दूर होते ही काम फिर से शेड्यूल में आ जाएगा।`,
+    `અટકેલું — ${systemBlockIn(block, lang)}. સાઇટ પર અડચણ દૂર કરો; દૂર થતાં કામ ફરી શેડ્યૂલમાં આવશે.`),
   /** one gate holds the activity: its name and its reason (English lower-cases the name, as before) */
   cannotStartOne: (label: string, reason: string, lang: Lang): string => pick(lang,
     `Cannot start yet — ${label.toLowerCase()}: ${reason}`,

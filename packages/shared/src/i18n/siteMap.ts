@@ -222,9 +222,15 @@ export function photoTakenAtIn(text: string, lang: Lang): string {
   const m = /^(\d{1,2}) ([A-Z][a-z]{2}) (\d{4}) · (\d{1,2}):(\d{2}) ([AP])M$/.exec(text.trim());
   const month = m ? MONTHS.indexOf(m[2]) : -1;
   if (!m || month < 0) return text;
+  // a day, year or clock the calendar does not have is shown as recorded, never rolled over (Codex, #922)
+  const year = Number(m[3]);
+  const at = new Date(0);
+  at.setUTCFullYear(year, month, Number(m[1]));
+  const clock = Number(m[4]);
+  if (year < 1000 || at.getUTCMonth() !== month || at.getUTCDate() !== Number(m[1]) || clock < 1 || clock > 12 || Number(m[5]) > 59) return text;
   const day = new Intl.DateTimeFormat(lang === 'hi' ? 'hi-IN' : 'gu-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' })
-    .format(new Date(Date.UTC(Number(m[3]), month, Number(m[1]))));
-  const hour = (Number(m[4]) % 12) + (m[6] === 'P' ? 12 : 0);
+    .format(at);
+  const hour = (clock % 12) + (m[6] === 'P' ? 12 : 0);
   return `${day} · ${String(hour).padStart(2, '0')}:${m[5]}`;
 }
 
@@ -340,5 +346,77 @@ export const placeToastText = {
   renamed: (name: string, lang: Lang): string => pick(lang, `Renamed to ${name}.`, `नया नाम: ${name}।`, `નવું નામ: ${name}.`),
   removed: { en: 'Location removed.', hi: 'जगह हटाई गई।', gu: 'જગ્યા કાઢી નાખી.' } satisfies Words,
   deleteRefused: (why: string, lang: Lang): string =>
-    pick(lang, `Couldn't delete this location — ${why}`, `यह जगह हटाई नहीं जा सकी — ${why}`, `આ જગ્યા કાઢી શકાઈ નહીં — ${why}`),
+    pick(lang, `Couldn't delete this location — ${why}`, `यह जगह हटाई नहीं जा सकी — ${placeRefusalIn(why, lang)}`, `આ જગ્યા કાઢી શકાઈ નહીં — ${placeRefusalIn(why, lang)}`),
+};
+
+/**
+ * The server's own refusals of a place delete (api nodes.service.ts `remove`), plus the client's fallback for a
+ * refusal with no message, matched whole; the counts stay as served and anything else is shown as served (Codex, #922).
+ */
+function placeRefusalIn(why: string, lang: Lang): string {
+  if (lang === 'en') return why;
+  const decisions = /^Move or remove the (\d+) decision\(s\) under this location before deleting it\.$/.exec(why);
+  if (decisions) {
+    return pick(lang, '', `इसे हटाने से पहले इस जगह के नीचे के ${decisions[1]} निर्णय कहीं और ले जाएँ या हटाएँ।`, `આ જગ્યા કાઢતાં પહેલાં તેની નીચેના ${decisions[1]} નિર્ણયો બીજે ખસેડો અથવા કાઢી નાખો.`);
+  }
+  const photos = /^Move or remove the (\d+) photo\(s\) on this unpublished place before deleting it\.$/.exec(why);
+  if (photos) {
+    return pick(lang, '', `इसे हटाने से पहले इस अप्रकाशित जगह की ${photos[1]} फ़ोटो कहीं और ले जाएँ या हटाएँ।`, `આ જગ્યા કાઢતાં પહેલાં આ અપ્રકાશિત જગ્યાના ${photos[1]} ફોટા બીજે ખસેડો અથવા કાઢી નાખો.`);
+  }
+  if (why === 'Location not found in this project') return pick(lang, '', 'यह जगह इस प्रोजेक्ट में नहीं मिली', 'આ જગ્યા આ પ્રોજેક્ટમાં મળી નહીં');
+  // the web client's own words when a refusal carries no readable message (store.ts runRemote)
+  if (why === 'the server refused it') return pick(lang, '', 'सर्वर ने मना कर दिया', 'સર્વરે ના પાડી');
+  return why;
+}
+
+/** The PMC's "All locations" editor (Codex, #922). Place and template names are project data. */
+export const manageLocationsLabels = {
+  title: { en: 'Locations', hi: 'जगहें', gu: 'જગ્યાઓ' },
+  intro: {
+    en: 'Zones sit at the top; rooms nest under zones or other rooms (to 5 levels); objects sit under a room or directly under a zone. Rename or remove any — a location with decisions on it can\'t be deleted until you move them. A ',
+    hi: 'ज़ोन सबसे ऊपर होते हैं; कमरे ज़ोन या दूसरे कमरों के अंदर आते हैं (5 स्तर तक); चीज़ें किसी कमरे के अंदर या सीधे ज़ोन के अंदर आती हैं। किसी का भी नाम बदलें या हटाएँ — जिस जगह पर निर्णय दर्ज हैं, उसे तब तक हटाया नहीं जा सकता जब तक आप उन्हें कहीं और न ले जाएँ। ',
+    gu: 'ઝોન સૌથી ઉપર હોય છે; રૂમ ઝોન કે બીજા રૂમની અંદર આવે છે (5 સ્તર સુધી); વસ્તુઓ કોઈ રૂમની અંદર કે સીધી ઝોનની અંદર આવે છે. કોઈનું પણ નામ બદલો કે કાઢી નાખો — જે જગ્યા પર નિર્ણયો નોંધાયેલા છે, તેને તમે બીજે ખસેડો નહીં ત્યાં સુધી કાઢી શકાતી નથી. ',
+  },
+  introDraft: { en: 'draft', hi: 'ड्राफ़्ट', gu: 'ડ્રાફ્ટ' },
+  introEnd: {
+    en: ' location is private to you until you publish it.',
+    hi: ' जगह प्रकाशित करने तक सिर्फ़ आपको दिखती है।',
+    gu: ' જગ્યા પ્રકાશિત કરો ત્યાં સુધી ફક્ત તમને દેખાય છે.',
+  },
+  newZone: { en: 'Add a zone (e.g. Ground Floor)', hi: 'ज़ोन जोड़ें (जैसे भूतल)', gu: 'ઝોન ઉમેરો (જેમ કે ભોંયતળિયું)' },
+  add: { en: 'Add', hi: 'जोड़ें', gu: 'ઉમેરો' },
+  asDraft: { en: 'Add as a private draft (publish later)', hi: 'निजी ड्राफ़्ट के रूप में जोड़ें (बाद में प्रकाशित करें)', gu: 'ખાનગી ડ્રાફ્ટ તરીકે ઉમેરો (પછી પ્રકાશિત કરો)' },
+  none: { en: 'No locations yet — add a zone to start.', hi: 'अभी कोई जगह नहीं — शुरू करने के लिए एक ज़ोन जोड़ें।', gu: 'હજી કોઈ જગ્યા નથી — શરૂ કરવા એક ઝોન ઉમેરો.' },
+  saveAsTemplate: { en: 'SAVE AS TEMPLATE', hi: 'टेम्पलेट के रूप में सेव करें', gu: 'ટેમ્પલેટ તરીકે સેવ કરો' },
+  templateName: { en: 'Template name (e.g. G+2 Residence)', hi: 'टेम्पलेट का नाम (जैसे G+2 मकान)', gu: 'ટેમ્પલેટનું નામ (જેમ કે G+2 મકાન)' },
+  save: { en: 'Save', hi: 'सेव करें', gu: 'સેવ કરો' },
+  templateNote: {
+    en: 'Captures the whole structure — locations, phases, planned activities, checklists — as a starting point for future projects. Never this project\'s approvals, dates, photos or people.',
+    hi: 'पूरा ढाँचा — जगहें, चरण, योजना के काम, चेकलिस्ट — आगे के प्रोजेक्ट की शुरुआत के लिए सहेजता है। इस प्रोजेक्ट की मंज़ूरियाँ, तारीखें, फ़ोटो या लोग कभी नहीं।',
+    gu: 'આખું માળખું — જગ્યાઓ, તબક્કા, યોજનાના કામ, ચેકલિસ્ટ — ભવિષ્યના પ્રોજેક્ટની શરૂઆત માટે સાચવે છે. આ પ્રોજેક્ટની મંજૂરીઓ, તારીખો, ફોટા કે લોકો ક્યારેય નહીં.',
+  },
+  done: { en: 'Done', hi: 'हो गया', gu: 'થઈ ગયું' },
+  cancel: { en: 'Cancel', hi: 'रद्द करें', gu: 'રદ કરો' },
+  draftChip: { en: 'DRAFT', hi: 'ड्राफ़्ट', gu: 'ડ્રાફ્ટ' },
+  publish: { en: 'Publish', hi: 'प्रकाशित करें', gu: 'પ્રકાશિત કરો' },
+  addRoom: { en: '+ Room', hi: '+ कमरा', gu: '+ રૂમ' },
+  addObject: { en: '+ Object', hi: '+ चीज़', gu: '+ વસ્તુ' },
+  saveModuleTitle: {
+    en: 'Save this zone (rooms, objects, checklists) as a reusable module',
+    hi: 'इस ज़ोन (कमरे, चीज़ें, चेकलिस्ट) को दोबारा इस्तेमाल होने वाले मॉड्यूल के रूप में सेव करें',
+    gu: 'આ ઝોન (રૂમ, વસ્તુઓ, ચેકલિસ્ટ) ને ફરી વાપરી શકાય તેવા મોડ્યુલ તરીકે સેવ કરો',
+  },
+} satisfies Record<string, Words>;
+
+export const manageLocationsText = {
+  newChild: (kind: 'room' | 'element', name: string, lang: Lang): string =>
+    kind === 'room'
+      ? pick(lang, `New room in ${name}`, `${name} में नया कमरा`, `${name} માં નવો રૂમ`)
+      : pick(lang, `New object in ${name}`, `${name} में नई चीज़`, `${name} માં નવી વસ્તુ`),
+  addInside: (name: string, lang: Lang): string => pick(lang, `Add inside ${name}`, `${name} के अंदर जोड़ें`, `${name} ની અંદર ઉમેરો`),
+  addRoomInside: (name: string, lang: Lang): string => pick(lang, `Add a room inside ${name}`, `${name} के अंदर कमरा जोड़ें`, `${name} ની અંદર રૂમ ઉમેરો`),
+  addObjectInside: (name: string, lang: Lang): string => pick(lang, `Add an object inside ${name}`, `${name} के अंदर चीज़ जोड़ें`, `${name} ની અંદર વસ્તુ ઉમેરો`),
+  saveAsModule: (name: string, lang: Lang): string => pick(lang, `Save ${name} as a module`, `${name} को मॉड्यूल के रूप में सेव करें`, `${name} ને મોડ્યુલ તરીકે સેવ કરો`),
+  rename: (name: string, lang: Lang): string => pick(lang, `Rename ${name}`, `${name} का नाम बदलें`, `${name} નું નામ બદલો`),
+  remove: (name: string, lang: Lang): string => pick(lang, `Delete ${name}`, `${name} हटाएँ`, `${name} કાઢી નાખો`),
 };
