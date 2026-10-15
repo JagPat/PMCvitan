@@ -1675,6 +1675,13 @@ export const useStore = create<Store>()(
       const r = overlayDailyLogDraft(serverLog, s.dailyLogDraft, projectId);
       s.dailyLog = r.log;
       s.dailyLogDraft = r.draft;
+      // The server counts the photos filed on this log (#482 unit 3); the ones this device still holds
+      // in its queue for it are not there yet, so they are added on top until they land.
+      const logId = r.log?.id;
+      if (s.dailyLog && logId) {
+        const queued = s.outbox.filter((o) => o.t === 'uploadMedia' && o.input.dailyLogId === logId).length;
+        if (queued > 0) s.dailyLog.progress += queued;
+      }
       // a draft written before the log carried an id is kept aside, never laid over it (#692)
       if (r.legacy) s.legacyDailyLogDraft = r.legacy;
     };
@@ -1879,7 +1886,10 @@ export const useStore = create<Store>()(
                 // carried on the module read exactly as on the snapshot path
                 ...(core.id ? { id: core.id } : {}),
                 date: core.date, logDate: core.logDate, checkedIn: core.checkedIn, checkinTime: core.checkinTime,
-                submitted: core.submitted, progress: core.progress,
+                // the day's photo count is the snapshot's (photos filed on the log, #482 unit 3): media is not
+                // the daily-log module's to read, so its own `progress` is only the stored count
+                submitted: core.submitted,
+                progress: snap.dailyLog && core.id && snap.dailyLog.id === core.id ? snap.dailyLog.progress : core.progress,
                 crew: core.crew.map((c) => ({ trade: c.trade, count: c.count })),
                 // the log before it (U1b): "Same as yesterday" reads it on either read path
                 ...(core.previous !== undefined

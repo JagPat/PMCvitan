@@ -41,6 +41,10 @@ export type DailyLogDraft = {
   crewRows?: Record<string, { trade: string; count: number }>;
   /** progress photos taken for this log on this device, beyond what the server holds */
   photosAdded?: number;
+  /** photos the server does NOT count on this log: ones carried in from a kept-aside draft (#692), taken
+   *  before the log had an id and so never filed on it. A photo filed on a log is counted by the server
+   *  (#482 unit 3), so only these are added on top of its count. */
+  unfiledPhotos?: number;
   /** the engineer answered every crew question for this log (a no-crew day is an answer, not a gap) */
   crewConfirmed?: boolean;
 };
@@ -81,6 +85,7 @@ export function draftHoldsWork(draft: DailyLogDraft): boolean {
     || (!!draft.crew && Object.keys(draft.crew).length > 0)
     || (!!draft.crewRows && Object.keys(draft.crewRows).length > 0)
     || (draft.photosAdded ?? 0) > 0
+    || (draft.unfiledPhotos ?? 0) > 0
     || !!draft.crewConfirmed;
 }
 
@@ -93,7 +98,7 @@ export function legacyDraftSummary(draft: DailyLogDraft): { checkinTime: string 
   return {
     checkinTime: draft.checkIn?.checkedIn ? draft.checkIn.checkinTime : null,
     crew: [...crew].map(([trade, count]) => ({ trade, count })),
-    photos: draft.photosAdded ?? 0,
+    photos: (draft.photosAdded ?? 0) + (draft.unfiledPhotos ?? 0),
   };
 }
 
@@ -121,8 +126,10 @@ export function adoptLegacyDraft(
   if (Object.keys(crew).length) out.crew = crew;
   const crewRows = { ...(legacy!.crewRows ?? {}), ...(mine?.crewRows ?? {}) };
   if (Object.keys(crewRows).length) out.crewRows = crewRows;
-  const photos = (legacy!.photosAdded ?? 0) + (mine?.photosAdded ?? 0);
-  if (photos) out.photosAdded = photos;
+  if (mine?.photosAdded) out.photosAdded = mine.photosAdded;
+  // the kept-aside draft's photos were never filed on this log, so the server's count leaves them out
+  const unfiled = (legacy!.photosAdded ?? 0) + (legacy!.unfiledPhotos ?? 0) + (mine?.unfiledPhotos ?? 0);
+  if (unfiled) out.unfiledPhotos = unfiled;
   if (mine?.crewConfirmed ?? legacy!.crewConfirmed) out.crewConfirmed = true;
   return out;
 }
@@ -147,7 +154,8 @@ export function legacyDraftExtras(legacy: DailyLogDraft, current: DailyLogDraft 
     }
   });
   if (Object.keys(rows).length) out.crewRows = rows;
-  if (legacy.photosAdded) out.photosAdded = legacy.photosAdded;
+  const unfiled = (legacy.photosAdded ?? 0) + (legacy.unfiledPhotos ?? 0);
+  if (unfiled) out.unfiledPhotos = unfiled;
   return out;
 }
 
@@ -156,7 +164,8 @@ export function legacyDraftExtras(legacy: DailyLogDraft, current: DailyLogDraft 
  * draft that survives — `null` when the draft no longer applies (sent, superseded by a new day, or no
  * log) — and never touches the inputs. The server's own truth wins where it is stronger: a log the
  * server already holds as checked in stays checked in, and a trade the draft never touched keeps the
- * server's count. `progress` is the server's count plus the photos taken here since.
+ * server's count. `progress` is the server's count (#482 unit 3: every photo filed on the log) plus the
+ * photos it cannot hold filed there.
  */
 export function overlayDailyLogDraft(
   serverLog: DailyLog | null,
@@ -183,7 +192,9 @@ export function overlayDailyLogDraft(
       const first = serverLog.crew.findIndex((x) => x.trade === c.trade) === i;
       return first && kept.crew && Object.hasOwn(kept.crew, c.trade) ? { ...c, count: kept.crew[c.trade]! } : c;
     }),
-    progress: serverLog.progress + (kept.photosAdded ?? 0),
+    // a log with an id is counted by the server from the photos filed on it (#482 unit 3), so this
+    // device's photos are already in it; only a log without an id, and photos never filed on it, add
+    progress: serverLog.progress + (kept.unfiledPhotos ?? 0) + (serverLog.id ? 0 : (kept.photosAdded ?? 0)),
   };
   // a check-OUT recorded here after the server never saw the check-in: the engineer's latest word stands
   if (kept.checkIn && !kept.checkIn.checkedIn && !serverLog.checkedIn) {
@@ -214,6 +225,7 @@ export function parseDailyLogDraft(raw: unknown): DailyLogDraft | null {
     draft.crew = crew;
   }
   if (typeof d.photosAdded === 'number' && Number.isInteger(d.photosAdded) && d.photosAdded >= 0) draft.photosAdded = d.photosAdded;
+  if (typeof d.unfiledPhotos === 'number' && Number.isInteger(d.unfiledPhotos) && d.unfiledPhotos > 0) draft.unfiledPhotos = d.unfiledPhotos;
   if (d.crewRows && typeof d.crewRows === 'object') {
     const rows: Record<string, { trade: string; count: number }> = {};
     for (const [at, v] of Object.entries(d.crewRows as Record<string, unknown>)) {

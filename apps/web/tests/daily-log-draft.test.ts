@@ -114,8 +114,15 @@ describe('#669 — the pending daily-log draft (pure rules)', () => {
     expect(parseDailyLogDraft({ projectId: 'ambli' })).toBeNull();
     expect(parseDailyLogDraft({ projectId: 'ambli', logKey: 'civil:2026-07-03', checkIn: { checkedIn: 'yes' }, crew: { Mason: 2, Bad: -1, Odd: 'x' }, photosAdded: 1.5 }))
       .toEqual({ projectId: 'ambli', logKey: 'civil:2026-07-03', crew: { Mason: 2 } });
-    const full = draft({ checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crew: { Mason: 3 }, photosAdded: 2 });
+    const full = draft({ checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crew: { Mason: 3 }, photosAdded: 2, unfiledPhotos: 1 });
     expect(parseDailyLogDraft(JSON.parse(JSON.stringify(full)))).toEqual(full);
+  });
+
+  it('#482 unit 3: a log with an id takes the server\'s photo count as it is; only photos never filed on it add', () => {
+    const filed = overlayDailyLogDraft(serverLog({ id: 'log-a', progress: 3 }), draft({ logId: 'log-a', photosAdded: 1 }), 'ambli');
+    expect(filed.log?.progress).toBe(3); // the server already counts this device's photo
+    const kept = overlayDailyLogDraft(serverLog({ id: 'log-a', progress: 3 }), draft({ logId: 'log-a', photosAdded: 1, unfiledPhotos: 2 }), 'ambli');
+    expect(kept.log?.progress).toBe(5);
   });
 });
 
@@ -437,12 +444,14 @@ describe('#692 — a legacy draft (no log id) is kept aside and reused only on c
     expect(s().dailyLog).toMatchObject({ progress: 3, checkedIn: false });
     s().adoptLegacyDailyLogDraft();
     expect(s().legacyDailyLogDraft).toBeNull();
-    expect(s().dailyLogDraft).toMatchObject({ logId: 'log-b', checkIn: { checkedIn: true, checkinTime: '9:05 AM' }, photosAdded: 2 });
+    // #482 unit 3: this log's own photo is filed on it (the server counts it); the kept one never was
+    expect(s().dailyLogDraft).toMatchObject({ logId: 'log-b', checkIn: { checkedIn: true, checkinTime: '9:05 AM' }, photosAdded: 1, unfiledPhotos: 1 });
     expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '9:05 AM', progress: 4 }); // 2 on the server + 1 here + 1 kept
     expect(s().dailyLog?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
     expect(s().dailyLog?.crew.find((c) => c.trade === 'Flooring mason')?.count).toBe(3); // not the legacy 9
-    // the next reconcile lays the adopted draft over the server's own log: the same result
-    const again = overlayDailyLogDraft(log, s().dailyLogDraft, 'ambli');
+    // the next reconcile lays the adopted draft over the server's own log, which now counts the photo
+    // filed on it (3): the same result, nothing counted twice
+    const again = overlayDailyLogDraft(serverLog({ id: 'log-b', progress: 3 }), s().dailyLogDraft, 'ambli');
     expect(again.log).toMatchObject({ checkedIn: true, progress: 4 });
     expect(again.log?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
     expect(again.log?.crew.find((c) => c.trade === 'Flooring mason')?.count).toBe(3);
@@ -527,5 +536,79 @@ describe('U1 — a no-crew day the engineer confirmed is a done crew step until 
     s().confirmCrew();
     expect(s().dailyLogDraft).toMatchObject({ logId: 'log-a', crewConfirmed: true });
     expect(parseDailyLogDraft(JSON.parse(JSON.stringify(s().dailyLogDraft)))?.crewConfirmed).toBe(true);
+  });
+});
+
+/**
+ * #482 site photos unit 3 — the day's photo count is the server's count of the photos filed on that log
+ * (every member's, including ones added after the log was sent). The device adds only the photos it still
+ * holds in its queue for that log, so a photo is never counted twice and another member's photo shows.
+ */
+describe('#482 unit 3 — the day\'s photo count reads the photos filed on the log (store)', () => {
+  beforeEach(() => {
+    globalThis.localStorage?.clear();
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.activeProjectId = 'ambli'; st.projectScopeGeneration = 1; st.outbox = []; st.syncQueue = []; });
+  });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('a photo uploaded online is counted once: the refresh brings the server\'s count, which already holds it', async () => {
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog({ id: 'log-a' }))),
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().addProgressPhoto('data:image/jpeg;base64,AAAA');
+    await settles(() => s().dailyLog?.progress === 3);
+    gw.snapshot.mockResolvedValue(makeSnapshot(serverLog({ id: 'log-a', progress: 3 })));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(3);
+  });
+
+  it('another member\'s photo on the log shows in the count', async () => {
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog({ id: 'log-a', progress: 4 }))) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(4);
+  });
+
+  it('a photo still queued offline for this log adds to the server\'s count until it lands; one for another log does not', async () => {
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog({ id: 'log-a' }))) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    useStore.setState((st) => { st.online = false; });
+    s().addProgressPhoto('data:image/jpeg;base64,AAAA');
+    s().addProgressPhoto('data:image/jpeg;base64,BBBB', null, undefined, undefined, 'log-old');
+    expect(s().dailyLog?.progress).toBe(3);
+    // a refresh while both are still queued: the server counts neither yet
+    useStore.setState((st) => { st.online = true; });
+    gw.snapshot.mockResolvedValue(makeSnapshot(serverLog({ id: 'log-a' })));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().outbox.filter((o) => o.t === 'uploadMedia')).toHaveLength(2);
+    expect(s().dailyLog?.progress).toBe(3);
+  });
+
+  it('moduleQuery mode: the count is the snapshot\'s for the same log, never the module\'s stored number', async () => {
+    vi.stubEnv('VITE_DAILYLOG_READ', 'moduleQuery');
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog({ id: 'log-a', progress: 5 }))),
+      dailyLog: vi.fn().mockResolvedValue(moduleRead(serverLog({ id: 'log-a', progress: 2 }))),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(5);
+    // the snapshot served another log: its count is not this log's
+    gw.snapshot.mockResolvedValue(makeSnapshot(serverLog({ id: 'log-z', progress: 7 })));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(2);
   });
 });

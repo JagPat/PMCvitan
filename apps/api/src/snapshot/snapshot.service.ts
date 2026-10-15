@@ -92,7 +92,14 @@ export class SnapshotService {
     // #884 — the viewer's hidden drafts (someone else's private places), read once: their photos leave the
     // photo layer, and inspection evidence on them gets no signed path.
     const hiddenNodes = hiddenDraftNodeIds(this.prisma, projectId, userId);
-    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, viewerFeed, siteMedia, drawingDtos, companies, nodes] = await Promise.all([
+    // #482 site photos unit 3 — the day's photo count reads the photos filed on that log (Media.dailyLogId,
+    // every member's, including ones added after the log was sent), never a time window. A log from before
+    // photos were filed on it keeps its stored count, so the served count is the larger of the two.
+    const dailyLogSlicePromise = this.dailyLogQuery.snapshotSlice(projectId);
+    const linkedPhotoCount = dailyLogSlicePromise.then((slice) =>
+      slice.dailyLog?.id ? this.prisma.media.count({ where: { projectId, dailyLogId: slice.dailyLog.id, kind: 'progress' } }) : 0,
+    );
+    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, viewerFeed, siteMedia, drawingDtos, companies, nodes, linkedPhotos] = await Promise.all([
       decisionSlicePromise,
       // Task 10 (Module 4) — the activity spine (`activities` + `phases`) comes from the activities
       // module's query, never a direct `prisma.activity`/`gateOverride`/`prisma.phase` read. It bakes
@@ -106,7 +113,7 @@ export class SnapshotService {
       // Task 10 — the daily-log slice (latest log core + project-wide materials) comes from the
       // module's query, never a direct `prisma.dailyLog`/`prisma.siteMaterial` read. The progress
       // PHOTOS remain the snapshot's to compose from media (below), so the DTO stays byte-identical.
-      this.dailyLogQuery.snapshotSlice(projectId),
+      dailyLogSlicePromise,
       feedSnapshot,
       // Site-reality photos for the daily-log gallery AND the Place view. One query,
       // capped, newest first; carries nodeId so a photo can be shown at its location. A photo filed
@@ -126,6 +133,7 @@ export class SnapshotService {
       this.drawingsQuery.snapshotSlice(projectId, userId),
       this.prisma.projectCompany.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
+      linkedPhotoCount,
     ]);
 
     // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
@@ -195,7 +203,9 @@ export class SnapshotService {
       phases: activitySlices.phases,
       // Task 10 — the daily-log core comes from the module query (byte-identical); the snapshot
       // composes the media-sourced progress photos onto it (media is not daily-log's to own).
-      dailyLog: dailyLogSlice.dailyLog ? { ...dailyLogSlice.dailyLog, photos: progressPhotos } : null,
+      dailyLog: dailyLogSlice.dailyLog
+        ? { ...dailyLogSlice.dailyLog, progress: Math.max(dailyLogSlice.dailyLog.progress, linkedPhotos), photos: progressPhotos }
+        : null,
       // Top 10 #4b unit B — the notices this viewer is served, by the one shared definition
       // (`served-notifications.ts`: AUTH-02's pending strip, the decider audience, the pmc-only
       // withdrawal, kinded rendering against the slice read in the same snapshot, and the subject keys)
