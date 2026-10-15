@@ -5443,7 +5443,10 @@ export const useStore = create<Store>()(
         // bytes it had already read, so nothing async sits between accepting this photo and
         // durably queueing it below. A file that carries no capture metadata contributes no
         // keys here, and the media contract stores nothing rather than something invented.
-        const input = { kind: 'progress' as const, mime, data: base64, ...stamped, ...(nodeId ? { nodeId } : {}) };
+        // One key per chosen photo, kept with the queued upload: a replay after a lost reply returns the
+        // photo already stored instead of storing it twice.
+        const clientKey = globalThis.crypto?.randomUUID?.() ?? `photo-${Math.random().toString(36).slice(2)}`;
+        const input = { kind: 'progress' as const, mime, data: base64, clientKey, ...stamped, ...(nodeId ? { nodeId } : {}) };
         // Phase 8 media offline queue: when offline, show the photo optimistically
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.

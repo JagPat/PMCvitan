@@ -168,7 +168,7 @@ describe('Phase 8 offline outbox', () => {
     s().addProgressPhoto('data:image/jpeg;base64,AAAA');
 
     expect(gw.uploadMedia).not.toHaveBeenCalled(); // not uploaded while offline
-    expect(s().outbox).toEqual([{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA' } }]);
+    expect(s().outbox).toEqual([{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA', clientKey: expect.any(String) } }]);
     expect(s().dailyLog!.photos.length).toBe(before + 1); // shown right away
     expect(s().dailyLog!.photos[0].url).toBe('data:image/jpeg;base64,AAAA');
     expect(s().dailyLog!.photos[0].id).toBeUndefined(); // no server id yet
@@ -189,7 +189,7 @@ describe('Phase 8 offline outbox', () => {
     s().toggleOnline(); // back online → flush
     await flush();
 
-    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'BBBB' });
+    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'BBBB', clientKey: expect.any(String) });
     expect(gw.snapshot).toHaveBeenCalled(); // refetched to reconcile photos
     expect(s().outbox).toHaveLength(0);
     expect(s().syncQueue).toHaveLength(0);

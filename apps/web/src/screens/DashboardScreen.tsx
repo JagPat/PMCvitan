@@ -281,7 +281,7 @@ export function DashboardScreen() {
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.2em', color: 'var(--muted)', marginBottom: 12 }}>
           {API_BASE ? 'LATEST · SITE PHOTOS' : 'THIS WEEK · PHOTO HIGHLIGHTS'}
         </div>
-        <AddSitePhoto />
+        {API_BASE && <AddSitePhoto />}
         {API_BASE ? (
           sitePhotos.length === 0 ? (
             <div style={{ fontSize: 13, color: 'var(--muted)', border: '1px dashed var(--hairline)', borderRadius: 10, padding: '22px 16px', textAlign: 'center' }}>

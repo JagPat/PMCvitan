@@ -32,7 +32,7 @@ describe('addProgressPhoto — API mode', () => {
     s()._setGateway(gw as unknown as ApiGateway);
 
     s().addProgressPhoto(PNG);
-    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'iVBORw0KGgo=' });
+    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'iVBORw0KGgo=', clientKey: expect.any(String) });
 
     await flush();
     expect(s().dailyLog!.photos[0]).toEqual({ id: 'm1', url: '/media/m1' });
@@ -66,7 +66,7 @@ describe('addProgressPhoto — the photo carries its own stamp', () => {
     s()._setGateway(gw as unknown as ApiGateway);
 
     s().addProgressPhoto(PNG, null, STAMP);
-    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'iVBORw0KGgo=', ...STAMP });
+    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'iVBORw0KGgo=', ...STAMP, clientKey: expect.any(String) });
   });
 
   it('sends no stamp keys at all when the photo recorded nothing', () => {
@@ -75,7 +75,7 @@ describe('addProgressPhoto — the photo carries its own stamp', () => {
 
     s().addProgressPhoto(PNG, null, {});
     // absent, not null and not invented — the column stays empty
-    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'iVBORw0KGgo=' });
+    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'iVBORw0KGgo=', clientKey: expect.any(String) });
   });
 
   it('queues an offline photo SYNCHRONOUSLY, stamp included', () => {

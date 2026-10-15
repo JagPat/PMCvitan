@@ -84,6 +84,7 @@ describe('#482 site photos: "Add site photo" on the Dashboard', () => {
 
     expect(uploadMedia).toHaveBeenCalledTimes(1);
     expect(uploadMedia.mock.calls[0][0]).toMatchObject({ kind: 'progress', mime: 'image/jpeg', data: 'AAAA', nodeId: 'r1' });
+    expect(uploadMedia.mock.calls[0][0].clientKey).toEqual(expect.any(String));
     await waitFor(() => expect(r.getAllByAltText(/^Site photo \d+$/)).toHaveLength(2));
     expect((r.getByAltText('Site photo 1') as HTMLImageElement).src).toBe('http://api.test/new.jpg');
     expect(r.getByTestId('tile-photos-value').textContent).toBe('2');
@@ -96,5 +97,32 @@ describe('#482 site photos: "Add site photo" on the Dashboard', () => {
     const r = render(<DashboardScreen />);
     const shown = r.getAllByAltText(/^Site photo \d+$/).map((img) => (img as HTMLImageElement).src);
     expect(shown).toEqual(['http://api.test/m1.jpg', 'http://api.test/m2.jpg', 'http://api.test/m3.jpg', 'http://api.test/m4.jpg']);
+  });
+
+  it('keeps one upload key with an offline pick, so a replay cannot store the photo twice', async () => {
+    const { useStore } = await loadApiMode('client');
+    const uploadMedia = vi.fn();
+    useStore.getState()._setGateway({ uploadMedia } as never);
+    useStore.setState({ online: false } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
+    fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['y'], 'q.jpg', { type: 'image/jpeg' })] } });
+    expect(uploadMedia).not.toHaveBeenCalled();
+    const keys = useStore.getState().outbox.map((o) => (o as { input?: { clientKey?: string } }).input?.clientKey);
+    expect(keys).toHaveLength(2);
+    expect(keys.every((k) => typeof k === 'string' && k.length > 0)).toBe(true);
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  it('is not offered in demo mode, where the Dashboard shows sample highlights rather than the photo list', async () => {
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    useStore.setState({ role: 'pmc' });
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    expect(r.queryByTestId('add-site-photo')).toBeNull();
   });
 });
