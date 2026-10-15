@@ -116,12 +116,14 @@ const STAMP_DISPLAY_MAX = 64;
 
 /**
  * A `takenAt` as it should be shown: bounded, and empty when there is nothing to show.
- * Only the displayable head is examined, so a value padded with megabytes of spaces costs no
- * more than a normal one; whitespace-only reads as no time.
+ * Leading space is skipped by one native scan with no copy; only a display-sized window after it
+ * is copied and trimmed, so padding of any length never builds a large string, a value that is
+ * only spaces reads as no time, and trailing padding never earns an ellipsis.
  */
 export function stampText(takenAt: string | null | undefined): string {
   if (!takenAt) return '';
-  const head = takenAt.slice(0, STAMP_DISPLAY_MAX + 1).trim();
-  if (!head) return '';
-  return takenAt.length > STAMP_DISPLAY_MAX ? `${head.slice(0, STAMP_DISPLAY_MAX)}…` : head;
+  const start = takenAt.search(/\S/);
+  if (start < 0) return '';
+  const shown = takenAt.slice(start, start + STAMP_DISPLAY_MAX + 1).trimEnd();
+  return shown.length > STAMP_DISPLAY_MAX ? `${shown.slice(0, STAMP_DISPLAY_MAX)}…` : shown;
 }

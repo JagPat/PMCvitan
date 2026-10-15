@@ -31,7 +31,6 @@ afterEach(() => {
 describe('#482 QA 9: one photo count on the Dashboard', () => {
   it('shows only "Site photos on record", matching the photos listed, even when the log reports more', async () => {
     const { useStore } = await loadApiMode([{ id: 'm1', url: 'http://api.test/m1.jpg', kind: 'progress', takenAt: '14 Oct 2026, 10:02' }]);
-    // a log that reports 10 progress photos, while only one photo is on record (the live QA case)
     const { getInitialState } = await import('@/store/store');
     const seeded = getInitialState().dailyLog;
     expect(seeded).not.toBeNull();

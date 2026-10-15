@@ -394,7 +394,9 @@ describe('a rendered stamp is bounded', () => {
     try {
       expect(stampText('   ')).toBe('');
       expect(stampText(' '.repeat(2_000_000))).toBe('');
-      expect(stampText(`  11 Aug 2026 · 9:15 AM${' '.repeat(2_000_000)}`).startsWith('11 Aug 2026 · 9:15 AM')).toBe(true);
+      expect(stampText(`  11 Aug 2026 · 9:15 AM${' '.repeat(2_000_000)}`)).toBe('11 Aug 2026 · 9:15 AM');
+      expect(stampText(`${' '.repeat(2_000_000)}11 Aug 2026 · 9:15 AM`)).toBe('11 Aug 2026 · 9:15 AM');
+      expect(stampText(`${' '.repeat(100)}${'x'.repeat(100)}`)).toBe(`${'x'.repeat(64)}…`);
     } finally {
       spy.mockRestore();
     }
