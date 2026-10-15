@@ -5,14 +5,14 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
 /**
- * #482 site photos — `DailyLog.legacyPhotos`, the photos a log counts that are not Media rows filed on it. The day's
- * photo count (the next unit) is this plus the progress photos filed on the log, so a photo filed after the send
+ * #482 site photos — `DailyLog.legacyPhotos`, the photos a SENT log counts that are not Media rows filed on it. The
+ * day's photo count (the next unit) is this plus the progress photos filed on the log, so a photo filed after the send
  * adds to it and nothing filed is counted twice.
  *
  * Proved against PostgreSQL: a new log starts at 0 and a negative count is refused; on a `db push` baseline (the
- * column without its CHECK or trigger) the migration backfills only the photos not filed on each log; a replay never
- * recomputes a backfilled value; the send sets it for a previous-release app's unfiled photos; any other write is
- * refused.
+ * column without its CHECK or trigger) the migration backfills only sent logs' unfiled photos and leaves open logs at
+ * 0; a replay never recomputes a value; the column is frozen after insert (the send included) by a trigger that reads
+ * only its own row; and the backfill and the freeze are installed by one statement.
  */
 const MIGRATION = readFileSync(
   resolve(__dirname, '../../prisma/migrations/20280113000000_daily_log_legacy_photos/migration.sql'),
@@ -70,7 +70,7 @@ describe('DailyLog.legacyPhotos (live PG)', () => {
     ).rejects.toThrow(/DailyLog_legacyPhotos_nonnegative/);
   });
 
-  it('on a db-push baseline the migration backfills only the photos not filed on each log, never below 0', async () => {
+  it('on a db-push baseline the backfill counts only sent logs\' unfiled photos; open logs stay 0', async () => {
     const sentry = new Error('rollback');
     let seen: Record<string, number> = {};
     await t.prisma
@@ -78,7 +78,8 @@ describe('DailyLog.legacyPhotos (live PG)', () => {
         // what `prisma db push` leaves: the column, without the CHECK or the trigger (nothing outlives the rollback)
         await tx.$executeRawUnsafe('DROP TRIGGER "DailyLog_legacyPhotos_frozen" ON "DailyLog"');
         await tx.$executeRawUnsafe('ALTER TABLE "DailyLog" DROP CONSTRAINT "DailyLog_legacyPhotos_nonnegative"');
-        const make = (progress: number) => tx.dailyLog.create({ data: { projectId: f.projectA.id, date: LOG, progress, submitted: true } });
+        const make = (progress: number, submitted = true, legacyPhotos = 0) =>
+          tx.dailyLog.create({ data: { projectId: f.projectA.id, date: LOG, progress, submitted, legacyPhotos } });
         const unfiled = await make(4); // sent before photos were filed: all 4 are legacy
         const mixed = await make(3); // 2 of its 3 are filed on it
         await file(tx, mixed.id);
@@ -88,10 +89,13 @@ describe('DailyLog.legacyPhotos (live PG)', () => {
         await file(tx, over.id);
         const otherKind = await make(2); // a material photo on it is not one of the day's progress photos
         await file(tx, otherKind.id, 'material');
+        const open = await make(2, false); // not sent: its progress is no sender's count (the seed's shape)
+        const dirty = await make(0, false, 5); // a db-push value no backfill wrote
         for (const st of STATEMENTS) await tx.$executeRawUnsafe(st);
-        const rows = await tx.dailyLog.findMany({ where: { id: { in: [unfiled.id, mixed.id, over.id, otherKind.id] } } });
+        const ids = { unfiled, mixed, over, otherKind, open, dirty };
+        const rows = await tx.dailyLog.findMany({ where: { id: { in: Object.values(ids).map((l) => l.id) } } });
         const by = new Map(rows.map((r) => [r.id, r.legacyPhotos]));
-        seen = { unfiled: by.get(unfiled.id)!, mixed: by.get(mixed.id)!, over: by.get(over.id)!, otherKind: by.get(otherKind.id)! };
+        seen = Object.fromEntries(Object.entries(ids).map(([k, l]) => [k, by.get(l.id)!]));
         const restored = await tx.$queryRawUnsafe<{ n: number }[]>(
           `SELECT ((SELECT count(*) FROM pg_constraint WHERE conname = 'DailyLog_legacyPhotos_nonnegative')
                  + (SELECT count(*) FROM pg_trigger WHERE tgname = 'DailyLog_legacyPhotos_frozen' AND tgenabled = 'O'))::int AS n`,
@@ -102,46 +106,38 @@ describe('DailyLog.legacyPhotos (live PG)', () => {
       .catch((e) => {
         if (e !== sentry) throw e;
       });
-    expect(seen).toEqual({ unfiled: 4, mixed: 1, over: 0, otherKind: 2, guards: 2 });
+    expect(seen).toEqual({ unfiled: 4, mixed: 1, over: 0, otherKind: 2, open: 0, dirty: 0, guards: 2 });
   });
 
-  it('a replay of the migration never recomputes a backfilled value', async () => {
-    const log = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: LOG, progress: 3 } });
-    await t.prisma.dailyLog.update({ where: { id: log.id }, data: { submitted: true } }); // the send: 3 unfiled
-    expect(await legacy(log.id)).toBe(3);
+  it('a replay of the migration never recomputes a value', async () => {
+    const log = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: LOG, progress: 3, submitted: true, legacyPhotos: 3 } });
     await file(t.prisma, log.id); // filed after the send: the backfill rule would now say 2
     for (let run = 0; run < 2; run++) for (const st of STATEMENTS) await t.prisma.$executeRawUnsafe(st);
     expect(await legacy(log.id)).toBe(3);
   });
 
-  it('the send sets it from the photos the sender counted that are not filed on the log', async () => {
-    // a previous-release app: its photos were uploaded without a log, then it sent a count of 4
-    const old = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: LOG } });
-    await t.prisma.dailyLog.update({ where: { id: old.id }, data: { checkedIn: true, progress: 4, submitted: true } });
-    expect(await legacy(old.id)).toBe(4);
-    // a current app: both of its photos are filed on the log before its send
-    const cur = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: LOG } });
-    await file(t.prisma, cur.id);
-    await file(t.prisma, cur.id);
-    await t.prisma.dailyLog.update({ where: { id: cur.id }, data: { checkedIn: true, progress: 2, submitted: true } });
-    expect(await legacy(cur.id)).toBe(0);
-    // a later photo filed on the sent log changes nothing stored: the count reads it live
-    await file(t.prisma, cur.id);
-    expect(await legacy(cur.id)).toBe(0);
-  });
-
-  it('any other write is refused: before the send, after it, and a second send', async () => {
+  it('the column is frozen after insert: before the send, at it, after it and through a re-send', async () => {
     const log = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: LOG } });
     await expect(t.prisma.dailyLog.update({ where: { id: log.id }, data: { legacyPhotos: 2 } })).rejects.toThrow(/legacyPhotos is frozen/);
-    await t.prisma.dailyLog.update({ where: { id: log.id }, data: { progress: 3, submitted: true } });
-    expect(await legacy(log.id)).toBe(3);
-    await expect(t.prisma.dailyLog.update({ where: { id: log.id }, data: { legacyPhotos: 2 } })).rejects.toThrow(/legacyPhotos is frozen/);
-    // un-sending and sending again cannot recompute a count it already holds
+    // the send writes progress and submitted only; nothing derives the column from them
+    await t.prisma.dailyLog.update({ where: { id: log.id }, data: { checkedIn: true, progress: 4, submitted: true } });
+    expect(await legacy(log.id)).toBe(0);
+    await expect(t.prisma.dailyLog.update({ where: { id: log.id }, data: { progress: 9, submitted: true, legacyPhotos: 7 } })).rejects.toThrow(/legacyPhotos is frozen/);
     await t.prisma.dailyLog.update({ where: { id: log.id }, data: { submitted: false } });
     await t.prisma.dailyLog.update({ where: { id: log.id }, data: { progress: 9, submitted: true } });
-    expect(await legacy(log.id)).toBe(3);
+    expect(await legacy(log.id)).toBe(0);
     // every other column still updates freely
     await t.prisma.dailyLog.update({ where: { id: log.id }, data: { checkinTime: '09:00' } });
-    expect(await legacy(log.id)).toBe(3);
+    expect(await legacy(log.id)).toBe(0);
+  });
+
+  it('the freeze reads only its own row, and one statement installs it with the backfill', async () => {
+    const [fn] = await t.prisma.$queryRawUnsafe<{ src: string }[]>(
+      `SELECT prosrc AS src FROM pg_proc WHERE proname = 'daily_log_legacy_photos_frozen'`,
+    );
+    expect(fn.src).not.toMatch(/Media|SELECT/i);
+    // the function (inert until a trigger names it) and ONE statement holding the column, backfill, CHECK and trigger
+    expect(STATEMENTS).toHaveLength(2);
+    expect(STATEMENTS[1]).toMatch(/ADD COLUMN IF NOT EXISTS[\s\S]*UPDATE "DailyLog"[\s\S]*ADD CONSTRAINT[\s\S]*CREATE TRIGGER/);
   });
 });

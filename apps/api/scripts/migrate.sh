@@ -516,8 +516,8 @@ if echo "$out" | grep -q "P3005"; then
   # re-runnable.
   #
   # #482 site photos 3a (20280113) is here for the same reason: a db-push baseline has `DailyLog.legacyPhotos` from
-  # schema.prisma but not its CHECK, its one-time backfill or its frozen-value trigger. The backfill is guarded on the
-  # CHECK it adds, so a replay never recomputes a value; everything else in it is re-runnable.
+  # schema.prisma but not its CHECK, its one-time backfill or its freeze trigger. The backfill is guarded on the CHECK
+  # it adds, so a replay never recomputes a value; everything else in it is re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
