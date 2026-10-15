@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { useStore } from '@/store/store';
+import { refreshSiteVisits } from '@/lib/useSiteVisits';
 import { API_BASE, DEV_AUTH, ApiGateway } from './apiGateway';
 import { subscribeToPush } from './push';
 import { jwtSub } from '@/lib/jwt';
@@ -45,6 +46,8 @@ export function useApiSync(): void {
       // superseded/scope-moved by the coordinator — but still gates the socket
       // handler below so we don't schedule a pull after unmount.
       useStore.getState().requestFreshSnapshot();
+      // Site Visits SV1-c (#874): the screen's visits are its own read, outside the snapshot
+      refreshSiteVisits();
       // Phase 3 Task 7 — keep the pilot Materials bundle fresh on the same pings (a no-op off-pilot,
       // gated by the `materials` capability). The initial call before the shell loads is a no-op; the
       // shell load then triggers the first real fetch, and subsequent `changed` pings refresh it.
