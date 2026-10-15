@@ -19,6 +19,7 @@ import {
   Package,
   HardHat,
   IndianRupee,
+  Footprints,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -52,6 +53,8 @@ export const SCREEN_META: Record<ScreenKey, ScreenMeta> = {
   materials: { key: 'materials', label: 'Materials', short: 'Materials', path: '/materials', icon: Package },
   labour: { key: 'labour', label: 'Labour', short: 'Labour', path: '/labour', icon: HardHat },
   commercial: { key: 'commercial', label: 'Commercial', short: 'Money', path: '/commercial', icon: IndianRupee },
+  // Site Visits SV1-c (#792, QA item 6) — every member reads the visits (`project.read`), so every role holds it, last
+  'site-visits': { key: 'site-visits', label: 'Site Visits', short: 'Site Visits', path: '/site-visits', icon: Footprints },
 };
 
 /**
@@ -104,6 +107,7 @@ export const SCREEN_MODULE: Record<ScreenKey, string | null> = {
   // Commercial (Phase 5 Task 7B-i) — same stance again: `commercial` is registry-enabled for every
   // project, so the module filter must be a no-op and the CAPABILITY above does the pilot gating.
   commercial: null,
+  'site-visits': 'site-visits',
 };
 
 /**
@@ -138,24 +142,24 @@ export function screensFor(role: Role): ScreenMeta[] {
   // #811 (Board decision 2026-10-13) — the Dashboard is the home for every role: first in the nav, so
   // everyone lands on it after login. For You (the live action queue) stays second.
   const keys: Record<Role, ScreenKey[]> = {
-    pmc: ['dashboard', 'inbox', 'daily-log', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team', 'portfolio'],
+    pmc: ['dashboard', 'inbox', 'daily-log', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team', 'portfolio', 'site-visits'],
     // QA check 14 Oct 2026 (#482): one "Decisions" screen — what waits on the client, then the history. The
     // Decision Log's own path stays reachable by link (ROUTE_ONLY_SCREENS) and opens the same screen.
-    client: ['dashboard', 'inbox', 'client-decisions', 'client-health', 'drawings', 'places'],
+    client: ['dashboard', 'inbox', 'client-decisions', 'client-health', 'drawings', 'places', 'site-visits'],
     // engineers hold activity.start/complete, so they get the Schedule (its authoring
     // controls stay behind activity.manage — pmc only). Materials and Labour (`labour.read` is
     // pmc/engineer) are pmc/engineer planning surfaces.
     // #482 QA (14 Oct 2026): no "Team Access & Login" for the engineer or the contractor — once signed in it
     // was a dead end in their menu
-    engineer: ['dashboard', 'inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'materials', 'labour', 'commercial', 'places', 'decision-log'],
-    contractor: ['dashboard', 'inbox', 'drawings', 'places', 'decision-log'],
+    engineer: ['dashboard', 'inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'materials', 'labour', 'commercial', 'places', 'decision-log', 'site-visits'],
+    contractor: ['dashboard', 'inbox', 'drawings', 'places', 'decision-log', 'site-visits'],
     // a discipline consultant: read-mostly reviewer — drawings, the register, the Site Map, project health
-    consultant: ['dashboard', 'inbox', 'drawings', 'decision-log', 'places', 'client-health'],
+    consultant: ['dashboard', 'inbox', 'drawings', 'decision-log', 'places', 'client-health', 'site-visits'],
     // Phase 6 task 4d-ii-b / B2 — the architect's screens, from the role's ROLE_POLICY rows: the
     // Inbox (the awaiting-countersign item, B3), the Decision Log (Countersign / Reject back / Forward
     // on and the consultation surface, B4/B5b), the drawing register and the Site Map (`project.read`).
     // No session can carry the role until 4d-iii drops the doors; the list is what such a session lands on.
-    architect: ['dashboard', 'inbox', 'decision-log', 'drawings', 'places'],
+    architect: ['dashboard', 'inbox', 'decision-log', 'drawings', 'places', 'site-visits'],
   };
   return keys[role].map((k) => {
     const own = ROLE_SCREEN_LABEL[role]?.[k];

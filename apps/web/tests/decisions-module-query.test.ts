@@ -36,7 +36,7 @@ describe('Task 9 — manifest-driven nav (enabledScreensFor)', () => {
   });
 
   it('hides a screen whose domain module is DISABLED, always keeps shell surfaces', () => {
-    const enabled = ['activities', 'auth', 'daily-log', 'drawings', 'inspections', 'media', 'nodes', 'orgs', 'platform']; // decisions DISABLED
+    const enabled = ['activities', 'auth', 'daily-log', 'drawings', 'inspections', 'media', 'nodes', 'orgs', 'platform', 'site-visits']; // decisions DISABLED
     const keys = enabledScreensFor('pmc', enabled).map((m) => m.key);
     expect(keys).not.toContain('decision-log'); // decisions module off → decision-log hidden
     expect(SCREEN_MODULE['decision-log']).toBe('decisions');
@@ -47,7 +47,7 @@ describe('Task 9 — manifest-driven nav (enabledScreensFor)', () => {
   });
 
   it('every role screen with a domain module survives when all modules are enabled (behaviour-preserving)', () => {
-    const enabled = ['activities', 'auth', 'daily-log', 'decisions', 'drawings', 'inspections', 'media', 'nodes', 'orgs', 'platform'];
+    const enabled = ['activities', 'auth', 'daily-log', 'decisions', 'drawings', 'inspections', 'media', 'nodes', 'orgs', 'platform', 'site-visits'];
     for (const role of ['pmc', 'client', 'engineer', 'contractor', 'consultant'] as const) {
       expect(enabledScreensFor(role, enabled).map((m) => m.key)).toEqual(enabledScreensFor(role, []).map((m) => m.key));
     }
