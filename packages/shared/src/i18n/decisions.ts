@@ -145,7 +145,8 @@ export const decisionLogText = {
   approvedBy: (approver: string, onBehalfOf: string | undefined, date: string | undefined, lang: Lang): string => {
     if (lang === 'en') return `Approved by ${approver}${onBehalfOf ? ` (on behalf of the ${onBehalfOf})` : ''} · ${date}`;
     const day = date === undefined ? '' : servedDayIn(date, lang);
-    const holder = onBehalfOf ? memberRoleIn(onBehalfOf, lang) : '';
+    // 'member' is a holder kind (the named decider), not a project role
+    const holder = !onBehalfOf ? '' : onBehalfOf === 'member' ? DECIDER.member[lang] : memberRoleIn(onBehalfOf, lang);
     return lang === 'hi'
       ? `${approver}${holder ? ` (${holder} की ओर से)` : ''} द्वारा मंज़ूर · ${day}`
       : `${approver}${holder ? ` (${holder} વતી)` : ''} દ્વારા મંજૂર · ${day}`;

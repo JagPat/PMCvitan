@@ -134,6 +134,22 @@ describe.each(['hi', 'gu'] as const)('the Decision Log in %s (#482 QA item 3)', 
     expect(leftoverEnglish(document.body, DATA)).toEqual([]);
   });
 
+  it('an invalid cost or days in a countersign panel is refused in the language (Codex review of #928)', async () => {
+    const { r } = await load(lang, { role: 'architect', sessionUserId: 'u-arch' });
+    fireEvent.click(r.getByTestId('reject-back-DL-3'));
+    fireEvent.change(r.getByTestId('chain-cost-DL-3'), { target: { value: '12.50' } });
+    fireEvent.change(r.getByTestId('chain-days-DL-3'), { target: { value: 'two' } });
+    expect(r.getByTestId('chain-cost-error-DL-3')).toBeTruthy();
+    expect(r.getByTestId('chain-days-error-DL-3')).toBeTruthy();
+    expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+  });
+
+  it('an approval the PMC gave for the named decider reads the holder in the language (Codex review of #928)', async () => {
+    const { r } = await load(lang, { decisions: [dec({ id: 'DL-1', title: 'Kitchen Counter', nodeId: 'kit', status: 'approved', ...approvedShape, onBehalfOf: 'member' })] });
+    expect(r.getByTestId('log-row-DL-1').textContent).not.toContain('member');
+    expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+  });
+
   it('the PMC\'s stranded countersign resolution shows no English', async () => {
     const stranded = DECISIONS.map((d) => (d.id === 'DL-3' ? { ...d, countersignRequired: undefined } : d));
     const { r } = await load(lang, { decisions: stranded });

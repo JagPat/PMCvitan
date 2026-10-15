@@ -6,7 +6,7 @@ import { isCountersignChainOp } from '@/data/apiGateway';
 // the LEAF module, not the `@/components` barrel (the `ConsultationThread` convention: this component is
 // itself exported from that barrel, so importing through it would close a cycle)
 import { Button } from './Button';
-import { readImpact } from '@/lib/impactInput';
+import { impactReasonIn, readImpact } from '@/lib/impactInput';
 import { can, viewerIsDecider, countersignLabels as L, memberRoleIn, type Decision, type Lang } from '@vitan/shared';
 
 /**
@@ -157,13 +157,13 @@ export function CountersignControls({ decision: d, lang = 'en' }: { decision: De
                 <input aria-label={L.cost[lang]} value={cost} onChange={(e) => setCost(e.target.value)} placeholder={L.costHint[lang]}
                   aria-invalid={!costReading.ok} aria-describedby={!costReading.ok ? `chain-cost-error-${d.id}` : undefined}
                   style={{ ...fld, ...(costReading.ok ? null : invalid) }} data-testid={`chain-cost-${d.id}`} />
-                {!costReading.ok && <div id={`chain-cost-error-${d.id}`} role="alert" style={err} data-testid={`chain-cost-error-${d.id}`}>{costReading.reason}</div>}
+                {!costReading.ok && <div id={`chain-cost-error-${d.id}`} role="alert" style={err} data-testid={`chain-cost-error-${d.id}`}>{impactReasonIn(costReading.reason, lang)}</div>}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 120px' }}>
                 <input aria-label={L.days[lang]} value={days} onChange={(e) => setDays(e.target.value)} placeholder={L.daysHint[lang]}
                   aria-invalid={!daysReading.ok} aria-describedby={!daysReading.ok ? `chain-days-error-${d.id}` : undefined}
                   style={{ ...fld, ...(daysReading.ok ? null : invalid) }} data-testid={`chain-days-${d.id}`} />
-                {!daysReading.ok && <div id={`chain-days-error-${d.id}`} role="alert" style={err} data-testid={`chain-days-error-${d.id}`}>{daysReading.reason}</div>}
+                {!daysReading.ok && <div id={`chain-days-error-${d.id}`} role="alert" style={err} data-testid={`chain-days-error-${d.id}`}>{impactReasonIn(daysReading.reason, lang)}</div>}
               </div>
             </div>
           )}
