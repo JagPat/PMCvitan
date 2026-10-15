@@ -1,8 +1,7 @@
 import { useId, type ReactNode } from 'react';
 import { Modal } from './Modal';
 import { Button } from './Button';
-import { confirmDialogLabels } from '@vitan/shared';
-import { useStore } from '@/store/store';
+import { confirmDialogLabels, type Lang } from '@vitan/shared';
 
 /**
  * Audit B4 — the one confirmation every destructive action goes through: it names the thing,
@@ -17,6 +16,7 @@ export function ConfirmDialog({
   onCancel,
   blocked,
   testId = 'confirm-dialog',
+  lang = 'en',
 }: {
   title: string;
   children?: ReactNode;
@@ -25,9 +25,10 @@ export function ConfirmDialog({
   onCancel: () => void;
   blocked?: string;
   testId?: string;
+  /** #482 — the Cancel/Close word; English unless the caller's own words are translated */
+  lang?: Lang;
 }) {
   const titleId = useId();
-  const lang = useStore((s) => s.lang);
   return (
     <Modal onClose={onCancel} maxWidth={400} labelledBy={titleId}>
       <div style={{ padding: '18px 20px' }} data-testid={testId}>

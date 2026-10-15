@@ -632,6 +632,7 @@ export function ScheduleScreen() {
           onConfirm={() => deletePhase(phaseToDelete.id)}
           onCancel={() => setPhaseToDelete(null)}
           testId="confirm-phase-delete"
+          lang={lang}
         >
           {L.phaseDeleteNote[lang]}
         </ConfirmDialog>
@@ -772,6 +773,7 @@ function PlanActivityModal({ activity, onClose, onDeleted }: { activity: Activit
         onConfirm={() => { const outcome = deleteActivity(activity.id); onDeleted?.(activity.id, outcome); onClose(); }}
         onCancel={() => setConfirmingDelete(false)}
         testId="confirm-activity-delete"
+        lang={lang}
       >
         {L.deleteNote[lang]}
       </ConfirmDialog>

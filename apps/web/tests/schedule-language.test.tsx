@@ -165,6 +165,61 @@ describe('the schedule in Hindi and Gujarati', () => {
     for (const reason of served) expect(gateReasonIn(reason, 'derived', 'en')).toBe(reason);
   });
 
+  it('the material and labour pilots\' readiness sentences read in Hindi and Gujarati, numbers and dates kept (Codex, #912)', async () => {
+    const { gateReasonIn } = await import('@vitan/shared');
+    const served = [
+      'Material ≠ approved — unresolved site mismatch (§A)', 'No material requirement for this activity',
+      'Crew ≠ allocated — unresolved labour mismatch (§A)', 'No labour requirement for this activity',
+      "Labour present for today's demand (§A)", 'Every demanded labour slice up to today is fulfilled (§A)',
+      'Labour window has not begun — first demand slice is 2026-10-20 (§A)',
+      'Overdue labour slice 2026-10-14 unfulfilled — 3 of 5 person-shifts covered (§A)',
+      'Crew allocated for today — muster pending (2 of 4 present, 2026-10-15 day) (§A)',
+      "Under-allocated for today's labour demand — 1 of 4 person-shifts allocated (2026-10-15 night) (§A)",
+      'Covered 12 of 12 m3 (reserved + issued)',
+      "Short by 4 m3; covering deliveries meet the activity's demand by 2026-10-22",
+      'Covered 12 of 12 m3; the activity is at-risk on another requirement (covering delivery by 2026-10-22)',
+      "Short by 4 m3 — inbound commitments cannot cover the activity's demand",
+      'Covered 12 of 12 m3; the activity is blocked on another requirement',
+    ];
+    for (const lang of ['hi', 'gu'] as const) {
+      for (const reason of served) expect([reason, words(gateReasonIn(reason, 'derived', lang))]).toEqual([reason, []]);
+      expect(gateReasonIn('Overdue labour slice 2026-10-14 unfulfilled — 3 of 5 person-shifts covered (§A)', 'derived', lang)).toMatch(/3.*5|5.*3/);
+    }
+    for (const reason of served) expect(gateReasonIn(reason, 'derived', 'en')).toBe(reason);
+  });
+
+  it('the server\'s refusal to delete an activity or phase reads in the language; an unknown one is kept (Codex, #912)', async () => {
+    const { scheduleToastText } = await import('@vitan/shared');
+    const linked = 'This activity has linked records (inspections/materials) — it can no longer be deleted';
+    for (const lang of ['hi', 'gu'] as const) {
+      expect(words(scheduleToastText.deleteRefused(linked, lang))).toEqual([]);
+      expect(words(scheduleToastText.deleteRefused('Activity ACT-3 not found', lang))).toEqual([]);
+      expect(scheduleToastText.deleteRefused('Activity ACT-3 not found', lang)).toContain('ACT-3');
+      expect(words(scheduleToastText.phaseRefused('Phase not found', lang))).toEqual([]);
+      expect(scheduleToastText.phaseRefused('Something newer', lang)).toContain('Something newer');
+    }
+    expect(scheduleToastText.deleteRefused(linked, 'en')).toBe(`Couldn't delete this activity — ${linked}`);
+  });
+
+  it('a served day the calendar does not have is shown as recorded, not rolled over (Codex, #912)', async () => {
+    const { servedDayIn } = await import('@vitan/shared');
+    for (const lang of ['hi', 'gu'] as const) {
+      expect(servedDayIn('31 Feb 2026', lang)).toBe('31 Feb 2026');
+      expect(servedDayIn('31 Jun', lang)).toBe('31 Jun');
+      expect(words(servedDayIn('28 Feb 2026', lang))).toEqual([]);
+    }
+  });
+
+  it('other screens\' confirmation dialogs keep their English Cancel and Close (Codex, #912)', async () => {
+    await load('hi', {});
+    const { ConfirmDialog } = await import('@/components');
+    const r = render(<ConfirmDialog title="Remove member" confirmLabel="Remove" onConfirm={() => {}} onCancel={() => {}} />);
+    expect(r.getByTestId('confirm-dialog-cancel').textContent).toBe('Cancel');
+    cleanup();
+    const b = render(<ConfirmDialog title="Remove member" confirmLabel="Remove" blocked="Not now" onConfirm={() => {}} onCancel={() => {}} />);
+    expect(b.getByTestId('confirm-dialog-cancel').textContent).toBe('Close');
+  });
+
   it('English reads as before', async () => {
     const { ScheduleScreen } = await load('en', { role: 'pmc' });
     const r = render(<ScheduleScreen />);

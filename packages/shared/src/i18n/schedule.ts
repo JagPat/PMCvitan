@@ -198,7 +198,59 @@ const EXACT: Record<string, Record<NonEn, string>> = {
   'Stored site flag — material on site': { hi: 'साइट पर दर्ज निशान — सामान साइट पर', gu: 'સાઇટ પર નોંધાયેલ નિશાન — માલસામાન સાઇટ પર' },
   'Stored site flag — team present': { hi: 'साइट पर दर्ज निशान — टीम मौजूद', gu: 'સાઇટ પર નોંધાયેલ નિશાન — ટીમ હાજર' },
   'Stored site flag (demo)': { hi: 'साइट पर दर्ज निशान (डेमो)', gu: 'સાઇટ પર નોંધાયેલ નિશાન (ડેમો)' },
+  // the material and labour pilots' own fixed sentences (api material-readiness.ts, team-readiness.ts,
+  // labour-coverage.service.ts) — Codex #912
+  'Material ≠ approved — unresolved site mismatch (§A)': {
+    hi: 'सामान मंज़ूर से अलग — साइट पर गड़बड़ी अभी सुलझी नहीं (§A)',
+    gu: 'માલસામાન મંજૂરથી અલગ — સાઇટ પરની ગડબડ હજી ઉકલી નથી (§A)',
+  },
+  'No material requirement for this activity': { hi: 'इस काम के लिए सामान की कोई ज़रूरत नहीं', gu: 'આ કામ માટે માલસામાનની કોઈ જરૂર નથી' },
+  'Crew ≠ allocated — unresolved labour mismatch (§A)': {
+    hi: 'टीम तय से अलग — मज़दूरों की गड़बड़ी अभी सुलझी नहीं (§A)',
+    gu: 'ટીમ ફાળવણીથી અલગ — મજૂરોની ગડબડ હજી ઉકલી નથી (§A)',
+  },
+  'No labour requirement for this activity': { hi: 'इस काम के लिए मज़दूरों की कोई ज़रूरत नहीं', gu: 'આ કામ માટે મજૂરોની કોઈ જરૂર નથી' },
+  "Labour present for today's demand (§A)": { hi: 'आज की ज़रूरत के मज़दूर मौजूद (§A)', gu: 'આજની જરૂરિયાતના મજૂરો હાજર (§A)' },
+  'Every demanded labour slice up to today is fulfilled (§A)': {
+    hi: 'आज तक की हर माँगी गई मज़दूर पाली पूरी (§A)',
+    gu: 'આજ સુધીની દરેક માગેલી મજૂર પાળી પૂરી (§A)',
+  },
 };
+
+const SHIFT: Record<string, Record<NonEn, string>> = { day: { hi: 'दिन', gu: 'દિવસ' }, night: { hi: 'रात', gu: 'રાત' } };
+const shiftIn = (shift: string, lang: NonEn): string => SHIFT[shift]?.[lang] ?? shift;
+const isoIn = (iso: string, lang: NonEn): string => (/^\d{4}-\d{2}-\d{2}$/.test(iso) ? civilDateIn(iso, lang) : iso);
+
+/** The material and labour coverage sentences with their quantities, units and dates (kept as served). */
+const COVERAGE: [RegExp, (m: RegExpExecArray, lang: NonEn) => string][] = [
+  [/^Labour window has not begun — first demand slice is (\S+) \(§A\)$/, (m, l) => pick(l, '',
+    `मज़दूरों का समय अभी शुरू नहीं हुआ — पहली माँग ${isoIn(m[1], l)} को (§A)`,
+    `મજૂરોનો સમય હજી શરૂ થયો નથી — પહેલી માગ ${isoIn(m[1], l)} ના રોજ (§A)`)],
+  [/^Overdue labour slice (\S+) unfulfilled — (\d+) of (\d+) person-shifts covered \(§A\)$/, (m, l) => pick(l, '',
+    `${isoIn(m[1], l)} की मज़दूर पाली अधूरी — ${m[3]} में से ${m[2]} व्यक्ति-पाली पूरी (§A)`,
+    `${isoIn(m[1], l)} ની મજૂર પાળી અધૂરી — ${m[3]} માંથી ${m[2]} વ્યક્તિ-પાળી પૂરી (§A)`)],
+  [/^Crew allocated for today — muster pending \((\d+) of (\d+) present, (\S+) (\S+)\) \(§A\)$/, (m, l) => pick(l, '',
+    `आज के लिए टीम तय — हाज़िरी बाकी (${m[2]} में से ${m[1]} मौजूद, ${isoIn(m[3], l)} ${shiftIn(m[4], l)}) (§A)`,
+    `આજ માટે ટીમ ફાળવી — હાજરી બાકી (${m[2]} માંથી ${m[1]} હાજર, ${isoIn(m[3], l)} ${shiftIn(m[4], l)}) (§A)`)],
+  [/^Under-allocated for today's labour demand — (\d+) of (\d+) person-shifts allocated \((\S+) (\S+)\) \(§A\)$/, (m, l) => pick(l, '',
+    `आज की मज़दूर माँग के लिए कम लोग — ${m[2]} में से ${m[1]} व्यक्ति-पाली तय (${isoIn(m[3], l)} ${shiftIn(m[4], l)}) (§A)`,
+    `આજની મજૂર માગ માટે ઓછા લોકો — ${m[2]} માંથી ${m[1]} વ્યક્તિ-પાળી ફાળવી (${isoIn(m[3], l)} ${shiftIn(m[4], l)}) (§A)`)],
+  [/^Covered (\S+) of (\S+) (.+) \(reserved \+ issued\)$/, (m, l) => pick(l, '',
+    `${m[2]} ${m[3]} में से ${m[1]} उपलब्ध (आरक्षित + जारी)`,
+    `${m[2]} ${m[3]} માંથી ${m[1]} ઉપલબ્ધ (અનામત + આપેલું)`)],
+  [/^Short by (\S+) (.+); covering deliveries meet the activity's demand by (\S+)$/, (m, l) => pick(l, '',
+    `${m[1]} ${m[2]} कम; आने वाली डिलीवरी ${isoIn(m[3], l)} तक ज़रूरत पूरी करेगी`,
+    `${m[1]} ${m[2]} ઓછું; આવનારી ડિલિવરી ${isoIn(m[3], l)} સુધીમાં જરૂર પૂરી કરશે`)],
+  [/^Covered (\S+) of (\S+) (.+); the activity is at-risk on another requirement \(covering delivery by (\S+)\)$/, (m, l) => pick(l, '',
+    `${m[2]} ${m[3]} में से ${m[1]} उपलब्ध; काम किसी दूसरी ज़रूरत पर जोखिम में है (डिलीवरी ${isoIn(m[4], l)} तक)`,
+    `${m[2]} ${m[3]} માંથી ${m[1]} ઉપલબ્ધ; કામ બીજી જરૂરિયાત પર જોખમમાં છે (ડિલિવરી ${isoIn(m[4], l)} સુધીમાં)`)],
+  [/^Short by (\S+) (.+) — inbound commitments cannot cover the activity's demand$/, (m, l) => pick(l, '',
+    `${m[1]} ${m[2]} कम — आने वाली डिलीवरी से ज़रूरत पूरी नहीं होगी`,
+    `${m[1]} ${m[2]} ઓછું — આવનારી ડિલિવરીથી જરૂર પૂરી નહીં થાય`)],
+  [/^Covered (\S+) of (\S+) (.+); the activity is blocked on another requirement$/, (m, l) => pick(l, '',
+    `${m[2]} ${m[3]} में से ${m[1]} उपलब्ध; काम किसी दूसरी ज़रूरत पर रुका है`,
+    `${m[2]} ${m[3]} માંથી ${m[1]} ઉપલબ્ધ; કામ બીજી જરૂરિયાત પર અટક્યું છે`)],
+];
 
 /** The fixed endings of the drawing gate's per-drawing reasons (`<number>: <ending>`). */
 const DRAWING_ENDINGS: [RegExp, (m: RegExpExecArray, lang: NonEn) => string][] = [
@@ -220,6 +272,10 @@ export function gateReasonIn(reason: string, source: GateSource, lang: Lang): st
   if (lang === 'en' || source === 'override') return reason;
   const exact = EXACT[reason];
   if (exact) return exact[lang];
+  for (const [re, say] of COVERAGE) {
+    const c = re.exec(reason);
+    if (c) return say(c, lang);
+  }
   let m = /^Awaiting inspection (\S+)$/.exec(reason);
   if (m) return pick(lang, '', `निरीक्षण ${m[1]} का इंतज़ार`, `નિરીક્ષણ ${m[1]} ની રાહ`);
   m = /^Correction chain open — the rejection of (\S+) is not yet made good$/.exec(reason);
@@ -334,6 +390,8 @@ export function servedDayIn(text: string, lang: Lang): string {
   const month = m ? MONTHS.indexOf(m[2]) : -1;
   if (!m || month < 0) return text;
   const at = new Date(Date.UTC(m[3] ? Number(m[3]) : 2026, month, Number(m[1])));
+  // a day the calendar does not have ("31 Feb") is shown as recorded, never rolled into the next month (Codex, #912)
+  if (at.getUTCMonth() !== month || at.getUTCDate() !== Number(m[1])) return text;
   return new Intl.DateTimeFormat(LOCALE[lang], { day: 'numeric', month: 'short', ...(m[3] ? { year: 'numeric' } : {}), timeZone: 'UTC' }).format(at);
 }
 
@@ -362,13 +420,28 @@ export const scheduleToast = {
   },
 } satisfies Record<string, Words>;
 
+/**
+ * The server's own refusals of an activity or phase removal (api activities.service.ts / phases.service.ts),
+ * matched whole; the activity id stays as served and anything else is shown as served (Codex, #912).
+ */
+function refusalIn(why: string, lang: Lang): string {
+  if (lang === 'en') return why;
+  if (why === 'This activity has linked records (inspections/materials) — it can no longer be deleted') {
+    return pick(lang, '', 'इस काम से रिकॉर्ड जुड़े हैं (निरीक्षण/सामान) — अब इसे हटाया नहीं जा सकता', 'આ કામ સાથે રેકોર્ડ જોડાયેલા છે (નિરીક્ષણ/માલસામાન) — હવે તેને હટાવી શકાય નહીં');
+  }
+  if (why === 'Phase not found') return pick(lang, '', 'चरण नहीं मिला', 'તબક્કો મળ્યો નહીં');
+  const m = /^Activity (\S+) not found$/.exec(why);
+  if (m) return pick(lang, '', `काम ${m[1]} नहीं मिला`, `કામ ${m[1]} મળ્યું નહીં`);
+  return why;
+}
+
 export const scheduleToastText = {
   planned: (name: string, lang: Lang): string => pick(lang, `Planned: ${name}.`, `योजना में जोड़ा: ${name}।`, `યોજનામાં ઉમેર્યું: ${name}.`),
   deleteRefused: (why: string, lang: Lang): string =>
-    pick(lang, `Couldn't delete this activity — ${why}`, `यह काम हटाया नहीं जा सका — ${why}`, `આ કામ હટાવી શકાયું નહીં — ${why}`),
+    pick(lang, `Couldn't delete this activity — ${why}`, `यह काम हटाया नहीं जा सका — ${refusalIn(why, lang)}`, `આ કામ હટાવી શકાયું નહીં — ${refusalIn(why, lang)}`),
   phaseAdded: (name: string, lang: Lang): string => pick(lang, `Phase added: ${name}.`, `चरण जोड़ा: ${name}।`, `તબક્કો ઉમેર્યો: ${name}.`),
   phaseRefused: (why: string, lang: Lang): string =>
-    pick(lang, `Couldn't remove this phase — ${why}`, `यह चरण हटाया नहीं जा सका — ${why}`, `આ તબક્કો હટાવી શકાયો નહીં — ${why}`),
+    pick(lang, `Couldn't remove this phase — ${why}`, `यह चरण हटाया नहीं जा सका — ${refusalIn(why, lang)}`, `આ તબક્કો હટાવી શકાયો નહીં — ${refusalIn(why, lang)}`),
   /** the queued command's name in the "saved offline" line */
   startCommand: (id: string, lang: Lang): string => pick(lang, `Start ${id}`, `${id} शुरू करना`, `${id} શરૂ કરવું`),
   completeCommand: (id: string, lang: Lang): string => pick(lang, `Complete ${id}`, `${id} पूरा करना`, `${id} પૂરું કરવું`),
