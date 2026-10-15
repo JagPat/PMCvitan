@@ -105,6 +105,8 @@ export function DailyLogScreen() {
       // may have switched projects and `useApiSync` may have installed another gateway, and
       // this photo would then be filed under a project it has nothing to do with.
       const pickedIn = projectScopeOf(useStore.getState());
+      // and the day's log on screen, for the same reason: a refresh may bring another log before `onload` (#482)
+      const pickedForLog = useStore.getState().dailyLog?.id ?? null;
       const reader = new FileReader();
       reader.onload = () => {
         if (typeof reader.result !== 'string') return;
@@ -113,7 +115,7 @@ export function DailyLogScreen() {
         // `file.slice().arrayBuffer()` — would suspend between the user choosing a photo and
         // the store queueing it, a window in which a project switch redirects the upload and
         // a reload loses the photo. `captureStamp` decodes the head of the data URL instead.
-        addProgressPhoto(reader.result, photoNode, captureStamp(reader.result), pickedIn);
+        addProgressPhoto(reader.result, photoNode, captureStamp(reader.result), pickedIn, pickedForLog);
       };
       reader.readAsDataURL(file);
     }

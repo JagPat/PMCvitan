@@ -786,8 +786,11 @@ export interface AppActions {
    * `pickedIn` is the scope the file was CHOSEN in: the picker's `FileReader` resolves after
    * an async boundary, so without it a photo chosen in project A can arrive here once B's
    * gateway is installed.
+   * `pickedForLog` is the server id of the daily log on screen when the file was chosen (null: none), captured
+   * with `pickedIn` for the same reason: a same-project refresh can replace the log before the read resolves.
+   * Omitted, the log on screen now is used.
    */
-  addProgressPhoto: (dataUrl: string, nodeId?: string | null, stamp?: CaptureStamp, pickedIn?: ProjectScope) => void;
+  addProgressPhoto: (dataUrl: string, nodeId?: string | null, stamp?: CaptureStamp, pickedIn?: ProjectScope, pickedForLog?: string | null) => void;
   submitDailyLog: () => void;
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
@@ -5456,7 +5459,7 @@ export const useStore = create<Store>()(
       persistDailyLogDraft();
       get().record('Progress photo');
     },
-    addProgressPhoto: (dataUrl, nodeId, stamp, pickedIn) => {
+    addProgressPhoto: (dataUrl, nodeId, stamp, pickedIn, pickedForLog) => {
       // The file was chosen BEFORE the read that produced this data URL, and a project switch
       // (or sign-out, or re-auth) in between makes this photo — and its `photoNode` — belong
       // to a project we have left. Uploading it through whichever gateway is installed now
@@ -5468,6 +5471,12 @@ export const useStore = create<Store>()(
         return;
       }
       const [, mime, base64] = m;
+      // The day's log this photo was taken for (#482): fixed when it was picked, filed on it, and shown only in
+      // THAT log. A replay that lands after the log was sent, or after a refresh brought the next log, still
+      // belongs to it, and never adds to the count of a log the server did not file it on.
+      const dailyLogId = pickedForLog === undefined ? (get().dailyLog?.id ?? null) : pickedForLog;
+      const onPickedLog = (s: AppState): DailyLog | null =>
+        s.dailyLog && (s.dailyLog.id ?? null) === dailyLogId ? s.dailyLog : null;
       // what the PHOTO recorded — shared by the server and local-demo paths below, so the
       // demo store mirrors what the server would hold rather than dropping it
       const stamped = stamp ?? {};
@@ -5482,7 +5491,10 @@ export const useStore = create<Store>()(
         // One key per pick (#482): the server stores one photo per (project, key), so a queued upload replayed
         // after its first attempt committed but its reply was lost is the same photo, not a second one.
         const clientKey = newIdempotencyKey();
-        const input = { kind: 'progress' as const, mime, data: base64, clientKey, ...stamped, ...(nodeId ? { nodeId } : {}) };
+        const input = {
+          kind: 'progress' as const, mime, data: base64, clientKey, ...stamped,
+          ...(nodeId ? { nodeId } : {}), ...(dailyLogId ? { dailyLogId } : {}),
+        };
         // Phase 8 media offline queue: when offline, show the photo optimistically
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
@@ -5490,9 +5502,10 @@ export const useStore = create<Store>()(
           set((s) => {
             s.outbox.push({ t: 'uploadMedia', input });
             s.syncQueue.push('Progress photo');
-            if (s.dailyLog) {
-              s.dailyLog.photos.unshift({ url: dataUrl });
-              s.dailyLog.progress += 1;
+            const log = onPickedLog(s);
+            if (log) {
+              log.photos.unshift({ url: dataUrl });
+              log.progress += 1;
               recordDraftPhoto(s);
             }
           });
@@ -5509,9 +5522,11 @@ export const useStore = create<Store>()(
           .then((res) => {
             if (!scopeStillCurrent(scope)) return;
             set((s) => {
-              if (!s.dailyLog) return;
-              s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
-              s.dailyLog.progress += 1;
+              // another log on screen now: the server holds the photo on its own log, and the next snapshot shows it
+              const log = onPickedLog(s);
+              if (!log) return;
+              log.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
+              log.progress += 1;
               recordDraftPhoto(s);
             });
             persistDailyLogDraft();
