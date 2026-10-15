@@ -52,6 +52,29 @@ describe('addProgressPhoto — API mode', () => {
     expect(s().outbox).toEqual([{ t: 'uploadMedia', input: expect.objectContaining({ dailyLogId: 'log-15' }) }]);
   });
 
+  it('a photo picked for one log never lands in, or counts on, another log on screen (#482)', async () => {
+    let resolveUpload!: (v: { id: string; url: string }) => void;
+    const gw = { uploadMedia: vi.fn(() => new Promise((r) => { resolveUpload = r; })) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.dailyLog!.id = 'log-b'; });
+    const before = { photos: s().dailyLog!.photos.length, progress: s().dailyLog!.progress };
+
+    // picked while log A was on screen; log B is on screen by the time it arrives, and when the reply lands
+    s().addProgressPhoto(PNG, null, undefined, undefined, 'log-a');
+    expect(gw.uploadMedia).toHaveBeenCalledWith(expect.objectContaining({ dailyLogId: 'log-a' }));
+    resolveUpload({ id: 'm1', url: '/media/m1' });
+    await flush();
+    expect(s().dailyLog!.photos.length).toBe(before.photos);
+    expect(s().dailyLog!.progress).toBe(before.progress);
+
+    // the same holds for a photo queued offline: it keeps log A, and log B shows nothing of it
+    useStore.setState((st) => { st.online = false; });
+    s().addProgressPhoto(PNG, null, undefined, undefined, 'log-a');
+    expect(s().outbox).toEqual([{ t: 'uploadMedia', input: expect.objectContaining({ dailyLogId: 'log-a' }) }]);
+    expect(s().dailyLog!.photos.length).toBe(before.photos);
+    expect(s().dailyLog!.progress).toBe(before.progress);
+  });
+
   it('surfaces a failure without adding a photo', async () => {
     const gw = { uploadMedia: vi.fn().mockRejectedValue(new Error('media 500')) };
     s()._setGateway(gw as unknown as ApiGateway);

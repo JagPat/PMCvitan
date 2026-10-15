@@ -164,6 +164,35 @@ describe('picking a progress photo reaches the store in one turn', () => {
   });
 });
 
+describe('a photo is filed on the log that was on screen when it was picked (#482)', () => {
+  it('a refresh that brings another log before the read resolves does not move the photo', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const scope = await import('@/store/projectScope');
+    useStore.setState(getInitialState());
+    useStore.setState({
+      ...scope.emptyProjectData(),
+      activeProjectId: 'villa-b',
+      projectLoadState: 'ready',
+      role: 'engineer',
+      dailyLog: { ...log(), id: 'log-a' },
+    });
+    const addProgressPhoto = vi.fn();
+    useStore.setState({ addProgressPhoto } as never);
+
+    const { release } = stubFileReader(dataUrlOf(jpegWithCaptureTime()));
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const r = render(<DailyLogScreen />);
+    fireEvent.change(r.getByTestId('progress-file'), { target: { files: [new File([], 'site.jpg', { type: 'image/jpeg' })] } });
+    useStore.setState({ dailyLog: { ...log(), id: 'log-b' } }); // the next log lands while the file is read
+    release();
+
+    expect(addProgressPhoto).toHaveBeenCalledTimes(1);
+    expect(addProgressPhoto.mock.calls[0][4]).toBe('log-a');
+  });
+});
+
 // ---- a JPEG with one EXIF DateTimeOriginal, built rather than checked in ----
 
 function jpegWithCaptureTime(): Uint8Array {
