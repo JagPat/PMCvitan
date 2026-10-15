@@ -4,7 +4,7 @@ import { useStore, checklistFrozen } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState, ItemNotFound } from '@/components';
 import { Camera } from '@/lib/icons';
 import { checklistLabels as L, checklistText as T, type ItemState } from '@vitan/shared';
-import { inspectionsReadMode } from '@/data/apiGateway';
+import { inspectionsReadMode, resolveMediaUrl } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
 import { useUrlItem } from '@/lib/useUrlItem';
 import styles from './responsive.module.css';
@@ -27,6 +27,14 @@ function toggleStyle(active: boolean, solid: string, text: string): CSSPropertie
   return active
     ? { ...toggleBase, border: `1px solid ${solid}`, background: solid, color: '#fff' }
     : { ...toggleBase, border: '1px solid rgba(35,33,28,.15)', background: '#fff', color: text };
+}
+
+/** Rows for a failed item's note: enough to show all of it (about 36 characters a row on a phone card, plus
+ *  every line break), at least two. While it is being written it stops at eight (past that the box scrolls
+ *  and can be dragged taller); a frozen note is only read, so it shows every row. */
+function noteRows(note: string, frozen: boolean): number {
+  const rows = note.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / 36)), 0);
+  return Math.max(2, frozen ? rows : Math.min(8, rows));
 }
 
 export function EngineerChecklistScreen() {
@@ -328,8 +336,10 @@ export function EngineerChecklistScreen() {
                 </div>
                 {(it.evidence?.length ?? 0) > 0 && (
                   <div style={{ display: 'flex', gap: 6, marginTop: 9, flexWrap: 'wrap' }}>
+                    {/* #482 QA item 4 — a server photo arrives as a relative, signed `/media/:id` path; unresolved,
+                        the browser asked the WEB origin for it and showed only the alt text. Same resolve as Review. */}
                     {it.evidence!.map((url, k) => (
-                      <img key={k} src={url} alt={T.evidenceAlt(k + 1, it.name, lang)} style={{ width: 52, height: 52, objectFit: 'cover', borderRadius: 8, border: '1px solid rgba(35,33,28,.15)' }} />
+                      <img key={k} src={resolveMediaUrl(url)} alt={T.evidenceAlt(k + 1, it.name, lang)} style={{ width: 52, height: 52, objectFit: 'cover', borderRadius: 8, border: '1px solid rgba(35,33,28,.15)' }} />
                     ))}
                   </div>
                 )}
@@ -339,12 +349,19 @@ export function EngineerChecklistScreen() {
                         do before this checklist can be submitted, so it leaves metadata type for F-1b's 13px
                         floor with real weight. The letter-spacing goes with the mono face. */}
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>{L.failNeeds[lang]}</div>
-                    <input
+                    {/* #482 QA item 4 — a one-line input cut a long note off (and a frozen one could not even be
+                        scrolled), so the note wraps and grows with what was written. A frozen note is read-only,
+                        not disabled, so it stays focusable and selectable (Codex 4278142781); `setNote` refuses
+                        a frozen checklist anyway. */}
+                    <textarea
                       value={it.note}
                       onChange={(e) => setNote(i, e.target.value)}
-                      disabled={frozen}
+                      readOnly={frozen}
+                      aria-readonly={frozen || undefined}
                       placeholder={L.describe[lang]}
-                      style={{ width: '100%', marginTop: 7, border: 'none', background: 'transparent', fontFamily: 'var(--font-sans)', fontSize: 13, outline: 'none', color: 'var(--ink)' }}
+                      rows={noteRows(it.note, frozen)}
+                      data-testid={`fail-note-${i}`}
+                      style={{ display: 'block', width: '100%', marginTop: 7, padding: 0, border: 'none', background: 'transparent', fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.4, outline: 'none', color: 'var(--ink)', resize: 'vertical', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}
                     />
                   </div>
                 )}
