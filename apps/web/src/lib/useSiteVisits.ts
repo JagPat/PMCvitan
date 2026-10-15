@@ -285,7 +285,9 @@ export function useSiteVisits() {
     const ping = () => { readHead(false); setPings((n) => n + 1); };
     listeners.add(ping);
     const told = (e: SiteVisitEvent) => {
-      if (e.project !== useStore.getState().activeProjectId) return;
+      // only the project and sign-in this screen shows: a late answer from an earlier sign-in is not this one's (Codex 4278754326)
+      const st = useStore.getState();
+      if (e.project !== st.activeProjectId || e.generation !== st.projectScopeGeneration) return;
       const lang = useStore.getState().lang;
       if (e.kind === 'answer') {
         if (!known.current.has(e.visit.id) && !movedTo.current.has(e.visit.id)) return;
@@ -331,7 +333,9 @@ export function useSiteVisits() {
 
   const now = () => new Date().toISOString();
   const shown = useMemo(() => withQueued(rows, queued, me), [rows, queued, me]);
-  known.current = new Set(shown.visits.map((v) => v.id));
+  // and every visit an act is queued on: after a reload its answer may land before the first read shows the visit
+  // (Codex 4278754321)
+  known.current = new Set([...shown.visits.map((v) => v.id), ...queued.map(siteVisitOf)]);
 
   return {
     visits: shown.visits, waiting: shown.waiting, queued: queued.length, load, hasMore, busy, error, notice, pings,

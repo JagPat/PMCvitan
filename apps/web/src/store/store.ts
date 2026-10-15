@@ -2206,7 +2206,10 @@ export const useStore = create<Store>()(
     // changes (useApiSync re-runs it on every token / project change).
     const LEGACY_OUTBOX_KEY = 'vitan.outbox';
     const outboxKey = (): string => {
-      let sub = 'anon';
+      // passwordless dev auth keeps no token: its session user scopes the queue, so two identities never share
+      // queued acts (Codex 4278754328; the create hold's rule, createHoldScope)
+      const user = get().sessionUserId;
+      let sub = user ? `dev:${user}` : 'anon';
       const token = get().sessionToken;
       if (token) {
         try {
@@ -5661,6 +5664,10 @@ export const useStore = create<Store>()(
       // Site Visits (#792, F53): the moves made for refused starts, applied to acts queued during this flush too
       // (to null: the refused start's acts went with it)
       const visitMoves: [string, string | null][] = [];
+      const remapVisits = (list: OutboxOp[]): OutboxOp[] => visitMoves.reduce(
+        (l, [from, to]) => (to ? moveSiteVisitOps(l, from, to) : l.filter((o) => !(isSiteVisitOp(o) && o.t !== 'siteVisitStart' && o.visitId === from))),
+        list,
+      );
       let stoppedAt = -1;
       let scopeMoved = false;
       for (let i = 0; i < ops.length; i++) {
@@ -5676,7 +5683,7 @@ export const useStore = create<Store>()(
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
         try {
-          const snap = await replayOutboxOp(flushGateway, ops[i]);
+          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation);
           if (snap) lastSnap = snap;
           // a site visit's answer shows on its own screen, so it is not counted in the "synced" line
           if (!isSiteVisitOp(ops[i])) synced += 1;
@@ -5714,7 +5721,7 @@ export const useStore = create<Store>()(
                 const onIt = rest.filter((o) => isSiteVisitOp(o) && o.t !== 'siteVisitStart' && o.visitId === op.body.id);
                 if (open) {
                   ops.splice(i + 1, rest.length, ...moveSiteVisitOps(rest, op.body.id, open.id));
-                  tellSiteVisits({ kind: 'moved', project: flushGateway.project, to: open.id, count: onIt.length });
+                  tellSiteVisits({ kind: 'moved', project: flushGateway.project, generation: flushScope.generation, to: open.id, count: onIt.length });
                 } else {
                   ops.splice(i + 1, rest.length, ...rest.filter((o) => !onIt.includes(o)));
                   for (const o of onIt) { const k = keyOf(o); if (k) droppedKeys.push(k); }
@@ -5722,7 +5729,7 @@ export const useStore = create<Store>()(
                 visitMoves.push([op.body.id, open?.id ?? null]);
               }
               if (!open) {
-                if (siteVisitListeners.size > 0) tellSiteVisits({ kind: 'refused', project: flushGateway.project, message: refusalMessage(err) });
+                if (siteVisitListeners.size > 0) tellSiteVisits({ kind: 'refused', project: flushGateway.project, generation: flushScope.generation, message: refusalMessage(err) });
                 else dropped += 1 + (op.t === 'siteVisitStart' ? droppedKeys.length - before : 0);
               }
             } else {
@@ -5762,8 +5769,9 @@ export const useStore = create<Store>()(
           if (storage) {
             const stored: unknown = JSON.parse(storage.getItem(flushKey) ?? '[]');
             // the flushed ops were the stored queue's prefix — drop the replayed part
+            // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
             const leftover = Array.isArray(stored) && stored.length >= taken
-              ? [...remaining, ...stored.slice(taken)]
+              ? [...remaining, ...remapVisits(stored.slice(taken) as OutboxOp[])]
               : remaining;
             storage.setItem(flushKey, JSON.stringify(leftover));
           }
@@ -5775,10 +5783,7 @@ export const useStore = create<Store>()(
 
       // Preserve anything queued while we were awaiting (shouldn't happen once online, but
       // never drop a write): the original ops were the outbox prefix, so slice past them.
-      const appended = visitMoves.reduce(
-        (list, [from, to]) => (to ? moveSiteVisitOps(list, from, to) : list.filter((o) => !(isSiteVisitOp(o) && o.t !== 'siteVisitStart' && o.visitId === from))),
-        get().outbox.slice(taken),
-      );
+      const appended = remapVisits(get().outbox.slice(taken));
       set((s) => {
         s.outbox = [...remaining, ...appended];
         // under module ownership the command's own snapshot carries no daily-log slice, so the log

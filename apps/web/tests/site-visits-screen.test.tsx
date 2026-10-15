@@ -239,10 +239,48 @@ describe('Site Visits screen', () => {
     await mount('consultant', CONSULTANT, gw);
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'End visit' })); });
     gw.listSiteVisits!.mockResolvedValue([]);
-    await act(async () => { useStore.setState((s) => ({ projectScopeGeneration: s.projectScopeGeneration + 1 })); });
+    // another sign-in: it brings its own queue (hydrateOutbox), so only the old flush's late answer is left
+    await act(async () => { useStore.setState((s) => ({ projectScopeGeneration: s.projectScopeGeneration + 1, outbox: [] })); });
     await act(async () => { answer(visit({ status: 'ended' })); });
     expect(screen.queryByTestId('sv-visit-v-1')).toBeNull();
     expect(screen.getByText('No site visits yet.')).toBeTruthy();
+  });
+
+  it('takes no late answer from an earlier sign-in over the visit this one reads (Codex 4278754326)', async () => {
+    let answer!: (v: SiteVisit) => void;
+    const endSiteVisit = vi.fn().mockImplementationOnce(() => new Promise<SiteVisit>((r) => { answer = r; }));
+    const gw = fakeGateway([visit()], { endSiteVisit });
+    await mount('consultant', CONSULTANT, gw);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'End visit' })); });
+    // a new sign-in on the same project, with its own queue, reads the visit as still open
+    await act(async () => { useStore.setState((s) => ({ projectScopeGeneration: s.projectScopeGeneration + 1, outbox: [] })); });
+    expect(screen.getByTestId('sv-visit-v-1').textContent).toContain('On site now');
+    await act(async () => { answer(visit({ status: 'ended', endedAt: '2026-10-14T06:00:00.000Z' })); });
+    expect(screen.getByTestId('sv-visit-v-1').textContent).toContain('On site now');
+    expect(screen.getByTestId('sv-visit-v-1').textContent).not.toContain('Ended');
+  });
+
+  it('shows the answer of an act kept across a reload that lands before the first read (Codex 4278754321)', async () => {
+    const held: ((rows: SiteVisit[]) => void)[] = [];
+    const ended = visit({ status: 'ended', endedAt: '2026-10-14T06:00:00.000Z' });
+    const gw = fakeGateway([], {
+      endSiteVisit: vi.fn(async () => ended),
+      // the first read (a page and the open list) answers late, with the visit still open; later reads see it ended
+      listSiteVisits: vi.fn((q?: { status?: string }) => (held.length < 2
+        ? new Promise<SiteVisit[]>((r) => { held.push(r); })
+        : Promise.resolve(q?.status === 'open' ? [] : [ended]))),
+    });
+    useStore.setState({ ...getInitialState(), role: 'consultant', lang: 'en', sessionUserId: CONSULTANT, nodes: NODES, members: MEMBERS, loadTeam: async () => true });
+    (gw as { project?: string }).project = useStore.getState().activeProjectId;
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    // the End made before the reload, read back from this phone's storage
+    useStore.setState({ outbox: [{ t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-14T06:00:00.000Z', idempotencyKey: 'k-end' }] });
+    render(<SiteVisitsScreen />);
+    await act(async () => {});
+    expect(gw.endSiteVisit).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().outbox).toHaveLength(0);
+    await act(async () => { held.forEach((r) => r([visit()])); });
+    expect(screen.getByTestId('sv-visit-v-1').textContent).toContain('Ended');
   });
 
   it('shows no buttons and says so with no server', async () => {
@@ -663,5 +701,57 @@ describe('a flush of site visit acts alone', () => {
     release(snap);
     await read;
     await vi.waitFor(() => expect(useStore.getState().projectLoadState).toBe('ready'));
+  });
+});
+
+describe('the queue of site visit acts', () => {
+  const end = { t: 'siteVisitEnd' as const, visitId: 'v-1', claimedAt: '2026-10-14T06:00:00.000Z', idempotencyKey: 'k-end' };
+
+  it('is kept per person under passwordless dev sign-in (Codex 4278754328)', () => {
+    useStore.setState({ ...getInitialState(), sessionToken: null, sessionUserId: 'u-a', online: false });
+    useStore.getState()._setGateway({ project: useStore.getState().activeProjectId } as unknown as ApiGateway);
+    useStore.getState().queueSiteVisitAct(end, 'saved');
+    const project = useStore.getState().activeProjectId;
+    expect(JSON.parse(localStorage.getItem(`vitan.outbox.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
+    // another dev persona on the same project does not get it
+    useStore.setState({ sessionUserId: 'u-b' });
+    useStore.getState().hydrateOutbox();
+    expect(useStore.getState().outbox).toEqual([]);
+    useStore.setState({ sessionUserId: 'u-a' });
+    useStore.getState().hydrateOutbox();
+    expect(useStore.getState().outbox).toEqual([end]);
+    localStorage.clear();
+  });
+
+  it('moves an act queued during a refused start\'s lookup even when the project changes mid-flush (Codex 4278754334)', async () => {
+    const conflict = Object.assign(new Error('409'), { status: 409, serverMessage: 'You already have a site visit open on this project; end it first' });
+    const open = visit({ id: 'v-open', visitorId: PMC });
+    let lookup!: (rows: SiteVisit[]) => void;
+    let ended!: (v: SiteVisit) => void;
+    const gw = {
+      project: 'p-a',
+      startSiteVisit: vi.fn(async () => { throw conflict; }),
+      listSiteVisits: vi.fn(() => new Promise<SiteVisit[]>((r) => { lookup = r; })),
+      endSiteVisit: vi.fn(() => new Promise<SiteVisit>((r) => { ended = r; })),
+      addSiteVisitAttendee: vi.fn(async () => open),
+    };
+    useStore.setState({ ...getInitialState(), sessionUserId: PMC, activeProjectId: 'p-a', online: true });
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    const start = { t: 'siteVisitStart' as const, idempotencyKey: 'k-s', visitor: { name: 'Priya Shah', role: 'pmc', placeName: null }, body: { id: 'v-tmp', claimedAt: '2026-10-14T04:30:00.000Z' } };
+    useStore.setState({ outbox: [start, { ...end, visitId: 'v-tmp' }] });
+    const flushed = useStore.getState().flushOutbox();
+    await vi.waitFor(() => expect(gw.listSiteVisits).toHaveBeenCalled());
+    // a guest added on the visit being started, while the lookup is out
+    const guest = { t: 'siteVisitAddAttendee' as const, visitId: 'v-tmp', idempotencyKey: 'k-g', name: 'Mr Mehta', body: { id: 'a-1', guestName: 'Mr Mehta' } };
+    useStore.getState().queueSiteVisitAct(guest, 'saved');
+    lookup([open]);
+    await vi.waitFor(() => expect(gw.endSiteVisit).toHaveBeenCalledWith('v-open', expect.any(String), expect.any(String)));
+    // the viewer switches project while the moved End is out
+    useStore.setState((s) => ({ activeProjectId: 'p-b', projectScopeGeneration: s.projectScopeGeneration + 1 }));
+    ended(open);
+    await flushed;
+    const kept = JSON.parse(localStorage.getItem(`vitan.outbox.dev:${PMC}.p-a`) ?? '[]') as { t: string; visitId: string }[];
+    expect(kept).toEqual([expect.objectContaining({ t: 'siteVisitAddAttendee', visitId: 'v-open' })]);
+    localStorage.clear();
   });
 });

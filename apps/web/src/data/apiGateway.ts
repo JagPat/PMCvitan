@@ -1928,10 +1928,11 @@ export function siteVisitOf(op: SiteVisitOp): string {
 
 /** What the outbox tells a Site Visits screen on show: a replayed act's answer (the whole visit), a refusal in the
  *  server's words, or the acts of a refused start moved onto the visitor's open visit. */
+/** Each names the project and scope generation (sign-in) its flush ran in: a screen takes only its own. */
 export type SiteVisitEvent =
-  | { kind: 'answer'; project: string; visit: SiteVisit }
-  | { kind: 'refused'; project: string; message: string | null }
-  | { kind: 'moved'; project: string; to: string; count: number };
+  | { kind: 'answer'; project: string; generation: number; visit: SiteVisit }
+  | { kind: 'refused'; project: string; generation: number; message: string | null }
+  | { kind: 'moved'; project: string; generation: number; to: string; count: number };
 export const siteVisitListeners = new Set<(e: SiteVisitEvent) => void>();
 export function tellSiteVisits(e: SiteVisitEvent): void {
   for (const l of siteVisitListeners) l(e);
@@ -1959,9 +1960,9 @@ export function moveSiteVisitOps(ops: OutboxOp[], from: string, to: string): Out
 
 /** Replay one queued mutation; resolves to the fresh snapshot, or null for an act whose answer is not a snapshot
  *  and needs none (a site visit's answer goes to the Site Visits screen). */
-export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapshot | null> {
+export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): Promise<ApiSnapshot | null> {
   const visit = (sent: Promise<SiteVisit>): Promise<null> =>
-    sent.then((v) => { tellSiteVisits({ kind: 'answer', project: gw.project, visit: v }); return null; });
+    sent.then((v) => { tellSiteVisits({ kind: 'answer', project: gw.project, generation, visit: v }); return null; });
   switch (op.t) {
     case 'siteVisitStart':
       return visit(gw.startSiteVisit(op.body, op.idempotencyKey));
