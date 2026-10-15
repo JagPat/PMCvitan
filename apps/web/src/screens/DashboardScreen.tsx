@@ -9,12 +9,12 @@ import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
-import { swatch as swatchGradient } from '@vitan/shared';
+import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, type Lang } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 /** Top 10 #2 (#771) — a count whose slice has not settled is shown as unknown, never as 0. */
 const UNKNOWN = '—';
-const unknownSub = (failed: boolean): string => (failed ? 'Could not load — try again' : 'Loading…');
+const unknownSub = (failed: boolean, lang: Lang): string => (failed ? L.loadFailed[lang] : L.loading[lang]);
 
 export function DashboardScreen() {
   // #811 — every role lands here, so a part shows only to a role that holds where it leads: the review queue is
@@ -23,6 +23,7 @@ export function DashboardScreen() {
   // enabled modules and capabilities, plus the decider's approval route), so a module the project switched off
   // offers no Dashboard way in either
   const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   const navScreens = new Set<ScreenKey>(useNavItems().map((n) => n.key));
   // #857 Codex 4269224400 — plus the role's link-only screens (the client's `/decisions`, where an unsettled
   // slice sends the approvals tile so retained rows never offer live controls), while their module is on (#822)
@@ -87,10 +88,10 @@ export function DashboardScreen() {
     // work begun — a phase whose only started work is now blocked must not read as not started
     const begunButBlocked = activities.some((a) => a.phaseId === p.id && a.status === 'blocked' && (a.as != null || !!a.actualStartDate));
     const started = !done && (r.done > 0 || r.inProgress > 0 || r.awaitingSignoff > 0 || begunButBlocked);
-    return { id: p.id, label: p.name, done, started, summary: `${p.name}: ${r.done} of ${r.activityTotal} activities done` };
+    return { id: p.id, label: p.name, done, started, summary: T.phaseSummary(p.name, r.done, r.activityTotal, lang) };
   });
 
-  const siteStatus = logFailed ? 'The site log could not be loaded' : logPending ? 'Loading the site log…' : submitted ? 'Daily log submitted' : checkedIn ? 'Engineer on site · logging' : 'Awaiting check-in';
+  const siteStatus = logFailed ? L.logFailed[lang] : logPending ? L.logLoading[lang] : submitted ? L.logSubmitted[lang] : checkedIn ? L.logging[lang] : L.awaitingCheckIn[lang];
   const siteDot = logPending ? 'var(--muted)' : checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)';
 
   // #818 Codex 4255468689 — the approvals tile opens where the viewer acts on them, the action queue's rule: the
@@ -104,21 +105,21 @@ export function DashboardScreen() {
   const openApprovals = canOpen(approvalsScreen) ? () => setScreen(approvalsScreen) : undefined;
   const tiles: Array<{ key: string; label: string; value: number | string; accent: string; sub: string; onClick?: () => void }> = [
     decisionsKnown
-      ? { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: openApprovals }
-      : { key: 'pending', label: 'DECISIONS AWAITING APPROVAL', value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed), onClick: openApprovals },
+      ? { key: 'pending', label: L.pendingTile[lang], value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? T.oldestAgeing(Math.max(...pending.map((d) => d.ageDays ?? 0)), lang) : L.allCleared[lang], onClick: openApprovals }
+      : { key: 'pending', label: L.pendingTile[lang], value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed, lang), onClick: openApprovals },
   ];
   if (canOpen('inspect-review')) tiles.push(
     inspectionsKnown
-      ? { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => (onlyReviewId ? openItem('inspect-review', onlyReviewId) : setScreen('inspect-review')) }
-      : { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: UNKNOWN, accent: 'var(--accent)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
+      ? { key: 'review', label: L.reviewTile[lang], value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? T.inQueue(reviewPending, lang) : reviewPending === 1 ? (activeReview?.title ?? L.onePending[lang]) : L.nothingPending[lang], onClick: () => (onlyReviewId ? openItem('inspect-review', onlyReviewId) : setScreen('inspect-review')) }
+      : { key: 'review', label: L.reviewTile[lang], value: UNKNOWN, accent: 'var(--accent)', sub: unknownSub(inspectionsFailed, lang), onClick: () => setScreen('inspect-review') },
     // API mode never claims WHICH items failed beyond the recorded count — the seeded
     // "Drain slope · Terrace" copy is demo-only prototype fidelity
     // #771 — a live server that did not report open-checklist lineage leaves the count unknown, not 0
     inspectionsKnown && API_BASE && !reinspections.known
-      ? { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: UNKNOWN, accent: 'var(--red-solid)', sub: 'Re-inspection status not reported', onClick: () => setScreen('inspect-review') }
+      ? { key: 'failed', label: L.failedTile[lang], value: UNKNOWN, accent: 'var(--red-solid)', sub: L.reinspectionUnknown[lang], onClick: () => setScreen('inspect-review') }
       : inspectionsKnown
-      ? { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `In ${reinspections.count} open re-inspection${reinspections.count === 1 ? '' : 's'}` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') }
-      : { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: UNKNOWN, accent: 'var(--red-solid)', sub: unknownSub(inspectionsFailed), onClick: () => setScreen('inspect-review') },
+      ? { key: 'failed', label: L.failedTile[lang], value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? T.inReinspections(reinspections.count, lang) : 'Drain slope · Terrace') : L.none[lang], onClick: () => setScreen('inspect-review') }
+      : { key: 'failed', label: L.failedTile[lang], value: UNKNOWN, accent: 'var(--red-solid)', sub: unknownSub(inspectionsFailed, lang), onClick: () => setScreen('inspect-review') },
   );
   tiles.push(
     // B7 (F-13): COMPUTED from the placed photos in every mode — the demo's fixed "24 this week ·
@@ -147,22 +148,22 @@ export function DashboardScreen() {
     <div className={`${styles.screen} ${styles.wide}`}>
       <div className={styles.headRule} style={{ marginBottom: 24 }}>
         <div>
-          <Eyebrow>PROJECT DASHBOARD</Eyebrow>
+          <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
           <div style={{ fontSize: 30, fontWeight: 700, marginTop: 5, letterSpacing: '-.01em' }}>{name}</div>
           <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 12.5, color: 'var(--muted)', flexWrap: 'wrap' }}>
             {descriptor && <span>{descriptor}</span>}
             {descriptor && stage && <span>·</span>}
             {stage && <span>{stage}</span>}
             {siteCode && <span>·</span>}
-            {siteCode && <span>Site Code {siteCode}</span>}
+            {siteCode && <span>{T.siteCode(siteCode, lang)}</span>}
           </div>
         </div>
         {/* Top 10 #1 / live-bug 6 (#769) — no server export exists, so a live project shows no report action at
             all (never a simulated one, and no dead control); the API-less demo keeps its prototype flash */}
         {/* #818 Codex 4255945761 — the demo's report action is the PMC's; other roles now land here too */}
         {!API_BASE && role === 'pmc' && (
-          <Button variant="ink" onClick={() => flash('Weekly report generated (PDF) — sent to client & contractor.')}>
-            Generate Weekly Report <ArrowUpRight size={15} />
+          <Button variant="ink" onClick={() => flash(L.weeklyReportDone[lang])}>
+            {L.weeklyReport[lang]} <ArrowUpRight size={15} />
           </Button>
         )}
       </div>
@@ -170,22 +171,22 @@ export function DashboardScreen() {
       {/* milestone progress */}
       <div style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 12, padding: '20px 24px', marginBottom: 22 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
-          <span style={{ fontWeight: 600, fontSize: 14 }}>Milestone Progress</span>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }} data-testid="dash-progress-pct">{progressNow.pct === null ? '—' : `${progressNow.pct}% complete`}</span>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>{L.milestones[lang]}</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }} data-testid="dash-progress-pct">{progressNow.pct === null ? '—' : T.percentComplete(progressNow.pct, lang)}</span>
         </div>
         <ProgressBar pct={progressNow.pct ?? 0} />
         <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 8 }} data-testid="dash-progress-basis">
           {progressNow.basis === 'derived'
-            ? `${progressNow.done} of ${progressNow.total} activities accepted as done`
+            ? T.activitiesAccepted(progressNow.done, progressNow.total, lang)
             : progressNow.basis === 'recorded'
-              ? 'No activities planned yet — this is the figure recorded on the project'
+              ? L.progressRecorded[lang]
               : progressNow.basis === 'unavailable'
-                ? 'The activities could not be loaded, so progress is unavailable'
-                : 'Loading the activities…'}
+                ? L.progressUnavailable[lang]
+                : L.progressLoading[lang]}
           {/* #818 Codex 4255945778 — the retry is here, not on the Schedule, which most roles do not hold */}
           {progressNow.basis === 'unavailable' && (
             <button type="button" onClick={requestFreshSnapshot} data-testid="dash-progress-retry" style={{ marginLeft: 8, background: 'transparent', border: '1px solid var(--hairline)', borderRadius: 7, padding: '4px 10px', minHeight: 32, font: 'inherit', fontWeight: 600, color: 'var(--accent)', cursor: 'pointer' }}>
-              Retry
+              {L.retry[lang]}
             </button>
           )}
         </div>
@@ -217,14 +218,14 @@ export function DashboardScreen() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, paddingRight: 22, borderRight: '1px solid rgba(237,231,218,.14)' }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: siteDot }} />
           <div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.18em', color: 'rgba(237,231,218,.62)' }}>LIVE FROM SITE</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.18em', color: 'rgba(237,231,218,.62)' }}>{L.liveFromSite[lang]}</div>
             <div style={{ fontWeight: 600, fontSize: 14, marginTop: 2 }}>{siteStatus}</div>
           </div>
         </div>
         <div style={{ display: 'flex', flex: 1, justifyContent: 'space-around', gap: 12, minWidth: 220 }}>
           {[
-            { v: logPending ? UNKNOWN : workers, l: 'WORKERS ON SITE' },
-            { v: logPending ? UNKNOWN : materialsCount, l: 'MATERIALS LOGGED' },
+            { v: logPending ? UNKNOWN : workers, l: L.workers[lang] },
+            { v: logPending ? UNKNOWN : materialsCount, l: L.materials[lang] },
             // no photo figure here: the daily log's self-reported count (DailyLog.progress, not linked
             // to media) read as a contradiction beside the "Site photos on record" tile below
           ].map((s) => (
@@ -235,10 +236,10 @@ export function DashboardScreen() {
           ))}
         </div>
         {logFailed && <Button variant="ghost" onClick={requestFreshSnapshot} data-testid="dash-daily-log-retry" style={{ background: 'rgba(237,231,218,.1)', border: '1px solid rgba(237,231,218,.2)', color: 'var(--sidebar-text)', padding: '9px 14px', fontSize: 12 }}>
-          Retry
+          {L.retry[lang]}
         </Button>}
         {canOpen('site-schedule') && <Button variant="ghost" onClick={() => setScreen('site-schedule')} style={{ background: 'rgba(237,231,218,.1)', border: '1px solid rgba(237,231,218,.2)', color: 'var(--sidebar-text)', padding: '9px 14px', fontSize: 12 }}>
-          View Schedule <ArrowRight size={14} />
+          {L.viewSchedule[lang]} <ArrowRight size={14} />
         </Button>}
       </div>
 
