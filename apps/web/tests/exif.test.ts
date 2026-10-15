@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readExif } from '@/lib/exif';
 import { captureStamp, hasStamp, stampText } from '@/lib/captureStamp';
 
@@ -382,5 +382,53 @@ describe('a rendered stamp is bounded', () => {
   it('E: leaves a normal stamp exactly as it is, and empty stays empty', () => {
     expect(stampText('11 Aug 2026 · 9:15 AM')).toBe('11 Aug 2026 · 9:15 AM');
     for (const v of [null, undefined, '']) expect(stampText(v)).toBe('');
+  });
+
+  it('E: reads spaces as no time, copying and searching only fixed-size windows of a padded value', () => {
+    const copied: number[] = [];
+    const trimmed: number[] = [];
+    const { slice, trim, trimStart, trimEnd } = String.prototype;
+    const spies = [
+      vi.spyOn(String.prototype, 'slice').mockImplementation(function (this: string, ...a: [number?, number?]) {
+        const out = slice.apply(this, a);
+        copied.push(out.length);
+        return out;
+      }),
+      ...([['trim', trim], ['trimStart', trimStart], ['trimEnd', trimEnd]] as const).map(([name, fn]) =>
+        vi.spyOn(String.prototype, name).mockImplementation(function (this: string) {
+          trimmed.push(this.length);
+          return fn.call(this);
+        }),
+      ),
+    ];
+    const pad = ' '.repeat(2_000_000);
+    let results: string[];
+    try {
+      results = [
+        stampText('   '),
+        stampText(pad),
+        stampText(`  11 Aug 2026 · 9:15 AM${pad}`),
+        stampText(`${pad}11 Aug 2026 · 9:15 AM`),
+        stampText(`${' '.repeat(100)}${'x'.repeat(100)}`),
+        stampText(`${'x'.repeat(64)} y`),
+        stampText(`${'x'.repeat(64)}${' '.repeat(100)}`),
+        stampText(`${'x'.repeat(64)}${pad}`),
+      ];
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    expect(results).toEqual([
+      '',
+      '',
+      '11 Aug 2026 · 9:15 AM…',
+      '',
+      `${'x'.repeat(64)}…`,
+      `${'x'.repeat(64)}…`,
+      'x'.repeat(64),
+      `${'x'.repeat(64)}…`,
+    ]);
+    expect(trimmed.length).toBeGreaterThan(0);
+    expect(Math.max(...trimmed)).toBeLessThanOrEqual(64);
+    expect(Math.max(...copied)).toBeLessThanOrEqual(256);
   });
 });
