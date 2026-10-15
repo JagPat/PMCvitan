@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { DOMAIN_EVENT_TYPES, validateRegistry, type ModuleManifest } from '@vitan/shared';
+import { DOMAIN_EVENT_TYPES, rolesFor, validateRegistry, type ModuleManifest } from '@vitan/shared';
 import { MODULE_MANIFESTS, KNOWN_ROLES, validateModuleRegistry, enabledModuleIds, moduleModelOwnership } from './registry';
 import { REBUILDABLE_PROJECTIONS } from '../projections/rebuild-operations';
 import { CASH_FORECAST_PROJECTION } from '../../commercial/cash-forecast.projection';
+import { mediaManifest } from '../../media/media.manifest';
 
 /**
  * Phase 2 Task 7 — the module registry validates. This is the SAME check
@@ -63,6 +64,11 @@ describe('Phase 2 Task 7 — module registry', () => {
     for (const m of MODULE_MANIFESTS) {
       for (const role of m.permissions) expect(KNOWN_ROLES.has(role), `${m.id} references unknown role ${role}`).toBe(true);
     }
+  });
+
+  it('the media manifest names exactly the roles its routes admit (#482: every member uploads a site photo)', () => {
+    const admitted = new Set([...rolesFor('media.upload'), ...rolesFor('media.file'), ...rolesFor('media.delete')]);
+    expect([...mediaManifest.permissions].sort()).toEqual([...admitted].sort());
   });
 
   it('the dependsOn graph is acyclic; the activity↔inspection atomic edge is a workflow participation (cycle-exempt)', () => {
