@@ -1102,6 +1102,24 @@ const outstandingFrom = (
  * Mirroring the slot back before it is replaced keeps the list the single source the switch reads
  * from, rather than adding a second per-inspection record for two fields.
  */
+/** A stable, synchronous digest of `text` (two seeded 53-bit cyrb53 passes, hex): the same text gives the same
+ *  value in every tab and on every load. An identity, not a security boundary. */
+function contentHash(text: string): string {
+  const pass = (seed: number): string => {
+    let h1 = 0xdeadbeef ^ seed;
+    let h2 = 0x41c6ce57 ^ seed;
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 2654435761);
+      h2 = Math.imul(h2 ^ c, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
+  };
+  return `${pass(1)}${pass(2)}`;
+}
+
 function parkEditSlot(s: AppState): void {
   const c = s.checklist;
   if (!c) return;
@@ -1628,6 +1646,24 @@ export const useStore = create<Store>()(
       } catch {
         /* storage unavailable — the in-session draft still works */
       }
+    };
+    /** A queued photo upload from an earlier release has no `clientKey`; give it one (#482), so each replay of it
+     *  is the same photo on the server. Ops that already carry a key, and every other op, pass unchanged.
+     *  The key is DERIVED from the queue's scope, the upload's own content and its place among identical
+     *  uploads, never minted: two tabs hydrating the same queue (or a reload whose write-back failed) reach
+     *  the same key, so their replays are still one photo. */
+    const keyQueuedPhotoUploads = (ops: OutboxOp[], scope: string): { ops: OutboxOp[]; changed: boolean } => {
+      let changed = false;
+      const seen = new Map<string, number>();
+      const keyed = ops.map((o) => {
+        if (o.t !== 'uploadMedia' || o.input.clientKey) return o;
+        changed = true;
+        const content = `${scope}\n${JSON.stringify(o.input)}`;
+        const nth = seen.get(content) ?? 0;
+        seen.set(content, nth + 1);
+        return { ...o, input: { ...o.input, clientKey: `legacy-photo-${contentHash(content)}-${nth}` } };
+      });
+      return { ops: keyed, changed };
     };
     /** Land the SERVER's log on the store with the engineer's unsent draft laid over it; the draft
      *  that no longer applies (the log was sent, a new day replaced it, or there is no log) is dropped
@@ -5442,7 +5478,11 @@ export const useStore = create<Store>()(
         // bytes it had already read, so nothing async sits between accepting this photo and
         // durably queueing it below. A file that carries no capture metadata contributes no
         // keys here, and the media contract stores nothing rather than something invented.
-        const input = { kind: 'progress' as const, mime, data: base64, ...stamped, ...(nodeId ? { nodeId } : {}) };
+        //
+        // One key per pick (#482): the server stores one photo per (project, key), so a queued upload replayed
+        // after its first attempt committed but its reply was lost is the same photo, not a second one.
+        const clientKey = newIdempotencyKey();
+        const input = { kind: 'progress' as const, mime, data: base64, clientKey, ...stamped, ...(nodeId ? { nodeId } : {}) };
         // Phase 8 media offline queue: when offline, show the photo optimistically
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
@@ -5948,9 +5988,19 @@ export const useStore = create<Store>()(
           // migration: there is no legacy key to derive one from, and inventing an identity for a
           // command whose exactly-once guarantee rests on it would be worse than dropping it.
           const commercialNorm = normalizeCommercialOutbox(labourNorm.ops);
-          const changed = materialsNorm.changed || labourNorm.changed || commercialNorm.changed;
-          // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable
-          if (changed) storage.setItem(outboxKey(), JSON.stringify(commercialNorm.ops));
+          // #482 — a photo queued by an earlier release carries no key, so a replay whose reply was lost would
+          // store it twice. It gets one key now, persisted below, so every later replay is the same photo.
+          const photosNorm = keyQueuedPhotoUploads(commercialNorm.ops, outboxKey());
+          const changed = materialsNorm.changed || labourNorm.changed || commercialNorm.changed || photosNorm.changed;
+          // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable;
+          // a write that fails (storage full) keeps the queue in memory, and the next load derives the same keys
+          if (changed) {
+            try {
+              storage.setItem(outboxKey(), JSON.stringify(photosNorm.ops));
+            } catch {
+              /* storage full — the queue still replays from memory this session */
+            }
+          }
           // the site visit acts, from their own key (malformed → none)
           let visitOps: OutboxOp[] = [];
           try {
@@ -5959,7 +6009,7 @@ export const useStore = create<Store>()(
           } catch {
             visitOps = [];
           }
-          const ops = [...commercialNorm.ops.filter((o) => !isSiteVisitOp(o)), ...visitOps];
+          const ops = [...photosNorm.ops.filter((o) => !isSiteVisitOp(o)), ...visitOps];
           // #669 — the engineer's unsent daily-log work for THIS scope comes back with its queue, so a
           // reload (or a return to this project) keeps the day where they left it; the next apply lays
           // it over the server's log (or drops it if that log has moved on). Malformed → none.
