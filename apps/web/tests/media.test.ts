@@ -39,6 +39,19 @@ describe('addProgressPhoto — API mode', () => {
     expect(s().dailyLog!.progress).toBe(3); // seed 2 + 1
   });
 
+  it('files the photo on the day\'s log it was taken for, online and when queued offline (#482)', () => {
+    const gw = { uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.dailyLog!.id = 'log-15'; });
+
+    s().addProgressPhoto(PNG);
+    expect(gw.uploadMedia).toHaveBeenCalledWith(expect.objectContaining({ kind: 'progress', dailyLogId: 'log-15' }));
+
+    useStore.setState((st) => { st.online = false; });
+    s().addProgressPhoto(PNG);
+    expect(s().outbox).toEqual([{ t: 'uploadMedia', input: expect.objectContaining({ dailyLogId: 'log-15' }) }]);
+  });
+
   it('surfaces a failure without adding a photo', async () => {
     const gw = { uploadMedia: vi.fn().mockRejectedValue(new Error('media 500')) };
     s()._setGateway(gw as unknown as ApiGateway);

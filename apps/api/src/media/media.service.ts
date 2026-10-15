@@ -27,12 +27,13 @@ export interface UploadedMedia {
   url: string;
 }
 
-/** The roles that keep the record-linked uploads: evidence for a decision, a daily log or an inspection item. */
+/** The roles that keep the record-linked uploads: evidence for a decision or an inspection item, or a non-progress kind. */
 const SITE_RECORD_ROLES: ReadonlySet<string> = new Set(['pmc', 'engineer']);
 
-/** A plain site photo: a progress photo, optionally placed on the location tree, linked to no record. */
+/** A plain site photo: a progress photo, optionally placed on the location tree and filed on the day's log it was
+ *  taken for (#482, Board 14 Oct 2026: every member adds photos to that day's record), linked to no other record. */
 function isPlainSitePhoto(input: CreateMediaInput): boolean {
-  return input.kind === 'progress' && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
+  return input.kind === 'progress' && !input.decisionId && !input.inspectionId && !input.inspectionItemId;
 }
 
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
@@ -76,7 +77,7 @@ export class MediaService {
    *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884). */
   private async replayed(projectId: string, user: AuthUser, row: ReplayRow): Promise<UploadedMedia> {
     if (!SITE_RECORD_ROLES.has(user.role)) {
-      const plain = row.kind === 'progress' && !row.decisionId && !row.dailyLogId && !row.inspectionId && !row.inspectionItemId;
+      const plain = row.kind === 'progress' && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
       if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
     }
     if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
@@ -90,8 +91,9 @@ export class MediaService {
    *  already-stored row — an offline photo uploads exactly once (Phase 1 Task 4). */
   async create(projectId: string, user: AuthUser, input: CreateMediaInput): Promise<UploadedMedia> {
     const uploadedBy = user.sub;
-    // #482 (Board, 14 Oct 2026) — every member may add a SITE photo; only the PMC and the engineer may add one
-    // that is evidence for something (a decision, a daily log, an inspection item) or a non-progress kind.
+    // #482 (Board, 14 Oct 2026) — every member may add a SITE photo, filed on the day's log it was taken for; only
+    // the PMC and the engineer may add one that is evidence for something (a decision, an inspection item) or a
+    // non-progress kind.
     // Asked before the idempotency read and before any byte is stored, so a refused caller learns nothing
     // about another photo's key and leaves nothing in the bucket.
     if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input)) {

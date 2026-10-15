@@ -5482,7 +5482,13 @@ export const useStore = create<Store>()(
         // One key per pick (#482): the server stores one photo per (project, key), so a queued upload replayed
         // after its first attempt committed but its reply was lost is the same photo, not a second one.
         const clientKey = newIdempotencyKey();
-        const input = { kind: 'progress' as const, mime, data: base64, clientKey, ...stamped, ...(nodeId ? { nodeId } : {}) };
+        // The day's log this photo was taken for (#482): filed on it now, so a replay that lands after the log
+        // was sent, or after the next day's log opened, still belongs to this one.
+        const dailyLogId = get().dailyLog?.id;
+        const input = {
+          kind: 'progress' as const, mime, data: base64, clientKey, ...stamped,
+          ...(nodeId ? { nodeId } : {}), ...(dailyLogId ? { dailyLogId } : {}),
+        };
         // Phase 8 media offline queue: when offline, show the photo optimistically
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
