@@ -8,8 +8,8 @@ import { SnapshotService } from '../../src/snapshot/snapshot.service';
 /**
  * #482 site photos unit 3 (board, 14 Oct 2026) — the day's photo count is the server's count of every member's
  * progress photos filed on that log, including ones added after the log was sent. It reads the photos filed on
- * the log (Media.dailyLogId, unit 2), never a time window. A log from before photos were filed on it keeps its
- * stored count: the served count is the larger of the two.
+ * the log (Media.dailyLogId, unit 2), never a time window. A stored count is kept: before the send the filed
+ * photos add to it, and once sent (the sender's total already holds them) the served count is the larger.
  *
  * Reproduce-first: at the base the snapshot serves the stored `progress` only, so another member's photo and a
  * photo added after the send are never counted.
@@ -75,6 +75,12 @@ describe('the day\'s photo count reads the photos filed on the log (live PG)', (
     expect((await upload(pmc, { dailyLogId: log.id, clientKey: 'after-1' })).status).toBe(201);
     expect((await upload(contractor, { dailyLogId: log.id, clientKey: 'after-2' })).status).toBe(201);
     expect(await served()).toMatchObject({ id: log.id, submitted: true, progress: 2 });
+  });
+
+  it('an unsent log\'s stored count (photos from before filing) is kept, and filed photos add to it', async () => {
+    const log = await newLog({ progress: 2 });
+    expect((await upload(contractor, { dailyLogId: log.id, clientKey: 'adds' })).status).toBe(201);
+    expect(await served()).toMatchObject({ id: log.id, submitted: false, progress: 3 });
   });
 
   it('a log from before photos were filed on it keeps its stored count', async () => {

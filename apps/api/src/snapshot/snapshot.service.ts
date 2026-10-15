@@ -93,8 +93,10 @@ export class SnapshotService {
     // photo layer, and inspection evidence on them gets no signed path.
     const hiddenNodes = hiddenDraftNodeIds(this.prisma, projectId, userId);
     // #482 site photos unit 3 — the day's photo count reads the photos filed on that log (Media.dailyLogId,
-    // every member's, including ones added after the log was sent), never a time window. A log from before
-    // photos were filed on it keeps its stored count, so the served count is the larger of the two.
+    // every member's, including ones added after the log was sent), never a time window. The stored count is
+    // written only by the send. Before the send it holds no filed photo (only ones from before photos were
+    // filed on logs), so the filed photos add to it. Once sent it is the sender's total, which already holds
+    // the photos filed by then, so the served count is the larger of the two.
     const dailyLogSlicePromise = this.dailyLogQuery.snapshotSlice(projectId);
     const linkedPhotoCount = dailyLogSlicePromise.then((slice) =>
       slice.dailyLog?.id ? this.prisma.media.count({ where: { projectId, dailyLogId: slice.dailyLog.id, kind: 'progress' } }) : 0,
@@ -204,7 +206,7 @@ export class SnapshotService {
       // Task 10 — the daily-log core comes from the module query (byte-identical); the snapshot
       // composes the media-sourced progress photos onto it (media is not daily-log's to own).
       dailyLog: dailyLogSlice.dailyLog
-        ? { ...dailyLogSlice.dailyLog, progress: Math.max(dailyLogSlice.dailyLog.progress, linkedPhotos), photos: progressPhotos }
+        ? { ...dailyLogSlice.dailyLog, progress: dailyLogSlice.dailyLog.submitted ? Math.max(dailyLogSlice.dailyLog.progress, linkedPhotos) : dailyLogSlice.dailyLog.progress + linkedPhotos, photos: progressPhotos }
         : null,
       // Top 10 #4b unit B — the notices this viewer is served, by the one shared definition
       // (`served-notifications.ts`: AUTH-02's pending strip, the decider audience, the pmc-only

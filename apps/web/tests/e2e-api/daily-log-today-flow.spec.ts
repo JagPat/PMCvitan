@@ -99,8 +99,8 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   await expect
     .poll(async () => (await serverSnapshot(request, eng.token)).dailyLog!.photos.length, { timeout: 10_000, message: 'the server holds the photo' })
     .toBe(seededPhotos + 1);
-  // the server's own count is still the seed's 2 (persisted only with the send) — the screen keeps 3
-  expect((await serverSnapshot(request, eng.token)).dailyLog).toMatchObject({ progress: 2, checkedIn: false });
+  // the server counts the photo filed on the log (#482 unit 3): the seed's 2 plus this one, still unsent
+  expect((await serverSnapshot(request, eng.token)).dailyLog).toMatchObject({ progress: 3, checkedIn: false });
   await expect(page.getByText('3 progress photos')).toBeVisible();
   await expect(page.getByTestId('crew-total')).toHaveText('11 workers');
   await expect(page.getByTestId('check-out')).toBeVisible();
