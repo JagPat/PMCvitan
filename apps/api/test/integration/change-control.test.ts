@@ -117,12 +117,13 @@ describe('decision change-control (integration)', () => {
     // locked
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 1 })).status).toBe(409);
 
-    // the engineer raises a change request → decision reopens, ONE open request with requester identity
-    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'Slab cracked', costImpact: 5000, timeImpactDays: 2 })).status).toBe(201);
+    // the client asks for a change → decision reopens, ONE open request with requester identity
+    // (#482 QA, 15 Oct 2026: only the client and the PMC request a change)
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'Slab cracked', costImpact: 5000, timeImpactDays: 2 })).status).toBe(201);
     d = await t.prisma.decision.findUniqueOrThrow({ where: { id } });
     expect(d.status).toBe('change');
     const open = await t.prisma.changeRequest.findFirstOrThrow({ where: { decisionId: id, status: 'open' } });
-    expect(open.requestedById).toBe(f.ownerUser.id);
+    expect(open.requestedById).toBe(f.strangerUser.id);
 
     // a second request while one is open is refused
     expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'again', costImpact: 0, timeImpactDays: 0 })).status).toBe(409);
@@ -156,24 +157,36 @@ describe('decision change-control (integration)', () => {
   it('withdraw: the requester restores the lock; a third party cannot; the request records the withdrawal', async () => {
     const id = await issueDecision('Balcony rail');
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'wrong finish', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'wrong finish', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
 
-    // the CLIENT is neither the requester nor the PMC → forbidden
-    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`)).status).toBe(403);
+    // the ENGINEER is neither the requester nor the PMC → forbidden
+    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`)).status).toBe(403);
 
     // the REQUESTER withdraws → decision returns to approved, request closed as withdrawn
-    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`)).status).toBe(201);
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`)).status).toBe(201);
     const d = await t.prisma.decision.findUniqueOrThrow({ where: { id } });
     expect(d.status).toBe('approved');
     const cr = await t.prisma.changeRequest.findFirstOrThrow({ where: { decisionId: id } });
     expect(cr.status).toBe('withdrawn');
     expect(cr.resolution).toBe('withdrawn');
-    expect(cr.resolvedById).toBe(f.ownerUser.id);
+    expect(cr.resolvedById).toBe(f.strangerUser.id);
 
     // nothing left to withdraw
     expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`)).status).toBe(409);
     const withdrawnEvent = await t.prisma.decisionEvent.findFirst({ where: { decisionId: id, type: 'change_withdrawn' } });
-    expect(withdrawnEvent?.actorId).toBe(f.ownerUser.id);
+    expect(withdrawnEvent?.actorId).toBe(f.strangerUser.id);
+  });
+
+  it('#482 QA (15 Oct 2026): the engineer, contractor and consultant cannot request a change — 403, nothing opens', async () => {
+    const id = await issueDecision('Kitchen shutters');
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
+    for (const role of ['engineer', 'contractor', 'consultant'] as const) {
+      const token = t.issueProjectToken(f.ownerUser.id, f.projectA.id, role);
+      const res = await as(token)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'x', costImpact: 0, timeImpactDays: 0 });
+      expect(res.status, role).toBe(403);
+    }
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('approved');
+    expect(await t.prisma.changeRequest.count({ where: { decisionId: id } })).toBe(0);
   });
 
   it('cross-project: a change request against another project\'s decision is refused', async () => {
@@ -192,7 +205,7 @@ describe('decision change-control (integration)', () => {
     try {
       const [r1, r2] = await Promise.all([
         as(pmcToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'racer one', costImpact: 0, timeImpactDays: 0 }),
-        as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'racer two', costImpact: 0, timeImpactDays: 0 }),
+        as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'racer two', costImpact: 0, timeImpactDays: 0 }),
       ]);
       expect(b.reads()).toBe(2); // both passed the pre-read on the same approved row
       expect([r1.status, r2.status].sort()).toEqual([201, 409]); // deterministic single winner
@@ -206,7 +219,7 @@ describe('decision change-control (integration)', () => {
   it('CONCURRENCY: two simultaneous re-approvals -> one winner; the request is resolved exactly once', async () => {
     const id = await issueDecision('Study desk');
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'r', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'r', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
 
     const b = barrierOn(id);
     try {
@@ -228,13 +241,13 @@ describe('decision change-control (integration)', () => {
   it('CONCURRENCY: approve-vs-withdraw race -> exactly one outcome and one resolution', async () => {
     const id = await issueDecision('Porch light');
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'r', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'r', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
 
     const b = barrierOn(id);
     try {
       const [r1, r2] = await Promise.all([
         as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 }),
-        as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`),
+        as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`),
       ]);
       expect(b.reads()).toBe(2);
       expect([r1.status, r2.status].sort()).toEqual([201, 409]); // one winner, either way
@@ -253,7 +266,7 @@ describe('decision change-control (integration)', () => {
   it('GATE FINDING 1: a change decision with NO open request cannot be re-approved — 409, state unchanged', async () => {
     const id = await issueDecision('Pooja unit');
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'shelf depth', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'shelf depth', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
 
     // the legacy inconsistency the deployed backfill permits: the open request was
     // resolved out-of-band while the decision stayed 'change' (zero open requests)
@@ -282,20 +295,20 @@ describe('decision change-control (integration)', () => {
   it('GATE FINDING 6: events and audits snapshot the actor ROLE held at action time', async () => {
     const id = await issueDecision('Loft ladder');
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'headroom', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`)).status).toBe(201);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'headroom', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`)).status).toBe(201);
 
     const events = await t.prisma.decisionEvent.findMany({ where: { decisionId: id } });
     const roleOf = (type: string) => events.find((e) => e.type === type)?.actorRole;
     expect(roleOf('issued')).toBe('pmc');
     expect(roleOf('approved')).toBe('client');
-    expect(roleOf('change_requested')).toBe('engineer');
-    expect(roleOf('change_withdrawn')).toBe('engineer');
+    expect(roleOf('change_requested')).toBe('pmc');
+    expect(roleOf('change_withdrawn')).toBe('pmc');
 
     const audits = await t.prisma.auditLog.findMany({ where: { entity: 'Decision', entityId: id } });
     expect(audits.find((a) => a.action === 'decision.approve')?.actorRole).toBe('client');
-    expect(audits.find((a) => a.action === 'decision.change')?.actorRole).toBe('engineer');
-    expect(audits.find((a) => a.action === 'decision.change_withdraw')?.actorRole).toBe('engineer');
+    expect(audits.find((a) => a.action === 'decision.change')?.actorRole).toBe('pmc');
+    expect(audits.find((a) => a.action === 'decision.change_withdraw')?.actorRole).toBe('pmc');
   });
 
   it('GATE FINDING 7: an on-behalf approval is ANNOUNCED as on-behalf; a direct client approval as the client\'s', async () => {
@@ -320,7 +333,7 @@ describe('decision change-control (integration)', () => {
   it('the DATABASE refuses a duplicate open request even on a direct insert', async () => {
     const id = await issueDecision('Gate motor');
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'r', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'r', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
     // Phase 6 unit 4d-i-b — under the named pairing bypass, so the refusal measured is the
     // index's (P2002, at INSERT) and not `ChangeRequest_t4d_paired`'s at commit.
     await expect(

@@ -53,7 +53,7 @@ describe('Site Map colours and locks (#633 unit B)', () => {
     expect(legend.getAttribute('aria-labelledby')).toBe('site-map-legend-title');
   });
 
-  for (const role of ['pmc', 'client', 'contractor'] as const) {
+  for (const role of ['pmc', 'client'] as const) {
     it(`a locked decision says why and how to change it, and an open one does not (${role})`, async () => {
       const view = await load(role);
       const locked = view.getByTestId('place-decision-DL-1');
@@ -65,8 +65,11 @@ describe('Site Map colours and locks (#633 unit B)', () => {
     });
   }
 
-  it('does not tell an architect to request a change the server would refuse (Codex 4273627437)', async () => {
-    const view = await load('architect');
-    expect(view.getByTestId('place-decision-lock-DL-1').textContent).toBe('Locked after approval.');
-  });
+  // #482 QA (15 Oct 2026, item 5): the engineer, contractor and consultant no longer request a change either
+  for (const role of ['architect', 'contractor', 'engineer', 'consultant'] as const) {
+    it(`does not tell the ${role} to request a change the server would refuse (Codex 4273627437)`, async () => {
+      const view = await load(role);
+      expect(view.getByTestId('place-decision-lock-DL-1').textContent).toBe('Locked after approval.');
+    });
+  }
 });

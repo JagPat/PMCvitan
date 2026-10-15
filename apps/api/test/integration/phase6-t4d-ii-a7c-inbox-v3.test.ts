@@ -45,7 +45,6 @@ describe('4d-ii-a / A7c — decisions.inbox v3: the contract version, the fence 
   let ops: ProjectionRebuildOperations;
   let pmcToken: string;
   let clientToken: string;
-  let engToken: string;
   const run = randomUUID().slice(0, 8);
   const OPERATOR = `a7c-operator-${run}`;
   const eng = { id: `a7c-eng-${run}`, membershipId: '' };
@@ -61,7 +60,6 @@ describe('4d-ii-a / A7c — decisions.inbox v3: the contract version, the fence 
     clientToken = t.issueProjectToken(f.clientUser.id, f.projectA.id, 'client');
     await t.prisma.user.create({ data: { id: eng.id, projectId: f.projectA.id, role: 'engineer', name: 'A7c Engineer', email: `${eng.id}@test.local` } });
     eng.membershipId = (await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: eng.id, role: 'engineer', status: 'active' } })).id;
-    engToken = t.issueProjectToken(eng.id, f.projectA.id, 'engineer');
     await t.prisma.user.create({ data: { id: clientB.id, projectId: f.projectA.id, role: 'client', name: 'A7c Client B', email: `${clientB.id}@test.local` } });
     clientB.membershipId = (await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: clientB.id, role: 'client', status: 'active' } })).id;
   });
@@ -240,7 +238,7 @@ describe('4d-ii-a / A7c — decisions.inbox v3: the contract version, the fence 
   it('the fold carries the non-standard origin: a countersign_rejection request is served as such by the projection, the live slice and the rebuild alike', async () => {
     const did = await issue();
     expect((await post(clientToken)(`${base()}/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
-    expect((await post(engToken)(`${base()}/${did}/change`, { reason: 'Disagree', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    expect((await post(pmcToken)(`${base()}/${did}/change`, { reason: 'Disagree', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
     const open = await t.prisma.changeRequest.findFirstOrThrow({ where: { decisionId: did, status: 'open' } });
     const head = await t.prisma.decisionApprovalRevision.findFirstOrThrow({ where: { decisionId: did }, orderBy: { version: 'desc' } });
     // the origin and the revision it answers are FROZEN by 4d-i's evidence seal; A8b's disagreement

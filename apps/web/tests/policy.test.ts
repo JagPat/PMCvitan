@@ -18,7 +18,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // Round-7 Codex F1 — the route ceiling admits every role the AUTHOR can be reassigned to;
   // the service narrows to the draft's author or a pmc.
   'decision.updateDraft': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
-  'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  'decision.change': ['pmc', 'client'],
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;
   // that is the practice's call alone.
@@ -169,14 +169,16 @@ describe('authorization policy (shared source of truth)', () => {
     }
   });
 
-  it('lets the site engineer raise a change request (the #44 regression fix)', () => {
-    expect(can('decision.change', 'engineer')).toBe(true);
+  it('only the client and the PMC request a change to an approved decision (#482 QA, 15 Oct 2026)', () => {
+    expect([...rolesFor('decision.change')].sort()).toEqual(['client', 'pmc']);
+    for (const r of ['engineer', 'contractor', 'consultant', 'architect'] as const) expect(can('decision.change', r)).toBe(false);
   });
 
-  it('withdraw shares the change allowlist — the SERVICE narrows it to requester-or-PMC (Phase 1 Task 2)', () => {
-    // …plus `architect` (Phase 6 task 4d, §A.1): the architect withdraws as a HOLDER but never opens a
-    // standard change request, since its own change path is the countersign disagreement
-    expect([...rolesFor('decision.withdrawChange')].filter((r) => r !== 'architect').sort()).toEqual([...rolesFor('decision.change')].sort());
+  it('withdraw stays wider than change — the SERVICE narrows it to requester-or-PMC (Phase 1 Task 2)', () => {
+    // a request an engineer, contractor or consultant raised before #482 QA narrowed `decision.change` can
+    // still be withdrawn by them; `architect` (Phase 6 task 4d, §A.1) withdraws as a HOLDER
+    for (const r of rolesFor('decision.change')) expect(rolesFor('decision.withdrawChange')).toContain(r);
+    for (const r of ['engineer', 'contractor', 'consultant'] as const) expect(rolesFor('decision.withdrawChange')).toContain(r);
     expect(rolesFor('decision.withdrawChange')).toContain('architect');
     expect(rolesFor('decision.change')).not.toContain('architect');
     expect(can('decision.withdrawChange', 'worker')).toBe(false);
