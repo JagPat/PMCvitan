@@ -1,4 +1,4 @@
-import { can, type PolicyAction, type TokenRole } from '@vitan/shared';
+import { can, createOptionLabels, materialBlockedLabels, type Lang, type PolicyAction, type TokenRole } from '@vitan/shared';
 import { ClipboardCheck, Package, ClipboardList, type LucideIcon } from 'lucide-react';
 
 /** What a user can start creating, named the way a person would say it. */
@@ -25,9 +25,9 @@ export interface CreateOption {
  * action the server would refuse — the existing policy stays the single authority.
  */
 const OPTIONS: readonly CreateOption[] = [
-  { kind: 'inspection', label: 'Check something here', detail: 'Issue a checklist for the site engineer to fill in', action: 'inspection.create', icon: ClipboardCheck },
-  { kind: 'material', label: 'Material delivered here', detail: 'Record what arrived and how much', action: 'dailyLog.addMaterial', icon: Package },
-  { kind: 'decision', label: 'Something to decide here', detail: 'Put options to the client to choose between', action: 'decision.create', icon: ClipboardList },
+  { kind: 'inspection', label: createOptionLabels.inspection.label.en, detail: createOptionLabels.inspection.detail.en, action: 'inspection.create', icon: ClipboardCheck },
+  { kind: 'material', label: createOptionLabels.material.label.en, detail: createOptionLabels.material.detail.en, action: 'dailyLog.addMaterial', icon: Package },
+  { kind: 'decision', label: createOptionLabels.decision.label.en, detail: createOptionLabels.decision.detail.en, action: 'decision.create', icon: ClipboardList },
 ];
 
 /** The options this role may actually author — the existing policy decides, nothing else. */
@@ -57,9 +57,10 @@ export function createOptionsFor(role: TokenRole): readonly CreateOption[] {
 export function materialBlockedReason(
   dailyLog: { submitted: boolean } | null,
   logReadFailed: boolean,
+  lang: Lang = 'en',
 ): string | null {
-  if (logReadFailed) return 'Today\u2019s log could not be loaded, so a delivery cannot be recorded yet — open the Daily Log and retry.';
-  if (!dailyLog) return 'Start today\u2019s site log first — a delivery is recorded onto it.';
-  if (dailyLog.submitted) return 'Today\u2019s log is already submitted — start a new day to record a delivery.';
+  if (logReadFailed) return materialBlockedLabels.logFailed[lang];
+  if (!dailyLog) return materialBlockedLabels.noLog[lang];
+  if (dailyLog.submitted) return materialBlockedLabels.submitted[lang];
   return null;
 }

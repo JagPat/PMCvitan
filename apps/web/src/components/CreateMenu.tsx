@@ -1,4 +1,5 @@
 import { type CSSProperties } from 'react';
+import { createOptionLabels } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { createOptionsFor, materialBlockedReason, type CreateKind } from '@/lib/createOptions';
 import { Modal } from './Modal';
@@ -27,6 +28,7 @@ export function CreateMenu({
   onClose: () => void;
 }) {
   const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   const options = createOptionsFor(role);
   // A delivery is recorded onto the daily log, so permission is not the whole answer (see
   // `materialBlockedReason`). The log arrives with the project snapshot, so inside the
@@ -36,7 +38,7 @@ export function CreateMenu({
   const logSubmitted = useStore((s) => s.dailyLog?.submitted ?? null);
   const logReadFailed = useStore((s) => s.dailyLogLoad === 'error');
   const blocked: Partial<Record<CreateKind, string | null>> = {
-    material: materialBlockedReason(logSubmitted === null ? null : { submitted: logSubmitted }, logReadFailed),
+    material: materialBlockedReason(logSubmitted === null ? null : { submitted: logSubmitted }, logReadFailed, lang),
   };
 
   return (
@@ -58,7 +60,7 @@ export function CreateMenu({
               >
                 <o.icon size={18} style={{ flex: 'none', color: reason ? 'var(--faint)' : 'var(--accent)' }} />
                 <span style={{ minWidth: 0 }}>
-                  <span style={{ display: 'block', fontWeight: 600, fontSize: 14 }}>{o.label}</span>
+                  <span style={{ display: 'block', fontWeight: 600, fontSize: 14 }}>{createOptionLabels[o.kind].label[lang]}</span>
                   {/* the REASON replaces the description: a disabled row that still describes
                       what it would have done, without saying why it cannot, is the silently
                       inert control this work exists to remove */}
@@ -66,7 +68,7 @@ export function CreateMenu({
                     style={{ display: 'block', fontSize: 12, color: reason ? 'var(--amber-text)' : 'var(--muted)', marginTop: 2 }}
                     data-testid={reason ? `create-${o.kind}-blocked` : undefined}
                   >
-                    {reason ?? o.detail}
+                    {reason ?? createOptionLabels[o.kind].detail[lang]}
                   </span>
                 </span>
               </button>
