@@ -2095,7 +2095,18 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
       // uploadMedia returns {id,url}, not a snapshot — refetch so the flush
       // reconciles dailyLog.photos (the real, server-stored photo replaces the
       // optimistic local data-URL one).
-      return gw.uploadMedia(op.input).then(() => gw.snapshot());
+      //
+      // A queued photo's place can be deleted or unpublished before the replay; the server then refuses
+      // the place (400) before storing anything, so the photo goes up unplaced, under the same key,
+      // instead of being dropped with its only copy of the bytes.
+      return gw
+        .uploadMedia(op.input)
+        .catch((err) => {
+          if (!op.input.nodeId || (err as { status?: number } | null)?.status !== 400) throw err;
+          const { nodeId: _placeGone, ...unplaced } = op.input;
+          return gw.uploadMedia(unplaced);
+        })
+        .then(() => gw.snapshot());
     case 'uploadEvidence': {
       // Task 4 durability lifecycle: bytes come from the IndexedDB evidenceStore;
       // they are deleted ONLY on confirmed server persistence (the 2xx — the server

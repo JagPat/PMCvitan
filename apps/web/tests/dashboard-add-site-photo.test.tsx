@@ -165,6 +165,68 @@ describe('#482 site photos: "Add site photo" on the Dashboard', () => {
     expect(r.getAllByAltText(/^Site photo \d+$/)).toHaveLength(1);
   });
 
+  it('adds the photo to the day\'s log once when a refresh brought it into the photo list but not the log', async () => {
+    const { useStore } = await loadApiMode('engineer');
+    const log = { date: '15 Oct', checkedIn: true, checkinTime: null, submitted: false, crew: [], materials: [], progress: 0, photos: [] };
+    useStore.setState({ dailyLog: log } as never);
+    let reply: (v: { id: string; url: string }) => void = () => {};
+    const uploadMedia = vi.fn().mockReturnValue(new Promise((res) => { reply = res; }));
+    useStore.getState()._setGateway({ uploadMedia } as never);
+    useStore.setState({ online: true } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
+    // the refresh's log read failed: the photo list has the new photo, the log is the last good one
+    act(() => useStore.setState({ photos: [{ id: 'new', url: 'http://api.test/new.jpg', kind: 'progress' }] }));
+    await act(async () => reply({ id: 'new', url: 'http://api.test/new.jpg' }));
+    expect(useStore.getState().photos.map((p) => p.id)).toEqual(['new']);
+    expect(useStore.getState().dailyLog?.photos.map((p) => p.id)).toEqual(['new']);
+    expect(useStore.getState().dailyLog?.progress).toBe(1);
+  });
+
+  it('keeps a queued photo whose place was removed before it was sent: it goes up unplaced, under the same key', async () => {
+    const { replayOutboxOp } = await import('@/data/apiGateway');
+    const refused = Object.assign(new Error('Unknown location for this project'), { status: 400 });
+    const uploadMedia = vi.fn().mockRejectedValueOnce(refused).mockResolvedValueOnce({ id: 'm1', url: '/m1.jpg' });
+    const snapshot = vi.fn().mockResolvedValue({});
+    const input = { kind: 'progress' as const, mime: 'image/jpeg', data: 'AAAA', clientKey: 'k1', nodeId: 'gone' };
+    await replayOutboxOp({ uploadMedia, snapshot } as never, { t: 'uploadMedia', input });
+    expect(uploadMedia).toHaveBeenCalledTimes(2);
+    expect(uploadMedia.mock.calls[1][0]).toEqual({ kind: 'progress', mime: 'image/jpeg', data: 'AAAA', clientKey: 'k1' });
+    expect(snapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('still drops a queued photo the server refuses for another reason', async () => {
+    const { replayOutboxOp } = await import('@/data/apiGateway');
+    const refused = Object.assign(new Error('Unsupported type'), { status: 415 });
+    const uploadMedia = vi.fn().mockRejectedValue(refused);
+    const input = { kind: 'progress' as const, mime: 'image/bmp', data: 'AAAA', clientKey: 'k1', nodeId: 'r1' };
+    await expect(replayOutboxOp({ uploadMedia, snapshot: vi.fn() } as never, { t: 'uploadMedia', input })).rejects.toBe(refused);
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an offline photo whose own queue is stored, even when the Site Visits queue cannot be', async () => {
+    const { useStore } = await loadApiMode('consultant');
+    useStore.getState()._setGateway({ uploadMedia: vi.fn() } as never);
+    useStore.setState({ online: false } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const realSetItem = Storage.prototype.setItem;
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key.startsWith('vitan.siteVisitQueue.')) throw new DOMException('full', 'QuotaExceededError');
+      return realSetItem.call(this, key, value);
+    });
+    try {
+      const { DashboardScreen } = await import('@/screens/DashboardScreen');
+      const r = render(<DashboardScreen />);
+      fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(useStore.getState().outbox.map((o) => o.t)).toEqual(['uploadMedia']);
+    expect(useStore.getState().toast).not.toMatch(/no room to keep the photo/);
+  });
+
   it('says the photo was not kept when this device cannot store it offline, instead of claiming it was saved', async () => {
     const { useStore } = await loadApiMode('consultant');
     const uploadMedia = vi.fn();

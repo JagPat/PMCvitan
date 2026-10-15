@@ -2225,13 +2225,14 @@ export const useStore = create<Store>()(
      *  before them (a rollback, an old tab) never reads one: its replay has no case for them and would drop them as
      *  sent (Codex 4278991737). The two lists are each in the order made; a site visit act never waits on another op. */
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
-    /** Writes the outbox (plus `next`, an op about to join it) to storage; false when the write was refused. */
+    /** Writes the outbox to storage; false when the write was refused. With `next` (an op about to join it), only
+     *  the list `next` joins is written, so the answer is whether `next` itself is stored. */
     const persistOutbox = (next?: OutboxOp): boolean => {
       const ops = next ? [...get().outbox, next] : get().outbox;
       try {
         const storage = globalThis.localStorage;
-        storage?.setItem(outboxKey(), JSON.stringify(ops.filter((o) => !isSiteVisitOp(o))));
-        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(ops.filter(isSiteVisitOp)));
+        if (!next || !isSiteVisitOp(next)) storage?.setItem(outboxKey(), JSON.stringify(ops.filter((o) => !isSiteVisitOp(o))));
+        if (!next || isSiteVisitOp(next)) storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(ops.filter(isSiteVisitOp)));
         return true;
       } catch {
         /* storage unavailable or full — the in-session outbox still works */
@@ -5483,12 +5484,14 @@ export const useStore = create<Store>()(
           .then((res) => {
             if (!scopeStillCurrent(scope)) return;
             set((s) => {
-              // a refresh that landed first (the upload's own invalidation) already holds this photo
-              if (s.photos.some((p) => p.id === res.id)) return;
-              s.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}) });
-              // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
-              if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
-              if (!s.dailyLog) return;
+              // a refresh that landed first (the upload's own invalidation) may already hold this photo, in the
+              // photo list, the day's log, or only one of them when the log's read failed; each gets it once
+              if (!s.photos.some((p) => p.id === res.id)) {
+                s.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}) });
+                // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
+                if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
+              }
+              if (!s.dailyLog || s.dailyLog.photos.some((p) => p.id === res.id)) return;
               s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
               s.dailyLog.progress += 1;
               recordDraftPhoto(s);
