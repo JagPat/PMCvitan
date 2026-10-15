@@ -106,6 +106,20 @@ describe('Site Visits screen', () => {
     expect(screen.queryByRole('button', { name: 'Close visit' })).toBeNull();
   });
 
+  it('draws the starting place as a normal one-line select (live check after #874)', async () => {
+    await mount('pmc', PMC, fakeGateway([]));
+    const select = screen.getByLabelText('Starting place (optional)') as HTMLSelectElement;
+    expect(select.multiple).toBe(false);
+    expect(select.size).toBe(0);
+    // it sits straight in the card, a column: there a flex basis is a height, so .field must not carry one
+    const css = (await import('node:fs')).readFileSync('src/screens/SiteVisitsScreen.module.css', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const block = (sel: string) => css.match(new RegExp(`(^|\\n)${sel.replace(/\./g, '\\.')}\\s*\\{([^}]*)\\}`))?.[2] ?? '';
+    expect(block('.field')).toMatch(/height:\s*44px/);
+    expect(block('.field')).not.toMatch(/(^|[\s;])flex(-basis|-grow)?\s*:/);
+    expect(block('.card')).toMatch(/flex-direction:\s*column/);
+    expect(block('.add .field')).toMatch(/flex:\s*1 1 180px/);
+  });
+
   it('saves the phone’s location when it shares one, and starts without it when the prompt goes unanswered', async () => {
     const geo = { getCurrentPosition: vi.fn((ok: PositionCallback) => ok({ coords: { latitude: 23.03, longitude: 72.5, accuracy: 12 }, timestamp: Date.parse('2026-10-14T04:30:00Z') } as GeolocationPosition)) };
     vi.stubGlobal('navigator', { ...navigator, geolocation: geo });
