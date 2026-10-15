@@ -536,6 +536,19 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** #888 — how long the "Awaiting client" summary may take before the read is given up and the list offers "Try again",
+ *  rather than showing "Loading…" for as long as a stalled connection stays open. */
+export const AWAITING_CLIENT_TIMEOUT_MS = 15_000;
+
+/** A signal that aborts with a TimeoutError after `ms`. Browsers without AbortSignal.timeout (Mobile Safari
+ *  before 16.4) get the same behaviour from a controller and a timer, so the read still fails instead of throwing. */
+export function timeoutSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(ms);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms);
+  return controller.signal;
+}
+
 export class ApiGateway {
   /** the project this gateway is scoped to (evidence replay keys off it) */
   get project(): string {
@@ -900,7 +913,8 @@ export class ApiGateway {
   /** #482 QA (14 Oct 2026) — what waits on the CLIENT, as a summary any project member may read: the engineer,
    *  contractor and consultant plan around it without receiving the decisions themselves. */
   awaitingClient(): Promise<AwaitingClientRow[]> {
-    return this.req<AwaitingClientRow[]>(`/projects/${this.projectId}/decisions/awaiting-client`);
+    // #888 — a hung read becomes a failure the list can offer to retry, never an endless "Loading…"
+    return this.req<AwaitingClientRow[]>(`/projects/${this.projectId}/decisions/awaiting-client`, { signal: timeoutSignal(AWAITING_CLIENT_TIMEOUT_MS) });
   }
 
   /** Phase 2 Task 10 — the MODULE-OWNED daily-log read (projection-served, live fallback). Fetched
