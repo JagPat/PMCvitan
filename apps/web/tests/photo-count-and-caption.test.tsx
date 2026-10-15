@@ -1,13 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 
-/**
- * #482 live QA (15 Oct), items 8 and 9, in API mode:
- * - 9: the Dashboard shows ONE photo count. The daily log's self-reported figure ("10 progress photos")
- *   no longer sits beside "Site photos on record: 1"; the tile counts the photos the latest-photos list shows.
- * - 8: a Project Health photo card with no capture time has no empty caption bar.
- */
-
 async function loadApiMode(photos: { id: string; url: string; kind: string; takenAt?: string }[]) {
   vi.stubEnv('VITE_API_URL', 'http://api.test');
   vi.resetModules();
