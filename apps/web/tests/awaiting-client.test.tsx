@@ -171,4 +171,24 @@ describe('#888 — a stalled "Awaiting client" read gives up and offers Try agai
       vi.unstubAllGlobals();
     }
   });
+
+  it('a browser without AbortSignal.timeout still gets the time limit, from a timer', async () => {
+    const { ApiGateway, AWAITING_CLIENT_TIMEOUT_MS } = await import('@/data/apiGateway');
+    vi.useFakeTimers();
+    const original = AbortSignal.timeout;
+    // Mobile Safari before 16.4 has no AbortSignal.timeout
+    Object.defineProperty(AbortSignal, 'timeout', { value: undefined, configurable: true, writable: true });
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+    })));
+    try {
+      const read = new ApiGateway('http://api.test', 'ambli').awaitingClient();
+      const outcome = expect(read).rejects.toMatchObject({ name: 'TimeoutError' });
+      await vi.advanceTimersByTimeAsync(AWAITING_CLIENT_TIMEOUT_MS);
+      await outcome;
+    } finally {
+      Object.defineProperty(AbortSignal, 'timeout', { value: original, configurable: true, writable: true });
+      vi.unstubAllGlobals();
+    }
+  });
 });
