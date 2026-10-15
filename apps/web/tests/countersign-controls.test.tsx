@@ -213,7 +213,7 @@ describe('B5b — disabled while an act on the row is in flight; the register re
 
   it('the Decision Log renders the controls on its rows — and, with the rollout reserved and no awaiting row, none at all', () => {
     acts();
-    expect(registerSource).toContain('<CountersignControls decision={d} />');
+    expect(registerSource).toContain('<CountersignControls decision={d} lang={lang} />');
     // the delivered world: reserved, the seeded rows — nothing renders for the PMC
     as('pmc', 'u-pmc', 'reserved');
     let r = render(<DecisionLogScreen />);
