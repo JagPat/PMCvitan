@@ -339,7 +339,7 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
             <span style={{ fontFamily: 'var(--font-mono)' }}>{drawing.number}</span> · {drawing.title}
           </div>
           <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
-            {T.issuedLine(rev.rev, rev.issuedBy, drawingDateIn(rev.issuedAt, lang), lang)}
+            {T.issuedLine(rev.rev, T.issuer(rev.issuedBy, lang), drawingDateIn(rev.issuedAt, lang), lang)}
           </div>
         </div>
         <span style={{ ...chip, background: sm.bg, color: sm.fg, borderColor: sm.border }}>{sm.label}</span>
@@ -386,7 +386,7 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
               <button key={r.id} onClick={() => setRev(r)} data-testid={`rev-${r.id}`} style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', minHeight: 44, padding: '9px 11px', borderRadius: 9, cursor: 'pointer', border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'rgba(35,33,28,.04)' : '#fff' }}>
                 <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 12, minWidth: 42 }}>{T.rev(r.rev, lang)}</span>
                 <span style={{ ...chip, background: s.bg, color: s.fg, borderColor: s.border }}>{s.label}</span>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', flex: 1 }}>{drawingDateIn(r.issuedAt, lang)} · {r.issuedBy}</span>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', flex: 1 }}>{drawingDateIn(r.issuedAt, lang)} · {T.issuer(r.issuedBy, lang)}</span>
                 {r.status !== 'superseded' && <Lock size={12} color="#2F6B44" />}
               </button>
             );

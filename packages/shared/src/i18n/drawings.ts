@@ -135,6 +135,10 @@ export const drawingsText = {
     lang === 'hi' ? `आप संशोधन ${rev} से काम कर रहे हैं` : lang === 'gu' ? `તમે સંસ્કરણ ${rev} પ્રમાણે કામ કરો છો` : `You’re building to Rev ${rev}`,
   ackButton: (rev: string, lang: Lang): string =>
     lang === 'hi' ? `संशोधन ${rev} से काम की पुष्टि करें` : lang === 'gu' ? `સંસ્કરણ ${rev} પ્રમાણે કામની પુષ્ટિ કરો` : `I’m building to Rev ${rev}`,
+  /** who issued a revision: the API-less demo records its own fixed "You (demo)", said in the viewer's language;
+   *  a person's name is shown as recorded */
+  issuer: (by: string, lang: Lang): string =>
+    by !== 'You (demo)' ? by : lang === 'hi' ? 'आप (डेमो)' : lang === 'gu' ? 'તમે (ડેમો)' : by,
   issuedLine: (rev: string, by: string, at: string, lang: Lang): string =>
     lang === 'hi'
       ? `संशोधन ${rev} · ${by} ने जारी किया · ${at}`

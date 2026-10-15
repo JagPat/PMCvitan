@@ -97,6 +97,13 @@ describe('the Drawings register in Hindi and Gujarati', () => {
       expect(r2.getByTestId('issue-drawing-file-status').textContent).not.toMatch(/[A-Za-z]/);
     });
 
+    it(`${lang}: a revision the API-less demo issued says who issued it in the language (Codex, #902)`, async () => {
+      const demoRev = (id: string) => rev(id, { issuedBy: 'You (demo)' });
+      const { DrawingsScreen } = await load(lang, { role: 'pmc', drawings: [dwg('DWG-1', 'A-101', { current: demoRev('DWG-1-b'), revisions: [demoRev('DWG-1-b')] })], routeItem: 'DWG-1' });
+      render(<DrawingsScreen />);
+      expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+    });
+
     it(`${lang}: what the drawing actions say back`, async () => {
       const said: string[] = [];
       const demo = await load(lang, { drawings: [dwg('DWG-1', 'A-101')] }, { demo: true });
