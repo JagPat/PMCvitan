@@ -40,7 +40,9 @@ Gujarati.
    the screen shows, and the team for the attendee picker. A read that an act or a later read has overtaken is
    dropped, so an older answer never puts back a state already replaced.
 5. **Online only.** With no signal, nothing is saved and the screen says so. The offline queue (F53: queued acts
-   survive a start conflict, a queued remove waits for its add) is unit 2.
+   survive a start conflict, a queued remove waits for its add) is unit 2: see
+   [2026-10-15-site-visits-sv1c-offline.md](2026-10-15-site-visits-sv1c-offline.md), which replaces choice 3's
+   in-memory act map with the outbox.
 6. **Refusals in the viewer's language.** In English the server's own reason is shown after "This was not saved.";
    Hindi and Gujarati show the translated line only, because the server's reasons are English.
 7. **Photo later.** "Add photo" (unit 3) reuses the site photos button once it is on main and files the photo as

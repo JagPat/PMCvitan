@@ -103,8 +103,9 @@
   gap: 8px;
   align-items: center;
 }
+/* A field grows only along a row of controls: in a card (a column) a flex
+   basis would set its height, which drew the start select ~120px tall. */
 .field {
-  flex: 1 1 180px;
   min-width: 0;
   height: 44px;
   padding: 0 12px;
@@ -114,6 +115,9 @@
   font: inherit;
   font-size: 14px;
   color: var(--ink);
+}
+.add .field {
+  flex: 1 1 180px;
 }
 .actions {
   display: flex;
