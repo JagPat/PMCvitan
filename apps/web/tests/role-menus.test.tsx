@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 const keysOf = (xs: { key: ScreenKey }[]) => xs.map((x) => x.key);
-const ALL_MODULES = ['activities', 'decisions', 'inspections', 'daily-log', 'drawings', 'nodes', 'orgs'];
+const ALL_MODULES = ['activities', 'decisions', 'inspections', 'daily-log', 'drawings', 'nodes', 'orgs', 'site-visits'];
 const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor', 'consultant', 'architect'];
 
 async function loadRail(role: Role) {
@@ -75,10 +75,11 @@ describe('#482 QA role menus', () => {
     }
   });
 
-  it('the contractor’s bar is Dashboard · For You · Site Map · Drawings, with Decisions behind More', () => {
+  // Site Visits (#792, QA item 6) is the contractor's sixth screen, so their bar keeps four and More holds the rest
+  it('the contractor’s bar keeps four screens; More holds Decisions and Site Visits', () => {
     const { primary, secondary } = splitMobileNav(enabledScreensFor('contractor', ALL_MODULES), 'contractor');
     expect(keysOf(primary)).toEqual(['dashboard', 'inbox', 'places', 'drawings']);
-    expect(keysOf(secondary)).toEqual(['decision-log']);
+    expect(keysOf(secondary)).toEqual(['decision-log', 'site-visits']);
   });
 
   it('the contractor’s desktop sidebar reads "Decisions" and has no access screen', async () => {
