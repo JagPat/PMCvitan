@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectActiveReview } from '@/store/selectors';
-import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound } from '@/components';
+import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound, ConfirmDialog } from '@/components';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { X, Plus } from '@/lib/icons';
 import { EmptyHint } from '@/guide/EmptyHint';
@@ -55,6 +55,8 @@ export function InspectionReviewScreen() {
   // this viewer decided it returns the URL to the queue (never "not found"). A refused or failed decision
   // leaves the review in the queue, so the route — and a reload of it — keeps naming that review.
   const [decidedId, setDecidedId] = useState<string | null>(null);
+  // the review whose Approve is awaiting confirmation (by id, so switching reviews never carries it over)
+  const [confirmApproveId, setConfirmApproveId] = useState<string | null>(null);
   const released = routeItem !== null && routeItem === decidedId && !routeReview && !routeChecklist;
   useEffect(() => {
     if (released) setRouteItem(null);
@@ -186,6 +188,10 @@ export function InspectionReviewScreen() {
   const review: Review = active;
   const pendingCount = reviews.filter((r) => !r.decided).length;
   const rejectedCount = review.items.filter((it) => it.rejected).length;
+  // #482 QA item 2 — when any item FAILED, sending it back is the expected decision: Send back leads
+  // and Approve steps down to a secondary button that asks first, so a failed item is never signed
+  // off by a stray tap. With nothing failed the order is unchanged.
+  const failedCount = review.items.filter((it) => it.result === 'FAIL').length;
   const summary = review.decided ? 'Decision recorded ✓' : `${rejectedCount} item(s) marked for rejection`;
 
   return (
@@ -323,10 +329,28 @@ export function InspectionReviewScreen() {
           />
         ) : (
           <>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-              <Button variant="success" onClick={() => decide(approveInspection)} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Approve Inspection</Button>
-              <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Send Rejections &amp; Create Re-inspection</Button>
-            </div>
+            {failedCount > 0 ? (
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Send back for re-inspection</Button>
+                <Button variant="outline" onClick={() => setConfirmApproveId(review.id)} data-testid="approve-inspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Approve Inspection</Button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Approve Inspection</Button>
+                <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Send back for re-inspection</Button>
+              </div>
+            )}
+            {confirmApproveId === review.id && failedCount > 0 && (
+              <ConfirmDialog
+                title="Approve with failed items?"
+                confirmLabel="Approve anyway"
+                onConfirm={() => decide(approveInspection)}
+                onCancel={() => setConfirmApproveId(null)}
+                testId="confirm-approve"
+              >
+                {failedCount === 1 ? '1 item failed' : `${failedCount} items failed`}. Approving signs this inspection off without a re-inspection.
+              </ConfirmDialog>
+            )}
             <div style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--faint)', marginTop: 9 }}>{summary}</div>
           </>
         )}

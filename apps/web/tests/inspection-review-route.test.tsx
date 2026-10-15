@@ -77,6 +77,8 @@ describe('Inspection Review — a decided routed review releases its route once 
     const first = useStore.getState().reviews[0];
     const view = await mount({ routeItem: first.id, activeReviewId: first.id });
     fireEvent.click(view.getByRole('button', { name: /Approve Inspection/ }));
+    // #482 QA item 2 — the seeded review has a FAILED item, so Approve asks first
+    fireEvent.click(view.getByTestId('confirm-approve-confirm'));
     // the decision is recorded; the review is still in the queue, so the route still names it
     expect(useStore.getState().routeItem).toBe(first.id);
     // the server's queue holds undecided reviews only: the decided one leaves it
@@ -250,6 +252,8 @@ describe('Codex 4212402110 — nothing of another record stands under a departin
     // hold the route so the transitional render can be observed
     const view = await mount({ routeItem: first.id, activeReviewId: first.id, setRouteItem: () => {} });
     fireEvent.click(view.getByRole('button', { name: /Approve Inspection/ }));
+    // #482 QA item 2 — the seeded review has a FAILED item, so Approve asks first
+    fireEvent.click(view.getByTestId('confirm-approve-confirm'));
     // the decided review leaves the server's queue; another review remains and the selection falls to it
     act(() => { useStore.setState({ reviews: [{ ...first, id: 'INSP-77', title: 'Another Review' }] }); });
     expect(view.getByTestId('inspections-returning')).toBeTruthy();
