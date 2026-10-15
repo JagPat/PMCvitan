@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import type { Role } from '@vitan/shared';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { StorageService } from '../../src/media/storage.service';
 
 /**
  * #482 (Board decision, 14 Oct 2026) — every project member adds a site photo: the PMC, the engineer, a
@@ -94,6 +95,55 @@ describe('who may add a site photo (live PG)', () => {
     expect(first.status).toBe(201);
     expect(again.status).toBe(201);
     expect(again.body.id).toBe(first.body.id);
+  });
+
+  it('two concurrent uploads under one new key keep one row and one object: the loser\'s object is cleaned up', async () => {
+    const storage = t.app.get(StorageService);
+    // explicit barrier: both requests have passed the idempotency read and stored their bytes, under their
+    // own keys, before either opens its transaction; then they race the unique and one loses (P2002)
+    const putKeys: string[] = [];
+    let release!: () => void;
+    const bothStored = new Promise<void>((r) => (release = r));
+    const realPut = storage.put.bind(storage);
+    const put = vi.spyOn(storage, 'put').mockImplementation(async (key, bytes, mime) => {
+      putKeys.push(key);
+      if (putKeys.length === 2) release();
+      const stored = await realPut(key, bytes, mime);
+      await bothStored;
+      return stored;
+    });
+    const remove = vi.spyOn(storage, 'remove').mockResolvedValue(undefined);
+    try {
+      const [a, b] = await Promise.all([
+        upload(tokens.contractor, { kind: 'progress', clientKey: 'race-own' }),
+        upload(tokens.contractor, { kind: 'progress', clientKey: 'race-own' }),
+      ]);
+      expect([a.status, b.status]).toEqual([201, 201]);
+      expect(a.body.id).toBe(b.body.id);
+      // the terminal invariant: one row, holding the winner's key; only the loser's object is removed
+      const rows = await t.prisma.media.findMany({ where: { projectId: f.projectA.id, clientKey: 'race-own' } });
+      expect(rows).toHaveLength(1);
+      expect(putKeys).toHaveLength(2);
+      expect(putKeys[0]).not.toBe(putKeys[1]);
+      const loser = putKeys.find((k) => k !== rows[0].storageKey);
+      expect(remove.mock.calls).toEqual([[loser]]);
+    } finally {
+      put.mockRestore();
+      remove.mockRestore();
+    }
+  });
+
+  it('a replayed key never hands back a photo on a draft hidden from the caller', async () => {
+    // a contractor's photo filed (before #881) on the PMC's private draft: hidden from the contractor since #884
+    const draft = await t.prisma.projectNode.create({
+      data: { id: `${f.projectA.id}-roles-legacy-draft`, projectId: f.projectA.id, name: 'legacy draft', kind: 'zone', publishedAt: null, authorId: f.memberUser.id },
+    });
+    await t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: Buffer.from(px, 'base64'), uploadedBy: `${f.projectA.id}-contractor`, nodeId: draft.id, clientKey: 'legacy-on-draft' },
+    });
+    const replay = await upload(tokens.contractor, { kind: 'progress', clientKey: 'legacy-on-draft' });
+    expect(replay.status).toBe(404);
+    expect(replay.body.url).toBeUndefined();
   });
 
   it('a contractor\'s photo goes on a published place, never on a draft (the #881 rule holds for the new roles)', async () => {

@@ -36,8 +36,8 @@ function isPlainSitePhoto(input: CreateMediaInput): boolean {
 }
 
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
-const REPLAY_SELECT = { id: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true } as const;
-type ReplayRow = { id: string; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null };
+const REPLAY_SELECT = { id: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true } as const;
+type ReplayRow = { id: string; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null };
 
 export type MediaBytes = { mime: string; bytes: Buffer };
 export type MediaRedirect = { redirect: string };
@@ -71,11 +71,16 @@ export class MediaService {
   ) {}
 
   /** A clientKey replay returns the stored row only when the caller could have created it: for the roles
-   *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence. */
-  private replayed(user: AuthUser, row: ReplayRow): UploadedMedia {
+   *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence.
+   *  And never a photo the caller cannot see now: one filed (before #881) on another member's private
+   *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884). */
+  private async replayed(projectId: string, user: AuthUser, row: ReplayRow): Promise<UploadedMedia> {
     if (!SITE_RECORD_ROLES.has(user.role)) {
       const plain = row.kind === 'progress' && !row.decisionId && !row.dailyLogId && !row.inspectionId && !row.inspectionItemId;
       if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
+    }
+    if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
+      throw new NotFoundException('Media not found');
     }
     return { id: row.id, url: this.signed.mediaPath(row.id) };
   }
@@ -98,7 +103,7 @@ export class MediaService {
         where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
         select: REPLAY_SELECT,
       });
-      if (existing) return this.replayed(user, existing);
+      if (existing) return this.replayed(projectId, user, existing);
     }
     // Location spine: the place must be this project's and PUBLISHED (a team photo never goes on a draft).
     // Checked here BEFORE the bytes are stored, as an early no; the tree's state is decided again under its
@@ -192,9 +197,9 @@ export class MediaService {
         });
         let replay: { id: string; url: string } | undefined;
         try {
-          replay = this.replayed(user, winner);
+          replay = await this.replayed(projectId, user, winner);
         } catch (refused) {
-          // the key is another member's: refused, after the same cleanup
+          // the key is another member's, or its photo is hidden from the caller: refused, after the same cleanup
           e = refused;
         }
         await this.removeIfUnreferenced(projectId, key);
