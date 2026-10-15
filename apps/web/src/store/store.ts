@@ -86,7 +86,7 @@ import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, isSiteVisitOp, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -747,7 +747,8 @@ export interface AppActions {
   issueChecklist: (input: { title: string; zone: string; items: string[]; nodeId?: string }) => void;
   startDailyLog: () => void;
   addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }) => void;
-  loadTeam: () => Promise<void>;
+  /** Read the project's team; resolves false when the read failed (Site Visits' picker then offers a retry). */
+  loadTeam: () => Promise<boolean | void>;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role, discipline?: string) => void;
   removeMember: (userId: string) => void;
@@ -796,6 +797,9 @@ export interface AppActions {
    *  `OutboxFlushResult` so a caller can confirm ITS OWN ops by key (queue absence ≠ success — a
    *  terminal 4xx also removes the op). */
   flushOutbox: (opts?: { okMsg?: string | (() => string) }) => Promise<OutboxFlushResult>;
+  /** Site Visits SV1-c unit 2 (#792, F53): put one site-visit act in the durable outbox and send it (write-ahead,
+   *  as the Daily Log does); `offlineMsg` is what the viewer is told when the app is offline. False without the server. */
+  queueSiteVisitAct: (op: OutboxOp, offlineMsg: string) => boolean;
   hydrateOutbox: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
@@ -2202,7 +2206,10 @@ export const useStore = create<Store>()(
     // changes (useApiSync re-runs it on every token / project change).
     const LEGACY_OUTBOX_KEY = 'vitan.outbox';
     const outboxKey = (): string => {
-      let sub = 'anon';
+      // passwordless dev auth keeps no token: its session user scopes the queue, so two identities never share
+      // queued acts (Codex 4278754328; the create hold's rule, createHoldScope)
+      const user = get().sessionUserId;
+      let sub = user ? `dev:${user}` : 'anon';
       const token = get().sessionToken;
       if (token) {
         try {
@@ -2213,9 +2220,15 @@ export const useStore = create<Store>()(
       }
       return `vitan.outbox.${sub}.${get().activeProjectId}`;
     };
+    /** Site Visits (#792): site visit acts are kept under a key of their own, beside the outbox's, so a bundle from
+     *  before them (a rollback, an old tab) never reads one: its replay has no case for them and would drop them as
+     *  sent (Codex 4278991737). The two lists are each in the order made; a site visit act never waits on another op. */
+    const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
     const persistOutbox = (): void => {
       try {
-        globalThis.localStorage?.setItem(outboxKey(), JSON.stringify(get().outbox));
+        const storage = globalThis.localStorage;
+        storage?.setItem(outboxKey(), JSON.stringify(get().outbox.filter((o) => !isSiteVisitOp(o))));
+        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(get().outbox.filter(isSiteVisitOp)));
       } catch {
         /* storage unavailable — the in-session outbox still works */
       }
@@ -5134,17 +5147,17 @@ export const useStore = create<Store>()(
       runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, DLC.material.en, () => DLX.materialRecorded(input.name, get().lang), DLX.savedOffline(DLC.material[lang], lang));
     },
     loadTeam: () => {
-      if (!gateway) return Promise.resolve();
+      if (!gateway) return Promise.resolve(false);
       // capture the SCOPE this request is FOR — an id-only pin would wrongly apply
       // an A-scoped reply after switching A→B→A; the generation catches that too
       const scope = currentScope();
       return gateway
         .listMembers()
-        .then((m) => set((s) => {
+        .then((m) => { set((s) => {
           if (!isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) return;
           s.members = m;
-        }))
-        .catch(() => {});
+        }); return true; })
+        .catch(() => false);
     },
     // Phase 6 task 4d-ii-b / B6 — the three member commands go through `dispatchMemberAct`: one request per
     // act in flight; the act's key minted on the first attempt and reused on the user's retry after a lost
@@ -5577,6 +5590,7 @@ export const useStore = create<Store>()(
         get().flash(DLX.synced(n, get().lang));
       }
     },
+    queueSiteVisitAct: (op, offlineMsg) => runWriteAhead(op, 'Site visit', '', offlineMsg),
     flushOutbox: async (opts) => {
       // A flush that did not actually process this call's ops (no gateway, coalesced, or empty) reports
       // `ran:false`/empty so a caller confirming its own ops never mistakes "not run" for "succeeded".
@@ -5589,6 +5603,10 @@ export const useStore = create<Store>()(
       outboxFlushing = true;
       try {
       const ops = get().outbox.slice();
+      // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
+      // take its own acts out of `ops` as it goes)
+      const taken = ops.length;
+      const takenVisits = ops.filter(isSiteVisitOp).length;
       if (ops.length === 0) return { ran: true, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] };
       // gate round-2 finding 2: the flush is about to change the durable truth
       // (confirmed uploads delete rows, terminal failures dead-letter them) — any
@@ -5609,7 +5627,9 @@ export const useStore = create<Store>()(
       // lease, so if a newer socket/mutation lease begins while a replay is in flight
       // the flush's (older) snapshot is `superseded` and discarded instead of stomping
       // the newer checklist. This is the reviewer's manifestation #1 — the core bug.
-      const flushLease = beginSnapshotLease(flushScope);
+      // A batch of site visit acts alone reads no snapshot (each answer goes to its own screen), so it takes no
+      // lease: one taken and never used would discard a snapshot already in flight as superseded.
+      const flushLease = ops.some((o) => !isSiteVisitOp(o)) ? beginSnapshotLease(flushScope) : null;
 
       // Replay in order, one at a time, committing progress as we go so a later failure
       // never re-runs an op that already succeeded. A permanently-rejected op (terminal
@@ -5648,6 +5668,13 @@ export const useStore = create<Store>()(
       // the doors stand, an ineligible state, a lesser client under an active chain) is reported as the
       // server's own words, one line per act, instead of joining the anonymous "discarded" count.
       const chainRefusals: string[] = [];
+      // Site Visits (#792, F53): the moves made for refused starts, applied to acts queued during this flush too
+      // (to null: the refused start's acts went with it)
+      const visitMoves: [string, string | null][] = [];
+      const remapVisits = (list: OutboxOp[]): OutboxOp[] => visitMoves.reduce(
+        (l, [from, to]) => (to ? moveSiteVisitOps(l, from, to) : l.filter((o) => !(isSiteVisitOp(o) && o.t !== 'siteVisitStart' && o.visitId === from))),
+        list,
+      );
       let stoppedAt = -1;
       let scopeMoved = false;
       for (let i = 0; i < ops.length; i++) {
@@ -5663,8 +5690,10 @@ export const useStore = create<Store>()(
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
         try {
-          lastSnap = await replayOutboxOp(flushGateway, ops[i]);
-          synced += 1;
+          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation);
+          if (snap) lastSnap = snap;
+          // a site visit's answer shows on its own screen, so it is not counted in the "synced" line
+          if (!isSiteVisitOp(ops[i])) synced += 1;
           if (ops[i].t === 'decideReview') refreshBriefAfterReview(flushedBy);
           if (ops[i].t === 'startDailyLog') dailyLogCommitted = 'start';
           else if (ops[i].t === 'submitDailyLog') dailyLogCommitted = 'send';
@@ -5677,6 +5706,39 @@ export const useStore = create<Store>()(
             const op = ops[i];
             if (isCountersignChainOp(op)) {
               chainRefusals.push(`${chainActLabel(op)} refused — ${refusalMessage(err) ?? 'the server did not say why'}.`);
+            } else if (isSiteVisitOp(op)) {
+              // F53: a start refused because the visitor already has a visit open hands its queued acts to that
+              // visit; any other refused start takes its queued acts with it. A refusal is told to the Site Visits
+              // screen in the server's words (or counted as discarded when no screen is on show)
+              let open: SiteVisit | null = null;
+              const before = droppedKeys.length;
+              if (op.t === 'siteVisitStart' && isOpenVisitConflict(err) && flushedBy) {
+                try {
+                  open = await ownOpenVisit(flushGateway, flushedBy);
+                } catch {
+                  stoppedAt = i; // the open visit could not be read: the start and its acts replay next time
+                  break;
+                }
+                // no open visit by now (another device ended it after the refusal): the refused start changed
+                // nothing, so the same start, under the same key, is sent again next time with its acts
+                if (!open) { stoppedAt = i; break; }
+              }
+              if (op.t === 'siteVisitStart') {
+                const rest = ops.slice(i + 1);
+                const onIt = rest.filter((o) => isSiteVisitOp(o) && o.t !== 'siteVisitStart' && o.visitId === op.body.id);
+                if (open) {
+                  ops.splice(i + 1, rest.length, ...moveSiteVisitOps(rest, op.body.id, open.id));
+                  tellSiteVisits({ kind: 'moved', project: flushGateway.project, generation: flushScope.generation, to: open.id, count: onIt.length });
+                } else {
+                  ops.splice(i + 1, rest.length, ...rest.filter((o) => !onIt.includes(o)));
+                  for (const o of onIt) { const k = keyOf(o); if (k) droppedKeys.push(k); }
+                }
+                visitMoves.push([op.body.id, open?.id ?? null]);
+              }
+              if (!open) {
+                if (siteVisitListeners.size > 0) tellSiteVisits({ kind: 'refused', project: flushGateway.project, generation: flushScope.generation, message: refusalMessage(err) });
+                else dropped += 1 + (op.t === 'siteVisitStart' ? droppedKeys.length - before : 0);
+              }
             } else {
               dropped += 1; // server will never accept this one — discard and keep going
             }
@@ -5712,12 +5774,15 @@ export const useStore = create<Store>()(
         try {
           const storage = globalThis.localStorage;
           if (storage) {
-            const stored: unknown = JSON.parse(storage.getItem(flushKey) ?? '[]');
-            // the flushed ops were the stored queue's prefix — drop the replayed part
-            const leftover = Array.isArray(stored) && stored.length >= ops.length
-              ? [...remaining, ...stored.slice(ops.length)]
-              : remaining;
-            storage.setItem(flushKey, JSON.stringify(leftover));
+            // each stored list holds its kind of the flushed ops as its prefix — drop the replayed part
+            const keep = (key: string, rest: OutboxOp[], took: number, after: (l: OutboxOp[]) => OutboxOp[]) => {
+              const stored: unknown = JSON.parse(storage.getItem(key) ?? '[]');
+              const leftover = Array.isArray(stored) && stored.length >= took ? [...rest, ...after(stored.slice(took) as OutboxOp[])] : rest;
+              storage.setItem(key, JSON.stringify(leftover));
+            };
+            keep(flushKey, remaining.filter((o) => !isSiteVisitOp(o)), taken - takenVisits, (l) => l);
+            // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
+            keep(siteVisitKeyOf(flushKey), remaining.filter(isSiteVisitOp), takenVisits, remapVisits);
           }
         } catch {
           /* storage unavailable — the persisted queue simply keeps its pre-flush state */
@@ -5727,7 +5792,7 @@ export const useStore = create<Store>()(
 
       // Preserve anything queued while we were awaiting (shouldn't happen once online, but
       // never drop a write): the original ops were the outbox prefix, so slice past them.
-      const appended = get().outbox.slice(ops.length);
+      const appended = remapVisits(get().outbox.slice(taken));
       set((s) => {
         s.outbox = [...remaining, ...appended];
         // under module ownership the command's own snapshot carries no daily-log slice, so the log
@@ -5748,7 +5813,7 @@ export const useStore = create<Store>()(
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).
-      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg, flushLease.scope);
+      if (lastSnap && flushLease) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg, flushLease.scope);
 
       const parts: string[] = [];
       const lang = get().lang;
@@ -5881,10 +5946,18 @@ export const useStore = create<Store>()(
           // migration: there is no legacy key to derive one from, and inventing an identity for a
           // command whose exactly-once guarantee rests on it would be worse than dropping it.
           const commercialNorm = normalizeCommercialOutbox(labourNorm.ops);
-          const ops = commercialNorm.ops;
           const changed = materialsNorm.changed || labourNorm.changed || commercialNorm.changed;
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable
-          if (changed) storage.setItem(outboxKey(), JSON.stringify(ops));
+          if (changed) storage.setItem(outboxKey(), JSON.stringify(commercialNorm.ops));
+          // the site visit acts, from their own key (malformed → none)
+          let visitOps: OutboxOp[] = [];
+          try {
+            const rawVisits: unknown = JSON.parse(storage.getItem(siteVisitKeyOf(outboxKey())) ?? '[]');
+            visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => o && isSiteVisitOp(o)) : [];
+          } catch {
+            visitOps = [];
+          }
+          const ops = [...commercialNorm.ops.filter((o) => !isSiteVisitOp(o)), ...visitOps];
           // #669 — the engineer's unsent daily-log work for THIS scope comes back with its queue, so a
           // reload (or a return to this project) keeps the day where they left it; the next apply lays
           // it over the server's log (or drops it if that log has moved on). Malformed → none.
