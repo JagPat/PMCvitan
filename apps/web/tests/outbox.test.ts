@@ -168,7 +168,7 @@ describe('Phase 8 offline outbox', () => {
     s().addProgressPhoto('data:image/jpeg;base64,AAAA');
 
     expect(gw.uploadMedia).not.toHaveBeenCalled(); // not uploaded while offline
-    expect(s().outbox).toEqual([{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA' } }]);
+    expect(s().outbox).toEqual([{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA', clientKey: expect.any(String) } }]);
     expect(s().dailyLog!.photos.length).toBe(before + 1); // shown right away
     expect(s().dailyLog!.photos[0].url).toBe('data:image/jpeg;base64,AAAA');
     expect(s().dailyLog!.photos[0].id).toBeUndefined(); // no server id yet
@@ -189,10 +189,46 @@ describe('Phase 8 offline outbox', () => {
     s().toggleOnline(); // back online → flush
     await flush();
 
-    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'BBBB' });
+    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'BBBB', clientKey: expect.any(String) });
     expect(gw.snapshot).toHaveBeenCalled(); // refetched to reconcile photos
     expect(s().outbox).toHaveLength(0);
     expect(s().syncQueue).toHaveLength(0);
+  });
+
+  it('a queued photo replays under one key: a retry after a lost reply is the same photo, and each pick has its own (#482)', async () => {
+    const gw = {
+      uploadMedia: vi.fn().mockRejectedValueOnce(new Error('network')).mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    s().addProgressPhoto('data:image/png;base64,BBBB');
+    s().addProgressPhoto('data:image/png;base64,CCCC');
+    const keys = s().outbox.map((o) => (o as { input?: { clientKey?: string } }).input?.clientKey);
+    expect(new Set(keys).size).toBe(2);
+
+    s().toggleOnline(); // the first attempt fails in transit; the op stays queued
+    await flush();
+    await s().flushOutbox();
+    await flush();
+
+    const sent = gw.uploadMedia.mock.calls.map((c) => (c[0] as { data: string; clientKey: string }));
+    const bbbb = sent.filter((i) => i.data === 'BBBB');
+    expect(bbbb.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(bbbb.map((i) => i.clientKey))).toEqual(new Set([keys[0]]));
+    expect(s().outbox).toHaveLength(0);
+  });
+
+  it('a photo queued by an earlier release, with no key, gets one key on load, kept for every replay (#482)', () => {
+    const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
+    globalThis.localStorage?.setItem(scopedKey, JSON.stringify([{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'BBBB' } }]));
+    s().hydrateOutbox();
+    const key = (s().outbox[0] as { input: { clientKey?: string } }).input.clientKey;
+    expect(key).toEqual(expect.any(String));
+    // persisted, so a reload does not mint a different one
+    expect(JSON.parse(globalThis.localStorage!.getItem(scopedKey)!)[0].input.clientKey).toBe(key);
+    s().hydrateOutbox();
+    expect((s().outbox[0] as { input: { clientKey?: string } }).input.clientKey).toBe(key);
   });
 
   it('without a gateway, offline mutations still apply locally (demo)', () => {
