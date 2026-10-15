@@ -164,5 +164,26 @@ describe('#482 site photos: "Add site photo" on the Dashboard', () => {
     expect(useStore.getState().photos.map((p) => p.id)).toEqual(['new']);
     expect(r.getAllByAltText(/^Site photo \d+$/)).toHaveLength(1);
   });
+
+  it('says the photo was not kept when this device cannot store it offline, instead of claiming it was saved', async () => {
+    const { useStore } = await loadApiMode('consultant');
+    const uploadMedia = vi.fn();
+    useStore.getState()._setGateway({ uploadMedia } as never);
+    useStore.setState({ online: false } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError');
+    });
+    try {
+      const { DashboardScreen } = await import('@/screens/DashboardScreen');
+      const r = render(<DashboardScreen />);
+      fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(useStore.getState().outbox).toEqual([]);
+    expect(useStore.getState().syncQueue).toEqual([]);
+    expect(useStore.getState().toast).toMatch(/no room to keep the photo/);
+  });
 });
 

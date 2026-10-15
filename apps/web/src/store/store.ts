@@ -76,7 +76,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { SNAPSHOT_SITE_PHOTO_LIMIT } from '@vitan/shared';
+import { SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoLabels as SPL } from '@vitan/shared';
 import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
@@ -2225,13 +2225,17 @@ export const useStore = create<Store>()(
      *  before them (a rollback, an old tab) never reads one: its replay has no case for them and would drop them as
      *  sent (Codex 4278991737). The two lists are each in the order made; a site visit act never waits on another op. */
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
-    const persistOutbox = (): void => {
+    /** Writes the outbox (plus `next`, an op about to join it) to storage; false when the write was refused. */
+    const persistOutbox = (next?: OutboxOp): boolean => {
+      const ops = next ? [...get().outbox, next] : get().outbox;
       try {
         const storage = globalThis.localStorage;
-        storage?.setItem(outboxKey(), JSON.stringify(get().outbox.filter((o) => !isSiteVisitOp(o))));
-        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(get().outbox.filter(isSiteVisitOp)));
+        storage?.setItem(outboxKey(), JSON.stringify(ops.filter((o) => !isSiteVisitOp(o))));
+        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(ops.filter(isSiteVisitOp)));
+        return true;
       } catch {
-        /* storage unavailable — the in-session outbox still works */
+        /* storage unavailable or full — the in-session outbox still works */
+        return false;
       }
     };
 
@@ -5445,14 +5449,21 @@ export const useStore = create<Store>()(
         // keys here, and the media contract stores nothing rather than something invented.
         // One key per chosen photo, kept with the queued upload: a replay after a lost reply returns the
         // photo already stored instead of storing it twice.
-        const clientKey = globalThis.crypto?.randomUUID?.() ?? `photo-${Math.random().toString(36).slice(2)}`;
+        const clientKey = newIdempotencyKey();
         const input = { kind: 'progress' as const, mime, data: base64, clientKey, ...stamped, ...(nodeId ? { nodeId } : {}) };
         // Phase 8 media offline queue: when offline, show the photo optimistically
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
         if (!get().online) {
+          // a photo too large for this device's storage would live only in memory and be lost on reload,
+          // so it is kept offline only once the queue holding it is stored; otherwise the user is told
+          const op: OutboxOp = { t: 'uploadMedia', input };
+          if (!persistOutbox(op)) {
+            get().flash(SPL.notKeptOffline[get().lang]);
+            return;
+          }
           set((s) => {
-            s.outbox.push({ t: 'uploadMedia', input });
+            s.outbox.push(op);
             s.syncQueue.push('Progress photo');
             if (s.dailyLog) {
               s.dailyLog.photos.unshift({ url: dataUrl });
@@ -5460,7 +5471,6 @@ export const useStore = create<Store>()(
               recordDraftPhoto(s);
             }
           });
-          persistOutbox();
           persistDailyLogDraft();
           get().flash(DLT.photoOffline[get().lang]);
           return;
