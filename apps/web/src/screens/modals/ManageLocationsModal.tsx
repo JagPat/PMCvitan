@@ -1,5 +1,6 @@
 import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { manageLocationsLabels as ML, manageLocationsText as MT, placeKindTag, type Lang } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { Button, Modal } from '@/components';
 import { Pencil, Trash2, BookmarkPlus } from '@/lib/icons';
@@ -18,6 +19,7 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   const addLocationNode = useStore((s) => s.addLocationNode);
   const saveZoneAsModule = useStore((s) => s.saveZoneAsModule);
   const saveProjectAsTemplate = useStore((s) => s.saveProjectAsTemplate);
+  const lang = useStore((s) => s.lang);
   const [newZone, setNewZone] = useState('');
   const [asDraft, setAsDraft] = useState(false);
   const [tplName, setTplName] = useState('');
@@ -38,14 +40,14 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal onClose={onClose} maxWidth={480} labelledBy="manage-loc-title">
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
-        <div id="manage-loc-title" style={{ fontWeight: 700, fontSize: 17 }}>Locations</div>
+        <div id="manage-loc-title" style={{ fontWeight: 700, fontSize: 17 }}>{ML.title[lang]}</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          Zones sit at the top; rooms nest under zones or other rooms (to 5 levels); objects sit under a room or directly under a zone. Rename or remove any — a location with decisions on it can&apos;t be deleted until you move them. A <b>draft</b> location is private to you until you publish it.
+          {ML.intro[lang]}<b>{ML.introDraft[lang]}</b>{ML.introEnd[lang]}
         </div>
 
         <div style={{ display: 'flex', gap: 8, margin: '14px 0 6px' }}>
-          <input value={newZone} onChange={(e) => setNewZone(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addZone(); }} placeholder="Add a zone (e.g. Ground Floor)" style={{ ...fldD, flex: 1, minWidth: 44 }} data-testid="manage-new-zone" />
-          <Button variant="ink" onClick={addZone} style={{ padding: '0 14px', fontSize: 12.5 }}>Add</Button>
+          <input value={newZone} onChange={(e) => setNewZone(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addZone(); }} placeholder={ML.newZone[lang]} style={{ ...fldD, flex: 1, minWidth: 44 }} data-testid="manage-new-zone" />
+          <Button variant="ink" onClick={addZone} style={{ padding: '0 14px', fontSize: 12.5 }}>{ML.add[lang]}</Button>
         </div>
         {/* Wave 0 / F-1b round 8 — the checkbox itself is a native 13px box; the LABEL is what a
             thumb lands on, and label activation forwards to the control, so the 44px band goes
@@ -53,10 +55,10 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
             for no gain, and the rule is about what the thumb meets. */}
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 44, fontSize: 12, color: 'var(--muted)', cursor: 'pointer', marginBottom: 4 }}>
           <input type="checkbox" checked={asDraft} onChange={(e) => setAsDraft(e.target.checked)} data-testid="manage-zone-draft" />
-          Add as a private draft (publish later)
+          {ML.asDraft[lang]}
         </label>
 
-        {list.length === 0 && <div style={{ color: 'var(--faint)', fontSize: 12.5, padding: '8px 0' }}>No locations yet — add a zone to start.</div>}
+        {list.length === 0 && <div style={{ color: 'var(--faint)', fontSize: 12.5, padding: '8px 0' }}>{ML.none[lang]}</div>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
           {list.map((n) => (
             <LocationRow
@@ -66,6 +68,7 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
               kind={n.kind}
               depth={n.depth}
               draft={n.draft}
+              lang={lang}
               onRename={(name) => renameNode(n.id, name)}
               onPublish={() => publishNode(n.id)}
               onDelete={() => setDeleting(n.id)}
@@ -82,25 +85,25 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
 
         {/* Templates Slice 3: capture this project's whole structure as a named preset */}
         <div style={{ borderTop: '1px dashed rgba(35,33,28,.15)', marginTop: 16, paddingTop: 12 }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--muted)', marginBottom: 6 }}>SAVE AS TEMPLATE</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--muted)', marginBottom: 6 }}>{ML.saveAsTemplate[lang]}</div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <input value={tplName} onChange={(e) => setTplName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveTemplate(); }} placeholder="Template name (e.g. G+2 Residence)" style={{ ...fldD, flex: 1, minWidth: 44 }} data-testid="save-template-name" />
-            <Button variant="outline" onClick={saveTemplate} data-testid="save-template" style={{ padding: '0 14px', fontSize: 12.5 }}>Save</Button>
+            <input value={tplName} onChange={(e) => setTplName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveTemplate(); }} placeholder={ML.templateName[lang]} style={{ ...fldD, flex: 1, minWidth: 44 }} data-testid="save-template-name" />
+            <Button variant="outline" onClick={saveTemplate} data-testid="save-template" style={{ padding: '0 14px', fontSize: 12.5 }}>{ML.save[lang]}</Button>
           </div>
           <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5, lineHeight: 1.5 }}>
-            Captures the whole structure — locations, phases, planned activities, checklists — as a starting point for future projects. Never this project&apos;s approvals, dates, photos or people.
+            {ML.templateNote[lang]}
           </div>
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 18 }}>
-          <Button variant="ink" onClick={onClose} style={{ padding: '10px 18px' }}>Done</Button>
+          <Button variant="ink" onClick={onClose} style={{ padding: '10px 18px' }}>{ML.done[lang]}</Button>
         </div>
       </div>
     </Modal>
   );
 }
 
-function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDelete, onSaveAsModule, onAddChild }: { id: string; name: string; kind: string; depth: number; draft: boolean; onRename: (name: string) => void; onPublish: () => void; onDelete: () => void; onSaveAsModule?: () => void; onAddChild?: (kind: 'room' | 'element', name: string) => void }) {
+function LocationRow({ id, name, kind, depth, draft, lang, onRename, onPublish, onDelete, onSaveAsModule, onAddChild }: { id: string; name: string; kind: string; depth: number; draft: boolean; lang: Lang; onRename: (name: string) => void; onPublish: () => void; onDelete: () => void; onSaveAsModule?: () => void; onAddChild?: (kind: 'room' | 'element', name: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(name);
   const [addingKind, setAddingKind] = useState<'room' | 'element' | null>(null);
@@ -114,9 +117,9 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
   if (addingKind) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: (depth + 1) * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
-        <input autoFocus value={childName} onChange={(e) => setChildName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitChild(); }} placeholder={`New ${addingKind === 'room' ? 'room' : 'object'} in ${name}`} style={{ ...fldD, flex: 1, minWidth: 44 }} data-testid={`loc-add-input-${id}`} />
-        <button onClick={commitChild} style={iconBtn} aria-label={`Add inside ${name}`}>✓</button>
-        <button onClick={() => { setAddingKind(null); setChildName(''); }} style={iconBtn} aria-label="Cancel">✕</button>
+        <input autoFocus value={childName} onChange={(e) => setChildName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitChild(); }} placeholder={MT.newChild(addingKind, name, lang)} style={{ ...fldD, flex: 1, minWidth: 44 }} data-testid={`loc-add-input-${id}`} />
+        <button onClick={commitChild} style={iconBtn} aria-label={MT.addInside(name, lang)}>✓</button>
+        <button onClick={() => { setAddingKind(null); setChildName(''); }} style={iconBtn} aria-label={ML.cancel[lang]}>✕</button>
       </div>
     );
   }
@@ -131,31 +134,31 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
       {editing ? (
         <>
           <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} style={{ ...fldD, flex: 1, minWidth: 44 }} />
-          <button onClick={commit} style={iconBtn} aria-label="Save">✓</button>
+          <button onClick={commit} style={iconBtn} aria-label={ML.save[lang]}>✓</button>
         </>
       ) : (
         <>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'var(--faint)', width: 44, flex: 'none' }}>{/* B5 (F-7): the stored kind `element` reads as OBJECT, matching "+ Object" */}{(kind === 'element' ? 'object' : kind).toUpperCase()}</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'var(--faint)', width: 44, flex: 'none' }}>{/* B5 (F-7): the stored kind `element` reads as OBJECT, matching "+ Object" */}{placeKindTag(kind, lang)}</span>
           <span style={{ flex: '1 1 110px', minWidth: 0, overflowWrap: 'anywhere', fontSize: 13.5, fontWeight: kind === 'zone' ? 600 : 400, color: draft ? 'var(--muted)' : 'var(--ink)' }}>{name}</span>
-          {draft && <span style={draftChip} data-testid={`loc-draft-${id}`}>DRAFT</span>}
-          {draft && <Button variant="success" onClick={onPublish} data-testid={`loc-publish-${id}`} style={{ padding: '4px 9px', fontSize: 11 }}>Publish</Button>}
+          {draft && <span style={draftChip} data-testid={`loc-draft-${id}`}>{ML.draftChip[lang]}</span>}
+          {draft && <Button variant="success" onClick={onPublish} data-testid={`loc-publish-${id}`} style={{ padding: '4px 9px', fontSize: 11 }}>{ML.publish[lang]}</Button>}
           {/* ONE group, so the actions wrap together and stay in a predictable order rather than
               breaking apart mid-cluster. `marginLeft: auto` keeps them right-aligned while they
               fit and is harmless once they take their own line. */}
           <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginLeft: 'auto' }}>
             {onAddChild && (
               <>
-                <button onClick={() => setAddingKind('room')} style={addChildBtn} data-testid={`loc-add-room-${id}`} title={`Add a room inside ${name}`} aria-label={`Add a room inside ${name}`}>+ Room</button>
-                <button onClick={() => setAddingKind('element')} style={addChildBtn} data-testid={`loc-add-element-${id}`} title={`Add an object inside ${name}`} aria-label={`Add an object inside ${name}`}>+ Object</button>
+                <button onClick={() => setAddingKind('room')} style={addChildBtn} data-testid={`loc-add-room-${id}`} title={MT.addRoomInside(name, lang)} aria-label={MT.addRoomInside(name, lang)}>{ML.addRoom[lang]}</button>
+                <button onClick={() => setAddingKind('element')} style={addChildBtn} data-testid={`loc-add-element-${id}`} title={MT.addObjectInside(name, lang)} aria-label={MT.addObjectInside(name, lang)}>{ML.addObject[lang]}</button>
               </>
             )}
             {onSaveAsModule && (
-              <button onClick={onSaveAsModule} style={iconBtn} data-testid={`loc-module-${id}`} title="Save this zone (rooms, objects, checklists) as a reusable module" aria-label={`Save ${name} as a module`}>
+              <button onClick={onSaveAsModule} style={iconBtn} data-testid={`loc-module-${id}`} title={ML.saveModuleTitle[lang]} aria-label={MT.saveAsModule(name, lang)}>
                 <BookmarkPlus size={13} />
               </button>
             )}
-            <button onClick={() => { setValue(name); setEditing(true); }} style={iconBtn} aria-label={`Rename ${name}`}><Pencil size={13} /></button>
-            <button onClick={onDelete} style={{ ...iconBtn, color: 'var(--red-solid)' }} aria-label={`Delete ${name}`}><Trash2 size={13} /></button>
+            <button onClick={() => { setValue(name); setEditing(true); }} style={iconBtn} aria-label={MT.rename(name, lang)}><Pencil size={13} /></button>
+            <button onClick={onDelete} style={{ ...iconBtn, color: 'var(--red-solid)' }} aria-label={MT.remove(name, lang)}><Trash2 size={13} /></button>
           </span>
         </>
       )}

@@ -98,11 +98,23 @@ describe('approve', () => {
   });
 });
 
-describe('a screen not yet translated keeps its English failure line', () => {
+describe('the Site Map\'s place editor (#482 QA item 3)', () => {
   for (const lang of ['hi', 'gu'] as const) {
-    it(`${lang}: renaming a location (still English) says the English network line`, async () => {
+    it(`${lang}: renaming a location says the network line in the language`, async () => {
       connect({ renameNode: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) }, lang);
       s().renameNode('N-1', 'Tower A');
+      await settles(() => s().toast !== null && script[lang].test(s().toast!));
+      expect(latinLeft(s().toast!)).toEqual([]);
+    });
+  }
+});
+
+describe('a screen not yet translated keeps its English failure line', () => {
+  for (const lang of ['hi', 'gu'] as const) {
+    it(`${lang}: publishing a draft location (still English) says the English network line`, async () => {
+      connect({ publishNode: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) }, lang);
+      useStore.setState({ nodes: [{ id: 'N-1', parentId: null, name: 'Tower A', kind: 'zone', order: 0, draft: true }] } as never);
+      s().publishNode('N-1');
       await settles(() => s().toast === 'Could not reach the server — please try again.');
     });
   }
