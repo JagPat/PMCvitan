@@ -12,6 +12,8 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * or PMC) closes it; every transition is a CAS committed with its events, so a
  * concurrent loser gets a deterministic 409.
  */
+const SITE_ROLES = ['engineer', 'contractor', 'consultant'] as const;
+
 describe('decision change-control (integration)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
@@ -32,6 +34,13 @@ describe('decision change-control (integration)', () => {
     // grant them one so live authorization admits them in their token role
     await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: f.ownerUser.id, role: 'engineer', status: 'active' } });
     await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: f.strangerUser.id, role: 'client', status: 'active' } });
+    // #482 QA: one ACTIVE member per site role, so live project authorization admits each
+    // token and a 403 on /change comes from the decision.change role guard, not from access
+    for (const role of SITE_ROLES) {
+      const id = `cc-${role}`;
+      await t.prisma.user.create({ data: { id, projectId: f.projectA.id, role, name: `CC ${role}`, email: `${id}@test.local` } });
+      await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: id, role, status: 'active' } });
+    }
   });
 
   afterAll(async () => {
@@ -62,6 +71,8 @@ describe('decision change-control (integration)', () => {
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_evidence_no_delete"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
     ]);
+    await t.prisma.membership.deleteMany({ where: { userId: { in: SITE_ROLES.map((r) => `cc-${r}`) } } });
+    await t.prisma.user.deleteMany({ where: { id: { in: SITE_ROLES.map((r) => `cc-${r}`) } } });
     await f?.cleanup();
     await t?.close();
   });
@@ -180,8 +191,11 @@ describe('decision change-control (integration)', () => {
   it('#482 QA (15 Oct 2026): the engineer, contractor and consultant cannot request a change — 403, nothing opens', async () => {
     const id = await issueDecision('Kitchen shutters');
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
-    for (const role of ['engineer', 'contractor', 'consultant'] as const) {
-      const token = t.issueProjectToken(f.ownerUser.id, f.projectA.id, role);
+    for (const role of SITE_ROLES) {
+      const token = t.issueProjectToken(`cc-${role}`, f.projectA.id, role);
+      // the member is admitted to the project (a read succeeds) …
+      expect((await http().get(`/projects/${f.projectA.id}/decisions`).set('Authorization', `Bearer ${token}`)).status, role).toBe(200);
+      // … and refused only the change request
       const res = await as(token)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'x', costImpact: 0, timeImpactDays: 0 });
       expect(res.status, role).toBe(403);
     }
