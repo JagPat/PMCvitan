@@ -151,9 +151,9 @@ export class DecisionsController {
     return this.decisions.resolveStrandedCountersign(projectId, decisionId, body, user, idempotencyKey);
   }
 
-  /** Raise a change request against a decision — PMC, client, contractor, or the site
-   *  engineer (the engineer's Decision Log UI exposes this, and the service records
-   *  `actor: user.role`, so all four are legitimate change requesters). */
+  /** Raise a change request against a decision — the client or the PMC only (#903).
+   *  The engineer, contractor and consultant are refused here by `decision.change`, and
+   *  the Decision Log hides the action for them; the service records `actor: user.role`. */
   @Post(':decisionId/change')
   @RolesFor('decision.change')
   change(

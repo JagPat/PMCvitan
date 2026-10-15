@@ -358,11 +358,11 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
   it('withdrawChange LEAVES the consultation-open set: the queued consultation requests are cancelled, and a late answer is refused', async () => {
     const did = await issue();
     expect((await post(clientToken)(`${base()}/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
-    expect((await post(engToken)(`${base()}/${did}/change`, { reason: 'Wrong finish', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    expect((await post(pmcToken)(`${base()}/${did}/change`, { reason: 'Wrong finish', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
     expect((await ask(did)).status).toBe(201);
     const c = await t.prisma.decisionConsultation.findFirstOrThrow({ where: { decisionId: did } });
     const requestDelivery = await pushDelivery(did, 'decision.consultation_requested');
-    const w = await post(engToken)(`${base()}/${did}/change/withdraw`, {});
+    const w = await post(pmcToken)(`${base()}/${did}/change/withdraw`, {});
     expect(w.status, w.text).toBe(201);
     expect(await deliveryRow(requestDelivery.id)).toMatchObject({ status: 'succeeded', deliveryAction: 'noop' });
     const ev = await t.prisma.domainEvent.findFirstOrThrow({ where: { entityId: did, eventType: 'decision.change_withdrawn' } });
@@ -379,7 +379,7 @@ describe('4d-ii-a / A7b — the send boundary: the pre-send hook, the row-locked
   it('withdrawChange REFUSES a countersign rejection (409 naming re-approval) and leaves the decision in change', async () => {
     const did = await issue();
     expect((await post(clientToken)(`${base()}/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
-    expect((await post(engToken)(`${base()}/${did}/change`, { reason: 'Disagree', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    expect((await post(pmcToken)(`${base()}/${did}/change`, { reason: 'Disagree', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
     const open = await t.prisma.changeRequest.findFirstOrThrow({ where: { decisionId: did, status: 'open' } });
     const head = await t.prisma.decisionApprovalRevision.findFirstOrThrow({ where: { decisionId: did }, orderBy: { version: 'desc' } });
     // the origin and the revision it answers are FROZEN by 4d-i's evidence seal; the disagreement

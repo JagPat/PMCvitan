@@ -51,9 +51,9 @@ different projects.
 |---|---|---|
 | **pmc** | Architect / PMC | Everything on the project: issue drawings, approve/reject inspections, approve decisions, edit project details, manage the team & companies, archive/restore. (Org owners/admins operate as this.) |
 | **client** | Owner / client | Approve & lock decisions, raise change requests, view drawings & health. |
-| **engineer** | Site engineer | Submit inspection checklists, submit the daily log, start/complete activities, acknowledge drawings, raise change requests. |
-| **contractor** | Contractor | Acknowledge drawings, raise change requests, read-only elsewhere. |
-| **consultant** | Discipline consultant (architect / structural / MEP / **plumbing** / **lighting** / HVAC / …) | Read-mostly reviewer: view the drawings, decision register, Site Map & project health; raise a change request to flag a conflict in their discipline. Does **not** approve decisions or issue drawings. Carries a **discipline** label (see below). |
+| **engineer** | Site engineer | Submit inspection checklists, submit the daily log, start/complete activities, acknowledge drawings. Cannot reopen an approved decision; raises concerns with the PMC or client (#482 QA, 15 Oct 2026). |
+| **contractor** | Contractor | Acknowledge drawings, read-only elsewhere. Cannot reopen an approved decision; raises concerns with the PMC or client. |
+| **consultant** | Discipline consultant (architect / structural / MEP / **plumbing** / **lighting** / HVAC / …) | Read-mostly reviewer: view the drawings, decision register, Site Map & project health. Flags a conflict in their discipline to the PMC or client, who can request the change; does **not** approve decisions, request changes or issue drawings. Carries a **discipline** label (see below). |
 | **worker** | Site labour (QR job card) | No login account — a device token from the site QR; can only tap-photo / job-card actions. Cannot perform any of the gated project mutations. |
 
 ### Consultants: one role, many disciplines
