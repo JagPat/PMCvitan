@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import type { Role } from '@vitan/shared';
 
 const NODES = [
@@ -125,4 +125,44 @@ describe('#482 site photos: "Add site photo" on the Dashboard', () => {
     const r = render(<DashboardScreen />);
     expect(r.queryByTestId('add-site-photo')).toBeNull();
   });
+
+  it('waits while the day\'s log is being sent, as the Daily Log does', async () => {
+    const { useStore } = await loadApiMode('engineer');
+    useStore.setState({ outbox: [{ t: 'submitDailyLog' }] } as never);
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    expect((r.getByTestId('add-site-photo') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('uploads without a place when the chosen place is gone, rather than sending its old id', async () => {
+    const { useStore } = await loadApiMode('contractor');
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'new', url: 'http://api.test/new.jpg' });
+    useStore.getState()._setGateway({ uploadMedia } as never);
+    useStore.setState({ online: true } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    fireEvent.change(r.getByTestId('add-site-photo-place'), { target: { value: 'r1' } });
+    act(() => useStore.setState({ nodes: NODES.filter((n) => n.id !== 'r1') as never }));
+    expect((r.getByTestId('add-site-photo-place') as HTMLSelectElement).value).toBe('');
+    fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
+    expect(uploadMedia.mock.calls[0][0].nodeId).toBeUndefined();
+  });
+
+  it('adds the photo once when a refresh already brought it in before the upload reply', async () => {
+    const { useStore } = await loadApiMode('pmc');
+    let reply: (v: { id: string; url: string }) => void = () => {};
+    const uploadMedia = vi.fn().mockReturnValue(new Promise((res) => { reply = res; }));
+    useStore.getState()._setGateway({ uploadMedia } as never);
+    useStore.setState({ online: true } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
+    act(() => useStore.setState({ photos: [{ id: 'new', url: 'http://api.test/new.jpg', kind: 'progress' }] }));
+    await act(async () => reply({ id: 'new', url: 'http://api.test/new.jpg' }));
+    expect(useStore.getState().photos.map((p) => p.id)).toEqual(['new']);
+    expect(r.getAllByAltText(/^Site photo \d+$/)).toHaveLength(1);
+  });
 });
+

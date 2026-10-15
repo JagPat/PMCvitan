@@ -5473,6 +5473,8 @@ export const useStore = create<Store>()(
           .then((res) => {
             if (!scopeStillCurrent(scope)) return;
             set((s) => {
+              // a refresh that landed first (the upload's own invalidation) already holds this photo
+              if (s.photos.some((p) => p.id === res.id)) return;
               s.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}) });
               // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
               if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;

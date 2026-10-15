@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { pathOf } from '@/lib/locationTree';
 import { pickProgressPhoto } from '@/lib/pickProgressPhoto';
+import { dailyLogSendPending } from '@/store/dailyLogPending';
 import { Camera } from '@/lib/icons';
 import { can, sitePhotoLabels as L } from '@vitan/shared';
 
@@ -14,6 +15,8 @@ export function AddSitePhoto() {
   const role = useStore((s) => s.role);
   const lang = useStore((s) => s.lang);
   const nodes = useStore(useShallow((s) => s.nodes));
+  // as on the Daily Log: while the day's log is being sent, a photo would miss the count that send froze
+  const sending = useStore(dailyLogSendPending);
   const fileRef = useRef<HTMLInputElement>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
   if (!can('media.upload', role)) return null;
@@ -22,6 +25,8 @@ export function AddSitePhoto() {
     .filter((n) => !n.draft)
     .map((n) => ({ id: n.id, label: pathOf(nodes, n.id).join(' › ') }))
     .sort((a, b) => a.label.localeCompare(b.label));
+  // a place removed or unpublished since it was chosen falls back to no place, so the photo still uploads
+  const placeId = places.some((p) => p.id === nodeId) ? nodeId : null;
 
   return (
     <div data-guide="add-site-photo" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -34,13 +39,14 @@ export function AddSitePhoto() {
         data-testid="add-site-photo-file"
         style={{ display: 'none' }}
         onChange={(e) => {
-          pickProgressPhoto(e.target.files?.[0], nodeId);
+          pickProgressPhoto(e.target.files?.[0], placeId);
           e.target.value = '';
         }}
       />
       <button
         type="button"
         onClick={() => fileRef.current?.click()}
+        disabled={sending}
         data-testid="add-site-photo"
         style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
       >
@@ -50,7 +56,7 @@ export function AddSitePhoto() {
         <select
           aria-label={L.place[lang]}
           data-testid="add-site-photo-place"
-          value={nodeId ?? ''}
+          value={placeId ?? ''}
           onChange={(e) => setNodeId(e.target.value || null)}
           style={{ height: 44, maxWidth: '100%', padding: '0 10px', borderRadius: 9, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)' }}
         >
