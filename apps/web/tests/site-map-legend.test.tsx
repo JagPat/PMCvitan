@@ -14,7 +14,7 @@ const NODES: ProjectNode[] = [
 const decision = (id: string, status: Decision['status']) =>
   ({ id, title: id, room: '', nodeId: 'kit', status, options: [] }) as unknown as Decision;
 
-async function load(role: 'pmc' | 'client' | 'contractor' | 'architect') {
+async function load(role: 'pmc' | 'client' | 'contractor' | 'engineer' | 'consultant' | 'architect') {
   vi.stubEnv('VITE_API_URL', 'http://api.test');
   vi.resetModules();
   const { useStore, getInitialState } = await import('@/store/store');
