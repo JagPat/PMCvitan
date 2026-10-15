@@ -4,6 +4,7 @@ import { useStore } from '@/store/store';
 import { Button, Modal, InheritedContext } from '@/components';
 import { Minus } from '@/lib/icons';
 import { locationLabelFor, inheritsLocation, type CaptureContext } from '@/lib/captureContext';
+import { issueChecklistLabels as L, issueChecklistText as T } from '@vitan/shared';
 
 /**
  * PMC issues a field checklist.
@@ -21,6 +22,7 @@ import { locationLabelFor, inheritsLocation, type CaptureContext } from '@/lib/c
 export function IssueChecklistModal({ context, onClose }: { context?: CaptureContext; onClose: () => void }) {
   const issueChecklist = useStore((s) => s.issueChecklist);
   const nodes = useStore(useShallow((s) => s.nodes));
+  const lang = useStore((s) => s.lang);
   const inherited = inheritsLocation(context);
   const [title, setTitle] = useState('');
   const [nodeId, setNodeId] = useState<string | null>(context?.nodeId ?? null);
@@ -49,24 +51,24 @@ export function IssueChecklistModal({ context, onClose }: { context?: CaptureCon
   return (
     <Modal onClose={onClose} maxWidth={460} labelledBy="new-chk-title">
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
-        <div id="new-chk-title" style={{ fontWeight: 700, fontSize: 17 }}>Issue checklist</div>
+        <div id="new-chk-title" style={{ fontWeight: 700, fontSize: 17 }}>{L.title[lang]}</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          The site engineer fills this in the field with photos, then submits it back here for your review.
+          {L.intro[lang]}
         </div>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (e.g. Waterproofing — 2nd coat)" style={{ ...fld, marginTop: 14, width: '100%' }} data-testid="chk-title" />
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={L.titlePlaceholder[lang]} style={{ ...fld, marginTop: 14, width: '100%' }} data-testid="chk-title" />
 
         <div style={{ marginTop: 12 }}>
           <InheritedContext value={nodeId} onChange={setNodeId} inherited={inherited} idPrefix="chk-loc" testId="chk-place" />
         </div>
 
-        <div style={sectionLabel}>CHECKLIST ITEMS</div>
+        <div style={sectionLabel}>{L.items[lang]}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {items.map((it, i) => (
             <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--faint)', width: 18, flex: 'none' }}>{i + 1}</span>
-              <input value={it} onChange={(e) => setItem(i, e.target.value)} placeholder="Item to verify on site" style={{ ...fld, flex: 1 }} data-testid={`chk-item-${i}`} />
+              <input value={it} onChange={(e) => setItem(i, e.target.value)} placeholder={L.itemPlaceholder[lang]} style={{ ...fld, flex: 1 }} data-testid={`chk-item-${i}`} />
               {items.length > 1 && (
-                <button onClick={() => removeItem(i)} aria-label={`Remove item ${i + 1}`} style={{ minWidth: 44, minHeight: 44, flex: 'none', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }} data-testid={`chk-item-${i}-remove`}>
+                <button onClick={() => removeItem(i)} aria-label={T.removeItem(i + 1, lang)} style={{ minWidth: 44, minHeight: 44, flex: 'none', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }} data-testid={`chk-item-${i}-remove`}>
                   <Minus size={16} />
                 </button>
               )}
@@ -75,13 +77,13 @@ export function IssueChecklistModal({ context, onClose }: { context?: CaptureCon
         </div>
         {items.length < 20 && (
           <button onClick={addItem} style={{ marginTop: 10, minHeight: 44, background: 'transparent', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, cursor: 'pointer', color: 'var(--muted)', width: '100%' }} data-testid="chk-add-item">
-            + Add item
+            {L.addItem[lang]}
           </button>
         )}
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
-          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-checklist" data-guide="issue-checklist" style={{ flex: 1, padding: 12 }}>Issue to engineer</Button>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>{L.cancel[lang]}</Button>
+          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-checklist" data-guide="issue-checklist" style={{ flex: 1, padding: 12 }}>{L.issue[lang]}</Button>
         </div>
       </div>
     </Modal>

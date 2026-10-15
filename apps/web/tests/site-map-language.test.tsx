@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import {
-  createMenuLabels, locationDeleteText, photoTakenAtIn, placeToastText, siteMapText,
+  createMenuLabels, issueDecisionLabels, locationDeleteText, photoTakenAtIn, placeToastText, siteMapText,
   type Activity, type Decision, type Drawing, type Lang, type Material, type Phase, type Photo, type PlacedInspection, type ProjectNode,
 } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
@@ -229,6 +229,29 @@ describe.each(['hi', 'gu'] as const)('the Site Map in %s, Codex review of #922',
     }
     expect(photoTakenAtIn('28 Feb 2026 · 9:12 AM', lang)).not.toMatch(/[A-Za-z]/);
   });
+
+  it('the inspection and decision forms the Add menu opens show no English', async () => {
+    const members = [{ name: 'Ravi Shah', role: 'contractor', status: 'active', membershipId: 'mem-1' }];
+    await load(lang, { routeItem: 'kit', members });
+    const { IssueChecklistModal } = await import('@/screens/modals/IssueChecklistModal');
+    const chk = render(<IssueChecklistModal onClose={() => {}} />);
+    fireEvent.click(chk.getByTestId('chk-add-item'));
+    expect(chk.getByTestId('chk-item-1-remove')).toBeTruthy();
+    expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+    cleanup();
+
+    const { IssueDecisionModal } = await import('@/screens/modals/IssueDecisionModal');
+    const dec = render(<IssueDecisionModal onClose={() => {}} />);
+    fireEvent.click(dec.getByText(issueDecisionLabels.addOption[lang]));
+    fireEvent.click(dec.getByTestId('dec-opt-0-more').querySelector('button')!);
+    fireEvent.change(dec.getByTestId('dec-opt-0-delta'), { target: { value: '12.50' } });
+    expect(dec.getByTestId('dec-opt-0-delta-error')).toBeTruthy();
+    fireEvent.change(dec.getByTestId('dec-decider-kind'), { target: { value: 'member' } });
+    expect(leftoverEnglish(document.body, [...DATA, 'Ravi Shah'])).toEqual([]);
+    fireEvent.change(dec.getByTestId('dec-decider-kind'), { target: { value: 'none' } });
+    expect(dec.getByTestId('dec-record-note')).toBeTruthy();
+    expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+  });
 });
 
 describe('the Site Map in English is unchanged', () => {
@@ -252,6 +275,19 @@ describe('the Site Map in English is unchanged', () => {
     expect(kit.r.getByTestId('place-section-decisions').textContent).toContain('APPROVED & LOCKED');
     fireEvent.click(kit.r.getByTestId('place-add'));
     expect(kit.r.getByTestId('create-inspection').textContent).toContain('Check something here');
+    cleanup();
+    const { IssueChecklistModal } = await import('@/screens/modals/IssueChecklistModal');
+    const chk = render(<IssueChecklistModal onClose={() => {}} />);
+    expect(chk.getByText('Issue checklist')).toBeTruthy();
+    expect(chk.getByTestId('save-checklist').textContent).toBe('Issue to engineer');
+    cleanup();
+    const { IssueDecisionModal } = await import('@/screens/modals/IssueDecisionModal');
+    const dec = render(<IssueDecisionModal onClose={() => {}} />);
+    expect(document.getElementById('issue-dec-title')?.nextElementSibling?.textContent).toBe(
+      "What is being decided, and between which options. A price delta, a swatch and a sample photo sit under each option's More details. Save as draft to keep working privately, or Publish to send it to the client to choose.",
+    );
+    expect(dec.getByTestId('save-decision').textContent).toBe('Publish to client');
+    expect(dec.getByTestId('dec-decider-kind').textContent).toBe('The clientThe practice (PMC)A named memberNobody — record only');
   });
 
   it('keeps its lines', () => {
