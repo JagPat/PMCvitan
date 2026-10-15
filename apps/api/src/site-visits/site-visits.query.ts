@@ -109,19 +109,37 @@ export class SiteVisitsQueryService {
 
   /**
    * A page of the project's visits, newest start first. `before` names the last visit of the previous page, so
-   * every visit stays reachable however many the project has.
+   * every visit stays reachable however many the project has. `status: 'open'` keeps only the visits still open.
    */
-  async list(projectId: string, page: { before?: string; limit?: number } = {}): Promise<SiteVisitDto[]> {
+  async list(projectId: string, page: { before?: string; limit?: number; status?: 'open' } = {}): Promise<SiteVisitDto[]> {
+    // The page boundary is the anchor's place in the order (start, then id), not the anchor row itself: under
+    // `status: 'open'` the anchor may have ended since the previous page, and a cursor on a row the filter now
+    // drops would return an empty page, hiding the older open visits.
+    let boundary: { startedAt: Date; id: string } | undefined;
     if (page.before !== undefined) {
-      const anchor = await this.prisma.siteVisit.findFirst({ where: { projectId, id: page.before }, select: { id: true } });
+      const anchor = await this.prisma.siteVisit.findFirst({
+        where: { projectId, id: page.before },
+        select: { id: true, startedAt: true },
+      });
       if (!anchor) throw new NotFoundException('Site visit not found');
+      boundary = anchor;
     }
     const rows = await this.prisma.siteVisit.findMany({
-      where: { projectId },
+      where: {
+        projectId,
+        ...(page.status ? { status: page.status } : {}),
+        ...(boundary
+          ? {
+              OR: [
+                { startedAt: { lt: boundary.startedAt } },
+                { startedAt: boundary.startedAt, id: { lt: boundary.id } },
+              ],
+            }
+          : {}),
+      },
       include: withChildren,
       orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
       take: page.limit ?? 50,
-      ...(page.before !== undefined ? { cursor: { id: page.before }, skip: 1 } : {}),
     });
     return rows.map(toSiteVisitDto);
   }
