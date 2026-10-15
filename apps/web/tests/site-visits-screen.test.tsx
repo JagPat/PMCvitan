@@ -4,7 +4,7 @@ import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { refreshSiteVisits, uuidV4, VISIT_PAGE, withQueued } from '@/lib/useSiteVisits';
-import type { ApiGateway, ApiSnapshot, SiteVisit } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, SiteVisit } from '@/data/apiGateway';
 import { leftoverEnglish } from './leftover-english';
 
 /**
@@ -725,7 +725,7 @@ describe('the queue of site visit acts', () => {
     useStore.getState()._setGateway({ project: useStore.getState().activeProjectId } as unknown as ApiGateway);
     useStore.getState().queueSiteVisitAct(end, 'saved');
     const project = useStore.getState().activeProjectId;
-    expect(JSON.parse(localStorage.getItem(`vitan.outbox.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
+    expect(JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
     // another dev persona on the same project does not get it
     useStore.setState({ sessionUserId: 'u-b' });
     useStore.getState().hydrateOutbox();
@@ -763,8 +763,25 @@ describe('the queue of site visit acts', () => {
     useStore.setState((s) => ({ activeProjectId: 'p-b', projectScopeGeneration: s.projectScopeGeneration + 1 }));
     ended(open);
     await flushed;
-    const kept = JSON.parse(localStorage.getItem(`vitan.outbox.dev:${PMC}.p-a`) ?? '[]') as { t: string; visitId: string }[];
+    const kept = JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:${PMC}.p-a`) ?? '[]') as { t: string; visitId: string }[];
     expect(kept).toEqual([expect.objectContaining({ t: 'siteVisitAddAttendee', visitId: 'v-open' })]);
+    localStorage.clear();
+  });
+
+  it('is kept apart from the outbox an older bundle reads, so it never replays an act it has no case for (Codex 4278991737)', () => {
+    useStore.setState({ ...getInitialState(), sessionToken: null, sessionUserId: 'u-a', online: false });
+    useStore.getState()._setGateway({ project: useStore.getState().activeProjectId } as unknown as ApiGateway);
+    const project = useStore.getState().activeProjectId;
+    const other: OutboxOp = { t: 'changeWithdraw', decisionId: 'd-1', idempotencyKey: 'k-w' };
+    useStore.setState({ outbox: [other] });
+    useStore.getState().queueSiteVisitAct(end, 'saved');
+    // the outbox key an older bundle reads holds no site visit act
+    expect(JSON.parse(localStorage.getItem(`vitan.outbox.dev:u-a.${project}`) ?? '[]')).toEqual([other]);
+    expect(JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
+    // a reload reads both back
+    useStore.setState({ outbox: [] });
+    useStore.getState().hydrateOutbox();
+    expect(useStore.getState().outbox).toEqual([other, end]);
     localStorage.clear();
   });
 });

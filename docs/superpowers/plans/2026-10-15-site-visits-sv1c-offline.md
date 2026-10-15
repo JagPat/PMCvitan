@@ -20,7 +20,11 @@ word is in English, Hindi and Gujarati.
    answer or a passing fault (no status, 401, 408, 429, 5xx) keeps the op, and the next send uses the same key and
    body, so the server runs it once. A definite refusal drops it. Unit 1's in-memory act map is gone. The outbox
    is what makes an act the same act, so a read that shows a row can no longer settle an act it should not
-   (#905, retire).
+   (#905, retire). On the phone the site visit acts are stored under a key of their own
+   (`vitan.siteVisitQueue.<user>.<project>`), not the outbox's: a bundle from before them (a rollback, an old tab)
+   reads only the outbox key and has no replay case for them, so it would drop one as sent. The store merges the
+   two lists on load; a site visit act never waits on another kind of op, so only the order within each list
+   matters.
 2. **In order, so a remove waits for its add.** The outbox replays in the order the acts were made and stops at
    the first one that cannot be sent yet. So a remove queued after its add never reaches the server first (F53).
 3. **A start refused because a visit is already open keeps its acts (F53).** The visitor may have started a visit

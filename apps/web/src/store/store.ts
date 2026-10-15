@@ -2220,9 +2220,15 @@ export const useStore = create<Store>()(
       }
       return `vitan.outbox.${sub}.${get().activeProjectId}`;
     };
+    /** Site Visits (#792): site visit acts are kept under a key of their own, beside the outbox's, so a bundle from
+     *  before them (a rollback, an old tab) never reads one: its replay has no case for them and would drop them as
+     *  sent (Codex 4278991737). The two lists are each in the order made; a site visit act never waits on another op. */
+    const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
     const persistOutbox = (): void => {
       try {
-        globalThis.localStorage?.setItem(outboxKey(), JSON.stringify(get().outbox));
+        const storage = globalThis.localStorage;
+        storage?.setItem(outboxKey(), JSON.stringify(get().outbox.filter((o) => !isSiteVisitOp(o))));
+        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(get().outbox.filter(isSiteVisitOp)));
       } catch {
         /* storage unavailable — the in-session outbox still works */
       }
@@ -5600,6 +5606,7 @@ export const useStore = create<Store>()(
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
+      const takenVisits = ops.filter(isSiteVisitOp).length;
       if (ops.length === 0) return { ran: true, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] };
       // gate round-2 finding 2: the flush is about to change the durable truth
       // (confirmed uploads delete rows, terminal failures dead-letter them) — any
@@ -5767,13 +5774,15 @@ export const useStore = create<Store>()(
         try {
           const storage = globalThis.localStorage;
           if (storage) {
-            const stored: unknown = JSON.parse(storage.getItem(flushKey) ?? '[]');
-            // the flushed ops were the stored queue's prefix — drop the replayed part
+            // each stored list holds its kind of the flushed ops as its prefix — drop the replayed part
+            const keep = (key: string, rest: OutboxOp[], took: number, after: (l: OutboxOp[]) => OutboxOp[]) => {
+              const stored: unknown = JSON.parse(storage.getItem(key) ?? '[]');
+              const leftover = Array.isArray(stored) && stored.length >= took ? [...rest, ...after(stored.slice(took) as OutboxOp[])] : rest;
+              storage.setItem(key, JSON.stringify(leftover));
+            };
+            keep(flushKey, remaining.filter((o) => !isSiteVisitOp(o)), taken - takenVisits, (l) => l);
             // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
-            const leftover = Array.isArray(stored) && stored.length >= taken
-              ? [...remaining, ...remapVisits(stored.slice(taken) as OutboxOp[])]
-              : remaining;
-            storage.setItem(flushKey, JSON.stringify(leftover));
+            keep(siteVisitKeyOf(flushKey), remaining.filter(isSiteVisitOp), takenVisits, remapVisits);
           }
         } catch {
           /* storage unavailable — the persisted queue simply keeps its pre-flush state */
@@ -5937,10 +5946,18 @@ export const useStore = create<Store>()(
           // migration: there is no legacy key to derive one from, and inventing an identity for a
           // command whose exactly-once guarantee rests on it would be worse than dropping it.
           const commercialNorm = normalizeCommercialOutbox(labourNorm.ops);
-          const ops = commercialNorm.ops;
           const changed = materialsNorm.changed || labourNorm.changed || commercialNorm.changed;
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable
-          if (changed) storage.setItem(outboxKey(), JSON.stringify(ops));
+          if (changed) storage.setItem(outboxKey(), JSON.stringify(commercialNorm.ops));
+          // the site visit acts, from their own key (malformed → none)
+          let visitOps: OutboxOp[] = [];
+          try {
+            const rawVisits: unknown = JSON.parse(storage.getItem(siteVisitKeyOf(outboxKey())) ?? '[]');
+            visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => o && isSiteVisitOp(o)) : [];
+          } catch {
+            visitOps = [];
+          }
+          const ops = [...commercialNorm.ops.filter((o) => !isSiteVisitOp(o)), ...visitOps];
           // #669 — the engineer's unsent daily-log work for THIS scope comes back with its queue, so a
           // reload (or a return to this project) keeps the day where they left it; the next apply lays
           // it over the server's log (or drops it if that log has moved on). Malformed → none.
