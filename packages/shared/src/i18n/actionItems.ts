@@ -24,8 +24,9 @@ export interface ActionItemFacts {
   title?: string;
   items?: number;
   zone?: string;
-  /** pmc-reinspections: the names the detail lists (data) and the next civil due day (YYYY-MM-DD) */
+  /** pmc-reinspections: the names the detail lists (data), their open issues and the next civil due day (YYYY-MM-DD) */
   names?: string;
+  issues?: number;
   due?: string;
   /** pmc-override-expiry: when the first override lapses (ISO instant), its activity (data), how many lapse */
   expiresAt?: string;
@@ -161,9 +162,11 @@ function translated(key: string, f: ActionItemFacts, detail: string | undefined,
     }
     case 'pmc-reinspections': {
       const due = f.due ? (hi ? `अगली तारीख ${civilDay(f.due, lang)}` : `આગલી તારીખ ${civilDay(f.due, lang)}`) : '';
+      const k = f.issues;
+      const issues = typeof k !== 'number' ? '' : hi ? `${k} खुली ${k === 1 ? 'समस्या' : 'समस्याएँ'}` : `${k} ખુલ્લી ${k === 1 ? 'સમસ્યા' : 'સમસ્યાઓ'}`;
       return {
         title: hi ? `${n} दोबारा निरीक्षण इंजीनियर के पास` : `${n} ફરી નિરીક્ષણ ઇજનેર પાસે`,
-        detail: [f.names ?? '', due].filter(Boolean).join(' · '),
+        detail: [issues, f.names ?? '', due].filter(Boolean).join(' · '),
       };
     }
     case 'pmc-drawing-gate':
