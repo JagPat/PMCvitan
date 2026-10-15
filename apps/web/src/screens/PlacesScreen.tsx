@@ -20,15 +20,14 @@ import { plannedWindow } from '@/lib/activityDates';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus, Lock } from '@/lib/icons';
 import { placeCountWords, type PlaceCountOptions, type PlaceCountWord } from '@/lib/placeCountWords';
 import { childrenOf, trailOf, placeContents, demoSiteMapInspections, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
-import { can, SNAPSHOT_SITE_PHOTO_LIMIT, type Photo, type PlacedInspection, type ScreenKey, type SwatchKey } from '@vitan/shared';
+import {
+  can, navLabels, SNAPSHOT_SITE_PHOTO_LIMIT, siteMapLabels as L, siteMapText as T, placeSectionLabels as SEC, placeKindTag, drawingRelationLabels,
+  placeInspectionStatusLabels, spaceStatusLabels, photoTakenAtIn,
+  type Lang, type Photo, type PlacedInspection, type ScreenKey, type SwatchKey,
+} from '@vitan/shared';
 import styles from './responsive.module.css';
 
-const KIND_LABEL: Record<string, string> = { zone: 'ZONE', room: 'ROOM', element: 'OBJECT' };
-const RELATION_META: Record<DrawingRelation, { label: string; color: string }> = {
-  here: { label: 'Here', color: 'var(--accent)' },
-  inherited: { label: 'Inherited', color: 'var(--muted)' },
-  detail: { label: 'Detail', color: 'var(--muted)' },
-};
+const RELATION_COLOR: Record<DrawingRelation, string> = { here: 'var(--accent)', inherited: 'var(--muted)', detail: 'var(--muted)' };
 
 /**
  * Site Map — the location spine's payoff. Browse the project by place (zone → room →
@@ -111,6 +110,7 @@ export function PlacesScreen() {
   const [creating, setCreating] = useState(false);
   const [creatingKind, setCreatingKind] = useState<CreateKind | null>(null);
   const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   const activeProjectId = useStore((s) => s.activeProjectId);
   // a role with nothing it may author is never offered the button, rather than being
   // offered one and refused
@@ -120,7 +120,7 @@ export function PlacesScreen() {
   const selValid = sel === null || nodes.some((n) => n.id === sel);
   const active = selValid ? sel : null;
 
-  const trail = useMemo(() => [{ id: null as string | null, name: 'Whole project' }, ...trailOf(nodes, active)], [nodes, active]);
+  const trail = useMemo(() => [{ id: null as string | null, name: L.wholeProject[lang] }, ...trailOf(nodes, active)], [nodes, active, lang]);
   const children = useMemo(() => childrenOf(nodes, active), [nodes, active]);
   const contents = useMemo(
     () => placeContents(active, nodes, decisions, drawings, photos, activities, materials, inspections),
@@ -137,8 +137,8 @@ export function PlacesScreen() {
   // sees inspections and their read has settled), else that its work is blocked
   const treeFlag = (id: string): string | null => {
     const open = countsFor(id).openIssues ?? 0;
-    if (canSeeInspections && inspectionsKnown && open > 0) return `${open} open ${open === 1 ? 'issue' : 'issues'}`;
-    if (activityRead === 'known' && spaceStatus(nodes, activities, phases, id).state === 'blocked') return 'Blocked';
+    if (canSeeInspections && inspectionsKnown && open > 0) return T.count('openIssues', open, lang);
+    if (activityRead === 'known' && spaceStatus(nodes, activities, phases, id).state === 'blocked') return spaceStatusLabels.blocked[lang];
     return null;
   };
   const countOpts: PlaceCountOptions = {
@@ -160,19 +160,19 @@ export function PlacesScreen() {
   // then deliveries and photos. Each row opens its own record; a later kind of record is one more entry.
   const recordSections: PlaceRecordSection[] = [
     ...(canSeeInspections ? [{
-      key: 'inspections', icon: <CircleCheck size={13} />, title: 'Inspections', count: contents.inspections.length,
-      sub: "quality checks here",
+      key: 'inspections', icon: <CircleCheck size={13} />, title: SEC.inspections.title[lang], count: contents.inspections.length,
+      sub: SEC.inspections.sub[lang],
       body: (
           contents.inspections.length === 0 ? (
-            <PlaceRecordsEmpty>No inspections here yet.</PlaceRecordsEmpty>
+            <PlaceRecordsEmpty>{SEC.inspections.empty[lang]}</PlaceRecordsEmpty>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
               {issuesFirst(contents.inspections).map((i) => {
-                const st = inspectionStatus(i);
+                const st = inspectionStatus(i, lang);
                 const screen = inspectionScreens[i.id];
                 const RowTag = screen ? 'button' : 'div';
                 return (
-                  <RowTag key={i.id} data-testid={`place-inspection-${i.id}`} style={screen ? rowCard : { ...rowCard, cursor: 'default' }} {...(screen ? { onClick: () => openItem(screen, i.id, { nodeId: sel }), 'aria-label': `Open inspection ${i.id}` } : {})}>
+                  <RowTag key={i.id} data-testid={`place-inspection-${i.id}`} style={screen ? rowCard : { ...rowCard, cursor: 'default' }} {...(screen ? { onClick: () => openItem(screen, i.id, { nodeId: sel }), 'aria-label': T.openInspection(i.id, lang) } : {})}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{i.id}</span>
@@ -181,7 +181,7 @@ export function PlacesScreen() {
                     </div>
                     {(i.openIssues ?? 0) > 0 && (
                       <span data-testid={`place-inspection-issues-${i.id}`} style={{ ...countPill, ...alertTone, fontSize: 12 }}>
-                        {i.openIssues} open {i.openIssues === 1 ? 'issue' : 'issues'}
+                        {T.count('openIssues', i.openIssues ?? 0, lang)}
                       </span>
                     )}
                     <span style={{ ...relChip, color: st.color, borderColor: st.color }}>{st.label}</span>
@@ -193,15 +193,15 @@ export function PlacesScreen() {
       ),
     }] : []),
     {
-      key: 'decisions', icon: <MapPin size={13} />, title: 'Decisions', count: contents.decisions.length,
-      sub: "choices recorded here",
+      key: 'decisions', icon: <MapPin size={13} />, title: SEC.decisions.title[lang], count: contents.decisions.length,
+      sub: SEC.decisions.sub[lang],
       body: (
         contents.decisions.length === 0 ? (
-          <PlaceRecordsEmpty>No decisions recorded here yet.</PlaceRecordsEmpty>
+          <PlaceRecordsEmpty>{SEC.decisions.empty[lang]}</PlaceRecordsEmpty>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
             {contents.decisions.map((d) => (
-              <button key={d.id} data-testid={`place-decision-${d.id}`} style={rowCard} onClick={() => openItem(decisionScreens[d.id] ?? 'decision-log', d.id, { nodeId: sel })} aria-label={`Open decision ${d.id}`} aria-describedby={d.status === 'approved' ? `place-decision-lock-${d.id}` : undefined}>
+              <button key={d.id} data-testid={`place-decision-${d.id}`} style={rowCard} onClick={() => openItem(decisionScreens[d.id] ?? 'decision-log', d.id, { nodeId: sel })} aria-label={T.openDecision(d.id, lang)} aria-describedby={d.status === 'approved' ? `place-decision-lock-${d.id}` : undefined}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{d.id}</span>
@@ -211,11 +211,11 @@ export function PlacesScreen() {
                   {/* #633 unit B — a locked record says why, and the way to change it (its record offers "Request change") */}
                   {d.status === 'approved' && (
                     <div id={`place-decision-lock-${d.id}`} data-testid={`place-decision-lock-${d.id}`} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--green-text)', marginTop: 3 }}>
-                      <Lock size={12} style={{ flex: 'none' }} /><span>{canRequestChange ? 'Locked after approval. Open it to request a change.' : 'Locked after approval.'}</span>
+                      <Lock size={12} style={{ flex: 'none' }} /><span>{canRequestChange ? L.lockedRequest[lang] : L.locked[lang]}</span>
                     </div>
                   )}
                 </div>
-                <DecisionChip status={d.status} />
+                <DecisionChip status={d.status} lang={lang} />
               </button>
             ))}
           </div>
@@ -223,14 +223,14 @@ export function PlacesScreen() {
       ),
     },
     {
-      key: 'work', icon: <Hammer size={13} />, title: 'Work', count: contents.activities.length,
-      sub: "site activities here",
+      key: 'work', icon: <Hammer size={13} />, title: SEC.work.title[lang], count: contents.activities.length,
+      sub: SEC.work.sub[lang],
       body: (
         contents.activities.length === 0 ? (
           <PlaceRecordsEmpty>
             {activityRead === 'unavailable'
-              ? 'The activities could not be loaded — open Schedule to retry.'
-              : activityRead === 'loading' ? 'Loading the activities…' : 'No activities planned here yet.'}
+              ? L.activitiesUnavailable[lang]
+              : activityRead === 'loading' ? L.activitiesLoading[lang] : SEC.work.empty[lang]}
           </PlaceRecordsEmpty>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
@@ -245,14 +245,14 @@ export function PlacesScreen() {
                       <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name}</span>
                     </div>
                     <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }} data-testid={`place-activity-plan-${a.id}`}>
-                      {phase ? phase.name : 'Unphased'} · Plan {plannedWindow(a)}
+                      {phase ? phase.name : L.unphased[lang]} · {L.plan[lang]} {plannedWindow(a, lang)}
                     </div>
                     {a.block && <div style={{ fontSize: 11.5, color: 'var(--red-solid)', marginTop: 2 }}>{a.block}</div>}
                   </div>
-                  <ActivityChip status={a.status} />
+                  <ActivityChip status={a.status} lang={lang} />
                   {canOpenSchedule && (
-                    <Button variant="light" onClick={() => openActivity(a.id, { nodeId: sel })} data-testid={`place-activity-open-${a.id}`} aria-label={`View ${a.name} in the schedule`} style={{ padding: '8px 11px', fontSize: 12 }}>
-                      View in schedule
+                    <Button variant="light" onClick={() => openActivity(a.id, { nodeId: sel })} data-testid={`place-activity-open-${a.id}`} aria-label={T.viewInScheduleAria(a.name, lang)} style={{ padding: '8px 11px', fontSize: 12 }}>
+                      {L.viewInSchedule[lang]}
                     </Button>
                   )}
                 </div>
@@ -263,16 +263,16 @@ export function PlacesScreen() {
       ),
     },
     {
-      key: 'drawings', icon: <FileText size={13} />, title: 'Drawings', count: contents.drawings.length,
-      sub: "what governs this place",
+      key: 'drawings', icon: <FileText size={13} />, title: SEC.drawings.title[lang], count: contents.drawings.length,
+      sub: SEC.drawings.sub[lang],
       body: (
         contents.drawings.length === 0 ? (
-          <PlaceRecordsEmpty>No drawings apply here yet.</PlaceRecordsEmpty>
+          <PlaceRecordsEmpty>{SEC.drawings.empty[lang]}</PlaceRecordsEmpty>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {contents.drawings.map(({ drawing, relation }) => {
               const cur = drawing.current;
-              const rm = RELATION_META[relation];
+              const rm = { label: drawingRelationLabels[relation][lang], color: RELATION_COLOR[relation] };
               return (
                 <button key={drawing.id} onClick={() => openDrawing(drawing.id, { nodeId: sel })} data-testid={`place-drawing-${drawing.number}`} style={rowCard}>
                   <div style={{ width: 38, height: 48, flex: 'none', borderRadius: 5, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -281,7 +281,7 @@ export function PlacesScreen() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 12 }}>{drawing.number}</span>
-                      {cur && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700, color: 'var(--accent)' }}>Rev {cur.rev}</span>}
+                      {cur && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700, color: 'var(--accent)' }}>{L.rev[lang]} {cur.rev}</span>}
                       <span style={{ ...relChip, color: rm.color, borderColor: rm.color }}>{rm.label}</span>
                     </div>
                     <div style={{ fontWeight: 600, fontSize: 13.5, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{drawing.title}</div>
@@ -295,11 +295,11 @@ export function PlacesScreen() {
       ),
     },
     {
-      key: 'materials', icon: <Blocks size={13} />, title: 'Materials', count: contents.materials.length,
-      sub: "delivered to this place",
+      key: 'materials', icon: <Blocks size={13} />, title: SEC.materials.title[lang], count: contents.materials.length,
+      sub: SEC.materials.sub[lang],
       body: (
         contents.materials.length === 0 ? (
-          <PlaceRecordsEmpty>No materials delivered here yet.</PlaceRecordsEmpty>
+          <PlaceRecordsEmpty>{SEC.materials.empty[lang]}</PlaceRecordsEmpty>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
             {contents.materials.map((m) => (
@@ -309,7 +309,7 @@ export function PlacesScreen() {
                   <div style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</div>
                   <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{m.qty}</div>
                 </div>
-                {!m.matched && <span style={{ ...relChip, color: 'var(--red-solid)', borderColor: 'var(--red-solid)' }}>Mismatch</span>}
+                {!m.matched && <span style={{ ...relChip, color: 'var(--red-solid)', borderColor: 'var(--red-solid)' }}>{L.mismatch[lang]}</span>}
               </div>
             ))}
           </div>
@@ -317,15 +317,15 @@ export function PlacesScreen() {
       ),
     },
     {
-      key: 'photos', icon: <Camera size={13} />, title: 'Reality', count: contents.photos.length,
-      sub: photosCapped ? `among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} photos on record` : "photos of what's built",
+      key: 'photos', icon: <Camera size={13} />, title: SEC.photos.title[lang], count: contents.photos.length,
+      sub: photosCapped ? T.photosCappedSub(SNAPSHOT_SITE_PHOTO_LIMIT, lang) : SEC.photos.sub[lang],
       body: (
         contents.photos.length === 0 ? (
-          <PlaceRecordsEmpty>{photosCapped ? `No photos filed here among the latest ${SNAPSHOT_SITE_PHOTO_LIMIT} on record.` : 'No photos filed here yet.'}</PlaceRecordsEmpty>
+          <PlaceRecordsEmpty>{photosCapped ? T.photosCappedEmpty(SNAPSHOT_SITE_PHOTO_LIMIT, lang) : SEC.photos.empty[lang]}</PlaceRecordsEmpty>
         ) : (
           <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
             {contents.photos.map((p, i) => (
-              <button key={p.id ?? i} onClick={() => setZoom(p.url)} data-testid="place-photo" aria-label={`Open site photo ${i + 1} of ${contents.photos.length}`} style={{ flex: 'none', width: 82, height: 82, borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+              <button key={p.id ?? i} onClick={() => setZoom(p.url)} data-testid="place-photo" aria-label={T.openPhoto(i + 1, contents.photos.length, lang)} style={{ flex: 'none', width: 82, height: 82, borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
                 <img src={p.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </button>
             ))}
@@ -337,20 +337,18 @@ export function PlacesScreen() {
 
   return (
     <div className={`${styles.screen} ${styles.wide}`}>
-      <Eyebrow>SITE MAP · BY LOCATION</Eyebrow>
-      <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em', marginTop: 4 }}>Site Map</div>
+      <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+      <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em', marginTop: 4 }}>{navLabels.places[lang]}</div>
       <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, maxWidth: 560 }}>
-        Walk the building by zone, room and object. Each place shows its decisions, the drawings that govern it, and photos of what&apos;s actually built — intent and reality on one coordinate.
+        {L.intro[lang]}
       </div>
 
       {nothingYet ? (
         <div style={{ marginTop: 34, textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '30px 16px', border: '1px dashed var(--hairline)', borderRadius: 14 }}>
           <LayoutGrid size={26} color="#b8b2a6" />
-          <div style={{ marginTop: 10, fontWeight: 600, color: 'var(--ink)' }}>No locations yet</div>
+          <div style={{ marginTop: 10, fontWeight: 600, color: 'var(--ink)' }}>{L.noLocations[lang]}</div>
           <div style={{ marginTop: 4 }}>
-            {canManagePlaces
-              ? 'Start with a zone — a floor, a wing or the site itself — then add its rooms and objects here.'
-              : 'Your PMC sets up the zones, rooms and objects. Decisions, drawings and photos are then filed to them.'}
+            {canManagePlaces ? L.noLocationsManage[lang] : L.noLocationsView[lang]}
           </div>
           <div style={{ marginTop: 16, display: 'flex', justifyContent: 'center' }}>
             <PlaceStructure active={undefined} depth={0} />
@@ -361,14 +359,14 @@ export function PlacesScreen() {
           {canCreateHere && (
             <div style={{ marginTop: 16 }}>
               <Button variant="ink" onClick={() => setCreating(true)} data-testid="place-add-empty" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 14px', fontSize: 13 }}>
-                <Plus size={15} /> Add here
+                <Plus size={15} /> {L.addHere[lang]}
               </Button>
             </div>
           )}
         </div>
       ) : (
         <div className={treeCss.layout}>
-          <SiteMapTree nodes={nodes} active={active} onSelect={setSel} flag={treeFlag} />
+          <SiteMapTree nodes={nodes} active={active} onSelect={setSel} flag={treeFlag} lang={lang} />
           <div className={treeCss.main}>
             {/* breadcrumb — click any crumb to jump up */}
             <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 3, margin: '18px 0 14px', fontSize: 13 }} data-testid="place-breadcrumb">
@@ -390,7 +388,7 @@ export function PlacesScreen() {
             </div>
 
             {/* #633 (mockup 7) — what this place holds, in words, open issues first */}
-            {active && <CountWords words={placeCountWords(total, countOpts)} testId="place-counts-here" pills />}
+            {active && <CountWords words={placeCountWords(total, countOpts, lang)} testId="place-counts-here" pills />}
 
             {/* Build the tree HERE (audit B3): the PMC adds, renames and deletes locations at the
                 place they are standing on */}
@@ -403,17 +401,17 @@ export function PlacesScreen() {
             {canCreateHere && (
               <div style={{ marginBottom: 18 }}>
                 <Button variant="ink" onClick={() => setCreating(true)} data-testid="place-add" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 14px', fontSize: 13 }}>
-                  <Plus size={15} /> Add here
+                  <Plus size={15} /> {L.addHere[lang]}
                 </Button>
               </div>
             )}
 
             {/* #633 unit B — what the status colours below mean, in words */}
-            <SiteMapLegend />
+            <SiteMapLegend lang={lang} />
 
             {/* drill-down: child zones/rooms/objects with per-place counts — "Places inside" (mockup 7) */}
             {children.length > 0 && (
-              <h2 data-testid="place-children-title" style={{ fontSize: 17, fontWeight: 700, margin: '0 0 10px' }}>Places inside</h2>
+              <h2 data-testid="place-children-title" style={{ fontSize: 17, fontWeight: 700, margin: '0 0 10px' }}>{L.placesInside[lang]}</h2>
             )}
             {children.length > 0 && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, marginBottom: 22 }}>
@@ -422,21 +420,21 @@ export function PlacesScreen() {
                   const st = spaceStatus(nodes, activities, phases, n.id);
                   return (
                     <button key={n.id} onClick={() => setSel(n.id)} data-testid={`place-node-${n.id}`} style={nodeCard}>
-                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.12em', color: 'var(--faint)' }}>{KIND_LABEL[n.kind] ?? n.kind.toUpperCase()}</div>
+                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.12em', color: 'var(--faint)' }}>{placeKindTag(n.kind, lang)}</div>
                       <div style={{ fontWeight: 600, fontSize: 14.5, marginTop: 3, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
                         <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.name}</span>
                         <ChevronRight size={15} color="#b8b2a6" style={{ flex: 'none' }} />
                       </div>
-                      <CountWords words={placeCountWords(c, countOpts)} testId={`place-counts-${n.id}`} />
+                      <CountWords words={placeCountWords(c, countOpts, lang)} testId={`place-counts-${n.id}`} />
                       {/* B8 — where this space stands, derived from its work (never a stored flag) */}
                       {activityRead !== 'known' ? (
                         <div data-testid={`place-status-${n.id}`} data-state={activityRead} style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
-                          {activityRead === 'unavailable' ? 'Status unavailable — the activities could not be loaded' : 'Loading status…'}
+                          {activityRead === 'unavailable' ? L.statusUnavailable[lang] : L.statusLoading[lang]}
                         </div>
                       ) : st.state !== 'none' && (
                         <div data-testid={`place-status-${n.id}`} data-state={st.state} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11, color: 'var(--muted)', flexWrap: 'wrap' }}>
-                          <span style={{ ...statusChip, ...STATUS_TONE[st.state] }}>{STATUS_LABEL[st.state]}</span>
-                          <span>{[st.phase, `${st.done}/${st.total} done`, st.blocked ? `${st.blocked} blocked` : null].filter(Boolean).join(' · ')}</span>
+                          <span style={{ ...statusChip, ...STATUS_TONE[st.state] }}>{spaceStatusLabels[st.state][lang]}</span>
+                          <span>{[st.phase, T.doneOf(st.done, st.total, lang), st.blocked ? T.blocked(st.blocked, lang) : null].filter(Boolean).join(' · ')}</span>
                         </div>
                       )}
                     </button>
@@ -453,12 +451,14 @@ export function PlacesScreen() {
                 photos={contents.photos}
                 onOpenDrawing={() => openDrawing(contents.drawings[0].drawing.id, { nodeId: sel })}
                 onZoom={setZoom}
+                lang={lang}
               />
             )}
 
             <PlaceWorkRecords
-              where={activeNode ? `At ${activeNode.name}${children.length ? ' and the places inside it' : ''}` : 'Across the whole project'}
+              where={activeNode ? T.at(activeNode.name, children.length > 0, lang) : L.acrossProject[lang]}
               sections={recordSections}
+              lang={lang}
             />
           </div>
         </div>
@@ -467,7 +467,7 @@ export function PlacesScreen() {
       {zoom && <PhotoViewer url={zoom} onClose={() => setZoom(null)} />}
       {creating && (
         <CreateMenu
-          title="Add here"
+          title={L.addHere[lang]}
           subtitle={trail[trail.length - 1]?.name}
           onPick={(kind) => { setCreating(false); setCreatingKind(kind); }}
           onClose={() => setCreating(false)}
@@ -495,34 +495,36 @@ export function IntentReality({
   photos,
   onOpenDrawing,
   onZoom,
+  lang = 'en',
 }: {
   placed: PlacedDrawing;
   photos: Photo[];
   onOpenDrawing: () => void;
   onZoom: (url: string) => void;
+  lang?: Lang;
 }) {
   const { drawing, relation } = placed;
   const cur = drawing.current;
   const acks = cur?.acks ?? [];
   const ackLine = !cur
-    ? 'No current revision'
+    ? L.noRevision[lang]
     : acks.length > 0
-      ? `Building to Rev ${cur.rev} · ${acks.length} acknowledged`
-      : `Rev ${cur.rev} · not yet acknowledged`;
+      ? T.buildingTo(cur.rev, acks.length, lang)
+      : T.notAcknowledged(cur.rev, lang);
   const hero = photos[0];
   const heroStamp = stampText(hero?.takenAt);
-  const rm = RELATION_META[relation];
+  const rm = { label: drawingRelationLabels[relation][lang], color: RELATION_COLOR[relation] };
 
   return (
     <div data-testid="intent-reality" style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 14, padding: 14, marginBottom: 22 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
-        <span style={{ fontWeight: 700, fontSize: 14.5 }}>Intent vs Reality</span>
-        <span style={{ fontSize: 11.5, color: 'var(--faint)', marginLeft: 'auto' }}>drawn vs built</span>
+        <span style={{ fontWeight: 700, fontSize: 14.5 }}>{L.intentReality[lang]}</span>
+        <span style={{ fontSize: 11.5, color: 'var(--faint)', marginLeft: 'auto' }}>{L.drawnVsBuilt[lang]}</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 12, alignItems: 'stretch' }}>
         {/* Intent — the drawing */}
         <button onClick={onOpenDrawing} data-testid="ir-drawing" style={{ ...irCard, minWidth: 44, textAlign: 'left' }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.14em', color: 'var(--faint)', marginBottom: 6 }}>INTENT · DRAWN</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.14em', color: 'var(--faint)', marginBottom: 6 }}>{L.intentDrawn[lang]}</div>
           <div style={{ width: '100%', aspectRatio: '3 / 4', maxHeight: 210, borderRadius: 8, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {!cur && <FileText size={22} color="#b8b2a6" />}
           </div>
@@ -537,24 +539,24 @@ export function IntentReality({
         </button>
 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--faint)' }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em' }}>VS</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em' }}>{L.versus[lang]}</span>
         </div>
 
         {/* Reality — the photos */}
         <div style={{ ...irCard }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.14em', color: 'var(--faint)', marginBottom: 6 }}>REALITY · BUILT</div>
-          <button onClick={() => hero && onZoom(hero.url)} disabled={!hero} aria-label={hero ? 'Open the latest site photo' : 'No site photo yet'} data-testid="ir-photo" style={{ width: '100%', aspectRatio: '3 / 4', maxHeight: 210, borderRadius: 8, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.14em', color: 'var(--faint)', marginBottom: 6 }}>{L.realityBuilt[lang]}</div>
+          <button onClick={() => hero && onZoom(hero.url)} disabled={!hero} aria-label={hero ? L.latestPhoto[lang] : L.noPhotoYet[lang]} data-testid="ir-photo" style={{ width: '100%', aspectRatio: '3 / 4', maxHeight: 210, borderRadius: 8, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
             {hero && <img src={hero.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
             {photos.slice(1, 4).map((p, i) => (
-              <button key={p.id} onClick={() => onZoom(p.url)} aria-label={`Open earlier site photo ${i + 1}`} style={{ width: 44, height: 44, borderRadius: 6, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+              <button key={p.id} onClick={() => onZoom(p.url)} aria-label={T.openEarlierPhoto(i + 1, lang)} style={{ width: 44, height: 44, borderRadius: 6, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
                 <img src={p.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </button>
             ))}
             {photos.length > 4 && <span style={{ fontSize: 11, color: 'var(--faint)' }}>+{photos.length - 4}</span>}
           </div>
-          {heroStamp && <div data-testid="ir-photo-stamp" style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Latest · {heroStamp}</div>}
+          {heroStamp && <div data-testid="ir-photo-stamp" style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>{L.latest[lang]} · {photoTakenAtIn(heroStamp, lang)}</div>}
         </div>
       </div>
     </div>
@@ -590,18 +592,12 @@ function issuesFirst(list: PlacedInspection[]): PlacedInspection[] {
 }
 
 /** A placed inspection's Site-Map status: open → in review → passed/failed. */
-function inspectionStatus(i: PlacedInspection): { label: string; color: string } {
-  if (!i.submitted) return { label: 'Open', color: 'var(--muted)' };
-  if (!i.decided) return { label: 'In review', color: 'var(--amber-text)' };
-  return i.failedItems > 0 ? { label: 'Failed', color: 'var(--red-solid)' } : { label: 'Passed', color: 'var(--green-solid)' };
+function inspectionStatus(i: PlacedInspection, lang: Lang): { label: string; color: string } {
+  const W = placeInspectionStatusLabels;
+  if (!i.submitted) return { label: W.open[lang], color: 'var(--muted)' };
+  if (!i.decided) return { label: W.inReview[lang], color: 'var(--amber-text)' };
+  return i.failedItems > 0 ? { label: W.failed[lang], color: 'var(--red-solid)' } : { label: W.passed[lang], color: 'var(--green-solid)' };
 }
-
-const STATUS_LABEL: Record<Exclude<SpaceStatus['state'], 'none'>, string> = {
-  'not-started': 'Not started',
-  'in-progress': 'Under way',
-  blocked: 'Blocked',
-  done: 'Done',
-};
 const STATUS_TONE: Record<Exclude<SpaceStatus['state'], 'none'>, CSSProperties> = {
   'not-started': { background: 'rgba(35,33,28,.06)', color: 'var(--muted)' },
   'in-progress': { background: '#f6ead2', color: 'var(--amber-text)' },

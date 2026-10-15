@@ -1,4 +1,4 @@
-import type { NodeKind, ProjectNode } from '@vitan/shared';
+import { locationDeleteText, type Lang, type NodeKind, type ProjectNode } from '@vitan/shared';
 import { API_BASE, decisionsReadMode } from '@/data/apiGateway';
 import { projectDataUsable, type ProjectLoadState } from '@/store/projectScope';
 import { subtreeIds } from './locationTree';
@@ -24,18 +24,13 @@ export function visibleDecisionsUnder(nodes: ProjectNode[], nodeId: string, deci
 }
 
 /** What the server does when the location goes (`NodesService.remove`), stated as its rule. */
-export function describeLocationDelete(kind: NodeKind): string {
-  const kept = 'Activities, drawings, inspections, material deliveries and photos filed';
-  return kind === 'element'
-    ? `${kept} here are kept, but no longer filed to a location. If a decision is filed here, the server refuses and says why.`
-    : `Every room and object inside it is deleted too, including private drafts other people are preparing. ${kept} here or inside it are kept, but no longer filed to a location. If a decision is filed anywhere inside it, the server refuses and says why.`;
+export function describeLocationDelete(kind: NodeKind, lang: Lang = 'en'): string {
+  return locationDeleteText.describe(kind, lang);
 }
 
 /** Why the delete can't run, or null when nothing the viewer can see refuses it. */
-export function locationDeleteBlocked(visibleDecisions: number): string | null {
-  if (!visibleDecisions) return null;
-  const one = visibleDecisions === 1;
-  return `${visibleDecisions} ${one ? 'decision is' : 'decisions are'} filed here. Move or remove ${one ? 'it' : 'them'} in the Decision Log first.`;
+export function locationDeleteBlocked(visibleDecisions: number, lang: Lang = 'en'): string | null {
+  return visibleDecisions ? locationDeleteText.blocked(visibleDecisions, lang) : null;
 }
 
 type Load = 'idle' | 'loading' | 'ready' | 'error';
@@ -53,4 +48,4 @@ export function locationDeleteSettled(s: { projectLoadState: ProjectLoadState; d
 }
 
 /** Said, with only Close, while the decisions filed here are not known. */
-export const LOCATION_DELETE_UNSETTLED = "The decisions filed here haven't finished loading, so this delete can't be checked yet. Try again in a moment.";
+export const LOCATION_DELETE_UNSETTLED = locationDeleteText.unsettled.en;

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { siteMapLabels, type Lang } from '@vitan/shared';
 
 /** One kind of record the place holds: its rows (or an empty line) under a titled, counted heading. */
 export interface PlaceRecordSection {
@@ -16,10 +17,10 @@ export interface PlaceRecordSection {
  * section per kind of record, each row opening its own record. The screen decides which sections a
  * viewer gets and in what order; a later kind of record is one more entry in `sections`.
  */
-export function PlaceWorkRecords({ where, sections }: { where: string; sections: PlaceRecordSection[] }) {
+export function PlaceWorkRecords({ where, sections, lang = 'en' }: { where: string; sections: PlaceRecordSection[]; lang?: Lang }) {
   return (
     <section data-testid="place-work-records" aria-labelledby="place-work-records-title" style={{ marginTop: 4 }}>
-      <h2 id="place-work-records-title" style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>Work and records here</h2>
+      <h2 id="place-work-records-title" style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>{siteMapLabels.workRecords[lang]}</h2>
       <div data-testid="place-work-records-where" style={{ fontSize: 12.5, color: 'var(--muted)', margin: '2px 0 14px' }}>{where}</div>
       {sections.map((s) => (
         <div key={s.key} data-testid={`place-section-${s.key}`} style={{ marginBottom: 22 }}>

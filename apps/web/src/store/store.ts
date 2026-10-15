@@ -76,7 +76,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -5015,10 +5015,10 @@ export const useStore = create<Store>()(
     },
     renameNode: (nodeId, name) => {
       if (!gateway) {
-        get().flash('Managing locations needs the server.');
+        get().flash(LOC.needsServer[get().lang]);
         return;
       }
-      runRemote(() => gateway!.renameNode(nodeId, name), `Renamed to ${name}.`);
+      runRemote(() => gateway!.renameNode(nodeId, name), () => PLT.renamed(name, get().lang), undefined, () => DTX.unreachable[get().lang]);
     },
     publishNode: (nodeId) => {
       const node = get().nodes.find((n) => n.id === nodeId);
@@ -5041,10 +5041,10 @@ export const useStore = create<Store>()(
     },
     deleteNode: (nodeId) => {
       if (!gateway) {
-        get().flash('Managing locations needs the server.');
+        get().flash(LOC.needsServer[get().lang]);
         return;
       }
-      runRemote(() => gateway!.deleteNode(nodeId), 'Location removed.', (why) => `Couldn't delete this location — ${why}`);
+      runRemote(() => gateway!.deleteNode(nodeId), () => PLT.removed[get().lang], (why) => PLT.deleteRefused(why, get().lang), () => DTX.unreachable[get().lang]);
     },
     createActivity: (input) => {
       if (!gateway) {

@@ -40,6 +40,7 @@ export * from './contracts/brief';
 // i18n dictionaries
 export * from './i18n/dictionary';
 export * from './i18n/schedule';
+export * from './i18n/siteMap';
 export * from './i18n/notices';
 export * from './i18n/actionItems';
 export * from './i18n/drawings';
