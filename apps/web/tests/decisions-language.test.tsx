@@ -144,6 +144,14 @@ describe.each(['hi', 'gu'] as const)('the Decision Log in %s (#482 QA item 3)', 
     expect(leftoverEnglish(document.body, DATA)).toEqual([]);
   });
 
+  it('a place literally named "Unfiled" stays as recorded; only the register\'s own bucket is translated (Codex review of #928)', async () => {
+    const named = await load(lang, { decisions: [dec({ id: 'DL-10', title: 'Mirror', room: 'Unfiled' })] });
+    expect(named.r.getByTestId('group-head-loc:Unfiled').textContent).toContain('Unfiled');
+    cleanup();
+    const bucket = await load(lang, { decisions: [DECISIONS[5]!] });
+    expect(bucket.r.getByTestId('group-head-loc:Unfiled').textContent).not.toContain('Unfiled');
+  });
+
   it('an approval the PMC gave for the named decider reads the holder in the language (Codex review of #928)', async () => {
     const { r } = await load(lang, { decisions: [dec({ id: 'DL-1', title: 'Kitchen Counter', nodeId: 'kit', status: 'approved', ...approvedShape, onBehalfOf: 'member' })] });
     expect(r.getByTestId('log-row-DL-1').textContent).not.toContain('member');

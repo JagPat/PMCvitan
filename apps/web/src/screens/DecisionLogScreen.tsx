@@ -12,9 +12,9 @@ import { EmptyHint } from '@/guide/EmptyHint';
 import { Lock, Plus, ChevronRight } from '@/lib/icons';
 import {
   swatch as swatchGradient, decisionRail, can, decisionLogLabels as L, decisionGroupByLabels, decisionStatusWords, decisionLogText as T,
-  type Decision, type Lang,
+  type Decision, type Lang, type ProjectNode,
 } from '@vitan/shared';
-import { groupDecisions, locationSegments, type GroupBy } from '@/lib/locationTree';
+import { groupDecisions, locationSegments, pathOf, type DecisionGroup, type GroupBy } from '@/lib/locationTree';
 import styles from './responsive.module.css';
 
 const GROUP_OPTIONS: GroupBy[] = ['location', 'room', 'element', 'status', 'flat'];
@@ -36,16 +36,20 @@ const STATUS_FILTERS: { key: Decision['status'] }[] = [
   { key: 'awaiting_countersign' },
 ];
 
+/** A decision with no published place and no free-text room: `locationSegments` files it under "Unfiled". */
+const isUnfiled = (d: Decision, nodes: ProjectNode[]): boolean => !d.room && pathOf(nodes, d.nodeId).length === 0;
+
 /** A group heading in the viewer's language: a status, or a group the register itself names ("No room");
  *  a place is project data and is shown as recorded. English is the grouping's own label. */
-function groupLabel(g: { key: string; label: string }, groupBy: GroupBy, lang: Lang): string {
+function groupLabel(g: DecisionGroup, groupBy: GroupBy, nodes: ProjectNode[], lang: Lang): string {
   if (lang === 'en') return g.label;
   if (groupBy === 'status') return (decisionStatusWords as Record<string, { group: Record<Lang, string> } | undefined>)[g.key]?.group[lang] ?? g.label;
   if (g.key === 'room:~none') return L.noRoom[lang];
   if (g.key === 'el:~none') return L.noObject[lang];
   if (g.key === 'all') return L.allDecisions[lang];
-  // a decision filed nowhere, with no free-text room
-  if (g.label === 'Unfiled' && (g.key === 'loc:Unfiled' || g.key === 'room:Unfiled')) return L.unfiled[lang];
+  // the register's own bucket for decisions filed nowhere, with no free-text room; a place someone named
+  // "Unfiled" is project data and stays as recorded (Codex review of #928)
+  if (g.label === 'Unfiled' && g.rows.length > 0 && g.rows.every((r) => isUnfiled(r.decision, nodes))) return L.unfiled[lang];
   return g.label;
 }
 
@@ -257,7 +261,7 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
                   style={{ width: '100%', minHeight: 44, display: 'flex', alignItems: 'center', gap: 9, padding: '9px 4px', background: 'transparent', border: 'none', borderBottom: '1px solid var(--hairline)', cursor: 'pointer', textAlign: 'left', marginBottom: isCollapsed ? 0 : 12 }}
                 >
                   <ChevronRight size={15} style={{ transform: isCollapsed ? 'none' : 'rotate(90deg)', transition: 'transform .15s', color: 'var(--muted)' }} />
-                  <span style={{ fontWeight: 700, fontSize: 15 }}>{groupLabel(g, groupBy, lang)}</span>
+                  <span style={{ fontWeight: 700, fontSize: 15 }}>{groupLabel(g, groupBy, nodes, lang)}</span>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--faint)' }}>{g.counts.total}</span>
                   <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
                     {g.counts.pending > 0 && <RollupChip n={g.counts.pending} color="var(--amber-solid)" label={decisionStatusWords.pending.rollup[lang]} />}
@@ -306,6 +310,7 @@ function DecisionRowCard({ d, subLabel, lang, onChange, onWithdraw, onWithdrawDe
   // B6 — `/decisions/<id>` names this decision: it is brought into view and marked, and its id is
   // a real link, so the register entry can be bookmarked or shared.
   const focused = useStore((st) => st.routeItem === d.id);
+  const nodes = useStore(useShallow((st) => st.nodes));
   const setRouteItem = useStore((st) => st.setRouteItem);
   const openItem = useStore((st) => st.openItem);
   // the client's history sits inside their approval screen, where the item setter means the approval FOCUS
@@ -386,7 +391,7 @@ function DecisionRowCard({ d, subLabel, lang, onChange, onWithdraw, onWithdrawDe
                   `subLabel` (the finer location under the group header) stays the fallback for a
                   legacy free-text decision that never got a node. */}
               <div style={{ marginTop: 3 }}>
-                <LocationContext nodeId={d.nodeId} fallback={subLabel === 'Unfiled' && !d.room ? L.unfiled[lang] : subLabel || d.room} compact testId={`decision-place-${d.id}`} lang={lang} />
+                <LocationContext nodeId={d.nodeId} fallback={subLabel === 'Unfiled' && isUnfiled(d, nodes) ? L.unfiled[lang] : subLabel || d.room} compact testId={`decision-place-${d.id}`} lang={lang} />
               </div>
             </div>
             <DecisionChip status={d.status} lang={lang} />
