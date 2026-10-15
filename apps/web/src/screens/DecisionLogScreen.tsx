@@ -264,7 +264,7 @@ export function DecisionLogScreen({ variant = 'register' }: { variant?: 'registe
                       key={decision.id}
                       d={decision}
                       subLabel={subLabel}
-                      onChange={() => openChange(decision.id)}
+                      onChange={can('decision.change', role) ? () => openChange(decision.id) : undefined}
                       onWithdraw={mayWithdraw(decision) ? () => withdrawChange(decision.id) : undefined}
                       onWithdrawDecision={mayWithdrawDecision(decision) ? () => openWithdraw(decision.id) : undefined}
                     />
@@ -289,7 +289,7 @@ function RollupChip({ n, color, label }: { n: number; color: string; label: stri
 }
 
 /** One decision card — the register row, with its finer location shown as a caption. */
-function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision }: { d: Decision; subLabel: string; onChange: () => void; onWithdraw?: () => void; onWithdrawDecision?: () => void }) {
+function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision }: { d: Decision; subLabel: string; onChange?: () => void; onWithdraw?: () => void; onWithdrawDecision?: () => void }) {
   // B6 — `/decisions/<id>` names this decision: it is brought into view and marked, and its id is
   // a real link, so the register entry can be bookmarked or shared.
   const focused = useStore((st) => st.routeItem === d.id);
@@ -431,7 +431,7 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
               <EditState
                 state="locked"
                 reason="Locked after approval — the approved choice is the record."
-                action={{ label: 'Request change', onClick: onChange, testId: `request-change-${d.id}` }}
+                action={onChange ? { label: 'Request change', onClick: onChange, testId: `request-change-${d.id}` } : undefined}
                 testId={`edit-state-${d.id}`}
               />
             </div>
