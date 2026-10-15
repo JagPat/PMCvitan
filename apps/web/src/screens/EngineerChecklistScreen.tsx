@@ -30,10 +30,11 @@ function toggleStyle(active: boolean, solid: string, text: string): CSSPropertie
 }
 
 /** Rows for a failed item's note: enough to show all of it (about 36 characters a row on a phone card, plus
- *  every line break), at least two, at most eight — past that the box scrolls and can be dragged taller. */
-function noteRows(note: string): number {
+ *  every line break), at least two. While it is being written it stops at eight (past that the box scrolls
+ *  and can be dragged taller); a frozen note is only read, so it shows every row. */
+function noteRows(note: string, frozen: boolean): number {
   const rows = note.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / 36)), 0);
-  return Math.min(8, Math.max(2, rows));
+  return Math.max(2, frozen ? rows : Math.min(8, rows));
 }
 
 export function EngineerChecklistScreen() {
@@ -349,13 +350,16 @@ export function EngineerChecklistScreen() {
                         floor with real weight. The letter-spacing goes with the mono face. */}
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>{L.failNeeds[lang]}</div>
                     {/* #482 QA item 4 — a one-line input cut a long note off (and a frozen one could not even be
-                        scrolled), so the note wraps and grows with what was written. */}
+                        scrolled), so the note wraps and grows with what was written. A frozen note is read-only,
+                        not disabled, so it stays focusable and selectable (Codex 4278142781); `setNote` refuses
+                        a frozen checklist anyway. */}
                     <textarea
                       value={it.note}
                       onChange={(e) => setNote(i, e.target.value)}
-                      disabled={frozen}
+                      readOnly={frozen}
+                      aria-readonly={frozen || undefined}
                       placeholder={L.describe[lang]}
-                      rows={noteRows(it.note)}
+                      rows={noteRows(it.note, frozen)}
                       data-testid={`fail-note-${i}`}
                       style={{ display: 'block', width: '100%', marginTop: 7, padding: 0, border: 'none', background: 'transparent', fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.4, outline: 'none', color: 'var(--ink)', resize: 'vertical', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}
                     />

@@ -70,7 +70,24 @@ describe('#482 a failed checklist item shows its photo and its whole note', () =
     const note = view.getByTestId('fail-note-1') as HTMLTextAreaElement;
     expect(note.tagName).toBe('TEXTAREA');
     expect(note.value).toBe(LONG_NOTE);
-    expect(note.rows).toBeGreaterThan(1);
+    expect(note.rows).toBe(4);
+    // Codex 4278142781 — read-only, not disabled, so it can still be focused and scrolled
+    expect(note.disabled).toBe(false);
+    expect(note.readOnly).toBe(true);
+  });
+
+  it('a submitted note longer than eight rows shows every row', async () => {
+    const veryLong = Array.from({ length: 12 }, (_, k) => `Line ${k + 1} of the issue`).join('\n');
+    const view = await mount(checklist({ submitted: true, items: [{ id: 'i2', name: 'Cover blocks', state: 'fail', photos: 1, note: veryLong, evidence: [] }] }));
+    expect((view.getByTestId('fail-note-0') as HTMLTextAreaElement).rows).toBe(12);
+  });
+
+  it('a note being written stops growing at eight rows', async () => {
+    const veryLong = Array.from({ length: 12 }, (_, k) => `Line ${k + 1} of the issue`).join('\n');
+    const view = await mount(checklist({ items: [{ id: 'i2', name: 'Cover blocks', state: 'fail', photos: 1, note: veryLong, evidence: [] }] }));
+    const note = view.getByTestId('fail-note-0') as HTMLTextAreaElement;
+    expect(note.rows).toBe(8);
+    expect(note.readOnly).toBe(false);
   });
 
   it('an empty note still offers two lines to write in', async () => {
