@@ -1668,9 +1668,6 @@ export const useStore = create<Store>()(
       if (!row) return;
       recordDailyLogDraft(s, (d) => { d.crewRows = { ...(d.crewRows ?? {}), [String(idx)]: { trade: row.trade, count } }; });
     };
-    /** …one more progress photo taken for this log on this device. */
-    const recordDraftPhoto = (s: AppState): void =>
-      recordDailyLogDraft(s, (d) => { d.photosAdded = (d.photosAdded ?? 0) + 1; });
 
     const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null, activitiesResult?: ModuleActivities | null): void => {
       set((s) => {
@@ -1840,7 +1837,11 @@ export const useStore = create<Store>()(
                 // carried on the module read exactly as on the snapshot path
                 ...(core.id ? { id: core.id } : {}),
                 date: core.date, logDate: core.logDate, checkedIn: core.checkedIn, checkinTime: core.checkinTime,
-                submitted: core.submitted, progress: core.progress,
+                // the day's photo count is media's, like the photos below: the snapshot composes it from the
+                // photos the server holds (#482). The module's own number (the one a device sent) stands only
+                // when the snapshot's log cannot be shown to be this one.
+                submitted: core.submitted,
+                progress: core.id && snap.dailyLog?.id === core.id ? snap.dailyLog.progress : core.progress,
                 crew: core.crew.map((c) => ({ trade: c.trade, count: c.count })),
                 // the log before it (U1b): "Same as yesterday" reads it on either read path
                 ...(core.previous !== undefined
@@ -5412,12 +5413,11 @@ export const useStore = create<Store>()(
       persistDailyLogDraft();
     },
     addProgress: () => {
+      // on screen only: the day's photo count is the server's, from the photos it holds (#482)
       set((s) => {
         if (!s.dailyLog) return;
         s.dailyLog.progress += 1;
-        recordDraftPhoto(s);
       });
-      persistDailyLogDraft();
       get().record('Progress photo');
     },
     addProgressPhoto: (dataUrl, nodeId, stamp, pickedIn) => {
@@ -5450,14 +5450,14 @@ export const useStore = create<Store>()(
           set((s) => {
             s.outbox.push({ t: 'uploadMedia', input });
             s.syncQueue.push('Progress photo');
+            // on screen until the queued photo is sent: the day's count is the server's, from the photos
+            // it holds, so nothing of it is kept on this device (#482)
             if (s.dailyLog) {
               s.dailyLog.photos.unshift({ url: dataUrl });
               s.dailyLog.progress += 1;
-              recordDraftPhoto(s);
             }
           });
           persistOutbox();
-          persistDailyLogDraft();
           get().flash(DLT.photoOffline[get().lang]);
           return;
         }
@@ -5469,12 +5469,13 @@ export const useStore = create<Store>()(
           .then((res) => {
             if (!scopeStillCurrent(scope)) return;
             set((s) => {
-              if (!s.dailyLog) return;
+              // a refresh that landed first (the upload's own invalidation) already shows this photo, and
+              // its count, read from the photos the server holds, already includes it
+              if (!s.dailyLog || s.dailyLog.photos.some((p) => p.id === res.id)) return;
               s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
-              s.dailyLog.progress += 1;
-              recordDraftPhoto(s);
+              // until the next refresh: the photo is on today's record, so only today's log counts it
+              if (!s.dailyLog.logDate || s.dailyLog.logDate === todayCivil(s.timeZone)) s.dailyLog.progress += 1;
             });
-            persistDailyLogDraft();
             // say what the photo actually carried, not what the feature is called
             get().flash(
               hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang],
@@ -5492,7 +5493,6 @@ export const useStore = create<Store>()(
         if (s.dailyLog) {
           s.dailyLog.photos.unshift({ url: dataUrl, ...stamped });
           s.dailyLog.progress += 1;
-          recordDraftPhoto(s);
         }
         s.photos.unshift({
           id: `demo-photo-${s.photos.length + 1}`,
@@ -5502,7 +5502,6 @@ export const useStore = create<Store>()(
           ...stamped,
         });
       });
-      persistDailyLogDraft();
       get().record('Progress photo');
       if (!get().online) {
         get().flash(DLT.photoOffline[get().lang]);

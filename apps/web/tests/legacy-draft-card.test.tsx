@@ -46,11 +46,12 @@ describe('#692 — Today shows kept-aside work and adds it only on confirmation'
     const { useStore, r } = await loadToday();
     const card = r.getByTestId('legacy-draft');
     expect(card.textContent).toContain(L.title.en);
-    expect(r.getByTestId('legacy-draft-summary').textContent).toBe(`Checked in 9:05 AM · ${firstTrade} 4 · 1 photo`);
+    // its photo is on the server, in the day's count (#482), so the card does not offer to add it again
+    expect(r.getByTestId('legacy-draft-summary').textContent).toBe(`Checked in 9:05 AM · ${firstTrade} 4`);
     expect(useStore.getState().dailyLog).toMatchObject({ checkedIn: false, progress: 0 });
     fireEvent.click(r.getByTestId('legacy-draft-add'));
     expect(r.queryByTestId('legacy-draft')).toBeNull();
-    expect(useStore.getState().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '9:05 AM', progress: 1 });
+    expect(useStore.getState().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '9:05 AM', progress: 0 });
     expect(useStore.getState().dailyLog?.crew[0]?.count).toBe(4);
     expect(useStore.getState().dailyLogDraft).toMatchObject({ logId: 'log-b' });
   });

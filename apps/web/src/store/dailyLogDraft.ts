@@ -1,7 +1,7 @@
 import type { DailyLog } from '@vitan/shared';
 
 /**
- * The engineer's UNSENT work on the day's log — check-in, crew counts and the progress photos taken —
+ * The engineer's UNSENT work on the day's log — check-in and crew counts —
  * as a project- and log-scoped pending draft.
  *
  * Why this exists (the #669 Today regression, Field Lab QA 2026-09-30): the server persists check-in,
@@ -39,7 +39,9 @@ export type DailyLogDraft = {
    *  each with the trade it was set on: a free-text trade can never collide with another row's key,
    *  and a count is applied only where that position still holds that trade */
   crewRows?: Record<string, { trade: string; count: number }>;
-  /** progress photos taken for this log on this device, beyond what the server holds */
+  /** LEGACY (drafts written before #482's server-owned count): photos taken for this log on this device.
+   *  Still parsed, never written, shown or added to the log's count, which is the server's, from the
+   *  photos it holds. */
   photosAdded?: number;
   /** the engineer answered every crew question for this log (a no-crew day is an answer, not a gap) */
   crewConfirmed?: boolean;
@@ -80,12 +82,11 @@ export function draftHoldsWork(draft: DailyLogDraft): boolean {
   return !!draft.checkIn
     || (!!draft.crew && Object.keys(draft.crew).length > 0)
     || (!!draft.crewRows && Object.keys(draft.crewRows).length > 0)
-    || (draft.photosAdded ?? 0) > 0
     || !!draft.crewConfirmed;
 }
 
-/** What a legacy draft holds, for the engineer to recognise before choosing: the check-in, the crew
- *  counts it set (by trade, the latest per row) and the photos taken. */
+/** What a legacy draft holds, for the engineer to recognise before choosing: the check-in and the crew
+ *  counts it set (by trade, the latest per row). */
 export function legacyDraftSummary(draft: DailyLogDraft): { checkinTime: string | null; crew: { trade: string; count: number }[]; photos: number } {
   const crew = new Map<string, number>();
   for (const [trade, count] of Object.entries(draft.crew ?? {})) crew.set(trade, count);
@@ -93,7 +94,8 @@ export function legacyDraftSummary(draft: DailyLogDraft): { checkinTime: string 
   return {
     checkinTime: draft.checkIn?.checkedIn ? draft.checkIn.checkinTime : null,
     crew: [...crew].map(([trade, count]) => ({ trade, count })),
-    photos: draft.photosAdded ?? 0,
+    // the photos it counted are on the server, in the day's count, so adding the draft adds none (#482)
+    photos: 0,
   };
 }
 
@@ -121,8 +123,6 @@ export function adoptLegacyDraft(
   if (Object.keys(crew).length) out.crew = crew;
   const crewRows = { ...(legacy!.crewRows ?? {}), ...(mine?.crewRows ?? {}) };
   if (Object.keys(crewRows).length) out.crewRows = crewRows;
-  const photos = (legacy!.photosAdded ?? 0) + (mine?.photosAdded ?? 0);
-  if (photos) out.photosAdded = photos;
   if (mine?.crewConfirmed ?? legacy!.crewConfirmed) out.crewConfirmed = true;
   return out;
 }
@@ -147,7 +147,6 @@ export function legacyDraftExtras(legacy: DailyLogDraft, current: DailyLogDraft 
     }
   });
   if (Object.keys(rows).length) out.crewRows = rows;
-  if (legacy.photosAdded) out.photosAdded = legacy.photosAdded;
   return out;
 }
 
@@ -156,7 +155,8 @@ export function legacyDraftExtras(legacy: DailyLogDraft, current: DailyLogDraft 
  * draft that survives — `null` when the draft no longer applies (sent, superseded by a new day, or no
  * log) — and never touches the inputs. The server's own truth wins where it is stronger: a log the
  * server already holds as checked in stays checked in, and a trade the draft never touched keeps the
- * server's count. `progress` is the server's count plus the photos taken here since.
+ * server's count. `progress` is the server's alone: the day's photo count is read from the photos it
+ * holds, whoever added them (#482), so no device adds to it.
  */
 export function overlayDailyLogDraft(
   serverLog: DailyLog | null,
@@ -183,7 +183,6 @@ export function overlayDailyLogDraft(
       const first = serverLog.crew.findIndex((x) => x.trade === c.trade) === i;
       return first && kept.crew && Object.hasOwn(kept.crew, c.trade) ? { ...c, count: kept.crew[c.trade]! } : c;
     }),
-    progress: serverLog.progress + (kept.photosAdded ?? 0),
   };
   // a check-OUT recorded here after the server never saw the check-in: the engineer's latest word stands
   if (kept.checkIn && !kept.checkIn.checkedIn && !serverLog.checkedIn) {

@@ -45,19 +45,19 @@ function makeSnapshot(dailyLog: DailyLog | null, projectId = 'ambli'): ApiSnapsh
 const moduleRead = (log: DailyLog | null): ModuleDailyLog => ({ dailyLog: log ? asCore(log) : null, materials: [], source: 'live', generation: null });
 const totalWorkers = () => s().dailyLog?.crew.reduce((n, c) => n + c.count, 0) ?? 0;
 
-/** the engineer's morning on the Site screen: check in, one more Flooring mason, one progress photo */
+/** the engineer's morning on the Site screen: check in, one more Flooring mason. (The day's photo count
+ *  is the server's, read from the photos it holds, so a photo is no part of the device's draft: #482.) */
 function doTheMorning(): void {
   s().checkIn();
   s().crewStep(0, +1);
-  s().addProgress();
-  expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '8:12 AM', progress: 3 });
+  expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '8:12 AM', progress: 2 });
   expect(s().dailyLog?.crew[0]).toEqual({ trade: 'Flooring mason', count: 3 });
   // Today reads the same log: 3 of 4 done, Send is next
   expect(todayPath(s().dailyLog, totalWorkers(), '2026-07-03')).toMatchObject({ doneCount: 3, action: 'send' });
 }
 /** what the regression left on screen: the server's unsent log, the morning gone */
 function expectTheMorningKept(): void {
-  expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '8:12 AM', progress: 3, submitted: false });
+  expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '8:12 AM', progress: 2, submitted: false });
   expect(s().dailyLog?.crew[0]).toEqual({ trade: 'Flooring mason', count: 3 });
   expect(s().dailyLog?.crew[4]).toEqual({ trade: 'Helper / Beldar', count: 5 }); // a trade never touched keeps the server's count
   expect(todayPath(s().dailyLog, totalWorkers(), '2026-07-03')).toMatchObject({ doneCount: 3, action: 'send', canSend: true });
@@ -72,9 +72,10 @@ describe('#669 — the pending daily-log draft (pure rules)', () => {
     expect(dailyLogKey({ date: '03 Jul 2026' })).toBe('date:03 Jul 2026');
   });
 
-  it('lays check-in, crew (absolute, by trade) and the photos taken over the server’s unsent log', () => {
+  it('lays check-in and crew (absolute, by trade) over the server’s unsent log; the photo count stays the server’s', () => {
+    // a draft from before #482 still carries the photos it counted: they are on the server, in its count
     const r = overlayDailyLogDraft(serverLog(), draft({ checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crew: { 'Flooring mason': 3 }, photosAdded: 1 }), 'ambli');
-    expect(r.log).toMatchObject({ checkedIn: true, checkinTime: '8:12 AM', progress: 3 });
+    expect(r.log).toMatchObject({ checkedIn: true, checkinTime: '8:12 AM', progress: 2 });
     expect(r.log?.crew.map((c) => c.count)).toEqual([3, 1, 0, 2, 5]);
     expect(r.draft).not.toBeNull();
   });
@@ -144,7 +145,7 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     await settles(() => gw.addSiteMaterial.mock.calls.length === 1 && s().outbox.length === 0);
     await flush();
     expectTheMorningKept();
-    expect(s().dailyLogDraft).toEqual({ projectId: 'ambli', logKey: 'civil:2026-07-03', checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crewRows: { 0: { trade: 'Flooring mason', count: 3 } }, photosAdded: 1 });
+    expect(s().dailyLogDraft).toEqual({ projectId: 'ambli', logKey: 'civil:2026-07-03', checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crewRows: { 0: { trade: 'Flooring mason', count: 3 } } });
   });
 
   it('moduleQuery mode: the post-command module read keeps all three too (RED at c6cfec7)', async () => {
@@ -250,22 +251,47 @@ describe('#669 — the morning survives a reconcile (store)', () => {
       .toEqual({ 0: { trade: 'Mason', count: 3 } });
   });
 
-  it('a photo uploaded online is counted once, and a refresh right after it keeps the count', async () => {
+  it('a photo uploaded online is counted once, and a refresh right after it takes the server\'s count, which holds it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-07-03T06:30:00Z') });
+    try {
+      const gw = {
+        snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog())),
+        uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      };
+      s()._setGateway(gw as unknown as ApiGateway);
+      await s().requestFreshSnapshot();
+      await flush();
+      s().checkIn();
+      s().addProgressPhoto('data:image/jpeg;base64,AAAA');
+      await settles(() => s().dailyLog?.progress === 3);
+      // the upload's own `changed` broadcast refreshes the snapshot: the server counts the day's photos, the new one included
+      gw.snapshot.mockResolvedValue(makeSnapshot(serverLog({ progress: 3, photos: [{ id: 'm1', url: '/media/m1' }] })));
+      await s().requestFreshSnapshot();
+      await flush();
+      expect(s().dailyLog).toMatchObject({ checkedIn: true, progress: 3 });
+      expect(s().dailyLogDraft?.photosAdded).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a photo whose refresh landed before its upload reply is not counted again (#916 review)', async () => {
+    let reply: (v: { id: string; url: string }) => void = () => {};
     const gw = {
       snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog())),
-      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      uploadMedia: vi.fn().mockReturnValue(new Promise((res) => { reply = res; })),
     };
     s()._setGateway(gw as unknown as ApiGateway);
     await s().requestFreshSnapshot();
     await flush();
-    s().checkIn();
     s().addProgressPhoto('data:image/jpeg;base64,AAAA');
-    await settles(() => s().dailyLog?.progress === 3);
-    // the upload's own `changed` broadcast refreshes the snapshot — the server still says 2 unsent
+    gw.snapshot.mockResolvedValue(makeSnapshot(serverLog({ progress: 3, photos: [{ id: 'm1', url: '/media/m1' }] })));
     await s().requestFreshSnapshot();
     await flush();
-    expect(s().dailyLog).toMatchObject({ checkedIn: true, progress: 3 });
-    expect(s().dailyLogDraft?.photosAdded).toBe(1);
+    reply({ id: 'm1', url: '/media/m1' });
+    await flush();
+    expect(s().dailyLog?.progress).toBe(3);
+    expect(s().dailyLog?.photos.map((p) => p.id)).toEqual(['m1']);
   });
 
   it('a reload keeps the morning: the draft is persisted with the outbox and laid over the next read', async () => {
@@ -274,7 +300,7 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     await s().requestFreshSnapshot();
     await flush();
     doTheMorning();
-    expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.anon.ambli')).toContain('"photosAdded":1');
+    expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.anon.ambli')).toContain('"checkedIn":true');
 
     // a fresh boot: the store starts empty, hydrates its queue (and the draft) for this scope, then reads
     useStore.setState(getInitialState());
@@ -301,7 +327,7 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     await settles(() => gw.submitDailyLog.mock.calls.length === 1 && s().outbox.length === 0);
     await flush();
     // the send carried the morning's values — the only point where the server persists them
-    expect(gw.submitDailyLog.mock.calls[0][0]).toMatchObject({ checkedIn: true, checkinTime: '8:12 AM', progress: 3 });
+    expect(gw.submitDailyLog.mock.calls[0][0]).toMatchObject({ checkedIn: true, checkinTime: '8:12 AM', progress: 2 });
     expect(s().dailyLog).toMatchObject({ submitted: true, progress: 3, checkedIn: true });
     expect(s().dailyLogDraft).toBeNull();
     expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.anon.ambli')).toBeNull();
@@ -432,18 +458,17 @@ describe('#692 — a legacy draft (no log id) is kept aside and reused only on c
   it('confirmed, it is added to this unsent log of its day and bound to its id; this log\'s own work wins and nothing counts twice', () => {
     const log = serverLog({ id: 'log-b' });
     useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: log, legacyDailyLogDraft: legacyDraft({ crew: { Plumber: 4, 'Flooring mason': 9 } }) });
-    s().crewStep(0, 1); // this log's own word for Flooring mason (2 → 3), and one photo of its own
-    s().addProgress();
-    expect(s().dailyLog).toMatchObject({ progress: 3, checkedIn: false });
+    s().crewStep(0, 1); // this log's own word for Flooring mason (2 → 3)
     s().adoptLegacyDailyLogDraft();
     expect(s().legacyDailyLogDraft).toBeNull();
-    expect(s().dailyLogDraft).toMatchObject({ logId: 'log-b', checkIn: { checkedIn: true, checkinTime: '9:05 AM' }, photosAdded: 2 });
-    expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '9:05 AM', progress: 4 }); // 2 on the server + 1 here + 1 kept
+    expect(s().dailyLogDraft).toMatchObject({ logId: 'log-b', checkIn: { checkedIn: true, checkinTime: '9:05 AM' } });
+    expect(s().dailyLogDraft?.photosAdded).toBeUndefined(); // its photos are on the server, in the server's count
+    expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '9:05 AM', progress: 2 });
     expect(s().dailyLog?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
     expect(s().dailyLog?.crew.find((c) => c.trade === 'Flooring mason')?.count).toBe(3); // not the legacy 9
     // the next reconcile lays the adopted draft over the server's own log: the same result
     const again = overlayDailyLogDraft(log, s().dailyLogDraft, 'ambli');
-    expect(again.log).toMatchObject({ checkedIn: true, progress: 4 });
+    expect(again.log).toMatchObject({ checkedIn: true, progress: 2 });
     expect(again.log?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
     expect(again.log?.crew.find((c) => c.trade === 'Flooring mason')?.count).toBe(3);
   });
@@ -455,7 +480,7 @@ describe('#692 — a legacy draft (no log id) is kept aside and reused only on c
       legacyDailyLogDraft: legacyDraft() });
     s().adoptLegacyDailyLogDraft();
     expect(s().dailyLog?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
-    expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '9:05 AM', progress: 3 });
+    expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '9:05 AM', progress: 2 });
     expect(s().dailyLogDraft).toMatchObject({ logId: 'log-b', crew: { Plumber: 4 } });
   });
 
@@ -489,7 +514,7 @@ describe('#692 — a legacy draft (no log id) is kept aside and reused only on c
   it('discarded, it is gone from memory and from storage', () => {
     globalThis.localStorage?.clear();
     useStore.setState({ ...getInitialState(), activeProjectId: 'ambli', role: 'engineer', dailyLog: serverLog({ id: 'log-b' }), legacyDailyLogDraft: legacyDraft() });
-    s().addProgress(); // persists the slot
+    s().crewStep(0, 1); // persists the slot
     expect(globalThis.localStorage.getItem('vitan.dailyLogDraft.legacy.anon.ambli')).not.toBeNull();
     s().discardLegacyDailyLogDraft();
     expect(s().legacyDailyLogDraft).toBeNull();

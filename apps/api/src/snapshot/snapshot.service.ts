@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { toIsoCivilDate } from '../common/civil-date';
+import { addCivilDays, civilDayStartInstant, toIsoCivilDate } from '../common/civil-date';
 import { ActivitiesQueryService } from '../activities/activities.query';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
@@ -128,6 +128,23 @@ export class SnapshotService {
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
     ]);
 
+    // #482 site photos: the log's photo count has ONE owner, the photos this project holds. It is every
+    // progress photo of the log's civil day (on the site's calendar), whoever added it, the same photos
+    // this viewer's photo layer may show. A count kept on the engineer's device never saw a photo another
+    // member added, and the stored column stays only for a log without a civil day (#916 review).
+    const logDay = dailyLogSlice.dailyLog?.logDate ?? null;
+    const hidden = await hiddenNodes;
+    const dayPhotoCount = logDay
+      ? await this.prisma.media.count({
+          where: {
+            projectId,
+            kind: 'progress',
+            createdAt: { gte: civilDayStartInstant(logDay, project.timeZone), lt: civilDayStartInstant(addCivilDays(logDay, 1), project.timeZone) },
+            ...(hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {}),
+          },
+        })
+      : null;
+
     // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
     // a caller authorized to see this snapshot gets a token, and it expires quickly.
     // The daily-log gallery keeps the newest 12 progress photos, unchanged.
@@ -195,7 +212,9 @@ export class SnapshotService {
       phases: activitySlices.phases,
       // Task 10 — the daily-log core comes from the module query (byte-identical); the snapshot
       // composes the media-sourced progress photos onto it (media is not daily-log's to own).
-      dailyLog: dailyLogSlice.dailyLog ? { ...dailyLogSlice.dailyLog, photos: progressPhotos } : null,
+      dailyLog: dailyLogSlice.dailyLog
+        ? { ...dailyLogSlice.dailyLog, ...(dayPhotoCount !== null ? { progress: dayPhotoCount } : {}), photos: progressPhotos }
+        : null,
       // Top 10 #4b unit B — the notices this viewer is served, by the one shared definition
       // (`served-notifications.ts`: AUTH-02's pending strip, the decider audience, the pmc-only
       // withdrawal, kinded rendering against the slice read in the same snapshot, and the subject keys)
