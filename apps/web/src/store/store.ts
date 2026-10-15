@@ -76,6 +76,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
+import { SNAPSHOT_SITE_PHOTO_LIMIT } from '@vitan/shared';
 import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
@@ -5469,6 +5470,9 @@ export const useStore = create<Store>()(
           .then((res) => {
             if (!scopeStillCurrent(scope)) return;
             set((s) => {
+              s.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}) });
+              // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
+              if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
               if (!s.dailyLog) return;
               s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
               s.dailyLog.progress += 1;
