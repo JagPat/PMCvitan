@@ -94,6 +94,9 @@ export const drawingsLabels = {
     gu: 'તેને યોગ્ય સ્તરે મૂકો — ફ્લોર પ્લાન ઝોન પર, ડિટેલ વસ્તુ પર. નીચેના રૂમને તે આપમેળે મળે છે.',
   },
   cancel: { en: 'Cancel', hi: 'रद्द करें', gu: 'રદ કરો' },
+  /** the issue form's file picker, drawn by the app (the browser's own button speaks the browser's language) */
+  chooseFile: { en: 'Choose file', hi: 'फ़ाइल चुनें', gu: 'ફાઇલ પસંદ કરો' },
+  noFile: { en: 'No file chosen', hi: 'कोई फ़ाइल नहीं चुनी', gu: 'કોઈ ફાઇલ પસંદ નથી' },
   saveDraft: { en: 'Save as draft', hi: 'ड्राफ़्ट सहेजें', gu: 'ડ્રાફ્ટ સાચવો' },
   publish: { en: 'Publish', hi: 'जारी करें', gu: 'જારી કરો' },
 } satisfies Record<string, Words>;

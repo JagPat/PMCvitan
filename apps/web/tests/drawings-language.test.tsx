@@ -92,6 +92,9 @@ describe('the Drawings register in Hindi and Gujarati', () => {
       const r2 = render(<again.DrawingsScreen />);
       fireEvent.click(r2.getByTestId('issue-drawing'));
       expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+      // the browser's own file button speaks the browser's language: the app draws its own (Codex, #902)
+      expect(r2.getByTestId('issue-drawing-file').style.position).toBe('absolute');
+      expect(r2.getByTestId('issue-drawing-file-status').textContent).not.toMatch(/[A-Za-z]/);
     });
 
     it(`${lang}: what the drawing actions say back`, async () => {

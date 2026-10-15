@@ -532,15 +532,24 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
             dialog and the one that actually attaches the drawing. It sits inside a `<label>`, so
             label activation forwards a tap anywhere in the box to the picker: giving the input a
             44px band makes the whole band the target rather than the native button alone. */}
-        <label style={{ display: 'block', marginTop: 10 }}>
+        {/* #482 QA item 3 (Codex) — the browser's own file button and "No file chosen" speak the BROWSER's language,
+            so a Hindi or Gujarati viewer gets the app's own button and status instead; English keeps the native control */}
+        <label style={lang === 'en' ? { display: 'block', marginTop: 10 } : { display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, minHeight: 44, cursor: 'pointer' }}>
           <input
             type="file"
             accept=".pdf,.dwg,.dxf,image/*,application/pdf"
             onChange={(e) => onPick(e.target.files?.[0])}
-            style={{ fontSize: 13, display: 'block', width: '100%', minHeight: 44 }}
+            data-testid="issue-drawing-file"
+            style={lang === 'en' ? { fontSize: 13, display: 'block', width: '100%', minHeight: 44 } : visuallyHidden}
           />
+          {lang !== 'en' && (
+            <>
+              <span style={{ flex: 'none', padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontSize: 13, fontWeight: 600 }}>{L.chooseFile[lang]}</span>
+              <span data-testid="issue-drawing-file-status" style={{ fontSize: 12.5, color: 'var(--muted)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file ? file.name : L.noFile[lang]}</span>
+            </>
+          )}
         </label>
-        {file && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{file.name}</div>}
+        {file && lang === 'en' && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{file.name}</div>}
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <Button variant="outline" onClick={onClose} style={{ flex: '0 0 auto', padding: '12px 16px' }}>{L.cancel[lang]}</Button>
@@ -555,6 +564,9 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
 // #584 review round 11 — these two toggles shipped at 26px tall and no sweep had ever measured
 // them, because the persona walk took its role list from `TopBar`'s switcher and that switcher
 // omitted `consultant`. They are the consultant's primary control on this surface.
+/** off screen but still focusable and announced: the picker's own label is the visible control */
+const visuallyHidden: CSSProperties = { position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0 };
+
 const scopeBtn = (active: boolean): CSSProperties => ({
   minHeight: 44,
   display: 'inline-flex',
