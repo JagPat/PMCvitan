@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { ProjectNode } from '@vitan/shared';
+import { siteMapLabels, type Lang, type ProjectNode } from '@vitan/shared';
 import { childrenOf, trailOf } from '@/lib/locationTree';
 import css from './SiteMapTree.module.css';
 
@@ -15,11 +15,11 @@ interface TreeItem {
  * The tree the Site Map shows: the whole project, every top-level place, and the places inside each place on the
  * path to the one on show. A long project stays short; the opened branch is always visible.
  */
-export function siteMapTree(nodes: ProjectNode[], active: string | null): TreeItem {
+export function siteMapTree(nodes: ProjectNode[], active: string | null, lang: Lang = 'en'): TreeItem {
   const open = new Set<string | null>([null, ...trailOf(nodes, active).map((t) => t.id)]);
   const grow = (parent: string | null, depth: number): TreeItem[] =>
     open.has(parent) ? childrenOf(nodes, parent).map((n) => ({ id: n.id, name: n.name, depth, children: grow(n.id, depth + 1) })) : [];
-  return { id: null, name: 'Whole project', depth: 0, children: grow(null, 1) };
+  return { id: null, name: siteMapLabels.wholeProject[lang], depth: 0, children: grow(null, 1) };
 }
 
 /** The desktop breakpoint of screens/responsive.module.css (>1024). Where matchMedia is missing, assume desktop. */
@@ -44,12 +44,13 @@ function useDesktop(): boolean {
  * breakpoint, where the breadcrumb and the "Places inside" cards do the same job. The places are nested lists, so
  * a screen reader hears each place's level and what it sits in.
  */
-export function SiteMapTree({ nodes, active, onSelect, flag }: {
+export function SiteMapTree({ nodes, active, onSelect, flag, lang = 'en' }: {
   nodes: ProjectNode[];
   active: string | null;
   onSelect: (id: string | null) => void;
   /** a short red note for a place, e.g. "1 open issue" or "Blocked"; null when nothing needs attention */
   flag: (id: string) => string | null;
+  lang?: Lang;
 }) {
   const desktop = useDesktop();
   const navRef = useRef<HTMLElement>(null);
@@ -91,8 +92,8 @@ export function SiteMapTree({ nodes, active, onSelect, flag }: {
   };
 
   return (
-    <nav ref={navRef} aria-label="Places" data-testid="site-map-tree" className={css.tree}>
-      <ul role="list" className={css.list}>{item(siteMapTree(nodes, active))}</ul>
+    <nav ref={navRef} aria-label={siteMapLabels.places[lang]} data-testid="site-map-tree" className={css.tree}>
+      <ul role="list" className={css.list}>{item(siteMapTree(nodes, active, lang))}</ul>
     </nav>
   );
 }

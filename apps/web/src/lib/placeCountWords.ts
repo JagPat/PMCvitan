@@ -1,22 +1,16 @@
+import { siteMapText, type Lang, type PlaceCountKey } from '@vitan/shared';
 import type { PlaceContents } from './locationTree';
 
 /** One count on a Site Map card or place header, in words ("1 open issue", "3 drawings"). */
 export interface PlaceCountWord {
-  key: 'openIssues' | 'decisions' | 'drawings' | 'photos' | 'activities' | 'materials' | 'inspections';
+  key: PlaceCountKey;
   text: string;
   /** an open issue is the one count drawn as a warning */
   alert: boolean;
 }
 
-const NOUNS: Record<PlaceCountWord['key'], [string, string]> = {
-  openIssues: ['open issue', 'open issues'],
-  inspections: ['inspection', 'inspections'],
-  decisions: ['decision', 'decisions'],
-  drawings: ['drawing', 'drawings'],
-  photos: ['photo', 'photos'],
-  activities: ['activity', 'activities'],
-  materials: ['material', 'materials'],
-};
+/** open issues first, then the rest in this order */
+const ORDER: PlaceCountKey[] = ['openIssues', 'inspections', 'decisions', 'drawings', 'photos', 'activities', 'materials'];
 
 export interface PlaceCountOptions {
   /** AUTH-02: `hidden` for a viewer who never sees inspections (no inspection or issue count, not even a
@@ -40,6 +34,7 @@ export interface PlaceCountOptions {
 export function placeCountWords(
   counts: PlaceContents['counts'],
   opts: PlaceCountOptions,
+  lang: Lang = 'en',
 ): PlaceCountWord[] {
   const inspectionsKnown = opts.inspections === 'known';
   const n: Record<PlaceCountWord['key'], number | null> = {
@@ -52,11 +47,10 @@ export function placeCountWords(
     materials: counts.materials,
   };
   const words: PlaceCountWord[] = [];
-  for (const key of Object.keys(NOUNS) as PlaceCountWord['key'][]) {
+  for (const key of ORDER) {
     const v = n[key];
     if (typeof v !== 'number' || v <= 0) continue;
-    const noun = NOUNS[key][v === 1 ? 0 : 1];
-    words.push({ key, text: `${v} ${key === 'photos' && opts.photosCapped ? `recent ${noun}` : noun}`, alert: key === 'openIssues' });
+    words.push({ key, text: siteMapText.count(key, v, lang, key === 'photos' && opts.photosCapped), alert: key === 'openIssues' });
   }
   return words;
 }

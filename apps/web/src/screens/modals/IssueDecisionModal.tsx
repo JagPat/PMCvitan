@@ -4,9 +4,9 @@ import { useStore, type IssueDecisionPayload } from '@/store/store';
 import { selectPhase6_4dOpen } from '@/store/selectors';
 import { Button, Modal, InheritedContext, MoreDetails } from '@/components';
 import { X } from '@/lib/icons';
-import { swatch as swatchGradient, SW, type DeciderKind, type SwatchKey } from '@vitan/shared';
+import { swatch as swatchGradient, SW, forYouRole, issueDecisionLabels as L, issueDecisionText as T, swatchLabels, type DeciderKind, type Role, type SwatchKey } from '@vitan/shared';
 import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
-import { readImpact } from '@/lib/impactInput';
+import { readImpact, impactReasonIn } from '@/lib/impactInput';
 
 /**
  * PMC issues a new decision: a place, a title, and 2–4 options for the client to choose.
@@ -23,6 +23,7 @@ import { readImpact } from '@/lib/impactInput';
  */
 export function IssueDecisionModal({ context, onClose }: { context?: CaptureContext; onClose: () => void }) {
   const issueDecision = useStore((s) => s.issueDecision);
+  const lang = useStore((s) => s.lang);
   const inherited = inheritsLocation(context);
   const [title, setTitle] = useState('');
   const [nodeId, setNodeId] = useState<string | null>(context?.nodeId ?? null);
@@ -45,6 +46,7 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
   }, []);
   const memberCandidates = members.filter((m) => m.status === 'active' && m.membershipId);
   const record = deciderKind === 'none';
+  const intro = T.intro(lang);
 
   const setOpt = (i: number, patch: Partial<OptionDraft>) =>
     setOptions((prev) => prev.map((o, j) => (j === i ? { ...o, ...patch } : patch.recommended ? { ...o, recommended: false } : o)));
@@ -101,39 +103,37 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
   return (
     <Modal onClose={onClose} maxWidth={560} labelledBy="issue-dec-title">
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
-        <div id="issue-dec-title" style={{ fontWeight: 700, fontSize: 17 }}>New decision</div>
+        <div id="issue-dec-title" style={{ fontWeight: 700, fontSize: 17 }}>{L.title[lang]}</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          What is being decided, and between which options. A price delta, a swatch and a sample
-          photo sit under each option's <b>More details</b>. <b>Save as draft</b> to keep working
-          privately, or <b>Publish</b> to send it to the client to choose.
+          {intro[0]}<b>{intro[1]}</b>{intro[2]}<b>{intro[3]}</b>{intro[4]}<b>{intro[5]}</b>{intro[6]}
         </div>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (e.g. Veneer finish, Lock & hardware)" style={{ ...fldD, marginTop: 14, width: '100%' }} data-testid="dec-title" />
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={L.titlePlaceholder[lang]} style={{ ...fldD, marginTop: 14, width: '100%' }} data-testid="dec-title" />
 
         <div style={{ marginTop: 12 }}>
           <InheritedContext value={nodeId} onChange={setNodeId} inherited={inherited} idPrefix="dec-loc" testId="dec-place" />
         </div>
 
         <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)' }}>WHO DECIDES</span>
-          <select value={deciderKind} onChange={(e) => setDeciderKind(e.target.value as typeof deciderKind)} style={{ ...fldD, flex: '0 0 180px' }} aria-label="Who decides" data-testid="dec-decider-kind">
-            <option value="client">The client</option>
-            <option value="pmc">The practice (PMC)</option>
-            <option value="member">A named member</option>
-            {chainOpen && <option value="architect">The architect</option>}
-            <option value="none">Nobody — record only</option>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)' }}>{L.whoDecides[lang]}</span>
+          <select value={deciderKind} onChange={(e) => setDeciderKind(e.target.value as typeof deciderKind)} style={{ ...fldD, flex: '0 0 180px' }} aria-label={L.whoDecidesAria[lang]} data-testid="dec-decider-kind">
+            <option value="client">{L.deciderClient[lang]}</option>
+            <option value="pmc">{L.deciderPmc[lang]}</option>
+            <option value="member">{L.deciderMember[lang]}</option>
+            {chainOpen && <option value="architect">{L.deciderArchitect[lang]}</option>}
+            <option value="none">{L.deciderNone[lang]}</option>
           </select>
           {deciderKind === 'member' && (
-            <select value={deciderMembershipId} onChange={(e) => setDeciderMembershipId(e.target.value)} style={{ ...fldD, flex: '1 1 160px' }} aria-label="Named decider" data-testid="dec-decider-member">
-              <option value="">Choose a member…</option>
+            <select value={deciderMembershipId} onChange={(e) => setDeciderMembershipId(e.target.value)} style={{ ...fldD, flex: '1 1 160px' }} aria-label={L.namedDeciderAria[lang]} data-testid="dec-decider-member">
+              <option value="">{L.chooseMember[lang]}</option>
               {memberCandidates.map((m) => (
-                <option key={m.membershipId} value={m.membershipId}>{m.name} · {m.role}</option>
+                <option key={m.membershipId} value={m.membershipId}>{m.name} · {roleIn(m.role, lang)}</option>
               ))}
             </select>
           )}
         </div>
         {record && (
           <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--muted)' }} data-testid="dec-record-note">
-            A record files the issue for the team — no options, and nobody is asked to approve it.
+            {L.recordNote[lang]}
           </div>
         )}
 
@@ -144,45 +144,45 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
           // opening its neighbour under the label of the one they were editing.
           <div key={o.id} style={{ marginTop: 14, padding: 12, border: '1px solid var(--hairline)', borderRadius: 12, background: 'var(--panel)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)' }}>OPTION {String.fromCharCode(65 + i)}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)' }}>{T.option(i, lang)}</span>
               {/* Wave 0 / F-1b round 9 — this control only EXISTS once a third option is added, and
                   the dialog sweep deliberately does not press controls inside dialogs, so no arm
                   ever reached the state that renders it. The floor applies to a control the user
                   can reach, not to one a sweep happens to see. */}
               {options.length > 2 && (
-                <button onClick={() => setOptions((prev) => prev.filter((_, j) => j !== i))} aria-label={`Remove option ${i + 1}`} data-testid={`dec-opt-${i}-remove`} style={{ marginLeft: 'auto', minWidth: 44, minHeight: 44, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <button onClick={() => setOptions((prev) => prev.filter((_, j) => j !== i))} aria-label={T.removeOption(i + 1, lang)} data-testid={`dec-opt-${i}-remove`} style={{ marginLeft: 'auto', minWidth: 44, minHeight: 44, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
                   <X size={15} />
                 </button>
               )}
             </div>
-            <input value={o.material} onChange={(e) => setOpt(i, { material: e.target.value })} placeholder="Material (e.g. Italian Marble)" style={{ ...fldD, width: '100%' }} data-testid={`dec-opt-${i}`} />
+            <input value={o.material} onChange={(e) => setOpt(i, { material: e.target.value })} placeholder={L.materialPlaceholder[lang]} style={{ ...fldD, width: '100%' }} data-testid={`dec-opt-${i}`} />
 
             <MoreDetails testId={`dec-opt-${i}-more`}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <input value={o.delta} onChange={(e) => setOpt(i, { delta: e.target.value })} placeholder="₹ delta (0 = base)" aria-label={`Option ${i + 1} price delta (₹)`}
+                <input value={o.delta} onChange={(e) => setOpt(i, { delta: e.target.value })} placeholder={L.deltaPlaceholder[lang]} aria-label={T.deltaAria(i + 1, lang)}
                   aria-invalid={!deltas[i].ok} aria-describedby={!deltas[i].ok ? `dec-opt-${i}-delta-error` : undefined} data-testid={`dec-opt-${i}-delta`}
                   style={{ ...fldD, flex: '0 0 130px', ...(deltas[i].ok ? null : { borderColor: 'var(--red-solid)' }) }} />
-                <select value={o.swatch} onChange={(e) => setOpt(i, { swatch: e.target.value as SwatchKey })} style={{ ...fldD, flex: '0 0 120px' }} aria-label="Swatch">
-                  {SWATCH_KEYS.map((k) => <option key={k} value={k}>{k}</option>)}
+                <select value={o.swatch} onChange={(e) => setOpt(i, { swatch: e.target.value as SwatchKey })} style={{ ...fldD, flex: '0 0 120px' }} aria-label={L.swatchAria[lang]}>
+                  {SWATCH_KEYS.map((k) => <option key={k} value={k}>{swatchLabels[k][lang]}</option>)}
                 </select>
                 <span style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--hairline)', background: o.photo ? `center/cover url(${o.photo.preview})` : swatchGradient(o.swatch) }} />
                 {/* the file input is display:none, so the LABEL is the whole tap target and carries
                     the floor itself — #584 review round 10, finding 1 */}
                 <label style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer', minHeight: 44, display: 'inline-flex', alignItems: 'center' }} data-testid={`dec-opt-${i}-photo`}>
-                  {o.photo ? 'Change photo' : 'Add sample photo'}
+                  {o.photo ? L.changePhoto[lang] : L.addPhoto[lang]}
                   <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => pickPhoto(i, e.target.files?.[0] ?? null)} />
                 </label>
                 {/* the radio's own box is a 13px platform affordance, so the LABEL is the target
                     and carries the floor — self-found once the label rule and the More-details
                     expansion brought this state into the sweep at all */}
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, minHeight: 44 }} data-testid={`dec-opt-${i}-recommended`}>
-                  <input type="radio" name="recommended" checked={o.recommended} onChange={() => setOpt(i, { recommended: true })} /> Recommended
+                  <input type="radio" name="recommended" checked={o.recommended} onChange={() => setOpt(i, { recommended: true })} /> {L.recommended[lang]}
                 </label>
               </div>
             </MoreDetails>
             {!deltas[i].ok && (
               <div id={`dec-opt-${i}-delta-error`} role="alert" data-testid={`dec-opt-${i}-delta-error`} style={{ fontSize: 11.5, lineHeight: 1.35, color: 'var(--red-solid)', marginTop: 6 }}>
-                Price delta: {(deltas[i] as { ok: false; reason: string }).reason}
+                {L.priceDelta[lang]}: {impactReasonIn((deltas[i] as { ok: false; reason: string }).reason, lang)}
               </div>
             )}
           </div>
@@ -190,14 +190,14 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
 
         {!record && options.length < 4 && (
           <button onClick={() => setOptions((prev) => [...prev, blankOption()])} style={{ marginTop: 12, minHeight: 44, background: 'transparent', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, cursor: 'pointer', color: 'var(--muted)', width: '100%' }}>
-            + Add another option
+            {L.addOption[lang]}
           </button>
         )}
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-          <Button variant="outline" onClick={onClose} style={{ flex: '0 0 auto', padding: '12px 16px' }}>Cancel</Button>
-          <Button variant="light" onClick={() => save(false)} disabled={!ready} data-testid="save-draft" style={{ flex: 1, padding: 12 }}>Save as draft</Button>
-          <Button variant="ink" onClick={() => save(true)} disabled={!ready} data-testid="save-decision" data-guide="publish-decision" style={{ flex: 1, padding: 12 }}>{record ? 'Publish record' : deciderKind === 'client' ? 'Publish to client' : 'Publish to decider'}</Button>
+          <Button variant="outline" onClick={onClose} style={{ flex: '0 0 auto', padding: '12px 16px' }}>{L.cancel[lang]}</Button>
+          <Button variant="light" onClick={() => save(false)} disabled={!ready} data-testid="save-draft" style={{ flex: 1, padding: 12 }}>{L.saveDraft[lang]}</Button>
+          <Button variant="ink" onClick={() => save(true)} disabled={!ready} data-testid="save-decision" data-guide="publish-decision" style={{ flex: 1, padding: 12 }}>{record ? L.publishRecord[lang] : deciderKind === 'client' ? L.publishClient[lang] : L.publishDecider[lang]}</Button>
         </div>
       </div>
     </Modal>
@@ -215,6 +215,9 @@ interface OptionDraft {
 }
 
 const SWATCH_KEYS = Object.keys(SW) as SwatchKey[];
+// English keeps the member's role as served; Hindi and Gujarati name a known role in the language
+const roleIn = (role: string, lang: 'en' | 'hi' | 'gu'): string =>
+  lang === 'en' ? role : (forYouRole[role as Role]?.[lang] ?? role);
 // A counter rather than a random id: unique within a form is all `key` needs, and a
 // deterministic sequence keeps the probes readable.
 let optionSeq = 0;

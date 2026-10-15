@@ -5,6 +5,7 @@ import {
   activityStatusLabels,
   decisionChip,
   decisionChipLabel,
+  decisionStatusChipLabels,
   resultChip,
   type ActivityStatus,
   type DecisionStatus,
@@ -22,13 +23,16 @@ const base: CSSProperties = {
   lineHeight: 1.3,
 };
 
-export function DecisionChip({ status, style }: { status: DecisionStatus; style?: CSSProperties }) {
+/** `lang` is the caller's (English when not given, the chip's long-standing words). */
+export function DecisionChip({ status, style, lang = 'en' }: { status: DecisionStatus; style?: CSSProperties; lang?: Lang }) {
   // Phase 6 unit 4b (Codex R2-F1's class): a status this bundle does not know renders as the
   // muted register chip instead of crashing — the NEXT status addition cannot break a cached tab.
   const c = (decisionChip as Record<string, (typeof decisionChip)[DecisionStatus]>)[status] ?? decisionChip.withdrawn;
   return (
     <span style={{ ...base, background: c.bg, color: c.color, border: `1px solid ${c.border}`, ...style }}>
-      {(decisionChipLabel as Record<string, string>)[status] ?? String(status).toUpperCase()}
+      {lang === 'en'
+        ? (decisionChipLabel as Record<string, string>)[status] ?? String(status).toUpperCase()
+        : (decisionStatusChipLabels as Record<string, Record<Lang, string>>)[status]?.[lang] ?? String(status).toUpperCase()}
     </span>
   );
 }

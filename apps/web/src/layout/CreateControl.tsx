@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createMenuLabels } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { CreateMenu } from '@/components';
 import { captureGlobal } from '@/lib/captureContext';
@@ -48,6 +49,7 @@ export function CreateControl() {
   const openCreate = useStore((s) => s.openCreate);
   const closeCreate = useStore((s) => s.closeCreate);
   const activeProjectId = useStore((s) => s.activeProjectId);
+  const lang = useStore((s) => s.lang);
   const [kind, setKind] = useState<CreateKind | null>(null);
 
   // The flow must not survive the project leaving `ready`. The render gate below already stops
@@ -69,15 +71,15 @@ export function CreateControl() {
         aria-haspopup="dialog"
         data-testid="create-fab"
         data-guide="add"
-        aria-label="Add"
+        aria-label={createMenuLabels.add[lang]}
       >
         <Plus size={22} />
       </button>
 
       {open && (
         <CreateMenu
-          title="Add"
-          subtitle="Recorded against this project"
+          title={createMenuLabels.add[lang]}
+          subtitle={createMenuLabels.againstProject[lang]}
           onPick={(k) => { closeCreate(); setKind(k); }}
           onClose={closeCreate}
         />
@@ -100,10 +102,11 @@ export function CreateControl() {
 export function CreateRailButton() {
   const canCreate = useCanCreateNow();
   const openCreate = useStore((s) => s.openCreate);
+  const lang = useStore((s) => s.lang);
   if (!canCreate) return null;
   return (
     <button className={styles.railButton} onClick={openCreate} aria-haspopup="dialog" data-testid="create-rail" data-guide="add">
-      <Plus size={15} /> Add
+      <Plus size={15} /> {createMenuLabels.add[lang]}
     </button>
   );
 }

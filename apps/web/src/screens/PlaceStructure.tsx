@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { useStore } from '@/store/store';
 import { Button } from '@/components';
 import { Plus, Pencil, Trash2 } from '@/lib/icons';
-import { can, type ProjectNode } from '@vitan/shared';
+import { can, placeKindLabels, placeNameExamples, placeStructureLabels as L, placeStructureText as T, type ProjectNode } from '@vitan/shared';
 import { ManageLocationsModal } from '@/screens/modals/ManageLocationsModal';
 import { ConfirmLocationDelete } from '@/screens/modals/ConfirmLocationDelete';
 
@@ -10,7 +10,6 @@ import { ConfirmLocationDelete } from '@/screens/modals/ConfirmLocationDelete';
 const MAX_TREE_DEPTH = 5;
 
 type NewKind = 'zone' | 'room' | 'element';
-const NOUN: Record<NewKind, string> = { zone: 'zone', room: 'room', element: 'object' };
 
 /**
  * Audit B3 — the location tree is built where people look for it: on the Site Map, at the place
@@ -24,6 +23,7 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   const addLocationNode = useStore((s) => s.addLocationNode);
   const renameNode = useStore((s) => s.renameNode);
   const nodes = useStore((s) => s.nodes);
+  const lang = useStore((s) => s.lang);
   const [adding, setAdding] = useState<NewKind | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [value, setValue] = useState('');
@@ -40,7 +40,7 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   const session = useRef(0);
   const inputId = useId();
 
-  const placeName = active?.name ?? 'the project';
+  const placeName = active?.name ?? L.theProject[lang];
   // a zone or room takes children while they would land within the cap (`depth` is the active
   // place's level, 1 for a zone); an object is a leaf
   const takesChildren = active ? active.kind !== 'element' && depth + 1 <= MAX_TREE_DEPTH : true;
@@ -87,38 +87,38 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
     }
   };
 
-  const formLabel = renaming ? `Rename ${placeName}` : adding ? `New ${NOUN[adding]} in ${placeName}` : '';
+  const formLabel = renaming ? T.renameAria(placeName, lang) : adding ? T.newIn(adding, placeName, lang) : '';
 
   return (
     <div style={{ marginBottom: 18 }} data-testid="place-structure">
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         {!active && (
           <Button variant="dashed" onClick={() => startAdd('zone')} data-testid="place-add-zone" style={btn}>
-            <Plus size={14} /> Zone
+            <Plus size={14} /> {placeKindLabels.zone[lang]}
           </Button>
         )}
         {active && takesChildren && (
           <>
             <Button variant="dashed" onClick={() => startAdd('room')} data-testid="place-add-room" style={btn}>
-              <Plus size={14} /> Room
+              <Plus size={14} /> {placeKindLabels.room[lang]}
             </Button>
             <Button variant="dashed" onClick={() => startAdd('element')} data-testid="place-add-object" style={btn}>
-              <Plus size={14} /> Object
+              <Plus size={14} /> {placeKindLabels.element[lang]}
             </Button>
           </>
         )}
         {active && (
           <>
-            <Button variant="light" onClick={startRename} data-testid="place-rename" aria-label={`Rename ${active.name}`} style={btn}>
-              <Pencil size={13} /> Rename
+            <Button variant="light" onClick={startRename} data-testid="place-rename" aria-label={T.renameAria(active.name, lang)} style={btn}>
+              <Pencil size={13} /> {L.rename[lang]}
             </Button>
-            <Button variant="dangerOutline" onClick={() => setDeleting(active.id)} data-testid="place-delete" aria-label={`Delete ${active.name}`} style={btn}>
-              <Trash2 size={13} /> Delete
+            <Button variant="dangerOutline" onClick={() => setDeleting(active.id)} data-testid="place-delete" aria-label={T.deleteAria(active.name, lang)} style={btn}>
+              <Trash2 size={13} /> {L.delete[lang]}
             </Button>
           </>
         )}
         <Button variant="ghost" onClick={() => setAllOpen(true)} data-testid="manage-locations" style={btn}>
-          All locations
+          {L.allLocations[lang]}
         </Button>
       </div>
 
@@ -140,18 +140,18 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
               aria-describedby={duplicate ? `${inputId}-dup` : undefined}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Escape') close(); }}
-              placeholder={adding === 'zone' ? 'e.g. Ground Floor' : adding === 'room' ? 'e.g. Kitchen' : adding === 'element' ? 'e.g. Main Door' : ''}
+              placeholder={adding ? placeNameExamples[adding][lang] : ''}
               data-testid="place-structure-input"
               style={field}
             />
             <Button variant="ink" type="submit" disabled={!value.trim() || pending || duplicate} data-testid="place-structure-save" style={btn}>
-              {renaming ? 'Save' : pending ? 'Adding…' : 'Add'}
+              {renaming ? L.save[lang] : pending ? L.adding[lang] : L.add[lang]}
             </Button>
-            <Button variant="outline" type="button" onClick={close} style={btn}>Cancel</Button>
+            <Button variant="outline" type="button" onClick={close} style={btn}>{L.cancel[lang]}</Button>
           </div>
           {duplicate && (
             <div id={`${inputId}-dup`} role="status" style={{ fontSize: 12.5, color: 'var(--red-solid)' }} data-testid="place-structure-duplicate">
-              {renaming ? (nodes.find((n) => n.id === active?.parentId)?.name ?? 'The project') : placeName} already has “{value.trim()}”.
+              {T.duplicate(renaming ? (nodes.find((n) => n.id === active?.parentId)?.name ?? L.TheProject[lang]) : placeName, value.trim(), lang)}
             </div>
           )}
         </form>
