@@ -231,6 +231,41 @@ describe('Phase 8 offline outbox', () => {
     expect((s().outbox[0] as { input: { clientKey?: string } }).input.clientKey).toBe(key);
   });
 
+  it('two tabs loading the same unkeyed queue reach the same key, and two identical picks keep two keys (#482)', () => {
+    const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
+    const legacy = JSON.stringify([
+      { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'BBBB' } },
+      { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'BBBB' } },
+    ]);
+    const keysAfterLoad = (): (string | undefined)[] => {
+      globalThis.localStorage?.setItem(scopedKey, legacy); // each tab read the queue before either wrote it back
+      s().hydrateOutbox();
+      return s().outbox.map((o) => (o as { input: { clientKey?: string } }).input.clientKey);
+    };
+    const tabA = keysAfterLoad();
+    const tabB = keysAfterLoad();
+    expect(tabA).toEqual(tabB);
+    expect(new Set(tabA).size).toBe(2);
+  });
+
+  it('a full storage on the key write-back keeps the queued photo, under the key the next load derives (#482)', () => {
+    const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
+    globalThis.localStorage?.setItem(scopedKey, JSON.stringify([{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'BBBB' } }]));
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError');
+    });
+    try {
+      s().hydrateOutbox();
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(s().outbox).toHaveLength(1);
+    const key = (s().outbox[0] as { input: { clientKey?: string } }).input.clientKey;
+    expect(key).toEqual(expect.any(String));
+    s().hydrateOutbox();
+    expect((s().outbox[0] as { input: { clientKey?: string } }).input.clientKey).toBe(key);
+  });
+
   it('without a gateway, offline mutations still apply locally (demo)', () => {
     useStore.setState((st) => { st.online = false; });
     s().openApprove('DL-014', 1);
