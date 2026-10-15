@@ -638,6 +638,11 @@ export interface Worker {
   job: string;
 }
 
+/** #886: a phone sign-in failure as an `accessDict` key (plus the throttle wait), and the text it produced. */
+export type AccessErrorKey =
+  | { key: 'noServer' | 'sendFailed' | 'tooManyLater' | 'wrongCode' | 'checkFailed' | 'retryRefused'; text: string }
+  | { key: 'tooManyWait'; seconds: number; text: string };
+
 export interface AccessState {
   /** Retires async replies from an older login/setup attempt. */
   generation: number;
@@ -652,6 +657,9 @@ export interface AccessState {
   sending: boolean;
   /** last auth error to surface on the OTP screen, or null. */
   error: string | null;
+  /** #886: why the phone sign-in failed, as a sign-in dictionary key, so the gate re-translates the message
+   *  when the person switches language. Only shown while its `text` is still the current `error`. */
+  errorKey?: AccessErrorKey | null;
   /** dev-stub OTP hint returned by the server when no SMS provider is configured. */
   devCode: string | null;
   /** #827 one-screen sign-in: how the server sent the phone sign-in code ('email' until SMS is live)
