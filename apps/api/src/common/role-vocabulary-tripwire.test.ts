@@ -87,7 +87,6 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     // 4d-ii-a / A8a — forward authority is the holder + pmc + architect: every holder-capable role at the route
     'packages/shared/src/domain/policy.ts :: list decision.forward': 'answered',
     'packages/shared/src/domain/policy.ts :: list decision.updateDraft': 'answered',
-    'packages/shared/src/domain/policy.ts :: list decision.change': 'excludes: the architect’s change path is the countersign disagreement, never a standard change request (§A.1); #482 QA narrowed it to the client and the PMC',
     'packages/shared/src/domain/policy.ts :: list decision.withdrawChange': 'answered',
     'packages/shared/src/domain/policy.ts :: list consultation.respond': 'answered',
     'packages/shared/src/domain/policy.ts :: list org.create': 'excludes: creating an organization is never the architect’s (§A.1, deliberately NOT)',
