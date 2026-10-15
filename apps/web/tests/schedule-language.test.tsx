@@ -201,6 +201,19 @@ describe('the schedule in Hindi and Gujarati', () => {
     expect(scheduleToastText.deleteRefused(linked, 'en')).toBe(`Couldn't delete this activity — ${linked}`);
   });
 
+  it('a refusal with no message, and a blocker the server wrote, read in the language; a typed blocker is kept (Codex, #912)', async () => {
+    const { scheduleToastText, scheduleText } = await import('@vitan/shared');
+    for (const lang of ['hi', 'gu'] as const) {
+      expect(words(scheduleToastText.deleteRefused('the server refused it', lang))).toEqual([]);
+      expect(words(scheduleToastText.phaseRefused('the server refused it', lang))).toEqual([]);
+      expect(words(scheduleText.blockedWith('Material ≠ approved', lang))).toEqual([]);
+      expect(words(scheduleText.blockedWith('Crew ≠ allocated', lang))).toEqual([]);
+      expect(scheduleText.blockedWith('Ponding test failed — drain slope', lang)).toContain('Ponding test failed — drain slope');
+    }
+    expect(scheduleToastText.deleteRefused('the server refused it', 'en')).toBe("Couldn't delete this activity — the server refused it");
+    expect(scheduleText.blockedWith('Crew ≠ allocated', 'en')).toBe('Blocked — Crew ≠ allocated. Resolve the blocker on site; the activity returns to the schedule once it clears.');
+  });
+
   it('a served day the calendar does not have is shown as recorded, not rolled over (Codex, #912)', async () => {
     const { servedDayIn } = await import('@vitan/shared');
     for (const lang of ['hi', 'gu'] as const) {

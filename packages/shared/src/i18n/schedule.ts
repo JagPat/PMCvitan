@@ -308,11 +308,25 @@ export function gateLineIn(k: GateKey, reason: string, source: GateSource, lang:
   return `${gateNames[k].label[lang]} — ${gateReasonIn(reason, source, lang)}${mark}`;
 }
 
+/**
+ * The blockers the server itself writes into `Activity.block` (api activity.participant.ts) read in the language;
+ * a note someone typed is shown as recorded (Codex, #912).
+ */
+const SYSTEM_BLOCK: Record<string, { hi: string; gu: string }> = {
+  'Material ≠ approved': { hi: 'सामान मंज़ूर से अलग', gu: 'માલસામાન મંજૂરથી અલગ' },
+  'Crew ≠ allocated': { hi: 'टीम तय से अलग', gu: 'ટીમ ફાળવણીથી અલગ' },
+};
+
+function blockIn(block: string, lang: Lang): string {
+  if (lang === 'en') return block;
+  return SYSTEM_BLOCK[block]?.[lang] ?? block;
+}
+
 export const scheduleText = {
   blockedWith: (block: string, lang: Lang): string => pick(lang,
     `Blocked — ${block}. Resolve the blocker on site; the activity returns to the schedule once it clears.`,
-    `रुका हुआ — ${block}। साइट पर रुकावट दूर करें; दूर होते ही काम फिर से शेड्यूल में आ जाएगा।`,
-    `અટકેલું — ${block}. સાઇટ પર અડચણ દૂર કરો; દૂર થતાં કામ ફરી શેડ્યૂલમાં આવશે.`),
+    `रुका हुआ — ${blockIn(block, lang)}। साइट पर रुकावट दूर करें; दूर होते ही काम फिर से शेड्यूल में आ जाएगा।`,
+    `અટકેલું — ${blockIn(block, lang)}. સાઇટ પર અડચણ દૂર કરો; દૂર થતાં કામ ફરી શેડ્યૂલમાં આવશે.`),
   /** one gate holds the activity: its name and its reason (English lower-cases the name, as before) */
   cannotStartOne: (label: string, reason: string, lang: Lang): string => pick(lang,
     `Cannot start yet — ${label.toLowerCase()}: ${reason}`,
@@ -422,7 +436,7 @@ export const scheduleToast = {
 
 /**
  * The server's own refusals of an activity or phase removal (api activities.service.ts / phases.service.ts),
- * matched whole; the activity id stays as served and anything else is shown as served (Codex, #912).
+ * plus the client's fallback for a refusal with no message, matched whole; the activity id stays as served and anything else is shown as served (Codex, #912).
  */
 function refusalIn(why: string, lang: Lang): string {
   if (lang === 'en') return why;
@@ -432,6 +446,8 @@ function refusalIn(why: string, lang: Lang): string {
   if (why === 'Phase not found') return pick(lang, '', 'चरण नहीं मिला', 'તબક્કો મળ્યો નહીં');
   const m = /^Activity (\S+) not found$/.exec(why);
   if (m) return pick(lang, '', `काम ${m[1]} नहीं मिला`, `કામ ${m[1]} મળ્યું નહીં`);
+  // the web client's own words when a refusal carries no readable message (store.ts runRemote)
+  if (why === 'the server refused it') return pick(lang, '', 'सर्वर ने मना कर दिया', 'સર્વરે ના પાડી');
   return why;
 }
 
