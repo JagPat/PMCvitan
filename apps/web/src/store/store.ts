@@ -76,7 +76,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, changeSubmittedToast } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -3552,7 +3552,7 @@ export const useStore = create<Store>()(
     issueDrawing: (input) => {
       if (gateway) {
         // Task 10 correction (C3) — never issue against a register whose module read hasn't settled.
-        if (drawingMutationsBlocked(get())) { get().flash('The drawing register is still loading — try again once it settles.'); return; }
+        if (drawingMutationsBlocked(get())) { get().flash(DWT.stillLoading[get().lang]); return; }
         const gw = gateway;
         // gate round 12: capture the scope BEFORE the request and guard EVERY continuation on it.
         const scope = currentScope();
@@ -3567,7 +3567,7 @@ export const useStore = create<Store>()(
             // retry NEVER re-runs this — it would re-presign a new storageKey / re-upload the bytes.
             prepared = await gw.prepareIssue(input);
           } catch {
-            if (scopeStillCurrent(scope)) get().flash('Could not prepare the drawing for upload — check your connection and try again.');
+            if (scopeStillCurrent(scope)) get().flash(DWT.prepareFailed[get().lang]);
             return;
           }
           // PHASE 2 (bounded same-key retry): the register-write. A transient failure (network / 5xx /
@@ -3580,7 +3580,7 @@ export const useStore = create<Store>()(
               committed = true;
             } catch (err) {
               if (isTerminalOutboxError(err)) {
-                if (scopeStillCurrent(scope)) get().flash('The drawing was rejected — check the details and try again.');
+                if (scopeStillCurrent(scope)) get().flash(DWT.rejected[get().lang]);
                 return;
               }
               // transient — keep the SAME key + prepared body and retry
@@ -3588,7 +3588,7 @@ export const useStore = create<Store>()(
           }
           if (!scopeStillCurrent(scope)) return;
           if (committed) {
-            get().flash(`Drawing issued: ${input.number} Rev ${input.rev} — team notified.`);
+            get().flash(DWX.issued(input.number, input.rev, get().lang));
             requestFreshSnapshot(scope); // one coalesced, coordinator-ordered refresh for THIS scope
             return;
           }
@@ -3643,8 +3643,8 @@ export const useStore = create<Store>()(
       });
       get().flash(
         input.publish
-          ? `Drawing issued: ${input.number} Rev ${input.rev} (demo).`
-          : `Draft saved: ${input.number} — visible only to you until you publish it (demo).`,
+          ? DWX.issuedDemo(input.number, input.rev, get().lang)
+          : DWX.draftSavedDemo(input.number, get().lang),
       );
     },
     publishDrawing: (drawingId) => {
@@ -3653,7 +3653,7 @@ export const useStore = create<Store>()(
       // API mode: the server flips publishedAt, notifies the build team, returns a snapshot.
       if (gateway) {
         // Task 10 correction (C3) — don't publish against a register whose module read hasn't settled.
-        if (drawingMutationsBlocked(get())) { get().flash('The drawing register is still loading — try again once it settles.'); return; }
+        if (drawingMutationsBlocked(get())) { get().flash(DWT.stillLoading[get().lang]); return; }
         // Task 10 correction (C2) — WRITE-AHEAD: persist the publish op + stable key BEFORE the network
         // call, so a lost/uncertain response replays the SAME op under the SAME key (published exactly
         // once) and the reconcile snapshot restores truth.
@@ -3783,7 +3783,7 @@ export const useStore = create<Store>()(
       const rev = drawing.current;
       if (gateway) {
         // Task 10 correction (C3) — don't acknowledge against a register whose module read hasn't settled.
-        if (drawingMutationsBlocked(get())) { get().flash('The drawing register is still loading — try again once it settles.'); return; }
+        if (drawingMutationsBlocked(get())) { get().flash(DWT.stillLoading[get().lang]); return; }
         // Phase 2 Task 10 (Module 2 — Drawings; finding-1 write-ahead discipline): persist the ack
         // op + its stable idempotency key to the durable outbox BEFORE any network request (online
         // too), then flush. A lost/uncertain online response leaves the op (and its key) persisted,
@@ -3796,7 +3796,8 @@ export const useStore = create<Store>()(
         runWriteAhead(
           { t: 'ackDrawing', revisionId: rev.id, idempotencyKey: ackKey },
           'Acknowledge ' + drawing.number,
-          `Acknowledged — building to ${drawing.number} Rev ${rev.rev}.`,
+          () => DWX.acknowledged(drawing.number, rev.rev, false, get().lang),
+          DLX.savedOffline(DWX.ackCommand(drawing.number, get().lang), get().lang),
         );
         return;
       }
@@ -3811,19 +3812,20 @@ export const useStore = create<Store>()(
         const inHistory = d.revisions.find((r) => r.id === d.current!.id);
         if (inHistory) inHistory.acks.push(ack);
       });
-      get().flash(`Acknowledged — building to ${drawing.number} Rev ${rev.rev} (demo).`);
+      get().flash(DWX.acknowledged(drawing.number, rev.rev, true, get().lang));
     },
     fileDrawing: (drawingId, nodeId) => {
       if (gateway) {
         // Task 10 correction (C3) — don't re-file/unfile against a register whose module read hasn't settled.
-        if (drawingMutationsBlocked(get())) { get().flash('The drawing register is still loading — try again once it settles.'); return; }
+        if (drawingMutationsBlocked(get())) { get().flash(DWT.stillLoading[get().lang]); return; }
         // Task 10 correction (C2) — WRITE-AHEAD: persist the re-file op + stable key BEFORE the network
         // call, so a lost/uncertain response replays the SAME op under the SAME key (applied exactly once).
         const key = newIdempotencyKey();
         runWriteAhead(
           { t: 'setDrawingNode', drawingId, nodeId, idempotencyKey: key },
           nodeId ? 'File drawing' : 'Unfile drawing',
-          nodeId ? 'Drawing filed to location.' : 'Drawing unfiled.',
+          () => (nodeId ? DWT.filed : DWT.unfiled)[get().lang],
+          DLX.savedOffline((nodeId ? DWT.fileCommand : DWT.unfileCommand)[get().lang], get().lang),
         );
         return;
       }
@@ -3831,7 +3833,7 @@ export const useStore = create<Store>()(
         const d = s.drawings.find((x) => x.id === drawingId);
         if (d) d.nodeId = nodeId ?? undefined;
       });
-      get().flash(nodeId ? 'Drawing filed to location (demo).' : 'Drawing unfiled (demo).');
+      get().flash((nodeId ? DWT.filedDemo : DWT.unfiledDemo)[get().lang]);
     },
     filePhoto: (photoId, nodeId) => {
       if (gateway) {

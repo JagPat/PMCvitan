@@ -7,20 +7,15 @@ import { drawingsSliceSettled } from '@/lib/notifications';
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
 import { Download, FileText, History, ChevronRight, X, Plus, Lock, Check, HardHat, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
-import { can, drawingDisciplineFor, type Discipline, type Drawing, type DrawingRevision } from '@vitan/shared';
+import { can, drawingDisciplineFor, drawingsLabels as L, drawingsText as T, drawingDisciplineLabels, drawingStatusLabels, drawingDateIn, forYouRole, type Discipline, type Drawing, type DrawingRevision, type Lang } from '@vitan/shared';
 import styles from './responsive.module.css';
 
-const DISCIPLINES: { key: Discipline; label: string }[] = [
-  { key: 'architectural', label: 'Architectural' },
-  { key: 'structural', label: 'Structural' },
-  { key: 'mep', label: 'MEP' },
-  { key: 'other', label: 'Sketches & References' },
-];
+const DISCIPLINES: Discipline[] = ['architectural', 'structural', 'mep', 'other'];
 
-function statusMeta(status: string): { label: string; bg: string; fg: string; border: string } {
-  if (status === 'for_construction') return { label: 'FOR CONSTRUCTION', bg: 'var(--green-chip, #E7F0E9)', fg: 'var(--green-text, #2F6B44)', border: '#BFD8C6' };
-  if (status === 'for_review') return { label: 'FOR REVIEW', bg: 'var(--amber-chip)', fg: 'var(--amber-text)', border: 'var(--amber-border)' };
-  return { label: 'SUPERSEDED', bg: 'rgba(35,33,28,.06)', fg: 'var(--faint)', border: 'var(--hairline)' };
+function statusMeta(status: string, lang: Lang): { label: string; bg: string; fg: string; border: string } {
+  if (status === 'for_construction') return { label: drawingStatusLabels.for_construction[lang], bg: 'var(--green-chip, #E7F0E9)', fg: 'var(--green-text, #2F6B44)', border: '#BFD8C6' };
+  if (status === 'for_review') return { label: drawingStatusLabels.for_review[lang], bg: 'var(--amber-chip)', fg: 'var(--amber-text)', border: 'var(--amber-border)' };
+  return { label: drawingStatusLabels.superseded[lang], bg: 'rgba(35,33,28,.06)', fg: 'var(--faint)', border: 'var(--hairline)' };
 }
 
 /** How a revision file previews: PDF inline, image inline, DWG/other download-only. */
@@ -35,6 +30,7 @@ export function DrawingsScreen() {
   const drawings = useStore(useShallow((s) => s.drawings.filter((d) => !d.draft)));
   const nodes = useStore(useShallow((s) => s.nodes));
   const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   const memberships = useStore(useShallow((s) => s.memberships));
   const activeProjectId = useStore((s) => s.activeProjectId);
   // Phase 2 Task 10 (Module 2 — Drawings; finding 4): under module read-ownership the drawing register
@@ -77,22 +73,24 @@ export function DrawingsScreen() {
   const [scoped, setScoped] = useState(true); // consultants default to their discipline
 
   const groups = useMemo(() => {
-    const all = DISCIPLINES.map((d) => ({ ...d, items: drawings.filter((dr) => dr.discipline === d.key) })).filter((g) => g.items.length);
+    const all = DISCIPLINES.map((key) => ({ key, label: drawingDisciplineLabels[key][lang], items: drawings.filter((dr) => dr.discipline === key) })).filter((g) => g.items.length);
     return scopeKey && scoped ? all.filter((g) => g.key === scopeKey) : all;
-  }, [drawings, scopeKey, scoped]);
-  const scopeLabel = scopeKey ? DISCIPLINES.find((d) => d.key === scopeKey)?.label ?? scopeKey : '';
+  }, [drawings, scopeKey, scoped, lang]);
+  const scopeLabel = scopeKey ? drawingDisciplineLabels[scopeKey]?.[lang] ?? scopeKey : '';
+
+  const intro = T.intro(lang);
 
   if (unsettledItem) {
     return (
       <div className={`${styles.screen} ${styles.mid}`} data-testid={loadFailed ? 'drawings-unavailable' : 'drawings-loading'}>
-        <Eyebrow>DRAWINGS · REGISTER</Eyebrow>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
         {loadFailed ? (
           <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
-            <span>Couldn't load the drawing register — check your connection and access.</span>
-            <Button data-testid="drawings-retry" onClick={() => requestFreshSnapshot()}>Retry</Button>
+            <span>{L.loadFailed[lang]}</span>
+            <Button data-testid="drawings-retry" onClick={() => requestFreshSnapshot()}>{L.retry[lang]}</Button>
           </div>
         ) : (
-          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the drawing register…</div>
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{L.loading[lang]}</div>
         )}
       </div>
     );
@@ -100,8 +98,8 @@ export function DrawingsScreen() {
   if (missingItem) {
     return (
       <div className={`${styles.screen} ${styles.mid}`}>
-        <Eyebrow>DRAWINGS · REGISTER</Eyebrow>
-        <ItemNotFound what="Drawing" id={missingItem} onShowAll={() => setOpenId(null)} showAllLabel="Show all drawings" />
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <ItemNotFound what={L.what[lang]} id={missingItem} onShowAll={() => setOpenId(null)} showAllLabel={L.showAll[lang]} lang={lang} />
       </div>
     );
   }
@@ -110,14 +108,14 @@ export function DrawingsScreen() {
     <div className={`${styles.screen} ${styles.mid}`}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <Eyebrow>DRAWINGS · REGISTER</Eyebrow>
+          <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
           <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, maxWidth: 520 }}>
-            The current issue the team builds from. New revisions supersede the old — the field always sees the latest <b>For Construction</b> set. Drawings you open are cached for <b>offline</b> viewing on site.
+            {intro[0]}<b>{intro[1]}</b>{intro[2]}<b>{intro[3]}</b>{intro[4]}
           </div>
         </div>
         {can('drawing.issue', role) && (
           <Button variant="ink" onClick={() => setIssuing(true)} disabled={actionsLocked} data-testid="issue-drawing" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 15px', fontSize: 13, cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.6 : 1 }}>
-            <Plus size={16} /> Issue drawing
+            <Plus size={16} /> {L.issue[lang]}
           </Button>
         )}
       </div>
@@ -131,10 +129,10 @@ export function DrawingsScreen() {
         <div data-testid="drawings-stale-warning" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px', marginTop: 14 }}>
           <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
           <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>
-            Showing the last-known register — the latest couldn't load. Actions are paused until it refreshes.
+            {L.stale[lang]}
           </span>
           <button onClick={() => requestFreshSnapshot()} data-testid="drawings-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-            <RefreshCw size={12} /> Retry
+            <RefreshCw size={12} /> {L.retry[lang]}
           </button>
         </div>
       )}
@@ -142,10 +140,10 @@ export function DrawingsScreen() {
       {/* consultant discipline scope — their set by default, one tap to see everything */}
       {scopeKey && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 2px', flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.12em', color: 'var(--faint)' }}>SHOWING</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.12em', color: 'var(--faint)' }}>{L.showing[lang]}</span>
           <div style={{ display: 'inline-flex', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 10, padding: 2 }}>
-            <button onClick={() => setScoped(true)} data-testid="scope-mine" style={scopeBtn(scoped)}>My discipline · {scopeLabel}</button>
-            <button onClick={() => setScoped(false)} data-testid="scope-all" style={scopeBtn(!scoped)}>All disciplines</button>
+            <button onClick={() => setScoped(true)} data-testid="scope-mine" style={scopeBtn(scoped)}>{T.myDiscipline(scopeLabel, lang)}</button>
+            <button onClick={() => setScoped(false)} data-testid="scope-all" style={scopeBtn(!scoped)}>{L.allDisciplines[lang]}</button>
           </div>
         </div>
       )}
@@ -155,26 +153,26 @@ export function DrawingsScreen() {
           on failure with no last-good register show an unavailable/Retry boundary. In snapshot mode
           `reading`/`unavailable` are false and only the honest-empty branch renders. */}
       {reading && drawings.length === 0 && (
-        <div data-testid="drawings-loading" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the drawing register…</div>
+        <div data-testid="drawings-loading" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{L.loading[lang]}</div>
       )}
       {unavailable && drawings.length === 0 && (
         <div data-testid="drawings-unavailable" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><WifiOff size={18} /> Drawing register unavailable.</div>
-          <div style={{ fontSize: 12.5, marginTop: 6 }}>Check your connection and access, then retry.</div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><WifiOff size={18} /> {L.unavailableTitle[lang]}</div>
+          <div style={{ fontSize: 12.5, marginTop: 6 }}>{L.unavailableDetail[lang]}</div>
           <div style={{ marginTop: 14 }}>
             <Button variant="ink" onClick={() => requestFreshSnapshot()} data-testid="drawings-retry-empty" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <RefreshCw size={15} /> Retry
+              <RefreshCw size={15} /> {L.retry[lang]}
             </Button>
           </div>
         </div>
       )}
       {!reading && !unavailable && drawings.length === 0 && (
-        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>No drawings issued yet.</div>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{L.none[lang]}</div>
       )}
 
       {scopeKey && scoped && groups.length === 0 && drawings.length > 0 && (
         <div style={{ marginTop: 30, textAlign: 'center', color: 'var(--muted)', fontSize: 13.5 }}>
-          No {scopeLabel} drawings filed yet.
+          {T.noneInScope(scopeLabel, lang)}
           {/* #584 review round 11 — the escape from a valid-but-empty discipline scope, measured at
               116 x 15 the first time any walk reached this branch. A zero-padding caption is not a
               target, and this one is the only way out of a screen showing the viewer nothing. */}
@@ -195,7 +193,7 @@ export function DrawingsScreen() {
                 fontWeight: 600,
               }}
             >
-              Show all disciplines
+              {L.showAllDisciplines[lang]}
             </button>
           </div>
         </div>
@@ -211,8 +209,8 @@ export function DrawingsScreen() {
               // live revisions are review copies is labeled, never built from.
               const inReviewOnly = !cur && d.revisions.some((r) => r.status === 'for_review');
               const sm = inReviewOnly
-                ? { ...statusMeta('for_review'), label: 'IN REVIEW — NOT FOR CONSTRUCTION' }
-                : statusMeta(cur?.status ?? 'superseded');
+                ? { ...statusMeta('for_review', lang), label: drawingStatusLabels.inReview[lang] }
+                : statusMeta(cur?.status ?? 'superseded', lang);
               const place = pathOf(nodes, d.nodeId).join(' › ');
               return (
                 <button key={d.id} onClick={() => setOpenId(d.id)} data-testid={`drawing-${d.number}`} style={cardStyle}>
@@ -222,7 +220,7 @@ export function DrawingsScreen() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 13 }}>{d.number}</span>
-                      {cur && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 700, color: 'var(--accent)' }}>Rev {cur.rev}</span>}
+                      {cur && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 700, color: 'var(--accent)' }}>{T.rev(cur.rev, lang)}</span>}
                       <span style={{ ...chip, background: sm.bg, color: sm.fg, borderColor: sm.border }}>{sm.label}</span>
                     </div>
                     <div style={{ fontWeight: 600, fontSize: 14.5, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.title}</div>
@@ -232,8 +230,8 @@ export function DrawingsScreen() {
                       ) : (
                         <span>{d.zone ?? '—'}</span>
                       )}
-                      {d.activityId ? ` · governs ${d.activityId}` : ''}
-                      {d.revisions.length > 1 ? ` · ${d.revisions.length} revisions` : ''}
+                      {d.activityId ? T.governs(d.activityId, lang) : ''}
+                      {d.revisions.length > 1 ? T.revisions(d.revisions.length, lang) : ''}
                     </div>
                   </div>
                   <ChevronRight size={18} color="#b8b2a6" />
@@ -250,13 +248,18 @@ export function DrawingsScreen() {
   );
 }
 
-const ROLE_SHORT: Record<string, string> = { pmc: 'Project manager (PMC)', client: 'Client', engineer: 'Engineer', contractor: 'Contractor', consultant: 'Consultant', architect: 'Architect', worker: 'Worker' };
+/** A role chip in the reader's language; a role with no label is shown as served. */
+const roleShort = (role: string, lang: Lang): string =>
+  role === 'worker'
+    ? { en: 'Worker', hi: 'कारीगर', gu: 'કારીગર' }[lang]
+    : (forYouRole as Record<string, Record<Lang, string>>)[role]?.[lang] ?? role;
 
 /** The build-acknowledgement block for the current revision (Slice 2). Contractor/
  *  engineer confirm they're building to it; the PMC/everyone sees who has. Reads
  *  the live current revision so a fresh ack shows immediately. */
 function AckBlock({ drawing }: { drawing: Drawing }) {
   const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   const acknowledgeDrawing = useStore((s) => s.acknowledgeDrawing);
   // finding 4 / Task 10 correction (C3) — the ack is a mutating command; don't record it against a
   // register whose module read hasn't settled. The SINGLE shared predicate the store also enforces.
@@ -271,7 +274,7 @@ function AckBlock({ drawing }: { drawing: Drawing }) {
   return (
     <div style={{ padding: '12px 18px 14px', borderTop: '1px solid var(--hairline)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--faint)', marginBottom: 9 }}>
-        <HardHat size={13} /> BUILDING TO REV {rev.rev}
+        <HardHat size={13} /> {T.buildingTo(rev.rev, lang)}
       </div>
       {acks.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: canAck ? 12 : 0 }}>
@@ -279,24 +282,24 @@ function AckBlock({ drawing }: { drawing: Drawing }) {
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
               <Check size={14} color="#2F6B44" />
               <span style={{ fontWeight: 600 }}>{a.userName}</span>
-              <span style={{ ...chip, background: 'var(--panel)', color: 'var(--muted)', borderColor: 'var(--hairline)' }}>{ROLE_SHORT[a.role] ?? a.role}</span>
-              <span style={{ fontSize: 11, color: 'var(--faint)', marginLeft: 'auto' }}>{a.at}</span>
+              <span style={{ ...chip, background: 'var(--panel)', color: 'var(--muted)', borderColor: 'var(--hairline)' }}>{roleShort(a.role, lang)}</span>
+              <span style={{ fontSize: 11, color: 'var(--faint)', marginLeft: 'auto' }}>{drawingDateIn(a.at, lang)}</span>
             </div>
           ))}
         </div>
       ) : (
-        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: canAck ? 12 : 0 }}>No one has acknowledged this revision yet.</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: canAck ? 12 : 0 }}>{L.noAcks[lang]}</div>
       )}
       {/* the frozen distribution (Phase 1 Task 3): who this revision was ISSUED to and hasn't confirmed yet */}
       {(rev.recipients ?? []).some((r) => !r.acked) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: canAck ? 12 : 0 }} data-testid="ack-outstanding">
           {/* #584 review round 1, finding 3 — the outstanding ISSUED-TO status is the reason a
               revision is still chased, so it carries F-1b's 13px floor rather than eyebrow type. */}
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>Issued to — not yet confirmed</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>{L.outstanding[lang]}</div>
           {(rev.recipients ?? []).filter((r) => !r.acked).map((r, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--muted)' }}>
               <span style={{ fontWeight: 600 }}>{r.userName}</span>
-              <span style={{ ...chip, background: 'var(--panel)', color: 'var(--muted)', borderColor: 'var(--hairline)' }}>{ROLE_SHORT[r.role] ?? r.role}</span>
+              <span style={{ ...chip, background: 'var(--panel)', color: 'var(--muted)', borderColor: 'var(--hairline)' }}>{roleShort(r.role, lang)}</span>
             </div>
           ))}
         </div>
@@ -304,11 +307,11 @@ function AckBlock({ drawing }: { drawing: Drawing }) {
       {canAck && (
         drawing.ackedByMe ? (
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 600, color: 'var(--green-text, #2F6B44)' }}>
-            <Check size={16} /> You’re building to Rev {rev.rev}
+            <Check size={16} /> {T.youBuild(rev.rev, lang)}
           </div>
         ) : (
           <Button variant="ink" onClick={() => acknowledgeDrawing(drawing.id)} disabled={ackLocked} data-testid="ack-drawing" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 15px', fontSize: 13, cursor: ackLocked ? 'not-allowed' : 'pointer', opacity: ackLocked ? 0.6 : 1 }}>
-            <HardHat size={15} /> I’m building to Rev {rev.rev}
+            <HardHat size={15} /> {T.ackButton(rev.rev, lang)}
           </Button>
         )
       )}
@@ -317,10 +320,11 @@ function AckBlock({ drawing }: { drawing: Drawing }) {
 }
 
 export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose: () => void }) {
+  const lang = useStore((s) => s.lang);
   const [rev, setRev] = useState<DrawingRevision>(drawing.current ?? drawing.revisions[0]);
   const src = resolveDrawingUrl(rev.url);
   const kind = previewKind(rev.mime);
-  const sm = statusMeta(rev.status);
+  const sm = statusMeta(rev.status, lang);
   const isCurrent = drawing.current?.id === rev.id;
 
   return (
@@ -333,28 +337,28 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
             <span style={{ fontFamily: 'var(--font-mono)' }}>{drawing.number}</span> · {drawing.title}
           </div>
           <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
-            Rev {rev.rev} · issued by {rev.issuedBy} · {rev.issuedAt}
+            {T.issuedLine(rev.rev, rev.issuedBy, drawingDateIn(rev.issuedAt, lang), lang)}
           </div>
         </div>
         <span style={{ ...chip, background: sm.bg, color: sm.fg, borderColor: sm.border }}>{sm.label}</span>
         {/* Wave 0 / F-1b round 8 — the drawing viewer's dismiss. A glyph with no padding measured
             32x22; it is the only way out of a full-screen sheet on a phone, so it takes the floor. */}
-        <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44 }}>
+        <button onClick={onClose} aria-label={L.close[lang]} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44 }}>
           <X size={20} />
         </button>
       </div>
 
       <div style={{ background: '#e9e4d8', maxHeight: '58vh', overflow: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
-        {kind === 'image' && <img src={src} alt={`${drawing.number} Rev ${rev.rev}`} style={{ maxWidth: '100%', display: 'block' }} />}
-        {kind === 'pdf' && <iframe src={src} title={`${drawing.number} Rev ${rev.rev}`} style={{ width: '100%', height: '58vh', border: 'none', background: '#fff' }} />}
+        {kind === 'image' && <img src={src} alt={`${drawing.number} ${T.rev(rev.rev, lang)}`} style={{ maxWidth: '100%', display: 'block' }} />}
+        {kind === 'pdf' && <iframe src={src} title={`${drawing.number} ${T.rev(rev.rev, lang)}`} style={{ width: '100%', height: '58vh', border: 'none', background: '#fff' }} />}
         {kind === 'download' && (
           <div style={{ textAlign: 'center', padding: 40 }}>
             <FileText size={40} color="#b8b2a6" />
             <div style={{ fontSize: 13.5, color: 'var(--muted)', margin: '12px 0 16px', maxWidth: 320 }}>
-              {rev.mime.includes('dwg') || rev.mime.includes('dxf') ? 'CAD source (DWG) — not previewable in the browser. Download it, or view the issued PDF.' : 'This file type can’t be previewed. Download to open it.'}
+              {rev.mime.includes('dwg') || rev.mime.includes('dxf') ? L.cadNote[lang] : L.noPreview[lang]}
             </div>
             <a href={src} download={`${drawing.number}-Rev${rev.rev}`} style={{ ...dlBtn }}>
-              <Download size={16} /> Download
+              <Download size={16} /> {L.download[lang]}
             </a>
           </div>
         )}
@@ -368,19 +372,19 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
 
       <div style={{ padding: '12px 18px 16px', borderTop: '1px solid var(--hairline)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--faint)', marginBottom: 8 }}>
-          <History size={13} /> REVISION HISTORY
+          <History size={13} /> {L.history[lang]}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {drawing.revisions.map((r) => {
             const on = r.id === rev.id;
-            const s = statusMeta(r.status);
+            const s = statusMeta(r.status, lang);
             return (
               // #584 review round 12 — selecting a revision is an ordinary phone interaction and
               // these rows measured ~35px. Inside the viewer dialog, in the default demo.
               <button key={r.id} onClick={() => setRev(r)} data-testid={`rev-${r.id}`} style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', minHeight: 44, padding: '9px 11px', borderRadius: 9, cursor: 'pointer', border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'rgba(35,33,28,.04)' : '#fff' }}>
-                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 12, width: 42 }}>Rev {r.rev}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 12, minWidth: 42 }}>{T.rev(r.rev, lang)}</span>
                 <span style={{ ...chip, background: s.bg, color: s.fg, borderColor: s.border }}>{s.label}</span>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', flex: 1 }}>{r.issuedAt} · {r.issuedBy}</span>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', flex: 1 }}>{drawingDateIn(r.issuedAt, lang)} · {r.issuedBy}</span>
                 {r.status !== 'superseded' && <Lock size={12} color="#2F6B44" />}
               </button>
             );
@@ -396,6 +400,7 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
 function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
   const nodes = useStore(useShallow((s) => s.nodes));
   const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   const fileDrawing = useStore((s) => s.fileDrawing);
   const canFile = can('drawing.file', role);
   // Task 10 correction (C2b) — re-file / unfile are drawing MUTATIONS: never run them against a register
@@ -409,17 +414,17 @@ function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
   return (
     <div style={{ padding: '12px 18px 14px', borderTop: '1px solid var(--hairline)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--faint)', marginBottom: 9 }}>
-        <MapPin size={13} /> LOCATION
+        <MapPin size={13} /> {L.location[lang]}
       </div>
       {!editing && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <LocationContext nodeId={drawing.nodeId} fallback="Not filed to a location (project-wide)" compact testId={`drawing-place-${drawing.id}`} />
+          <LocationContext nodeId={drawing.nodeId} fallback={L.unfiled[lang]} lang={lang} compact testId={`drawing-place-${drawing.id}`} />
           {/* Every one of these states used to look the same from outside: a control that was
               simply absent or greyed. Each now states its reason, and offers the action when there is one. */}
           {!canFile ? (
             <EditState
               state="restricted"
-              reason="Only the PMC files a drawing to a location."
+              reason={L.onlyPmcFiles[lang]}
               testId="drawing-location-state"
             />
           ) : (
@@ -430,13 +435,13 @@ function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
               state={locked ? 'paused' : 'editable'}
               reason={
                 locked
-                  ? 'The drawing register is still loading — location changes are paused until it refreshes.'
+                  ? L.locationPaused[lang]
                   : filed
-                    ? 'You can move this drawing to another location.'
-                    : 'This drawing is not filed to a place yet.'
+                    ? L.canMove[lang]
+                    : L.notFiled[lang]
               }
               action={{
-                label: filed ? 'Move' : 'File to a location',
+                label: filed ? L.move[lang] : L.fileTo[lang],
                 onClick: () => { if (!locked) setEditing(true); },
                 disabled: locked,
                 testId: 'drawing-refile',
@@ -450,7 +455,7 @@ function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {locked && (
             <div data-testid="drawing-location-paused" style={{ fontSize: 12, color: 'var(--amber-text)', background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 9, padding: '7px 10px' }}>
-              The drawing register is still loading — location changes are paused until it refreshes.
+              {L.locationPaused[lang]}
             </div>
           )}
           {/* the picker is inert while locked: pointer-events off + a guarded onChange (belt-and-braces
@@ -460,9 +465,9 @@ function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             {drawing.nodeId && (
-              <Button variant="outline" disabled={locked} onClick={() => { if (locked) return; fileDrawing(drawing.id, null); setEditing(false); }} data-testid="drawing-unfile" style={{ padding: '7px 12px', fontSize: 12, cursor: locked ? 'not-allowed' : 'pointer', opacity: locked ? 0.5 : 1 }}>Unfile</Button>
+              <Button variant="outline" disabled={locked} onClick={() => { if (locked) return; fileDrawing(drawing.id, null); setEditing(false); }} data-testid="drawing-unfile" style={{ padding: '7px 12px', fontSize: 12, cursor: locked ? 'not-allowed' : 'pointer', opacity: locked ? 0.5 : 1 }}>{L.unfile[lang]}</Button>
             )}
-            <Button variant="ink" onClick={() => setEditing(false)} style={{ padding: '7px 12px', fontSize: 12, marginLeft: 'auto' }}>Done</Button>
+            <Button variant="ink" onClick={() => setEditing(false)} style={{ padding: '7px 12px', fontSize: 12, marginLeft: 'auto' }}>{L.done[lang]}</Button>
           </div>
         </div>
       )}
@@ -470,10 +475,10 @@ function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
   );
 }
 
-const DISCIPLINE_OPTS: Discipline[] = ['architectural', 'structural', 'mep', 'other'];
-
 function IssueDrawingModal({ onClose }: { onClose: () => void }) {
   const issueDrawing = useStore((s) => s.issueDrawing);
+  const lang = useStore((s) => s.lang);
+  const lead = T.newIntro(lang);
   const [number, setNumber] = useState('');
   const [title, setTitle] = useState('');
   const [discipline, setDiscipline] = useState<Discipline>('architectural');
@@ -505,20 +510,20 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal onClose={onClose} maxWidth={440} labelledBy="issue-title">
       <div style={{ padding: '18px 20px' }}>
-        <div id="issue-title" style={{ fontWeight: 700, fontSize: 17 }}>New drawing</div>
-        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>A matching number adds a revision and supersedes the prior. <b>Save as draft</b> to prepare it privately, or <b>Publish</b> to issue it to the build team.</div>
+        <div id="issue-title" style={{ fontWeight: 700, fontSize: 17 }}>{L.newTitle[lang]}</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>{lead[0]}<b>{lead[1]}</b>{lead[2]}<b>{lead[3]}</b>{lead[4]}</div>
 
         <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-          <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder="Number (A-201)" style={{ ...fld, flex: 1 }} />
-          <input value={rev} onChange={(e) => setRev(e.target.value)} placeholder="Rev" style={{ ...fld, width: 70 }} />
+          <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder={L.numberPlaceholder[lang]} style={{ ...fld, flex: 1 }} />
+          <input value={rev} onChange={(e) => setRev(e.target.value)} placeholder={L.revPlaceholder[lang]} style={{ ...fld, width: 70 }} />
         </div>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" style={{ ...fld, marginTop: 10 }} />
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={L.titlePlaceholder[lang]} style={{ ...fld, marginTop: 10 }} />
         <select value={discipline} onChange={(e) => setDiscipline(e.target.value as Discipline)} style={{ ...fld, marginTop: 10 }}>
-          {DISCIPLINE_OPTS.map((d) => <option key={d} value={d}>{d}</option>)}
+          {DISCIPLINES.map((d) => <option key={d} value={d}>{drawingDisciplineLabels[d][lang]}</option>)}
         </select>
 
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '14px 0 7px' }}>LOCATION (OPTIONAL)</div>
-        <div style={{ fontSize: 11.5, color: 'var(--faint)', marginBottom: 7 }}>File it at its level — a floor plan on the zone, a detail on the object. Rooms below inherit it.</div>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '14px 0 7px' }}>{L.locationOptional[lang]}</div>
+        <div style={{ fontSize: 11.5, color: 'var(--faint)', marginBottom: 7 }}>{L.locationHint[lang]}</div>
         <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="dwg-loc" />
 
         {/* Wave 0 / F-1b round 7 — the file control rendered 254×21, the smallest target in this
@@ -536,9 +541,9 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
         {file && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{file.name}</div>}
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-          <Button variant="outline" onClick={onClose} style={{ flex: '0 0 auto', padding: '12px 16px' }}>Cancel</Button>
-          <Button variant="light" onClick={() => submit(false)} disabled={!ready} data-testid="save-draft-drawing" style={{ flex: 1, padding: 12 }}>Save as draft</Button>
-          <Button variant="ink" onClick={() => submit(true)} disabled={!ready} data-testid="publish-drawing" style={{ flex: 1, padding: 12 }}>Publish</Button>
+          <Button variant="outline" onClick={onClose} style={{ flex: '0 0 auto', padding: '12px 16px' }}>{L.cancel[lang]}</Button>
+          <Button variant="light" onClick={() => submit(false)} disabled={!ready} data-testid="save-draft-drawing" style={{ flex: 1, padding: 12 }}>{L.saveDraft[lang]}</Button>
+          <Button variant="ink" onClick={() => submit(true)} disabled={!ready} data-testid="publish-drawing" style={{ flex: 1, padding: 12 }}>{L.publish[lang]}</Button>
         </div>
       </div>
     </Modal>
