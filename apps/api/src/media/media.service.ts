@@ -182,20 +182,24 @@ export class MediaService {
       });
     } catch (e) {
       // a concurrent replay of the same clientKey landed first — return ITS row
-      // (the unique is the DB proof the photo persisted exactly once). The winner's object IS
-      // this key's bytes for the same clientKey, so nothing is orphaned on this path.
+      // (the unique is the DB proof the photo persisted exactly once). The winner's row points at
+      // the WINNER's object: every request stores under its own random key, so this request's
+      // object is unreferenced either way and goes through the earned cleanup below (#482).
       if (input.clientKey && e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
         const winner = await this.prisma.media.findUniqueOrThrow({
           where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
           select: REPLAY_SELECT,
         });
+        let replay: { id: string; url: string } | undefined;
         try {
-          return this.replayed(user, winner);
+          replay = this.replayed(user, winner);
         } catch (refused) {
-          // the key is another member's: nothing references THIS request's object, so it goes
-          // through the same earned cleanup below rather than staying in the bucket
+          // the key is another member's: refused, after the same cleanup
           e = refused;
         }
+        await this.removeIfUnreferenced(projectId, key);
+        if (replay) return replay;
+        throw e;
       }
       // THE ROLLBACK DOES NOT REACH THE BUCKET (#571 round 11, finding 3). The preflight above is
       // deliberately advisory, so the authoritative in-transaction check is the one that can refuse
@@ -214,12 +218,7 @@ export class MediaService {
       // no row references its key. A read that itself fails leaves the object alone — an orphan to
       // sweep is a cost; a deleted photo behind a committed row is not recoverable, and where the two
       // are not distinguishable the harmless one is the only admissible guess.
-      if (key) {
-        const persisted = await this.prisma.media
-          .findFirst({ where: { projectId, storageKey: key }, select: { id: true } })
-          .catch(() => ({ id: 'unknown' }) as { id: string });
-        if (!persisted) await this.storage.remove(key).catch(() => {});
-      }
+      await this.removeIfUnreferenced(projectId, key);
       throw e;
     }
 
@@ -227,6 +226,16 @@ export class MediaService {
     if (events.length) await this.dispatcher.dispatchCommitted(events);
     // a short-lived, signed path resolved against the API base by the frontend
     return { id: row.id, url: this.signed.mediaPath(row.id) };
+  }
+
+  /** The earned cleanup (#571 round 12): remove this request's stored object only once a fresh read
+   *  proves no row references its key. A read that fails leaves the object alone. */
+  private async removeIfUnreferenced(projectId: string, key: string | null | undefined): Promise<void> {
+    if (!key) return;
+    const persisted = await this.prisma.media
+      .findFirst({ where: { projectId, storageKey: key }, select: { id: true } })
+      .catch(() => ({ id: 'unknown' }) as { id: string });
+    if (!persisted) await this.storage.remove(key).catch(() => {});
   }
 
   /** Re-file a photo onto a location-tree node (or null to unfile). Scoped to the

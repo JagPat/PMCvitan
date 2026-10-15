@@ -282,13 +282,28 @@ describe('MediaService — a replayed upload key (#482)', () => {
     expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
   });
 
-  it('a concurrent replay of the caller\'s own plain photo returns that row', async () => {
-    const { svc, prisma } = make(null);
+  it('a concurrent replay of the caller\'s own plain photo returns that row, and cleans up this request\'s object', async () => {
+    const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
       findUniqueOrThrow: vi.fn(async () => ({ id: 'own', kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
+      findFirst: vi.fn(async () => null),
     });
     expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok' });
+    // the winner's row points at the winner's object; this request's own key is unreferenced
+    expect(prisma.media.findFirst).toHaveBeenCalledWith({ where: { projectId: 'ambli', storageKey: 'ambli/progress/med1.jpg' }, select: { id: true } });
+    expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
+  });
+
+  it('a concurrent replay keeps this request\'s object when a row still references it', async () => {
+    const { svc, prisma, storage } = make(null);
+    prisma.media.create.mockRejectedValueOnce(p2002());
+    Object.assign(prisma.media, {
+      findUniqueOrThrow: vi.fn(async () => ({ id: 'own', kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
+      findFirst: vi.fn(async () => ({ id: 'own' })),
+    });
+    expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok' });
+    expect(storage.remove).not.toHaveBeenCalled();
   });
 });
 
