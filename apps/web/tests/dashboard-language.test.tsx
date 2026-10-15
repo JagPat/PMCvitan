@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
-import { dashboardLabels, type Lang, type Role } from '@vitan/shared';
+import { dashboardLabels, type Activity, type Lang, type Role } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
 
 /**
@@ -14,9 +14,9 @@ type StoreState = Record<string, unknown>;
 
 const PHASES = [{ id: 'ph-1', name: 'Finishes', order: 0, plannedStart: 0, plannedEnd: 30, activityTotal: 2, done: 1, inProgress: 1, blocked: 0, notStarted: 0, donePct: 50 }];
 const ACTS = [
-  { id: 'ACT-1', name: 'Kitchen Tiling', zone: 'Kitchen', decisionId: null, phaseId: 'ph-1', nodeId: null, ps: 0, pe: 5, as: 0, ae: 4, status: 'done', gm: 'ok', gt: 'ok', gi: 'ok' },
-  { id: 'ACT-2', name: 'Bath Fittings', zone: 'Bath', decisionId: null, phaseId: 'ph-1', nodeId: null, ps: 5, pe: 9, as: 5, ae: null, status: 'in-progress', gm: 'ok', gt: 'ok', gi: 'ok' },
-];
+  { id: 'ACT-1', name: 'Kitchen Tiling', zone: 'Kitchen', decisionId: null, phaseId: 'ph-1', ps: 0, pe: 5, as: 0, ae: 4, status: 'done', gm: 'ok', gt: 'ok', gi: 'ok' },
+  { id: 'ACT-2', name: 'Bath Fittings', zone: 'Bath', decisionId: null, phaseId: 'ph-1', ps: 5, pe: 9, as: 5, ae: null, status: 'in-progress', gm: 'ok', gt: 'ok', gi: 'ok' },
+] as Activity[];
 const DATA = ['Villa B', 'Residence', 'Finishing', 'VB-01', 'Finishes', 'PMC'];
 
 async function load(lang: Lang, { role = 'pmc' as Role, env = { VITE_API_URL: 'http://api.test' } as Record<string, string>, over = {} as StoreState } = {}) {
