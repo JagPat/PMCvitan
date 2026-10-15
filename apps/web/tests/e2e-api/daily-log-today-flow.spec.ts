@@ -135,8 +135,10 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   await expect(now).toHaveAttribute('data-action', 'start');
   await expect(page.getByTestId('today-overdue')).toHaveCount(0);
 
-  // a second tap never sends twice: the Site screen holds the sent log read-only and offers a new day
+  // a second tap never sends twice, and the Site screen gives Today's answer (#482, QA 15 Oct item 1): the
+  // earlier day's sent log is not today's, so it says there is no log yet today and offers to start one
   await page.getByRole('button', { name: /Daily Site Log/i }).click();
-  await expect(page.getByTestId('submit-daily-log')).toBeDisabled();
+  await expect(page.getByTestId('daily-log-no-today')).toBeVisible();
+  await expect(page.getByTestId('submit-daily-log')).toHaveCount(0);
   await expect(page.getByTestId('start-new-day')).toBeVisible();
 });

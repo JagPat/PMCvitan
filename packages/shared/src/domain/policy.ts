@@ -31,8 +31,9 @@ export const ROLE_POLICY = {
   // (a pmc who authored a draft and was later re-roled must still reach their own private
   // draft); the identity narrowing lives in the service, exactly like `decision.withdrawChange`.
   'decision.updateDraft': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
-  // consultants raise change requests to flag a conflict in their discipline (read-mostly otherwise)
-  'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  // #482 QA (Jagrut, 15 Oct 2026) — reopening an approved decision is the client's call, and the PMC's
+  // on their behalf; the engineer, contractor and consultant raise concerns with the PMC instead
+  'decision.change': ['pmc', 'client'],
   // withdraw an open change request — endpoint allowlist; the SERVICE narrows it to the
   // actual requester or the PMC, so the UI must also check requestedById (Phase 1 Task 2)
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant', 'architect'],
@@ -223,7 +224,10 @@ export const ROLE_POLICY = {
   // decision (the flag is engineer site work; the resolution disposes of the dispute)
   'dailyLog.resolveMismatch': ['pmc'],
   'dailyLog.submit': ['engineer', 'pmc'],
-  'media.upload': ['pmc', 'engineer'],
+  // Board decision 14 Oct 2026 (#482): every project member adds site photos (a foreman signs in as a contractor
+  // member). Anonymous worker tokens stay out. The service narrows the newly admitted roles to a plain site
+  // photo: linking one to a decision, a daily log or an inspection stays the PMC's and engineer's.
+  'media.upload': ['pmc', 'engineer', 'contractor', 'consultant', 'client'],
   'media.delete': ['pmc', 'engineer'],
   // re-file a photo onto a location-tree node (or unfile) — same authority as upload
   'media.file': ['pmc', 'engineer'],

@@ -169,6 +169,38 @@ describe('Site Visits SV1-b — start, end and close (live PG)', () => {
     expect((await page('?limit=201')).status).toBe(400);
   });
 
+  it('`status=open` lists every open visit whatever its age, so a screen knows who is on site beyond its first page (#874)', async () => {
+    const open = randomUUID();
+    expect((await start(consultantToken, { id: open, claimedAt: ago(60 * 24 * 3) })).status).toBe(201);
+    const ended = randomUUID();
+    expect((await start(pmcToken, { id: ended, claimedAt: ago(5) })).status).toBe(201);
+    await finish(pmcToken, ended);
+    const res = await http().get(`${base()}?status=open&limit=200`).set('Authorization', `Bearer ${clientToken}`);
+    expect(res.status).toBe(200);
+    const listed: { id: string; status: string }[] = res.body;
+    expect(listed.map((v) => v.id)).toContain(open);
+    expect(listed.map((v) => v.id)).not.toContain(ended);
+    expect(listed.every((v) => v.status === 'open')).toBe(true);
+    expect((await http().get(`${base()}?status=ended`).set('Authorization', `Bearer ${clientToken}`)).status).toBe(400);
+    await finish(consultantToken, open);
+  });
+
+  it('an open page continues past a visit that ended between pages (Codex 4276569151)', async () => {
+    const older = randomUUID();
+    expect((await start(consultantToken, { id: older, claimedAt: ago(60 * 24 * 4) })).status).toBe(201);
+    const newer = randomUUID();
+    expect((await start(pmcToken, { id: newer, claimedAt: ago(60 * 24 * 2) })).status).toBe(201);
+    const page = (query: string) => http().get(`${base()}${query}`).set('Authorization', `Bearer ${clientToken}`);
+    const first: string[] = (await page('?status=open&limit=200')).body.map((v: { id: string }) => v.id);
+    expect(first.indexOf(newer)).toBeLessThan(first.indexOf(older));
+    // the last row of the previous page ends before the next page is asked for
+    await finish(pmcToken, newer);
+    const next = await page(`?status=open&before=${newer}`);
+    expect(next.status).toBe(200);
+    expect(next.body.map((v: { id: string }) => v.id)).toContain(older);
+    await finish(consultantToken, older);
+  });
+
   it('a retried start with the same Idempotency-Key lands once', async () => {
     const id = randomUUID();
     const key = `sv1b-${randomUUID()}`;

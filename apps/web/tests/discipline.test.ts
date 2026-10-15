@@ -21,8 +21,8 @@ describe('drawingDisciplineFor — consultant discipline → drawing register bu
 });
 
 describe('consultant permissions', () => {
-  it('can raise a change request but cannot approve decisions or issue drawings', () => {
-    expect(can('decision.change', 'consultant')).toBe(true);
+  it('cannot raise a change request (#482 QA: the client\'s call), approve decisions or issue drawings', () => {
+    expect(can('decision.change', 'consultant')).toBe(false);
     // Phase 6 task 4b — the approve ROUTE ceiling now admits every decider-capable role (a
     // consultant can be a NAMED member-decider); the service narrows to the actual decider,
     // so a non-decider consultant is still refused at the command.

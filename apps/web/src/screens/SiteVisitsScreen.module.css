@@ -1,0 +1,127 @@
+/* Site Visits SV1-c (#792): one column of visit cards, phone first. */
+.screen {
+  margin: 0 auto;
+  max-width: 760px;
+  padding: 22px 18px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+@media (min-width: 640px) {
+  .screen {
+    padding: 30px 40px 72px;
+  }
+}
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.title {
+  font-family: var(--font-serif);
+  font-size: 26px;
+  font-weight: 500;
+  margin: 0;
+  line-height: 1.15;
+}
+.note {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+}
+.error {
+  font-size: 13px;
+  color: var(--red-solid, #b3261e);
+  margin: 0;
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.card {
+  background: #fff;
+  border: 1px solid rgba(35, 33, 28, 0.12);
+  border-radius: 16px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.chip {
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 20px;
+  padding: 3px 10px;
+  background: var(--panel);
+}
+.chip[data-status='open'] {
+  background: #e3f1e6;
+}
+.meta {
+  font-size: 13px;
+  color: var(--muted);
+}
+.sub {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 8px 0 0;
+}
+.items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+}
+.items li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+.retired {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+/* A field grows only along a row of controls: in a card (a column) a flex
+   basis would set its height, which drew the start select ~120px tall. */
+.field {
+  min-width: 0;
+  height: 44px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(35, 33, 28, 0.18);
+  background: #fff;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+}
+.add .field {
+  flex: 1 1 180px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}

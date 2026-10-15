@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { API_BASE, CONNECTIVITY_SIMULATOR, dailyLogReadMode } from '@/data/apiGateway';
@@ -11,6 +11,8 @@ import { captureStamp } from '@/lib/captureStamp';
 import { projectScopeOf } from '@/store/projectScope';
 import { dailyLogCommandInFlight, dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { pathOf } from '@/lib/locationTree';
+import { todayCivil } from '@/lib/civilDate';
+import { sentOnEarlierDay } from '@/lib/engineerToday';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
 import { can, dailyLogLabels as L, dailyLogText as T, labourLabels, type ScreenKey, type Lang } from '@vitan/shared';
 import styles from './responsive.module.css';
@@ -80,6 +82,16 @@ export function DailyLogScreen() {
   const location = useStore((s) => s.location);
   const siteLabel = location || short;
 
+  // #482 (QA 15 Oct, item 1) — the site's civil day (the project's zone, IST for most), the same day the
+  // Today card and the PMC brief judge. A minute tick moves a screen left open across midnight on.
+  const timeZone = useStore((s) => s.timeZone);
+  const [, setMinute] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setMinute((m) => m + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const today = todayCivil(timeZone);
+
   const fileRef = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState<string | null>(null);
   const [addingMaterial, setAddingMaterial] = useState(false);
@@ -116,6 +128,11 @@ export function DailyLogScreen() {
 
   // starting a new day leaves the log the URL names: the route is released first, so the viewer's own start is
   // never shown as that log being "not found"
+  // #482 (QA 15 Oct, item 7) — the PMC reviews the site's day, the engineer runs it: Check in, Check out and
+  // starting a day are hidden for the PMC (the server's permissions are unchanged); adding a photo stays.
+  const runsTheDay = role !== 'pmc';
+  const mayStart = runsTheDay && can('dailyLog.start', role);
+
   const startNewDay = () => {
     setRouteItem(null);
     startDailyLog();
@@ -176,13 +193,35 @@ export function DailyLogScreen() {
         title={L.noLogTitle[lang]}
         detail={L.noLogDetail[lang]}
         action={
-          can('dailyLog.start', role) ? (
+          mayStart ? (
             <Button variant="ink" onClick={startNewDay} disabled={inFlight} data-testid="start-new-day">
               <Plus size={15} /> {starting ? L.starting[lang] : L.startToday[lang]}
             </Button>
           ) : undefined
         }
       />
+    );
+  }
+
+  // #482 (QA 15 Oct, item 1) — the latest log was sent on an EARLIER day: it is not today's, so the screen
+  // says what the Today card and the brief say — no log yet today — instead of showing yesterday's log as
+  // "Submitted". A link that names that log (`/site/log/<id>`) still opens it as a record, and a read that
+  // has not settled (or failed) keeps the last-known log with its warning: today's may already exist.
+  if (record.state === 'list' && !actionsLocked && sentOnEarlierDay(dailyLog, today)) {
+    return (
+      <div data-testid="daily-log-no-today">
+        <EmptyState
+          title={L.noLogToday[lang]}
+          detail={`${T.lastLogSent(dailyLog.logDate ? logDateIn(dailyLog, lang) : null, lang)} ${L.noLogDetail[lang]}`}
+          action={
+            mayStart ? (
+              <Button variant="ink" onClick={startNewDay} disabled={inFlight} data-testid="start-new-day">
+                <Plus size={15} /> {starting ? L.starting[lang] : L.startToday[lang]}
+              </Button>
+            ) : undefined
+          }
+        />
+      </div>
     );
   }
 
@@ -210,7 +249,7 @@ export function DailyLogScreen() {
             <div style={{ fontWeight: 700, fontSize: 22, marginTop: 4 }}>{short}</div>
             <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{logDateIn(dailyLog, lang)}</div>
           </div>
-          {dailyLog.submitted && can('dailyLog.start', role) && (
+          {dailyLog.submitted && mayStart && (
             <Button variant="outline" onClick={startNewDay} disabled={actionsLocked || inFlight} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
               <Plus size={15} /> {L.startNewDay[lang]}
             </Button>
@@ -241,11 +280,13 @@ export function DailyLogScreen() {
               <div style={{ fontWeight: 600, fontSize: 14 }}>{T.checkedIn(dailyLog.checkinTime, lang)}</div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'rgba(237,231,218,.62)', marginTop: 2 }}>{T.checkedInWhere(siteLabel, lang)}</div>
             </div>
-            <button onClick={checkOut} disabled={sending} data-testid="check-out" style={{ background: 'transparent', border: '1px solid rgba(237,231,218,.3)', color: 'var(--sidebar-text)', padding: '8px 11px', minHeight: 44, borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
-              {L.checkOut[lang]}
-            </button>
+            {runsTheDay && (
+              <button onClick={checkOut} disabled={sending} data-testid="check-out" style={{ background: 'transparent', border: '1px solid rgba(237,231,218,.3)', color: 'var(--sidebar-text)', padding: '8px 11px', minHeight: 44, borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
+                {L.checkOut[lang]}
+              </button>
+            )}
           </div>
-        ) : (
+        ) : runsTheDay && (
           <>
             <button onClick={checkIn} disabled={sending} data-testid="check-in" style={{ width: '100%', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 15, padding: 18, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9 }}>
               <Crosshair size={18} /> {L.checkIn[lang]}

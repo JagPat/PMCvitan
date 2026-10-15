@@ -383,7 +383,7 @@ test('the engineer PASSES the reinspection with evidence; the PMC accepts; the a
 test('the CHANGE LOOP: a change request reverts readiness; the client re-approves in the browser; ready again', async ({ page, request }) => {
   await ensureIds(request);
   expect((await request.post(`${API}/projects/${chainId}/decisions/${decisionId}/change`, {
-    headers: bearer(conToken),
+    headers: bearer(pmcToken), // #482 QA: only the client and the PMC request a change
     data: { reason: 'Kota lot rejected at yard', costImpact: 0, timeImpactDays: 3 },
   })).ok()).toBeTruthy();
   await pollGate(request, 'decision', 'wait'); // the reopening reverts readiness automatically
