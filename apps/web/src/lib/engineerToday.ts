@@ -31,10 +31,7 @@ export type TodayPath = {
  * for the log it was given for and is gone once the log is sent; a sent log's path is the record.
  */
 export function todayPath(latest: DailyLog | null, totalWorkers: number, today?: string, crewConfirmed = false): TodayPath {
-  // a sent log with no civil date (a legacy row) is history too: the server lets a new day start
-  // over any submitted log, and the Site screen offers it
-  const earlierDaySent = !!latest?.submitted && (!latest.logDate || (!!today && latest.logDate < today));
-  const log = earlierDaySent ? null : latest;
+  const log = sentOnEarlierDay(latest, today) ? null : latest;
   const done: Record<EngineerTodayStep, boolean> = {
     checkIn: !!log?.checkedIn,
     crew: !!log && (totalWorkers > 0 || (crewConfirmed && !log.submitted)),
@@ -49,6 +46,16 @@ export function todayPath(latest: DailyLog | null, totalWorkers: number, today?:
   const canSend = !!log && log.checkedIn && !log.submitted;
   const overdue = log && !log.submitted && log.logDate && today && log.logDate < today ? log.logDate : null;
   return { done, action, doneCount, canSend, overdue };
+}
+
+/**
+ * #482 (QA 15 Oct, item 1) — is the project's latest log one already SENT on an earlier civil day? Then
+ * today has no log yet: the Today card, the Daily Site Log screen and the PMC brief (`logOn(today)`) all
+ * say so. A sent log with no civil date (a legacy row) is history too: the server lets a new day start
+ * over any submitted log. `today` is the project's civil date (`todayCivil`).
+ */
+export function sentOnEarlierDay(latest: Pick<DailyLog, 'submitted' | 'logDate'> | null, today?: string): boolean {
+  return !!latest?.submitted && (!latest.logDate || (!!today && latest.logDate < today));
 }
 
 /**
