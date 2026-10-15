@@ -41,3 +41,4 @@ export * from './contracts/brief';
 export * from './i18n/dictionary';
 export * from './i18n/notices';
 export * from './i18n/actionItems';
+export * from './i18n/drawings';
