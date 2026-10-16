@@ -511,7 +511,6 @@ export interface UploadMediaInput {
   inspectionId?: string;
   inspectionItemId?: string;
   clientKey?: string;
-  dailyLogId?: string; // the day's log this photo was taken for (#482)
   geoLat?: number;
   geoLng?: number;
   takenAt?: string;

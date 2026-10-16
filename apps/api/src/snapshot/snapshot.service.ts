@@ -102,14 +102,14 @@ export class SnapshotService {
       const log = slice.dailyLog;
       if (!log?.id) return null;
       const id = log.id;
-      const [filed, mine] = await Promise.all([
-        this.prisma.media.count({ where: { projectId, dailyLogId: id, kind: 'progress' } }),
-        this.prisma.media.findMany({
-          where: { projectId, dailyLogId: id, kind: 'progress', uploadedBy: userId, clientKey: { not: null } },
-          select: { clientKey: true },
-        }),
-      ]);
-      return { photoCount: Math.max(log.progress, filed), myPhotoKeys: mine.map((m) => m.clientKey!) };
+      // One statement, so the count and the viewer's keys come from the same database snapshot: an upload that
+      // commits meanwhile is either in both or in neither, never counted without its key.
+      const filed = await this.prisma.media.findMany({
+        where: { projectId, dailyLogId: id, kind: 'progress' },
+        select: { uploadedBy: true, clientKey: true },
+      });
+      const myPhotoKeys = filed.flatMap((m) => (m.uploadedBy === userId && m.clientKey ? [m.clientKey] : []));
+      return { photoCount: Math.max(log.progress, filed.length), myPhotoKeys };
     });
     const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, viewerFeed, siteMedia, drawingDtos, companies, nodes, logPhotos] = await Promise.all([
       decisionSlicePromise,
