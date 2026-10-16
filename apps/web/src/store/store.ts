@@ -404,6 +404,9 @@ export interface AppState {
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
+  /** #482 site photos unit 3 — this device's online photo uploads for a log, from the pick until the server's own
+   *  count is seen to hold them (`dailyLog.myPhotoKeys`); memory only (a reload re-reads the server's count). */
+  photoUploadsInFlight: { clientKey: string; dailyLogId: string; settled: boolean }[];
   /** FAILED evidence (terminal non-dedupe rejection) awaiting the user's Retry/Delete (Task 4),
    *  each row still carrying WHICH work it belongs to. `inspectionId` /
    *  `inspectionItemId` are kept because Delete on this list is the one non-server path that drops
@@ -1371,6 +1374,7 @@ export function getInitialState(): AppState {
     online: true,
     syncQueue: [],
     outbox: [],
+    photoUploadsInFlight: [],
     failedEvidence: [],
     pendingEvidenceCount: 0,
     access: freshAccess(),
@@ -1677,6 +1681,26 @@ export const useStore = create<Store>()(
       s.dailyLogDraft = r.draft;
       // a draft written before the log carried an id is kept aside, never laid over it (#692)
       if (r.legacy) s.legacyDailyLogDraft = r.legacy;
+      recountDailyLogPhotos(s);
+    };
+    /** #482 site photos unit 3 — a server that counts the day's photos (`photoCount`: every member's photos filed on
+     *  the log) is the count, plus this device's uploads for that log the server does not hold
+     *  yet: queued ones and online ones in flight, each known by its upload key, so a photo the server already holds
+     *  (its reply lost, or a refresh that landed before the reply) is never counted twice. A server that sends no
+     *  `photoCount` keeps the count as before (the stored count plus the photos taken here). The added uploads are
+     *  shown only: Send stores the server's own count, so an upload that never lands is never stored. */
+    const recountDailyLogPhotos = (s: AppState): void => {
+      const log = s.dailyLog;
+      if (!log?.id || log.photoCount === undefined) return;
+      const held = new Set(log.myPhotoKeys ?? []);
+      // an upload the server is seen to hold, or one settled for a log no longer on screen, needs no more counting
+      s.photoUploadsInFlight = s.photoUploadsInFlight.filter((u) => !u.settled || (u.dailyLogId === log.id && !held.has(u.clientKey)));
+      const mine = new Set<string>();
+      for (const o of s.outbox) {
+        if (o.t === 'uploadMedia' && o.input.dailyLogId === log.id && o.input.clientKey && !held.has(o.input.clientKey)) mine.add(o.input.clientKey);
+      }
+      for (const u of s.photoUploadsInFlight) if (u.dailyLogId === log.id && !held.has(u.clientKey)) mine.add(u.clientKey);
+      log.progress = log.photoCount + mine.size;
     };
     /** Record what the engineer just did on the log on screen into the pending draft for THAT log
      *  (a draft written against another log is superseded). A sent log takes no draft. */
@@ -1887,6 +1911,11 @@ export const useStore = create<Store>()(
                   : {}),
                 materials: core.materials.map((m) => ({ name: m.name, decisionId: m.decisionId, qty: m.qty, zone: m.zone, matched: m.matched, swatch: m.swatch as SwatchKey, photo: m.photo })),
                 photos: progressPhotos,
+                // the day's photo count is the snapshot's (#482 unit 3: media is not the daily-log module's to read),
+                // and only for the log it counted
+                ...(core.id && snap.dailyLog?.id === core.id && snap.dailyLog.photoCount !== undefined
+                  ? { photoCount: snap.dailyLog.photoCount, myPhotoKeys: snap.dailyLog.myPhotoKeys ?? [] }
+                  : {}),
               }
             : null, snap.project.id);
           s.materials = dailyLogResult.materials.map((m) => ({ id: m.id, name: m.name, qty: m.qty, zone: m.zone, matched: m.matched, swatch: m.swatch as SwatchKey, decisionId: m.decisionId, nodeId: m.nodeId }));
@@ -5436,6 +5465,8 @@ export const useStore = create<Store>()(
         s.dailyLog = overlayDailyLogDraft(s.dailyLog, extras, s.activeProjectId).log;
         s.dailyLogDraft = adopted;
         s.legacyDailyLogDraft = null;
+        // a server that counts the day's photos counts only photos filed on the log; kept-aside ones never were
+        recountDailyLogPhotos(s);
       });
       persistDailyLogDraft();
     },
@@ -5507,7 +5538,8 @@ export const useStore = create<Store>()(
             const log = onPickedLog(s);
             if (log) {
               log.photos.unshift({ url: dataUrl });
-              log.progress += 1;
+              if (log.photoCount === undefined) log.progress += 1;
+              else recountDailyLogPhotos(s);
               recordDraftPhoto(s);
             }
           });
@@ -5519,16 +5551,26 @@ export const useStore = create<Store>()(
         // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
         // reply must never land on ANOTHER project's daily log (finding 3)
         const scope = currentScope();
+        // counted from the pick until the server's count is seen to hold it, whichever lands first (#482 unit 3)
+        if (dailyLogId) set((s) => { s.photoUploadsInFlight.push({ clientKey, dailyLogId, settled: false }); recountDailyLogPhotos(s); });
+        const settle = (s: AppState, landed: boolean): void => {
+          const at = s.photoUploadsInFlight.findIndex((u) => u.clientKey === clientKey);
+          if (at < 0) return;
+          if (landed) s.photoUploadsInFlight[at]!.settled = true;
+          else s.photoUploadsInFlight.splice(at, 1);
+          recountDailyLogPhotos(s);
+        };
         gateway
           .uploadMedia(input)
           .then((res) => {
-            if (!scopeStillCurrent(scope)) return;
+            if (!scopeStillCurrent(scope)) { set((s) => settle(s, true)); return; }
             set((s) => {
+              settle(s, true);
               // another log on screen now: the server holds the photo on its own log, and the next snapshot shows it
               const log = onPickedLog(s);
               if (!log) return;
               log.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
-              log.progress += 1;
+              if (log.photoCount === undefined) log.progress += 1;
               recordDraftPhoto(s);
             });
             persistDailyLogDraft();
@@ -5537,7 +5579,10 @@ export const useStore = create<Store>()(
               hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang],
             );
           })
-          .catch(() => get().flash(DLT.photoUploadFailed[get().lang]));
+          .catch(() => {
+            set((s) => settle(s, false));
+            get().flash(DLT.photoUploadFailed[get().lang]);
+          });
         return;
       }
       // local demo: keep the data URL as the image source; also place it on the tree
@@ -5590,7 +5635,9 @@ export const useStore = create<Store>()(
         get().flash(DLT.alreadyOnItsWay[get().lang]);
         return;
       }
-      const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew };
+      // a server that counts the day's photos is sent its own count: photos still uploading or queued are only
+      // shown, and count once they land filed on this log, so one that never lands is never stored (#482 unit 3)
+      const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.photoCount ?? dl.progress, crew: dl.crew };
       // Task 10 correction round 2 (finding 1): WRITE-AHEAD — the op + its key are persisted before the
       // network call (online too), so a lost response is retried under the SAME key, submitting once.
       const submitKey = newIdempotencyKey();
@@ -5854,6 +5901,8 @@ export const useStore = create<Store>()(
       const appended = remapVisits(get().outbox.slice(taken));
       set((s) => {
         s.outbox = [...remaining, ...appended];
+        // a photo upload dropped for good (terminal rejection) stops counting on screen in the same update
+        recountDailyLogPhotos(s);
         // under module ownership the command's own snapshot carries no daily-log slice, so the log
         // on screen predates the committed start/submit until the reconcile's module read lands —
         // flag it in the SAME update that drops the op, leaving no window to act on the stale log

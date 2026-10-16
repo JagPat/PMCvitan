@@ -118,6 +118,9 @@ export interface ProjectDataState {
   dailyLogDraft: DailyLogDraft | null;
   // a draft written before the log carried an id, kept aside for the engineer to confirm or discard
   legacyDailyLogDraft: DailyLogDraft | null;
+  // #482 site photos unit 3 — this viewer's online photo uploads still counted on screen; another viewer's
+  // count never holds their keys, so they tear down with the scope
+  photoUploadsInFlight: { clientKey: string; dailyLogId: string; settled: boolean }[];
   notifications: AppNotification[];
   // Top 10 #4b unit D (#778) — the bell's per-notice read marks on this device (lib/notificationSeen.ts);
   // project-owned, so a switch starts clean and an old project's in-flight answer has nothing to change
@@ -223,6 +226,7 @@ export function emptyProjectData(): ProjectDataState {
     dailyLog: null,
     dailyLogDraft: null,
     legacyDailyLogDraft: null,
+    photoUploadsInFlight: [],
     notifications: [],
     notifSeen: emptyNotifSeen(),
     companies: [],
