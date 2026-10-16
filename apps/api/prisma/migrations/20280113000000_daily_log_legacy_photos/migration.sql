@@ -3,7 +3,13 @@
 -- on their log are not Media rows filed on it, so the count also needs the number of those: `legacyPhotos`.
 --
 -- Backfill, once, for SENT logs only: their stored `progress` is the count the sender saw, so what it holds beyond the
--- progress photos filed on the log is legacy: GREATEST(0, progress - filed). An open log has not been sent, so its
+-- progress photos filed on the log BY THAT SEND is legacy: GREATEST(0, progress - filed before the send). "Before" is
+-- the project's event order (streamPosition, never occurredAt): a photo whose `media.uploaded` event comes after the
+-- log's latest `dailylog.submitted` (the send whose `progress` is stored) was added after it and is not subtracted. A
+-- photo or a log with no such event keeps the plain rule (subtracted), so the count can fall short but never doubles.
+-- The app's outbox replays a log's queued photos before its queued send (one FIFO queue that stops at the first
+-- transient failure), and an online photo joins `progress` only once its upload has returned, so every photo in a
+-- sender's count was filed before the send's event. An open log has not been sent, so its
 -- `progress` is no sender's count; it stays 0. Nothing writes the column after this backfill: the day's count (the next
 -- unit) is max(progress, legacyPhotos + filed), so a log a previous-release app sends later, with log-less photos,
 -- still counts them through its `progress`.
@@ -37,15 +43,26 @@ BEGIN
   ) THEN
     -- the freeze is (re)installed below, after the backfill, in this same statement
     DROP TRIGGER IF EXISTS "DailyLog_legacyPhotos_frozen" ON "DailyLog";
-    -- every log to 0, then sent logs to their unfiled count; filed photos are counted once per log and joined
+    -- every log to 0, then sent logs to their unfiled count; the photos filed before each log's latest send are
+    -- counted once per log and joined
     UPDATE "DailyLog" SET "legacyPhotos" = 0 WHERE "legacyPhotos" <> 0;
     UPDATE "DailyLog" d
     SET "legacyPhotos" = GREATEST(0, d."progress" - COALESCE(f.n, 0))
     FROM "DailyLog" s
     LEFT JOIN (
-      SELECT "projectId", "dailyLogId", count(*)::int AS n FROM "Media"
-      WHERE "kind" = 'progress' AND "dailyLogId" IS NOT NULL
-      GROUP BY "projectId", "dailyLogId"
+      SELECT m."projectId", m."dailyLogId", count(DISTINCT m."id")::int AS n
+      FROM "Media" m
+      LEFT JOIN (
+        SELECT "projectId", "entityId", max("streamPosition") AS p FROM "DomainEvent"
+        WHERE "eventType" = 'dailylog.submitted' AND "entityType" = 'DailyLog'
+        GROUP BY "projectId", "entityId"
+      ) sent ON sent."projectId" = m."projectId" AND sent."entityId" = m."dailyLogId"
+      LEFT JOIN "DomainEvent" up
+        ON up."projectId" = m."projectId" AND up."eventType" = 'media.uploaded' AND up."entityType" = 'Media'
+       AND up."entityId" = m."id"
+      WHERE m."kind" = 'progress' AND m."dailyLogId" IS NOT NULL
+        AND (sent.p IS NULL OR up."streamPosition" IS NULL OR up."streamPosition" < sent.p)
+      GROUP BY m."projectId", m."dailyLogId"
     ) f ON f."projectId" = s."projectId" AND f."dailyLogId" = s."id"
     WHERE s."id" = d."id" AND d."submitted" AND d."progress" > 0;
     ALTER TABLE "DailyLog" ADD CONSTRAINT "DailyLog_legacyPhotos_nonnegative" CHECK ("legacyPhotos" >= 0);

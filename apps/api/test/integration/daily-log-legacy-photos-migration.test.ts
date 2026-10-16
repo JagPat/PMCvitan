@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, insertRawEventVia, type TwoProjectFixture } from './fixtures';
+import { randomUUID } from 'node:crypto';
 
 /**
  * #482 site photos — `DailyLog.legacyPhotos`, the photos a SENT log counts that are not Media rows filed on it. The
@@ -11,7 +12,11 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
  *
  * Proved against PostgreSQL: a new log starts at 0 and a negative count is refused; on a `db push` baseline (the
  * column without its CHECK or trigger) the migration backfills only sent logs' unfiled photos and leaves open logs at
- * 0; a replay never recomputes a value; the column is frozen after insert (the send included) by a trigger that reads
+ * 0, subtracting only the photos filed before the log's latest send in the project's event order (a photo filed after
+ * the send, or between a send and a re-send, is the next count's, not the sender's). The app guarantees that order
+ * for the sender's own photos: its outbox is one FIFO queue that stops at the first transient failure, so a queued
+ * photo replays before the send queued after it (apps/web/src/store/store.ts, flushOutbox), and an online photo joins
+ * the draft's `progress` only once its upload has returned (addProgressPhoto). A replay never recomputes a value; the column is frozen after insert (the send included) by a trigger that reads
  * only its own row; and the backfill and the freeze are installed by one statement.
  */
 const MIGRATION = readFileSync(
@@ -70,7 +75,7 @@ describe('DailyLog.legacyPhotos (live PG)', () => {
     ).rejects.toThrow(/DailyLog_legacyPhotos_nonnegative/);
   });
 
-  it('on a db-push baseline the backfill counts only sent logs\' unfiled photos; open logs stay 0', async () => {
+  it('on a db-push baseline the backfill counts only sent logs\' unfiled photos, against what was filed before the send; open logs stay 0', async () => {
     const sentry = new Error('rollback');
     let seen: Record<string, number> = {};
     await t.prisma
@@ -91,8 +96,29 @@ describe('DailyLog.legacyPhotos (live PG)', () => {
         await file(tx, otherKind.id, 'material');
         const open = await make(2, false); // not sent: its progress is no sender's count (the seed's shape)
         const dirty = await make(0, false, 5); // a db-push value no backfill wrote
+        // the project's event order (streamPosition): a photo's upload and a log's send, as the services emit them
+        const event = (eventType: 'media.uploaded' | 'dailylog.submitted', entityId: string) =>
+          insertRawEventVia(tx, {
+            projectId: f.projectA.id, organizationId: f.orgA.id, eventId: randomUUID(), effectKey: eventType,
+            entityType: eventType === 'media.uploaded' ? 'Media' : 'DailyLog', entityId,
+          });
+        const uploaded = async (logId: string) => event('media.uploaded', (await file(tx, logId)).id);
+        // sent with 2: one filed photo from before events (counted as the sender's), then 2 filed after the send
+        const late = await make(2);
+        await file(tx, late.id);
+        await event('dailylog.submitted', late.id);
+        await uploaded(late.id);
+        await uploaded(late.id);
+        // sent, a photo filed, sent again with 3: the stored count is the re-send's, which saw both filed photos;
+        // the photo filed after the re-send is not subtracted
+        const resent = await make(3);
+        await uploaded(resent.id);
+        await event('dailylog.submitted', resent.id);
+        await uploaded(resent.id);
+        await event('dailylog.submitted', resent.id);
+        await uploaded(resent.id);
         for (const st of STATEMENTS) await tx.$executeRawUnsafe(st);
-        const ids = { unfiled, mixed, over, otherKind, open, dirty };
+        const ids = { unfiled, mixed, over, otherKind, open, dirty, late, resent };
         const rows = await tx.dailyLog.findMany({ where: { id: { in: Object.values(ids).map((l) => l.id) } } });
         const by = new Map(rows.map((r) => [r.id, r.legacyPhotos]));
         seen = Object.fromEntries(Object.entries(ids).map(([k, l]) => [k, by.get(l.id)!]));
@@ -106,7 +132,7 @@ describe('DailyLog.legacyPhotos (live PG)', () => {
       .catch((e) => {
         if (e !== sentry) throw e;
       });
-    expect(seen).toEqual({ unfiled: 4, mixed: 1, over: 0, otherKind: 2, open: 0, dirty: 0, guards: 2 });
+    expect(seen).toEqual({ unfiled: 4, mixed: 1, over: 0, otherKind: 2, open: 0, dirty: 0, late: 1, resent: 1, guards: 2 });
   });
 
   it('a replay of the migration never recomputes a value', async () => {
