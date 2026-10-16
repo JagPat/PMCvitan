@@ -114,11 +114,7 @@ export class MediaService {
     // Project-owned references: a photo may only point at THIS project's decision/log.
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     // Task 10 — a daily-log reference is validated through the daily-log module's query, not `project-ref`.
-    // #482 site photos: a plain progress photo sent without a log (a previous-release app, or an offline draft from
-    // before #927) is filed on the project's open log, so the day's count holds it once; with no open log it stays
-    // unfiled, as before.
-    const dailyLogId = (await this.dailyLog.resolveRefInProject(projectId, input.dailyLogId, 'dailyLogId'))
-      ?? (isPlainSitePhoto(input) ? await this.dailyLog.openLogId(projectId) : null);
+    const dailyLogId = await this.dailyLog.resolveRefInProject(projectId, input.dailyLogId, 'dailyLogId');
     // Evidence linkage (Task 4): the item requires ITS inspection — validated through the inspections
     // module's query (Task 10) for a readable 400; the composite-FK chain + CHECK are the database backstop.
     if (input.inspectionItemId && !input.inspectionId) {

@@ -4,8 +4,9 @@
 --
 -- Backfill, once, for SENT logs only: their stored `progress` is the count the sender saw, so what it holds beyond the
 -- progress photos filed on the log is legacy: GREATEST(0, progress - filed). An open log has not been sent, so its
--- `progress` is no sender's count; it stays 0. A previous-release app's log-less photo is filed on the open log by the
--- media module when it arrives (the next unit), so nothing sent after this migration is legacy.
+-- `progress` is no sender's count; it stays 0. Nothing writes the column after this backfill: the day's count (the next
+-- unit) is max(progress, legacyPhotos + filed), so a log a previous-release app sends later, with log-less photos,
+-- still counts them through its `progress`.
 --
 -- Frozen: after insert the column never changes (evidence integrity). The trigger compares only the row's own
 -- column. Inserts are initialization (0 by default; fixtures and seeds set it there).

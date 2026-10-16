@@ -111,18 +111,6 @@ export class DailyLogQueryService {
     return { status: log.submitted ? 'sent' : 'open', id: log.id };
   }
 
-  /** #482 site photos — the project's open log: the latest log (the one the snapshot serves) while it is unsent, else
-   *  null. A progress photo sent without a log (a previous-release app's offline draft) is filed on it, so it counts
-   *  on the day's log like every other photo. */
-  async openLogId(projectId: string): Promise<string | null> {
-    const latest = await this.prisma.dailyLog.findFirst({
-      where: { projectId },
-      orderBy: [{ logDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
-      select: { id: true, submitted: true },
-    });
-    return latest && !latest.submitted ? latest.id : null;
-  }
-
   async existsInProject(projectId: string, dailyLogId: string): Promise<boolean> {
     const row = await this.prisma.dailyLog.findFirst({ where: { id: dailyLogId, projectId }, select: { id: true } });
     return row !== null;

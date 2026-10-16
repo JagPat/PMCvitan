@@ -6,8 +6,8 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
 /**
  * #482 site photos — `DailyLog.legacyPhotos`, the photos a SENT log counts that are not Media rows filed on it. The
- * day's photo count (the next unit) is this plus the progress photos filed on the log, so a photo filed after the send
- * adds to it and nothing filed is counted twice.
+ * day's photo count (the next unit) is max(progress, this plus the progress photos filed on the log), so a photo filed
+ * after the send adds to it, nothing filed is counted twice, and a later send's own count is never lost.
  *
  * Proved against PostgreSQL: a new log starts at 0 and a negative count is refused; on a `db push` baseline (the
  * column without its CHECK or trigger) the migration backfills only sent logs' unfiled photos and leaves open logs at
