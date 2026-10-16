@@ -65,9 +65,10 @@ When N is 0, it reads "Nothing needs you" / "अभी आपके लिए �
 
 A2. Tapping the line opens For You.
 
-A3. Throttle the network to "Slow 3G", then move from For You back to the Dashboard (no reload: a reload signs
-the user out). The line may show "—" while counts load, or go straight to the number, depending on timing.
-PASS when it never shows a 0 that later changes to another number.
+A3. Sign out. On the sign-in screen, throttle the network to "Slow 3G", then sign in, so the counts load cold
+(moving between tabs loads nothing new). Watch the Dashboard from the moment it appears. The line may show "—"
+while counts load, or go straight to the number, depending on timing. PASS when it never shows a 0 that later
+changes to another number.
 
 ## O. Offline (switch on)
 
