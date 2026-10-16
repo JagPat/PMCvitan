@@ -69,6 +69,29 @@ describe('the Dashboard’s actions line', () => {
     expect(r.getByTestId('dash-actions').getAttribute('data-known')).toBe('false');
   });
 
+  it('on a pilot project the PMC’s count waits for the hubs: "—" while a hub loads or after its read failed', () => {
+    for (const load of ['loading', 'error'] as const) {
+      cleanup();
+      useStore.setState(getInitialState());
+      switchOn('pmc');
+      useStore.setState((st) => { st.capabilities = [HOME_NAV_CAPABILITY, 'materials']; st.materialsLoad = load; });
+      const r = render(<DashboardScreen />);
+      expect(r.getByTestId('dash-actions').textContent, load).toBe('You have — actions');
+    }
+  });
+
+  it('a hub the PMC’s project does not have, or a role it gives no actions, never holds the count', () => {
+    switchOn('pmc');
+    useStore.setState((st) => { st.labourLoad = 'error'; });
+    let r = render(<DashboardScreen />);
+    expect(r.getByTestId('dash-actions').getAttribute('data-known')).toBe('true');
+    cleanup();
+    switchOn('client');
+    useStore.setState((st) => { st.capabilities = [HOME_NAV_CAPABILITY, 'materials']; st.materialsLoad = 'error'; });
+    r = render(<DashboardScreen />);
+    expect(r.getByTestId('dash-actions').getAttribute('data-known')).toBe('true');
+  });
+
   it('reads "Nothing needs you" at 0, in Hindi and Gujarati too', () => {
     switchOn('consultant');
     useStore.setState((st) => { st.decisions = []; st.drawings = []; st.reviews = []; st.checklist = null; st.dailyLog = null; });
