@@ -51,7 +51,23 @@ export const dashboardLabels = {
   loading: { en: 'Loading…', hi: 'लोड हो रहा है…', gu: 'લોડ થઈ રહ્યું છે…' },
   // Stage 1 redesign (#482, Rev 3.1 unit H2) — the Dashboard's one line pointing at For You
   nothingNeedsYou: { en: 'Nothing needs you', hi: 'अभी आपके लिए कुछ नहीं', gu: 'હમણાં તમારા માટે કંઈ નથી' },
+  // Stage 1 redesign (#482, Rev 3.1 unit H3) — the site photo tile in every language, behind the home-nav switch
+  photosTile: { en: 'SITE PHOTOS ON RECORD', hi: 'दर्ज साइट फ़ोटो', gu: 'નોંધાયેલા સાઇટ ફોટા' },
+  photosNotPlaced: { en: 'Not placed on the site map yet', hi: 'अभी साइट मैप पर नहीं रखी गईं', gu: 'હજી સાઇટ મેપ પર મૂક્યા નથી' },
+  photosNone: { en: 'None recorded yet', hi: 'अभी कोई दर्ज नहीं', gu: 'હજી કોઈ નોંધાયા નથી' },
 } satisfies Record<string, Words>;
+
+/** Stage 1 H3 — who a tile's items wait on; `several` when they wait on more than one party. */
+export type WaitParty = 'you' | 'client' | 'pmc' | 'engineer' | 'architect' | 'decider' | 'several';
+const WAIT_PARTY: Record<WaitParty, Words> = {
+  you: { en: 'Waiting on you', hi: 'आपकी राह', gu: 'તમારી રાહ' },
+  client: { en: 'Waiting on the client', hi: 'क्लाइंट की राह', gu: 'ક્લાયન્ટની રાહ' },
+  pmc: { en: 'Waiting on the PMC', hi: 'PMC की राह', gu: 'PMCની રાહ' },
+  engineer: { en: 'Waiting on the engineer', hi: 'इंजीनियर की राह', gu: 'ઇજનેરની રાહ' },
+  architect: { en: 'Waiting on the architect', hi: 'आर्किटेक्ट की राह', gu: 'આર્કિટેક્ટની રાહ' },
+  decider: { en: 'Waiting on the named decider', hi: 'तय करने वाले की राह', gu: 'નિર્ણય લેનારની રાહ' },
+  several: { en: 'Waiting on more than one person', hi: 'एक से ज़्यादा लोगों की राह', gu: 'એકથી વધુ લોકોની રાહ' },
+};
 
 export const dashboardText = {
   siteCode: (code: string, lang: Lang): string => pick(lang, `Site Code ${code}`, `साइट कोड ${code}`, `સાઇટ કોડ ${code}`),
@@ -65,6 +81,13 @@ export const dashboardText = {
   /** Stage 1 H2 — `n` is the For You badge; `'—'` while it is not yet known (never a false 0). */
   youHaveActions: (n: number | '—', lang: Lang): string =>
     pick(lang, `You have ${n} action${n === 1 ? '' : 's'}`, `आपके लिए ${n} काम`, `તમારા માટે ${n} કામ`),
+  /** Stage 1 H3 — whom a Dashboard tile's items wait on. */
+  waitingOn: (party: WaitParty, lang: Lang): string => WAIT_PARTY[party][lang],
+  /** Stage 1 H3 — the site photo tile's sub-line: a full snapshot window is "the latest n", never the total. */
+  photosLatest: (n: number, lang: Lang): string => pick(lang, `Latest ${n} shown`, `नवीनतम ${n} दिखाई गईं`, `તાજેતરના ${n} બતાવ્યા`),
+  /** `after`: the clause follows another on the same line, so English starts it in lower case */
+  photosAcross: (places: number, lang: Lang, after = false): string =>
+    pick(lang, `${after ? 'across' : 'Across'} ${places} place${places === 1 ? '' : 's'}`, `${places} ${places === 1 ? 'जगह' : 'जगहों'} पर`, `${places} જગ્યાએ`),
   inQueue: (n: number, lang: Lang): string => pick(lang, `${n} in the queue`, `कतार में ${n}`, `કતારમાં ${n}`),
   inReinspections: (n: number, lang: Lang): string =>
     pick(lang, `In ${n} open re-inspection${n === 1 ? '' : 's'}`, `${n} खुले दोबारा निरीक्षण में`, `${n} ખુલ્લા ફરી નિરીક્ષણમાં`),
