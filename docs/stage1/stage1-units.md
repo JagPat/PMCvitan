@@ -21,9 +21,10 @@ that carried the unit live. At 17:45 UTC `https://pms-api.vitan.in/health` and
 
 1. **#944.** Done: merged and deployed (API at d6c7dda, 16 Oct 14:49 UTC).
 2. **Switch on for qa-test-d135.** Done by the Board at about 23:00 IST, verified at 23:02 IST.
-3. **Q3 baseline.** It was not taken before the switch went on, so it is taken during the rollback drill
-   (journeys file, part R): off, baseline, back on. That needs two operator commands.
-4. **H1, H2, offline and H3 part 1.** One monitor pass: 5 roles, en/hi/gu, 390 px and 320 px.
+3. **H1, H2, offline and H3 part 1.** One monitor pass: 5 roles, en/hi/gu, 390 px and 320 px.
+4. **Q3 baseline.** It was not taken before the switch went on, so it is taken during the rollback drill
+   (journeys file, part R): off, baseline, back on. That needs two operator commands, and R4 compares the
+   step 3 results with the baseline.
 5. **Q4 write journeys (C0–C6).** Steps are in q4-write-journeys.md; one monitor run.
    - Each record is titled "QA TEST".
    - The refusals (403s) are included.
