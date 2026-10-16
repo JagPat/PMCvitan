@@ -532,3 +532,174 @@ describe('U1 — a no-crew day the engineer confirmed is a done crew step until 
     expect(parseDailyLogDraft(JSON.parse(JSON.stringify(s().dailyLogDraft)))?.crewConfirmed).toBe(true);
   });
 });
+
+/**
+ * #482 site photos unit 3 — a server that counts the day's photos (`photoCount`: every member's photos filed on the
+ * log) is the count. This device adds only its own uploads the server does not hold yet, known
+ * by upload key (`myPhotoKeys`), so a photo is counted once whichever lands first: the reply, a refresh, or a replay.
+ * A server without `photoCount` keeps the count as before (the tests above).
+ */
+describe('#482 unit 3 — the day\'s photo count is the server\'s (store)', () => {
+  const JPEG = 'data:image/jpeg;base64,AAAA';
+  const counted = (over: Partial<DailyLog> = {}) => serverLog({ id: 'log-a', photoCount: 2, myPhotoKeys: [], ...over });
+  beforeEach(() => {
+    globalThis.localStorage?.clear();
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.activeProjectId = 'ambli'; st.projectScopeGeneration = 1; st.outbox = []; st.syncQueue = []; });
+  });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('another member\'s photo shows: the count is the server\'s, not the stored number', async () => {
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(counted({ progress: 0, photoCount: 4 }))) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(4);
+  });
+
+  it('an online upload counts once, the reply first and the refresh after', async () => {
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(counted())),
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().addProgressPhoto(JPEG);
+    await settles(() => s().photoUploadsInFlight[0]?.settled === true);
+    expect(s().dailyLog?.progress).toBe(3);
+    const key = gw.uploadMedia.mock.calls[0]![0].clientKey as string;
+    gw.snapshot.mockResolvedValue(makeSnapshot(counted({ photoCount: 3, myPhotoKeys: [key] })));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(3);
+    expect(s().photoUploadsInFlight).toEqual([]);
+  });
+
+  it('a refresh that already holds the photo, landing before the reply, is not counted again by the reply (r4285614525)', async () => {
+    let reply!: (v: { id: string; url: string }) => void;
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(counted())),
+      uploadMedia: vi.fn(() => new Promise((r) => { reply = r; })),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().addProgressPhoto(JPEG);
+    expect(s().dailyLog?.progress).toBe(3); // counted from the pick
+    const key = (gw.uploadMedia.mock.calls[0] as unknown as [{ clientKey: string }])[0].clientKey;
+    gw.snapshot.mockResolvedValue(makeSnapshot(counted({ photoCount: 3, myPhotoKeys: [key] })));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(3);
+    reply({ id: 'm1', url: '/media/m1' });
+    await flush();
+    expect(s().dailyLog?.progress).toBe(3);
+  });
+
+  it('a queued upload the server already holds (its reply lost) is not counted again (r4285614517)', async () => {
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(counted())) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    useStore.setState((st) => { st.online = false; });
+    s().addProgressPhoto(JPEG);
+    s().addProgressPhoto(JPEG, null, undefined, undefined, 'log-old'); // queued for another log: never counted here
+    expect(s().dailyLog?.progress).toBe(3);
+    const op = s().outbox.find((o) => o.t === 'uploadMedia' && o.input.dailyLogId === 'log-a');
+    const key = op?.t === 'uploadMedia' ? op.input.clientKey! : '';
+    // still queued, the server's count does not hold it yet: counted once on top
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(3);
+    // the first attempt committed and its reply was lost: the server holds it while the op is still queued
+    gw.snapshot.mockResolvedValue(makeSnapshot(counted({ photoCount: 3, myPhotoKeys: [key] })));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().outbox.filter((o) => o.t === 'uploadMedia')).toHaveLength(2);
+    expect(s().dailyLog?.progress).toBe(3);
+  });
+
+  it('a failed upload leaves the server\'s count', async () => {
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(counted())),
+      uploadMedia: vi.fn().mockRejectedValue(new Error('media 500')),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().addProgressPhoto(JPEG);
+    await flush();
+    expect(s().dailyLog?.progress).toBe(2);
+    expect(s().photoUploadsInFlight).toEqual([]);
+  });
+
+  it('moduleQuery mode: the snapshot\'s count for the same log, never another log\'s', async () => {
+    vi.stubEnv('VITE_DAILYLOG_READ', 'moduleQuery');
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(counted({ photoCount: 5 }))),
+      dailyLog: vi.fn().mockResolvedValue(moduleRead(serverLog({ id: 'log-a' }))),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(5);
+    gw.snapshot.mockResolvedValue(makeSnapshot(serverLog({ id: 'log-z', photoCount: 7, myPhotoKeys: [] })));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(2); // the module's stored number, as before
+  });
+
+  it('Send stores the server\'s count: a photo still uploading is only shown, so one that then fails is never stored (r4292359576)', async () => {
+    let fail!: (e: Error) => void;
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(counted({ checkedIn: true, checkinTime: '08:05' }))),
+      uploadMedia: vi.fn(() => new Promise((_, reject) => { fail = reject; })),
+      submitDailyLog: vi.fn().mockResolvedValue(makeSnapshot(counted({ checkedIn: true, checkinTime: '08:05', submitted: true }))),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().addProgressPhoto(JPEG);
+    expect(s().dailyLog?.progress).toBe(3); // shown while it uploads
+    s().submitDailyLog();
+    await flush();
+    expect(gw.submitDailyLog.mock.calls[0]![0]).toMatchObject({ progress: 2 });
+    fail(new Error('media 500'));
+    await flush();
+    expect(gw.submitDailyLog).toHaveBeenCalledTimes(1);
+  });
+
+  it('a queued photo the server refuses for good stops counting at once, with no refresh to correct it (r4292359558)', async () => {
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(counted())),
+      uploadMedia: vi.fn().mockRejectedValue(Object.assign(new Error('node deleted'), { status: 400 })),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    useStore.setState((st) => { st.online = false; });
+    s().addProgressPhoto(JPEG);
+    expect(s().dailyLog?.progress).toBe(3);
+    gw.snapshot.mockRejectedValue(new Error('offline again')); // no snapshot lands after the drop
+    s().toggleOnline();
+    await settles(() => s().outbox.length === 0);
+    expect(s().dailyLog?.progress).toBe(2);
+  });
+
+  it('a photo still uploading stops counting when another viewer takes the device (r4292359566)', async () => {
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot(counted())),
+      uploadMedia: vi.fn(() => new Promise(() => {})),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().addProgressPhoto(JPEG);
+    expect(s().photoUploadsInFlight).toHaveLength(1);
+    s().setRole('contractor');
+    await flush();
+    expect(s().photoUploadsInFlight).toEqual([]);
+  });
+});
