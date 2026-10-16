@@ -188,7 +188,14 @@ describe('what the daily log leads into, in Hindi and Gujarati', () => {
     it(`${lang}: the check-in time the app records reads without AM/PM`, async () => {
       const r = await screen(lang, { dailyLog: log({ checkedIn: false, checkinTime: null }) }, { demo: true });
       const { useStore } = await import('@/store/store');
-      act(() => useStore.getState().checkIn());
+      // #482 D13 — the check-in is stamped with the tap's own time
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(2026, 5, 20, 8, 12));
+      try {
+        act(() => useStore.getState().checkIn());
+      } finally {
+        vi.useRealTimers();
+      }
       expect(r.container.textContent).toContain('08:12');
       expect(leftoverEnglish(r.container, DATA)).toEqual([]);
     });
