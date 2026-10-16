@@ -132,6 +132,12 @@ export const engineerNavLabels: Partial<Record<ScreenKey, Record<Lang, string>>>
   'daily-log': { en: 'Site', hi: 'साइट', gu: 'સાઇટ' },
 };
 
+/** Stage 1 redesign (#482, Rev 3.1 unit H1) — names the bar uses on a project whose `home-nav` switch is on.
+ *  The PMC's "Daily" tab becomes "Site Log"; the engineer keeps their own day names above. */
+export const homeNavLabels: Partial<Record<ScreenKey, Record<Lang, string>>> = {
+  'daily-log': { en: 'Site Log', hi: 'साइट लॉग', gu: 'સાઇટ લોગ' },
+};
+
 /** The engineer's Today screen: one "do this now" action and the day's four-step path. Plain
  *  words a site engineer reads at a glance; Gujarati and Hindi copy awaits a native speaker's check. */
 export type EngineerTodayStep = 'checkIn' | 'crew' | 'photos' | 'send';

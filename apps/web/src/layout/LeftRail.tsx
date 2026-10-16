@@ -12,6 +12,7 @@ import { Bell, ChevronDown, MoreHorizontal, Power } from '@/lib/icons';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { ROLE_LABEL } from '@/lib/screens';
 import { navLabelFor, splitMobileNav } from '@/lib/mobileNav';
+import { useHomeNav } from '@/lib/homeNav';
 import { shellLabels } from '@vitan/shared';
 import logo from '@/assets/vitan-logo.jpeg';
 import styles from './LeftRail.module.css';
@@ -39,7 +40,9 @@ export function LeftRail() {
   const stage = useStore((s) => s.stage);
   const activeName = memberships.find((m) => m.projectId === activeProjectId)?.short ?? short;
   const projMeta = [descriptor, stage].filter(Boolean).join(' · ') || '—';
-  const { primary, secondary } = splitMobileNav(items, role);
+  // Stage 1 H1 — the rail follows the project's `home-nav` switch exactly as the phone bar does
+  const homeNav = useHomeNav();
+  const { primary, secondary } = splitMobileNav(items, role, homeNav);
   // attention never hides behind More: while it is closed it carries the badges of the screens inside it
   const moreBadge = secondary.reduce((n, i) => n + i.badge, 0);
   const activeMoreKey = secondary.find((i) => i.active)?.key;
@@ -62,7 +65,7 @@ export function LeftRail() {
         <n.icon size={16} />
         {/* the rail follows the language switch above it: English keeps the full screen
             names, hi/gu read the same words as the phone's tab bar */}
-        {lang === 'en' ? n.label : navLabelFor(n.key, role, lang)}
+        {lang === 'en' ? n.label : navLabelFor(n.key, role, lang, homeNav)}
       </span>
       {n.badge > 0 && <span className={n.active ? `${styles.badge} ${styles.badgeActive}` : styles.badge}>{n.badge}</span>}
     </button>
