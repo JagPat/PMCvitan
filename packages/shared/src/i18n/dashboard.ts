@@ -49,6 +49,8 @@ export const dashboardLabels = {
   none: { en: 'None', hi: 'कोई नहीं', gu: 'કોઈ નહીં' },
   loadFailed: { en: 'Could not load — try again', hi: 'लोड नहीं हो सका — फिर कोशिश करें', gu: 'લોડ ન થયું — ફરી પ્રયાસ કરો' },
   loading: { en: 'Loading…', hi: 'लोड हो रहा है…', gu: 'લોડ થઈ રહ્યું છે…' },
+  // Stage 1 redesign (#482, Rev 3.1 unit H2) — the Dashboard's one line pointing at For You
+  nothingNeedsYou: { en: 'Nothing needs you', hi: 'अभी आपके लिए कुछ नहीं', gu: 'હમણાં તમારા માટે કંઈ નથી' },
 } satisfies Record<string, Words>;
 
 export const dashboardText = {
@@ -60,6 +62,9 @@ export const dashboardText = {
     pick(lang, `${phase}: ${done} of ${total} activities done`, `${phase}: ${total} में से ${done} काम पूरे`, `${phase}: ${total} માંથી ${done} કામ પૂર્ણ`),
   oldestAgeing: (days: number, lang: Lang): string =>
     pick(lang, `Oldest ageing ${days} days`, `सबसे पुराना ${days} दिन से रुका`, `સૌથી જૂનો ${days} દિવસથી અટકેલો`),
+  /** Stage 1 H2 — `n` is the For You badge; `'—'` while it is not yet known (never a false 0). */
+  youHaveActions: (n: number | '—', lang: Lang): string =>
+    pick(lang, `You have ${n} action${n === 1 ? '' : 's'}`, `आपके लिए ${n} काम`, `તમારા માટે ${n} કામ`),
   inQueue: (n: number, lang: Lang): string => pick(lang, `${n} in the queue`, `कतार में ${n}`, `કતારમાં ${n}`),
   inReinspections: (n: number, lang: Lang): string =>
     pick(lang, `In ${n} open re-inspection${n === 1 ? '' : 's'}`, `${n} खुले दोबारा निरीक्षण में`, `${n} ખુલ્લા ફરી નિરીક્ષણમાં`),
