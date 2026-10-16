@@ -520,20 +520,24 @@ async function main(): Promise<void> {
       },
     },
   });
-  await prisma.media.create({
-    data: {
-      id: 'test-photo-a',
-      projectId: PROJECT_ID,
-      kind: 'progress',
-      mime: 'image/png',
-      // 1×1 transparent PNG — a real decodable image for the dev-stub serve path
-      data: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'),
-      sizeBytes: 68,
-      takenAt: '03 Jul 2026 · 9:12 AM',
-      uploadedBy: 'engineer',
-      nodeId: 'r-living',
-    },
-  });
+  // the seeded log's 2 progress photos, each filed on it (#482: the day's count reads the photos filed on the log)
+  for (const [id, takenAt] of [['test-photo-a', '03 Jul 2026 · 9:12 AM'], ['test-photo-a2', '03 Jul 2026 · 9:40 AM']]) {
+    await prisma.media.create({
+      data: {
+        id,
+        projectId: PROJECT_ID,
+        dailyLogId: seededLog.id,
+        kind: 'progress',
+        mime: 'image/png',
+        // 1×1 transparent PNG — a real decodable image for the dev-stub serve path
+        data: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'),
+        sizeBytes: 68,
+        takenAt,
+        uploadedBy: 'engineer',
+        nodeId: 'r-living',
+      },
+    });
+  }
 
   const notifs = [
     { text: 'Client approved Master Bath CP Fittings — Kohler', time: '2h ago', color: '#3F7A54' },

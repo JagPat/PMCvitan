@@ -7,12 +7,13 @@ import { SnapshotService } from '../../src/snapshot/snapshot.service';
 
 /**
  * #482 site photos unit 3 (board, 14 Oct 2026) — the day's photo count is the server's count of every member's
- * progress photos filed on that log, including ones added after the log was sent. It reads the photos filed on
- * the log (Media.dailyLogId, unit 2), never a time window. A stored count is kept: before the send the filed
- * photos add to it, and once sent (the sender's total already holds them) the served count is the larger.
+ * progress photos filed on that log, including ones added after the log was sent. The snapshot serves it as
+ * `photoCount`: the larger of the count the sender saw (`progress`, written at the send by every release) and the
+ * photos filed on the log (Media.dailyLogId, unit 2). Never a time window, and the server never files a photo itself. `myPhotoKeys` names the viewer's own
+ * photos filed on the log, never another member's.
  *
- * Reproduce-first: at the base the snapshot serves the stored `progress` only, so another member's photo and a
- * photo added after the send are never counted.
+ * Reproduce-first: at the base the snapshot serves no `photoCount`, so another member's photo and a photo added
+ * after the send are never counted.
  */
 describe('the day\'s photo count reads the photos filed on the log (live PG)', () => {
   let t: TestApp;
@@ -36,7 +37,7 @@ describe('the day\'s photo count reads the photos filed on the log (live PG)', (
     logs.push(log.id);
     return log;
   };
-  const served = async () => (await snapshots.build(f.projectA.id, 'pmc', f.memberUser.id)).dailyLog;
+  const served = async (userId = f.memberUser.id, role: 'pmc' | 'contractor' = 'pmc') => (await snapshots.build(f.projectA.id, role, userId)).dailyLog;
 
   beforeAll(async () => {
     t = await createTestApp();
@@ -63,39 +64,45 @@ describe('the day\'s photo count reads the photos filed on the log (live PG)', (
     await t?.close();
   });
 
-  it('every member\'s photo filed on the log counts, with no send', async () => {
+  it('every member\'s photo filed on the log counts, with no send; each viewer is named only their own keys', async () => {
     const log = await newLog();
     expect((await upload(pmc, { dailyLogId: log.id, clientKey: 'count-pmc' })).status).toBe(201);
     expect((await upload(contractor, { dailyLogId: log.id, clientKey: 'count-contractor' })).status).toBe(201);
-    expect(await served()).toMatchObject({ id: log.id, progress: 2 });
+    expect(await served()).toMatchObject({ id: log.id, photoCount: 2, myPhotoKeys: ['count-pmc'], progress: 0 });
+    expect(await served(extra[0], 'contractor')).toMatchObject({ photoCount: 2, myPhotoKeys: ['count-contractor'] });
   });
 
   it('a photo added after the log was sent still counts', async () => {
     const log = await newLog({ submitted: true, progress: 1 });
     expect((await upload(pmc, { dailyLogId: log.id, clientKey: 'after-1' })).status).toBe(201);
     expect((await upload(contractor, { dailyLogId: log.id, clientKey: 'after-2' })).status).toBe(201);
-    expect(await served()).toMatchObject({ id: log.id, submitted: true, progress: 2 });
+    expect(await served()).toMatchObject({ id: log.id, submitted: true, photoCount: 2, progress: 1 });
   });
 
-  it('an unsent log\'s stored count (photos from before filing) is kept, and filed photos add to it', async () => {
-    const log = await newLog({ progress: 2 });
-    expect((await upload(contractor, { dailyLogId: log.id, clientKey: 'adds' })).status).toBe(201);
-    expect(await served()).toMatchObject({ id: log.id, submitted: false, progress: 3 });
-  });
-
-  it('a log from before photos were filed on it keeps its stored count', async () => {
-    const log = await newLog({ submitted: true, progress: 4 });
-    expect((await upload(contractor, { clientKey: 'unfiled' })).status).toBe(201);
-    expect(await served()).toMatchObject({ id: log.id, progress: 4 });
+  it('a previous-release app\'s send counts its photos that carry no log; the server never files them', async () => {
+    // the old app uploaded its 2 photos with no log, then sent the count it saw; the column was 0 at insert
+    const log = await newLog();
+    expect((await upload(contractor, { clientKey: 'old-app-1' })).status).toBe(201);
+    expect((await upload(contractor, { clientKey: 'old-app-2' })).status).toBe(201);
+    await t.prisma.dailyLog.update({ where: { id: log.id }, data: { submitted: true, progress: 2 } });
+    expect(await served()).toMatchObject({ id: log.id, photoCount: 2, progress: 2, myPhotoKeys: [] });
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, dailyLogId: log.id } })).toBe(0);
+    // the accepted limit (r4285614530): a sent count holding photos that carry no log, plus another member's photo
+    // filed after that send, shows the larger number until the filed photos pass it; never a double count
+    expect((await upload(pmc, { dailyLogId: log.id, clientKey: 'after-old-send' })).status).toBe(201);
+    expect(await served()).toMatchObject({ photoCount: 2 });
+    expect((await upload(pmc, { dailyLogId: log.id, clientKey: 'after-old-send-2' })).status).toBe(201);
+    expect((await upload(pmc, { dailyLogId: log.id, clientKey: 'after-old-send-3' })).status).toBe(201);
+    expect(await served()).toMatchObject({ photoCount: 3 });
   });
 
   it('photos filed on another log, unfiled photos and other kinds never count on this one', async () => {
-    const older = await newLog({ logDate: '2026-10-14' });
+    const older = await newLog({ logDate: '2026-10-14', submitted: true });
+    expect((await upload(contractor, { clientKey: 'loose' })).status).toBe(201); // no open log: unfiled
     const today = await newLog();
     expect((await upload(contractor, { dailyLogId: older.id, clientKey: 'older' })).status).toBe(201);
-    expect((await upload(contractor, { clientKey: 'loose' })).status).toBe(201);
     expect((await upload(pmc, { kind: 'material', dailyLogId: today.id, clientKey: 'material' })).status).toBe(201);
     expect((await upload(pmc, { dailyLogId: today.id, clientKey: 'today' })).status).toBe(201);
-    expect(await served()).toMatchObject({ id: today.id, progress: 1 });
+    expect(await served()).toMatchObject({ id: today.id, photoCount: 1, myPhotoKeys: ['today'] });
   });
 });

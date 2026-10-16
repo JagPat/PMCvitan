@@ -34,7 +34,7 @@ async function signIn(page: Page, email: string): Promise<void> {
   await page.getByTestId('login-password').fill(PASSWORD);
   await page.getByTestId('login-submit').click();
 }
-type ServerLog = { checkedIn: boolean; submitted: boolean; progress: number; crew: { trade: string; count: number }[]; photos: unknown[] };
+type ServerLog = { checkedIn: boolean; submitted: boolean; progress: number; photoCount?: number; crew: { trade: string; count: number }[]; photos: unknown[] };
 type Snapshot = { dailyLog: ServerLog | null; materials: { name: string }[] };
 async function serverSnapshot(request: APIRequestContext, token: string): Promise<Snapshot> {
   const res = await request.get(`${API}/projects/${A}/snapshot`, { headers: { Authorization: `Bearer ${token}` } });
@@ -99,8 +99,9 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   await expect
     .poll(async () => (await serverSnapshot(request, eng.token)).dailyLog!.photos.length, { timeout: 10_000, message: 'the server holds the photo' })
     .toBe(seededPhotos + 1);
-  // the server counts the photo filed on the log (#482 unit 3): the seed's 2 plus this one, still unsent
-  expect((await serverSnapshot(request, eng.token)).dailyLog).toMatchObject({ progress: 3, checkedIn: false });
+  // the server's stored count is still the seed's 2 (persisted only with the send), and the day's photo count it
+  // serves holds the photos filed on the log (#482 unit 3): the seed's 2 plus this one — the screen 3
+  expect((await serverSnapshot(request, eng.token)).dailyLog).toMatchObject({ progress: 2, photoCount: 3, checkedIn: false });
   await expect(page.getByText('3 progress photos')).toBeVisible();
   await expect(page.getByTestId('crew-total')).toHaveText('11 workers');
   await expect(page.getByTestId('check-out')).toBeVisible();
@@ -126,7 +127,7 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
     .poll(async () => (await serverSnapshot(request, eng.token)).dailyLog?.submitted, { timeout: 10_000 })
     .toBe(true);
   const sent = (await serverSnapshot(request, eng.token)).dailyLog!;
-  expect(sent).toMatchObject({ submitted: true, checkedIn: true, progress: 3 });
+  expect(sent).toMatchObject({ submitted: true, checkedIn: true, progress: 3, photoCount: 3 });
   expect(sent.crew.find((c) => c.trade === 'Flooring mason')?.count).toBe(3);
   expect(sent.crew.reduce((n, c) => n + c.count, 0)).toBe(11);
   // the log sent was an EARLIER day's, so once it is with PMC it is history: Today offers to start
