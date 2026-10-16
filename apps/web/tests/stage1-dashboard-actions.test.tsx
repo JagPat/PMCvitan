@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
@@ -19,7 +19,11 @@ beforeEach(() => {
   globalThis.localStorage?.clear();
   useStore.setState(getInitialState());
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+  vi.resetModules();
+});
 
 const switchOn = (role: Role) =>
   useStore.setState((st) => {
@@ -89,6 +93,38 @@ describe('the Dashboard’s actions line', () => {
     switchOn('client');
     useStore.setState((st) => { st.capabilities = [HOME_NAV_CAPABILITY, 'materials']; st.materialsLoad = 'error'; });
     r = render(<DashboardScreen />);
+    expect(r.getByTestId('dash-actions').getAttribute('data-known')).toBe('true');
+  });
+
+  it('the PMC’s count stays "—" while a live project’s open checklist has unreported re-inspection lineage', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const live = await import('@/store/store');
+    const { actionCountKnown } = await import('@/screens/DashboardActionsLine');
+    const scope = await import('@/store/projectScope');
+    live.useStore.setState(live.getInitialState());
+    live.useStore.setState({ ...scope.emptyProjectData(), activeProjectId: 'villa-b', projectLoadState: 'ready', role: 'pmc', capabilities: [HOME_NAV_CAPABILITY], capabilitiesKnown: true });
+    const checklist = structuredClone(s().checklist!);
+    live.useStore.setState({ openChecklists: [{ ...checklist, submitted: false, reinspectionOfId: undefined }] });
+    expect(actionCountKnown(live.useStore.getState())).toBe(false);
+    live.useStore.setState({ openChecklists: [{ ...checklist, submitted: false, reinspectionOfId: null }] });
+    expect(actionCountKnown(live.useStore.getState())).toBe(true);
+  });
+
+  it('a module a role’s items never read does not hold its count', () => {
+    for (const role of ['client', 'contractor', 'consultant'] as Role[]) {
+      cleanup();
+      useStore.setState(getInitialState());
+      switchOn(role);
+      useStore.setState((st) => { st.inspectionsLoad = 'error'; });
+      const r = render(<DashboardScreen />);
+      expect(r.getByTestId('dash-actions').getAttribute('data-known'), role).toBe('true');
+    }
+    cleanup();
+    useStore.setState(getInitialState());
+    switchOn('client');
+    useStore.setState((st) => { st.drawingsLoad = 'error'; });
+    const r = render(<DashboardScreen />);
     expect(r.getByTestId('dash-actions').getAttribute('data-known')).toBe('true');
   });
 
