@@ -1,7 +1,8 @@
 # Stage 1 units and what remains (16 Oct 2026, updated 17:45 UTC)
 
-Status columns follow the plan: Built, Reviewed, Deployed, Live-tested. "Deployed" was checked against
-`https://pms-api.vitan.in/health` and `https://pms.vitan.in/version.json`, which both report 82d6cbf.
+Status columns follow the plan: Built, Reviewed, Deployed, Live-tested. "Deployed" names the first commit
+that carried the unit live. At 17:45 UTC `https://pms-api.vitan.in/health` and
+`https://pms.vitan.in/version.json` both report d6c7dda, which holds H0–H3 (live since 82d6cbf) and #944.
 
 | # | Unit | Built | Reviewed | Deployed | Live-tested | Remaining |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -14,7 +15,7 @@ Status columns follow the plan: Built, Reviewed, Deployed, Live-tested. "Deploye
 | H1 | Navigation | #938 | Codex clean | 82d6cbf | pending (N, O1) | monitor run |
 | H2 | "You have N actions" | #939 | Codex clean | 82d6cbf | pending (A, O2) | monitor run |
 | H3 | Tiles say whom they wait on | #943 | Codex clean | 82d6cbf | pending (T1 now, T2 after Q4) | monitor run, twice |
-| Q4 | Write journeys C1–C6 | steps written (q4-write-journeys.md) | — | — | V8 after C1 | one monitor run |
+| Q4 | Write journeys C1–C6 | steps written (q4-write-journeys.md) | — | — | V8 after C2 | one monitor run |
 
 ## What is left, in order
 
@@ -26,7 +27,8 @@ Status columns follow the plan: Built, Reviewed, Deployed, Live-tested. "Deploye
 5. **Q4 write journeys (C0–C6).** Steps are in q4-write-journeys.md; one monitor run.
    - Each record is titled "QA TEST".
    - The refusals (403s) are included.
-   - V8 runs after C1: no alert reaches Jagrut, and Portfolio/Brief are unchanged.
+   - V8 runs after C2, the first write that alerts the PMC: no alert reaches Jagrut, and Portfolio/Brief are
+     unchanged.
 6. **H3 part 2.** It runs after Q4, once the project holds a client decision, a review and a failed item.
 7. **Real projects.** The controller decides, one at a time, after the QA checks pass. Not part of this
    list.

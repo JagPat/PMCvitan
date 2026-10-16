@@ -11,8 +11,9 @@ Project: **qa-test-d135 only.** Accounts: qa.pmc, qa.client, qa.engineer, qa.con
 
 ## 0. Ground rules for this run
 
-1. **Gate.** Do not start until the coordinator has confirmed V1–V7 (qa-isolation-steps.md). Run C1 first
-   among the writes that alert anyone, then run **V8**. If V8 fails, stop every QA write.
+1. **Gate.** Do not start until the coordinator has confirmed V1–V7 (qa-isolation-steps.md). Run **V8**
+   straight after C2, the first write that sends an alert to the PMC audience (the one that fans out to org
+   owners and admins). If V8 fails, stop every QA write.
 2. **Names.** Every record you can title starts with `QA TEST` and carries the run date as `DD-Mon-YYYY`
    (shown here as `16-Oct-2026`; use the real date). A daily log and a site visit have no title field; they
    are dated by the server (the log's civil date; the visit's start time).
@@ -42,10 +43,12 @@ Project: **qa-test-d135 only.** Accounts: qa.pmc, qa.client, qa.engineer, qa.con
    status is 403 **and** the message is the one named in the step. The role-gate message is
    `"Your role is not permitted to perform this action"` (`apps/api/src/common/roles.ts:70-72`); the role
    lists are `packages/shared/src/domain/policy.ts:19-252`.
-5. **Records to verify by API (read-only GETs, any member):** places come in `GET /projects/qa-test-d135/snapshot` (there is no GET
-   route for nodes), plus `/decisions`, `/daily-log`,
-   `/inspections`, `/drawings`, `/site-visits` under `/projects/qa-test-d135`
-   (`apps/web/src/data/apiGateway.ts:904-946`, `:1480`).
+5. **Records to verify by API (read-only GETs, as qa.pmc):** places come in `GET /projects/qa-test-d135/snapshot`
+   (there is no GET route for nodes), plus `/decisions`, `/daily-log`, `/inspections`, `/drawings`,
+   `/site-visits` under `/projects/qa-test-d135` (`apps/web/src/data/apiGateway.ts:904-946`, `:1480`).
+   Verify as **qa.pmc**, not as another role: these reads are shaped by role. A pending decision is hidden
+   from non-deciders, and the PMC's review queue and the engineer's open re-inspection are hidden from other
+   roles, so a contractor, consultant or client token can show a record that exists as missing.
 
 ## What a fresh project contains
 
@@ -64,7 +67,7 @@ and the submit only updates rows that already exist (`daily-log.service.ts:260-2
 
 ## Order
 
-C0 → C1 → **V8** → C2 → C3 → C4 → C5 → C6 → L (leave-open steps) → then H3 part 2 (T2 in
+C0 → C1 → C2 → **V8** → C3 → C4 → C5 → C6 → L (leave-open steps) → then H3 part 2 (T2 in
 h1-h3-live-journeys.md).
 
 ---
@@ -169,9 +172,7 @@ JPEG/PNG for a progress photo.
 | qa.client, qa.contractor, qa.consultant | `POST /projects/qa-test-d135/daily-log/start` (no body) | 403, role message (`dailyLog.start` = engineer, pmc; `policy.ts:220`) |
 | qa.contractor | `POST /projects/qa-test-d135/daily-log/submit` `{"checkedIn":true,"checkinTime":"x","progress":0,"crew":[]}` | 403, role message (`policy.ts:226`) |
 
-### V8 check (stop rule): Jagrut receives no alert from C1; Jagrut's Portfolio and PMC Brief are unchanged versus the V6 screenshot; any failure stops all QA writes.
-
-(Code expectation: C1 emits no push at all, see above, so any alert Jagrut sees is a FAIL.)
+(C1 emits no push at all, see above, so it cannot test alert isolation. V8 runs after C2 instead.)
 
 ---
 
@@ -222,7 +223,19 @@ would close it wrongly.
 - **API:** `POST /projects/qa-test-d135/decisions/DEC_C2/approve` body `{"optionIndex":0}` with an
   `Idempotency-Key` (`store.ts:2996`, `apiGateway.ts:1265-1266`; route `decisions.controller.ts:80-81`).
 - **Expected:** toast "Approved & locked — saved to the server." (`dictionary.ts:525`); the card leaves the
-  waiting list; `GET …/decisions` shows DEC_C2 `approved`, option A.
+  waiting list; `GET …/decisions` (as qa.pmc) shows DEC_C2 `approved`, option A.
+- **Push:** `decision.approved` alerts the PMC audience (`apps/api/src/platform/external-effects.ts:112`), so
+  qa.pmc should get it. This is the first QA write that would reach a Vitan org owner or admin if isolation
+  were broken.
+
+### V8 check (stop rule), right after C2
+
+- Jagrut's bell and phone get **no** alert from the QA project from C0, C1 or C2.
+- Jagrut's Portfolio and PMC Brief are unchanged versus the V6 screenshot.
+- qa.pmc **did** get the C2 approval alert (bell, or phone if push is on for that login). If qa.pmc got
+  nothing, the check proves nothing: stop and report, and the coordinator checks the alert's recipients.
+
+Any failure stops all further QA writes.
 
 ---
 
@@ -279,7 +292,8 @@ would close it wrongly.
 4. Click the camera button on item 2 (aria-label **Add photo**, `EngineerChecklistScreen.tsx:310-316`) and
    choose the image (the hidden input is `data-testid="evidence-file-input"`, `:408`).
    - **API:** `POST /projects/qa-test-d135/media` with `"kind":"inspection"` and the item id
-     (`store.ts:3363`, `apiGateway.ts:1351-1354`). The PHOTOS tile goes to 1.
+     (`store.ts:3363`, `apiGateway.ts:1351-1354`). The Dashboard photo tile goes up by exactly 1 from its
+     count before this step (it is 2, not 1, if C1's optional photo was added).
 5. Click **Submit Inspection** (`EngineerChecklistScreen.tsx:413-442`).
    - **API:** `POST /projects/qa-test-d135/inspections/<INSP_C4>/submit` body `{"items":[…]}`
      (`apiGateway.ts:1338-1339`; route `inspections.controller.ts:50-51`). Without the photo the server

@@ -67,7 +67,7 @@ Sign in each account with `POST https://pms-api.vitan.in/auth/login` (body `{"em
 
 | # | Check | Run by, step | PASS when |
 | --- | --- | --- | --- |
-| V1 | QA org roster | Monitor as qa.pmc: `GET /orgs/QA_ORG/members` | Exactly one row: qa.pmc@vitan.in, role `owner` |
+| V1 | QA org roster | Monitor as qa.pmc: `GET /orgs/QA_ORG/members` | Exactly one row: qa.pmc@vitan.in with `orgRole` equal to `"owner"` (the field is `orgRole`, not `role`) |
 | V2 | QA project members | Monitor as qa.pmc: `GET /projects/QA_PROJECT/members` | Exactly five active rows, the five qa.* emails, each in its own role (pmc, client, engineer, contractor, consultant) |
 | V3 | QA accounts reach only QA | Monitor, each qa.* account: `GET /me/memberships` | Each lists QA_PROJECT only (no Vitan project, no qa-test-356a) |
 | V4 | QA accounts administer nothing real | Monitor, each qa.* account: `GET /me/orgs` | qa.pmc: QA_ORG as owner, nothing else. The other four: no `owner` or `admin` row anywhere |
@@ -77,9 +77,10 @@ Sign in each account with `POST https://pms-api.vitan.in/auth/login` (body `{"em
 
 **Isolation is proven only when V1–V7 all PASS.** Any FAIL: stop, no QA writes, report the failing line.
 
-After the coordinator confirms, the first QA write (C1, the daily log) adds one more check:
+After the coordinator confirms, the first QA write that alerts the PMC (C2, the client's approval) adds one
+more check:
 - **V8.** Jagrut's bell and phone get no alert from the QA project, and their Portfolio and PMC Brief look the same as
-  the V6 screenshot. FAIL stops all further QA writes.
+  the V6 screenshot, while qa.pmc did get the C2 alert. FAIL stops all further QA writes.
 
 ## Notes
 

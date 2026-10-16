@@ -70,11 +70,15 @@ never shows a 0 that later changes.
 
 ## O. Offline (switch on)
 
-O1. As qa.pmc and as qa.engineer, open the app online, then go offline in DevTools and reload.
+Do **not** reload while offline. The app does not keep the sign-in across a reload, so a reload with no
+signal lands on the sign-in screen, whatever the switch. Lose the signal while the app stays open.
+
+O1. As qa.pmc and as qa.engineer, open the app online and wait for the Dashboard to load. Go offline in
+DevTools without reloading, then move between the bar's tabs.
 - The bar keeps the new layout (Site Log / Site Map).
 - Badges show the last known counts.
 
-O2. Still offline, the actions line shows the last known N or "—", never a false 0.
+O2. Still offline, back on the Dashboard, the actions line shows the last known N or "—", never a false 0.
 
 O3. Tiles read as before going offline.
 
