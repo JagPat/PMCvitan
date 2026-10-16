@@ -92,7 +92,7 @@ import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
 import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
-import { todayCivil } from '@/lib/civilDate';
+import { checkinClock, todayCivil } from '@/lib/civilDate';
 import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
@@ -5406,14 +5406,16 @@ export const useStore = create<Store>()(
         get().flash(DLT.noLog[get().lang]);
         return;
       }
+      // #482 D13 — the real time of the tap, on the project's clock (it was a fixed "8:12 AM")
+      const checkinTime = checkinClock(get().timeZone);
       set((s) => {
         if (!s.dailyLog) return;
         s.dailyLog.checkedIn = true;
-        s.dailyLog.checkinTime = '8:12 AM';
-        recordDailyLogDraft(s, (d) => { d.checkIn = { checkedIn: true, checkinTime: '8:12 AM' }; });
+        s.dailyLog.checkinTime = checkinTime;
+        recordDailyLogDraft(s, (d) => { d.checkIn = { checkedIn: true, checkinTime }; });
       });
       persistDailyLogDraft();
-      get().record('Check-in 8:12 AM');
+      get().record('Check-in ' + checkinTime);
       // the site named in the toast is the LIVE project's, never seeded copy (Phase 0 Task 7)
       get().flash(get().online ? DLX.checkedIn(get().location || get().short, get().lang) : DLT.checkedInOffline[get().lang]);
     },
