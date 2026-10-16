@@ -4,6 +4,8 @@ import { decisionRecordLink, inspectionsSettledForLinks, selectDecisionsAwaiting
 import { API_BASE, dailyLogReadMode } from '@/data/apiGateway';
 import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
 import { useNavItems } from '@/layout/useNavItems';
+import { useHomeNav } from '@/lib/homeNav';
+import { DashboardActionsLine } from './DashboardActionsLine';
 import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
@@ -24,7 +26,11 @@ export function DashboardScreen() {
   // offers no Dashboard way in either
   const role = useStore((s) => s.role);
   const lang = useStore((s) => s.lang);
-  const navScreens = new Set<ScreenKey>(useNavItems().map((n) => n.key));
+  const navItems = useNavItems();
+  const navScreens = new Set<ScreenKey>(navItems.map((n) => n.key));
+  // Stage 1 H2 (#482) — on a project whose `home-nav` switch is on, one line carries the For You badge's number
+  const homeNav = useHomeNav();
+  const forYou = navItems.find((n) => n.key === 'inbox');
   // #857 Codex 4269224400 — plus the role's link-only screens (the client's `/decisions`, where an unsettled
   // slice sends the approvals tile so retained rows never offer live controls), while their module is on (#822)
   const enabledModules = useStore((s) => s.enabledModules);
@@ -167,6 +173,8 @@ export function DashboardScreen() {
           </Button>
         )}
       </div>
+
+      {homeNav && forYou && <DashboardActionsLine badge={forYou.badge} onOpen={() => setScreen('inbox')} />}
 
       {/* milestone progress */}
       <div style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 12, padding: '20px 24px', marginBottom: 22 }}>
