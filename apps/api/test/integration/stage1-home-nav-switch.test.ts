@@ -3,7 +3,7 @@ import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { CapabilitiesService, HOME_NAV_CAPABILITY, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
-import { disableCapability } from '../../src/platform/capability-switch';
+import { disableCapability, enableCapability } from '../../src/platform/capability-switch';
 
 /**
  * Stage 1 redesign (#482, Rev 3.1 unit H0) — the per-project home/navigation switch is a SERVER switch:
@@ -81,5 +81,22 @@ describe('Stage 1 H0 — the home-nav switch (live PG)', () => {
       projectId: f.projectA.id, capability: HOME_NAV_CAPABILITY, operator: 'operator@test.local', reason: ' ',
     })).rejects.toThrow(/reason/);
     expect(await disableAudits()).toHaveLength(1);
+  });
+
+  it('the operator turns it on: the audit trail records who and why, once, and a retry writes nothing', async () => {
+    const enableAudits = () =>
+      t.prisma.auditLog.findMany({ where: { projectId: f.projectB.id, action: 'capability.enable' } });
+    const input = { projectId: f.projectB.id, capability: HOME_NAV_CAPABILITY, operator: 'operator@test.local', reason: 'QA project first' };
+    expect(await enableCapability(t.prisma, input)).toEqual({ changed: true });
+    expect(await shellCapabilities(f.projectB.id, tokenB)).toContain(HOME_NAV_CAPABILITY);
+    expect(await shellCapabilities(f.projectA.id, tokenA), 'the sibling project is untouched').not.toContain(HOME_NAV_CAPABILITY);
+    const audits = await enableAudits();
+    expect(audits).toHaveLength(1);
+    expect(audits[0].entityId).toBe(`${f.projectB.id}:${HOME_NAV_CAPABILITY}`);
+    expect(audits[0].payload).toEqual({ reason: 'QA project first' });
+    expect(await enableCapability(t.prisma, { ...input, reason: 'retry' })).toEqual({ changed: false });
+    expect(await enableAudits()).toHaveLength(1);
+    await expect(enableCapability(t.prisma, { ...input, reason: ' ' })).rejects.toThrow(/reason/);
+    await expect(enableCapability(t.prisma, { ...input, projectId: 'no-such-project' })).rejects.toThrow();
   });
 });
