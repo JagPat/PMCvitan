@@ -125,8 +125,11 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     useStore.setState(getInitialState());
     s()._setGateway(null);
     useStore.setState((st) => { st.online = true; st.activeProjectId = 'ambli'; st.projectScopeGeneration = 1; st.outbox = []; st.syncQueue = []; });
+    // #482 D13 — check-in records the real time of the tap; the morning here happens at 8:12 local
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 6, 3, 8, 12));
   });
-  afterEach(() => { vi.unstubAllEnvs(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
   it('snapshot mode: a material recorded after check-in, crew and a photo keeps all three (RED at c6cfec7)', async () => {
     // the server's log is unsent throughout: the command's own snapshot carries the same defaults
