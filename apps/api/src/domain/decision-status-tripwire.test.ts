@@ -71,6 +71,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     'packages/shared/src/tokens/colors.ts decisionChipLabel': 'answered',
     'packages/shared/src/tokens/colors.ts decisionRail': 'answered',
     'packages/shared/src/i18n/siteMap.ts decisionStatusChipLabels': 'answered',
+    'packages/shared/src/i18n/decisions.ts decisionStatusWords': 'answered',
     'apps/web/src/lib/locationTree.ts counts': 'answered',
     'apps/web/src/lib/locationTree.ts STATUS_LABEL': 'answered',
     'apps/web/src/lib/locationTree.ts rank': 'answered',

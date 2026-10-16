@@ -1,7 +1,7 @@
 import { Controller, Get, Param, UseGuards } from '@nestjs/common';
 import { SnapshotService } from './snapshot.service';
 import { ModuleRegistryService } from '../platform/module-registry/module-registry.service';
-import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
+import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY, COMMERCIAL_CAPABILITY, HOME_NAV_CAPABILITY } from '../platform/capabilities.service';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
 import type { ProjectShellDto } from './types';
@@ -32,11 +32,12 @@ export class ProjectController {
   @Get('shell')
   @RolesFor('project.read')
   async shell(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser): Promise<ProjectShellDto> {
-    const [summary, materials, labour, commercial, phase6_4d] = await Promise.all([
+    const [summary, materials, labour, commercial, homeNav, phase6_4d] = await Promise.all([
       this.snapshot.shellSummary(projectId, user.role, user.sub, user.decisionsContract),
       this.capabilities.isEnabled(projectId, MATERIALS_CAPABILITY),
       this.capabilities.isEnabled(projectId, LABOUR_CAPABILITY),
       this.capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY),
+      this.capabilities.isEnabled(projectId, HOME_NAV_CAPABILITY),
       readPhase6_4dRollout(this.prisma),
     ]);
     // Phase 6 unit 4c-iv — `consultation` is deliberately NOT here any more. 4c-ii advertised it
@@ -48,6 +49,8 @@ export class ProjectController {
       ...(materials ? [MATERIALS_CAPABILITY] : []),
       ...(labour ? [LABOUR_CAPABILITY] : []),
       ...(commercial ? [COMMERCIAL_CAPABILITY] : []),
+      // Stage 1 redesign (#482) — the home/navigation switch; layout only, read by the web
+      ...(homeNav ? [HOME_NAV_CAPABILITY] : []),
     ];
     return { ...summary, enabledModules: this.registry.enabledModules, capabilities, rollout: { phase6_4d } };
   }

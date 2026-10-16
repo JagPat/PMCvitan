@@ -6,8 +6,8 @@ import { isCountersignChainOp } from '@/data/apiGateway';
 // the LEAF module, not the `@/components` barrel (the `ConsultationThread` convention: this component is
 // itself exported from that barrel, so importing through it would close a cycle)
 import { Button } from './Button';
-import { readImpact } from '@/lib/impactInput';
-import { can, viewerIsDecider, type Decision } from '@vitan/shared';
+import { impactReasonIn, readImpact } from '@/lib/impactInput';
+import { can, viewerIsDecider, countersignLabels as L, memberRoleIn, type Decision, type Lang } from '@vitan/shared';
 
 /**
  * Phase 6 task 4d-ii-b / B5b — the countersign chain's AFFORDANCES and CONTROLS on a register row (the web
@@ -35,7 +35,8 @@ import { can, viewerIsDecider, type Decision } from '@vitan/shared';
 type Designation = 'client' | 'pmc' | 'member' | 'architect';
 type Panel = 'forward' | 'reject_back' | 'forward_on' | 'completed' | 'returned' | null;
 
-export function CountersignControls({ decision: d }: { decision: Decision }) {
+/** `lang` is the caller's (#482 QA item 3): the controls' own words follow it, English unless it says otherwise. */
+export function CountersignControls({ decision: d, lang = 'en' }: { decision: Decision; lang?: Lang }) {
   const role = useStore((s) => s.role);
   const sessionUserId = useStore((s) => s.sessionUserId);
   const chainOpen = useStore(selectPhase6_4dOpen);
@@ -104,73 +105,73 @@ export function CountersignControls({ decision: d }: { decision: Decision }) {
   };
   const askable = members.filter((m) => m.status === 'active' && m.membershipId);
   const btn: CSSProperties = { padding: '6px 12px', fontSize: 11.5, fontWeight: 500 };
-  const working = pending ? 'Working…' : null;
+  const working = pending ? L.working[lang] : null;
 
   return (
     <div data-testid={`chain-controls-${d.id}`} style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {mayForward && (
-          <Button variant="outline" style={btn} disabled={pending} onClick={() => openPanel('forward')} data-testid={`forward-${d.id}`}>{working ?? 'Forward'}</Button>
+          <Button variant="outline" style={btn} disabled={pending} onClick={() => openPanel('forward')} data-testid={`forward-${d.id}`}>{working ?? L.forward[lang]}</Button>
         )}
         {mayCountersign && (
           <>
-            <Button variant="success" style={btn} disabled={pending} onClick={() => countersignDecision(d.id)} data-testid={`countersign-${d.id}`}>{working ?? 'Countersign'}</Button>
-            <Button variant="outline" style={btn} disabled={pending} onClick={() => openPanel('reject_back')} data-testid={`reject-back-${d.id}`}>{working ?? 'Reject back'}</Button>
-            <Button variant="outline" style={btn} disabled={pending} onClick={() => openPanel('forward_on')} data-testid={`forward-on-${d.id}`}>{working ?? 'Forward on'}</Button>
+            <Button variant="success" style={btn} disabled={pending} onClick={() => countersignDecision(d.id)} data-testid={`countersign-${d.id}`}>{working ?? L.countersign[lang]}</Button>
+            <Button variant="outline" style={btn} disabled={pending} onClick={() => openPanel('reject_back')} data-testid={`reject-back-${d.id}`}>{working ?? L.rejectBack[lang]}</Button>
+            <Button variant="outline" style={btn} disabled={pending} onClick={() => openPanel('forward_on')} data-testid={`forward-on-${d.id}`}>{working ?? L.forwardOn[lang]}</Button>
           </>
         )}
         {mayResolve && (
           <>
-            <Button variant="success" style={btn} disabled={pending} onClick={() => openPanel('completed')} data-testid={`stranded-complete-${d.id}`}>{working ?? 'Complete without countersign'}</Button>
-            <Button variant="outline" style={btn} disabled={pending} onClick={() => openPanel('returned')} data-testid={`stranded-return-${d.id}`}>{working ?? 'Return to the decider'}</Button>
+            <Button variant="success" style={btn} disabled={pending} onClick={() => openPanel('completed')} data-testid={`stranded-complete-${d.id}`}>{working ?? L.completeWithout[lang]}</Button>
+            <Button variant="outline" style={btn} disabled={pending} onClick={() => openPanel('returned')} data-testid={`stranded-return-${d.id}`}>{working ?? L.returnToDecider[lang]}</Button>
           </>
         )}
       </div>
       {panel && (
         <div data-testid={`chain-panel-${d.id}`} style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(35,33,28,.035)', border: '1px solid rgba(35,33,28,.12)', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--faint)' }}>
-            {panel === 'forward' ? 'Forward to' : panel === 'reject_back' ? 'Reject back to the decider' : panel === 'forward_on' ? 'Forward on to' : panel === 'completed' ? 'Complete without countersign' : 'Return to the decider'}
+            {(panel === 'forward' ? L.forwardTo : panel === 'reject_back' ? L.rejectBackTitle : panel === 'forward_on' ? L.forwardOnTo : panel === 'completed' ? L.completeWithout : L.returnToDecider)[lang]}
           </div>
           {hasTarget && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <select aria-label={panel === 'returned' ? 'Re-home to' : 'Forward to'} value={kind} onChange={(e) => setKind(e.target.value as Designation | '')} style={{ ...fld, flex: '0 0 200px' }} data-testid={`chain-kind-${d.id}`}>
-                <option value="">{panel === 'returned' ? 'Keep the current decider' : 'Choose who decides…'}</option>
-                <option value="client">The client</option>
-                <option value="pmc">The practice (PMC)</option>
-                <option value="member">A named member</option>
-                <option value="architect">The architect</option>
+              <select aria-label={(panel === 'returned' ? L.rehomeTo : L.forwardTo)[lang]} value={kind} onChange={(e) => setKind(e.target.value as Designation | '')} style={{ ...fld, flex: '0 0 200px' }} data-testid={`chain-kind-${d.id}`}>
+                <option value="">{(panel === 'returned' ? L.keepDecider : L.chooseWho)[lang]}</option>
+                <option value="client">{L.kindClient[lang]}</option>
+                <option value="pmc">{L.kindPmc[lang]}</option>
+                <option value="member">{L.kindMember[lang]}</option>
+                <option value="architect">{L.kindArchitect[lang]}</option>
               </select>
               {kind === 'member' && (
-                <select aria-label="Named member" value={membershipId} onChange={(e) => setMembershipId(e.target.value)} style={{ ...fld, flex: '1 1 160px' }} data-testid={`chain-member-${d.id}`}>
-                  <option value="">Choose a member…</option>
-                  {askable.map((m) => <option key={m.membershipId} value={m.membershipId}>{m.name} · {m.role}</option>)}
+                <select aria-label={L.namedMember[lang]} value={membershipId} onChange={(e) => setMembershipId(e.target.value)} style={{ ...fld, flex: '1 1 160px' }} data-testid={`chain-member-${d.id}`}>
+                  <option value="">{L.chooseMember[lang]}</option>
+                  {askable.map((m) => <option key={m.membershipId} value={m.membershipId}>{m.name} · {memberRoleIn(m.role, lang)}</option>)}
                 </select>
               )}
             </div>
           )}
-          <textarea aria-label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} rows={2} placeholder="Reason (required)" data-testid={`chain-reason-${d.id}`}
+          <textarea aria-label={L.reason[lang]} value={reason} onChange={(e) => setReason(e.target.value)} rows={2} placeholder={L.reasonHint[lang]} data-testid={`chain-reason-${d.id}`}
             style={{ width: '100%', fontSize: 12.5, padding: 8, borderRadius: 8, border: '1px solid var(--hairline)', font: 'inherit' }} />
           {hasImpacts && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 140px' }}>
-                <input aria-label="Cost impact" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="Cost impact (₹, optional)"
+                <input aria-label={L.cost[lang]} value={cost} onChange={(e) => setCost(e.target.value)} placeholder={L.costHint[lang]}
                   aria-invalid={!costReading.ok} aria-describedby={!costReading.ok ? `chain-cost-error-${d.id}` : undefined}
                   style={{ ...fld, ...(costReading.ok ? null : invalid) }} data-testid={`chain-cost-${d.id}`} />
-                {!costReading.ok && <div id={`chain-cost-error-${d.id}`} role="alert" style={err} data-testid={`chain-cost-error-${d.id}`}>{costReading.reason}</div>}
+                {!costReading.ok && <div id={`chain-cost-error-${d.id}`} role="alert" style={err} data-testid={`chain-cost-error-${d.id}`}>{impactReasonIn(costReading.reason, lang)}</div>}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 120px' }}>
-                <input aria-label="Schedule impact (days)" value={days} onChange={(e) => setDays(e.target.value)} placeholder="Days (optional)"
+                <input aria-label={L.days[lang]} value={days} onChange={(e) => setDays(e.target.value)} placeholder={L.daysHint[lang]}
                   aria-invalid={!daysReading.ok} aria-describedby={!daysReading.ok ? `chain-days-error-${d.id}` : undefined}
                   style={{ ...fld, ...(daysReading.ok ? null : invalid) }} data-testid={`chain-days-${d.id}`} />
-                {!daysReading.ok && <div id={`chain-days-error-${d.id}`} role="alert" style={err} data-testid={`chain-days-error-${d.id}`}>{daysReading.reason}</div>}
+                {!daysReading.ok && <div id={`chain-days-error-${d.id}`} role="alert" style={err} data-testid={`chain-days-error-${d.id}`}>{impactReasonIn(daysReading.reason, lang)}</div>}
               </div>
             </div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
             <Button variant="ink" style={btn} disabled={pending || !reason.trim() || !targetComplete || !impactsValid} onClick={send} data-testid={`chain-send-${d.id}`}>
-              {panel === 'forward' ? 'Forward' : panel === 'reject_back' ? 'Send back' : panel === 'forward_on' ? 'Forward on' : panel === 'completed' ? 'Complete' : 'Return'}
+              {(panel === 'forward' ? L.forward : panel === 'reject_back' ? L.sendBack : panel === 'forward_on' ? L.forwardOn : panel === 'completed' ? L.complete : L.return)[lang]}
             </Button>
-            <Button variant="outline" style={btn} onClick={() => setPanel(null)} data-testid={`chain-cancel-${d.id}`}>Cancel</Button>
+            <Button variant="outline" style={btn} onClick={() => setPanel(null)} data-testid={`chain-cancel-${d.id}`}>{L.cancel[lang]}</Button>
           </div>
         </div>
       )}

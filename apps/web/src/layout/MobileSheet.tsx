@@ -6,6 +6,7 @@ import { CreateProjectModal } from './ProjectSwitcher';
 import { Check, Plus, X, LayoutGrid } from '@/lib/icons';
 import { ROLE_LABEL } from '@/lib/screens';
 import { navLabelFor } from '@/lib/mobileNav';
+import { useHomeNav } from '@/lib/homeNav';
 import { noteLangChoice } from '@/lib/langPreference';
 import { LANG_SWITCH, shellLabels } from '@vitan/shared';
 import { useNavItems, type NavItem } from './useNavItems';
@@ -75,6 +76,7 @@ export function MoreSheet({ items, onClose }: { items: NavItem[]; onClose: () =>
   const setScreen = useStore((s) => s.setScreen);
   const role = useStore((s) => s.role);
   const lang = useStore((s) => s.lang);
+  const homeNav = useHomeNav();
   return (
     <MobileSheet title={shellLabels.more[lang]} onClose={onClose} testId="more-sheet">
       {items.map((n) => (
@@ -90,7 +92,7 @@ export function MoreSheet({ items, onClose }: { items: NavItem[]; onClose: () =>
         >
           <n.icon size={18} />
           {/* English keeps the full screen name; hi/gu read the same word the tab bar uses */}
-          <span className={styles.rowLabel}>{lang === 'en' ? n.label : navLabelFor(n.key, role, lang)}</span>
+          <span className={styles.rowLabel}>{lang === 'en' ? n.label : navLabelFor(n.key, role, lang, homeNav)}</span>
           {n.badge > 0 && <span className={styles.rowBadge}>{n.badge}</span>}
         </button>
       ))}

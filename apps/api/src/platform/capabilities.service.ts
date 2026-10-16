@@ -32,6 +32,18 @@ export const COMMERCIAL_CAPABILITY = 'commercial';
  *  cannot yet be opened. */
 export const CONSULTATION_CAPABILITY = 'consultation';
 
+/** Stage 1 redesign (Rev 3.1, #482) — the per-project HOME AND NAVIGATION switch. Unlike the pilot
+ *  capabilities above it gates no route, write, job or notification: the shell reports it and the web
+ *  shows the redesigned bar and Dashboard only where it is on. Off (no row) is today's app exactly.
+ *  Because it is presentation only, it is the one capability an operator may also turn OFF
+ *  (`capability:disable`) — the server-side rollback the Board asked for instead of a web revert. */
+export const HOME_NAV_CAPABILITY = 'home-nav';
+
+/** The capabilities `capability:disable` accepts. Each must be presentation only: no stored data,
+ *  queued work or command depends on it being on. A pilot hub never belongs here — turning
+ *  `materials`, `labour` or `commercial` off under live records would strand them. */
+export const SWITCHABLE_CAPABILITIES: readonly string[] = [HOME_NAV_CAPABILITY];
+
 @Injectable()
 export class CapabilitiesService {
   constructor(private readonly prisma: PrismaService) {}
