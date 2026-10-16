@@ -1,4 +1,4 @@
-import { engineerNavLabels, navLabels, type Lang, type Role, type ScreenKey } from '@vitan/shared';
+import { engineerNavLabels, homeNavLabels, navLabels, type Lang, type Role, type ScreenKey } from '@vitan/shared';
 import { ROLE_SCREEN_LABEL } from './screens';
 
 /**
@@ -40,14 +40,27 @@ export const MOBILE_ROLE_PRIMARY: Partial<Record<Role, readonly ScreenKey[]>> = 
   contractor: ['dashboard', 'inbox', 'places', 'drawings'],
 };
 
+/**
+ * Stage 1 redesign (#482, Rev 3.1 unit H1) — the bars on a project whose `home-nav` server switch is on
+ * (`useHomeNav`). The engineer gains the Site Map beside Today and Site; the PMC's bar keeps its four tabs
+ * (its "Daily" tab reads "Site Log", `homeNavLabels`). Every other role keeps today's bar. With the
+ * switch off, `MOBILE_ROLE_PRIMARY` applies unchanged.
+ */
+export const MOBILE_ROLE_PRIMARY_HOME_NAV: Partial<Record<Role, readonly ScreenKey[]>> = {
+  ...MOBILE_ROLE_PRIMARY,
+  engineer: ['dashboard', 'inbox', 'daily-log', 'places'],
+};
+
 /** The bar/More label for a screen, in the viewer's language (the engineer's two fixed tabs carry
- *  their day names). English equals the `short` of the role's `screensFor` entry for every other screen. */
-export function navLabelFor(key: ScreenKey, role: Role, lang: Lang): string {
+ *  their day names). English equals the `short` of the role's `screensFor` entry for every other screen,
+ *  except where the project's `home-nav` switch renames it. */
+export function navLabelFor(key: ScreenKey, role: Role, lang: Lang, homeNav = false): string {
   // #482 QA — a role's own English name for a screen ("Decisions" for the engineer, contractor, consultant)
   const renamed = lang === 'en' ? ROLE_SCREEN_LABEL[role]?.[key] : undefined;
   if (renamed) return renamed;
   const own = role === 'engineer' ? engineerNavLabels[key] : undefined;
-  return (own ?? navLabels[key])[lang];
+  const stage1 = homeNav ? homeNavLabels[key] : undefined;
+  return (own ?? stage1 ?? navLabels[key])[lang];
 }
 
 export interface MobileNavSplit<T> {
@@ -66,8 +79,8 @@ export interface MobileNavSplit<T> {
  * meaningful bar rather than a preference list padded with gaps. When the whole list already
  * fits (<= 5), nothing is hidden and no More tab is needed.
  */
-export function splitMobileNav<T extends { key: ScreenKey }>(items: readonly T[], role?: Role): MobileNavSplit<T> {
-  const fixed = role ? MOBILE_ROLE_PRIMARY[role] : undefined;
+export function splitMobileNav<T extends { key: ScreenKey }>(items: readonly T[], role?: Role, homeNav = false): MobileNavSplit<T> {
+  const fixed = role ? (homeNav ? MOBILE_ROLE_PRIMARY_HOME_NAV : MOBILE_ROLE_PRIMARY)[role] : undefined;
   if (fixed) {
     // a role with its own bar keeps exactly those tabs it actually holds, in that order; a tab
     // whose module is off is simply absent (never fabricated), and if none survive, the

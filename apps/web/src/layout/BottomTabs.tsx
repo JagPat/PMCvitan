@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '@/store/store';
 import { useNavItems } from './useNavItems';
 import { navLabelFor, splitMobileNav } from '@/lib/mobileNav';
+import { useHomeNav } from '@/lib/homeNav';
 import { shellLabels } from '@vitan/shared';
 import { MoreSheet } from './MobileSheet';
 import { MoreHorizontal } from '@/lib/icons';
@@ -23,8 +24,9 @@ export function BottomTabs() {
   const setScreen = useStore((s) => s.setScreen);
   const role = useStore((s) => s.role);
   const lang = useStore((s) => s.lang);
+  const homeNav = useHomeNav();
   const [moreOpen, setMoreOpen] = useState(false);
-  const { primary, secondary } = splitMobileNav(items, role);
+  const { primary, secondary } = splitMobileNav(items, role, homeNav);
   // attention never hides behind More: the tab carries the overflow's badges, and it reads
   // "active" while any secondary screen is the one on stage
   const moreBadge = secondary.reduce((n, i) => n + i.badge, 0);
@@ -45,7 +47,7 @@ export function BottomTabs() {
               <n.icon size={20} />
               {n.badge > 0 && <span className={styles.badge}>{n.badge}</span>}
             </span>
-            <span className={styles.label}>{navLabelFor(n.key, role, lang)}</span>
+            <span className={styles.label}>{navLabelFor(n.key, role, lang, homeNav)}</span>
           </button>
         ))}
         {secondary.length > 0 && (
