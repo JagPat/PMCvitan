@@ -70,7 +70,7 @@ Sign in each account with `POST https://pms-api.vitan.in/auth/login` (body `{"em
 | V1 | QA org roster | Monitor as qa.pmc: `GET /orgs/QA_ORG/members` | Exactly one row: qa.pmc@vitan.in with `orgRole` equal to `"owner"` (the field is `orgRole`, not `role`) |
 | V2 | QA project members | Monitor as qa.pmc: `GET /projects/QA_PROJECT/members` | Exactly five active rows, the five qa.* emails, each in its own role (pmc, client, engineer, contractor, consultant) |
 | V3 | QA accounts reach only QA | Monitor, each qa.* account: `GET /me/memberships` | Each lists QA_PROJECT only (no Vitan project, no qa-test-356a) |
-| V4 | QA accounts administer nothing real | Monitor, each qa.* account: `GET /me/orgs` | qa.pmc: QA_ORG as owner, nothing else. The other four: no `owner` or `admin` row anywhere |
+| V4 | QA accounts administer nothing real | Monitor, each qa.* account: `GET /me/orgs` | qa.pmc: `owner` of QA_ORG and `owner` or `admin` of no other organisation. The other four: no `owner` or `admin` row anywhere. A plain `member` row elsewhere passes, as in P3: it gives no project reach (`orgs/project-reach.ts:22`) |
 | V5 | Vitan admins don't see QA in the switcher | Jagrut, in the app: open the project switcher | Neither "QA TEST Project" nor "QA Test Project" (qa-test-356a) is listed |
 | V6 | Vitan admins' totals exclude QA | Jagrut, in the app: Portfolio and PMC Brief (For You) | No QA project card or row; screenshot saved for comparison after the first QA write |
 | V7 | Alerts can't reach Vitan admins | Monitor: V1 plus V2 | PASS when V1 and V2 both pass, because PMC alerts go only to QA_PROJECT's PMC members and QA_ORG's owners/admins (qa.pmc alone) |

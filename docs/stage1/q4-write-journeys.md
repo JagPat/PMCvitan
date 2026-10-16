@@ -312,9 +312,10 @@ Any failure stops all further QA writes.
 - **API:** `POST /projects/qa-test-d135/inspections/<INSP_C4>/decide` body
   `{"approve":false,"rejectedItemIds":[]}` with an `Idempotency-Key` (`store.ts:3607-3621`,
   `apiGateway.ts:1341-1344`; route `inspections.controller.ts:63-64`).
-- **Expected:** toast "1 re-inspection task(s) created with due dates." (`store.ts:3621`); the review shows
-  "REVIEWED" and "Reviewed — this inspection has been decided…" (`InspectionReviewScreen.tsx:262`, `:327`).
-  A new checklist `Re-inspection: QA TEST C4 checklist 16-Oct-2026` holding only item 2, assigned to
+- **Expected:** toast "1 re-inspection task(s) created with due dates." (`store.ts:3621`). The decided
+  inspection then leaves `/review`, because the review queue holds only submitted, undecided inspections
+  (`inspections-serialize.ts:285`); the "REVIEWED" view is not shown on live data. The proof is that
+  a new checklist `Re-inspection: QA TEST C4 checklist 16-Oct-2026` holding only item 2, assigned to
   qa.engineer, is created (`inspections.service.ts:367`, `:420-436`) and pushed to the engineer
   (`external-effects.ts:293`). **Leave the re-inspection unfilled** (it is the failed item left for H3).
 
