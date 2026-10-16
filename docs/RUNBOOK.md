@@ -2587,6 +2587,6 @@ Turn it off for one project (the rollback):
 
     pnpm --filter api capability:disable --project <id> --capability home-nav --operator <you> --reason <text>
 
-Both are audited on the project's trail (`capability.enable` / `capability.disable`, the reason in the disable
-row). People see the change the next time the app opens or reloads. `capability:disable` refuses every other
+Both are audited on the project's trail (`capability.enable` / `capability.disable`), each row naming the
+operator and carrying their reason. Re-running either for a switch already in that state writes nothing. People see the change the next time the app opens or reloads. `capability:disable` refuses every other
 capability. Run both from the deployed image, like every operator CLI (see the server-generation fence above).
