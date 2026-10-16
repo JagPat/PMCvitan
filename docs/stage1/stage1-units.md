@@ -11,7 +11,7 @@ that carried the unit live. At 17:45 UTC `https://pms-api.vitan.in/health` and
 | Q2 | Live isolation proof (V1–V7) | done | coordinator | live | PASS | none |
 | Q3 | Baseline sweep (C7), switch off | steps written (journeys file, parts R and B) | — | — | pending | taken during the rollback drill |
 | H0 | `home-nav` switch + audited off command | #937 | Codex clean | 82d6cbf | on: PASS (Board, 23:02 IST); off: pending (R) | rollback drill |
-| H0b | "On" command records the reason | #944 merged | Codex clean | d6c7dda | Board's enable printed changed:true | check the reason on R3's audit row |
+| H0b | "On" command records the reason | #944 merged | Codex clean | d6c7dda | Board's enable printed changed:true | R3b: read the reason on the audit row |
 | H1 | Navigation | #938 | Codex clean | 82d6cbf | pending (N, O1) | monitor run |
 | H2 | "You have N actions" | #939 | Codex clean | 82d6cbf | pending (A, O2) | monitor run |
 | H3 | Tiles say whom they wait on | #943 | Codex clean | 82d6cbf | pending (T1 now, T2 after Q4) | monitor run, twice |

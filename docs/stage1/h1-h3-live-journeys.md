@@ -122,6 +122,17 @@ R3. The operator turns it back on:
 pnpm --filter api capability:enable --project qa-test-d135 --capability home-nav --operator <your email> --reason "Stage 1 live check resumes after the rollback drill"
 ```
 
+R3b. The operator reads the switch's audit rows from the same terminal. This is a read: it changes nothing.
+
+```
+node -e 'const {PrismaClient}=require("@prisma/client");const p=new PrismaClient();p.auditLog.findMany({where:{projectId:"qa-test-d135",action:{in:["capability.enable","capability.disable"]}},orderBy:{at:"desc"},take:4,select:{at:true,action:true,actor:true,actorId:true,payload:true}}).then(r=>console.log(JSON.stringify(r,null,1))).finally(()=>p.$disconnect())'
+```
+
+PASS when the newest row is `capability.enable` with `actorId` equal to R3's `--operator` and
+`payload.reason` equal to R3's `--reason`, and the row below it is R1's `capability.disable` with R1's
+operator and reason. Paste the output into `results.md`. This is the only check that proves #944 live: the
+command itself prints only `changed`.
+
 R4. The monitor reloads as qa.pmc; the bar shows Site Log again. Then compare the N, A and T1 results
 against B. The client, contractor and consultant bars, every tile number and every tile's destination must
 match B.
@@ -145,7 +156,7 @@ B3. As qa.pmc, call `GET /projects/qa-test-d135/shell`. PASS when `capabilities`
 | Unit | Built | Reviewed | Deployed | Live-tested |
 | --- | --- | --- | --- | --- |
 | H0 switch | #937 | Codex clean | 82d6cbf | E1, E2 done (Board); R pending |
-| H0 reason on enable | #944 | Codex clean | d6c7dda | Board's enable printed changed:true; R3's audit row carries the reason |
+| H0 reason on enable | #944 | Codex clean | d6c7dda | Board's enable printed changed:true; R3b shows the reason on the audit row |
 | H1 navigation | #938 | Codex clean | 82d6cbf | N1–N4, O1 |
 | H2 actions line | #939 | Codex clean | 82d6cbf | A1–A3, O2 |
 | H3 tiles | #943 | Codex clean | 82d6cbf | T1 now, T2 after Q4 |

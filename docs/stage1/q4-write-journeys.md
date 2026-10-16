@@ -1,8 +1,9 @@
 # Stage 1 Q4 write journeys (C0–C6) on the QA project (qa-test-d135)
 
 Written 16 Oct 2026 for the monitor. Read-only research of the code; nothing was run against the live site.
-Code read at local HEAD 4e7c5ab. Its only difference from the deployed 82d6cbf is the operator script
-and its test (`git diff --stat 82d6cbf 4e7c5ab`: 4 files, none in the web or journey API code), so every
+Code read at d6c7dda, the main commit that is deployed (`/health` and `/version.json` both report it).
+Its only difference from 82d6cbf, where H0–H3 first went live, is #944: the operator script, its test and
+the runbook (`git diff --stat 82d6cbf d6c7dda`: 4 files, none in the web or journey API code), so every
 screen and route cited below is what runs live. All `file:line` cites are repo paths.
 
 Web: `https://pms.vitan.in`. API: `https://pms-api.vitan.in` (no `/api` prefix).
