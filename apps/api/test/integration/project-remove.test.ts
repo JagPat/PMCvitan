@@ -23,6 +23,9 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
   const qaId = `it-rm-qa-${run}`;
   const qaEmail = `qa.${run}@vitan.in`;
   const loneId = `it-rm-lone-${run}`;
+  // a staff account whose home is elsewhere and whose last-used project is the target (jp@ on #482)
+  const staffId = `it-rm-staff-${run}`;
+  const staffEmail = `staff.${run}@vitan.in`;
 
   const opts = async (over: Partial<RemovalOptions> = {}): Promise<RemovalOptions> => ({
     projectId: f.projectA.id,
@@ -49,8 +52,8 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
 
   afterAll(async () => {
     await t?.prisma.processedEvent.deleteMany({ where: { id: receipt } });
-    await t?.prisma.membership.deleteMany({ where: { userId: { in: [qaId, loneId] } } });
-    await t?.prisma.user.deleteMany({ where: { id: { in: [qaId, loneId] } } });
+    await t?.prisma.membership.deleteMany({ where: { userId: { in: [qaId, loneId, staffId] } } });
+    await t?.prisma.user.deleteMany({ where: { id: { in: [qaId, loneId, staffId] } } });
     if (f && await projectExists(f.projectA.id)) {
       await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
       await t.prisma.crewRow.deleteMany({ where: { dailyLogId: logId } });
@@ -61,7 +64,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     await t?.close();
   });
 
-  it('refuses, changing nothing, while a non-QA account points at the project', async () => {
+  it('refuses, changing nothing, while a non-QA account has the project as its home project', async () => {
     const r = await removeProject(t.prisma, await opts());
     expect(r.outcome).toBe('refused');
     expect(r.ok).toBe(false);
@@ -83,6 +86,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
 
   it('refuses a list that no longer matches the database, and an archived destination', async () => {
     await t.prisma.user.create({ data: { id: qaId, projectId: f.projectA.id, lastProjectId: f.projectB.id, role: 'pmc', name: 'qa', email: qaEmail } });
+    await t.prisma.user.create({ data: { id: staffId, projectId: f.projectB.id, lastProjectId: f.projectA.id, role: 'pmc', name: 'staff', email: staffEmail } });
     await t.prisma.membership.create({ data: { projectId: f.projectB.id, userId: qaId, role: 'pmc', status: 'active' } });
     const stale = await opts();
     const node = await t.prisma.projectNode.create({ data: { projectId: f.projectA.id, name: 'Late', kind: 'zone' } });
@@ -112,6 +116,18 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     expect(Object.keys(r.added)).toEqual([]);
     expect(Object.keys(r.changed)).toEqual(['User']);
     expect(r.rehomed).toEqual([{ id: qaId, email: qaEmail, fromProjectId: f.projectA.id, toProjectId: f.projectB.id, lastProjectId: f.projectB.id }]);
+    // a non-QA account pointed at only by its last-used project is not refused: that pointer is cleared
+    expect(r.lastProjectCleared).toEqual([{ id: staffId, email: staffEmail }]);
+    expect(r.users).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: qaId, linkedBy: 'User.projectId' }),
+      expect.objectContaining({ id: staffId, linkedBy: 'User.lastProjectId' }),
+    ]));
+    expect(r.users).toHaveLength(2);
+    expect(r.changed.User).toHaveLength(2);
+    // tables no project path reaches are named and unchanged: Org, OrgMembership, UserIdentity
+    for (const table of ['Org', 'OrgMembership', 'UserIdentity']) {
+      expect(r.unlinked.find((u) => u.table === table), table).toMatchObject({ unchanged: true });
+    }
     expect(r.protected).toEqual([expect.objectContaining({ projectId: f.projectB.id, removed: [], keysUnchanged: true })]);
     expect(r.triggers.disabled.map((d) => d.name)).toContain('DomainEvent_append_only');
     expect(r.triggers.restored).toBe(true);
@@ -137,6 +153,8 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     expect(await t.prisma.crewRow.count({ where: { dailyLogId: logId } })).toBe(0);
     const qa = await t.prisma.user.findUniqueOrThrow({ where: { id: qaId } });
     expect({ projectId: qa.projectId, lastProjectId: qa.lastProjectId }).toEqual({ projectId: f.projectB.id, lastProjectId: f.projectB.id });
+    const staff = await t.prisma.user.findUniqueOrThrow({ where: { id: staffId } });
+    expect({ projectId: staff.projectId, lastProjectId: staff.lastProjectId }).toEqual({ projectId: f.projectB.id, lastProjectId: null });
     expect(await triggers()).toEqual(before);
     const bAfter = await inventoryProject(t.prisma, f.projectB.id);
     const { User: _u1, ...restBefore } = bBefore.keys;

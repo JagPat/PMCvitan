@@ -60,6 +60,8 @@ export interface RemovalRecord {
   startedAt?: string;
   /** the reviewed file's own snapshot time; the run refuses unless its list matches the database's now */
   inventoryTakenAt?: string;
+  /** every listed `User` row, by the path that links it: users are pointed at the project, never removed */
+  users: Array<{ key: string; id: string; email: string; projectId: string; lastProjectId: string | null; linkedBy: string }>;
   rehomed: Array<{ id: string; email: string; fromProjectId: string; toProjectId: string; lastProjectId: string | null }>;
   lastProjectCleared: Array<{ id: string; email: string }>;
   counts: Record<string, { before: number; after: number }>;
@@ -68,6 +70,8 @@ export interface RemovalRecord {
   changed: Record<string, string[]>;
   added: Record<string, string[]>;
   protected: Array<{ projectId: string; removed: string[]; changed: string[]; keysUnchanged: boolean }>;
+  /** every table no project path reaches (global tables: Org, OrgMembership, UserIdentity, …): none may change */
+  unlinked: Array<{ table: string; before: number; after: number; unchanged: boolean }>;
   triggers: { disabled: Array<{ table: string; name: string; enabled: string }>; compared: number; restored: boolean };
   /** the target's stored files: object storage is not touched */
   files: StoredFile[];
@@ -86,7 +90,7 @@ class Rollback extends Error {
 function emptyRecord(opts: RemovalOptions): RemovalRecord {
   return {
     ok: false, mode: opts.commit ? 'commit' : 'dry-run', outcome: 'failed', failures: [], projectId: opts.projectId,
-    rehomed: [], lastProjectCleared: [], counts: Object.create(null), deleted: Object.create(null),
+    users: [], rehomed: [], lastProjectCleared: [], unlinked: [], counts: Object.create(null), deleted: Object.create(null),
     removed: Object.create(null), changed: Object.create(null), added: Object.create(null), protected: [],
     triggers: { disabled: [], compared: 0, restored: false }, files: [],
   };
@@ -116,8 +120,16 @@ export interface RemovalCheckInput {
   rehomeTo: string | null;
   protectedBefore: ProjectInventory[];
   protectedAfter: ProjectInventory[];
+  /** tables no project path reaches: any change in them fails */
+  unlinked: string[];
   triggersBefore: TriggerState[];
   triggersAfter: TriggerState[];
+}
+
+/** Listed `User` keys that are not one of the users pointing at the project. */
+export function strayUsers(listedUsers: string[], pointers: Array<{ key: string }>): string[] {
+  const known = new Set(pointers.map((u) => u.key));
+  return listedUsers.filter((k) => !known.has(k));
 }
 
 /** Every way the database after the run differs from what the reviewed list allows; empty means none. */
@@ -146,6 +158,7 @@ export function checkRemoval(c: RemovalCheckInput): string[] {
     const off = ch.table === 'User' ? ch.changed.filter((k) => !updated.has(k)) : ch.changed;
     if (off.length) failures.push(`${ch.table}: ${off.length} row(s) changed that the run may not change: ${off.slice(0, 5).join(' ')}`);
   }
+  for (const table of c.unlinked) if (byTable.has(table)) failures.push(`unlinked ${table}: changed by the run`);
   const userChanged = new Set(byTable.get('User')?.changed ?? []);
   const unchangedUsers = c.updatedUsers.filter((k) => !userChanged.has(k));
   if (unchangedUsers.length) failures.push(`User: ${unchangedUsers.length} updated user row(s) show no change`);
@@ -251,9 +264,17 @@ export async function removeProject(prisma: PrismaClient, opts: RemovalOptions):
       record.files = live.files;
       const drift = sameInventory(file, live);
       if (drift.length) throw new Refusal(`the database no longer matches the reviewed list; take a fresh inventory. ${drift.join('; ')}`);
-      const nonQa = live.userPointers.filter((u) => !QA_EMAIL.test(u.email));
-      if (nonQa.length) throw new Refusal(`users that are not QA accounts point at the project; they go to Board: ${nonQa.map((u) => u.email).join(', ')}`);
+      // a user is pointed at the project, never removed with it: every listed `User` row must be one of them
+      const stray = strayUsers(live.keys.User ?? [], live.userPointers);
+      if (stray.length) throw new Refusal(`listed User rows that are not home or last-project pointers; they go to the coordinator: ${stray.join(' ')}`);
+      record.users = live.userPointers.map((u) => ({
+        key: u.key, id: u.id, email: u.email, projectId: u.projectId, lastProjectId: u.lastProjectId,
+        linkedBy: [u.projectId === opts.projectId && 'User.projectId', u.lastProjectId === opts.projectId && 'User.lastProjectId'].filter(Boolean).join(' + '),
+      }));
+      // only a home project moves (6240992923): a user whose last project alone is the target just has it cleared
       const home = live.userPointers.filter((u) => u.projectId === opts.projectId);
+      const nonQa = home.filter((u) => !QA_EMAIL.test(u.email));
+      if (nonQa.length) throw new Refusal(`users that are not QA accounts have the project as their home project; they go to Board: ${nonQa.map((u) => u.email).join(', ')}`);
       if (home.length) {
         if (!opts.rehomeTo) throw new Refusal(`${home.length} user(s) have the project as their home project and no --rehome-to was given`);
         const [to] = await tx.$queryRawUnsafe<Array<{ id: string; archivedAt: string | null }>>(
@@ -336,8 +357,12 @@ export async function removeProject(prisma: PrismaClient, opts: RemovalOptions):
       const updatedUsers = sorted(new Set([...record.rehomed, ...record.lastProjectCleared].map((u) => userKeys.get(u.id)!)));
       record.failures = checkRemoval({
         changes, listed, updatedUsers, rehomedUsers: record.rehomed.map((u) => userKeys.get(u.id)!), rehomeTo: opts.rehomeTo,
-        protectedBefore, protectedAfter, triggersBefore, triggersAfter,
+        protectedBefore, protectedAfter, unlinked: live.unlinked.map((u) => u.table), triggersBefore, triggersAfter,
       });
+      const changedTables = new Set(changes.map((ch) => ch.table));
+      record.unlinked = live.unlinked.map(({ table }) => ({
+        table, before: before[table]?.rows ?? 0, after: after[table]?.rows ?? 0, unchanged: !changedTables.has(table),
+      }));
       fillDiff(record, before, after, changes, protectedBefore, updatedUsers);
       record.triggers.compared = triggersBefore.length;
       record.triggers.restored = !record.failures.some((f) => f.startsWith('trigger '));

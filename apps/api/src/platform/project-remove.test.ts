@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkRemoval, deleteOrder, QA_EMAIL, type RemovalCheckInput, type TriggerState } from './project-remove';
+import { checkRemoval, deleteOrder, QA_EMAIL, strayUsers, type RemovalCheckInput, type TriggerState } from './project-remove';
 import type { ProjectInventory } from './project-inventory';
 
 /**
@@ -22,6 +22,7 @@ function base(over: Partial<RemovalCheckInput> = {}): RemovalCheckInput {
     rehomeTo: 'd135',
     protectedBefore: [inv('d135', { Project: ['["d135"]'], User: ['["u2"]'] })],
     protectedAfter: [inv('d135', { Project: ['["d135"]'], User: ['["u1"]', '["u2"]'] })],
+    unlinked: ['Org', 'OrgMembership', 'UserIdentity'],
     triggersBefore: [trig],
     triggersAfter: [trig],
     ...over,
@@ -86,6 +87,15 @@ describe('checkRemoval', () => {
     ]));
   });
 
+  it('fails any change in a table no project path reaches (Org, OrgMembership, UserIdentity)', () => {
+    const f = checkRemoval(base({ changes: [
+      ...base().changes,
+      { table: 'Org', removed: [], added: [], changed: ['["cmrcu7nov0000ms4mtf3vyq5i"]'] },
+      { table: 'OrgMembership', removed: ['["om1"]'], added: [], changed: [] },
+    ] }));
+    expect(f).toEqual(expect.arrayContaining(['unlinked Org: changed by the run', 'unlinked OrgMembership: changed by the run']));
+  });
+
   it('fails a trigger that is not restored exactly, is gone, or is new', () => {
     const f = checkRemoval(base({
       triggersBefore: [trig, { ...trig, name: 'B' }, { ...trig, name: 'C' }],
@@ -114,6 +124,13 @@ describe('deleteOrder', () => {
     expect(at('DailyLog')).toBeLessThan(at('Project'));
     expect(at('OutboxDelivery')).toBeLessThan(at('DomainEvent'));
     expect(at('DomainEvent')).toBeLessThan(at('Project'));
+  });
+});
+
+describe('strayUsers', () => {
+  it('names a listed User row that is not one of the users pointing at the project', () => {
+    expect(strayUsers(['["u1"]', '["u9"]'], [{ key: '["u1"]' }, { key: '["u2"]' }])).toEqual(['["u9"]']);
+    expect(strayUsers(['["u1"]'], [{ key: '["u1"]' }])).toEqual([]);
   });
 });
 

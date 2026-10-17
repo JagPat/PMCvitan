@@ -2660,17 +2660,20 @@ Everything happens in one `SERIALIZABLE` transaction, with a 10-second lock time
 
 1. **Refusals, before any write.** It refuses if the list it rebuilds now differs from the
    `--inventory` file, key for key, including its `userPointers`. It refuses if the file is for
-   another project, database or schema. It refuses if any user pointing at the project has an
-   email other than `^qa\.[a-z]+@vitan\.in$`: a real account goes to Board. Each user whose home
-   project is the target must already hold an active membership on `--rehome-to`, which must be
-   one of `--protect`, exist, and not be archived.
+   another project, database or schema. Users are never removed: it refuses if a listed `User` row
+   is not one of the users whose home or last-used project is the target. It refuses if a user
+   whose HOME project is the target has an email other than `^qa\.[a-z]+@vitan\.in$`: a real
+   account goes to Board. A user whose last-used project alone is the target, of any email, only
+   has `lastProjectId` cleared. Each user whose home project is the target must already hold an
+   active membership on `--rehome-to`, which must be one of `--protect`, exist, and not be archived.
 2. **Before.** Every table's keys (§DS) and each protected project's list (§PI).
 3. **Writes.** Users whose home project is the target move to `--rehome-to`. `lastProjectId` is
    cleared only where it names the target. Each DELETE trigger on a table being emptied is
    switched off inside the transaction. Exactly the listed keys are deleted, child tables first.
    The triggers are switched back on as they were, and deferred constraints are checked at once.
 4. **Checks.** Removed keys equal the list, table by table. The only changed rows are the users it
-   moved. No row is added. No protected project loses or changes a row. Every trigger in the
+   moved or whose last-used project it cleared. No row is added. No table that no project path
+   reaches (`unlinked`: `Org`, `OrgMembership`, `UserIdentity`, …) changes at all. No protected project loses or changes a row. Every trigger in the
    schema has the same mode and definition as before.
 5. **Commit** only with `--commit` and every check passed. Otherwise it rolls back, and the record
    names each failed check.
@@ -2678,7 +2681,8 @@ Everything happens in one `SERIALIZABLE` transaction, with a 10-second lock time
 Switching a trigger off takes an exclusive lock on its table until the run ends, so other
 sessions wait on those tables while it runs. No other session can write past a switched-off guard.
 Run it at a quiet time. The record holds per-table before/after counts, every removed, changed
-and added key by table, the users moved, each protected project's result, the triggers switched
+and added key by table, every listed user with the path that links it, the users moved,
+the unlinked tables with their counts, each protected project's result, the triggers switched
 off and the restore check, and the target's stored files. Object storage is not touched. The
 record is written owner-only and never over an existing file. Exit 0 means a dry run whose every
 check held, or a committed removal. Run it from the deployed image, like every operator CLI.
