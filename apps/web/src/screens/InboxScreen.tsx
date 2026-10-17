@@ -8,6 +8,7 @@ import { EngineerToday } from './EngineerToday';
 import { ClientPulse } from './ClientPulse';
 import { PmcBrief } from './PmcBrief';
 import { BRIEF_REFRESH_MS, briefIsFresh, pmcBrief } from '@/lib/pmcBrief';
+import { useHomeNav } from '@/lib/homeNav';
 import styles from './responsive.module.css';
 
 type Tone = ActionItem['tone'];
@@ -34,6 +35,7 @@ export function InboxScreen() {
   const items = useMemo(() => selectActionItems(state), [state]);
   const total = countActionItems(items);
   const role = useStore((s) => s.role);
+  const homeNav = useHomeNav();
   const short = useStore((s) => s.short); // this queue is scoped to the active project
   const setScreen = useStore((s) => s.setScreen);
   const brief = useStore((s) => s.brief);
@@ -97,12 +99,12 @@ export function InboxScreen() {
   // task, so nothing is hidden behind the brief's cut. Until a server answers (or in the demo, which
   // has none), and whenever the last answer is no longer fresh, the PMC keeps the list below.
   if (role === 'pmc' && brief && brief.projects.length > 0 && briefIsFresh(briefAt, Date.now())) {
-    const named = pmcBrief(brief.projects, Date.now()).first;
+    const named = pmcBrief(brief.projects, Date.now(), homeNav).first;
     const reviewsNamed = named.some((t) => t.kind === 'reviews' && t.projectId === activeProjectId);
     const rest = items.filter((it) => !(reviewsNamed && it.key === 'pmc-reviews'));
     return (
       <div className={`${styles.screen} ${styles.mid}`}>
-        <PmcBrief brief={brief} also={rest.length ? <ActionList items={rest} onOpen={setScreen} /> : undefined} />
+        <PmcBrief brief={brief} homeNav={homeNav} also={rest.length ? <ActionList items={rest} onOpen={setScreen} /> : undefined} />
       </div>
     );
   }

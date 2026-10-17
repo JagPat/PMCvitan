@@ -32,6 +32,9 @@ export interface PmcBrief {
   first: BriefTask[];
   /** how many tasks there are in all, the ones not named included */
   total: number;
+  /** Stage 1 (home-nav on): the tasks held by someone else — a log not sent waits on the engineer, a decision
+   *  on the client — shown as "Waiting on …" lines instead of in "Do these first"; empty with the switch off */
+  waiting: BriefTask[];
   /** across every project in the brief */
   digest: { projects: number; logsSent: number; approvals: number; photos: number; rejectedInspections: number };
 }
@@ -43,8 +46,10 @@ export interface PmcBrief {
  *  2. inspections waiting for review, most first — a contractor is held up;
  *  3. today's site log not sent, not started before started, then by project.
  * "Days" counts whole days since the oldest waiting decision was published, against `now`.
+ * With `homeNav` (Stage 1, #482 6227430525) only 2 is the PMC's own to do: 1 and 3 wait on the client and the
+ * engineer (the PMC cannot start a site log), so they move to `waiting` and "Do these first" names none of them.
  */
-export function pmcBrief(projects: readonly PmcBriefProject[], now: number): PmcBrief {
+export function pmcBrief(projects: readonly PmcBriefProject[], now: number, homeNav = false): PmcBrief {
   const client = projects
     .filter((p) => p.waitingOnClient > 0)
     .map((p) => ({ p, since: p.oldestWaitingSince ? Date.parse(p.oldestWaitingSince) : NaN }))
@@ -69,10 +74,11 @@ export function pmcBrief(projects: readonly PmcBriefProject[], now: number): Pmc
     // the bare log screen, where today's log is started, when none is
     .map((p): BriefTask => ({ kind: 'log', projectId: p.projectId, short: p.short, log: p.logToday as 'open' | 'missing', target: 'daily-log', ...(p.logToday === 'open' && p.logTodayId ? { item: p.logTodayId } : {}) }));
 
-  const all = [...client, ...reviews, ...logs];
+  const all = homeNav ? reviews : [...client, ...reviews, ...logs];
   return {
     first: all.slice(0, FIRST_COUNT),
     total: all.length,
+    waiting: homeNav ? [...client, ...logs] : [],
     digest: {
       projects: projects.length,
       logsSent: projects.filter((p) => p.logToday === 'sent').length,

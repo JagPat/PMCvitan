@@ -15,6 +15,7 @@ import { demoReviewOpenIssues } from '@/lib/locationTree';
 import { decisionsSliceSettled, drawingsSliceSettled, inspectionsSliceSettled, projectSnapshotSettled } from '@/lib/notifications';
 import { activitiesReadMode, dailyLogReadMode, inspectionsReadMode } from '@/data/apiGateway';
 import { dailyLogCommandInFlight } from './dailyLogPending';
+import { HOME_NAV_CAPABILITY, resolveHomeNav } from '@/lib/homeNav';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
 export const WIN = 75;
@@ -612,7 +613,10 @@ export function selectActionItems(s: AppState): ActionItem[] {
     if (otherPending.length) {
       const allClientHeld = otherPending.every((d) => (d.deciderKind ?? 'client') === 'client');
       const who = allClientHeld ? 'the client' : otherPending.length === 1 ? 'its decider' : 'their deciders';
-      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', facts: { n: otherPending.length, who: allClientHeld ? 'client' : 'decider' }, screen: 'decision-log', cta: 'View', tone: 'ink', count: otherPending.length, item: only(otherPending) });
+      // Stage 1 A1 (#482 6227430525) — with home-nav on, these wait on someone else, not the PMC: the card stays, but
+      // counts 0 toward N and the For You badge, as the brief shows them as "Waiting on the client"
+      const homeNav = resolveHomeNav(s.activeProjectId, s.capabilitiesKnown, s.capabilities.includes(HOME_NAV_CAPABILITY));
+      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', facts: { n: otherPending.length, who: allClientHeld ? 'client' : 'decider' }, screen: 'decision-log', cta: 'View', tone: 'ink', count: homeNav ? 0 : otherPending.length, item: only(otherPending) });
     }
     // #771 PMC For You — the re-inspections a rejection sent back, still with the engineer (from the served lineage,
     // assignee and due date). With the re-inspections awaiting review, already counted in `pmc-reviews`, they make
