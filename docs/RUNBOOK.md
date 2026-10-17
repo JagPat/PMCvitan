@@ -2590,3 +2590,27 @@ Turn it off for one project (the rollback):
 Both are audited on the project's trail (`capability.enable` / `capability.disable`), each row naming the
 operator and carrying their reason. Re-running either for a switch already in that state writes nothing. People see the change the next time the app opens or reloads. `capability:disable` refuses every other
 capability. Run both from the deployed image, like every operator CLI (see the server-generation fence above).
+
+## §DS. Database snapshot (read-only)
+
+Records every table's rows by key, so a removal can be checked row by row (#482: the archived
+`qa-test-356a`). Board takes one before the removal, as the record of what was there.
+
+    pnpm --filter api db:snapshot --out <file.json>
+
+`db:snapshot` runs in one `REPEATABLE READ, READ ONLY` transaction (one snapshot, every write
+refused) and stops unless PostgreSQL confirms both. For every table in the schema it records the
+row count and the full sorted list of row keys: the primary key as a JSON array of PostgreSQL's
+own text for each column, or the md5 of the whole row for a table without one, and beside each key
+the md5 of the whole row (a digest, not the row's contents). Nothing is parsed as a number, and
+`takenAt`, `database` and `schema` are PostgreSQL's, read in the statement that took the snapshot.
+`--out` is written owner-only to a temporary file, flushed, then linked into place: it never
+replaces an existing file and is never left half-written. The file holds every key of every table,
+so expect it to grow with the database.
+
+There is no command that compares two snapshot files: a file cannot prove which server it came
+from or when it was taken. The comparison (`diffSnapshots`: every key removed, added, or kept with
+different contents, by table) runs only inside the removal command, on the snapshots it takes
+itself on one connection before and after the delete. It does not decide which project a row
+belongs to, so a table with no foreign key to a project is covered like any other.
+Run it from the deployed image, like every operator CLI.
