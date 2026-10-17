@@ -2573,3 +2573,20 @@ Prisma on BOTH the ordinary and the P3005 path, with each of those two call site
 prove the refusal came from it. That the proof itself is RUN is pinned separately, by
 `scripts/ci-baseline-proof-wiring.test.mjs` in the required `automation` job: a proof cannot detect
 that it was unwired from CI.
+
+## §HN. Stage 1 redesign — the `home-nav` switch (turn the new Home and navigation on or off)
+
+The Stage 1 Home and navigation changes (#482, Rev 3.1) show only on a project that holds the `home-nav`
+capability. It changes layout only: no route, write, job or notification depends on it. Off is today's app.
+
+Turn it on for one project (the controller decides which, QA project first):
+
+    pnpm --filter api capability:enable --project <id> --capability home-nav --operator <you> --reason <text>
+
+Turn it off for one project (the rollback):
+
+    pnpm --filter api capability:disable --project <id> --capability home-nav --operator <you> --reason <text>
+
+Both are audited on the project's trail (`capability.enable` / `capability.disable`), each row naming the
+operator and carrying their reason. Re-running either for a switch already in that state writes nothing. People see the change the next time the app opens or reloads. `capability:disable` refuses every other
+capability. Run both from the deployed image, like every operator CLI (see the server-generation fence above).

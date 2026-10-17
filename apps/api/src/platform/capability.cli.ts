@@ -1,8 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { PrismaService } from '../prisma.service';
-import { recordAudit } from './audit';
-import { assertServerGenerationAdmitted } from './server-generation';
-import { systemActor } from '../common/actor';
+import { enableCapability } from './capability-switch';
 import { CommercialActivationService } from '../commercial/commercial-activation.service';
 import { CommercialParticipant } from '../commercial/commercial.participant';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from './capabilities.service';
@@ -123,25 +121,8 @@ async function main(): Promise<void> {
       process.stdout.write(JSON.stringify({ ok: true, projectId: f.project, capability: f.capability, ...result }) + '\n');
       return;
     }
-    await prisma.$transaction(async (tx) => {
-      // 4d-iii / R0c — the server-generation fence, before anything is written (the commercial branch
-      // above takes it inside `activate`'s transaction). Read `FOR SHARE` and held to commit.
-      await assertServerGenerationAdmitted(tx);
-      await tx.project.findUniqueOrThrow({ where: { id: f.project }, select: { id: true } });
-      await tx.projectCapability.upsert({
-        where: { projectId_capability: { projectId: f.project, capability: f.capability } },
-        create: { projectId: f.project, capability: f.capability, enabledById: f.operator },
-        update: {},
-      });
-      await recordAudit(tx, {
-        projectId: f.project,
-        actor: systemActor(f.operator, f.operator, 'operator'),
-        action: 'capability.enable',
-        entity: 'ProjectCapability',
-        entityId: `${f.project}:${f.capability}`,
-      });
-    });
-    process.stdout.write(JSON.stringify({ ok: true, projectId: f.project, capability: f.capability }) + '\n');
+    const { changed } = await enableCapability(prisma, { projectId: f.project, capability: f.capability, operator: f.operator, reason: f.reason });
+    process.stdout.write(JSON.stringify({ ok: true, projectId: f.project, capability: f.capability, changed }) + '\n');
   } catch (e) {
     process.stderr.write(`capability:enable: ${(e as Error).message}\n`);
     process.exitCode = 1;

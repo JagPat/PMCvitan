@@ -307,6 +307,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'approved'": 'excludes: the lock icon marks a FINAL approval; an uncountersigned one is provisional',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'recorded'": 'excludes: the record branch',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'awaiting_countersign'": 'answered',
+    // Stage 1 H3 (#482) — the Dashboard decisions tile names the architect (or, stranded, the PMC) for an awaiting row
+    "apps/web/src/screens/dashboardWaitingOn.ts :: d.status === 'awaiting_countersign'": 'answered',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'pending' || d.status === 'withdrawn'": 'excludes: the never-approved rows render their options; an awaiting row carries a provisional approval and renders it (its own arm above)',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'withdrawn'": 'excludes: the withdrawn attribution',
     "apps/web/src/screens/DecisionLogScreen.tsx :: d.status === 'withdrawn' #2": 'excludes: the withdrawal reason',

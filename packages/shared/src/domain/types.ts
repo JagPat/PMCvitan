@@ -631,6 +631,11 @@ export interface DailyLog {
   materials: SiteMaterial[];
   progress: number;
   photos: MediaRef[];
+  /** #482 site photos unit 3 — the server's count of the day's photos: every member's photos filed on this log
+   *  plus its legacy photos. Absent from a server that does not send it (the client then counts as before). */
+  photoCount?: number;
+  /** the upload keys of the viewer's own photos the server holds filed on this log */
+  myPhotoKeys?: string[];
 }
 
 export interface Worker {

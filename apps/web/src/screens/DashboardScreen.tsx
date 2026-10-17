@@ -4,12 +4,15 @@ import { decisionRecordLink, inspectionsSettledForLinks, selectDecisionsAwaiting
 import { API_BASE, dailyLogReadMode } from '@/data/apiGateway';
 import { decisionsSliceSettled, inspectionsSliceSettled } from '@/lib/notifications';
 import { useNavItems } from '@/layout/useNavItems';
+import { useHomeNav } from '@/lib/homeNav';
+import { DashboardActionsLine } from './DashboardActionsLine';
+import { decisionsWaitOn, failedWaitOn, reviewsWaitOn } from './dashboardWaitingOn';
 import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
-import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, type Lang } from '@vitan/shared';
+import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, type Lang, type WaitParty } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 /** Top 10 #2 (#771) — a count whose slice has not settled is shown as unknown, never as 0. */
@@ -24,7 +27,11 @@ export function DashboardScreen() {
   // offers no Dashboard way in either
   const role = useStore((s) => s.role);
   const lang = useStore((s) => s.lang);
-  const navScreens = new Set<ScreenKey>(useNavItems().map((n) => n.key));
+  const navItems = useNavItems();
+  const navScreens = new Set<ScreenKey>(navItems.map((n) => n.key));
+  // Stage 1 H2 (#482) — on a project whose `home-nav` switch is on, one line carries the For You badge's number
+  const homeNav = useHomeNav();
+  const forYou = navItems.find((n) => n.key === 'inbox');
   // #857 Codex 4269224400 — plus the role's link-only screens (the client's `/decisions`, where an unsettled
   // slice sends the approvals tile so retained rows never offer live controls), while their module is on (#822)
   const enabledModules = useStore((s) => s.enabledModules);
@@ -103,14 +110,21 @@ export function DashboardScreen() {
   });
   // `onClick` stays optional: a tile with nowhere to go renders as a plain box (B5)
   const openApprovals = canOpen(approvalsScreen) ? () => setScreen(approvalsScreen) : undefined;
+  // Stage 1 H3 (#482) — with the home-nav switch on, a tile with items says whom they wait on, ahead of today's line
+  const decisionsWait = useStore(decisionsWaitOn);
+  const reviewsWait = useStore(reviewsWaitOn);
+  const failedWait = useStore(failedWaitOn);
+  const waitSub = (party: WaitParty | null, sub: string): string => (homeNav && party ? `${T.waitingOn(party, lang)} · ${sub}` : sub);
+  // …and the site photo tile reads in the viewer's language (today it is English only)
+  const photoLang: Lang = homeNav ? lang : 'en';
   const tiles: Array<{ key: string; label: string; value: number | string; accent: string; sub: string; onClick?: () => void }> = [
     decisionsKnown
-      ? { key: 'pending', label: L.pendingTile[lang], value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? T.oldestAgeing(Math.max(...pending.map((d) => d.ageDays ?? 0)), lang) : L.allCleared[lang], onClick: openApprovals }
+      ? { key: 'pending', label: L.pendingTile[lang], value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? waitSub(decisionsWait, T.oldestAgeing(Math.max(...pending.map((d) => d.ageDays ?? 0)), lang)) : L.allCleared[lang], onClick: openApprovals }
       : { key: 'pending', label: L.pendingTile[lang], value: UNKNOWN, accent: 'var(--amber-solid)', sub: unknownSub(decisionsFailed, lang), onClick: openApprovals },
   ];
   if (canOpen('inspect-review')) tiles.push(
     inspectionsKnown
-      ? { key: 'review', label: L.reviewTile[lang], value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? T.inQueue(reviewPending, lang) : reviewPending === 1 ? (activeReview?.title ?? L.onePending[lang]) : L.nothingPending[lang], onClick: () => (onlyReviewId ? openItem('inspect-review', onlyReviewId) : setScreen('inspect-review')) }
+      ? { key: 'review', label: L.reviewTile[lang], value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? waitSub(reviewsWait, T.inQueue(reviewPending, lang)) : reviewPending === 1 ? waitSub(reviewsWait, activeReview?.title ?? L.onePending[lang]) : L.nothingPending[lang], onClick: () => (onlyReviewId ? openItem('inspect-review', onlyReviewId) : setScreen('inspect-review')) }
       : { key: 'review', label: L.reviewTile[lang], value: UNKNOWN, accent: 'var(--accent)', sub: unknownSub(inspectionsFailed, lang), onClick: () => setScreen('inspect-review') },
     // API mode never claims WHICH items failed beyond the recorded count — the seeded
     // "Drain slope · Terrace" copy is demo-only prototype fidelity
@@ -118,7 +132,7 @@ export function DashboardScreen() {
     inspectionsKnown && API_BASE && !reinspections.known
       ? { key: 'failed', label: L.failedTile[lang], value: UNKNOWN, accent: 'var(--red-solid)', sub: L.reinspectionUnknown[lang], onClick: () => setScreen('inspect-review') }
       : inspectionsKnown
-      ? { key: 'failed', label: L.failedTile[lang], value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? T.inReinspections(reinspections.count, lang) : 'Drain slope · Terrace') : L.none[lang], onClick: () => setScreen('inspect-review') }
+      ? { key: 'failed', label: L.failedTile[lang], value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? waitSub(failedWait, API_BASE ? T.inReinspections(reinspections.count, lang) : 'Drain slope · Terrace') : L.none[lang], onClick: () => setScreen('inspect-review') }
       : { key: 'failed', label: L.failedTile[lang], value: UNKNOWN, accent: 'var(--red-solid)', sub: unknownSub(inspectionsFailed, lang), onClick: () => setScreen('inspect-review') },
   );
   tiles.push(
@@ -128,10 +142,10 @@ export function DashboardScreen() {
     // The snapshot carries the newest SNAPSHOT_SITE_PHOTO_LIMIT only: a full window is "at least", and its
     // places are the places among those (Codex 4194155412) — never presented as the total on record.
     {
-      key: 'photos', label: 'SITE PHOTOS ON RECORD', value: photoStats.capped ? `${photoStats.count}+` : photoStats.count, accent: 'var(--green-solid)',
+      key: 'photos', label: L.photosTile[photoLang], value: photoStats.capped ? `${photoStats.count}+` : photoStats.count, accent: 'var(--green-solid)',
       sub: photoStats.capped
-        ? `Latest ${photoStats.count} shown${photoStats.zones > 0 ? ` · across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : ''}`
-        : photoStats.zones > 0 ? `Across ${photoStats.zones} place${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet',
+        ? `${T.photosLatest(photoStats.count, photoLang)}${photoStats.zones > 0 ? ` · ${T.photosAcross(photoStats.zones, photoLang, true)}` : ''}`
+        : photoStats.zones > 0 ? T.photosAcross(photoStats.zones, photoLang) : photoStats.count > 0 ? L.photosNotPlaced[photoLang] : L.photosNone[photoLang],
       onClick: canOpen('places') ? () => setScreen('places') : undefined,
     },
   );
@@ -167,6 +181,8 @@ export function DashboardScreen() {
           </Button>
         )}
       </div>
+
+      {homeNav && forYou && <DashboardActionsLine badge={forYou.badge} onOpen={() => setScreen('inbox')} />}
 
       {/* milestone progress */}
       <div style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 12, padding: '20px 24px', marginBottom: 22 }}>
@@ -256,7 +272,7 @@ export function DashboardScreen() {
                 {t.onClick && <ArrowRight size={15} style={{ opacity: 0.5 }} aria-hidden />}
               </div>
               <div data-testid={`tile-${t.key}-value`} style={{ fontSize: 44, fontWeight: 700, lineHeight: 1, margin: '14px 0 8px', color: t.accent }}>{t.value}</div>
-              <div style={{ fontSize: 12, color: 'var(--muted)' }}>{t.sub}</div>
+              <div data-testid={`tile-${t.key}-sub`} style={{ fontSize: 12, color: 'var(--muted)' }}>{t.sub}</div>
             </>
           );
           const box = { background: 'var(--panel)', border: '1px solid var(--hairline)', borderTop: `3px solid ${t.accent}`, borderRadius: 12, padding: '20px 22px' } as const;

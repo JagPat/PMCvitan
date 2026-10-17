@@ -22,6 +22,7 @@
     "outbox:seal-external": "tsx src/platform/outbox/outbox.cli.ts seal-external",
     "projection:rebuild": "tsx src/platform/projections/projection-rebuild.cli.ts",
     "capability:enable": "tsx src/platform/capability.cli.ts",
+    "capability:disable": "tsx src/platform/capability-disable.cli.ts",
     "commercial:reevaluate": "tsx src/commercial/commercial-reevaluate.cli.ts",
     "t45:preflight": "tsx src/platform/t45/t45.cli.ts preflight",
     "t45:migration-state": "tsx src/platform/t45/t45.cli.ts migration-state",

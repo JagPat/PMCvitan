@@ -10,8 +10,9 @@ import type { DailyLogDto, MaterialDto } from '../snapshot/types';
 
 /** The daily-log-OWNED core of the DailyLog slice — the {@link DailyLogDto} WITHOUT its `photos`,
  *  which are progress MEDIA the snapshot composes (media is a separate module, not daily-log's to
- *  own). The snapshot re-attaches `photos: progressPhotos` onto this core, keeping the DTO identical. */
-export type DailyLogCore = Omit<DailyLogDto, 'photos'>;
+ *  own), nor the day's photo count and photo keys it reads from media (#482 unit 3). The snapshot
+ *  re-attaches all three onto this core. */
+export type DailyLogCore = Omit<DailyLogDto, 'photos' | 'photoCount' | 'myPhotoKeys'>;
 
 /** The full daily-log read slice: the LATEST log's photo-less core + every project material. Unlike
  *  the decisions slice, this carries NO per-viewer visibility — every viewer of the project sees the

@@ -380,6 +380,11 @@ export interface DailyLogDto {
   materials: { name: string; decisionId: string; qty: string; zone: string; matched: boolean; swatch: string; photo: boolean }[];
   progress: number;
   photos: { id: string; url: string; takenAt?: string }[];
+  /** #482 site photos unit 3 — the day's photo count: the progress photos filed on this log (every member's,
+   *  including after the send) plus its legacy photos. `progress` stays the count the sender saw. */
+  photoCount: number;
+  /** the upload keys of the VIEWER's own photos filed on this log (never another member's) */
+  myPhotoKeys: string[];
 }
 
 export interface ProjectMetaDto {
