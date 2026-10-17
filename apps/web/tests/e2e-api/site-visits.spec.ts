@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
-import { loginTo, signIn } from './landing';
+import { loginTo, signIn, gotoSignedOut } from './landing';
 
 /**
  * Site Visits SV1-c (#792, QA item 6) — the screen over the real server. The PMC starts a visit, names a guest
@@ -29,7 +29,7 @@ async function endOpenVisits(request: APIRequestContext): Promise<void> {
 
 async function openVisits(page: Page, request: APIRequestContext, email: string): Promise<void> {
   await loginTo(request, email, PROJECT); // sign-in opens the project last used
-  await page.goto(`/projects/${PROJECT}/site-visits`);
+  await gotoSignedOut(page, `/projects/${PROJECT}/site-visits`);
   await signIn(page, email);
   await expect(page.getByRole('heading', { name: 'Site Visits' })).toBeVisible();
 }

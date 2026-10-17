@@ -1,5 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
-import { loginTo } from './landing';
+import { loginTo, openProject, gotoSignedOut } from './landing';
 import { openNav } from '../e2e/fixtures/nav';
 
 /**
@@ -68,7 +68,7 @@ async function signIn(page: Page, email: string): Promise<void> {
  *  as one unit: a post-sign-in re-render can close the just-opened dropdown before the option is
  *  clicked (deterministic on slow containers, amplified when every module read fetches on load). */
 async function signInToChain(page: Page, email: string, chainName: string): Promise<void> {
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, email);
   const switcher = page.getByTestId('project-switcher');
   await expect(switcher).toBeVisible();
@@ -507,16 +507,11 @@ test('OFFLINE EVIDENCE: a captured photo survives a reload and replays exactly o
   await expect(page.getByText(/saved offline/i).first()).toBeVisible();
   await expect(page.getByTestId('evidence-pending')).toContainText(/1 photo/);
 
-  // RELOAD: the in-memory store dies; the bytes and the queued op survive
+  // RELOAD: the in-memory store dies; the bytes and the queued op survive, and (#482 6227430525) the tab
+  // keeps the engineer's session, so no second sign-in
   await page.reload();
-  await signIn(page, ENG);
   await expect(page.getByTestId('project-switcher')).toBeVisible();
-  // one-unit open-and-pick retry (a re-render can close the dropdown and swallow the pick)
-  const chainOption = page.getByRole('group', { name: 'Switch project' }).getByRole('button', { name: new RegExp(chainName) }).first();
-  await expect(async () => {
-    if (!(await chainOption.isVisible())) await page.getByTestId('project-switcher').click();
-    await chainOption.click({ timeout: 2000 });
-  }).toPass();
+  await openProject(page, chainName);
 
   // back online → the replay uploads EXACTLY once (project-scoped clientKey dedupe).
   // Boot resets online=true without flushing — cycle the switch to trigger the flush.

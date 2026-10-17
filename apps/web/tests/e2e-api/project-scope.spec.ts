@@ -1,5 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
-import { loginTo, openProject } from './landing';
+import { loginTo, openProject, gotoSignedOut } from './landing';
 import { openNav } from '../e2e/fixtures/nav';
 
 /**
@@ -47,7 +47,7 @@ const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
 test('authentication lands on the server project', async ({ page }) => {
   // the URL claims Project A; the signing-in user's server-side scope is B only
-  await page.goto(`/projects/${A}/decisions`);
+  await gotoSignedOut(page, `/projects/${A}/decisions`);
   const snapB = page.waitForResponse((r) => r.url().includes(`/projects/${B}/snapshot`) && r.status() === 200);
   await signIn(page, 'test-client-b@vitan.in');
   await snapB; // token scope is B — a token scoped elsewhere would 403 this route
@@ -57,7 +57,7 @@ test('authentication lands on the server project', async ({ page }) => {
 });
 
 test('populated A to empty B is atomic', async ({ page }) => {
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, 'test-pmc@vitan.in');
   await openProject(page, 'Test Empty Site');
 
@@ -101,21 +101,21 @@ test('populated A to empty B is atomic', async ({ page }) => {
 test('deep link survives token switch', async ({ page, request }) => {
   // sign-in opens the last project used (#811): make that B, the deep link's project
   await loginTo(request, 'test-pmc@vitan.in', B);
-  await page.goto(`/projects/${B}/decisions`);
+  await gotoSignedOut(page, `/projects/${B}/decisions`);
   await signIn(page, 'test-pmc@vitan.in');
   await expect(page).toHaveURL(new RegExp(`/projects/${B}/decisions$`));
   await expect(page.getByText('CLIENT DECISION LOG')).toBeVisible();
 
-  // a refresh drops the in-memory token — signing in again mints a NEW token,
-  // and the deep link's project AND screen still survive
+  // #482 6227430525 — a refresh keeps the session: no second sign-in, and the deep link's project AND
+  // screen still survive
   await page.reload();
-  await signIn(page, 'test-pmc@vitan.in');
+  await expect(page.getByTestId('phone-input')).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`/projects/${B}/decisions$`));
   await expect(page.getByText('CLIENT DECISION LOG')).toBeVisible();
 });
 
 test('history preserves scope and screen', async ({ page }) => {
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, 'test-pmc@vitan.in');
   await openProject(page, 'Test Empty Site');
 
@@ -175,7 +175,7 @@ test('non-member is forbidden', async ({ page, request }) => {
   page.on('request', (r) => {
     if (r.url().includes(`/projects/${B}/`)) bRequests.push(r.url());
   });
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, 'test-eng@vitan.in');
   await openProject(page, 'Residence at Ambli');
   await expect(page.getByText('Test Empty Site')).toHaveCount(0);
@@ -196,7 +196,7 @@ test('removed membership revokes token', async ({ page, request }) => {
   expect(before.status()).toBe(200);
 
   // …and they are signed in on A in the browser
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, 'test-removed@vitan.in');
   await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
 
@@ -248,7 +248,7 @@ test('cross-project reference is rejected', async ({ request }) => {
 
 test('empty project is truthful', async ({ page, browser }) => {
   // PMC surfaces on B: live identity, zero counts, no Ambli, no fake report
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, 'test-pmc@vitan.in');
   await openProject(page, 'Test Empty Site');
 

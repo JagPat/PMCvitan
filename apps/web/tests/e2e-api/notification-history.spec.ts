@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
-import { loginTo, openProject } from './landing';
+import { loginTo, openProject, gotoSignedOut } from './landing';
 
 /**
  * Live bug 1 — owner live check (#482 6039737806): on the deployed app, Back after opening a record from
@@ -50,7 +50,7 @@ async function tapNotice(page: Page, text: string): Promise<void> {
 
 test('a notification opens its record, and Back and Forward walk the history the tap made', async ({ page, request }) => {
   const issued = await issueChecklist(request);
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, PMC);
   await openAmbli(page);
   // #811 — every role lands on the Dashboard

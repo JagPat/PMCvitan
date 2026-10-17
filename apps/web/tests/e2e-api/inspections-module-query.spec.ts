@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { openNav } from '../e2e/fixtures/nav';
+import { gotoSignedOut } from './landing';
 
 /**
  * Phase 2 Task 10 (Module 3 — Inspections) — the inspections MODULE-OWNED read, proven end-to-end over
@@ -49,7 +50,7 @@ test.describe('inspections module-owned read (moduleQuery)', () => {
       }
     });
 
-    await page.goto('/');
+    await gotoSignedOut(page, '/');
     await signIn(page, 'test-pmc@vitan.in');
     // switch to Project A (the PMC's home may be B) if the switcher isn't already there.
     // The open-and-pick retries as ONE unit (the pillar-chain signInToChain pattern): a

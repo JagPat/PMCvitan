@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 import { attemptName } from './attempt-name';
 import { navButton, openNav } from '../e2e/fixtures/nav';
+import { gotoSignedOut } from './landing';
 
 /**
  * Phase 5 Task 7B-iv (§M) — the pilot COMMERCIAL acceptance chain: REAL browser, live PostgreSQL,
@@ -56,7 +57,7 @@ async function get(request: APIRequestContext, token: string, path: string): Pro
 
 /** Verbatim from the cleared materials/labour pilots: the switcher may already show the target. */
 async function signInToProject(page: Page, email: string, projectName: string): Promise<void> {
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(email);
   await page.getByTestId('login-password').fill(PASSWORD);

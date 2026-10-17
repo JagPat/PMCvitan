@@ -1,5 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
-import { loginTo, openProject } from './landing';
+import { loginTo, openProject, gotoSignedOut } from './landing';
 
 /**
  * #669 — the engineer's Today flow over the REAL stack (Field Lab QA 2026-09-30 regression). The server
@@ -49,7 +49,7 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   expect(seeded.dailyLog, 'the seeded ambli log').toMatchObject({ checkedIn: false, submitted: false });
   const seededPhotos = seeded.dailyLog!.photos.length;
 
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, ENG);
   await openProject(page, 'Residence at Ambli');
 
@@ -106,10 +106,9 @@ test('Today reaches Send: check-in, crew and photos survive the material and pho
   await expect(page.getByTestId('crew-total')).toHaveText('11 workers');
   await expect(page.getByTestId('check-out')).toBeVisible();
 
-  // 4. a reload drops the in-memory token, so the engineer signs in again — and the day is where they
-  //    left it: the deep link brings the Site screen back, with the morning on it, and Today agrees
+  // 4. a reload keeps the engineer signed in (#482 6227430525) — and the day is where they left it: the
+  //    deep link brings the Site screen back, with the morning on it, and Today agrees
   await page.reload();
-  await signIn(page, ENG);
   await openProject(page, 'Residence at Ambli');
   await expect(page.getByTestId('check-out')).toBeVisible();
   await expect(page.getByTestId('crew-total')).toHaveText('11 workers');

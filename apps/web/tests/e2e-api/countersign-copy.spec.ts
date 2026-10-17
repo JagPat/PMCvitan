@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { openProject } from './landing';
+import { openProject, gotoSignedOut } from './landing';
 import { openNav } from '../e2e/fixtures/nav';
 
 /**
@@ -27,7 +27,7 @@ async function signIn(page: Page, email: string): Promise<void> {
 }
 
 test('with the doors standing, the client’s confirmation reads the delivered copy and is cancelled without approving', async ({ page }) => {
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, CLIENT);
   await openProject(page, 'Residence at Ambli');
   await openNav(page, /^Decisions( \d+)?$/);
@@ -43,7 +43,7 @@ test('with the doors standing, the client’s confirmation reads the delivered c
 });
 
 test('with the doors standing, the PMC’s register offers Withdraw on the seeded standard change request and names no origin', async ({ page }) => {
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, PMC);
   // ambli holds the seeded reopened decision; sign-in opens the last project used (#811)
   await openProject(page, 'Residence at Ambli');

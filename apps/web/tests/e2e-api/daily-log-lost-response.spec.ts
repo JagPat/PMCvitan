@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { loginTo, openProject } from './landing';
+import { loginTo, openProject, gotoSignedOut } from './landing';
 
 /**
  * Phase 2 Task 10 correction ROUND 2 (finding 1) — the write-ahead outbox proves itself over the REAL
@@ -27,7 +27,7 @@ async function signIn(page: Page, email: string): Promise<void> {
 test('a lost response after the server commits does NOT double-apply — the write-ahead retry reuses the key', async ({ page, request }) => {
   const MAT = `LostResp-${test.info().workerIndex}-${test.info().retry}`;
 
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, 'test-eng@vitan.in');
   await openProject(page, 'Residence at Ambli');
   await page.getByRole('button', { name: /Daily Site Log/i }).click();

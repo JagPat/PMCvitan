@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { openProject } from './landing';
+import { openProject, gotoSignedOut } from './landing';
 import { openNav } from '../e2e/fixtures/nav';
 
 /**
@@ -25,7 +25,7 @@ async function signIn(page: Page, email: string): Promise<void> {
 }
 
 test('with the doors standing, the PMC’s register renders no Forward, no countersign control and no stranded resolution on any row', async ({ page }) => {
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, PMC);
   await openProject(page, 'Residence at Ambli'); // sign-in opens the last project used (#811)
   await openNav(page, /^Decision Log( \d+)?$/);

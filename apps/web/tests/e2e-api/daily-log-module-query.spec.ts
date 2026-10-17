@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { openProject } from './landing';
+import { openProject, gotoSignedOut } from './landing';
 
 /**
  * Phase 2 Task 10 (correction, finding 5) — the daily-log MODULE-OWNED read, proven end-to-end over
@@ -47,7 +47,7 @@ test.describe('daily-log module-owned read (moduleQuery)', () => {
       }
     });
 
-    await page.goto('/');
+    await gotoSignedOut(page, '/');
     await signIn(page, 'test-eng@vitan.in');
     await openProject(page, 'Residence at Ambli');
 

@@ -1,6 +1,7 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import { execSync } from 'node:child_process';
 import { navButton, openNav } from '../e2e/fixtures/nav';
+import { gotoSignedOut } from './landing';
 
 /**
  * Phase 3 Task 7 (correction 2) — the pilot MATERIALS acceptance chain, in a REAL browser over live
@@ -53,7 +54,7 @@ async function get(request: APIRequestContext, token: string, path: string): Pro
 }
 
 async function signInToProject(page: Page, email: string, projectName: string): Promise<void> {
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(email);
   await page.getByTestId('login-password').fill(PASSWORD);

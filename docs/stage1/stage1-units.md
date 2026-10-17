@@ -1,4 +1,4 @@
-# Stage 1 units and what remains (16 Oct 2026, updated 17:45 UTC)
+# Stage 1 units and what remains (16 Oct 2026, updated 17 Oct 02:00 UTC)
 
 Status columns follow the plan: Built, Reviewed, Deployed, Live-tested. "Deployed" names the first commit
 that carried the unit live. At 17:45 UTC `https://pms-api.vitan.in/health` and
@@ -8,12 +8,12 @@ that carried the unit live. At 17:45 UTC `https://pms-api.vitan.in/health` and
 | --- | --- | --- | --- | --- | --- | --- |
 | Q0 | QA isolation check (read-only code) | done | n/a | n/a | n/a | none |
 | Q1 | Isolate QA (QA-only org, qa-test-d135) | done by monitor + Jagrut | coordinator | live | coordinator 19:46 IST | none |
-| Q2 | Live isolation proof (V1–V7) | done | coordinator | live | PASS | none |
+| Q2 | Live isolation proof (V1–V7) | steps written (qa-isolation-steps.md) | coordinator | live | V5, V6 PASS (coordinator 19:46 IST); V1–V4 and V7 not yet run as written | monitor runs V1–V4; V7 follows from V1 and V2 |
 | Q3 | Baseline sweep (C7), switch off | steps written (journeys file, parts R and B) | — | — | pending | taken during the rollback drill |
 | H0 | `home-nav` switch + audited off command | #937 | Codex clean | 82d6cbf | on: PASS (Board, 23:02 IST); off: pending (R) | rollback drill |
 | H0b | "On" command records the reason | #944 merged | Codex clean | d6c7dda | Board's enable printed changed:true | R3b: read the reason on the audit row |
-| H1 | Navigation | #938 | Codex clean | 82d6cbf | pending (N, O1) | monitor run |
-| H2 | "You have N actions" | #939 | Codex clean | 82d6cbf | pending (A, O2) | monitor run |
+| H1 | Navigation | #938 | Codex clean | 82d6cbf | N1, N2 PASS (5 roles); N4 desktop menu mismatch, fix in review; O1 pending | hi/gu and offline runs; reload fix (#482 6227430525) |
+| H2 | "You have N actions" | #939 | Codex clean | 82d6cbf | A1, A2 PASS (5 roles); PMC For You list vs N open (product call) | hi/gu and offline runs (O2) |
 | H3 | Tiles say whom they wait on | #943 | Codex clean | 82d6cbf | pending (T1 now, T2 after Q4) | monitor run, twice |
 | Q4 | Write journeys C1–C6 | steps written (q4-write-journeys.md) | — | — | V8 after C2 | one monitor run |
 
