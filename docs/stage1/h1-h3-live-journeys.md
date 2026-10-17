@@ -1,8 +1,10 @@
 # Stage 1 H1–H3 live journeys on the QA project (qa-test-d135)
 
-Written 16 Oct 2026 for the monitor; updated 17:45 UTC. Project: **qa-test-d135** only. Never touch a real
+Written 16 Oct 2026 for the monitor; updated 17 Oct 03:50 UTC. Project: **qa-test-d135** only. Never touch a real
 project's switch. Web https://pms.vitan.in, API https://pms-api.vitan.in (no /api prefix). H0–H3 have been live
-since 82d6cbf; #944 (the reason on the "on" audit row) since d6c7dda.
+since 82d6cbf; #944 (the reason on the "on" audit row) since d6c7dda. Since 5f81f1b (17 Oct) the live app
+also carries #949 (desktop menu), #950 (PMC For You "Waiting on ..." lines) and #948 (a reload keeps the
+sign-in).
 
 **State at 17:35 UTC:** the Board turned `home-nav` on for qa-test-d135 at about 23:00 IST (`changed:true`) and
 verified it read-only: on for all five qa.* accounts, off on ambli.
@@ -55,13 +57,17 @@ N2. No label is cut off or overlapping at 320 px.
 
 N3. Every screen the role had in the baseline is still on the bar or under More. Open each one once.
 
-N4. Desktop width (1280 px), qa.pmc and qa.engineer: the side menu shows the same five main items.
+N4. Desktop width (1280 px), qa.pmc and qa.engineer: the side menu shows the same five main items, in the
+same words as that role's bottom bar (#949). PASS in en, hi and gu on 5f81f1b (monitor, 17 Oct 08:00 IST).
 
 ## A. H2 "You have N actions" (switch on)
 
 A1. For each role, the Dashboard's top line reads "You have N actions". In hi it reads
 "आपके लिए N काम" and in gu "તમારા માટે N કામ". N must equal the For You badge on the bar.
 When N is 0, it reads "Nothing needs you" / "अभी आपके लिए कुछ नहीं" / "હમણાં તમારા માટે કંઈ નથી".
+For qa.pmc (#950), For You's "Do these first" holds only the PMC's own reviews. A site log not sent and
+decisions held by the client show as "QA TEST · Waiting on the engineer" / "QA TEST · Waiting on the client"
+lines (the project's short name, set in qa-isolation-steps.md), and the "N decisions awaiting the client" card stays visible but counts 0 toward N and the badge.
 
 A2. Tapping the line opens For You.
 
@@ -72,8 +78,8 @@ changes to another number.
 
 ## O. Offline (switch on)
 
-Do **not** reload while offline. The app does not keep the sign-in across a reload, so a reload with no
-signal lands on the sign-in screen, whatever the switch. Lose the signal while the app stays open.
+Do **not** reload while offline. Since #948 a reload keeps the sign-in, but O1 to O4 test losing the signal
+while the app stays open, which is what site staff meet. Lose the signal without reloading.
 
 O1. As qa.pmc and as qa.engineer, open the app online and wait for the Dashboard to load. Go offline in
 DevTools without reloading, then move between the bar's tabs.
@@ -159,6 +165,9 @@ B3. As qa.pmc, call `GET /projects/qa-test-d135/shell`. PASS when `capabilities`
 | --- | --- | --- | --- | --- |
 | H0 switch | #937 | Codex clean | 82d6cbf | E1, E2 done (Board); R pending |
 | H0 reason on enable | #944 | Codex clean | d6c7dda | Board's enable printed changed:true; R3b shows the reason on the audit row |
-| H1 navigation | #938 | Codex clean | 82d6cbf | N1–N4, O1 |
-| H2 actions line | #939 | Codex clean | 82d6cbf | A1–A3, O2 |
+| H1 navigation | #938 | Codex clean | 82d6cbf | N1, N2 PASS; N3, O1 |
+| H1 desktop menu words | #949 | Codex clean | 0dc152c | N4 PASS (en, hi, gu) |
+| H2 actions line | #939 | Codex clean | 82d6cbf | A1, A2 PASS; A3, O2 |
+| H2 PMC For You "Waiting on" lines | #950 | Codex clean | 95afa3e | A1 for qa.pmc: pending re-run |
+| Reload keeps the sign-in | #948 | round cap, P2s in #951 | 5f81f1b | R-a to R-d PASS (monitor, 17 Oct 08:00 IST) |
 | H3 tiles | #943 | Codex clean | 82d6cbf | T1 now, T2 after Q4 |
