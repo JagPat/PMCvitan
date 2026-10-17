@@ -3074,11 +3074,6 @@ model DailyLog {
   checkinTime String?
   submitted   Boolean        @default(false)
   progress    Int            @default(0)
-  // #482 site photos — the photos this log counts that are NOT Media rows filed on it (Media.dailyLogId): ones
-  // taken before photos were filed on their log. The day's photo count is this plus the progress photos filed on
-  // the log; `progress` stays the count the sender saw. Set at insert (0 by default) or by its migration's backfill
-  // of sent logs; a trigger freezes it after insert.
-  legacyPhotos Int           @default(0)
   crew        CrewRow[]
   materials   SiteMaterial[]
   media       Media[]

@@ -514,10 +514,6 @@ if echo "$out" | grep -q "P3005"; then
   # A7d-shaped audits and ON CONFLICT DO NOTHING; 20280112 installs the visit tables' raw seals and the
   # site-visits claimant triggers that pair the eight `pairingRequired` types. Both are guarded and
   # re-runnable.
-  #
-  # #482 site photos 3a (20280113) is here for the same reason: a db-push baseline has `DailyLog.legacyPhotos` from
-  # schema.prisma but not its CHECK, its one-time backfill or its freeze trigger. The backfill is guarded on the CHECK
-  # it adds, so a replay never recomputes a value; everything else in it is re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -553,8 +549,7 @@ if echo "$out" | grep -q "P3005"; then
 20280107000000_phase6_t4d_iii_r0b_system_pair
 20280109000000_top10_4b_notification_receipt
 20280111000000_site_visits_sv1a_catalog
-20280112000000_site_visits_sv1a_record
-20280113000000_daily_log_legacy_photos"
+20280112000000_site_visits_sv1a_record"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
