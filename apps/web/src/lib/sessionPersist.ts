@@ -1,4 +1,7 @@
-import type { Role } from '@vitan/shared';
+import { TOKEN_ROLES, type Role } from '@vitan/shared';
+
+/** the roles a signed-in web session can hold (a `worker` device token never signs in here) */
+const SESSION_ROLES: readonly string[] = TOKEN_ROLES.filter((r) => r !== 'worker');
 
 /**
  * Stage 1 live check (#482 6227430525) — a browser reload no longer signs the person out.
@@ -61,7 +64,7 @@ export function loadSession(now: number = Date.now()): SavedSession | null {
     const v = JSON.parse(raw) as Partial<SavedSession>;
     const exp = typeof v.token === 'string' ? tokenExpiry(v.token) : null;
     if (
-      typeof v.token === 'string' && typeof v.role === 'string' && exp !== null && exp * 1000 > now + EXPIRY_MARGIN_MS
+      typeof v.token === 'string' && typeof v.role === 'string' && SESSION_ROLES.includes(v.role) && exp !== null && exp * 1000 > now + EXPIRY_MARGIN_MS
       && (v.name === undefined || typeof v.name === 'string')
       && (v.projectId === undefined || typeof v.projectId === 'string')
     ) {

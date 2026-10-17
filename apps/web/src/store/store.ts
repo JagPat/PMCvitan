@@ -2749,15 +2749,6 @@ export const useStore = create<Store>()(
     },
     _setGateway: (g) => {
       gateway = g;
-      // #948 Codex 4300725705 — a restored session opened on a link to ANOTHER project switches there once the
-      // authenticated gateway is in (after this install's own refresh starts; the switch supersedes it)
-      const target = restoreSwitchTarget;
-      if (g && target && get().sessionToken === restoredToken) {
-        restoreSwitchTarget = null;
-        setTimeout(() => {
-          if (gateway === g && get().sessionToken === restoredToken) void get().switchProject(target.projectId, target.screen);
-        }, 0);
-      }
     },
     restoreSession: () => {
       // #482 6227430525 — a reload adopts the session this tab saved, through the one adoption path, so a
@@ -3991,7 +3982,17 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       // session-scoped (not project-scoped): ignore replies after sign-out / re-auth
       const tok = get().sessionToken;
-      gateway.listMemberships().then((ms) => set((s) => { if (s.sessionToken === tok) s.memberships = ms; })).catch(() => {});
+      gateway.listMemberships().then((ms) => {
+        set((s) => { if (s.sessionToken === tok) s.memberships = ms; });
+        // #948 Codex 4300725705 / 4300786709 — a restored session opened on a link to ANOTHER project switches
+        // there only once its memberships confirm the person belongs to it; a stale, mistyped or foreign link
+        // is dropped, and the session stays on its own project, which is already loading
+        const target = restoreSwitchTarget;
+        if (target && tok !== null && tok === restoredToken && get().sessionToken === tok) {
+          restoreSwitchTarget = null;
+          if (ms.some((m) => m.projectId === target.projectId)) void get().switchProject(target.projectId, target.screen);
+        }
+      }).catch(() => {});
       gateway.myOrgs().then((os) => set((s) => { if (s.sessionToken === tok) s.myOrgs = os; })).catch(() => {});
     },
     loadPortfolio: () => {

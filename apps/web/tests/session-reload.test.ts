@@ -167,7 +167,7 @@ describe('#948 Codex round 1', () => {
     expect(useStore.getState().screen).toBe('places');
   });
 
-  it('a link to another project, opened with a saved session, switches there once the gateway is in', async () => {
+  async function restoredOnLink(memberOf: string[]) {
     window.history.replaceState(null, '', '/projects/villa-b/decisions');
     const useStore = await freshStore();
     globalThis.sessionStorage.setItem('vitan.session.v1', JSON.stringify({ token: valid, role: 'pmc', projectId: 'qa-test-d135' }));
@@ -175,8 +175,34 @@ describe('#948 Codex round 1', () => {
     expect(useStore.getState().activeProjectId).toBe('qa-test-d135'); // the token's own project first
     const switchProject = vi.fn().mockResolvedValue(true);
     useStore.setState({ switchProject });
-    useStore.getState()._setGateway({ authToken: valid, snapshot: vi.fn(() => new Promise(() => {})) } as never);
+    const listMemberships = vi.fn().mockResolvedValue(memberOf.map((projectId) => ({ projectId, name: projectId, short: projectId, role: 'pmc' })));
+    useStore.getState()._setGateway({ authToken: valid, listMemberships, myOrgs: vi.fn().mockResolvedValue([]) } as never);
+    useStore.getState().loadOrgData();
+    await vi.waitFor(() => expect(useStore.getState().memberships.length).toBe(memberOf.length));
+    return { useStore, switchProject };
+  }
+
+  it('a link to another project the person belongs to switches there once memberships confirm it', async () => {
+    const { switchProject } = await restoredOnLink(['qa-test-d135', 'villa-b']);
     await vi.waitFor(() => expect(switchProject).toHaveBeenCalledWith('villa-b', 'decision-log'));
     expect(switchProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('a link to a project the person does not belong to is dropped: no switch, the session stays on its own project', async () => {
+    const { useStore, switchProject } = await restoredOnLink(['qa-test-d135']);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(switchProject).not.toHaveBeenCalled();
+    expect(useStore.getState().activeProjectId).toBe('qa-test-d135');
+    expect(useStore.getState().sessionToken).toBe(valid);
+  });
+
+  it('a saved session whose role is not a web role is dropped, never adopted (no blank page on reload)', async () => {
+    const useStore = await freshStore();
+    for (const role of ['owner', 'worker']) {
+      globalThis.sessionStorage.setItem('vitan.session.v1', JSON.stringify({ token: valid, role, projectId: 'qa-test-d135' }));
+      expect(useStore.getState().restoreSession()).toBe(false);
+      expect(globalThis.sessionStorage.getItem('vitan.session.v1')).toBeNull();
+    }
+    expect(useStore.getState().sessionToken).toBeNull();
   });
 });
