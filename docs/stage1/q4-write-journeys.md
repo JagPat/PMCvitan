@@ -69,7 +69,7 @@ and the submit only updates rows that already exist (`daily-log.service.ts:260-2
 ## Order
 
 C0 → C1 → C2 → **V8** → C3 → C4 → C5 → C6 → L (leave-open steps) → then H3 part 2 (T2 in
-h1-h3-live-journeys.md).
+h1-h3-live-journeys.md) and the O2 re-run (same file).
 
 ---
 

@@ -30,7 +30,8 @@ that carried the unit live. At 03:45 UTC on 17 Oct `https://pms-api.vitan.in/hea
    - The refusals (403s) are included.
    - V8 runs after C2, the first write that alerts the PMC: no alert reaches Jagrut, and Portfolio/Brief are
      unchanged.
-6. **H3 part 2.** It runs after Q4, once the project holds a client decision, a review and a failed item.
+6. **H3 part 2 and the O2 re-run.** They run after Q4, once the project holds a client decision, a review and a
+   failed item; O2 then has an N above 0 to keep offline.
 7. **Real projects.** The controller decides, one at a time, after the QA checks pass. Not part of this
    list.
 
