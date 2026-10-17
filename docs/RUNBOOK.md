@@ -2594,19 +2594,24 @@ capability. Run both from the deployed image, like every operator CLI (see the s
 ## §PI. Project inventory (read-only)
 
 Lists everything one project owns or is pointed at by, before any removal is designed (#482: the archived
-`qa-test-356a`). It changes nothing: the whole run is one read-only transaction, and it stops unless
-PostgreSQL confirms `transaction_read_only = on`.
+`qa-test-356a`). It changes nothing: the whole run is one `REPEATABLE READ, READ ONLY` transaction (one
+snapshot, every write refused), and it stops unless PostgreSQL confirms both.
 
     pnpm --filter api project:inventory --project <id> --out <file.json>
 
 It finds the tables from the database catalog: every `projectId` column, every other key into
-`Project(id)`, and `User.lastProjectId`. `--out` receives the full export (each matching row, with byte
-columns as their length only), and the summary on stdout gives:
+`Project(id)`, `User.lastProjectId`, and every table contained in one of those through a foreign key
+(followed until nothing new appears; a user is never followed to its children). `--out` receives the
+full export: each matching row, with byte columns as their length and bigint/numeric values as exact
+strings. The summary on stdout gives:
 
-- the target's row count per `table.column`;
+- the target's row count per path;
 - the users whose home or last project it is;
-- each photo's storage key, or whether its bytes are in the database;
+- every stored file (any table with a `storageKey` column), and whether its bytes are in the database;
 - the delete triggers its tables carry;
-- the row counts for every project, so a later run can show that the others kept every row.
+- every project's row count and primary-key hash per path, so a later run can show that the others
+  kept every row, not only the same number of rows.
 
-`--out` refuses to overwrite an existing file. Run it from the deployed image, like every operator CLI.
+The command refuses, writing nothing, when the project does not exist. The export is created new (never
+over an existing file) and readable by its owner only: it holds whole rows, credential hashes included.
+Run it from the deployed image, like every operator CLI.

@@ -1,16 +1,16 @@
-import { writeFileSync } from 'node:fs';
 import { PrismaService } from '../prisma.service';
-import { inventoryProject } from './project-inventory';
+import { inventoryProject, writeInventoryExport } from './project-inventory';
 
 /**
  * #482 — the read-only inventory of one project (see `project-inventory.ts`).
  *
  *   pnpm --filter api project:inventory --project <id> --out <file.json>
  *
- * Writes the full export (every row, user pointer and storage key) to `--out` and prints a summary:
- * the target's counts per table, its user pointers and photos, the delete triggers it would meet,
- * and the row counts for every project. It changes nothing in the database: the run is one
- * read-only transaction.
+ * Writes the full export (every row, user pointer and stored file) to `--out`, readable by its owner
+ * only, and prints a summary: the target's counts per table, its user pointers and files, the delete
+ * triggers it would meet, and every project's row counts and identity hashes. Refuses, writing
+ * nothing, when the project does not exist. It changes nothing in the database: the run is one
+ * repeatable-read, read-only transaction.
  */
 function parseFlags(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -31,20 +31,20 @@ async function main(): Promise<void> {
   const prisma = new PrismaService();
   try {
     const inv = await inventoryProject(prisma, f.project);
-    writeFileSync(f.out, JSON.stringify(inv, null, 2) + '\n', { flag: 'wx' });
+    writeInventoryExport(inv, f.out);
     const summary = {
       ok: true,
       projectId: inv.projectId,
-      found: inv.project !== null,
       readOnlyVerified: inv.readOnlyVerified,
+      snapshot: inv.snapshot,
       takenAt: inv.takenAt,
       export: f.out,
-      columnsScanned: inv.columns.length,
+      pathsScanned: inv.paths.length,
       counts: inv.counts,
       userPointers: inv.userPointers,
-      media: inv.media,
+      files: inv.files,
       deleteTriggers: inv.deleteTriggers,
-      countsByProject: inv.countsByProject,
+      byProject: inv.byProject,
     };
     process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
   } catch (e) {
