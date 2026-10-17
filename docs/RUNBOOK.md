@@ -2667,8 +2667,9 @@ Everything happens in one `SERIALIZABLE` transaction, with a 10-second lock time
    account goes to Board. A user whose last-used project alone is the target, of any email, only
    has `lastProjectId` cleared. Each user whose home project is the target must already hold an
    active membership on `--rehome-to`, which must be one of `--protect`, exist, and not be archived.
-   It refuses while the relay holds a lease on one of the project's outbox deliveries, since that
-   delivery may be mid-send; run it again once the lease settles.
+   It refuses while one of the project's outbox deliveries is leased, or changed in the last 15
+   minutes (a lease that ran out can be reclaimed and settled while the first sender still sends),
+   since a send may be in flight; run it again once they have been quiet for 15 minutes.
 2. **Before.** Every table's keys (§DS) and each protected project's list (§PI).
 3. **Writes.** Users whose home project is the target move to `--rehome-to`. `lastProjectId` is
    cleared only where it names the target. Each DELETE trigger on a table being emptied is

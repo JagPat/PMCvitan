@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, insertRawEvent, type TwoProjectFixture } from './fixtures';
 import { inventoryProject } from '../../src/platform/project-inventory';
-import { removeProject, type RemovalOptions } from '../../src/platform/project-remove';
+import { OUTBOX_QUIET_MINUTES, removeProject, type RemovalOptions } from '../../src/platform/project-remove';
 
 /**
  * #482 — step 3, the removal of one project by the list Board reviewed. A dry run changes nothing
@@ -11,7 +11,7 @@ import { removeProject, type RemovalOptions } from '../../src/platform/project-r
  * project to a protected project they already belong to, and leaves every trigger as it was. It
  * refuses, before any write, a target that is not archived, a list that no longer matches the
  * database, a non-QA account, a user with no membership where they would move, an archived
- * destination, and a delivery the relay holds a lease on.
+ * destination, and a delivery that is leased or was touched lately.
  */
 describe('project:remove — one project, by the reviewed list (live PG)', () => {
   let t: TestApp;
@@ -115,15 +115,25 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     }
   });
 
-  it('refuses while the relay holds a lease on one of the project\'s deliveries (it may be mid-send)', async () => {
-    // the event's own delivery, as the relay holds it while it sends
+  it('refuses while one of the project\'s deliveries is leased or lately touched (it may be mid-send)', async () => {
     const d = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { eventId, consumer: 'socket.invalidation' } });
-    await t.prisma.outboxDelivery.update({ where: { id: d.id }, data: { status: 'leased', leaseOwner: 'it-relay', leaseExpiresAt: new Date(Date.now() + 60_000) } });
-    const r = await removeProject(t.prisma, await opts());
-    expect(r.outcome).toBe('refused');
-    expect(r.reason).toMatch(/1 outbox delivery\(ies\) of the project are leased/);
-    // the relay lets it go; the removal then lists and removes it with the rest
-    await t.prisma.outboxDelivery.update({ where: { id: d.id }, data: { status: d.status, leaseOwner: d.leaseOwner, leaseExpiresAt: d.leaseExpiresAt } });
+    const quiet = `now() - interval '${OUTBOX_QUIET_MINUTES + 1} minutes'`;
+    const set = (sql: string) => t.prisma.$executeRawUnsafe(`UPDATE "OutboxDelivery" SET ${sql} WHERE id = $1`, d.id);
+    const settleAll = () => t.prisma.$executeRawUnsafe(`UPDATE "OutboxDelivery" SET "updatedAt" = ${quiet} WHERE "projectId" = $1`, f.projectA.id);
+    // the event's deliveries were all written just now; every other one is settled from here on
+    await settleAll();
+    // the event's own delivery, as the relay holds it while it sends
+    await set(`"status" = 'leased', "leaseOwner" = 'it-relay', "leaseExpiresAt" = now() + interval '1 minute', "updatedAt" = ${quiet}`);
+    const leased = await removeProject(t.prisma, await opts());
+    expect(leased.outcome).toBe('refused');
+    expect(leased.reason).toMatch(/1 outbox delivery\(ies\) of the project are leased or changed/);
+    // settled by another relay a moment ago, after the first one's lease ran out: it may still be sending
+    await set(`"status" = 'succeeded', "leaseOwner" = NULL, "leaseExpiresAt" = NULL, "updatedAt" = now()`);
+    const recent = await removeProject(t.prisma, await opts());
+    expect(recent.outcome).toBe('refused');
+    expect(recent.reason).toMatch(/1 outbox delivery\(ies\)/);
+    // quiet since: every delivery of the project counts as settled, and the removal lists and removes them
+    await settleAll();
   });
 
   it('dry run: does everything, every check holds, and nothing is changed', async () => {

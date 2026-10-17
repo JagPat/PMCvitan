@@ -11,7 +11,7 @@ import { collectInventory, readCatalog, type ProjectInventory, type SnapshotIden
  *   1. refuse, before any write, unless the target is archived, the list rebuilt now matches the
  *      reviewed file key for key, every user whose home project is the target is a QA account
  *      (`QA_EMAIL`) and already holds an active membership on the project they move to, and no
- *      delivery of the project is leased by the relay (it may be mid-send);
+ *      delivery of the project is leased or was touched in `OUTBOX_QUIET_MINUTES` (it may be mid-send);
  *   2. snapshot every table (`snapshotTables`) and the protected projects' inventories;
  *   3. move those users' home project, clear `lastProjectId` where it names the target, switch off
  *      the DELETE triggers of the tables being emptied, delete exactly the listed keys child-first,
@@ -29,6 +29,9 @@ import { collectInventory, readCatalog, type ProjectInventory, type SnapshotIden
  * `project-remove.cli.ts` imports it, and `project-remove.boundary.test.ts` fails if the server
  * ever loads it.
  */
+
+/** How long every outbox delivery of the target must have been untouched: far past any send. */
+export const OUTBOX_QUIET_MINUTES = 15;
 
 /** The only accounts the run may touch: Board's ruling on #482, 6240658704. */
 export const QA_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
@@ -292,10 +295,16 @@ export async function removeProject(prisma: PrismaClient, opts: RemovalOptions):
         const outside = home.filter((u) => !members.has(u.id));
         if (outside.length) throw new Refusal(`moving these users' home project would need a membership on ${opts.rehomeTo}: ${outside.map((u) => u.email).join(', ')}`);
       }
-      // a leased delivery may be mid-send to the outside world: deleting it cannot recall the send.
-      // A pending one is safe: the relay's lease is an UPDATE this transaction's delete conflicts with.
-      const leased = await tx.outboxDelivery.count({ where: { projectId: opts.projectId, status: 'leased' } });
-      if (leased) throw new Refusal(`${leased} outbox delivery(ies) of the project are leased by the relay and may be mid-send; run again once they settle`);
+      // a send happens outside the relay's lease transaction, so a delivery that is leased, or was
+      // touched lately (a lease that ran out may have been reclaimed and settled by another relay
+      // while the first still sends), may be mid-send: deleting it cannot recall the send. A row
+      // quiet for OUTBOX_QUIET_MINUTES is settled. A pending one is safe: the relay's lease is an
+      // UPDATE that this transaction's delete conflicts with.
+      const [busy] = await tx.$queryRawUnsafe<Array<{ n: number }>>(
+        `SELECT count(*)::int AS n FROM "OutboxDelivery"
+          WHERE "projectId" = $1 AND ("status" = 'leased' OR "updatedAt" > now() - make_interval(mins => $2::int))`,
+        opts.projectId, OUTBOX_QUIET_MINUTES);
+      if (busy.n) throw new Refusal(`${busy.n} outbox delivery(ies) of the project are leased or changed in the last ${OUTBOX_QUIET_MINUTES} minutes and may be mid-send; run again once they settle`);
       const protectedBefore: ProjectInventory[] = [];
       for (const p of opts.protect) {
         const inv = await collectInventory(tx, id, p);
