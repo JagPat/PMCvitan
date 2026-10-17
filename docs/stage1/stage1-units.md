@@ -1,8 +1,8 @@
-# Stage 1 units and what remains (16 Oct 2026, updated 17 Oct 02:00 UTC)
+# Stage 1 units and what remains (16 Oct 2026, updated 17 Oct 03:50 UTC)
 
 Status columns follow the plan: Built, Reviewed, Deployed, Live-tested. "Deployed" names the first commit
-that carried the unit live. At 17:45 UTC `https://pms-api.vitan.in/health` and
-`https://pms.vitan.in/version.json` both report d6c7dda, which holds H0–H3 (live since 82d6cbf) and #944.
+that carried the unit live. At 03:45 UTC on 17 Oct `https://pms-api.vitan.in/health` and
+`https://pms.vitan.in/version.json` both report 5f81f1b, which holds H0–H3, #944, #948, #949 and #950.
 
 | # | Unit | Built | Reviewed | Deployed | Live-tested | Remaining |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -12,8 +12,8 @@ that carried the unit live. At 17:45 UTC `https://pms-api.vitan.in/health` and
 | Q3 | Baseline sweep (C7), switch off | steps written (journeys file, parts R and B) | — | — | pending | taken during the rollback drill |
 | H0 | `home-nav` switch + audited off command | #937 | Codex clean | 82d6cbf | on: PASS (Board, 23:02 IST); off: pending (R) | rollback drill |
 | H0b | "On" command records the reason | #944 merged | Codex clean | d6c7dda | Board's enable printed changed:true | R3b: read the reason on the audit row |
-| H1 | Navigation | #938 | Codex clean | 82d6cbf | N1, N2 PASS (5 roles); N4 desktop menu mismatch, fix in review; O1 pending | hi/gu and offline runs; reload fix (#482 6227430525) |
-| H2 | "You have N actions" | #939 | Codex clean | 82d6cbf | A1, A2 PASS (5 roles); PMC For You list vs N open (product call) | hi/gu and offline runs (O2) |
+| H1 | Navigation | #938 | Codex clean | 82d6cbf | N1, N2 PASS (5 roles); N4 PASS after #949 (0dc152c); reload keeps sign-in PASS after #948 (5f81f1b); O1 pending | hi/gu and offline runs |
+| H2 | "You have N actions" | #939 | Codex clean | 82d6cbf | A1, A2 PASS (5 roles); PMC For You "Waiting on" lines live with #950 (95afa3e) | hi/gu, A3 and offline runs (O2) |
 | H3 | Tiles say whom they wait on | #943 | Codex clean | 82d6cbf | pending (T1 now, T2 after Q4) | monitor run, twice |
 | Q4 | Write journeys C1–C6 | steps written (q4-write-journeys.md) | — | — | V8 after C2 | one monitor run |
 
