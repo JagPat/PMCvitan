@@ -73,7 +73,6 @@ const q = (ident: string): string => `"${ident.replace(/"/g, '""')}"`;
 const lit = (s: string): string => `'${s.replace(/'/g, "''")}'`;
 /** Tables that are pointed at a project but own nothing of it: never followed to their children. */
 const NOT_OWNERS = new Set(['User', 'Project', 'Org']);
-const MAX_DEPTH = 8;
 
 type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
@@ -94,7 +93,7 @@ export async function readOnlyTransaction<T>(prisma: PrismaClient, fn: (tx: Tx) 
   );
 }
 
-interface Catalog {
+export interface Catalog {
   direct: Array<{ table: string; column: string }>;
   edges: Array<{ child: string; columns: string[]; parent: string; parentColumns: string[] }>;
   primaryKeys: Map<string, string[]>;
@@ -156,12 +155,13 @@ async function readCatalog(tx: Tx): Promise<Catalog> {
   return { direct, edges, primaryKeys, byteColumns, exactColumns, columnsOf };
 }
 
-/** Every path to a project: the direct columns, then contained tables, breadth first. */
-function buildPaths(cat: Catalog): ProjectPath[] {
+/** Every path to a project: the direct columns, then contained tables, breadth first until none is left. */
+export function buildPaths(cat: Pick<Catalog, 'direct' | 'edges'>): ProjectPath[] {
   const paths: ProjectPath[] = cat.direct.map((d) => ({ key: `${d.table}.${d.column}`, table: d.table, column: d.column }));
   const reached = new Set(paths.map((p) => p.table));
   let frontier = [...new Set(paths.map((p) => p.table))].filter((t) => !NOT_OWNERS.has(t));
-  for (let depth = 0; depth < MAX_DEPTH && frontier.length; depth++) {
+  // `reached` holds each table once, so a cycle in the key graph ends the walk
+  while (frontier.length) {
     const next: string[] = [];
     for (const e of cat.edges) {
       if (!frontier.includes(e.parent) || reached.has(e.child) || e.child === e.parent) continue;
@@ -207,7 +207,8 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
     };
     const identityOf = (table: string, alias: string): string => {
       const pk = cat.primaryKeys.get(table);
-      return pk ? pk.map((c) => `${alias}.${q(c)}::text`).join(` || '|' || `) : `md5((${rowJson(table, alias)})::text)`;
+      // a JSON array, so no key value can run into the next one
+      return pk ? `jsonb_build_array(${pk.map((c) => `${alias}.${q(c)}::text`).join(', ')})::text` : `md5((${rowJson(table, alias)})::text)`;
     };
 
     const [project] = await tx.$queryRawUnsafe<Array<{ row: Record<string, unknown> }>>(
@@ -226,7 +227,7 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
       }
       const id = identityOf(path.table, 't');
       for (const g of await tx.$queryRawUnsafe<Array<{ projectId: string; n: number; identity: string }>>(
-        `SELECT owner AS "projectId", count(*)::int AS n, md5(string_agg(rid, ',' ORDER BY rid)) AS identity
+        `SELECT owner AS "projectId", count(*)::int AS n, md5(jsonb_agg(rid ORDER BY rid)::text) AS identity
            FROM (SELECT ${owner} AS owner, ${id} AS rid FROM ${q(path.table)} t) s
           WHERE owner IS NOT NULL GROUP BY owner`)) {
         (byProject[g.projectId] ??= {})[path.key] = { rows: g.n, identity: g.identity };

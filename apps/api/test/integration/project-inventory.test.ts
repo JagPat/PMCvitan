@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
-import { inventoryProject, readOnlyTransaction, writeInventoryExport } from '../../src/platform/project-inventory';
+import { buildPaths, inventoryProject, readOnlyTransaction, writeInventoryExport } from '../../src/platform/project-inventory';
 
 /**
  * #482 — the inventory Board runs before removing the archived QA project. It must find every table
@@ -97,6 +97,31 @@ describe('project:inventory — read-only project inventory (live PG)', () => {
     const after = (await inventoryProject(t.prisma, f.projectA.id)).byProject[f.projectA.id]['ProjectNode.projectId'];
     expect(after.rows).toBe(before.rows);
     expect(after.identity).not.toBe(before.identity);
+  });
+
+  it('follows contained tables however deep the chain goes, and stops on a cycle', () => {
+    // T0 holds the project id; T1..T12 each hang under the one before; T12 points back at T3
+    const edges = Array.from({ length: 12 }, (_, i) => ({ child: `T${i + 1}`, columns: ['parentId'], parent: `T${i}`, parentColumns: ['id'] }));
+    edges.push({ child: 'T3', columns: ['loopId'], parent: 'T12', parentColumns: ['id'] });
+    const paths = buildPaths({ direct: [{ table: 'T0', column: 'projectId' }], edges });
+    expect(paths.map((p) => p.table)).toEqual(Array.from({ length: 13 }, (_, i) => `T${i}`));
+  });
+
+  it('gives different key sets different identities even when the keys contain commas', async () => {
+    const nodes = async () => (await inventoryProject(t.prisma, f.projectA.id)).byProject[f.projectA.id]['ProjectNode.projectId'];
+    const make = (ids: string[]) => t.prisma.projectNode.createMany({ data: ids.map((id) => ({ id, projectId: f.projectA.id, name: id, kind: 'zone' })) });
+    const drop = (ids: string[]) => t.prisma.projectNode.deleteMany({ where: { id: { in: ids } } });
+    // joined with commas, both sets read "zz-a,zz-b,zz-c"
+    const one = [`zz-a-${run}`, `zz-b-${run},zz-c-${run}`];
+    const two = [`zz-a-${run},zz-b-${run}`, `zz-c-${run}`];
+    await make(one);
+    const first = await nodes();
+    await drop(one);
+    await make(two);
+    const second = await nodes();
+    await drop(two);
+    expect(second.rows).toBe(first.rows);
+    expect(second.identity).not.toBe(first.identity);
   });
 
   it('keeps exact numbers exact: bigint and numeric are exported as strings', async () => {
