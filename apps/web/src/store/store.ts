@@ -1391,14 +1391,15 @@ export function getInitialState(): AppState {
     sessionToken: null,
     userName: null,
     sessionUserId: null,
-    // #953 — against a real API the project's identity comes only from its snapshot: the bundled sample
+    // #953 — behind real sign-in the project's identity comes only from its snapshot: the bundled sample
     // project's name must never label a real person's loader (a reload restores onto the URL's project,
-    // which keeps these fields until the snapshot lands)
-    name: API_BASE ? '' : PROJECT.name,
-    short: API_BASE ? '' : PROJECT.short,
-    descriptor: API_BASE ? '' : PROJECT.descriptor,
-    stage: API_BASE ? '' : PROJECT.stage,
-    siteCode: API_BASE ? '' : PROJECT.siteCode,
+    // which keeps these fields until the snapshot lands). The demo and dev-auth builds, which render the
+    // seeded store before any snapshot, keep the sample.
+    name: DEV_AUTH ? PROJECT.name : '',
+    short: DEV_AUTH ? PROJECT.short : '',
+    descriptor: DEV_AUTH ? PROJECT.descriptor : '',
+    stage: DEV_AUTH ? PROJECT.stage : '',
+    siteCode: DEV_AUTH ? PROJECT.siteCode : '',
     location: '',
     timeZone: null,
     projStart: PROJECT.projStart,

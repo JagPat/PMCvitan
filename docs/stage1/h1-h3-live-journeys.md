@@ -87,7 +87,6 @@ DevTools without reloading, then move between the bar's tabs.
 - Badges show the last known counts.
 
 O2. Still offline, back on the Dashboard, the actions line shows the last known N or "—", never a false 0.
-While N is 0 this cannot show a false 0, so O2 runs again after the Q4 write journeys, when N > 0 (with T2).
 
 O3. Tiles read as before going offline.
 

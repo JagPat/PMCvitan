@@ -57,4 +57,12 @@ describe('#953 the loader never names the sample project', () => {
     const { useStore } = await import('@/store/store');
     expect(useStore.getState().short).toBe('Residence at Ambli');
   });
+
+  it('an API build with dev auth renders the seeded store before any snapshot, so it keeps the sample too', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.stubEnv('VITE_ALLOW_DEV_AUTH', 'true');
+    vi.resetModules();
+    const { useStore } = await import('@/store/store');
+    expect(useStore.getState().short).toBe('Residence at Ambli');
+  });
 });
