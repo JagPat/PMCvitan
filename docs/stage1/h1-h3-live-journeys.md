@@ -66,8 +66,8 @@ A1. For each role, the Dashboard's top line reads "You have N actions". In hi it
 "आपके लिए N काम" and in gu "તમારા માટે N કામ". N must equal the For You badge on the bar.
 When N is 0, it reads "Nothing needs you" / "अभी आपके लिए कुछ नहीं" / "હમણાં તમારા માટે કંઈ નથી".
 For qa.pmc (#950), For You's "Do these first" holds only the PMC's own reviews. A site log not sent and
-decisions held by the client show as "qa-test-d135 · Waiting on the engineer" / "· Waiting on the client"
-lines, and the "N decisions awaiting the client" card stays visible but counts 0 toward N and the badge.
+decisions held by the client show as "QA TEST · Waiting on the engineer" / "QA TEST · Waiting on the client"
+lines (the project's short name, set in qa-isolation-steps.md), and the "N decisions awaiting the client" card stays visible but counts 0 toward N and the badge.
 
 A2. Tapping the line opens For You.
 
@@ -168,6 +168,6 @@ B3. As qa.pmc, call `GET /projects/qa-test-d135/shell`. PASS when `capabilities`
 | H1 navigation | #938 | Codex clean | 82d6cbf | N1, N2 PASS; N3, O1 |
 | H1 desktop menu words | #949 | Codex clean | 0dc152c | N4 PASS (en, hi, gu) |
 | H2 actions line | #939 | Codex clean | 82d6cbf | A1, A2 PASS; A3, O2 |
-| H2 PMC For You "Waiting on" lines | #950 | Codex clean | 95afa3e | A1 for qa.pmc |
+| H2 PMC For You "Waiting on" lines | #950 | Codex clean | 95afa3e | A1 for qa.pmc: pending re-run |
 | Reload keeps the sign-in | #948 | round cap, P2s in #951 | 5f81f1b | R-a to R-d PASS (monitor, 17 Oct 08:00 IST) |
 | H3 tiles | #943 | Codex clean | 82d6cbf | T1 now, T2 after Q4 |

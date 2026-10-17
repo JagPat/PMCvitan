@@ -13,7 +13,7 @@ that carried the unit live. At 03:45 UTC on 17 Oct `https://pms-api.vitan.in/hea
 | H0 | `home-nav` switch + audited off command | #937 | Codex clean | 82d6cbf | on: PASS (Board, 23:02 IST); off: pending (R) | rollback drill |
 | H0b | "On" command records the reason | #944 merged | Codex clean | d6c7dda | Board's enable printed changed:true | R3b: read the reason on the audit row |
 | H1 | Navigation | #938 | Codex clean | 82d6cbf | N1, N2 PASS (5 roles); N4 PASS after #949 (0dc152c); reload keeps sign-in PASS after #948 (5f81f1b); O1 pending | hi/gu and offline runs |
-| H2 | "You have N actions" | #939 | Codex clean | 82d6cbf | A1, A2 PASS (5 roles); PMC For You "Waiting on" lines live with #950 (95afa3e) | hi/gu, A3 and offline runs (O2) |
+| H2 | "You have N actions" | #939 | Codex clean | 82d6cbf | A1, A2 PASS (5 roles) before #950; #950's PMC For You "Waiting on" lines (live since 95afa3e) not yet re-run | A1 re-run for qa.pmc on #950; hi/gu, A3 and offline runs (O2) |
 | H3 | Tiles say whom they wait on | #943 | Codex clean | 82d6cbf | pending (T1 now, T2 after Q4) | monitor run, twice |
 | Q4 | Write journeys C1–C6 | steps written (q4-write-journeys.md) | — | — | V8 after C2 | one monitor run |
 
