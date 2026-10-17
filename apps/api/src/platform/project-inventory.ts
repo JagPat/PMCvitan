@@ -22,6 +22,12 @@ import type { PrismaClient } from '@prisma/client';
  * Read-only is enforced by PostgreSQL, not by care: the whole run is one `REPEATABLE READ, READ
  * ONLY` transaction — one snapshot for every query, and any INSERT, UPDATE, DELETE or DDL fails —
  * and it refuses to continue unless the server confirms both.
+ *
+ * It reads every module's tables, so it is an operator tool, never module code: only
+ * `project-inventory.cli.ts` imports it, and the server never loads either file. The module
+ * boundary (no synchronous read of another module's tables) covers the files the server loads,
+ * the same set `boundary-analyzer.ts` checks, which leaves out the CLI entrypoints (like
+ * `outbox.cli.ts`). `project-inventory.boundary.test.ts` fails if the server ever imports it.
  */
 
 /** How a table reaches a project: directly through `column`, or through `via`'s row. */
