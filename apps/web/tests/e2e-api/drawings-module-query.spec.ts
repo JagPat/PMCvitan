@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { openProject } from './landing';
+import { openProject, gotoSignedOut } from './landing';
 import { openNav } from '../e2e/fixtures/nav';
 
 /**
@@ -49,7 +49,7 @@ test.describe('drawings module-owned read (moduleQuery)', () => {
       }
     });
 
-    await page.goto('/');
+    await gotoSignedOut(page, '/');
     await signIn(page, 'test-eng@vitan.in');
     await openProject(page, 'Residence at Ambli');
 
@@ -94,7 +94,7 @@ test.describe('drawings module-owned read (moduleQuery)', () => {
       }
     });
 
-    await page.goto('/');
+    await gotoSignedOut(page, '/');
     await signIn(page, 'test-pmc@vitan.in');
     await openProject(page, 'Residence at Ambli'); // where the register lives
 

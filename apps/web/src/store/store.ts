@@ -86,7 +86,7 @@ import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, isSiteVisitOp, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, isSiteVisitOp, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -96,6 +96,7 @@ import { checkinClock, todayCivil } from '@/lib/civilDate';
 import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
+import { saveSession, clearSession, loadSession } from '@/lib/sessionPersist';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -836,6 +837,8 @@ export interface AppActions {
   /** Refetch the active project's snapshot after a load error (the boundary's Retry). */
   retryProjectLoad: () => void;
   _setGateway: (g: ApiGateway | null) => void;
+  /** adopt the session this tab saved before a reload, if one is still valid; true when one was adopted */
+  restoreSession: () => boolean;
   /** Site Visits SV1-c (#792) — the gateway a screen that keeps its own state (the Site Visits screen) sends
    *  through; null in the local demo. Read it at each send, with `captureProjectScope`, like the store's own paths. */
   serverGateway: () => ApiGateway | null;
@@ -1417,6 +1420,10 @@ export const useStore = create<Store>()(
     // When present, mutating actions persist through the API and reconcile from
     // the returned snapshot; when null, they mutate the seeded local store.
     let gateway: ApiGateway | null = null;
+    /** the token a reload adopted from this tab's saved session (#482 6227430525), until another replaces it */
+    let restoredToken: string | null = null;
+    /** the project a restored session's URL named when it is not the saved session's own (switched to on install) */
+    let restoreSwitchTarget: { projectId: string; screen: ScreenKey } | null = null;
     // #482 — decision publishes still on their way, per project scope (project + generation, which a
     // switch or sign-in moves), for the in-app guide's Publish step (see `issueDecision`)
     const decisionPublishesInFlight = new Map<string, number>();
@@ -2033,6 +2040,9 @@ export const useStore = create<Store>()(
       if (c.refreshInFlight) { c.refreshQueued = true; return; }
       c.refreshInFlight = true;
       const g = gateway;
+      // #948 Codex 4300725700 — the token THIS gateway carries, not the store's: a project switch adopts the new
+      // token before the old gateway is replaced, and a refusal of the old token must not end the new session
+      const tokenAtStart = g.authToken ?? null;
       const lease = beginSnapshotLease(scope);
       // the flag is the CURRENT scope's: a scope switched to carries only its own obligation
       if (scopeStillCurrent(scope)) publishCommandOwed(c);
@@ -2100,7 +2110,20 @@ export const useStore = create<Store>()(
           set((s) => { s.projectLoadState = 'error'; s.projectLoadError = RECOVERABLE_LOAD_ERROR; });
         }
         // superseded / scope-moved: a newer owner or the queued rerun supplies truth.
-      } catch {
+      } catch (err) {
+        // #482 6227430525 — the server refused this session's token (expired early, or the account's
+        // access was removed): a session restored after a reload must not sit signed in on screens that
+        // cannot load. A 401 ends any session; a 403 ends a RESTORED one (its project or role is no longer
+        // the person's: removed, archived, role changed), which a fresh sign-in would have refused. Only the
+        // token this pull carried; a sign-in that replaced it meanwhile is kept.
+        const refusal = (err as { status?: number } | null)?.status;
+        if (
+          tokenAtStart !== null && get().sessionToken === tokenAtStart
+          && (refusal === 401 || (refusal === 403 && tokenAtStart === restoredToken))
+        ) {
+          get().signOut();
+          return;
+        }
         // The pull failed. Surface the recoverable error/Retry boundary when the user is
         // waiting on THIS scope's data — an initial load / switch, or the MANDATORY
         // reconcile for ANY outstanding obligation (a pull that began after its threshold).
@@ -2627,7 +2650,7 @@ export const useStore = create<Store>()(
      *  call, stranding stale data on screen under the wrong identity. */
     const applyAuthResult = (
       res: { role: Role; token: string; name?: string; projectId?: string },
-      opts?: { msg?: string; targetScreen?: ScreenKey; targetItem?: string },
+      opts?: { msg?: string; targetScreen?: ScreenKey; targetItem?: string; quiet?: boolean },
     ): void => {
       set((s) => {
         const changedProject = !!res.projectId && res.projectId !== s.activeProjectId;
@@ -2686,7 +2709,9 @@ export const useStore = create<Store>()(
         s.pendingProjectId = null;
       });
       get().syncProjectCreateHold(); // a create hold is the signed-in identity's own (Codex 4192524377)
-      get().flash(opts?.msg ?? 'Signed in as ' + (res.name ?? res.role) + '.');
+      // #482 6227430525 — keep the adopted session for this tab, so a reload does not sign the person out
+      saveSession({ token: res.token, role: res.role, name: res.name, projectId: res.projectId ?? get().activeProjectId });
+      if (!opts?.quiet) get().flash(opts?.msg ?? 'Signed in as ' + (res.name ?? res.role) + '.');
     };
 
     /** Local-demo passwordless sign-in: map an email to a role (else engineer). */
@@ -2725,6 +2750,20 @@ export const useStore = create<Store>()(
     _setGateway: (g) => {
       gateway = g;
     },
+    restoreSession: () => {
+      // #482 6227430525 — a reload adopts the session this tab saved, through the one adoption path, so a
+      // reload lands back where the person was instead of on the sign-in screen. Never under dev auth.
+      if (!API_BASE || DEV_AUTH || get().sessionToken !== null) return false;
+      const saved = loadSession();
+      if (!saved) return false;
+      // the screen the URL names (`initialScreen`) survives the adoption, as a deep link does
+      const screen = get().screen;
+      const urlProject = typeof window !== 'undefined' ? parseLocation(window.location.pathname).projectId : null;
+      applyAuthResult(saved, { quiet: true, targetScreen: screen });
+      restoredToken = saved.token;
+      restoreSwitchTarget = urlProject && saved.projectId && urlProject !== saved.projectId ? { projectId: urlProject, screen } : null;
+      return true;
+    },
     serverGateway: () => gateway,
     // gate round 11: the PUBLIC apply is a coordinator entry — it begins a FRESH
     // lease (a delivered snapshot is the newest intent) and routes through
@@ -2738,7 +2777,7 @@ export const useStore = create<Store>()(
     // ---- shell ----
     setRole: (role) => {
       const first = screensFor(role)[0]?.key ?? 'inbox';
-      const applySwitch = () => { set((s) => {
+      const applySwitch = () => { clearSession(); set((s) => {
         s.role = role;
         s.screen = first;
         s.notifOpen = false;
@@ -2793,6 +2832,10 @@ export const useStore = create<Store>()(
      * With dev auth off, the AppShell auth-gate then shows the sign-in screen.
      */
     signOut: () => {
+      // #948 Codex 4300725697 — forget the tab's saved session at once: a reload during the bounded push unlink
+      // below must not restore the session being signed out (the in-memory token stays for the unlink request)
+      clearSession();
+      restoreSwitchTarget = null;
       // Phase 6 task 4b (§A.3 round 13) — UNLINK this browser's push subscription BEFORE the
       // token clears (the request needs the still-valid session): a shared device must not keep
       // receiving the departing user's decider-targeted content. Round-1 Codex F1: the handoff
@@ -2821,6 +2864,8 @@ export const useStore = create<Store>()(
     /** The sign-out teardown itself — separated so the push unlink can complete first on a
      *  push-capable browser (round-1 Codex F1) while every other environment stays synchronous. */
     completeSignOut: () => {
+      clearSession();
+      restoreSwitchTarget = null;
       set((s) => {
         s.sessionToken = null;
         s.userName = null;
@@ -3937,7 +3982,17 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       // session-scoped (not project-scoped): ignore replies after sign-out / re-auth
       const tok = get().sessionToken;
-      gateway.listMemberships().then((ms) => set((s) => { if (s.sessionToken === tok) s.memberships = ms; })).catch(() => {});
+      gateway.listMemberships().then((ms) => {
+        set((s) => { if (s.sessionToken === tok) s.memberships = ms; });
+        // #948 Codex 4300725705 / 4300786709 — a restored session opened on a link to ANOTHER project switches
+        // there only once its memberships confirm the person belongs to it; a stale, mistyped or foreign link
+        // is dropped, and the session stays on its own project, which is already loading
+        const target = restoreSwitchTarget;
+        if (target && tok !== null && tok === restoredToken && get().sessionToken === tok) {
+          restoreSwitchTarget = null;
+          if (ms.some((m) => m.projectId === target.projectId)) void get().switchProject(target.projectId, target.screen);
+        }
+      }).catch(() => {});
       gateway.myOrgs().then((os) => set((s) => { if (s.sessionToken === tok) s.myOrgs = os; })).catch(() => {});
     },
     loadPortfolio: () => {

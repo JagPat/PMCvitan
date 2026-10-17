@@ -9,6 +9,9 @@ import { App } from './App';
 import { useStore } from './store/store';
 import { DEV_AUTH } from './data/apiGateway';
 
+// #482 6227430525 — a reload keeps the person signed in: adopt the session this tab saved (if still valid)
+// BEFORE the outbox is rehydrated, so the queue loaded is that person's own.
+useStore.getState().restoreSession();
 // Rehydrate any mutations queued offline in a previous session (Phase 8 outbox).
 useStore.getState().hydrateOutbox();
 

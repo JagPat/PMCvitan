@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { openNav } from '../e2e/fixtures/nav';
+import { gotoSignedOut } from './landing';
 
 /**
  * Phase 2 Task 10 (Module 4 — Activities) — the activities MODULE-OWNED read, proven end-to-end over
@@ -51,7 +52,7 @@ test.describe('activities module-owned read (moduleQuery)', () => {
       }
     });
 
-    await page.goto('/');
+    await gotoSignedOut(page, '/');
     await signIn(page, 'test-pmc@vitan.in');
     // switch to Project A (the PMC's home may be B) if the switcher isn't already there. Wait for a
     // REAL project name first (hydration), then retry the open-and-pick as one unit: a post-sign-in

@@ -56,3 +56,18 @@ export async function signIn(page: Page, email: string): Promise<void> {
   await page.getByTestId('login-password').fill(PASSWORD);
   await page.getByTestId('login-submit').click();
 }
+
+/**
+ * #482 6227430525 — the tab keeps a signed-in session across a reload, so a `page.goto` in the middle of a spec
+ * no longer signs the previous user out by itself. This opens `path` signed out, as every spec here expects
+ * before its next sign-in: it forgets the tab's saved session and, when there was one, opens the page again.
+ */
+export async function gotoSignedOut(page: Page, path: string): Promise<void> {
+  await page.goto(path);
+  const hadSession = await page.evaluate(() => {
+    const had = sessionStorage.getItem('vitan.session.v1') !== null;
+    sessionStorage.removeItem('vitan.session.v1');
+    return had;
+  });
+  if (hadSession) await page.goto(path);
+}

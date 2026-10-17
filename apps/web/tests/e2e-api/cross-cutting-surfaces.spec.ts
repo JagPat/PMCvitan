@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { openNav } from '../e2e/fixtures/nav';
+import { gotoSignedOut } from './landing';
 
 /**
  * Phase 2 Task 10 FINALIZATION — the three CROSS-CUTTING surfaces (Inbox "For You", Dashboard,
@@ -64,7 +65,7 @@ test.describe('cross-cutting surfaces under all-module reads', () => {
       }
     });
 
-    await page.goto('/');
+    await gotoSignedOut(page, '/');
     await signIn(page, 'test-pmc@vitan.in');
     const switcher = page.getByTestId('project-switcher');
     await expect(switcher).toContainText(/Residence at Ambli|Test Empty Site/);

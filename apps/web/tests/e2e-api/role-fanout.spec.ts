@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { openProject } from './landing';
+import { openProject, gotoSignedOut } from './landing';
 import { openNav } from '../e2e/fixtures/nav';
 
 /**
@@ -26,7 +26,7 @@ const optionValues = (page: Page, testId: string) =>
   page.getByTestId(testId).locator('option').evaluateAll((els) => els.map((e) => (e as HTMLOptionElement).value));
 
 test('with the doors standing, no picker offers the architect: the Team role pickers and the decider picker follow the reserved shell', async ({ page }) => {
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, PMC);
   await openProject(page, 'Test Empty Site'); // sign-in opens the last project used (#811)
 

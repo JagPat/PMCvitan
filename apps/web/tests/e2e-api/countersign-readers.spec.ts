@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { loginTo, openProject } from './landing';
+import { loginTo, openProject, gotoSignedOut } from './landing';
 
 /**
  * Phase 6 task 4d-ii-b / B3 — the readers over the REAL stack with the six reservation doors STANDING (the
@@ -54,7 +54,7 @@ test('with the doors standing, the client’s approval badge is the shell’s co
   expect(pending).toBeGreaterThan(0);
   expect(decisions.some((d) => d.status === 'awaiting_countersign')).toBe(false);
 
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, CLIENT);
   await openProject(page, 'Residence at Ambli');
 

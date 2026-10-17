@@ -1,6 +1,7 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import { execSync } from 'node:child_process';
 import { navButton, openNav } from '../e2e/fixtures/nav';
+import { gotoSignedOut } from './landing';
 
 /**
  * Phase 4 Task 6 (§J) — the pilot LABOUR acceptance chain, in a REAL browser over live PostgreSQL,
@@ -56,7 +57,7 @@ async function get(request: APIRequestContext, token: string, path: string): Pro
 }
 
 async function signInToProject(page: Page, email: string, projectName: string): Promise<void> {
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(email);
   await page.getByTestId('login-password').fill(PASSWORD);
@@ -267,7 +268,7 @@ test('INERT: a non-pilot project has NO Labour nav, a direct /labour deep link i
   // (A fresh login scopes to the account's SERVER-designated home project — the pre-existing
   // "authentication lands on the server project" behaviour — so the eject may land on the home
   // project's role default; the finding's claim is only that the dead hub is never served.)
-  await page.goto(`/projects/${plainId}/labour`);
+  await gotoSignedOut(page, `/projects/${plainId}/labour`);
   await page.getByTestId('go-login').click();
   await page.getByTestId('login-email').fill(PMC);
   await page.getByTestId('login-password').fill(PASSWORD);

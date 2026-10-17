@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { loginTo, openProject } from './landing';
+import { loginTo, openProject, gotoSignedOut } from './landing';
 
 /**
  * Phase 6 task 4d-ii-b / B1 — the client boundary over the REAL stack, probed with the six reservation
@@ -35,7 +35,7 @@ test('every API-bound request declares countersign-v1, and the shell reads rollo
     apiRequests.push({ url: u, contract: r.headers()['x-vitan-decisions-contract'] });
   });
 
-  await page.goto('/');
+  await gotoSignedOut(page, '/');
   await signIn(page, ENG);
   await openProject(page, 'Residence at Ambli');
   // the engineer's home (the Dashboard, #811) has settled — the post-sign-in route lands before we navigate away
