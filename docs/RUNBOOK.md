@@ -2590,3 +2590,27 @@ Turn it off for one project (the rollback):
 Both are audited on the project's trail (`capability.enable` / `capability.disable`), each row naming the
 operator and carrying their reason. Re-running either for a switch already in that state writes nothing. People see the change the next time the app opens or reloads. `capability:disable` refuses every other
 capability. Run both from the deployed image, like every operator CLI (see the server-generation fence above).
+
+## §DS. Database snapshot and diff (read-only)
+
+Records every table's rows by key, so a removal can be checked row by row (#482: the archived
+`qa-test-356a`). Take one snapshot before the removal and one after, then compare them.
+
+    pnpm --filter api db:snapshot --out <file.json>
+    pnpm --filter api db:snapshot-diff --before <before.json> --after <after.json>
+
+`db:snapshot` runs in one `REPEATABLE READ, READ ONLY` transaction (one snapshot, every write
+refused) and stops unless PostgreSQL confirms both. For every table in the schema it records the
+row count and the full sorted list of row keys: the primary key as a JSON array of PostgreSQL's
+own text for each column, or the md5 of the whole row for a table without one. Nothing is parsed as
+a number, and `takenAt` is PostgreSQL's clock in the statement that took the snapshot. `--out` is
+written owner-only to a temporary file, flushed, then linked into place: it never replaces an
+existing file and is never left half-written. The file holds every key of every table, so expect
+it to grow with the database.
+
+`db:snapshot-diff` reads two snapshot files and touches no database. It prints every table whose
+rows differ, with the exact keys removed and added, and any table present in only one snapshot.
+It does not decide which project a row belongs to: after a removal, every removed key must be one
+the removal was meant to delete, and anything else listed is a change to explain. A table with no
+foreign key to a project is covered like any other.
+Run both from the deployed image, like every operator CLI.
