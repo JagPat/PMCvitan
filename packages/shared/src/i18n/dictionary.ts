@@ -552,8 +552,9 @@ export const projectLoadLabels = {
   loadingDetail: { en: 'Fetching this project’s decisions, schedule and site data.', hi: 'इस प्रोजेक्ट के निर्णय, शेड्यूल और साइट की जानकारी आ रही है।', gu: 'આ પ્રોજેક્ટના નિર્ણય, શેડ્યૂલ અને સાઇટની માહિતી આવી રહી છે.' },
 } satisfies Record<string, Record<Lang, string>>;
 
-/** "Loading Ambli…" — the project's short name is data. */
+/** "Loading Ambli…" — the project's short name is data; before the snapshot names it (#953), "Loading the project…". */
 export function projectLoadingTitle(project: string, lang: Lang): string {
+  if (!project) return { en: 'Loading the project…', hi: 'प्रोजेक्ट खुल रहा है…', gu: 'પ્રોજેક્ટ ખૂલી રહ્યો છે…' }[lang];
   if (lang === 'hi') return `${project} खुल रहा है…`;
   if (lang === 'gu') return `${project} ખૂલી રહ્યો છે…`;
   return `Loading ${project}…`;
