@@ -25,8 +25,8 @@ rollback drill (R), which also proves the H0 off-switch live.
 1. **N: H1 navigation**, **A: H2 actions line**, **O: Offline**, **T1: H3 tiles, part 1** (switch on now).
 2. **R: Rollback drill with the baseline.** The operator turns the switch off, the monitor takes the baseline
    (B), and the operator turns it back on.
-3. **T2: H3 tiles, part 2.** It runs after the Q4 write journeys (q4-write-journeys.md), once the project holds
-   records.
+3. **T2: H3 tiles, part 2, and the O2 re-run.** They run after the Q4 write journeys (q4-write-journeys.md), once
+   the project holds records.
 
 Wherever a check below says "the same as in the baseline", record what is seen now and compare it once B exists.
 
@@ -87,6 +87,7 @@ DevTools without reloading, then move between the bar's tabs.
 - Badges show the last known counts.
 
 O2. Still offline, back on the Dashboard, the actions line shows the last known N or "—", never a false 0.
+While N is 0 this cannot show a false 0, so O2 runs again after the Q4 write journeys, when N > 0 (with T2).
 
 O3. Tiles read as before going offline.
 
