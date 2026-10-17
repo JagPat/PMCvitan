@@ -13,14 +13,18 @@ import type { PrismaClient } from '@prisma/client';
  *   - contained: any table whose foreign key reaches a table already found (an `InspectionItem`
  *     through its `Inspection`, a `CrewRow` through its `DailyLog`), followed until nothing new
  *     appears. `User` is never followed: a user is pointed at a project, it is not owned by one.
+ *     A reference the schema keeps without a foreign key is listed by hand in `LOGICAL_REFS`.
+ *   - coverage: every other table is named in `unlinked` with its row count, so a table that holds
+ *     a project's data by some reference the catalog cannot see is shown for review, never missed.
  *
  * It is the itemised list and the before/after proof, not a row export (that is a separate unit).
- * For the target: its row count per table, every user whose home or last project it is, every
- * stored file (any table with a `storageKey` column) and every delete trigger with its enabled
- * state. For every project, per table: the row count and a hash of the sorted primary keys, so a
- * later run proves no other project lost or swapped a row. Every value is computed by PostgreSQL
- * and comes back as a count, a hash, an id, a name or a flag: no row is read into JavaScript, so
- * nothing can be rounded.
+ * For the target: its row count per table, every user whose home or last project it is and every
+ * stored file (any table with a `storageKey` column). For every project, its own `Project` row and,
+ * per table, the row count and a hash of the sorted primary keys, so a later run proves no other
+ * project lost or swapped a row, including a project that owns nothing else. Every value is
+ * computed by PostgreSQL and comes back as a count, a hash, an id, a name or a flag: no row is read
+ * into JavaScript, so nothing can be rounded. What a delete would meet (triggers, cascades) belongs
+ * to the delete design, not to this list.
  *
  * Read-only is enforced by PostgreSQL, not by care: the whole run is one `REPEATABLE READ, READ
  * ONLY` transaction — one snapshot for every query, and any INSERT, UPDATE, DELETE or DDL fails —
@@ -56,40 +60,37 @@ export interface StoredFile {
   bytesInDatabase: boolean;
 }
 
-/** A trigger that fires on DELETE, with `pg_trigger.tgenabled` and whether it fires in this session. */
-export interface DeleteTrigger {
-  trigger: string;
-  /** O = fires (origin/local role), A = always, R = replica role only, D = disabled */
-  enabled: 'O' | 'A' | 'R' | 'D';
-  /** whether it fires under this session's `session_replication_role` */
-  firesInThisSession: boolean;
-}
-
 export interface ProjectInventory {
   projectId: string;
   readOnlyVerified: true;
   snapshot: 'repeatable read';
   takenAt: string;
-  sessionReplicationRole: string;
   project: { id: string; name: string; orgId: string; archivedAt: string | null } | null;
   /** every path by which a table can reach a project, from the catalog */
   paths: ProjectPath[];
   /** the target's row count per path key (non-zero only) */
   counts: Record<string, number>;
-  /** every project's row count and identity hash per path key, for the before/after comparison */
+  /** every project's row count and identity hash per path key (its own row under `Project.id`), for the before/after comparison */
   byProject: Record<string, Record<string, RowIdentity>>;
   /** users whose home project (`User.projectId`) or last-used project (`User.lastProjectId`) is the target */
   userPointers: Array<{ id: string; email: string; name: string; projectId: string; lastProjectId: string | null }>;
   /** the target's stored files: every row with a `storageKey` column, and where its bytes live */
   files: StoredFile[];
-  /** triggers that fire on DELETE, per table holding target rows (what a delete would meet) */
-  deleteTriggers: Record<string, DeleteTrigger[]>;
+  /** every table no path reaches, with its row count: not counted for any project, so reviewed by hand */
+  unlinked: Array<{ table: string; rows: number }>;
 }
 
 const q = (ident: string): string => `"${ident.replace(/"/g, '""')}"`;
 const lit = (s: string): string => `'${s.replace(/'/g, "''")}'`;
 /** Tables that are pointed at a project but own nothing of it: never followed to their children. */
 const NOT_OWNERS = new Set(['User', 'Project', 'Org']);
+/**
+ * References the schema keeps without a foreign key, followed like one. `_t4d_tx_transition` names a
+ * `Decision` by `decisionId` and nothing else (migration 20271221000000_phase6_t4d_i_decision_facts).
+ */
+const LOGICAL_REFS: Catalog['edges'] = [
+  { child: '_t4d_tx_transition', columns: ['decisionId'], parent: 'Decision', parentColumns: ['id'] },
+];
 
 type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
@@ -116,6 +117,7 @@ export interface Catalog {
   primaryKeys: Map<string, string[]>;
   byteColumns: Map<string, string[]>;
   columnsOf: Map<string, Set<string>>;
+  tables: string[];
 }
 
 async function readCatalog(tx: Tx): Promise<Catalog> {
@@ -135,7 +137,7 @@ async function readCatalog(tx: Tx): Promise<Catalog> {
     UNION
     SELECT 'User', 'lastProjectId'
      ORDER BY 1, 2`);
-  const edges = await tx.$queryRawUnsafe<Catalog['edges']>(`
+  const keyed = await tx.$queryRawUnsafe<Catalog['edges']>(`
     SELECT ch.relname::text AS child, pa.relname::text AS parent,
            array_agg(a.attname::text ORDER BY k.ord) AS columns, array_agg(b.attname::text ORDER BY k.ord) AS "parentColumns"
       FROM pg_constraint c
@@ -148,6 +150,13 @@ async function readCatalog(tx: Tx): Promise<Catalog> {
      WHERE c.contype = 'f'
      GROUP BY c.oid, ch.relname, pa.relname
      ORDER BY 1, 2, 3`);
+  const tables = (await tx.$queryRawUnsafe<Array<{ table: string }>>(`
+    SELECT c.relname::text AS "table" FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = current_schema()
+     WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition ORDER BY 1`)).map((r) => r.table);
+  // a hand-listed reference is followed only while its table exists, and never twice
+  const edges = [...keyed, ...LOGICAL_REFS.filter((l) => tables.includes(l.child) && tables.includes(l.parent)
+    && !keyed.some((k) => k.child === l.child && k.parent === l.parent))];
   const primaryKeys = new Map<string, string[]>();
   for (const r of await tx.$queryRawUnsafe<Array<{ table: string; columns: string[] }>>(`
     SELECT c.relname::text AS "table", array_agg(a.attname::text ORDER BY k.ord) AS columns
@@ -166,7 +175,7 @@ async function readCatalog(tx: Tx): Promise<Catalog> {
     (columnsOf.get(r.table) ?? columnsOf.set(r.table, new Set()).get(r.table)!).add(r.column);
     if (r.type === 'bytea') byteColumns.set(r.table, [...(byteColumns.get(r.table) ?? []), r.column]);
   }
-  return { direct, edges, primaryKeys, byteColumns, columnsOf };
+  return { direct, edges, primaryKeys, byteColumns, columnsOf, tables };
 }
 
 /** Every path to a project: the direct columns, then contained tables, breadth first until none is left. */
@@ -216,7 +225,14 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
     const [project] = await tx.$queryRawUnsafe<Array<NonNullable<ProjectInventory['project']>>>(
       `SELECT id, name, "orgId", "archivedAt"::text AS "archivedAt" FROM "Project" WHERE id = $1`, projectId);
 
-    const byProject: ProjectInventory['byProject'] = {};
+    // database ids are keys here: no prototype, so an id like `__proto__` is an entry like any other
+    const byProject: ProjectInventory['byProject'] = Object.create(null);
+    const entryOf = (id: string): Record<string, RowIdentity> => (byProject[id] ??= Object.create(null));
+    // each project's own row, so a project that owns nothing else is still in the proof
+    for (const g of await tx.$queryRawUnsafe<Array<{ projectId: string; identity: string }>>(
+      `SELECT p.id AS "projectId", md5(jsonb_agg(${identityOf('Project', 'p')})::text) AS identity FROM "Project" p GROUP BY p.id`)) {
+      entryOf(g.projectId)['Project.id'] = { rows: 1, identity: g.identity };
+    }
     for (const path of paths) {
       const owner = projectOf(path, 't', paths);
       const id = identityOf(path.table, 't');
@@ -224,11 +240,11 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
         `SELECT owner AS "projectId", count(*)::int AS n, md5(jsonb_agg(rid ORDER BY rid)::text) AS identity
            FROM (SELECT ${owner} AS owner, ${id} AS rid FROM ${q(path.table)} t) s
           WHERE owner IS NOT NULL GROUP BY owner`)) {
-        (byProject[g.projectId] ??= {})[path.key] = { rows: g.n, identity: g.identity };
+        entryOf(g.projectId)[path.key] = { rows: g.n, identity: g.identity };
       }
     }
     const counts: ProjectInventory['counts'] = Object.fromEntries(
-      Object.entries(byProject[projectId] ?? {}).map(([key, r]) => [key, r.rows]));
+      Object.entries(byProject[projectId] ?? {}).filter(([key]) => key !== 'Project.id').map(([key, r]) => [key, r.rows]));
 
     const userPointers = await tx.$queryRawUnsafe<ProjectInventory['userPointers']>(
       `SELECT id, email, name, "projectId", "lastProjectId" FROM "User"
@@ -245,20 +261,11 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
            FROM ${q(path.table)} t WHERE ${projectOf(path, 't', paths)} = $1 ORDER BY t.id`, projectId));
     }
 
-    const deleteTriggers: ProjectInventory['deleteTriggers'] = {};
-    const held = [...new Set(paths.filter((p) => p.key in counts).map((p) => p.table))];
-    if (project) held.push('Project');
-    const [{ role }] = await tx.$queryRawUnsafe<Array<{ role: string }>>("SELECT current_setting('session_replication_role') AS role");
-    for (const r of await tx.$queryRawUnsafe<Array<{ table: string } & DeleteTrigger>>(`
-      SELECT c.relname::text AS "table", t.tgname::text AS "trigger", t.tgenabled::text AS enabled,
-             CASE t.tgenabled WHEN 'A' THEN true WHEN 'D' THEN false
-               WHEN 'R' THEN current_setting('session_replication_role') = 'replica'
-               ELSE current_setting('session_replication_role') <> 'replica' END AS "firesInThisSession"
-        FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-        JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = current_schema()
-       WHERE NOT t.tgisinternal AND (t.tgtype & 8) <> 0 AND c.relname = ANY($1::text[])
-       ORDER BY 1, 2`, held)) {
-      (deleteTriggers[r.table] ??= []).push({ trigger: r.trigger, enabled: r.enabled, firesInThisSession: r.firesInThisSession });
+    const reached = new Set(['Project', ...paths.map((p) => p.table)]);
+    const unlinked: ProjectInventory['unlinked'] = [];
+    for (const table of cat.tables.filter((t) => !reached.has(t))) {
+      const [{ n }] = await tx.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM ${q(table)}`);
+      unlinked.push({ table, rows: n });
     }
 
     return {
@@ -266,14 +273,13 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
       readOnlyVerified: true as const,
       snapshot: 'repeatable read' as const,
       takenAt: new Date().toISOString(),
-      sessionReplicationRole: role,
       project: project ?? null,
       paths,
       counts,
       byProject,
       userPointers,
       files,
-      deleteTriggers,
+      unlinked,
     };
   });
 }
@@ -290,7 +296,9 @@ export function writeInventoryExport(inv: ProjectInventory, path: string): void 
   const fd = openSync(tmp, 'wx', 0o600);
   try {
     try {
-      writeSync(fd, JSON.stringify(inv, null, 2) + '\n');
+      const data = Buffer.from(JSON.stringify(inv, null, 2) + '\n');
+      // a write may take only part of the buffer (a full disk does this without throwing)
+      for (let off = 0; off < data.length;) off += writeSync(fd, data, off, data.length - off);
       fsyncSync(fd);
     } finally {
       closeSync(fd);

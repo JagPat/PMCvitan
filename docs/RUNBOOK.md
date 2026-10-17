@@ -2606,9 +2606,15 @@ It finds the tables from the database catalog: every `projectId` column, every o
 - the target's row count per path;
 - the users whose home or last project it is;
 - every stored file (any table with a `storageKey` column), and whether its bytes are in the database;
-- the delete triggers its tables carry, each with `tgenabled` and whether it fires in this session;
-- every project's row count and primary-key hash per path, so a later run can show that the others
-  kept every row, not only the same number of rows.
+- every project's own `Project` row and its row count and primary-key hash per path, so a later run
+  can show that the others kept every row, not only the same number of rows, including a project
+  that owns nothing else;
+- every table no path reaches (`unlinked`), with its row count, to review by hand: anything listed
+  there is not counted for any project.
+
+A reference the schema keeps without a foreign key is followed from a short hand-kept list
+(`LOGICAL_REFS`; today `_t4d_tx_transition.decisionId` to `Decision`). What a delete would meet
+(triggers, foreign-key cascades) is part of the delete design, not this list.
 
 Every value is computed by PostgreSQL (counts, hashes, ids, names, flags); no row is read out, so
 nothing can be rounded. The full row export is a separate command. The command refuses, writing

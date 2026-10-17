@@ -7,8 +7,8 @@ import { inventoryProject, writeInventoryExport } from './project-inventory';
  *   pnpm --filter api project:inventory --project <id> --out <file.json>
  *
  * Writes the inventory to `--out` (owner-only, never over an existing file, never left half-written)
- * and prints it: the target's counts per table, its user pointers and files, the delete triggers it
- * would meet and whether each fires, and every project's row counts and identity hashes. Refuses,
+ * and prints it: the target's counts per table, its user pointers and files, every project's own row
+ * and row counts and identity hashes, and every table no path reaches with its row count. Refuses,
  * writing nothing, when the project does not exist. It changes nothing in the database: the run is
  * one repeatable-read, read-only transaction.
  */
@@ -38,14 +38,13 @@ async function main(): Promise<void> {
       readOnlyVerified: inv.readOnlyVerified,
       snapshot: inv.snapshot,
       takenAt: inv.takenAt,
-      sessionReplicationRole: inv.sessionReplicationRole,
       project: inv.project,
       export: f.out,
       pathsScanned: inv.paths.length,
       counts: inv.counts,
       userPointers: inv.userPointers,
       files: inv.files,
-      deleteTriggers: inv.deleteTriggers,
+      unlinked: inv.unlinked,
       byProject: inv.byProject,
     };
     process.stdout.write(JSON.stringify(summary, null, 2) + '\n');

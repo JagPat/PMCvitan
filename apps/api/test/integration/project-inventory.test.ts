@@ -139,19 +139,37 @@ describe('project:inventory — read-only project inventory (live PG)', () => {
     expect(readdirSync(dir).sort(), 'only the finished export and the pre-existing file').toEqual(['a.json', 'taken.json']);
   });
 
-  it('names the delete triggers the target would meet, and whether each would fire', async () => {
-    const inv = await inventoryProject(t.prisma, f.projectA.id);
-    expect(inv.sessionReplicationRole).toBe('origin');
-    const [first] = inv.deleteTriggers.Project ?? [];
-    expect(first, 'Project carries a delete trigger').toBeTruthy();
-    expect(first).toMatchObject({ enabled: 'O', firesInThisSession: true });
-    await t.prisma.$executeRawUnsafe(`ALTER TABLE "Project" DISABLE TRIGGER "${first.trigger}"`);
+  it("keeps every project's own row in the proof, including a new one whose id is __proto__", async () => {
+    const { orgId } = await t.prisma.project.findUniqueOrThrow({ where: { id: f.projectA.id }, select: { orgId: true } });
+    const bare = { ...await t.prisma.project.findUniqueOrThrow({ where: { id: f.projectA.id } }), id: '__proto__', siteCode: `PROTO${run}`, orgId };
+    await t.prisma.project.deleteMany({ where: { id: '__proto__' } });
+    await t.prisma.project.create({ data: bare });
     try {
-      const off = (await inventoryProject(t.prisma, f.projectA.id)).deleteTriggers.Project.find((x) => x.trigger === first.trigger);
-      expect(off).toEqual({ trigger: first.trigger, enabled: 'D', firesInThisSession: false });
+      const inv = await inventoryProject(t.prisma, f.projectA.id);
+      const all = (await t.prisma.project.findMany({ select: { id: true } })).map((p) => p.id).sort();
+      expect(Object.keys(inv.byProject).filter((id) => inv.byProject[id]['Project.id']).sort(), 'every project row is in the proof').toEqual(all);
+      expect(Object.hasOwn(inv.byProject, '__proto__'), 'a database id is an entry, not the prototype').toBe(true);
+      expect(inv.byProject.__proto__['Project.id']).toEqual({ rows: 1, identity: expect.any(String) });
+      expect(JSON.parse(JSON.stringify(inv)).byProject.__proto__['Project.id'].rows, 'and it survives the export').toBe(1);
+      expect(inv.counts, "the target's own row is not one of its table counts").not.toHaveProperty('Project.id');
     } finally {
-      await t.prisma.$executeRawUnsafe(`ALTER TABLE "Project" ENABLE TRIGGER "${first.trigger}"`);
+      await t.prisma.project.deleteMany({ where: { id: '__proto__' } });
     }
+  });
+
+  it('follows a reference kept without a foreign key, and names every table no path reaches', async () => {
+    const inv = await inventoryProject(t.prisma, f.projectA.id);
+    const reached = new Set(['Project', ...inv.paths.map((p) => p.table)]);
+    expect(inv.paths.map((p) => p.key), 'a transition row is reached through its decision').toContain('_t4d_tx_transition.(decisionId)->Decision');
+    const unlinked = inv.unlinked.map((u) => u.table);
+    expect(unlinked).not.toContain('_t4d_tx_transition');
+    expect(unlinked.filter((u) => reached.has(u)), 'a reached table is not also listed as unlinked').toEqual([]);
+    const tables = (await t.prisma.$queryRawUnsafe<Array<{ table: string }>>(
+      `SELECT c.relname::text AS "table" FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = current_schema()
+        WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition`)).map((r) => r.table);
+    expect(tables.filter((tb) => !reached.has(tb) && !unlinked.includes(tb)), 'every table is either reached or listed').toEqual([]);
+    const org = inv.unlinked.find((u) => u.table === 'Org');
+    expect(org?.rows, 'an unlinked table carries its row count').toBeGreaterThanOrEqual(2);
   });
 
   it('runs on one repeatable-read snapshot, changes nothing, and a write inside it is refused', async () => {
