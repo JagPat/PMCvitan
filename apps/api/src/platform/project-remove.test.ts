@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { checkRemoval, deleteOrder, QA_EMAIL, strayUsers, type RemovalCheckInput, type TriggerState } from './project-remove';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { checkRemoval, deleteOrder, QA_EMAIL, reserveRecordPath, strayUsers, writeRemovalRecord, type RemovalCheckInput, type RemovalRecord, type TriggerState } from './project-remove';
 import type { ProjectInventory } from './project-inventory';
 
 /**
@@ -139,5 +142,21 @@ describe('QA_EMAIL', () => {
     for (const ok of ['qa.pmc@vitan.in', 'qa.consultant@vitan.in']) expect(QA_EMAIL.test(ok), ok).toBe(true);
     for (const no of ['jp@vitan.in', 'qa.pmc@vitan.in.evil', 'qa.pmc2@vitan.in', 'xqa.pmc@vitan.in', 'qa.@vitan.in', 'QA.pmc@vitan.in', 'qa.pmc@test.local'])
       expect(QA_EMAIL.test(no), no).toBe(false);
+  });
+});
+
+describe('the record file', () => {
+  it('is claimed before the run, owner-only and never over an existing file, then written whole', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rm-'));
+    const taken = join(dir, 'dry-run.json');
+    writeFileSync(taken, 'the dry run');
+    expect(() => reserveRecordPath(taken)).toThrow(/EEXIST/);
+    expect(readFileSync(taken, 'utf8')).toBe('the dry run');
+    const out = join(dir, 'commit.json');
+    const fd = reserveRecordPath(out);
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+    const record = { ok: true, mode: 'commit', outcome: 'committed', projectId: 'p' } as unknown as RemovalRecord;
+    writeRemovalRecord(record, fd);
+    expect(JSON.parse(readFileSync(out, 'utf8'))).toEqual(record);
   });
 });

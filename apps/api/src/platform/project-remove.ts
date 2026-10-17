@@ -1,5 +1,6 @@
+import { closeSync, fsyncSync, ftruncateSync, openSync, writeSync } from 'node:fs';
 import type { PrismaClient } from '@prisma/client';
-import { diffSnapshots, rowKeySql, snapshotTables, writeJsonAtomically, type TableChange, type TableSnapshot, type Tx } from './db-snapshot';
+import { diffSnapshots, rowKeySql, snapshotTables, type TableChange, type TableSnapshot, type Tx } from './db-snapshot';
 import { collectInventory, readCatalog, type ProjectInventory, type SnapshotIdentity, type StoredFile } from './project-inventory';
 
 /**
@@ -7,9 +8,10 @@ import { collectInventory, readCatalog, type ProjectInventory, type SnapshotIden
  * `project:inventory`), and prove it (comments 6239955975, 6240007524, 6240658704).
  *
  * Everything happens in ONE `SERIALIZABLE` transaction on one connection:
- *   1. refuse, before any write, unless the list rebuilt now matches the reviewed file key for key,
- *      every user it points at is a QA account (`QA_EMAIL`), and each user whose home project is
- *      the target already holds an active membership on the project they move to;
+ *   1. refuse, before any write, unless the target is archived, the list rebuilt now matches the
+ *      reviewed file key for key, every user whose home project is the target is a QA account
+ *      (`QA_EMAIL`) and already holds an active membership on the project they move to, and no
+ *      delivery of the project is leased by the relay (it may be mid-send);
  *   2. snapshot every table (`snapshotTables`) and the protected projects' inventories;
  *   3. move those users' home project, clear `lastProjectId` where it names the target, switch off
  *      the DELETE triggers of the tables being emptied, delete exactly the listed keys child-first,
@@ -262,6 +264,8 @@ export async function removeProject(prisma: PrismaClient, opts: RemovalOptions):
       if (!live.project) throw new Refusal(`project ${opts.projectId} does not exist in this database`);
       record.project = live.project;
       record.files = live.files;
+      // the command purges an archived project; a live one is never removed
+      if (!live.project.archivedAt) throw new Refusal(`project ${opts.projectId} is not archived`);
       const drift = sameInventory(file, live);
       if (drift.length) throw new Refusal(`the database no longer matches the reviewed list; take a fresh inventory. ${drift.join('; ')}`);
       // a user is pointed at the project, never removed with it: every listed `User` row must be one of them
@@ -288,6 +292,10 @@ export async function removeProject(prisma: PrismaClient, opts: RemovalOptions):
         const outside = home.filter((u) => !members.has(u.id));
         if (outside.length) throw new Refusal(`moving these users' home project would need a membership on ${opts.rehomeTo}: ${outside.map((u) => u.email).join(', ')}`);
       }
+      // a leased delivery may be mid-send to the outside world: deleting it cannot recall the send.
+      // A pending one is safe: the relay's lease is an UPDATE this transaction's delete conflicts with.
+      const leased = await tx.outboxDelivery.count({ where: { projectId: opts.projectId, status: 'leased' } });
+      if (leased) throw new Refusal(`${leased} outbox delivery(ies) of the project are leased by the relay and may be mid-send; run again once they settle`);
       const protectedBefore: ProjectInventory[] = [];
       for (const p of opts.protect) {
         const inv = await collectInventory(tx, id, p);
@@ -428,9 +436,25 @@ function fillDiff(
 }
 
 /**
- * Save the record owner-only and whole, never over an existing file (`writeJsonAtomically`). The
- * record is the deletion record: Board pastes it back for the coordinator to check.
+ * Claim the record's file before the run: created owner-only, never over an existing file, so a
+ * committed removal always has a place for its record. Throws, before anything runs, if it can't.
  */
-export function writeRemovalRecord(record: RemovalRecord, path: string): void {
-  writeJsonAtomically(record, path);
+export function reserveRecordPath(path: string): number {
+  return openSync(path, 'wx', 0o600);
+}
+
+/**
+ * Write the record whole into the file `reserveRecordPath` claimed. The record is the deletion
+ * record: Board pastes it back for the coordinator to check.
+ */
+export function writeRemovalRecord(record: RemovalRecord, fd: number): void {
+  try {
+    const data = Buffer.from(JSON.stringify(record, null, 2) + '\n');
+    ftruncateSync(fd, 0);
+    // a write may take only part of the buffer (a full disk does this without throwing)
+    for (let off = 0; off < data.length;) off += writeSync(fd, data, off, data.length - off, off);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }

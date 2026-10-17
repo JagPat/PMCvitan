@@ -2658,7 +2658,8 @@ record shows exactly what a commit would do. Run the dry run first, paste the re
 
 Everything happens in one `SERIALIZABLE` transaction, with a 10-second lock timeout:
 
-1. **Refusals, before any write.** It refuses if the list it rebuilds now differs from the
+1. **Refusals, before any write.** It refuses a target that is not archived: it purges an
+   archived project, never a live one. It refuses if the list it rebuilds now differs from the
    `--inventory` file, key for key, including its `userPointers`. It refuses if the file is for
    another project, database or schema. Users are never removed: it refuses if a listed `User` row
    is not one of the users whose home or last-used project is the target. It refuses if a user
@@ -2666,6 +2667,8 @@ Everything happens in one `SERIALIZABLE` transaction, with a 10-second lock time
    account goes to Board. A user whose last-used project alone is the target, of any email, only
    has `lastProjectId` cleared. Each user whose home project is the target must already hold an
    active membership on `--rehome-to`, which must be one of `--protect`, exist, and not be archived.
+   It refuses while the relay holds a lease on one of the project's outbox deliveries, since that
+   delivery may be mid-send; run it again once the lease settles.
 2. **Before.** Every table's keys (§DS) and each protected project's list (§PI).
 3. **Writes.** Users whose home project is the target move to `--rehome-to`. `lastProjectId` is
    cleared only where it names the target. Each DELETE trigger on a table being emptied is
@@ -2684,5 +2687,9 @@ Run it at a quiet time. The record holds per-table before/after counts, every re
 and added key by table, every listed user with the path that links it, the users moved,
 the unlinked tables with their counts, each protected project's result, the triggers switched
 off and the restore check, and the target's stored files. Object storage is not touched. The
-record is written owner-only and never over an existing file. Exit 0 means a dry run whose every
-check held, or a committed removal. Run it from the deployed image, like every operator CLI.
+`--out` file is claimed before the run, owner-only and never over an existing file: a path that
+is taken (such as the dry run's) exits 2 and runs nothing, so give `--commit` a new path. The
+record is printed, then saved. Exit 0 means a dry run whose every check held, or a committed
+removal. Exit 1 means nothing was changed. Exit 3 means the removal COMMITTED but saving the
+record failed: the printed record is the deletion record. Run it from the deployed image, like
+every operator CLI.

@@ -9,8 +9,9 @@ import { removeProject, type RemovalOptions } from '../../src/platform/project-r
  * #482 — step 3, the removal of one project by the list Board reviewed. A dry run changes nothing
  * and shows what a commit would do; a commit removes exactly the listed rows, moves QA users' home
  * project to a protected project they already belong to, and leaves every trigger as it was. It
- * refuses, before any write, a list that no longer matches the database, a non-QA account, a
- * user with no membership where they would move, and an archived destination.
+ * refuses, before any write, a target that is not archived, a list that no longer matches the
+ * database, a non-QA account, a user with no membership where they would move, an archived
+ * destination, and a delivery the relay holds a lease on.
  */
 describe('project:remove — one project, by the reviewed list (live PG)', () => {
   let t: TestApp;
@@ -26,6 +27,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
   // a staff account whose home is elsewhere and whose last-used project is the target (jp@ on #482)
   const staffId = `it-rm-staff-${run}`;
   const staffEmail = `staff.${run}@vitan.in`;
+  let streamPosition = 0;
 
   const opts = async (over: Partial<RemovalOptions> = {}): Promise<RemovalOptions> => ({
     projectId: f.projectA.id,
@@ -46,7 +48,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     await t.prisma.dailyLog.create({ data: { id: logId, projectId: a, date: '01 Jun 2026', logDate: new Date('2026-06-01') } });
     await t.prisma.crewRow.create({ data: { dailyLogId: logId, trade: 'Mason', count: 4, order: 0 } });
     // an append-only event of the project and a consumer's receipt for it, held with no foreign key
-    await insertRawEvent(t.prisma, { projectId: a, organizationId: f.orgA.id, eventId });
+    streamPosition = await insertRawEvent(t.prisma, { projectId: a, organizationId: f.orgA.id, eventId });
     await t.prisma.processedEvent.create({ data: { id: receipt, consumer: 'it-remove', eventId } });
   });
 
@@ -62,6 +64,14 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     }
     await f?.cleanup();
     await t?.close();
+  });
+
+  it('refuses a project that is not archived', async () => {
+    const r = await removeProject(t.prisma, await opts());
+    expect(r.outcome).toBe('refused');
+    expect(r.reason).toMatch(/is not archived/);
+    expect(await projectExists(f.projectA.id)).toBe(true);
+    await t.prisma.project.update({ where: { id: f.projectA.id }, data: { archivedAt: new Date() } });
   });
 
   it('refuses, changing nothing, while a non-QA account has the project as its home project', async () => {
@@ -105,12 +115,23 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     }
   });
 
+  it('refuses while the relay holds a lease on one of the project\'s deliveries (it may be mid-send)', async () => {
+    // the event's own delivery, as the relay holds it while it sends
+    const d = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { eventId, consumer: 'socket.invalidation' } });
+    await t.prisma.outboxDelivery.update({ where: { id: d.id }, data: { status: 'leased', leaseOwner: 'it-relay', leaseExpiresAt: new Date(Date.now() + 60_000) } });
+    const r = await removeProject(t.prisma, await opts());
+    expect(r.outcome).toBe('refused');
+    expect(r.reason).toMatch(/1 outbox delivery\(ies\) of the project are leased/);
+    // the relay lets it go; the removal then lists and removes it with the rest
+    await t.prisma.outboxDelivery.update({ where: { id: d.id }, data: { status: d.status, leaseOwner: d.leaseOwner, leaseExpiresAt: d.leaseExpiresAt } });
+  });
+
   it('dry run: does everything, every check holds, and nothing is changed', async () => {
     const o = await opts();
     const r = await removeProject(t.prisma, o);
     expect(r.failures).toEqual([]);
     expect(r).toMatchObject({ ok: true, mode: 'dry-run', outcome: 'rolled back' });
-    for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'DomainEvent', 'ProcessedEvent']) {
+    for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent']) {
       expect(r.removed[table], table).toEqual(o.inventory.keys[table]);
     }
     expect(Object.keys(r.added)).toEqual([]);
