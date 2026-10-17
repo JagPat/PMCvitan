@@ -2590,3 +2590,23 @@ Turn it off for one project (the rollback):
 Both are audited on the project's trail (`capability.enable` / `capability.disable`), each row naming the
 operator and carrying their reason. Re-running either for a switch already in that state writes nothing. People see the change the next time the app opens or reloads. `capability:disable` refuses every other
 capability. Run both from the deployed image, like every operator CLI (see the server-generation fence above).
+
+## §PI. Project inventory (read-only)
+
+Lists everything one project owns or is pointed at by, before any removal is designed (#482: the archived
+`qa-test-356a`). It changes nothing: the whole run is one read-only transaction, and it stops unless
+PostgreSQL confirms `transaction_read_only = on`.
+
+    pnpm --filter api project:inventory --project <id> --out <file.json>
+
+It finds the tables from the database catalog: every `projectId` column, every other key into
+`Project(id)`, and `User.lastProjectId`. `--out` receives the full export (each matching row, with byte
+columns as their length only), and the summary on stdout gives:
+
+- the target's row count per `table.column`;
+- the users whose home or last project it is;
+- each photo's storage key, or whether its bytes are in the database;
+- the delete triggers its tables carry;
+- the row counts for every project, so a later run can show that the others kept every row.
+
+`--out` refuses to overwrite an existing file. Run it from the deployed image, like every operator CLI.
