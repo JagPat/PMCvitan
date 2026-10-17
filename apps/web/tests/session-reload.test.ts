@@ -30,6 +30,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  window.history.replaceState(null, '', '/');
   vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.resetModules();
@@ -84,7 +85,7 @@ describe('#482 a reload keeps the person signed in', () => {
     globalThis.sessionStorage.setItem('vitan.session.v1', JSON.stringify({ token: valid, role: 'pmc', projectId: 'qa-test-d135' }));
     useStore.getState().restoreSession();
     const refused = Object.assign(new Error('/projects/qa-test-d135/snapshot 401'), { status: 401 });
-    useStore.getState()._setGateway({ snapshot: vi.fn().mockRejectedValue(refused) } as never);
+    useStore.getState()._setGateway({ authToken: valid, snapshot: vi.fn().mockRejectedValue(refused) } as never);
     useStore.getState().retryProjectLoad();
     await vi.waitFor(() => expect(useStore.getState().sessionToken).toBeNull());
     expect(globalThis.sessionStorage.getItem('vitan.session.v1')).toBeNull();
@@ -94,7 +95,7 @@ describe('#482 a reload keeps the person signed in', () => {
     const useStore = await freshStore();
     globalThis.sessionStorage.setItem('vitan.session.v1', JSON.stringify({ token: valid, role: 'pmc', projectId: 'qa-test-d135' }));
     useStore.getState().restoreSession();
-    useStore.getState()._setGateway({ snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
+    useStore.getState()._setGateway({ authToken: valid, snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
     useStore.getState().retryProjectLoad();
     await vi.waitFor(() => expect(useStore.getState().projectLoadState).toBe('error'));
     expect(useStore.getState().sessionToken).toBe(valid);
@@ -108,7 +109,7 @@ describe('#482 a restored session whose project is no longer the person\'s ends'
     globalThis.sessionStorage.setItem('vitan.session.v1', JSON.stringify({ token: valid, role: 'pmc', projectId: 'qa-test-d135' }));
     useStore.getState().restoreSession();
     const removed = Object.assign(new Error('/projects/qa-test-d135/snapshot 403'), { status: 403, serverMessage: 'Project access has been removed' });
-    useStore.getState()._setGateway({ snapshot: vi.fn().mockRejectedValue(removed) } as never);
+    useStore.getState()._setGateway({ authToken: valid, snapshot: vi.fn().mockRejectedValue(removed) } as never);
     useStore.getState().retryProjectLoad();
     await vi.waitFor(() => expect(useStore.getState().sessionToken).toBeNull());
     expect(globalThis.sessionStorage.getItem('vitan.session.v1')).toBeNull();
@@ -120,9 +121,62 @@ describe('#482 a restored session whose project is no longer the person\'s ends'
     useStore.getState().login('qa.pmc@vitan.in', 'pw');
     await vi.waitFor(() => expect(useStore.getState().sessionToken).toBe(valid));
     const removed = Object.assign(new Error('/projects/qa-test-d135/snapshot 403'), { status: 403 });
-    useStore.getState()._setGateway({ snapshot: vi.fn().mockRejectedValue(removed) } as never);
+    useStore.getState()._setGateway({ authToken: valid, snapshot: vi.fn().mockRejectedValue(removed) } as never);
     useStore.getState().retryProjectLoad();
     await vi.waitFor(() => expect(useStore.getState().projectLoadState).toBe('error'));
     expect(useStore.getState().sessionToken).toBe(valid);
+  });
+});
+
+describe('#948 Codex round 1', () => {
+  it('sign-out forgets the saved session at once, before the push unlink finishes (a reload then cannot restore it)', async () => {
+    const useStore = await freshStore();
+    globalThis.sessionStorage.setItem('vitan.session.v1', JSON.stringify({ token: valid, role: 'pmc', projectId: 'qa-test-d135' }));
+    useStore.getState().restoreSession();
+    // a push-capable browser whose unlink has not answered yet
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { ready: new Promise(() => {}) } });
+    Object.defineProperty(window, 'PushManager', { configurable: true, value: function PushManager() {} });
+    try {
+      useStore.getState()._setGateway({ authToken: valid } as never);
+      useStore.getState().signOut();
+      expect(globalThis.sessionStorage.getItem('vitan.session.v1')).toBeNull();
+      expect(useStore.getState().sessionToken).toBe(valid); // still held for the unlink request
+    } finally {
+      delete (navigator as { serviceWorker?: unknown }).serviceWorker;
+      delete (window as { PushManager?: unknown }).PushManager;
+    }
+  });
+
+  it('a refusal of the token an OLD gateway sent never signs out the session that replaced it', async () => {
+    const useStore = await freshStore();
+    globalThis.sessionStorage.setItem('vitan.session.v1', JSON.stringify({ token: valid, role: 'pmc', projectId: 'qa-test-d135' }));
+    useStore.getState().restoreSession();
+    const refused = Object.assign(new Error('/projects/qa-test-d135/snapshot 401'), { status: 401 });
+    useStore.getState()._setGateway({ authToken: expired, snapshot: vi.fn().mockRejectedValue(refused) } as never);
+    useStore.getState().retryProjectLoad();
+    await vi.waitFor(() => expect(useStore.getState().projectLoadState).toBe('error'));
+    expect(useStore.getState().sessionToken).toBe(valid);
+    expect(globalThis.sessionStorage.getItem('vitan.session.v1')).toContain(valid);
+  });
+
+  it('a reload keeps the screen the URL names', async () => {
+    window.history.replaceState(null, '', '/projects/qa-test-d135/places');
+    const useStore = await freshStore();
+    globalThis.sessionStorage.setItem('vitan.session.v1', JSON.stringify({ token: valid, role: 'pmc', projectId: 'qa-test-d135' }));
+    useStore.getState().restoreSession();
+    expect(useStore.getState().screen).toBe('places');
+  });
+
+  it('a link to another project, opened with a saved session, switches there once the gateway is in', async () => {
+    window.history.replaceState(null, '', '/projects/villa-b/decisions');
+    const useStore = await freshStore();
+    globalThis.sessionStorage.setItem('vitan.session.v1', JSON.stringify({ token: valid, role: 'pmc', projectId: 'qa-test-d135' }));
+    useStore.getState().restoreSession();
+    expect(useStore.getState().activeProjectId).toBe('qa-test-d135'); // the token's own project first
+    const switchProject = vi.fn().mockResolvedValue(true);
+    useStore.setState({ switchProject });
+    useStore.getState()._setGateway({ authToken: valid, snapshot: vi.fn(() => new Promise(() => {})) } as never);
+    await vi.waitFor(() => expect(switchProject).toHaveBeenCalledWith('villa-b', 'decision-log'));
+    expect(switchProject).toHaveBeenCalledTimes(1);
   });
 });

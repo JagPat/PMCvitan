@@ -587,6 +587,11 @@ export class ApiGateway {
     this.token = token;
   }
 
+  /** The token this gateway sends (#948: a refusal is judged against the token that was refused). */
+  get authToken(): string | null {
+    return this.token;
+  }
+
   /** POST to a public (no-auth) auth endpoint. */
   private pub<T>(path: string, body: unknown): Promise<T> {
     return this.req<T>(path, { method: 'POST', body: JSON.stringify(body) });

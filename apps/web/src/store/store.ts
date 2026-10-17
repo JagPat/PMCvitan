@@ -1422,6 +1422,8 @@ export const useStore = create<Store>()(
     let gateway: ApiGateway | null = null;
     /** the token a reload adopted from this tab's saved session (#482 6227430525), until another replaces it */
     let restoredToken: string | null = null;
+    /** the project a restored session's URL named when it is not the saved session's own (switched to on install) */
+    let restoreSwitchTarget: { projectId: string; screen: ScreenKey } | null = null;
     // #482 — decision publishes still on their way, per project scope (project + generation, which a
     // switch or sign-in moves), for the in-app guide's Publish step (see `issueDecision`)
     const decisionPublishesInFlight = new Map<string, number>();
@@ -2038,7 +2040,9 @@ export const useStore = create<Store>()(
       if (c.refreshInFlight) { c.refreshQueued = true; return; }
       c.refreshInFlight = true;
       const g = gateway;
-      const tokenAtStart = get().sessionToken;
+      // #948 Codex 4300725700 — the token THIS gateway carries, not the store's: a project switch adopts the new
+      // token before the old gateway is replaced, and a refusal of the old token must not end the new session
+      const tokenAtStart = g.authToken ?? null;
       const lease = beginSnapshotLease(scope);
       // the flag is the CURRENT scope's: a scope switched to carries only its own obligation
       if (scopeStillCurrent(scope)) publishCommandOwed(c);
@@ -2745,6 +2749,15 @@ export const useStore = create<Store>()(
     },
     _setGateway: (g) => {
       gateway = g;
+      // #948 Codex 4300725705 — a restored session opened on a link to ANOTHER project switches there once the
+      // authenticated gateway is in (after this install's own refresh starts; the switch supersedes it)
+      const target = restoreSwitchTarget;
+      if (g && target && get().sessionToken === restoredToken) {
+        restoreSwitchTarget = null;
+        setTimeout(() => {
+          if (gateway === g && get().sessionToken === restoredToken) void get().switchProject(target.projectId, target.screen);
+        }, 0);
+      }
     },
     restoreSession: () => {
       // #482 6227430525 — a reload adopts the session this tab saved, through the one adoption path, so a
@@ -2752,8 +2765,12 @@ export const useStore = create<Store>()(
       if (!API_BASE || DEV_AUTH || get().sessionToken !== null) return false;
       const saved = loadSession();
       if (!saved) return false;
-      applyAuthResult(saved, { quiet: true });
+      // the screen the URL names (`initialScreen`) survives the adoption, as a deep link does
+      const screen = get().screen;
+      const urlProject = typeof window !== 'undefined' ? parseLocation(window.location.pathname).projectId : null;
+      applyAuthResult(saved, { quiet: true, targetScreen: screen });
       restoredToken = saved.token;
+      restoreSwitchTarget = urlProject && saved.projectId && urlProject !== saved.projectId ? { projectId: urlProject, screen } : null;
       return true;
     },
     serverGateway: () => gateway,
@@ -2824,6 +2841,10 @@ export const useStore = create<Store>()(
      * With dev auth off, the AppShell auth-gate then shows the sign-in screen.
      */
     signOut: () => {
+      // #948 Codex 4300725697 — forget the tab's saved session at once: a reload during the bounded push unlink
+      // below must not restore the session being signed out (the in-memory token stays for the unlink request)
+      clearSession();
+      restoreSwitchTarget = null;
       // Phase 6 task 4b (§A.3 round 13) — UNLINK this browser's push subscription BEFORE the
       // token clears (the request needs the still-valid session): a shared device must not keep
       // receiving the departing user's decider-targeted content. Round-1 Codex F1: the handoff
@@ -2853,6 +2874,7 @@ export const useStore = create<Store>()(
      *  push-capable browser (round-1 Codex F1) while every other environment stays synchronous. */
     completeSignOut: () => {
       clearSession();
+      restoreSwitchTarget = null;
       set((s) => {
         s.sessionToken = null;
         s.userName = null;
