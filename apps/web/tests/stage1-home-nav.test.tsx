@@ -138,4 +138,36 @@ describe('the rendered bar and rail', () => {
     // the main items come before More's toggle, so Site Map is on the rail itself, not folded inside More
     expect(site.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
+
+  // #482 6227430525 (N4 at 1280 px) — the rail read "Dashboard / For You / Daily Site Log / Site Map" for both
+  // roles while the phone bars read Home · For You · Site Log and Home · Today · Site: one layout now
+  const railMain = (r: ReturnType<typeof render>) => {
+    const nav = r.container.querySelector('nav')!;
+    const more = r.getByTestId('rail-more');
+    return [...nav.querySelectorAll('button')]
+      .filter((b) => b.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .map((b) => b.textContent!.replace(/\d+$/, ''));
+  };
+  it.each([
+    ['engineer', 'en', ['Home', 'Today', 'Site', 'Site Map']],
+    ['pmc', 'en', ['Home', 'For You', 'Site Log', 'Site Map']],
+    ['engineer', 'hi', ['होम', 'आज', 'साइट', 'जगहें']],
+    ['pmc', 'gu', ['હોમ', 'તમારા માટે', 'સાઇટ લોગ', 'સ્થળો']],
+  ] as const)('switch on: the %s’s rail (%s) reads the phone bar’s words in its order', async (role, lang, words) => {
+    const { useStore, LeftRail, BottomTabs } = await loadNav({ role, lang, capabilities: [HOME_NAV_CAPABILITY] });
+    const rail = railMain(render(<LeftRail />));
+    expect(rail).toEqual(words);
+    const bar = render(<BottomTabs />);
+    for (const [i, key] of ['dashboard', 'inbox', 'daily-log', 'places'].entries()) {
+      expect(bar.getByTestId(`tab-${key}`).textContent!.replace(/\d+$/, '')).toBe(rail[i]);
+    }
+    void useStore;
+  });
+
+  it('switch off: the English rail keeps the full screen names', async () => {
+    const { LeftRail } = await loadNav({ role: 'pmc' });
+    const r = render(<LeftRail />);
+    expect(r.getByRole('button', { name: /^Daily Site Log/ })).toBeInTheDocument();
+    expect(r.queryByRole('button', { name: /^Site Log/ })).not.toBeInTheDocument();
+  });
 });

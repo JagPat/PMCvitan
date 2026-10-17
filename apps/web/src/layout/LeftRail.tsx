@@ -54,7 +54,7 @@ export function LeftRail() {
     if (activeMoreKey) setMoreOpen(true);
   }, [activeMoreKey]);
 
-  const navButton = (n: NavItem) => (
+  const navButton = (n: NavItem, isPrimary = false) => (
     <button
       key={n.key}
       onClick={() => setScreen(n.key)}
@@ -64,8 +64,10 @@ export function LeftRail() {
       <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <n.icon size={16} />
         {/* the rail follows the language switch above it: English keeps the full screen
-            names, hi/gu read the same words as the phone's tab bar */}
-        {lang === 'en' ? n.label : navLabelFor(n.key, role, lang, homeNav)}
+            names, hi/gu read the same words as the phone's tab bar. With the project's home-nav
+            switch on (Stage 1 H1, #482 6227430525 N4) the main items read the phone bar's words in
+            English too, so desktop and phone show one layout; the screens under More keep theirs. */}
+        {lang !== 'en' || (homeNav && isPrimary) ? navLabelFor(n.key, role, lang, homeNav) : n.label}
       </span>
       {n.badge > 0 && <span className={n.active ? `${styles.badge} ${styles.badgeActive}` : styles.badge}>{n.badge}</span>}
     </button>
@@ -113,7 +115,7 @@ export function LeftRail() {
 
       <nav className={`${styles.nav} vscroll`}>
         <div className={styles.navLabel}>{shellLabels.screens[lang]}</div>
-        {primary.map(navButton)}
+        {primary.map((n) => navButton(n, true))}
         {secondary.length > 0 && (
           <>
             <button
@@ -133,7 +135,7 @@ export function LeftRail() {
                 <ChevronDown size={14} style={{ transform: moreOpen ? 'rotate(180deg)' : undefined }} aria-hidden="true" />
               )}
             </button>
-            {moreOpen && <div id="rail-more-items">{secondary.map(navButton)}</div>}
+            {moreOpen && <div id="rail-more-items">{secondary.map((n) => navButton(n))}</div>}
           </>
         )}
       </nav>
