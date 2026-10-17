@@ -70,7 +70,7 @@ export function rowKeySql(key: string[] | null, alias: string): string {
   return key ? `jsonb_build_array(${key.map((c) => `${alias}.${q(c)}::text`).join(', ')})::text` : `md5(to_jsonb(${alias})::text)`;
 }
 
-type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
+export type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
 export async function snapshotDatabase(prisma: PrismaClient): Promise<DatabaseSnapshot> {
   return prisma.$transaction(
@@ -85,31 +85,41 @@ export async function snapshotDatabase(prisma: PrismaClient): Promise<DatabaseSn
       if (ro !== 'on' || iso !== 'repeatable read') {
         throw new Error(`refusing to run: the transaction is not a repeatable-read, read-only one (${iso}, read_only=${ro})`);
       }
-      const tables = await tx.$queryRawUnsafe<Array<{ table: string; key: string[] | null }>>(`
-        SELECT c.relname::text AS "table",
-               (SELECT array_agg(a.attname::text ORDER BY k.ord)
-                  FROM pg_index i
-                  CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
-                  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
-                 WHERE i.indrelid = c.oid AND i.indisprimary) AS key
-          FROM pg_class c
-          JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = current_schema()
-         WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition
-         ORDER BY 1`);
-      // keyed by table name with no prototype, so no table name can resolve to an inherited property
-      const out: Record<string, TableSnapshot> = Object.create(null);
-      for (const { table, key } of tables) {
-        const rid = rowKeySql(key, 't');
-        // the digest beside each key shows a row kept under its key with different contents
-        const [{ keys, digests }] = await tx.$queryRawUnsafe<Array<{ keys: string[] | null; digests: string[] | null }>>(
-          `SELECT array_agg(rid ORDER BY rid COLLATE "C", dig COLLATE "C") AS keys, array_agg(dig ORDER BY rid COLLATE "C", dig COLLATE "C") AS digests
-             FROM (SELECT ${rid} AS rid, md5(to_jsonb(t)::text) AS dig FROM ${q(table)} t) s`);
-        out[table] = { rows: keys?.length ?? 0, key, keys: keys ?? [], digests: digests ?? [] };
-      }
-      return { readOnlyVerified: true as const, snapshot: 'repeatable read' as const, takenAt, database, schema, tables: out };
+      const tables = await snapshotTables(tx);
+      return { readOnlyVerified: true as const, snapshot: 'repeatable read' as const, takenAt, database, schema, tables };
     },
     { timeout: 600_000, maxWait: 30_000 },
   );
+}
+
+/**
+ * Every table's row keys and digests, read in `tx`'s snapshot. `snapshotDatabase` calls it in a
+ * read-only transaction; the removal command calls it inside its own transaction, before and after
+ * the delete, so both snapshots come from one connection in that order.
+ */
+export async function snapshotTables(tx: Tx): Promise<Record<string, TableSnapshot>> {
+  const list = await tx.$queryRawUnsafe<Array<{ table: string; key: string[] | null }>>(`
+    SELECT c.relname::text AS "table",
+           (SELECT array_agg(a.attname::text ORDER BY k.ord)
+              FROM pg_index i
+              CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
+              JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+             WHERE i.indrelid = c.oid AND i.indisprimary) AS key
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = current_schema()
+     WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition
+     ORDER BY 1`);
+  // keyed by table name with no prototype, so no table name can resolve to an inherited property
+  const out: Record<string, TableSnapshot> = Object.create(null);
+  for (const { table, key } of list) {
+    const rid = rowKeySql(key, 't');
+    // the digest beside each key shows a row kept under its key with different contents
+    const [{ keys, digests }] = await tx.$queryRawUnsafe<Array<{ keys: string[] | null; digests: string[] | null }>>(
+      `SELECT array_agg(rid ORDER BY rid COLLATE "C", dig COLLATE "C") AS keys, array_agg(dig ORDER BY rid COLLATE "C", dig COLLATE "C") AS digests
+         FROM (SELECT ${rid} AS rid, md5(to_jsonb(t)::text) AS dig FROM ${q(table)} t) s`);
+    out[table] = { rows: keys?.length ?? 0, key, keys: keys ?? [], digests: digests ?? [] };
+  }
+  return out;
 }
 
 /** Count each key, so identical rows of a table without a primary key are compared as a multiset. */

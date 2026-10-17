@@ -2643,3 +2643,42 @@ project that does not exist. The removal command (step 3) checks every key it re
 against this list and fails loudly on any key that is not on it, so a table this list misses stops
 the removal rather than being deleted unseen. Run it from the deployed image, like every operator
 CLI.
+
+## §PR. Project removal (step 3)
+
+Removes one project by the list Board reviewed (§PI), and prints and saves the deletion record
+(#482: the archived `qa-test-356a`, rulings 6237197604, 6240007524 and 6240658704).
+
+    pnpm --filter api project:remove --project <id> --inventory <b2.json> \
+      --protect <id,id,...> [--rehome-to <id>] --out <record.json> [--commit]
+
+Without `--commit` it is a **dry run**: it does everything below, then always rolls back, and the
+record shows exactly what a commit would do. Run the dry run first, paste the record back, and run
+`--commit` only when the coordinator sends it.
+
+Everything happens in one `SERIALIZABLE` transaction, with a 10-second lock timeout:
+
+1. **Refusals, before any write.** It refuses if the list it rebuilds now differs from the
+   `--inventory` file, key for key, including its `userPointers`. It refuses if the file is for
+   another project, database or schema. It refuses if any user pointing at the project has an
+   email other than `^qa\.[a-z]+@vitan\.in$`: a real account goes to Board. Each user whose home
+   project is the target must already hold an active membership on `--rehome-to`, which must be
+   one of `--protect`, exist, and not be archived.
+2. **Before.** Every table's keys (§DS) and each protected project's list (§PI).
+3. **Writes.** Users whose home project is the target move to `--rehome-to`. `lastProjectId` is
+   cleared only where it names the target. Each DELETE trigger on a table being emptied is
+   switched off inside the transaction. Exactly the listed keys are deleted, child tables first.
+   The triggers are switched back on as they were, and deferred constraints are checked at once.
+4. **Checks.** Removed keys equal the list, table by table. The only changed rows are the users it
+   moved. No row is added. No protected project loses or changes a row. Every trigger in the
+   schema has the same mode and definition as before.
+5. **Commit** only with `--commit` and every check passed. Otherwise it rolls back, and the record
+   names each failed check.
+
+Switching a trigger off takes an exclusive lock on its table until the run ends, so other
+sessions wait on those tables while it runs. No other session can write past a switched-off guard.
+Run it at a quiet time. The record holds per-table before/after counts, every removed, changed
+and added key by table, the users moved, each protected project's result, the triggers switched
+off and the restore check, and the target's stored files. Object storage is not touched. The
+record is written owner-only and never over an existing file. Exit 0 means a dry run whose every
+check held, or a committed removal. Run it from the deployed image, like every operator CLI.
