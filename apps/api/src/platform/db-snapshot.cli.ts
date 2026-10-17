@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { PrismaService } from '../prisma.service';
-import { diffSnapshots, snapshotDatabase, writeJsonAtomically, type DatabaseSnapshot } from './db-snapshot';
+import { assertSameDatabase, diffSnapshots, snapshotDatabase, writeJsonAtomically, type DatabaseSnapshot } from './db-snapshot';
 
 /**
  * #482 — the read-only snapshot of every table's row keys, and the comparison of two (see
@@ -12,7 +12,8 @@ import { diffSnapshots, snapshotDatabase, writeJsonAtomically, type DatabaseSnap
  * `snapshot` writes the snapshot to `--out` (owner-only, never over an existing file, never left
  * half-written) and prints each table's row count. It changes nothing in the database: the run is
  * one repeatable-read, read-only transaction. `diff` reads two snapshot files, touches no database,
- * and prints every table whose rows differ with the exact keys removed and added.
+ * refuses files from different databases, and prints every table whose rows differ with the exact
+ * keys removed, added, and kept with different contents.
  */
 function parseFlags(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -25,7 +26,9 @@ function parseFlags(argv: string[]): Record<string, string> {
 
 function readSnapshot(path: string): DatabaseSnapshot {
   const s = JSON.parse(readFileSync(path, 'utf8')) as DatabaseSnapshot;
-  if (s?.readOnlyVerified !== true || typeof s.tables !== 'object' || s.tables === null) throw new Error(`${path} is not a db:snapshot file`);
+  const tablesOk = typeof s?.tables === 'object' && s.tables !== null
+    && Object.values(s.tables).every((t) => Array.isArray(t?.keys) && Array.isArray(t.digests) && t.keys.length === t.digests.length);
+  if (s?.readOnlyVerified !== true || typeof s.database !== 'string' || typeof s.schema !== 'string' || !tablesOk) throw new Error(`${path} is not a db:snapshot file`);
   return s;
 }
 
@@ -51,8 +54,9 @@ async function main(): Promise<void> {
     try {
       const before = readSnapshot(f.before);
       const after = readSnapshot(f.after);
+      assertSameDatabase(before, after);
       const changes = diffSnapshots(before, after);
-      process.stdout.write(JSON.stringify({ ok: true, before: before.takenAt, after: after.takenAt, tablesChanged: changes.length, changes }, null, 2) + '\n');
+      process.stdout.write(JSON.stringify({ ok: true, database: before.database, schema: before.schema, before: before.takenAt, after: after.takenAt, tablesChanged: changes.length, changes }, null, 2) + '\n');
     } catch (e) {
       process.stderr.write(`db:snapshot-diff: ${(e as Error).message}\n`);
       process.exitCode = 1;

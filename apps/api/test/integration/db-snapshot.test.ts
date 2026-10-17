@@ -33,6 +33,7 @@ describe('db:snapshot — every table, read-only (live PG)', () => {
     const before = new Date(Date.now() - 60_000);
     const snap = await snapshotDatabase(t.prisma);
     expect(snap.readOnlyVerified).toBe(true);
+    expect(snap.schema).toBe('public');
     expect(new Date(snap.takenAt).getTime()).toBeGreaterThan(before.getTime());
     const tables = (await t.prisma.$queryRawUnsafe<Array<{ table: string }>>(
       `SELECT c.relname::text AS "table" FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = current_schema()
@@ -42,25 +43,29 @@ describe('db:snapshot — every table, read-only (live PG)', () => {
       const [{ n }] = await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM "${table}"`);
       expect(snap.tables[table].rows, table).toBe(n);
       expect(snap.tables[table].keys, table).toHaveLength(n);
+      expect(snap.tables[table].digests, table).toHaveLength(n);
     }
     expect(snap.tables.Project.key).toEqual(['id']);
     expect(snap.tables.Project.keys).toContain(JSON.stringify([f.projectA.id]));
     expect(snap.tables.Membership.keys.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('shows exactly the rows that changed, including a receipt that has no foreign key to any project', async () => {
+  it('shows exactly the rows that changed, contents included, and a receipt that has no foreign key to any project', async () => {
     const before = await snapshotDatabase(t.prisma);
     const node = await t.prisma.projectNode.create({ data: { projectId: f.projectA.id, name: 'Zone', kind: 'zone' } });
     await t.prisma.processedEvent.create({ data: { id: receipt, consumer: 'it-snapshot', eventId: `evt-${run}` } });
     const after = await snapshotDatabase(t.prisma);
     const changes = diffSnapshots(before, after).filter((c) => c.table === 'ProjectNode' || c.table === 'ProcessedEvent');
     expect(changes).toEqual([
-      { table: 'ProcessedEvent', removed: [], added: [JSON.stringify([receipt])] },
-      { table: 'ProjectNode', removed: [], added: [JSON.stringify([node.id])] },
+      { table: 'ProcessedEvent', removed: [], added: [JSON.stringify([receipt])], changed: [] },
+      { table: 'ProjectNode', removed: [], added: [JSON.stringify([node.id])], changed: [] },
     ]);
+    await t.prisma.projectNode.update({ where: { id: node.id }, data: { name: 'Zone renamed' } });
+    const renamed = await snapshotDatabase(t.prisma);
+    expect(diffSnapshots(after, renamed).find((c) => c.table === 'ProjectNode')).toEqual({ table: 'ProjectNode', removed: [], added: [], changed: [JSON.stringify([node.id])] });
     await t.prisma.processedEvent.delete({ where: { id: receipt } });
     const back = await snapshotDatabase(t.prisma);
-    expect(diffSnapshots(after, back).find((c) => c.table === 'ProcessedEvent')).toEqual({ table: 'ProcessedEvent', removed: [JSON.stringify([receipt])], added: [] });
+    expect(diffSnapshots(renamed, back).find((c) => c.table === 'ProcessedEvent')).toEqual({ table: 'ProcessedEvent', removed: [JSON.stringify([receipt])], added: [], changed: [] });
   });
 
   it('is unchanged by a run of itself: two snapshots with nothing written between them are equal', async () => {
