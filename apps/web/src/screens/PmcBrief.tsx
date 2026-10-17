@@ -12,6 +12,7 @@ import {
   pmcBriefReviews,
   pmcBriefSince,
   pmcBriefSummary,
+  dashboardText,
   type Lang,
   type PmcBriefResult,
   type ScreenKey,
@@ -26,7 +27,7 @@ const LOCALE: Record<Lang, string> = { en: 'en-IN', hi: 'hi-IN', gu: 'gu-IN' };
  * `pmcBrief`; "Since yesterday" sums what moved; each project row opens that project. It shows no
  * schedule verdict and offers no nudge — no rule or command stands behind either yet.
  */
-export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactNode }) {
+export function PmcBrief({ brief, also, homeNav = false }: { brief: PmcBriefResult; also?: ReactNode; homeNav?: boolean }) {
   const lang = useStore((s) => s.lang);
   const short = useStore((s) => s.short);
   const activeProjectId = useStore((s) => s.activeProjectId);
@@ -34,7 +35,7 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
   const openItem = useStore((s) => s.openItem);
   const switchProject = useStore((s) => s.switchProject);
 
-  const view = useMemo(() => pmcBrief(brief.projects, Date.now()), [brief]);
+  const view = useMemo(() => pmcBrief(brief.projects, Date.now(), homeNav), [brief, homeNav]);
   const { digest } = view;
   // the site's today of the project on screen: every project carries its own civil today, and sites on
   // either side of a midnight disagree, so the header never borrows another site's date
@@ -85,6 +86,27 @@ export function PmcBrief({ brief, also }: { brief: PmcBriefResult; also?: ReactN
       ) : (
         <div className={styles.calm} data-testid="brief-clear">
           <CircleCheck size={22} aria-hidden /> {L.clear[lang]}
+        </div>
+      )}
+
+      {/* Stage 1 (#482 6227430525) — what the PMC follows up but cannot do: worded as the Dashboard tiles (H3) */}
+      {view.waiting.length > 0 && (
+        <div className={styles.block}>
+          <ul className={styles.tasks} data-testid="brief-waiting">
+            {view.waiting.map((t) => (
+              <li key={`${t.kind}-${t.projectId}`}>
+                <button className={styles.task} onClick={() => go(t.projectId, t.target, t.item)} data-testid={`brief-waiting-${t.kind}-${t.projectId}`}>
+                  <span className={styles.taskText}>
+                    <span className={styles.taskProject}>{t.short} · {dashboardText.waitingOn(t.kind === 'log' ? 'engineer' : 'client', lang)}</span>
+                    <span className={styles.taskWhat}>{taskText(t, lang)}</span>
+                  </span>
+                  <span className={styles.taskGo}>
+                    {taskAction(t, lang)} <ArrowRight size={18} aria-hidden />
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
