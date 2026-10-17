@@ -1,4 +1,5 @@
-import { writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, linkSync, openSync, unlinkSync, writeSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 
 /**
@@ -13,11 +14,13 @@ import type { PrismaClient } from '@prisma/client';
  *     through its `Inspection`, a `CrewRow` through its `DailyLog`), followed until nothing new
  *     appears. `User` is never followed: a user is pointed at a project, it is not owned by one.
  *
- * For the target it exports every row (byte columns as their length; exact numbers — bigint and
- * numeric — as strings, so no value is rounded), every user whose home or last project it is, and
- * every stored file (any table with a `storageKey` column). For every project it records, per
- * table, the row count and a hash of the sorted primary keys, so a later run proves no other
- * project lost or swapped a row.
+ * It is the itemised list and the before/after proof, not a row export (that is a separate unit).
+ * For the target: its row count per table, every user whose home or last project it is, every
+ * stored file (any table with a `storageKey` column) and every delete trigger with its enabled
+ * state. For every project, per table: the row count and a hash of the sorted primary keys, so a
+ * later run proves no other project lost or swapped a row. Every value is computed by PostgreSQL
+ * and comes back as a count, a hash, an id, a name or a flag: no row is read into JavaScript, so
+ * nothing can be rounded.
  *
  * Read-only is enforced by PostgreSQL, not by care: the whole run is one `REPEATABLE READ, READ
  * ONLY` transaction — one snapshot for every query, and any INSERT, UPDATE, DELETE or DDL fails —
@@ -53,16 +56,24 @@ export interface StoredFile {
   bytesInDatabase: boolean;
 }
 
+/** A trigger that fires on DELETE, with `pg_trigger.tgenabled` and whether it fires in this session. */
+export interface DeleteTrigger {
+  trigger: string;
+  /** O = fires (origin/local role), A = always, R = replica role only, D = disabled */
+  enabled: 'O' | 'A' | 'R' | 'D';
+  /** whether it fires under this session's `session_replication_role` */
+  firesInThisSession: boolean;
+}
+
 export interface ProjectInventory {
   projectId: string;
   readOnlyVerified: true;
   snapshot: 'repeatable read';
   takenAt: string;
-  project: Record<string, unknown> | null;
+  sessionReplicationRole: string;
+  project: { id: string; name: string; orgId: string; archivedAt: string | null } | null;
   /** every path by which a table can reach a project, from the catalog */
   paths: ProjectPath[];
-  /** the target's rows per path key; paths with none are left out */
-  rows: Record<string, Array<Record<string, unknown>>>;
   /** the target's row count per path key (non-zero only) */
   counts: Record<string, number>;
   /** every project's row count and identity hash per path key, for the before/after comparison */
@@ -71,8 +82,8 @@ export interface ProjectInventory {
   userPointers: Array<{ id: string; email: string; name: string; projectId: string; lastProjectId: string | null }>;
   /** the target's stored files: every row with a `storageKey` column, and where its bytes live */
   files: StoredFile[];
-  /** user triggers that fire on DELETE, per table holding target rows (what a delete would meet) */
-  deleteTriggers: Record<string, string[]>;
+  /** triggers that fire on DELETE, per table holding target rows (what a delete would meet) */
+  deleteTriggers: Record<string, DeleteTrigger[]>;
 }
 
 const q = (ident: string): string => `"${ident.replace(/"/g, '""')}"`;
@@ -104,7 +115,6 @@ export interface Catalog {
   edges: Array<{ child: string; columns: string[]; parent: string; parentColumns: string[] }>;
   primaryKeys: Map<string, string[]>;
   byteColumns: Map<string, string[]>;
-  exactColumns: Map<string, string[]>;
   columnsOf: Map<string, Set<string>>;
 }
 
@@ -149,16 +159,14 @@ async function readCatalog(tx: Tx): Promise<Catalog> {
      WHERE i.indisprimary
      GROUP BY c.relname`)) primaryKeys.set(r.table, r.columns);
   const byteColumns = new Map<string, string[]>();
-  const exactColumns = new Map<string, string[]>();
   const columnsOf = new Map<string, Set<string>>();
   for (const r of await tx.$queryRawUnsafe<Array<{ table: string; column: string; type: string }>>(`
     SELECT table_name AS "table", column_name AS "column", data_type AS type
       FROM information_schema.columns WHERE table_schema = current_schema()`)) {
     (columnsOf.get(r.table) ?? columnsOf.set(r.table, new Set()).get(r.table)!).add(r.column);
     if (r.type === 'bytea') byteColumns.set(r.table, [...(byteColumns.get(r.table) ?? []), r.column]);
-    if (r.type === 'bigint' || r.type === 'numeric') exactColumns.set(r.table, [...(exactColumns.get(r.table) ?? []), r.column]);
   }
-  return { direct, edges, primaryKeys, byteColumns, exactColumns, columnsOf };
+  return { direct, edges, primaryKeys, byteColumns, columnsOf };
 }
 
 /** Every path to a project: the direct columns, then contained tables, breadth first until none is left. */
@@ -199,38 +207,18 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
     const cat = await readCatalog(tx);
     const paths = buildPaths(cat);
 
-    // byte columns become their length; exact numbers become strings (no JavaScript rounding)
-    const rowJson = (table: string, alias: string): string => {
-      const bytes = cat.byteColumns.get(table) ?? [];
-      const exact = cat.exactColumns.get(table) ?? [];
-      const strip = [...bytes, ...exact].map((b) => ` - ${lit(b)}`).join('');
-      const extra = [
-        `${lit('_table')}, ${lit(table)}`,
-        ...bytes.map((b) => `${lit(`${b}Bytes`)}, octet_length(${alias}.${q(b)})`),
-        ...exact.map((x) => `${lit(x)}, ${alias}.${q(x)}::text`),
-      ].join(', ');
-      return `(to_jsonb(${alias})${strip}) || jsonb_build_object(${extra})`;
-    };
     const identityOf = (table: string, alias: string): string => {
       const pk = cat.primaryKeys.get(table);
-      // a JSON array, so no key value can run into the next one
-      return pk ? `jsonb_build_array(${pk.map((c) => `${alias}.${q(c)}::text`).join(', ')})::text` : `md5((${rowJson(table, alias)})::text)`;
+      // a JSON array, so no key value can run into the next one; hashed whole when there is no key
+      return pk ? `jsonb_build_array(${pk.map((c) => `${alias}.${q(c)}::text`).join(', ')})::text` : `md5(to_jsonb(${alias})::text)`;
     };
 
-    const [project] = await tx.$queryRawUnsafe<Array<{ row: Record<string, unknown> }>>(
-      `SELECT ${rowJson('Project', 'p')} AS row FROM "Project" p WHERE p.id = $1`, projectId);
+    const [project] = await tx.$queryRawUnsafe<Array<NonNullable<ProjectInventory['project']>>>(
+      `SELECT id, name, "orgId", "archivedAt"::text AS "archivedAt" FROM "Project" WHERE id = $1`, projectId);
 
-    const rows: ProjectInventory['rows'] = {};
-    const counts: ProjectInventory['counts'] = {};
     const byProject: ProjectInventory['byProject'] = {};
     for (const path of paths) {
       const owner = projectOf(path, 't', paths);
-      const found = await tx.$queryRawUnsafe<Array<{ row: Record<string, unknown> }>>(
-        `SELECT ${rowJson(path.table, 't')} AS row FROM ${q(path.table)} t WHERE ${owner} = $1`, projectId);
-      if (found.length) {
-        rows[path.key] = found.map((f) => f.row);
-        counts[path.key] = found.length;
-      }
       const id = identityOf(path.table, 't');
       for (const g of await tx.$queryRawUnsafe<Array<{ projectId: string; n: number; identity: string }>>(
         `SELECT owner AS "projectId", count(*)::int AS n, md5(jsonb_agg(rid ORDER BY rid)::text) AS identity
@@ -239,6 +227,8 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
         (byProject[g.projectId] ??= {})[path.key] = { rows: g.n, identity: g.identity };
       }
     }
+    const counts: ProjectInventory['counts'] = Object.fromEntries(
+      Object.entries(byProject[projectId] ?? {}).map(([key, r]) => [key, r.rows]));
 
     const userPointers = await tx.$queryRawUnsafe<ProjectInventory['userPointers']>(
       `SELECT id, email, name, "projectId", "lastProjectId" FROM "User"
@@ -258,13 +248,17 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
     const deleteTriggers: ProjectInventory['deleteTriggers'] = {};
     const held = [...new Set(paths.filter((p) => p.key in counts).map((p) => p.table))];
     if (project) held.push('Project');
-    for (const r of await tx.$queryRawUnsafe<Array<{ table: string; trigger: string }>>(`
-      SELECT c.relname::text AS "table", t.tgname::text AS "trigger"
+    const [{ role }] = await tx.$queryRawUnsafe<Array<{ role: string }>>("SELECT current_setting('session_replication_role') AS role");
+    for (const r of await tx.$queryRawUnsafe<Array<{ table: string } & DeleteTrigger>>(`
+      SELECT c.relname::text AS "table", t.tgname::text AS "trigger", t.tgenabled::text AS enabled,
+             CASE t.tgenabled WHEN 'A' THEN true WHEN 'D' THEN false
+               WHEN 'R' THEN current_setting('session_replication_role') = 'replica'
+               ELSE current_setting('session_replication_role') <> 'replica' END AS "firesInThisSession"
         FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = current_schema()
        WHERE NOT t.tgisinternal AND (t.tgtype & 8) <> 0 AND c.relname = ANY($1::text[])
        ORDER BY 1, 2`, held)) {
-      (deleteTriggers[r.table] ??= []).push(r.trigger);
+      (deleteTriggers[r.table] ??= []).push({ trigger: r.trigger, enabled: r.enabled, firesInThisSession: r.firesInThisSession });
     }
 
     return {
@@ -272,9 +266,9 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
       readOnlyVerified: true as const,
       snapshot: 'repeatable read' as const,
       takenAt: new Date().toISOString(),
-      project: project?.row ?? null,
+      sessionReplicationRole: role,
+      project: project ?? null,
       paths,
-      rows,
       counts,
       byProject,
       userPointers,
@@ -285,11 +279,24 @@ export async function inventoryProject(prisma: PrismaClient, projectId: string):
 }
 
 /**
- * Save the full export. A missing project is refused before anything is written, so a mistyped id
- * or the wrong database never leaves a file that looks like evidence. The file is created new
- * (never overwritten) and readable by its owner only: it holds whole rows, credential hashes included.
+ * Save the inventory. A missing project is refused before anything is written, so a mistyped id or
+ * the wrong database never leaves a file that looks like evidence. The file is written whole to a
+ * private temporary file beside `path`, flushed to disk, and only then linked in at `path` — a link
+ * never replaces an existing file — so an interrupted run leaves no partial file at `path`.
  */
 export function writeInventoryExport(inv: ProjectInventory, path: string): void {
   if (!inv.project) throw new Error(`project ${inv.projectId} does not exist in this database; nothing written`);
-  writeFileSync(path, JSON.stringify(inv, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  const fd = openSync(tmp, 'wx', 0o600);
+  try {
+    try {
+      writeSync(fd, JSON.stringify(inv, null, 2) + '\n');
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    linkSync(tmp, path);
+  } finally {
+    unlinkSync(tmp);
+  }
 }

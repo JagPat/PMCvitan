@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, readFileSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
@@ -8,9 +8,9 @@ import { buildPaths, inventoryProject, readOnlyTransaction, writeInventoryExport
 
 /**
  * #482 — the inventory Board runs before removing the archived QA project. It must find every table
- * that can hold the project's id, export the target's rows (photo bytes as a length only), list the
- * users pointing at it and its storage keys, count every other project for the before/after proof,
- * and be unable to change anything.
+ * that can hold the project's id, count the target's rows, list the users pointing at it, its storage
+ * keys and the delete triggers it would meet, count and hash every project for the before/after
+ * proof, read no row into JavaScript, and be unable to change anything.
  */
 describe('project:inventory — read-only project inventory (live PG)', () => {
   let t: TestApp;
@@ -61,18 +61,15 @@ describe('project:inventory — read-only project inventory (live PG)', () => {
     expect(inv.paths.some((p) => p.via?.parent === 'User'), 'a user is never followed to its children').toBe(false);
   });
 
-  it("exports the target's rows, user pointers and storage keys, with photo bytes as a length only", async () => {
+  it("counts the target's rows and lists its user pointers and storage keys, with no row read out", async () => {
     const inv = await inventoryProject(t.prisma, f.projectA.id);
     expect(inv.readOnlyVerified).toBe(true);
-    expect(inv.project?.id).toBe(f.projectA.id);
+    expect(inv.project).toEqual({ id: f.projectA.id, name: expect.any(String), orgId: expect.any(String), archivedAt: null });
     expect(inv.counts['Membership.projectId']).toBe(2);
     expect(inv.counts['Media.projectId']).toBe(1);
     expect(inv.counts['ProjectNode.projectId']).toBe(1);
-    const media = inv.rows['Media.projectId'][0];
-    expect(media).not.toHaveProperty('data');
-    expect(media.dataBytes).toBe(3);
-    expect(media._table).toBe('Media');
-    expect(inv.counts['CrewRow.(dailyLogId)->DailyLog'], 'the contained crew row is exported').toBe(1);
+    expect(inv.counts['CrewRow.(dailyLogId)->DailyLog'], 'the contained crew row is counted').toBe(1);
+    expect(inv, 'no row values are carried, so none can be rounded').not.toHaveProperty('rows');
     expect(inv.files).toEqual(expect.arrayContaining([
       { table: 'Media', id: `it-media-${f.projectA.id}`, storageKey: null, url: null, bytesInDatabase: true },
       { table: 'DrawingRevision', id: revisionId, storageKey: 'drawings/a-1-a.pdf', url: null, bytesInDatabase: false },
@@ -88,7 +85,6 @@ describe('project:inventory — read-only project inventory (live PG)', () => {
     expect(inv.byProject[f.projectA.id]['CrewRow.(dailyLogId)->DailyLog'].rows).toBe(1);
     expect(inv.byProject[f.projectB.id]['Membership.projectId'].rows).toBe(1);
     expect(inv.byProject[f.projectB.id]).not.toHaveProperty('Media.projectId');
-    expect(inv.rows['Membership.projectId'].every((r) => r.projectId === f.projectA.id), 'only the target is exported').toBe(true);
     // same count, different row: the identity hash changes
     const before = inv.byProject[f.projectA.id]['ProjectNode.projectId'];
     const node = await t.prisma.projectNode.findFirstOrThrow({ where: { projectId: f.projectA.id, name: 'Zone' } });
@@ -124,30 +120,38 @@ describe('project:inventory — read-only project inventory (live PG)', () => {
     expect(second.identity).not.toBe(first.identity);
   });
 
-  it('keeps exact numbers exact: bigint and numeric are exported as strings', async () => {
-    // beyond 2^53: as a JavaScript number this would round to ...992
-    await t.prisma.membership.updateMany({ where: { projectId: f.projectA.id, userId: f.memberUser.id }, data: { approvalLimit: '9007199254740993.01' } });
-    const inv = await inventoryProject(t.prisma, f.projectA.id);
-    const member = inv.rows['Membership.projectId'].find((r) => r.userId === f.memberUser.id)!;
-    expect(member.approvalLimit).toBe('9007199254740993.01');
-  });
-
-  it('writes the export owner-only and never over an existing file, and refuses a missing project', async () => {
+  it('writes the export owner-only and whole, never over an existing file, and refuses a missing project', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'inv-'));
     const inv = await inventoryProject(t.prisma, f.projectA.id);
     const out = join(dir, 'a.json');
     writeInventoryExport(inv, out);
     expect(statSync(out).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(out, 'utf8')).projectId).toBe(f.projectA.id);
-    expect(() => writeInventoryExport(inv, out), 'never overwritten').toThrow();
+    // an existing file is never replaced, and the temporary file is cleaned up
+    const taken = join(dir, 'taken.json');
+    writeFileSync(taken, 'keep');
+    expect(() => writeInventoryExport(inv, taken)).toThrow(/EEXIST/);
+    expect(readFileSync(taken, 'utf8')).toBe('keep');
+    // a write that fails part-way (here: the destination directory is missing) leaves nothing behind
+    expect(() => writeInventoryExport(inv, join(dir, 'missing', 'c.json'))).toThrow();
     const missing = await inventoryProject(t.prisma, 'no-such-project');
     expect(() => writeInventoryExport(missing, join(dir, 'b.json'))).toThrow(/does not exist/);
-    expect(existsSync(join(dir, 'b.json')), 'nothing written').toBe(false);
+    expect(readdirSync(dir).sort(), 'only the finished export and the pre-existing file').toEqual(['a.json', 'taken.json']);
   });
 
-  it('names the delete triggers the target would meet', async () => {
+  it('names the delete triggers the target would meet, and whether each would fire', async () => {
     const inv = await inventoryProject(t.prisma, f.projectA.id);
-    expect(Object.keys(inv.deleteTriggers)).toContain('Project');
+    expect(inv.sessionReplicationRole).toBe('origin');
+    const [first] = inv.deleteTriggers.Project ?? [];
+    expect(first, 'Project carries a delete trigger').toBeTruthy();
+    expect(first).toMatchObject({ enabled: 'O', firesInThisSession: true });
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "Project" DISABLE TRIGGER "${first.trigger}"`);
+    try {
+      const off = (await inventoryProject(t.prisma, f.projectA.id)).deleteTriggers.Project.find((x) => x.trigger === first.trigger);
+      expect(off).toEqual({ trigger: first.trigger, enabled: 'D', firesInThisSession: false });
+    } finally {
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "Project" ENABLE TRIGGER "${first.trigger}"`);
+    }
   });
 
   it('runs on one repeatable-read snapshot, changes nothing, and a write inside it is refused', async () => {

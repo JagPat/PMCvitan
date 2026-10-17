@@ -2601,17 +2601,17 @@ snapshot, every write refused), and it stops unless PostgreSQL confirms both.
 
 It finds the tables from the database catalog: every `projectId` column, every other key into
 `Project(id)`, `User.lastProjectId`, and every table contained in one of those through a foreign key
-(followed until nothing new appears; a user is never followed to its children). `--out` receives the
-full export: each matching row, with byte columns as their length and bigint/numeric values as exact
-strings. The summary on stdout gives:
+(followed until nothing new appears; a user is never followed to its children). It gives:
 
 - the target's row count per path;
 - the users whose home or last project it is;
 - every stored file (any table with a `storageKey` column), and whether its bytes are in the database;
-- the delete triggers its tables carry;
+- the delete triggers its tables carry, each with `tgenabled` and whether it fires in this session;
 - every project's row count and primary-key hash per path, so a later run can show that the others
   kept every row, not only the same number of rows.
 
-The command refuses, writing nothing, when the project does not exist. The export is created new (never
-over an existing file) and readable by its owner only: it holds whole rows, credential hashes included.
+Every value is computed by PostgreSQL (counts, hashes, ids, names, flags); no row is read out, so
+nothing can be rounded. The full row export is a separate command. The command refuses, writing
+nothing, when the project does not exist. `--out` is written owner-only to a temporary file, flushed,
+then linked into place: it never replaces an existing file and is never left half-written.
 Run it from the deployed image, like every operator CLI.

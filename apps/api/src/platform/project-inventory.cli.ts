@@ -6,11 +6,11 @@ import { inventoryProject, writeInventoryExport } from './project-inventory';
  *
  *   pnpm --filter api project:inventory --project <id> --out <file.json>
  *
- * Writes the full export (every row, user pointer and stored file) to `--out`, readable by its owner
- * only, and prints a summary: the target's counts per table, its user pointers and files, the delete
- * triggers it would meet, and every project's row counts and identity hashes. Refuses, writing
- * nothing, when the project does not exist. It changes nothing in the database: the run is one
- * repeatable-read, read-only transaction.
+ * Writes the inventory to `--out` (owner-only, never over an existing file, never left half-written)
+ * and prints it: the target's counts per table, its user pointers and files, the delete triggers it
+ * would meet and whether each fires, and every project's row counts and identity hashes. Refuses,
+ * writing nothing, when the project does not exist. It changes nothing in the database: the run is
+ * one repeatable-read, read-only transaction.
  */
 function parseFlags(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -38,6 +38,8 @@ async function main(): Promise<void> {
       readOnlyVerified: inv.readOnlyVerified,
       snapshot: inv.snapshot,
       takenAt: inv.takenAt,
+      sessionReplicationRole: inv.sessionReplicationRole,
+      project: inv.project,
       export: f.out,
       pathsScanned: inv.paths.length,
       counts: inv.counts,
