@@ -2614,3 +2614,32 @@ different contents, by table) runs only inside the removal command, on the snaps
 itself on one connection before and after the delete. It does not decide which project a row
 belongs to, so a table with no foreign key to a project is covered like any other.
 Run it from the deployed image, like every operator CLI.
+
+## §PI. Project inventory (read-only)
+
+The itemised list of one project's rows (#482, B2: the archived `qa-test-356a`), taken before the
+removal so the removal can be checked against it.
+
+    pnpm --filter api project:inventory --project <id> --out <file.json>
+
+It runs in one `REPEATABLE READ, READ ONLY` transaction and stops unless PostgreSQL confirms both.
+The tables come from the database catalog: every `projectId` column, every other column with a
+foreign key to `Project`, and every table that hangs under one of those through a foreign key (a
+crew row under its daily log), however deep, stopping on a cycle. A `User` is never followed to its
+children. A reference the schema keeps without a foreign key is followed from a short hand-kept
+list (`LOGICAL_REFS`): today `_t4d_tx_transition.decisionId` to `Decision`, and
+`ProcessedEvent.eventId` to `DomainEvent` (a consumer's receipt for one of the project's events).
+
+The file holds, from that one snapshot:
+- `keys`: per table, every row of the project by the same key `db:snapshot` records (§DS), the
+  project's own `Project` row included, and `counts`, the number of keys per table;
+- `userPointers`: every user whose home or last project it is, with their key and email;
+- `files`: every stored file (any table with a `storageKey` column), and whether its bytes are in
+  the database;
+- `unlinked`: every table no path reaches, with its row count, to review by hand.
+
+`--out` is written owner-only, whole, and never over an existing file; nothing is written for a
+project that does not exist. The removal command (step 3) checks every key it removes or changes
+against this list and fails loudly on any key that is not on it, so a table this list misses stops
+the removal rather than being deleted unseen. Run it from the deployed image, like every operator
+CLI.

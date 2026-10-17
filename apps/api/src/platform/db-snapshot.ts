@@ -61,6 +61,15 @@ export interface TableChange {
 
 const q = (ident: string): string => `"${ident.replace(/"/g, '""')}"`;
 
+/**
+ * The SQL for row `alias`'s key, as every snapshot records it: a JSON array of each primary-key
+ * column's text, so no key value can run into the next one, or the md5 of the whole row for a table
+ * without a primary key. Anything that lists keys to compare with a snapshot builds them here.
+ */
+export function rowKeySql(key: string[] | null, alias: string): string {
+  return key ? `jsonb_build_array(${key.map((c) => `${alias}.${q(c)}::text`).join(', ')})::text` : `md5(to_jsonb(${alias})::text)`;
+}
+
 type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
 export async function snapshotDatabase(prisma: PrismaClient): Promise<DatabaseSnapshot> {
@@ -90,8 +99,7 @@ export async function snapshotDatabase(prisma: PrismaClient): Promise<DatabaseSn
       // keyed by table name with no prototype, so no table name can resolve to an inherited property
       const out: Record<string, TableSnapshot> = Object.create(null);
       for (const { table, key } of tables) {
-        // a JSON array of each column's text, so no key value can run into the next one
-        const rid = key ? `jsonb_build_array(${key.map((c) => `t.${q(c)}::text`).join(', ')})::text` : 'md5(to_jsonb(t)::text)';
+        const rid = rowKeySql(key, 't');
         // the digest beside each key shows a row kept under its key with different contents
         const [{ keys, digests }] = await tx.$queryRawUnsafe<Array<{ keys: string[] | null; digests: string[] | null }>>(
           `SELECT array_agg(rid ORDER BY rid COLLATE "C", dig COLLATE "C") AS keys, array_agg(dig ORDER BY rid COLLATE "C", dig COLLATE "C") AS digests
