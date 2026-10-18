@@ -6,6 +6,7 @@ import {
   decisionChip,
   decisionChipLabel,
   decisionStatusChipLabels,
+  inspectionReviewText,
   resultChip,
   type ActivityStatus,
   type DecisionStatus,
@@ -47,7 +48,8 @@ export function ActivityChip({ status, lang = 'en' }: { status: ActivityStatus; 
   );
 }
 
-export function ResultChip({ result }: { result: InspectionResult }) {
+/** `lang` is the caller's (English when not given, the chip's long-standing words). */
+export function ResultChip({ result, lang = 'en' }: { result: InspectionResult; lang?: Lang }) {
   const c = resultChip[result];
-  return <span style={{ ...base, background: c.bg, color: c.color }}>{result}</span>;
+  return <span style={{ ...base, background: c.bg, color: c.color }}>{inspectionReviewText.result(result, lang)}</span>;
 }

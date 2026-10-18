@@ -6,7 +6,7 @@ import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound, 
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { X, Plus } from '@/lib/icons';
 import { EmptyHint } from '@/guide/EmptyHint';
-import { swatch as swatchGradient, can, reviewItemText as RIT, type Checklist, type Review } from '@vitan/shared';
+import { swatch as swatchGradient, can, reviewItemText as RIT, inspectionReviewLabels as L, inspectionReviewText as T, servedDayIn, type Checklist, type Lang, type Review } from '@vitan/shared';
 import { resolveMediaUrl, inspectionsReadMode } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
 import { useUrlItem } from '@/lib/useUrlItem';
@@ -86,16 +86,16 @@ export function InspectionReviewScreen() {
   if (adopting) {
     return (
       <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-opening">
-        <Eyebrow>INSPECTION REVIEW</Eyebrow>
-        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Opening {adopting}…</div>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{T.opening(adopting, lang)}</div>
       </div>
     );
   }
   if (released || clearing) {
     return (
       <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-returning">
-        <Eyebrow>INSPECTION REVIEW</Eyebrow>
-        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Returning to the inspection queue…</div>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{L.returning[lang]}</div>
       </div>
     );
   }
@@ -105,8 +105,8 @@ export function InspectionReviewScreen() {
   if (routeReview && active?.id !== routeReview) {
     return (
       <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-opening">
-        <Eyebrow>INSPECTION REVIEW</Eyebrow>
-        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Opening {routeReview}…</div>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{T.opening(routeReview, lang)}</div>
       </div>
     );
   }
@@ -115,10 +115,10 @@ export function InspectionReviewScreen() {
   if (routeChecklist && !routeReview) {
     return (
       <div className={`${styles.screen} ${styles.mid}`} data-testid="routed-checklist">
-        <Eyebrow>INSPECTION REVIEW</Eyebrow>
-        <OutstandingChecklists items={openChecklists} focused={routeChecklist} />
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <OutstandingChecklists items={openChecklists} focused={routeChecklist} lang={lang} />
         <div style={{ marginTop: 18 }}>
-          <Button data-testid="routed-checklist-show-reviews" onClick={() => setRouteItem(null)}>Show inspections awaiting review</Button>
+          <Button data-testid="routed-checklist-show-reviews" onClick={() => setRouteItem(null)}>{L.showAwaiting[lang]}</Button>
         </div>
       </div>
     );
@@ -127,14 +127,14 @@ export function InspectionReviewScreen() {
     const failed = moduleOwned ? unavailable : projectLoadState === 'error';
     return (
       <div className={`${styles.screen} ${styles.mid}`} data-testid={failed ? 'inspections-unavailable' : 'inspections-loading'}>
-        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
         {failed ? (
           <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
-            <span>Couldn't load inspections — check your connection and access.</span>
-            <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+            <span>{L.loadFailed[lang]}</span>
+            <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>{L.retry[lang]}</Button>
           </div>
         ) : (
-          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading inspections…</div>
+          <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{L.loading[lang]}</div>
         )}
       </div>
     );
@@ -142,8 +142,8 @@ export function InspectionReviewScreen() {
   if (missingItem) {
     return (
       <div className={`${styles.screen} ${styles.mid}`}>
-        <Eyebrow>INSPECTION REVIEW</Eyebrow>
-        <ItemNotFound what="Inspection" id={missingItem} onShowAll={() => setRouteItem(null)} showAllLabel="Show all inspections" />
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <ItemNotFound what={L.what[lang]} id={missingItem} onShowAll={() => setRouteItem(null)} showAllLabel={L.showAll[lang]} lang={lang} />
       </div>
     );
   }
@@ -153,18 +153,18 @@ export function InspectionReviewScreen() {
   if (!active && reading) {
     return (
       <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-loading">
-        <Eyebrow>INSPECTION REVIEW</Eyebrow>
-        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading inspections…</div>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>{L.loading[lang]}</div>
       </div>
     );
   }
   if (!active && unavailable) {
     return (
       <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-unavailable">
-        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
-          <span>Couldn't load inspections — check your connection and access.</span>
-          <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+          <span>{L.loadFailed[lang]}</span>
+          <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>{L.retry[lang]}</Button>
         </div>
       </div>
     );
@@ -174,14 +174,14 @@ export function InspectionReviewScreen() {
     return (
       <div className={`${styles.screen} ${styles.mid}`}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <Eyebrow>INSPECTION REVIEW</Eyebrow>
+          <Eyebrow>{L.eyebrow[lang]}</Eyebrow>
           <NewChecklist />
         </div>
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
-          No inspections awaiting review. Submitted checklists and closing inspections land here.
+          {L.empty[lang]}
           <EmptyHint task="checklist" />
         </div>
-        <OutstandingChecklists items={openChecklists} focused={routeChecklist} />
+        <OutstandingChecklists items={openChecklists} focused={routeChecklist} lang={lang} />
       </div>
     );
   }
@@ -193,17 +193,17 @@ export function InspectionReviewScreen() {
   // and Approve steps down to a secondary button that asks first, so a failed item is never signed
   // off by a stray tap. With nothing failed the order is unchanged.
   const failedCount = review.items.filter((it) => it.result === 'FAIL').length;
-  const summary = review.decided ? 'Decision recorded ✓' : `${rejectedCount} item(s) marked for rejection`;
+  const summary = review.decided ? L.decided[lang] : T.marked(rejectedCount, lang);
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <Eyebrow>INSPECTION REVIEW{pendingCount > 1 ? ` · ${pendingCount} PENDING` : ''}</Eyebrow>
+        <Eyebrow>{L.eyebrow[lang]}{pendingCount > 1 ? T.pending(pendingCount, lang) : ''}</Eyebrow>
         <NewChecklist />
       </div>
 
       {reviews.length > 1 && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0 2px' }} role="group" aria-label="Review queue">
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '10px 0 2px' }} role="group" aria-label={L.queue[lang]}>
           {reviews.map((r) => {
             const on = r.id === review.id;
             return (
@@ -244,29 +244,30 @@ export function InspectionReviewScreen() {
             // Task 5: a closing review is the activity's SIGN-OFF — approving it is
             // what marks the named activity done, so say so up front
             <div data-testid="closing-signoff-label" style={{ display: 'inline-block', marginBottom: 7, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.08em', padding: '4px 10px', borderRadius: 14, background: '#E6ECF3', color: '#31567F', border: '1px solid #C4D3E4' }}>
-              CLOSING SIGN-OFF · {review.activityName ?? review.activityId ?? 'ACTIVITY'} — APPROVAL MARKS IT DONE
+              {T.closing(review.activityName ?? review.activityId ?? null, lang)}
             </div>
           )}
           <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' }}>{review.title}</div>
           {/* WHERE this inspection was carried out — the filed trail, tappable back to the
               Site Map. Falls back to the legacy free-text zone for a review with no node. */}
           <div style={{ marginTop: 7 }}>
-            <LocationContext nodeId={review.nodeId} fallback={review.zone} compact testId={`review-place-${review.id}`} />
+            <LocationContext nodeId={review.nodeId} fallback={review.zone} compact testId={`review-place-${review.id}`} lang={lang} />
           </div>
           <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 12.5, color: 'var(--muted)', flexWrap: 'wrap' }}>
-            <span>Submitted by {review.by}</span>
+            <span>{T.submittedBy(review.by, lang)}</span>
             <span>·</span>
-            <span>{review.date}</span>
+            {/* a served "18 Oct 2026" day reads in the viewer's calendar; any other text as recorded */}
+            <span>{servedDayIn(review.date, lang)}</span>
           </div>
         </div>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, padding: '5px 11px', border: '1px solid var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)', borderRadius: 20 }}>
-          {review.decided ? 'REVIEWED' : 'AWAITING REVIEW'}
+          {review.decided ? L.reviewed[lang] : L.awaiting[lang]}
         </div>
       </div>
 
       {review.items.length === 0 ? (
         <div style={{ color: 'var(--muted)', fontSize: 13.5, padding: '8px 0 4px' }}>
-          No checklist items were recorded for this inspection — approve to sign it off, or send it back for a re-inspection.
+          {L.noItems[lang]}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -277,19 +278,24 @@ export function InspectionReviewScreen() {
                 {/* the ACTUAL evidence photo when one is linked (Task 4); swatch = legacy placeholder */}
                 <div style={{ width: 130, height: 100, flex: 'none', borderRadius: 8, background: swatchGradient(it.swatch), position: 'relative', overflow: 'hidden' }}>
                   {(it.evidence?.length ?? 0) > 0 && (
-                    <img src={resolveMediaUrl(it.evidence![0])} alt={`Evidence — ${it.name}`} data-testid={`review-evidence-${i}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <img src={resolveMediaUrl(it.evidence![0])} alt={T.evidenceAlt(it.name, lang)} data-testid={`review-evidence-${i}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
                   )}
-                  {/* #482 F-C4.5 — the tag names attached photos; a placeholder swatch carries none */}
-                  {(it.evidence?.length ?? 0) > 0 && (
-                    <span data-testid={`review-photo-tag-${i}`} style={{ position: 'absolute', left: 6, bottom: 6, fontFamily: 'var(--font-mono)', fontSize: 8, color: 'rgba(255,255,255,.9)', background: 'rgba(0,0,0,.4)', padding: '1px 5px', borderRadius: 3 }}>
+                  {/* #482 F-C4.5 — the tag names attached photos. V-1018-1 — it is legible on any photo, and a
+                      photo-less item SAYS so, so its placeholder swatch is never read as a thumbnail */}
+                  {(it.evidence?.length ?? 0) > 0 ? (
+                    <span data-testid={`review-photo-tag-${i}`} style={{ position: 'absolute', left: 6, bottom: 6, fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 600, letterSpacing: '.04em', color: '#fff', background: 'rgba(0,0,0,.72)', padding: '2px 7px', borderRadius: 4 }}>
                       {RIT.photos(it.evidence!.length, lang)}
+                    </span>
+                  ) : (
+                    <span data-testid={`review-no-photo-${i}`} style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 8, fontSize: 12, fontWeight: 600, color: 'var(--muted)', background: 'rgba(255,255,255,.55)' }}>
+                      {L.noPhoto[lang]}
                     </span>
                   )}
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                     <span style={{ fontWeight: 600, fontSize: 15 }}>{it.name}</span>
-                    <ResultChip result={it.result} />
+                    <ResultChip result={it.result} lang={lang} />
                   </div>
                   <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>{it.note}</div>
                   {it.rejected && (
@@ -307,7 +313,7 @@ export function InspectionReviewScreen() {
                     data-testid={`review-reject-${i}`}
                     style={{ padding: '9px 14px', fontSize: 12, whiteSpace: 'nowrap', cursor: review.decided ? 'not-allowed' : 'pointer', opacity: review.decided ? 0.5 : 1 }}
                   >
-                    {it.rejected ? 'Rejected ✕' : 'Reject item'}
+                    {it.rejected ? L.rejected[lang] : L.reject[lang]}
                   </Button>
                 </div>
               </div>
@@ -327,40 +333,39 @@ export function InspectionReviewScreen() {
             // it, returning the activity to execution with a re-inspection. `Review` carries no
             // approved/rejected field, so the wording states what IS known and points at the
             // activity, where the outcome actually shows.
-            reason={review.closing
-              ? `Reviewed — the closing decision for ${review.activityName ?? review.activityId ?? 'this activity'} is recorded. Its outcome shows on that activity in the Schedule.`
-              : 'Reviewed — this inspection has been decided; its outcome and any re-inspection it created are recorded.'}
+            reason={review.closing ? T.decidedClosing(review.activityName ?? review.activityId ?? null, lang) : L.decidedReason[lang]}
             testId={`review-decided-${review.id}`}
           />
         ) : (
           <>
             {failedCount > 0 ? (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Send back for re-inspection</Button>
-                <Button variant="outline" onClick={() => setConfirmApproveId(review.id)} data-testid="approve-inspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Approve Inspection</Button>
+                <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
+                <Button variant="outline" onClick={() => setConfirmApproveId(review.id)} data-testid="approve-inspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
               </div>
             ) : (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Approve Inspection</Button>
-                <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Send back for re-inspection</Button>
+                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
+                <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
               </div>
             )}
             {confirmApproveId === review.id && failedCount > 0 && (
               <ConfirmDialog
-                title="Approve with failed items?"
-                confirmLabel="Approve anyway"
+                title={L.confirmTitle[lang]}
+                confirmLabel={L.confirmLabel[lang]}
+                lang={lang}
                 onConfirm={() => decide(approveInspection)}
                 onCancel={() => setConfirmApproveId(null)}
                 testId="confirm-approve"
               >
-                {failedCount === 1 ? '1 item failed' : `${failedCount} items failed`}. Approving signs this inspection off without a re-inspection.
+                {T.failedConfirm(failedCount, lang)}
               </ConfirmDialog>
             )}
             <div style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--faint)', marginTop: 9 }}>{summary}</div>
           </>
         )}
       </div>
-      <OutstandingChecklists items={openChecklists} focused={routeChecklist} />
+      <OutstandingChecklists items={openChecklists} focused={routeChecklist} lang={lang} />
     </div>
   );
 }
@@ -372,16 +377,14 @@ export function InspectionReviewScreen() {
  * and the PMC who issued them saw none of them. Shown with a count, so "how many are open"
  * is answerable from the screen the PMC issues them on.
  */
-function OutstandingChecklists({ items, focused }: { items: Checklist[]; focused: string | null }) {
+function OutstandingChecklists({ items, focused, lang }: { items: Checklist[]; focused: string | null; lang: Lang }) {
   useEffect(() => {
     if (focused) document.querySelector(`[data-testid="outstanding-checklist-${CSS.escape(focused)}"]`)?.scrollIntoView({ block: 'center' });
   }, [focused]);
   if (!items.length) return null;
   return (
     <div style={{ marginTop: 26 }} data-testid="outstanding-checklists">
-      <Eyebrow>
-        OUT ON SITE · {items.length} AWAITING THE ENGINEER
-      </Eyebrow>
+      <Eyebrow>{T.outOnSite(items.length, lang)}</Eyebrow>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
         {items.map((c) => (
           <div
@@ -392,8 +395,8 @@ function OutstandingChecklists({ items, focused }: { items: Checklist[]; focused
           >
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--faint)' }}>{c.id}</span>
             <span style={{ fontSize: 13.5, color: 'var(--ink)', flex: 1, minWidth: 160 }}>{c.title}</span>
-            <span style={{ fontSize: 12, color: 'var(--muted)' }}>{c.items.length} item{c.items.length === 1 ? '' : 's'}</span>
-            <LocationContext nodeId={c.nodeId} fallback={c.zone} />
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>{T.items(c.items.length, lang)}</span>
+            <LocationContext nodeId={c.nodeId} fallback={c.zone} lang={lang} />
           </div>
         ))}
       </div>
@@ -405,12 +408,13 @@ function OutstandingChecklists({ items, focused }: { items: Checklist[]; focused
  *  engineer fills in with photos, then submits back into this review queue. */
 function NewChecklist() {
   const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
   const [open, setOpen] = useState(false);
   if (!can('inspection.create', role)) return null;
   return (
     <>
       <Button variant="ink" onClick={() => setOpen(true)} data-testid="new-checklist" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5 }}>
-        <Plus size={15} /> New checklist
+        <Plus size={15} /> {L.newChecklist[lang]}
       </Button>
       {open && <IssueChecklistModal onClose={() => setOpen(false)} />}
     </>
