@@ -110,6 +110,18 @@ describe('#482 F-C4.1 — an engineer-failed item is sent back without an explic
     expect(after.placedInspections.find((i) => i.id === insp.id)).toMatchObject({ decided: true, failedItems: 1 });
   });
 
+  it('Approve anyway on an engineer-failed item keeps the failed count but claims no re-inspection', async () => {
+    const { p, pmc, eng } = await freshProject();
+    const insp = await submittedWithEngineerFail(p, pmc, eng);
+
+    await svc.decide(p, insp.id, { approve: true, rejectedItemIds: [] }, as(pmc, 'pmc', p));
+
+    expect(await childOf(p, insp.id)).toBeNull();
+    const after = await query.snapshotSlice(p, 'pmc', pmc);
+    expect(after.reinspectionCreated).toBe(false);
+    expect(after.placedInspections.find((i) => i.id === insp.id)).toMatchObject({ decided: true, failedItems: 1 });
+  });
+
   it('the explicit Reject path is unchanged, and adds to the engineer-failed item', async () => {
     const { p, pmc, eng } = await freshProject();
     const insp = await submittedWithEngineerFail(p, pmc, eng);

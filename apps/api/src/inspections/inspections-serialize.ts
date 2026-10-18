@@ -315,8 +315,10 @@ export function bakeInspections(
       }),
     );
 
-  // any inspection already decided with a rejected/failed item ⇒ re-inspection exists.
-  const reinspectionCreated = all.some((i) => i.decided && i.items.some(isFailedItem));
+  // any inspection already decided with a rejected/failed item ⇒ re-inspection exists. #482 F-C4.1 — NOT
+  // `isFailedItem`: an engineer's fail the PMC approved anyway is decided with no re-inspection, while a send-back
+  // marks every item it returns `rejected`, so a rejection (or a seeded FAIL) is the evidence one was created.
+  const reinspectionCreated = all.some((i) => i.decided && i.items.some((it) => it.rejected || it.result === 'FAIL'));
 
   // Location spine: every inspection with its place, for the Site-Map's "inspections here". pmc/engineer.
   const placedInspections: PlacedInspection[] = canSeeInspections
