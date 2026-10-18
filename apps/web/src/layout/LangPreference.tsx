@@ -8,6 +8,7 @@ import {
   readLangPreference,
   subscribeLangChoice,
   takeLangChoice,
+  writeDeviceLang,
   writeLangPreference,
 } from '@/lib/langPreference';
 
@@ -50,7 +51,7 @@ export function LangPreference() {
       // guest IS that person); a guest pick made inside a console never follows its identity change
       const noted = takeLangChoice();
       const chosen = noted && (noted.source === 'viewer' || applied.current === null) ? noted : null;
-      if (chosen) writeLangPreference(key, chosen.lang);
+      if (chosen) { writeLangPreference(key, chosen.lang); writeDeviceLang(chosen.lang); }
       const next = chosen?.lang ?? readLangPreference(key) ?? defaultLangFor(role);
       applied.current = { key, role, lang: next };
       guestLang.current = null;
@@ -65,6 +66,7 @@ export function LangPreference() {
       applied.current = { key, role, lang: noted.lang };
       guestLang.current = null;
       writeLangPreference(key, noted.lang);
+      writeDeviceLang(noted.lang);
       if (lang !== noted.lang) setLang(noted.lang);
       return;
     }

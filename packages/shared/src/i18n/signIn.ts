@@ -1,0 +1,134 @@
+/**
+ * #482 V-1018-6 — the email sign-in, the email code and the password setup screens in the gate's language. The
+ * phone sign-in already reads from `accessDict`; these screens were written in English only, so a person who
+ * chose Hindi or Gujarati met English as soon as they tapped "Sign in with email". English is byte-identical to
+ * the screens' original copy. Email addresses typed by the person are data and are shown as typed.
+ */
+import type { Lang } from '../domain/types';
+
+export const signInLabels = {
+  loginTitle: { en: 'Sign in', hi: 'साइन इन करें', gu: 'સાઇન ઇન કરો' },
+  loginSub: { en: 'Architect, client & contractor accounts', hi: 'आर्किटेक्ट, क्लाइंट और ठेकेदार के खाते', gu: 'આર્કિટેક્ટ, ક્લાયન્ટ અને કોન્ટ્રાક્ટરનાં ખાતાં' },
+  password: { en: 'Password', hi: 'पासवर्ड', gu: 'પાસવર્ડ' },
+  signIn: { en: 'Sign in', hi: 'साइन इन करें', gu: 'સાઇન ઇન કરો' },
+  setupLink: { en: 'Set up or forgot password', hi: 'पासवर्ड बनाएँ या भूल गए', gu: 'પાસવર્ડ બનાવો અથવા ભૂલી ગયા' },
+  setupTitle: { en: 'Set up or reset password', hi: 'पासवर्ड बनाएँ या बदलें', gu: 'પાસવર્ડ બનાવો અથવા બદલો' },
+  setupSub: { en: 'Use the email your administrator added to Vitan PMC.', hi: 'वही ईमेल डालें जो आपके एडमिन ने Vitan PMC में जोड़ा है।', gu: 'એ જ ઇમેઇલ નાખો જે તમારા એડમિને Vitan PMC માં ઉમેર્યો છે.' },
+  invitedEmail: { en: 'Invited email', hi: 'आमंत्रित ईमेल', gu: 'આમંત્રિત ઇમેઇલ' },
+  sendVerification: { en: 'Send verification code', hi: 'जाँच कोड भेजें', gu: 'ચકાસણી કોડ મોકલો' },
+  verifyTitle: { en: 'Verify your email', hi: 'अपना ईमेल जाँचें', gu: 'તમારો ઇમેઇલ ચકાસો' },
+  codePlaceholder: { en: '6-digit code', hi: '6 अंकों का कोड', gu: '6 આંકડાનો કોડ' },
+  verificationCode: { en: 'Verification code', hi: 'जाँच कोड', gu: 'ચકાસણી કોડ' },
+  sendNewCode: { en: 'Send a new code', hi: 'नया कोड भेजें', gu: 'નવો કોડ મોકલો' },
+  verifyEmail: { en: 'Verify email', hi: 'ईमेल जाँचें', gu: 'ઇમેઇલ ચકાસો' },
+  startAgain: { en: 'Start again', hi: 'फिर से शुरू करें', gu: 'ફરીથી શરૂ કરો' },
+  createTitle: { en: 'Create your password', hi: 'अपना पासवर्ड बनाएँ', gu: 'તમારો પાસવર્ડ બનાવો' },
+  createSub: { en: 'Use 12 to 128 characters. A long passphrase is acceptable.', hi: '12 से 128 अक्षर रखें। लंबा वाक्य भी चलेगा।', gu: '12 થી 128 અક્ષર રાખો. લાંબું વાક્ય પણ ચાલશે.' },
+  newPassword: { en: 'New password', hi: 'नया पासवर्ड', gu: 'નવો પાસવર્ડ' },
+  confirmPassword: { en: 'Confirm password', hi: 'पासवर्ड दोबारा डालें', gu: 'પાસવર્ડ ફરી નાખો' },
+  mismatch: { en: 'Passwords do not match.', hi: 'दोनों पासवर्ड एक जैसे नहीं हैं।', gu: 'બંને પાસવર્ડ સરખા નથી.' },
+  saving: { en: 'Saving password…', hi: 'पासवर्ड सहेज रहे हैं…', gu: 'પાસવર્ડ સાચવી રહ્યા છીએ…' },
+  saveAndSignIn: { en: 'Save password and sign in', hi: 'पासवर्ड सहेजें और साइन इन करें', gu: 'પાસવર્ડ સાચવો અને સાઇન ઇન કરો' },
+  emailTitle: { en: 'Sign in with email', hi: 'ईमेल से साइन इन करें', gu: 'ઇમેઇલથી સાઇન ઇન કરો' },
+  emailSub: { en: "We'll email you a 6-digit code", hi: 'हम आपको 6 अंकों का कोड ईमेल करेंगे', gu: 'અમે તમને 6 આંકડાનો કોડ ઇમેઇલ કરીશું' },
+  enterCode: { en: 'Enter the code', hi: 'कोड डालें', gu: 'કોડ નાખો' },
+} satisfies Record<string, Record<Lang, string>>;
+
+const pick = (lang: Lang, en: string, hi: string, gu: string): string => (lang === 'hi' ? hi : lang === 'gu' ? gu : en);
+
+export const signInText = {
+  /** the password-setup code screen; the address is the one the person typed */
+  verifyBody: (email: string, lang: Lang) => pick(lang,
+    `If ${email} is an invited Vitan PMC account, a 6-digit code is on its way. It can take a minute; check your spam folder too.`,
+    `अगर ${email} Vitan PMC का आमंत्रित खाता है, तो 6 अंकों का कोड आ रहा है। इसमें एक मिनट लग सकता है; स्पैम फ़ोल्डर भी देखें।`,
+    `જો ${email} Vitan PMC નું આમંત્રિત ખાતું હોય, તો 6 આંકડાનો કોડ આવી રહ્યો છે. તેમાં એક મિનિટ લાગી શકે; સ્પામ ફોલ્ડર પણ જુઓ.`),
+  addMore: (n: number, lang: Lang) => pick(lang,
+    `Add ${n} more ${n === 1 ? 'character' : 'characters'} to continue.`,
+    `आगे बढ़ने के लिए ${n} अक्षर और जोड़ें।`,
+    `આગળ વધવા ${n} અક્ષર વધુ ઉમેરો.`),
+  remove: (n: number, lang: Lang) => pick(lang,
+    `Remove ${n} ${n === 1 ? 'character' : 'characters'} to continue.`,
+    `आगे बढ़ने के लिए ${n} अक्षर हटाएँ।`,
+    `આગળ વધવા ${n} અક્ષર કાઢો.`),
+  /** the toast after a password is saved and the person is signed in */
+  passwordSaved: (lang: Lang) => pick(lang, 'Password saved. You are signed in.', 'पासवर्ड सहेज लिया। आप साइन इन हैं।', 'પાસવર્ડ સાચવ્યો. તમે સાઇન ઇન છો.'),
+};
+
+/**
+ * Why an email or password sign-in step failed, before it is put into words, so the gate words it in its
+ * current language (#886's rule for the phone sign-in, now for every sign-in screen). `{wait}` is a wait phrase.
+ */
+export type SignInErrorKey =
+  | 'enterEmailPassword' | 'demoEmails' | 'accessRemoved' | 'serverDown' | 'wrongPassword'
+  | 'invalidInvitedEmail' | 'setupNeedsServer' | 'passwordMismatch' | 'codeSendFailed' | 'setupWrongCode' | 'passwordLength'
+  | 'setupExpired' | 'passwordSaveFailed' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
+  | 'tooManySignIns' | 'tooManyCodes';
+
+export const signInErrors: Record<Lang, Record<SignInErrorKey, string> & { waitFew: string }> = {
+  en: {
+    enterEmailPassword: 'Enter your email and password.',
+    demoEmails: 'Demo: use pmc@ / client@ / contractor@vitan.in.',
+    accessRemoved: 'Your project access has been removed. Ask your PMC to re-add you.',
+    serverDown: 'The server could not sign you in right now. Try again in a minute.',
+    wrongPassword: 'Wrong email or password. Never set a password? Use “Set up or forgot password”.',
+    invalidInvitedEmail: 'Enter a valid invited email address.',
+    setupNeedsServer: 'Password setup needs the live server.',
+    codeSendFailed: 'Could not send the code. Please try again.',
+    setupWrongCode: 'Wrong or expired code. Request a new code and try again.',
+    passwordMismatch: 'Passwords do not match.',
+    passwordLength: 'Use a password between 12 and 128 characters.',
+    setupExpired: 'This setup link expired. Request a new code.',
+    passwordSaveFailed: 'Could not save the password. Request a new code and try again.',
+    invalidEmail: 'Enter a valid email address.',
+    emailSendFailed: 'Could not send the code — please try again.',
+    emailWrongCode: 'Wrong or expired code — try again.',
+    enterMobile: 'Enter a 10-digit mobile number.',
+    tooManySignIns: 'Too many sign-in attempts. {wait}, then try again.',
+    tooManyCodes: 'Too many code requests. {wait}, then try again.',
+    waitFew: 'Wait a few minutes',
+  },
+  hi: {
+    enterEmailPassword: 'अपना ईमेल और पासवर्ड डालें।',
+    demoEmails: 'डेमो: pmc@ / client@ / contractor@vitan.in डालें।',
+    accessRemoved: 'इस प्रोजेक्ट में आपकी पहुँच हटा दी गई है। अपने PMC से फिर जोड़ने को कहें।',
+    serverDown: 'सर्वर अभी आपको साइन इन नहीं कर सका। एक मिनट बाद फिर कोशिश करें।',
+    wrongPassword: 'ईमेल या पासवर्ड गलत है। कभी पासवर्ड नहीं बनाया? “पासवर्ड बनाएँ या भूल गए” दबाएँ।',
+    invalidInvitedEmail: 'सही आमंत्रित ईमेल पता डालें।',
+    setupNeedsServer: 'पासवर्ड बनाने के लिए लाइव सर्वर चाहिए।',
+    codeSendFailed: 'कोड नहीं भेज सके। फिर कोशिश करें।',
+    setupWrongCode: 'कोड गलत है या उसका समय निकल गया। नया कोड मँगाकर फिर कोशिश करें।',
+    passwordMismatch: 'दोनों पासवर्ड एक जैसे नहीं हैं।',
+    passwordLength: '12 से 128 अक्षर का पासवर्ड रखें।',
+    setupExpired: 'पासवर्ड बनाने का यह लिंक पुराना हो गया। नया कोड मँगाएँ।',
+    passwordSaveFailed: 'पासवर्ड सहेज नहीं सके। नया कोड मँगाकर फिर कोशिश करें।',
+    invalidEmail: 'सही ईमेल पता डालें।',
+    emailSendFailed: 'कोड नहीं भेज सके — फिर कोशिश करें।',
+    emailWrongCode: 'कोड गलत है या उसका समय निकल गया — फिर कोशिश करें।',
+    enterMobile: '10 अंकों का मोबाइल नंबर डालें।',
+    tooManySignIns: 'साइन इन की बहुत कोशिशें हुईं। {wait}, फिर कोशिश करें।',
+    tooManyCodes: 'बहुत बार कोड मँगाया गया। {wait}, फिर कोशिश करें।',
+    waitFew: 'कुछ मिनट रुकें',
+  },
+  gu: {
+    enterEmailPassword: 'તમારો ઇમેઇલ અને પાસવર્ડ નાખો.',
+    demoEmails: 'ડેમો: pmc@ / client@ / contractor@vitan.in નાખો.',
+    accessRemoved: 'આ પ્રોજેક્ટમાં તમારી પહોંચ દૂર કરવામાં આવી છે. તમારા PMC ને ફરી ઉમેરવા કહો.',
+    serverDown: 'સર્વર હમણાં તમને સાઇન ઇન કરી શક્યું નહીં. એક મિનિટ પછી ફરી પ્રયાસ કરો.',
+    wrongPassword: 'ઇમેઇલ અથવા પાસવર્ડ ખોટો છે. ક્યારેય પાસવર્ડ નથી બનાવ્યો? “પાસવર્ડ બનાવો અથવા ભૂલી ગયા” દબાવો.',
+    invalidInvitedEmail: 'સાચું આમંત્રિત ઇમેઇલ સરનામું નાખો.',
+    setupNeedsServer: 'પાસવર્ડ બનાવવા માટે લાઇવ સર્વર જોઈએ.',
+    codeSendFailed: 'કોડ મોકલી શક્યા નહીં. ફરી પ્રયાસ કરો.',
+    setupWrongCode: 'કોડ ખોટો છે અથવા તેનો સમય પૂરો થયો. નવો કોડ મંગાવીને ફરી પ્રયાસ કરો.',
+    passwordMismatch: 'બંને પાસવર્ડ સરખા નથી.',
+    passwordLength: '12 થી 128 અક્ષરનો પાસવર્ડ રાખો.',
+    setupExpired: 'પાસવર્ડ બનાવવાની આ લિંક જૂની થઈ ગઈ. નવો કોડ મંગાવો.',
+    passwordSaveFailed: 'પાસવર્ડ સાચવી શક્યા નહીં. નવો કોડ મંગાવીને ફરી પ્રયાસ કરો.',
+    invalidEmail: 'સાચું ઇમેઇલ સરનામું નાખો.',
+    emailSendFailed: 'કોડ મોકલી શક્યા નહીં — ફરી પ્રયાસ કરો.',
+    emailWrongCode: 'કોડ ખોટો છે અથવા તેનો સમય પૂરો થયો — ફરી પ્રયાસ કરો.',
+    enterMobile: '10 આંકડાનો મોબાઇલ નંબર નાખો.',
+    tooManySignIns: 'સાઇન ઇનના ઘણા પ્રયાસ થયા. {wait}, પછી ફરી પ્રયાસ કરો.',
+    tooManyCodes: 'ઘણી વાર કોડ મંગાવ્યો. {wait}, પછી ફરી પ્રયાસ કરો.',
+    waitFew: 'થોડી મિનિટ રાહ જુઓ',
+  },
+};

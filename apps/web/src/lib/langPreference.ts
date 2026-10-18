@@ -39,6 +39,22 @@ export function writeLangPreference(key: string, lang: Lang): void {
 }
 
 /**
+ * #482 V-1018-6 — the language last chosen on this device, by whoever chose it. The sign-in gate has no person
+ * yet, so it opens in this one: a reload or a sign-out no longer drops a Hindi or Gujarati reader into English.
+ * Each person's own choice still wins once they sign in (`LangPreference`). The key cannot collide with a
+ * person's (`user:` / `persona:`).
+ */
+const DEVICE_KEY = 'device';
+
+export function readDeviceLang(): Lang | null {
+  return readLangPreference(DEVICE_KEY);
+}
+
+export function writeDeviceLang(lang: Lang): void {
+  writeLangPreference(DEVICE_KEY, lang);
+}
+
+/**
  * The viewer's EXPLICIT choice, recorded at every language picker. `LangPreference` cannot infer
  * intent from identity changes alone — a language on screen may be one the viewer picked or a
  * default it applied — so a picker says so here. A choice made before the viewer has a console

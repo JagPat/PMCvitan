@@ -7,6 +7,7 @@
  */
 
 import type { SwatchKey } from '../tokens/swatches';
+import type { SignInErrorKey } from '../i18n/signIn';
 
 /**
  * Every role a bearer token can carry — including the account-less `worker` device
@@ -650,7 +651,10 @@ export interface Worker {
 /** #886: a phone sign-in failure as an `accessDict` key (plus the throttle wait), and the text it produced. */
 export type AccessErrorKey =
   | { key: 'noServer' | 'sendFailed' | 'tooManyLater' | 'wrongCode' | 'checkFailed' | 'retryRefused'; text: string }
-  | { key: 'tooManyWait'; seconds: number; text: string };
+  | { key: 'tooManyWait'; seconds: number; text: string }
+  /** #482 V-1018-6: the email and password sign-in screens' failures, as `signInErrors` keys */
+  | { key: Exclude<SignInErrorKey, 'tooManySignIns' | 'tooManyCodes'>; text: string }
+  | { key: 'tooManySignIns' | 'tooManyCodes'; seconds: number | null; text: string };
 
 export interface AccessState {
   /** Retires async replies from an older login/setup attempt. */
