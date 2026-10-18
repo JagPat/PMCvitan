@@ -3637,14 +3637,16 @@ export const useStore = create<Store>()(
       if (i < 0) return;
       const review = get().reviews[i];
       // Task 5: approving a CLOSING review is the sign-off that completes its activity
-      // #482 V-1018-2 — what the decision says back, in the viewer's language (names and ids are data)
+      // #482 V-1018-2 — what the decision says back, in the viewer's language when it is said (names and ids are
+      // data): an online decision's toast reads the language at settlement (Codex 4307111788)
       const lang = get().lang;
-      const msg = review.closing ? IRT.signedOffToast(review.activityName ?? review.title, lang) : IRT.approvedToast(review.id, lang);
+      const approvedMsg = (l: Lang): string => (review.closing ? IRT.signedOffToast(review.activityName ?? review.title, l) : IRT.approvedToast(review.id, l));
+      const msg = approvedMsg(lang);
       // Task 10 (Module 3) correction — one stable idempotency key for this decision: the online send
       // and any offline replay reach the server under it, so a lost-response retry decides once.
       const approveReviewKey = newIdempotencyKey();
       const decidedBy = get().sessionUserId;
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, IRL.approveQueued.en, () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), msg, DLX.savedOffline(IRL.approveQueued[lang], lang))) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, IRL.approveQueued.en, () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), () => approvedMsg(get().lang), DLX.savedOffline(IRL.approveQueued[lang], lang))) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) {
@@ -3676,7 +3678,7 @@ export const useStore = create<Store>()(
       // Task 10 (Module 3) correction — the rejection decision carries its own stable idempotency key.
       const rejectReviewKey = newIdempotencyKey();
       const decidedBy = get().sessionUserId;
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, IRL.sendBackQueued.en, () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), IRT.reinspectionsToast(n, lang), DLX.savedOffline(IRL.sendBackQueued[lang], lang))) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, IRL.sendBackQueued.en, () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), () => IRT.reinspectionsToast(n, get().lang), DLX.savedOffline(IRL.sendBackQueued[lang], lang))) return;
       set((s) => {
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);

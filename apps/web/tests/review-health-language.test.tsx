@@ -157,3 +157,33 @@ describe('the client Project Health lines', () => {
     expect(T.decisionsWaiting(1, 'gu')).toBe('1 નિર્ણય તમારી રાહ જુએ છે');
   });
 });
+
+describe('Codex 4307111788 — an online decision says back in the language at settlement', () => {
+  it.each([
+    ['approve', 'निरीक्षण INSP-21 मंज़ूर हुआ', 'નિરીક્ષણ INSP-21 મંજૂર થયું'],
+    ['send back', 'दोबारा निरीक्षण', 'ફરી નિરીક્ષણ'],
+  ] as const)('%s: the viewer switches from Hindi to Gujarati while it is in flight', async (act_, hiLine, guLine) => {
+    const { useStore, getInitialState } = await import('@/store/store');
+    globalThis.localStorage?.clear();
+    useStore.setState(getInitialState());
+    useStore.setState({ role: 'pmc', lang: 'hi', activeReviewId: 'INSP-21', online: true, activeProjectId: 'ambli', projectScopeGeneration: 1, outbox: [], syncQueue: [] });
+    let commit!: (v: unknown) => void;
+    const gw = { decideReview: vi.fn(() => new Promise((r) => { commit = r; })), getBrief: vi.fn(() => new Promise(() => {})), snapshot: vi.fn(() => new Promise(() => {})) };
+    useStore.getState()._setGateway(gw as never);
+    const review = useStore.getState().reviews.find((r) => r.id === 'INSP-21')!;
+    useStore.setState({ reviews: [{ ...review, closing: false, items: review.items.map((it) => ({ ...it, result: 'FAIL' as const })) }] });
+    if (act_ === 'approve') useStore.getState().approveInspection();
+    else useStore.getState().sendReinspection();
+    expect(gw.decideReview).toHaveBeenCalled();
+    useStore.setState({ lang: 'gu' });
+    // a whole snapshot for this project, so the reply is applied and announces its success
+    commit({
+      project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+      decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null,
+      reinspectionCreated: false, drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+    });
+    await vi.waitFor(() => { if (!useStore.getState().toast) throw new Error('not settled'); }, { timeout: 5000, interval: 10 });
+    expect(useStore.getState().toast).toContain(guLine);
+    expect(useStore.getState().toast).not.toContain(hiLine);
+  });
+});
