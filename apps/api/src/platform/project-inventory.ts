@@ -93,7 +93,7 @@ const LOGICAL_REFS: Catalog['edges'] = [
 
 type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
-interface SnapshotIdentity { takenAt: string; database: string; schema: string }
+export interface SnapshotIdentity { takenAt: string; database: string; schema: string }
 
 /** Run `fn` in one transaction PostgreSQL itself holds read-only on one snapshot: any write fails. */
 export async function readOnlyTransaction<T>(prisma: PrismaClient, fn: (tx: Tx, id: SnapshotIdentity) => Promise<T>): Promise<T> {
@@ -124,7 +124,7 @@ export interface Catalog {
   tables: string[];
 }
 
-async function readCatalog(tx: Tx): Promise<Catalog> {
+export async function readCatalog(tx: Tx): Promise<Catalog> {
   const direct = await tx.$queryRawUnsafe<Array<{ table: string; column: string }>>(`
     SELECT table_name AS "table", column_name AS "column"
       FROM information_schema.columns
@@ -218,73 +218,79 @@ const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0
 
 export async function inventoryProject(prisma: PrismaClient, projectId: string): Promise<ProjectInventory> {
   if (!projectId.trim()) throw new Error('a project id is required');
-  return readOnlyTransaction(prisma, async (tx, id) => {
-    const cat = await readCatalog(tx);
-    const paths = buildPaths(cat);
-    const keyOf = (table: string, alias: string): string => rowKeySql(cat.primaryKeys.get(table) ?? null, alias);
+  return readOnlyTransaction(prisma, (tx, id) => collectInventory(tx, id, projectId));
+}
 
-    const [project] = await tx.$queryRawUnsafe<Array<NonNullable<ProjectInventory['project']>>>(
-      `SELECT id, name, "orgId", "archivedAt"::text AS "archivedAt" FROM "Project" WHERE id = $1`, projectId);
+/**
+ * The inventory of `projectId` as `tx` sees it. `inventoryProject` runs it read-only; the removal
+ * command runs it inside its own transaction, so the list it deletes by is the one it just read.
+ */
+export async function collectInventory(tx: Tx, id: SnapshotIdentity, projectId: string): Promise<ProjectInventory> {
+  const cat = await readCatalog(tx);
+  const paths = buildPaths(cat);
+  const keyOf = (table: string, alias: string): string => rowKeySql(cat.primaryKeys.get(table) ?? null, alias);
 
-    // table names are keys here: no prototype, so no table name can resolve to an inherited property
-    const sets: Record<string, Set<string>> = Object.create(null);
-    const add = (table: string, ks: string[] | null): void => {
-      if (!ks?.length) return;
-      const s = (sets[table] ??= new Set());
-      for (const k of ks) s.add(k);
-    };
-    add('Project', (await tx.$queryRawUnsafe<Array<{ k: string }>>(
-      `SELECT ${keyOf('Project', 'p')} AS k FROM "Project" p WHERE p.id = $1`, projectId)).map((r) => r.k));
-    // a table reached by several paths lists a row once, whichever path finds it
-    for (const path of paths) {
-      const [{ ks }] = await tx.$queryRawUnsafe<Array<{ ks: string[] | null }>>(
-        `SELECT array_agg(rid) AS ks FROM (SELECT ${projectOf(path, 't', paths)} AS owner, ${keyOf(path.table, 't')} AS rid FROM ${q(path.table)} t) s
-          WHERE owner = $1`, projectId);
-      add(path.table, ks);
-    }
-    const keys: ProjectInventory['keys'] = Object.create(null);
-    const counts: ProjectInventory['counts'] = Object.create(null);
-    for (const table of Object.keys(sets).sort(byCodeUnit)) {
-      keys[table] = [...sets[table]].sort(byCodeUnit);
-      counts[table] = keys[table].length;
-    }
+  const [project] = await tx.$queryRawUnsafe<Array<NonNullable<ProjectInventory['project']>>>(
+    `SELECT id, name, "orgId", "archivedAt"::text AS "archivedAt" FROM "Project" WHERE id = $1`, projectId);
 
-    const userPointers = await tx.$queryRawUnsafe<ProjectInventory['userPointers']>(
-      `SELECT ${keyOf('User', 'u')} AS key, u.id, u.email, u."projectId", u."lastProjectId" FROM "User" u
-        WHERE u."projectId" = $1 OR u."lastProjectId" = $1 ORDER BY u.email`, projectId);
+  // table names are keys here: no prototype, so no table name can resolve to an inherited property
+  const sets: Record<string, Set<string>> = Object.create(null);
+  const add = (table: string, ks: string[] | null): void => {
+    if (!ks?.length) return;
+    const s = (sets[table] ??= new Set());
+    for (const k of ks) s.add(k);
+  };
+  add('Project', (await tx.$queryRawUnsafe<Array<{ k: string }>>(
+    `SELECT ${keyOf('Project', 'p')} AS k FROM "Project" p WHERE p.id = $1`, projectId)).map((r) => r.k));
+  // a table reached by several paths lists a row once, whichever path finds it
+  for (const path of paths) {
+    const [{ ks }] = await tx.$queryRawUnsafe<Array<{ ks: string[] | null }>>(
+      `SELECT array_agg(rid) AS ks FROM (SELECT ${projectOf(path, 't', paths)} AS owner, ${keyOf(path.table, 't')} AS rid FROM ${q(path.table)} t) s
+        WHERE owner = $1`, projectId);
+    add(path.table, ks);
+  }
+  const keys: ProjectInventory['keys'] = Object.create(null);
+  const counts: ProjectInventory['counts'] = Object.create(null);
+  for (const table of Object.keys(sets).sort(byCodeUnit)) {
+    keys[table] = [...sets[table]].sort(byCodeUnit);
+    counts[table] = keys[table].length;
+  }
 
-    const files: StoredFile[] = [];
-    for (const path of paths.filter((p) => cat.columnsOf.get(p.table)?.has('storageKey'))) {
-      const cols = cat.columnsOf.get(path.table)!;
-      const bytes = cat.byteColumns.get(path.table) ?? [];
-      const url = cols.has('url') ? 't."url"' : 'NULL';
-      const inDb = bytes.length ? bytes.map((b) => `t.${q(b)} IS NOT NULL`).join(' OR ') : 'false';
-      files.push(...await tx.$queryRawUnsafe<StoredFile[]>(
-        `SELECT ${lit(path.table)} AS "table", t.id::text AS id, t."storageKey", ${url} AS url, (${inDb}) AS "bytesInDatabase"
-           FROM ${q(path.table)} t WHERE ${projectOf(path, 't', paths)} = $1 ORDER BY t.id`, projectId));
-    }
+  const userPointers = await tx.$queryRawUnsafe<ProjectInventory['userPointers']>(
+    `SELECT ${keyOf('User', 'u')} AS key, u.id, u.email, u."projectId", u."lastProjectId" FROM "User" u
+      WHERE u."projectId" = $1 OR u."lastProjectId" = $1 ORDER BY u.email`, projectId);
 
-    const reached = new Set(['Project', ...paths.map((p) => p.table)]);
-    const unlinked: ProjectInventory['unlinked'] = [];
-    for (const table of cat.tables.filter((t) => !reached.has(t))) {
-      const [{ n }] = await tx.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM ${q(table)}`);
-      unlinked.push({ table, rows: n });
-    }
+  const files: StoredFile[] = [];
+  for (const path of paths.filter((p) => cat.columnsOf.get(p.table)?.has('storageKey'))) {
+    const cols = cat.columnsOf.get(path.table)!;
+    const bytes = cat.byteColumns.get(path.table) ?? [];
+    const url = cols.has('url') ? 't."url"' : 'NULL';
+    const inDb = bytes.length ? bytes.map((b) => `t.${q(b)} IS NOT NULL`).join(' OR ') : 'false';
+    files.push(...await tx.$queryRawUnsafe<StoredFile[]>(
+      `SELECT ${lit(path.table)} AS "table", t.id::text AS id, t."storageKey", ${url} AS url, (${inDb}) AS "bytesInDatabase"
+         FROM ${q(path.table)} t WHERE ${projectOf(path, 't', paths)} = $1 ORDER BY t.id`, projectId));
+  }
 
-    return {
-      projectId,
-      readOnlyVerified: true as const,
-      snapshot: 'repeatable read' as const,
-      ...id,
-      project: project ?? null,
-      paths,
-      keys,
-      counts,
-      userPointers,
-      files,
-      unlinked,
-    };
-  });
+  const reached = new Set(['Project', ...paths.map((p) => p.table)]);
+  const unlinked: ProjectInventory['unlinked'] = [];
+  for (const table of cat.tables.filter((t) => !reached.has(t))) {
+    const [{ n }] = await tx.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM ${q(table)}`);
+    unlinked.push({ table, rows: n });
+  }
+
+  return {
+    projectId,
+    readOnlyVerified: true as const,
+    snapshot: 'repeatable read' as const,
+    ...id,
+    project: project ?? null,
+    paths,
+    keys,
+    counts,
+    userPointers,
+    files,
+    unlinked,
+  };
 }
 
 /**

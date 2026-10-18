@@ -25,6 +25,7 @@
     "capability:disable": "tsx src/platform/capability-disable.cli.ts",
     "db:snapshot": "tsx src/platform/db-snapshot.cli.ts",
     "project:inventory": "tsx src/platform/project-inventory.cli.ts",
+    "project:remove": "tsx src/platform/project-remove.cli.ts",
     "commercial:reevaluate": "tsx src/commercial/commercial-reevaluate.cli.ts",
     "t45:preflight": "tsx src/platform/t45/t45.cli.ts preflight",
     "t45:migration-state": "tsx src/platform/t45/t45.cli.ts migration-state",
