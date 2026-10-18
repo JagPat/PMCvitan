@@ -76,7 +76,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -3637,14 +3637,16 @@ export const useStore = create<Store>()(
       if (i < 0) return;
       const review = get().reviews[i];
       // Task 5: approving a CLOSING review is the sign-off that completes its activity
-      const msg = review.closing
-        ? `Signed off: ${review.activityName ?? review.title} is complete.`
-        : `Inspection ${review.id} approved. Contractor and client notified.`;
+      // #482 V-1018-2 — what the decision says back, in the viewer's language when it is said (names and ids are
+      // data): an online decision's toast reads the language at settlement (Codex 4307111788)
+      const lang = get().lang;
+      const approvedMsg = (l: Lang): string => (review.closing ? IRT.signedOffToast(review.activityName ?? review.title, l) : IRT.approvedToast(review.id, l));
+      const msg = approvedMsg(lang);
       // Task 10 (Module 3) correction — one stable idempotency key for this decision: the online send
       // and any offline replay reach the server under it, so a lost-response retry decides once.
       const approveReviewKey = newIdempotencyKey();
       const decidedBy = get().sessionUserId;
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, 'Approve inspection', () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), msg)) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, IRL.approveQueued.en, () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), () => approvedMsg(get().lang), DLX.savedOffline(IRL.approveQueued[lang], lang))) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) {
@@ -3666,8 +3668,9 @@ export const useStore = create<Store>()(
       if (i < 0) return;
       const review = get().reviews[i];
       const n = review.items.filter((it) => it.rejected || it.result === 'FAIL').length;
+      const lang = get().lang;
       if (n === 0) {
-        get().flash('No items rejected. Use Approve Inspection instead.');
+        get().flash(IRL.noneRejected[lang]);
         return;
       }
       // gate finding 3: rejection names exact ROWS by server id (labels are not unique)
@@ -3675,7 +3678,7 @@ export const useStore = create<Store>()(
       // Task 10 (Module 3) correction — the rejection decision carries its own stable idempotency key.
       const rejectReviewKey = newIdempotencyKey();
       const decidedBy = get().sessionUserId;
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), n + ' re-inspection task(s) created with due dates.')) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, IRL.sendBackQueued.en, () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), () => IRT.reinspectionsToast(n, get().lang), DLX.savedOffline(IRL.sendBackQueued[lang], lang))) return;
       set((s) => {
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);
@@ -3687,7 +3690,7 @@ export const useStore = create<Store>()(
         }
         s.activeReviewId = review.id;
       });
-      get().flash(n + ' re-inspection task(s) created with due dates.');
+      get().flash(IRT.reinspectionsToast(n, lang));
     },
 
     // ---- drawings register ----

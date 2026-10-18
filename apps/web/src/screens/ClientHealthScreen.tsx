@@ -5,7 +5,7 @@ import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, ProgressBar, Swatch } from '@/components';
 import { ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
-import { dashboardLabels, signed, swatch as swatchGradient } from '@vitan/shared';
+import { clientHealthLabels as L, clientHealthText as T, dashboardLabels, dashboardText, signed, swatch as swatchGradient } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function ClientHealthScreen() {
@@ -18,16 +18,16 @@ export function ClientHealthScreen() {
   const openItem = useStore((s) => s.openItem);
   const short = useStore((s) => s.short); // live project identity, not the seed
   const stage = useStore((s) => s.stage);
-  // #954 — the empty photo line reads in the viewer's language
+  // #954 / #482 6248989265 — the screen reads in the viewer's language
   const lang = useStore((s) => s.lang);
   // B7 (F-12): the same derived progress the Dashboard shows
   const milestonePct = useStore((s) => selectProjectProgress(s).pct);
   const sitePhotos = useStore(useShallow((s) => s.photos));
 
-  const healthLine = checkedIn ? `Site active today · ${workers} workers` : 'Site opens shortly today';
-  const countLabel = `${pending.length} ${pending.length === 1 ? 'decision waiting' : 'decisions waiting'} for you`;
+  const healthLine = checkedIn ? T.siteActive(workers, lang) : L.siteOpens[lang];
+  const countLabel = T.decisionsWaiting(pending.length, lang);
   // live: the recorded stage with no fabricated health verdict; demo keeps the prototype copy
-  const stageLine = API_BASE ? stage : 'Finishing stage · On track';
+  const stageLine = API_BASE ? stage : L.demoStage[lang];
 
   // demo-only prototype cards; API mode shows the project's own photos (or an honest absence)
   const photos = [
@@ -39,7 +39,7 @@ export function ClientHealthScreen() {
   return (
     <div className={styles.clientScreen}>
       <div style={{ padding: '8px 0 12px' }}>
-        <Eyebrow size={9}>PROJECT HEALTH</Eyebrow>
+        <Eyebrow size={9}>{L.eyebrow[lang]}</Eyebrow>
         <div style={{ fontFamily: 'var(--font-serif)', fontSize: 26, fontWeight: 500, marginTop: 4, lineHeight: 1.15 }}>{short}</div>
         <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>{stageLine}</div>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 10, background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 20, padding: '6px 12px' }}>
@@ -56,13 +56,13 @@ export function ClientHealthScreen() {
             {dashboardLabels.noProgressPhotos[lang]}
           </div>
         ) : (
-          <div className={`${styles.carousel} vscroll`} tabIndex={0} role="region" aria-label="Progress photos" style={{ margin: '6px 0 14px' }}>
+          <div className={`${styles.carousel} vscroll`} tabIndex={0} role="region" aria-label={L.photos[lang]} style={{ margin: '6px 0 14px' }}>
             {sitePhotos.slice(-6).reverse().map((p, i) => {
               const caption = stampText(p.takenAt);
               return (
                 <div key={p.id} style={{ width: 250, borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(35,33,28,.12)' }}>
                   <div style={{ height: 170, position: 'relative', background: '#000' }}>
-                    <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <img src={p.url} alt={dashboardText.sitePhotoAlt(i + 1, lang)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </div>
                   {caption && (
                     <div data-testid="health-photo-caption" style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{caption}</div>
@@ -73,7 +73,7 @@ export function ClientHealthScreen() {
           </div>
         )
       ) : (
-        <div className={`${styles.carousel} vscroll`} tabIndex={0} role="region" aria-label="Progress photos" style={{ margin: '6px 0 14px' }}>
+        <div className={`${styles.carousel} vscroll`} tabIndex={0} role="region" aria-label={L.photos[lang]} style={{ margin: '6px 0 14px' }}>
           {photos.map((p) => (
             <div key={p.label} style={{ width: 250, borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(35,33,28,.12)' }}>
               <div style={{ height: 170, background: swatchGradient(p.swatch), position: 'relative' }}>
@@ -88,7 +88,7 @@ export function ClientHealthScreen() {
       {/* overall progress */}
       <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.12)', borderRadius: 16, padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <span style={{ fontWeight: 600, fontSize: 14 }}>Overall progress</span>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>{L.overall[lang]}</span>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{milestonePct === null ? '—' : `${milestonePct}%`}</span>
         </div>
         <div style={{ marginTop: 10 }}>
@@ -109,7 +109,7 @@ export function ClientHealthScreen() {
           style={{ width: '100%', marginTop: 16, background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', borderRadius: 16, padding: 18, textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
         >
           <div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.15em', color: '#e8775c' }}>ACTION NEEDED</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.15em', color: '#e8775c' }}>{L.actionNeeded[lang]}</div>
             <div style={{ fontWeight: 700, fontSize: 16, marginTop: 4 }}>{countLabel}</div>
           </div>
           <ArrowRight size={22} />
@@ -117,15 +117,15 @@ export function ClientHealthScreen() {
       )}
 
       {/* recently approved */}
-      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.2em', color: 'var(--faint)', margin: '22px 0 10px' }}>RECENTLY APPROVED</div>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.2em', color: 'var(--faint)', margin: '22px 0 10px' }}>{L.recentlyApproved[lang]}</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {approved.map((a) => (
           // Top 10 #3 (#774) — an approved decision opens its record in the Decision Log, which every role holds
-          <button key={a.id} onClick={() => openItem('decision-log', a.id)} data-testid={`health-approved-${a.id}`} aria-label={`Open decision ${a.title}`} style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: '12px 14px', display: 'flex', gap: 12, alignItems: 'center', width: '100%', textAlign: 'left', cursor: 'pointer', font: 'inherit', color: 'inherit' }}>
+          <button key={a.id} onClick={() => openItem('decision-log', a.id)} data-testid={`health-approved-${a.id}`} aria-label={T.openDecision(a.title, lang)} style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: '12px 14px', display: 'flex', gap: 12, alignItems: 'center', width: '100%', textAlign: 'left', cursor: 'pointer', font: 'inherit', color: 'inherit' }}>
             <Swatch swatch={a.photoSwatch ?? ''} size={42} radius={9} lock />
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: 13.5 }}>{a.title}</div>
-              <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>By {a.approver} · {a.date}</div>
+              <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>{T.approvedBy(a.approver, a.date, lang)}</div>
             </div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--muted)' }}>{signed(a.cost ?? 0)}</div>
           </button>
