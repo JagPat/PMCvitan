@@ -6,6 +6,7 @@ import { useProjectSwitch } from './useProjectSwitch';
 import { Modal } from '@/components';
 import { ChevronRight, Plus, Check } from '@/lib/icons';
 import type { ModuleSelection, NewProjectInput } from '@/data/apiGateway';
+import { forYouRole, shellChromeLabels as SL, shellChromeText as ST } from '@vitan/shared';
 
 /** Active-project display + switcher for the left rail. Real data arrives from
  *  the API (`/me/memberships`); with no API it's just the seeded project name. */
@@ -14,6 +15,7 @@ export function ProjectSwitcher() {
   // owns project state and a switch from either takes the identical store path
   const { memberships, activeProjectId, label, adminOrg, canSwitch, switchProject } = useProjectSwitch();
   const setScreen = useStore((s) => s.setScreen);
+  const lang = useStore((s) => s.lang);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   // Wave 0 / F-1a: the switcher is a NON-MODAL disclosure popup, not a dialog
@@ -59,14 +61,14 @@ export function ProjectSwitcher() {
         }
       }}
     >
-      <div style={label0}>PROJECT</div>
+      <div style={label0}>{SL.project[lang]}</div>
       {canSwitch ? (
         <button
           ref={triggerRef}
           onClick={() => setOpen((v) => !v)}
           data-testid="project-switcher"
           aria-expanded={open}
-          aria-label={`Project: ${label} — switch project`}
+          aria-label={ST.projectButton(label, true, lang)}
           style={{ ...pill, cursor: 'pointer' }}
         >
           <span style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
@@ -85,25 +87,25 @@ export function ProjectSwitcher() {
           ref={panelRef}
           style={panel}
           role="group"
-          aria-label="Switch project"
+          aria-label={SL.switchProject[lang]}
         >
           {memberships.map((m) => {
             const on = m.projectId === activeProjectId;
             return (
               <button key={m.projectId} onClick={() => { closeToTrigger(); switchProject(m.projectId); }} style={row(on)}>
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.short}</span>
-                <span style={roleTag}>{m.role}</span>
+                <span style={roleTag}>{lang === 'en' ? m.role : forYouRole[m.role][lang]}</span>
                 {on && <Check size={13} color="#8fce9f" />}
               </button>
             );
           })}
           {adminOrg && (
             <button onClick={() => { closeToTrigger(); setCreating(true); }} style={{ ...row(false), color: 'var(--accent)' }}>
-              <Plus size={14} /> <span>New project</span>
+              <Plus size={14} /> <span>{SL.newProject[lang]}</span>
             </button>
           )}
           <button onClick={() => { closeToTrigger(); setScreen('team'); }} style={row(false)}>
-            Manage team →
+            {SL.manageTeam[lang]}
           </button>
         </div>
       )}

@@ -457,6 +457,40 @@ export const shellLabels: Record<'more' | 'language' | 'close' | 'screens', Reco
   screens: { en: 'SCREENS', hi: 'स्क्रीन', gu: 'સ્ક્રીન' },
 };
 
+/** #482 6251162266 V-1018-3 — the rest of the app's frame (the desktop rail, the phone's top bar and its sheets)
+ *  in the viewer's language. "VITAN" is the firm's name and "PMC" stays in brackets as everywhere (#827), so
+ *  the console line keeps both. Project names and people's names are data, shown as recorded. The English
+ *  strings are byte-identical to the frame's original copy. */
+export const shellChromeLabels = {
+  console: { en: 'PMC CONSOLE', hi: 'PMC कंसोल', gu: 'PMC કન્સોલ' },
+  signedInAs: { en: 'SIGNED IN AS', hi: 'इस नाम से साइन इन', gu: 'આ નામે સાઇન ઇન' },
+  signOut: { en: 'Sign out', hi: 'साइन आउट करें', gu: 'સાઇન આઉટ કરો' },
+  project: { en: 'PROJECT', hi: 'प्रोजेक्ट', gu: 'પ્રોજેક્ટ' },
+  switchProject: { en: 'Switch project', hi: 'प्रोजेक्ट बदलें', gu: 'પ્રોજેક્ટ બદલો' },
+  newProject: { en: 'New project', hi: 'नया प्रोजेक्ट', gu: 'નવો પ્રોજેક્ટ' },
+  manageTeam: { en: 'Manage team →', hi: 'टीम संभालें →', gu: 'ટીમ સંભાળો →' },
+  allProjects: { en: 'All projects (Portfolio)', hi: 'सभी प्रोजेक्ट (पोर्टफ़ोलियो)', gu: 'બધા પ્રોજેક્ટ (પોર્ટફોલિયો)' },
+  notifications: { en: 'Notifications', hi: 'सूचनाएँ', gu: 'સૂચનાઓ' },
+  build: { en: 'build', hi: 'बिल्ड', gu: 'બિલ્ડ' },
+  nothingMore: {
+    en: 'Everything you can reach is already on the bar.',
+    hi: 'आप जो कुछ खोल सकते हैं, वह सब पहले से बार पर है।',
+    gu: 'તમે જે ખોલી શકો તે બધું પહેલેથી બાર પર છે.',
+  },
+} satisfies Record<string, Record<Lang, string>>;
+
+/** The frame's lines that carry a project name or a build time. */
+export const shellChromeText = {
+  /** what a reader hears on the project button; the switch half only when there is somewhere to switch to */
+  projectButton(label: string, canSwitch: boolean, lang: Lang): string {
+    const head = lang === 'hi' ? `प्रोजेक्ट: ${label}` : lang === 'gu' ? `પ્રોજેક્ટ: ${label}` : `Project: ${label}`;
+    return canSwitch ? `${head} — ${lang === 'en' ? 'switch project' : shellChromeLabels.switchProject[lang]}` : head;
+  },
+  built(at: string, lang: Lang): string {
+    return lang === 'hi' ? `बिल्ड का समय ${at}` : lang === 'gu' ? `બિલ્ડનો સમય ${at}` : `Built ${at}`;
+  },
+};
+
 /** #827 (Top 10 #5) — the approve-and-lock confirmation, one of the paths the Board named. The English
  *  strings are byte-identical to the modal's original copy. */
 export const approveModalLabels = {
