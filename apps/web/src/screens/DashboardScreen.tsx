@@ -293,24 +293,24 @@ export function DashboardScreen() {
       </div>
 
       {/* photo highlights — live projects show their own recorded photos, honestly empty otherwise */}
-      <div style={{ marginTop: 24 }}>
+      <div data-testid="dash-photo-block" style={{ marginTop: 24 }}>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.2em', color: 'var(--muted)', marginBottom: 12 }}>
-          {API_BASE ? 'LATEST · SITE PHOTOS' : 'THIS WEEK · PHOTO HIGHLIGHTS'}
+          {API_BASE ? L.latestPhotos[lang] : 'THIS WEEK · PHOTO HIGHLIGHTS'}
         </div>
         {API_BASE ? (
           sitePhotos.length === 0 ? (
             <div style={{ fontSize: 13, color: 'var(--muted)', border: '1px dashed var(--hairline)', borderRadius: 10, padding: '22px 16px', textAlign: 'center' }}>
-              No progress photos recorded
+              {L.noProgressPhotos[lang]}
             </div>
           ) : (
             <div className={styles.photos}>
               {sitePhotos.slice(-4).reverse().map((p, i) => (
                 <div key={p.id} style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--hairline)' }}>
                   <div style={{ height: 120, position: 'relative', background: '#000' }}>
-                    <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <img src={p.url} alt={T.sitePhotoAlt(i + 1, lang)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </div>
                   <div style={{ padding: '9px 11px', background: 'var(--panel)' }}>
-                    <div style={{ fontSize: 11.5, fontWeight: 600, textTransform: 'capitalize' }}>{p.kind}</div>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, textTransform: 'capitalize' }}>{T.photoKind(p.kind, lang)}</div>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{stampText(p.takenAt)}</div>
                   </div>
                 </div>
