@@ -97,3 +97,26 @@ describe('#482 a failed checklist item shows its photo and its whole note', () =
     expect(note.placeholder).toBe('Describe the issue…');
   });
 });
+
+describe('#482 F-C4.3 — the PHOTOS count is the photos actually attached', () => {
+  const live = checklist({
+    items: [
+      // a live upload links evidence and never moves the demo counter
+      { id: 'i1', name: 'Rebar spacing', state: 'pass', photos: 0, note: '', evidence: ['/media/m-1?t=1', '/media/m-2?t=2'] },
+      { id: 'i2', name: 'Cover blocks', state: 'fail', photos: 0, note: 'Blocks missing', evidence: ['/media/m-3?t=3'] },
+    ],
+  });
+  const tile = (view: Awaited<ReturnType<typeof mount>>, label: RegExp) => view.getByText(label).parentElement!.textContent;
+
+  it('counts linked evidence in the header and on each photo button', async () => {
+    const view = await mount(live);
+    expect(tile(view, /^photos$/i)).toMatch(/3/);
+    expect(view.getByTestId('evidence-0').textContent).toBe('2');
+    expect(view.getByTestId('evidence-1').textContent).toBe('1');
+  });
+
+  it('the demo counter, with its local thumbnails, is not counted twice', async () => {
+    const view = await mount(checklist());
+    expect(tile(view, /^photos$/i)).toMatch(/2/);
+  });
+});

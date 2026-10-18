@@ -104,7 +104,7 @@ describe('English is unchanged', () => {
   it('the log reads as before', async () => {
     const r = await screen('en', { dailyLog: log() });
     const text = r.container.textContent ?? '';
-    for (const s of ['DAILY SITE LOG', 'Checked in · 09:00', 'Villa Bodakdev · within 60 m · GPS + selfie', 'CREW PRESENT TODAY', '2 workers',
+    for (const s of ['DAILY SITE LOG', 'Checked in · 09:00', 'Villa Bodakdev · check-in time recorded', 'CREW PRESENT TODAY', '2 workers',
       'MATERIAL ON SITE', '✓ Matches locked decision DL-1', '⚠ MISMATCH — not the approved DL-2', "TODAY'S PROGRESS", '3 progress photos', 'Submit Daily Log to PMC']) {
       expect(text).toContain(s);
     }

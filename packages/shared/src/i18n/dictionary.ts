@@ -183,7 +183,8 @@ export const engineerTodayLabels = {
   } satisfies Record<EngineerTodayAction, Record<Lang, string>>,
   actionDetail: {
     start: { en: 'Begin when work starts on site.', hi: 'साइट पर काम शुरू होते ही शुरू करें।', gu: 'સાઇટ પર કામ શરૂ થાય ત્યારે શરૂ કરો.' },
-    checkIn: { en: "Uses this phone's location and a selfie.", hi: 'यह फ़ोन आपकी जगह और एक सेल्फ़ी लेगा।', gu: 'આ ફોન તમારું સ્થાન અને એક સેલ્ફી લેશે.' },
+    // #482 F-C1.3 — check-in records the tap time only (#940); it takes no location or selfie (that is D4)
+    checkIn: { en: 'Records the time you tap.', hi: 'आप जिस समय टैप करेंगे, वह समय दर्ज होगा।', gu: 'તમે ટેપ કરશો તે સમય નોંધાશે.' },
     crew: { en: 'Who came today, and what material arrived.', hi: 'आज कौन आया और कौन सा सामान आया।', gu: 'આજે કોણ આવ્યું અને કયો માલ આવ્યો.' },
     photos: { en: "A few photos of today's work.", hi: 'आज के काम की कुछ फ़ोटो।', gu: 'આજના કામના થોડા ફોટા.' },
     send: { en: 'One tap. PMC sees it straight away.', hi: 'एक टैप। PMC को तुरंत दिखेगा।', gu: 'એક ટેપ. PMC ને તરત દેખાશે.' },
@@ -537,6 +538,22 @@ export const decisionToastText = {
   adviseLabel: { en: 'Advise', hi: 'सलाह दी', gu: 'સલાહ આપી' },
 } satisfies Record<string, Record<Lang, string>>;
 
+/** #482 F-C4.4 / F-C4.5 — an item on the PMC's Inspection Review. "Reject item" only marks it to go back; the
+ *  re-inspection exists once Send back is decided, and the photo tag names photos that are attached. */
+export const reviewItemText = {
+  willSendBack: { en: 'Will be sent back for re-inspection', hi: 'दोबारा निरीक्षण के लिए वापस भेजा जाएगा', gu: 'ફરી નિરીક્ષણ માટે પાછું મોકલાશે' },
+  sentBack: { en: 'Sent back — re-inspection task created', hi: 'वापस भेजा — दोबारा निरीक्षण का काम बना', gu: 'પાછું મોકલ્યું — ફરી નિરીક્ષણનું કામ બન્યું' },
+  photos: (n: number, lang: Lang): string =>
+    lang === 'hi' ? (n === 1 ? 'फ़ोटो' : `${n} फ़ोटो`) : lang === 'gu' ? (n === 1 ? 'ફોટો' : `${n} ફોટા`) : n === 1 ? 'PHOTO' : `${n} PHOTOS`,
+};
+
+/** #482 F-C4.2 — a command the server REFUSED (a 4xx with its reason), never reported as a network failure: retrying
+ *  it would fail the same way. The reason is the server's own words (data, English). */
+export const serverRefusalText = {
+  refused: (why: string, lang: Lang): string =>
+    lang === 'hi' ? `सर्वर ने यह नहीं माना — ${why}` : lang === 'gu' ? `સર્વરે આ સ્વીકાર્યું નહીં — ${why}` : `The server refused this — ${why}`,
+};
+
 /** "Change Request submitted for client re-approval." — naming who re-approves, in the viewer's language. */
 export function changeSubmittedToast(kind: DeciderKind, lang: Lang): string {
   if (lang === 'en') return kind === 'client' ? 'Change Request submitted for client re-approval.' : `Change Request submitted for ${(DECIDER_NOUN[kind] ?? DECIDER_NOUN.client).en}’s re-approval.`;
@@ -601,10 +618,11 @@ export const dailyLogLabels = {
   backOnline: { en: 'Back online', hi: 'फिर ऑनलाइन', gu: 'ફરી ઓનલાઇન' },
   checkOut: { en: 'Check out', hi: 'साइट से निकलें', gu: 'સાઇટ પરથી નીકળો' },
   checkIn: { en: 'Check in at site', hi: 'साइट पर हाज़िरी लगाएँ', gu: 'સાઇટ પર હાજરી પૂરો' },
+  // #482 F-C1.3 — what a check-in records today: the tap time, never a location or a selfie
   proof: {
-    en: "Uses this phone's GPS + a selfie as proof of presence",
-    hi: 'हाज़िरी के सबूत के लिए इस फ़ोन का GPS और एक सेल्फ़ी लेता है',
-    gu: 'હાજરીના પુરાવા માટે આ ફોનનું GPS અને એક સેલ્ફી લે છે',
+    en: 'Records the time you check in',
+    hi: 'आपकी हाज़िरी का समय दर्ज होता है',
+    gu: 'તમારી હાજરીનો સમય નોંધાય છે',
   },
   crewTitle: { en: 'CREW PRESENT TODAY', hi: 'आज मौजूद कारीगर', gu: 'આજે હાજર કારીગરો' },
   qr: { en: 'Worker self check-in (scan QR)', hi: 'कारीगर खुद हाज़िरी लगाएँ (QR स्कैन)', gu: 'કારીગર જાતે હાજરી પૂરે (QR સ્કેન)' },
@@ -638,7 +656,7 @@ export const dailyLogText = {
     return lang === 'hi' ? `हाज़िरी लगी${at}` : lang === 'gu' ? `હાજરી પુરાઈ${at}` : `Checked in${at}`;
   },
   checkedInWhere: (site: string, lang: Lang): string =>
-    lang === 'hi' ? `${site} · 60 मी के अंदर · GPS + सेल्फ़ी` : lang === 'gu' ? `${site} · 60 મી ની અંદર · GPS + સેલ્ફી` : `${site} · within 60 m · GPS + selfie`,
+    lang === 'hi' ? `${site} · हाज़िरी का समय दर्ज` : lang === 'gu' ? `${site} · હાજરીનો સમય નોંધાયો` : `${site} · check-in time recorded`,
   workers: (n: number, lang: Lang): string =>
     lang === 'hi' ? `${n} कारीगर` : lang === 'gu' ? `${n} કારીગરો` : `${n} workers`,
   removeTrade: (trade: string, lang: Lang): string =>
@@ -714,7 +732,7 @@ export const dailyLogToast = {
 
 export const dailyLogToastText = {
   checkedIn: (site: string, lang: Lang): string =>
-    lang === 'hi' ? `${site} पर हाज़िरी लगी · 60 मी के अंदर · सेल्फ़ी + समय दर्ज।` : lang === 'gu' ? `${site} પર હાજરી પુરાઈ · 60 મી ની અંદર · સેલ્ફી + સમય નોંધાયો.` : `Checked in at ${site} · within 60 m · selfie + time stamped.`,
+    lang === 'hi' ? `${site} पर हाज़िरी लगी · समय दर्ज।` : lang === 'gu' ? `${site} પર હાજરી પુરાઈ · સમય નોંધાયો.` : `Checked in at ${site} · time recorded.`,
   materialRecorded: (name: string, lang: Lang): string =>
     lang === 'hi' ? `सामान दर्ज हुआ: ${name}।` : lang === 'gu' ? `માલસામાન નોંધાયો: ${name}.` : `Material recorded: ${name}.`,
   savedOffline: (label: string, lang: Lang): string =>
