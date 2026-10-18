@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { computeInspectionsBase } from '../../src/inspections/inspections-serialize';
 
 /** #482 V-1018-5 PR 2 — the data migration that removes the English "Re-inspection: " words the server used to store
  *  in a re-inspection's title. It runs from the real migration file, twice, against rows shaped like the ones the
@@ -25,6 +26,13 @@ describe('V-1018-5 re-inspection title migration (live PG)', () => {
     const rows = await t.prisma.inspection.findMany({ where: { projectId: P }, select: { id: true, title: true } });
     return Object.fromEntries(rows.map((r) => [r.id.slice(P.length + 1), r.title]));
   };
+  /** the projection's stored copy and what canonical serializes now, compared as stored JSON. The serializer
+   *  reads rows with no order (the read sorts them), and an UPDATE moves rows, so entries compare by id. */
+  type Base = { inspections: { id: string; title: string }[] };
+  const byId = (b: Base): Base => ({ ...b, inspections: [...b.inspections].sort((x, y) => x.id.localeCompare(y.id)) });
+  const projected = async (): Promise<Base> =>
+    byId((await t.prisma.inspectionsProjection.findFirstOrThrow({ where: { projectId: P } })).dto as Base);
+  const canonical = async (): Promise<Base> => byId(JSON.parse(JSON.stringify(await computeInspectionsBase(t.prisma, P))) as Base);
   const migrate = async (): Promise<void> => {
     await t.prisma.$executeRawUnsafe(readFileSync(MIGRATION, 'utf8'));
   };
@@ -52,8 +60,11 @@ describe('V-1018-5 re-inspection title migration (live PG)', () => {
     await add('mismatch', 'Re-inspection: Slab casting (east)', 'other-parent');
     await add('case-parent', 'Slab casting');
     await add('case', 're-inspection: Slab casting', 'case-parent');
+    // a quiet project's read model, written by the projection before the migration (Codex 4308535200)
+    await t.prisma.inspectionsProjection.create({ data: { generationId: `gen-${run}`, projectId: P, dto: await canonical() as object } });
   });
   afterAll(async () => {
+    await t?.prisma.inspectionsProjection.deleteMany({ where: { projectId: P } });
     await t?.prisma.inspection.deleteMany({ where: { projectId: P } });
     await t?.prisma.project.deleteMany({ where: { id: P } });
     await f?.cleanup();
@@ -79,9 +90,18 @@ describe('V-1018-5 re-inspection title migration (live PG)', () => {
     });
   });
 
+  it('the inspections read model serves the same titles as canonical, with no rebuild', async () => {
+    const stored = await projected();
+    expect(stored.inspections.find((e) => e.id === `${P}-grandchild`)?.title).toBe('Terrace waterproofing');
+    expect(stored.inspections.find((e) => e.id === `${P}-typed`)?.title).toBe('Re-inspection: Kitchen tiling');
+    expect(stored).toEqual(await canonical());
+  });
+
   it('a second run changes nothing', async () => {
     const before = await titles();
+    const read = await projected();
     await migrate();
     expect(await titles()).toEqual(before);
+    expect(await projected()).toEqual(read);
   });
 });
