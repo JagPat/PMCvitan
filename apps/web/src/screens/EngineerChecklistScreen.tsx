@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore, checklistFrozen } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState, ItemNotFound } from '@/components';
 import { Camera } from '@/lib/icons';
-import { checklistLabels as L, checklistText as T, type ItemState } from '@vitan/shared';
+import { checklistLabels as L, checklistText as T, servedDayIn, type ItemState } from '@vitan/shared';
 import { inspectionsReadMode, resolveMediaUrl } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
 import { useUrlItem } from '@/lib/useUrlItem';
@@ -223,7 +223,7 @@ export function EngineerChecklistScreen() {
           <div style={{ marginTop: 4 }}>
             <LocationContext nodeId={checklist.nodeId} fallback={checklist.zone} compact testId="checklist-place" lang={lang} />
           </div>
-          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{checklist.date}</div>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }} data-testid="checklist-date">{servedDayIn(checklist.date, lang)}</div>
           {/* More than one checklist is out on this site. Before this, the engineer saw only the
               oldest and the rest were invisible work — so the picker is the whole point of the
               list, not decoration. Unsubmitted marks on the one they leave are kept, so moving

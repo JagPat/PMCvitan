@@ -8,7 +8,7 @@ import { ROLE_LABEL } from '@/lib/screens';
 import { navLabelFor } from '@/lib/mobileNav';
 import { useHomeNav } from '@/lib/homeNav';
 import { noteLangChoice } from '@/lib/langPreference';
-import { LANG_SWITCH, shellLabels } from '@vitan/shared';
+import { LANG_SWITCH, forYouRole, shellChromeLabels as SL, shellLabels } from '@vitan/shared';
 import { useNavItems, type NavItem } from './useNavItems';
 import styles from './MobileSheet.module.css';
 
@@ -29,6 +29,7 @@ export function MobileSheet({
   children: ReactNode;
   testId?: string;
 }) {
+  const lang = useStore((s) => s.lang);
   const sheetRef = useRef<HTMLDivElement>(null);
   useFocusTrap(sheetRef);
   useEffect(() => {
@@ -56,7 +57,7 @@ export function MobileSheet({
         <div className={styles.grabber} />
         <div className={styles.head}>
           <span id={titleId} className={styles.title}>{title}</span>
-          <button className={styles.close} onClick={onClose} aria-label="Close">
+          <button className={styles.close} onClick={onClose} aria-label={shellLabels.close[lang]}>
             <X size={19} />
           </button>
         </div>
@@ -96,7 +97,7 @@ export function MoreSheet({ items, onClose }: { items: NavItem[]; onClose: () =>
           {n.badge > 0 && <span className={styles.rowBadge}>{n.badge}</span>}
         </button>
       ))}
-      {items.length === 0 && <div className={styles.note}>Everything you can reach is already on the bar.</div>}
+      {items.length === 0 && <div className={styles.note}>{SL.nothingMore[lang]}</div>}
     </MobileSheet>
   );
 }
@@ -110,6 +111,7 @@ export function MoreSheet({ items, onClose }: { items: NavItem[]; onClose: () =>
 export function ProjectSheet({ onClose }: { onClose: () => void }) {
   const { memberships, activeProjectId, adminOrg, switchProject } = useProjectSwitch();
   const setScreen = useStore((s) => s.setScreen);
+  const lang = useStore((s) => s.lang);
   const [creating, setCreating] = useState(false);
   // Portfolio is a pmc-only screen (`screensFor`), so offering it unconditionally would
   // advertise a destination `RouteBridge` immediately bounces — mounting PortfolioScreen and
@@ -119,7 +121,7 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
   if (creating && adminOrg) return <CreateProjectModal orgId={adminOrg.id} onClose={onClose} />;
 
   return (
-    <MobileSheet title="Switch project" onClose={onClose} testId="project-sheet">
+    <MobileSheet title={SL.switchProject[lang]} onClose={onClose} testId="project-sheet">
       {memberships.map((m) => {
         const on = m.projectId === activeProjectId;
         return (
@@ -135,7 +137,7 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
             }}
           >
             <span className={styles.rowLabel}>{m.short}</span>
-            <span className={styles.rowMeta}>{ROLE_LABEL[m.role]}</span>
+            <span className={styles.rowMeta}>{lang === 'en' ? ROLE_LABEL[m.role] : forYouRole[m.role][lang]}</span>
             {on && <Check size={16} color="#3f7d55" />}
           </button>
         );
@@ -150,13 +152,13 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
           }}
         >
           <LayoutGrid size={18} />
-          <span className={styles.rowLabel}>All projects (Portfolio)</span>
+          <span className={styles.rowLabel}>{SL.allProjects[lang]}</span>
         </button>
       )}
       {adminOrg && (
         <button className={styles.row} data-testid="project-sheet-new" onClick={() => setCreating(true)} style={{ color: 'var(--accent)' }}>
           <Plus size={18} />
-          <span className={styles.rowLabel}>New project</span>
+          <span className={styles.rowLabel}>{SL.newProject[lang]}</span>
         </button>
       )}
     </MobileSheet>

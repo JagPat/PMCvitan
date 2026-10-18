@@ -8,7 +8,7 @@ import type { Role } from '@vitan/shared';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { useProjectSwitch } from './useProjectSwitch';
 import { LanguageSheet, ProjectSheet } from './MobileSheet';
-import { LANG_SWITCH, shellLabels } from '@vitan/shared';
+import { LANG_SWITCH, shellChromeLabels as SL, shellChromeText as ST, shellLabels } from '@vitan/shared';
 import logo from '@/assets/vitan-logo.jpeg';
 import styles from './TopBar.module.css';
 
@@ -47,7 +47,7 @@ export function TopBar() {
           disabled={!canSwitch}
           aria-haspopup={canSwitch ? 'dialog' : undefined}
           aria-expanded={canSwitch ? switching : undefined}
-          aria-label={canSwitch ? `Project: ${label} — switch project` : `Project: ${label}`}
+          aria-label={ST.projectButton(label, canSwitch, lang)}
         >
           <span className={styles.projectName}>{label}</span>
           {canSwitch && <ChevronDown size={15} className={styles.projectChevron} />}
@@ -79,11 +79,11 @@ export function TopBar() {
             </select>
           </label>
         ) : (
-          <button className={styles.bell} onClick={signOut} aria-label="Sign out">
+          <button className={styles.bell} onClick={signOut} aria-label={SL.signOut[lang]}>
             <Power size={16} />
           </button>
         )}
-        <button className={styles.bell} onClick={toggleNotif} aria-label="Notifications">
+        <button className={styles.bell} onClick={toggleNotif} aria-label={SL.notifications[lang]}>
           <Bell size={16} />
           {notifCount > 0 && <span className={styles.bellDot}>{notifCount}</span>}
         </button>

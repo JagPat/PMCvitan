@@ -13,7 +13,7 @@ import { DEV_AUTH } from '@/data/apiGateway';
 import { ROLE_LABEL } from '@/lib/screens';
 import { navLabelFor, splitMobileNav } from '@/lib/mobileNav';
 import { useHomeNav } from '@/lib/homeNav';
-import { shellLabels } from '@vitan/shared';
+import { forYouRole, shellChromeLabels as SL, shellChromeText as ST, shellLabels } from '@vitan/shared';
 import logo from '@/assets/vitan-logo.jpeg';
 import styles from './LeftRail.module.css';
 
@@ -81,7 +81,7 @@ export function LeftRail() {
         </div>
         <div>
           <div className={styles.brand}>VITAN</div>
-          <div className={styles.brandSub}>PMC CONSOLE</div>
+          <div className={styles.brandSub}>{SL.console[lang]}</div>
         </div>
       </div>
 
@@ -95,10 +95,10 @@ export function LeftRail() {
         </div>
       ) : (
         <div className={styles.persona} style={{ paddingTop: 4 }}>
-          <div className={styles.signedInLabel}>SIGNED IN AS</div>
-          <div className={styles.signedInName}>{userName ?? ROLE_LABEL[role]}</div>
+          <div className={styles.signedInLabel}>{SL.signedInAs[lang]}</div>
+          <div className={styles.signedInName}>{userName ?? (lang === 'en' ? ROLE_LABEL[role] : forYouRole[role][lang])}</div>
           <button className={styles.signOut} onClick={signOut}>
-            <Power size={13} /> Sign out
+            <Power size={13} /> {SL.signOut[lang]}
           </button>
         </div>
       )}
@@ -144,11 +144,11 @@ export function LeftRail() {
         <div>
           <div className={styles.projName}>{activeName}</div>
           <div className={styles.projMeta}>{projMeta}</div>
-          <div className={styles.projMeta} title={`Built ${BUILD_INFO.builtAt}`} data-testid="build-version">
-            build {BUILD_INFO.commitShort}
+          <div className={styles.projMeta} title={ST.built(BUILD_INFO.builtAt, lang)} data-testid="build-version">
+            {SL.build[lang]} {BUILD_INFO.commitShort}
           </div>
         </div>
-        <button className={styles.bell} onClick={toggleNotif} aria-label="Notifications">
+        <button className={styles.bell} onClick={toggleNotif} aria-label={SL.notifications[lang]}>
           <Bell size={16} />
           {notifCount > 0 && <span className={styles.bellDot}>{notifCount}</span>}
         </button>
