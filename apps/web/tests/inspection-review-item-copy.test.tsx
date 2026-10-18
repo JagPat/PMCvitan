@@ -47,6 +47,17 @@ describe('#482 F-C4.4 — a rejected item says it will go back, until Send back 
     expect(view.getByTestId('review-reject-state-1').textContent).toContain('Sent back — re-inspection task created');
   });
 
+  it('Reject item then Approve: approval sends nothing back, so no item says a re-inspection was created (Codex 4306414397)', async () => {
+    const { view, useStore } = await mount({});
+    fireEvent.click(view.getAllByRole('button', { name: /reject item/i })[1]!);
+    act(() => useStore.getState().approveInspection());
+    const r = useStore.getState().reviews[0]!;
+    expect(r.decided).toBe(true);
+    expect(r.items.some((it) => it.rejected)).toBe(false);
+    expect(view.queryByTestId('review-reject-state-1')).toBeNull();
+    expect(view.container.textContent).not.toContain('re-inspection task created');
+  });
+
   it('speaks Hindi and Gujarati', async () => {
     const hi = await mount({}, 'hi');
     hi.patch({ rejected: true });

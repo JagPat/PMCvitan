@@ -168,4 +168,23 @@ describe('#482 F-A1.1 (Board 6246214610, Option A) — with the switch on, N cou
     expect(key('pmc-reinspections')).toMatchObject({ count: 1 });
     expect(n).toBe(3);
   });
+
+  it('on: a decision awaiting the architect\'s countersign stays listed but counts 0 (Codex 4306414401); off it counts 1', async () => {
+    async function held(capabilities: string[]) {
+      vi.resetModules();
+      const { useStore, getInitialState } = await import('@/store/store');
+      const sel = await import('@/store/selectors');
+      const init = getInitialState();
+      const d: Decision = { ...structuredClone(init.decisions[0]!), id: 'DL-CS', draft: false, status: 'awaiting_countersign', deciderKind: 'client', countersignRequired: true };
+      useStore.setState({ ...init, role: 'pmc', sessionUserId: 'u-pmc', decisions: [d], reviews: [], activities: [], drawings: [], openChecklists: [], capabilities, capabilitiesKnown: true });
+      const items = sel.selectActionItems(useStore.getState());
+      return { card: items.find((i) => i.key === 'pmc-countersign'), n: sel.countActionItems(items) };
+    }
+    const on = await held([HOME_NAV_CAPABILITY]);
+    expect(on.card).toMatchObject({ title: '1 decision awaiting the architect’s countersign', count: 0 });
+    expect(on.n).toBe(0);
+    const off = await held([]);
+    expect(off.card?.count).toBeUndefined();
+    expect(off.n).toBe(1);
+  });
 });

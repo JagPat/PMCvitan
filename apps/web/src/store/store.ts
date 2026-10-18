@@ -3647,7 +3647,12 @@ export const useStore = create<Store>()(
       if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, 'Approve inspection', () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), msg)) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
-        if (j >= 0) s.reviews[j].decided = true;
+        if (j >= 0) {
+          s.reviews[j].decided = true;
+          // #482 F-C4.4 (Codex 4306414397) — approval records no rejection (the server's decide sends none), so an
+          // item marked "Reject item" before Approve is not shown as sent back
+          for (const it of s.reviews[j].items) it.rejected = false;
+        }
         if (review.closing && review.activityId) {
           const a = s.activities.find((x) => x.id === review.activityId);
           if (a) a.status = 'done'; // the PMC's acceptance IS the completion

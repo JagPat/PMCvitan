@@ -570,6 +570,10 @@ export function selectActionItems(s: AppState): ActionItem[] {
   // the awaiting rows are read and (B5b) acted on — never on the approval route, which stays limited to
   // actionable pending/change states (#677 review, finding 4145060024). Empty while the doors stand.
   const awaiting = selectAwaitingCountersign(s);
+  // #482 F-A1.1 (Board ruling 6246214610, Option A) — with home-nav on, the PMC's N and For You badge count only
+  // what waits on the PMC: a card for work held by someone else stays listed but counts 0. Off, every count is as before
+  const waitsOnOthersCount = (n?: number): number | undefined =>
+    (resolveHomeNav(s.activeProjectId, s.capabilitiesKnown, s.capabilities.includes(HOME_NAV_CAPABILITY)) ? 0 : n);
   if (s.role === 'architect' && awaiting.length) {
     items.push({ key: 'arch-countersign', title: `${awaiting.length} decision${plural(awaiting.length)} awaiting your countersign`, detail: names(awaiting), facts: { n: awaiting.length }, screen: 'decision-log', cta: 'Review & countersign', tone: 'amber', count: awaiting.length, item: only(awaiting) });
   }
@@ -577,7 +581,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
     const stranded = awaiting.filter(isStrandedCountersign);
     const held = awaiting.filter((d) => !isStrandedCountersign(d));
     if (stranded.length) items.push({ key: 'pmc-stranded', title: `${stranded.length} decision${plural(stranded.length)} stranded — no architect to countersign`, detail: names(stranded), facts: { n: stranded.length }, screen: 'decision-log', cta: 'Resolve', tone: 'red', count: stranded.length, item: only(stranded) });
-    if (held.length) items.push({ key: 'pmc-countersign', title: `${held.length} decision${plural(held.length)} awaiting the architect’s countersign`, detail: names(held), facts: { n: held.length }, screen: 'decision-log', cta: 'View', tone: 'ink', item: only(held) });
+    if (held.length) items.push({ key: 'pmc-countersign', title: `${held.length} decision${plural(held.length)} awaiting the architect’s countersign`, detail: names(held), facts: { n: held.length }, screen: 'decision-log', cta: 'View', tone: 'ink', count: waitsOnOthersCount(), item: only(held) }); // F-A1.1: with the architect
   }
 
   if (s.role === 'engineer') {
@@ -608,11 +612,8 @@ export function selectActionItems(s: AppState): ActionItem[] {
     // countersigns (`pmc-stranded`) and every other published pending decision here (`pending` is that
     // selector's pending arm for the PMC, `selectPending`), each counted per record
     const otherPending = pending.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
-    // #482 F-A1.1 (Board ruling 6246214610, Option A) — with home-nav on, N and the For You badge count only what
-    // waits on the PMC. A change request on a decision someone else decides waits on that decider's re-approval
-    // (the PMC's only act there is Withdraw), so its card stays but counts 0, like `pmc-pending` below
-    const waitsOnOthersCount = (n: number): number =>
-      (resolveHomeNav(s.activeProjectId, s.capabilitiesKnown, s.capabilities.includes(HOME_NAV_CAPABILITY)) ? 0 : n);
+    // #482 F-A1.1 — a change request on a decision someone else decides waits on that decider's re-approval
+    // (the PMC's only act there is Withdraw), so with home-nav on its card stays but counts 0, like `pmc-pending` below
     if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), facts: { n: otherChanges.length }, screen: 'decision-log', cta: 'Open', tone: 'red', count: waitsOnOthersCount(otherChanges.length), item: only(otherChanges) });
     if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), facts: { n: blocked.length }, screen: 'site-schedule', cta: 'Open schedule', tone: 'red', item: activitiesSettledForLinks(s) ? only(blocked) : undefined });
     if (otherPending.length) {
