@@ -55,7 +55,17 @@ export const dashboardLabels = {
   photosTile: { en: 'SITE PHOTOS ON RECORD', hi: 'दर्ज साइट फ़ोटो', gu: 'નોંધાયેલા સાઇટ ફોટા' },
   photosNotPlaced: { en: 'Not placed on the site map yet', hi: 'अभी साइट मैप पर नहीं रखी गईं', gu: 'હજી સાઇટ મેપ પર મૂક્યા નથી' },
   photosNone: { en: 'None recorded yet', hi: 'अभी कोई दर्ज नहीं', gu: 'હજી કોઈ નોંધાયા નથી' },
+  // #954 — the Dashboard's photo section (and the client's empty line) in every language
+  latestPhotos: { en: 'LATEST · SITE PHOTOS', hi: 'नई · साइट फ़ोटो', gu: 'નવા · સાઇટ ફોટા' },
+  noProgressPhotos: { en: 'No progress photos recorded', hi: 'प्रगति की कोई फ़ोटो दर्ज नहीं', gu: 'પ્રગતિનો કોઈ ફોટો નોંધાયો નથી' },
 } satisfies Record<string, Words>;
+
+/** #954 — a site photo's kind as the Dashboard names it; the snapshot sends progress, inspection and material */
+const PHOTO_KIND: Record<string, Words> = {
+  progress: { en: 'Progress', hi: 'प्रगति', gu: 'પ્રગતિ' },
+  inspection: { en: 'Inspection', hi: 'निरीक्षण', gu: 'નિરીક્ષણ' },
+  material: { en: 'Material', hi: 'सामान', gu: 'માલસામાન' },
+};
 
 /** Stage 1 H3 — who a tile's items wait on; `several` when they wait on more than one party. */
 export type WaitParty = 'you' | 'client' | 'pmc' | 'engineer' | 'architect' | 'decider' | 'several';
@@ -70,6 +80,9 @@ const WAIT_PARTY: Record<WaitParty, Words> = {
 };
 
 export const dashboardText = {
+  /** #954 — a kind the snapshot does not send yet reads as recorded */
+  photoKind: (kind: string, lang: Lang): string => PHOTO_KIND[kind]?.[lang] ?? kind,
+  sitePhotoAlt: (n: number, lang: Lang): string => pick(lang, `Site photo ${n}`, `साइट फ़ोटो ${n}`, `સાઇટ ફોટો ${n}`),
   siteCode: (code: string, lang: Lang): string => pick(lang, `Site Code ${code}`, `साइट कोड ${code}`, `સાઇટ કોડ ${code}`),
   percentComplete: (pct: number, lang: Lang): string => pick(lang, `${pct}% complete`, `${pct}% पूरा`, `${pct}% પૂર્ણ`),
   activitiesAccepted: (done: number, total: number, lang: Lang): string =>

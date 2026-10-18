@@ -5,7 +5,7 @@ import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, ProgressBar, Swatch } from '@/components';
 import { ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
-import { signed, swatch as swatchGradient } from '@vitan/shared';
+import { dashboardLabels, signed, swatch as swatchGradient } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function ClientHealthScreen() {
@@ -18,6 +18,8 @@ export function ClientHealthScreen() {
   const openItem = useStore((s) => s.openItem);
   const short = useStore((s) => s.short); // live project identity, not the seed
   const stage = useStore((s) => s.stage);
+  // #954 — the empty photo line reads in the viewer's language
+  const lang = useStore((s) => s.lang);
   // B7 (F-12): the same derived progress the Dashboard shows
   const milestonePct = useStore((s) => selectProjectProgress(s).pct);
   const sitePhotos = useStore(useShallow((s) => s.photos));
@@ -51,7 +53,7 @@ export function ClientHealthScreen() {
       {API_BASE ? (
         sitePhotos.length === 0 ? (
           <div style={{ margin: '6px 0 14px', fontSize: 13, color: 'var(--muted)', border: '1px dashed rgba(35,33,28,.2)', borderRadius: 16, padding: '26px 16px', textAlign: 'center' }}>
-            No progress photos recorded
+            {dashboardLabels.noProgressPhotos[lang]}
           </div>
         ) : (
           <div className={`${styles.carousel} vscroll`} tabIndex={0} role="region" aria-label="Progress photos" style={{ margin: '6px 0 14px' }}>
