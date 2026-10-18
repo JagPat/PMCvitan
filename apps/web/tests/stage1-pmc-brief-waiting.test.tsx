@@ -132,3 +132,40 @@ describe('the "decisions awaiting the client" card with the switch on', () => {
     expect(n).toBe(2);
   });
 });
+
+describe('#482 F-A1.1 (Board 6246214610, Option A) — with the switch on, N counts only what waits on the PMC', () => {
+  /** Q4's qa.pmc: one review to do (theirs), a change request with the client, and a re-inspection with the engineer */
+  async function q4Pmc(capabilities: string[]) {
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const sel = await import('@/store/selectors');
+    const init = getInitialState();
+    const change: Decision = { ...structuredClone(init.decisions[0]!), id: 'DEC_C2', draft: false, status: 'change', deciderKind: 'client' };
+    const review = { ...structuredClone(init.reviews[0]!), id: 'INSP-030', decided: false, submitted: true, reinspectionOfId: undefined };
+    const reinspection = {
+      id: 'INSP-026', title: 'Re-inspection: QA TEST', zone: 'QA', date: 'today', submitted: false, reinspectionOfId: 'INSP-025',
+      items: [{ id: 'r1', name: 'Drain slope', state: null, photos: 0, note: '', evidence: [] }],
+    };
+    useStore.setState({
+      ...init, role: 'pmc', sessionUserId: 'u-pmc', decisions: [change], reviews: [review], activities: [], drawings: [],
+      openChecklists: [reinspection], capabilities, capabilitiesKnown: true,
+    });
+    const items = sel.selectActionItems(useStore.getState());
+    return { items, n: sel.countActionItems(items), key: (k: string) => items.find((i) => i.key === k) };
+  }
+
+  it('on: N = 1, the review; the change request and the re-inspection stay on the list but count 0', async () => {
+    const { n, key } = await q4Pmc([HOME_NAV_CAPABILITY]);
+    expect(key('pmc-reviews')).toMatchObject({ count: 1 });
+    expect(key('pmc-change')).toMatchObject({ title: '1 change request to resolve', count: 0 });
+    expect(key('pmc-reinspections')).toMatchObject({ title: '1 re-inspection with the engineer', count: 0 });
+    expect(n).toBe(1);
+  });
+
+  it('off: unchanged — every card counts, N = 3 (every real project today)', async () => {
+    const { n, key } = await q4Pmc([]);
+    expect(key('pmc-change')).toMatchObject({ count: 1 });
+    expect(key('pmc-reinspections')).toMatchObject({ count: 1 });
+    expect(n).toBe(3);
+  });
+});

@@ -608,15 +608,19 @@ export function selectActionItems(s: AppState): ActionItem[] {
     // countersigns (`pmc-stranded`) and every other published pending decision here (`pending` is that
     // selector's pending arm for the PMC, `selectPending`), each counted per record
     const otherPending = pending.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
-    if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), facts: { n: otherChanges.length }, screen: 'decision-log', cta: 'Open', tone: 'red', count: otherChanges.length, item: only(otherChanges) });
+    // #482 F-A1.1 (Board ruling 6246214610, Option A) — with home-nav on, N and the For You badge count only what
+    // waits on the PMC. A change request on a decision someone else decides waits on that decider's re-approval
+    // (the PMC's only act there is Withdraw), so its card stays but counts 0, like `pmc-pending` below
+    const waitsOnOthersCount = (n: number): number =>
+      (resolveHomeNav(s.activeProjectId, s.capabilitiesKnown, s.capabilities.includes(HOME_NAV_CAPABILITY)) ? 0 : n);
+    if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), facts: { n: otherChanges.length }, screen: 'decision-log', cta: 'Open', tone: 'red', count: waitsOnOthersCount(otherChanges.length), item: only(otherChanges) });
     if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), facts: { n: blocked.length }, screen: 'site-schedule', cta: 'Open schedule', tone: 'red', item: activitiesSettledForLinks(s) ? only(blocked) : undefined });
     if (otherPending.length) {
       const allClientHeld = otherPending.every((d) => (d.deciderKind ?? 'client') === 'client');
       const who = allClientHeld ? 'the client' : otherPending.length === 1 ? 'its decider' : 'their deciders';
       // Stage 1 A1 (#482 6227430525) — with home-nav on, these wait on someone else, not the PMC: the card stays, but
       // counts 0 toward N and the For You badge, as the brief shows them as "Waiting on the client"
-      const homeNav = resolveHomeNav(s.activeProjectId, s.capabilitiesKnown, s.capabilities.includes(HOME_NAV_CAPABILITY));
-      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', facts: { n: otherPending.length, who: allClientHeld ? 'client' : 'decider' }, screen: 'decision-log', cta: 'View', tone: 'ink', count: homeNav ? 0 : otherPending.length, item: only(otherPending) });
+      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', facts: { n: otherPending.length, who: allClientHeld ? 'client' : 'decider' }, screen: 'decision-log', cta: 'View', tone: 'ink', count: waitsOnOthersCount(otherPending.length), item: only(otherPending) });
     }
     // #771 PMC For You — the re-inspections a rejection sent back, still with the engineer (from the served lineage,
     // assignee and due date). With the re-inspections awaiting review, already counted in `pmc-reviews`, they make
@@ -631,7 +635,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
       // in-review re-inspections' items are the Dashboard's failed items. The card's own count stays per record.
       // The number leads the one-line detail, which clips long names with an ellipsis (Codex on #897)
       const issues = reinspecting.reduce((n, c) => n + c.items.length, 0);
-      items.push({ key: 'pmc-reinspections', title: `${reinspecting.length} re-inspection${plural(reinspecting.length)} with the engineer`, detail: [`${issues} open issue${plural(issues)}`, names(reinspecting), due ? `next due ${civilDayLabel(due)}` : ''].filter(Boolean).join(' · '), facts: { n: reinspecting.length, names: names(reinspecting), issues, ...(due ? { due } : {}) }, screen: 'inspect-review', cta: 'Follow up', tone: 'amber', count: reinspecting.length, item: inspectionsSettledForLinks(s) ? only(reinspecting) : undefined });
+      items.push({ key: 'pmc-reinspections', title: `${reinspecting.length} re-inspection${plural(reinspecting.length)} with the engineer`, detail: [`${issues} open issue${plural(issues)}`, names(reinspecting), due ? `next due ${civilDayLabel(due)}` : ''].filter(Boolean).join(' · '), facts: { n: reinspecting.length, names: names(reinspecting), issues, ...(due ? { due } : {}) }, screen: 'inspect-review', cta: 'Follow up', tone: 'amber', count: waitsOnOthersCount(reinspecting.length), item: inspectionsSettledForLinks(s) ? only(reinspecting) : undefined }); // F-A1.1: with the engineer
     }
     // Task 6: unstarted work whose DRAWING gate blocks it — the derived conclusion, surfaced
     const drawingBlocked = s.activities.filter((a) => {

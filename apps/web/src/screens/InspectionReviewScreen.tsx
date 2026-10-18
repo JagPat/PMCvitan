@@ -6,7 +6,7 @@ import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound, 
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { X, Plus } from '@/lib/icons';
 import { EmptyHint } from '@/guide/EmptyHint';
-import { swatch as swatchGradient, can, type Checklist, type Review } from '@vitan/shared';
+import { swatch as swatchGradient, can, reviewItemText as RIT, type Checklist, type Review } from '@vitan/shared';
 import { resolveMediaUrl, inspectionsReadMode } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
 import { useUrlItem } from '@/lib/useUrlItem';
@@ -19,6 +19,7 @@ export function InspectionReviewScreen() {
   const toggleReject = useStore((s) => s.toggleReject);
   const approveInspection = useStore((s) => s.approveInspection);
   const sendReinspection = useStore((s) => s.sendReinspection);
+  const lang = useStore((s) => s.lang);
   // Phase 2 Task 10 (Module 3 — Inspections): under module read-ownership the inspection slices are a
   // SEPARATE async surface from the project snapshot, with their own honest load state. Never claim "No
   // inspections awaiting review" until a read has actually SUCCEEDED; while it loads show a loading state;
@@ -278,9 +279,12 @@ export function InspectionReviewScreen() {
                   {(it.evidence?.length ?? 0) > 0 && (
                     <img src={resolveMediaUrl(it.evidence![0])} alt={`Evidence — ${it.name}`} data-testid={`review-evidence-${i}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
                   )}
-                  <span style={{ position: 'absolute', left: 6, bottom: 6, fontFamily: 'var(--font-mono)', fontSize: 8, color: 'rgba(255,255,255,.9)', background: 'rgba(0,0,0,.4)', padding: '1px 5px', borderRadius: 3 }}>
-                    {(it.evidence?.length ?? 0) > 1 ? `${it.evidence!.length} PHOTOS` : 'PHOTO'}
-                  </span>
+                  {/* #482 F-C4.5 — the tag names attached photos; a placeholder swatch carries none */}
+                  {(it.evidence?.length ?? 0) > 0 && (
+                    <span data-testid={`review-photo-tag-${i}`} style={{ position: 'absolute', left: 6, bottom: 6, fontFamily: 'var(--font-mono)', fontSize: 8, color: 'rgba(255,255,255,.9)', background: 'rgba(0,0,0,.4)', padding: '1px 5px', borderRadius: 3 }}>
+                      {RIT.photos(it.evidence!.length, lang)}
+                    </span>
+                  )}
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
@@ -289,8 +293,9 @@ export function InspectionReviewScreen() {
                   </div>
                   <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>{it.note}</div>
                   {it.rejected && (
-                    <div style={{ marginTop: 8, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--red-solid)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <X size={12} /> Rejected — re-inspection task created
+                    <div data-testid={`review-reject-state-${i}`} style={{ marginTop: 8, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--red-solid)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      {/* #482 F-C4.4 — "Reject item" only marks it; the re-inspection exists once Send back is decided */}
+                      <X size={12} /> {review.decided ? RIT.sentBack[lang] : RIT.willSendBack[lang]}
                     </div>
                   )}
                 </div>

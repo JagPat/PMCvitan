@@ -38,6 +38,10 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   // form (Cancel, Escape, walking to another place) or opening a new one starts a new session, so a
   // reply that lands later never disables, closes or edits a form it was not sent from.
   const session = useRef(0);
+  // #482 F-C0.2 — an add the server made whose reply was not applied (a newer refresh owned the tree): the
+  // name and parent it was sent with, so the form closes once the tree shows that place, instead of
+  // staying open over a name the guard below now calls taken
+  const [unconfirmed, setUnconfirmed] = useState<{ name: string; parentId: string | null; session: number } | null>(null);
   const inputId = useId();
 
   const placeName = active?.name ?? L.theProject[lang];
@@ -45,20 +49,31 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
   // place's level, 1 for a zone); an object is a leaf
   const takesChildren = active ? active.kind !== 'element' && depth + 1 <= MAX_TREE_DEPTH : true;
 
-  const close = () => { session.current += 1; setAdding(null); setRenaming(false); setValue(''); setPending(false); };
+  const close = () => { session.current += 1; setAdding(null); setRenaming(false); setValue(''); setPending(false); setUnconfirmed(null); };
   // #699 Codex 4174429322 — the form acts on the place it was OPENED for: walking to another place
   // (a child card, a crumb) closes it, so Save can never rename or add under a place it was not opened on
   const activeId = active?.id ?? null;
   useEffect(() => { close(); setDeleting(null); }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!can('node.manage', role)) return null;
   // …and refuses a name this place already holds (drafts included): a second "Kitchen" under the same
   // floor is either a repeated click, a retry after a lost reply that DID create it, or a name the
   // pickers could not tell apart. Case and spacing do not make a different name.
   const norm = (n: string) => n.trim().replace(/\s+/g, ' ').toLowerCase();
   const siblingsNamed = (name: string, parentId: string | null, except?: string) =>
     nodes.some((n) => n.parentId === parentId && n.id !== except && norm(n.name) === norm(name));
-  const duplicate = value.trim() !== '' && (
+  // #482 F-C0.2 — the place the unconfirmed add asked for is in the tree now (the guard refused that name
+  // before the send, so it is the one this form made): done, as if the reply had been applied. A name the
+  // user has since retyped is theirs, so only that wait is dropped.
+  const unconfirmedLanded = unconfirmed !== null && unconfirmed.session === session.current
+    && siblingsNamed(unconfirmed.name, unconfirmed.parentId);
+  useEffect(() => {
+    if (!unconfirmedLanded || !unconfirmed) return;
+    if (norm(value) === norm(unconfirmed.name)) close();
+    else setUnconfirmed(null);
+  }, [unconfirmedLanded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!can('node.manage', role)) return null;
+  const duplicate = !unconfirmedLanded && value.trim() !== '' && (
     renaming && active
       ? siblingsNamed(value, active.parentId, active.id)
       : adding !== null && siblingsNamed(value, active?.id ?? null)
@@ -78,12 +93,13 @@ export function PlaceStructure({ active, depth }: { active: ProjectNode | undefi
       setPending(true);
       // published explicitly: the Site Map shows only published places, so what is added here must appear
       // here at once; the server defaults `publish` to true, but the intent is stated, not inherited
-      const id = await addLocationNode({ name, kind: adding, parentId: active?.id ?? null, publish: true }).catch(() => null);
+      const parentId = active?.id ?? null;
+      const id = await addLocationNode({ name, kind: adding, parentId, publish: true }).catch(() => null);
       if (session.current !== mine) return; // the form this was sent from is gone
       if (id) close();
-      // not confirmed: the form stays as typed, and the name guard says so if a re-read tree shows the
-      // place was added after all
-      else setPending(false);
+      // not confirmed: the form stays as typed until a re-read tree shows the place was added after all,
+      // which closes it (F-C0.2); a send that never landed leaves it open to retry
+      else { setPending(false); setUnconfirmed({ name, parentId, session: mine }); }
     }
   };
 

@@ -191,7 +191,10 @@ export function EngineerChecklistScreen() {
   }
 
   const doneCount = checklist.items.filter((it) => it.state).length;
-  const photoCount = checklist.items.reduce((a, it) => a + it.photos, 0);
+  // #482 F-C4.3 — an item's photos are its linked evidence; `photos` is the demo's counter, which a live
+  // upload never moves, so the header read 0 beside attached photos. The larger of the two serves both.
+  const photosOf = (it: (typeof checklist.items)[number]): number => Math.max(it.photos, it.evidence?.length ?? 0);
+  const photoCount = checklist.items.reduce((a, it) => a + photosOf(it), 0);
 
   /**
    * WHOSE work a refused photo belongs to, in the words the engineer already uses for it: the item's
@@ -312,7 +315,7 @@ export function EngineerChecklistScreen() {
                     data-testid={`evidence-${i}`}
                     data-guide={it.state === 'fail' ? 'fail-photo' : undefined}
                     data-guide-key={`${checklist.id}:${i}`}
-                    data-guide-done={it.photos > 0 ? 'true' : undefined}
+                    data-guide-done={photosOf(it) > 0 ? 'true' : undefined}
                     aria-label={L.addPhoto[lang]}
                     style={{
                       flex: 1,
@@ -325,13 +328,13 @@ export function EngineerChecklistScreen() {
                       alignItems: 'center',
                       justifyContent: 'center',
                       gap: 4,
-                      border: it.photos > 0 ? '1px solid var(--ink)' : '1px solid rgba(35,33,28,.15)',
-                      background: it.photos > 0 ? 'var(--ink)' : '#fff',
-                      color: it.photos > 0 ? 'var(--sidebar-text)' : 'var(--ink)',
+                      border: photosOf(it) > 0 ? '1px solid var(--ink)' : '1px solid rgba(35,33,28,.15)',
+                      background: photosOf(it) > 0 ? 'var(--ink)' : '#fff',
+                      color: photosOf(it) > 0 ? 'var(--sidebar-text)' : 'var(--ink)',
                     }}
                   >
                     <Camera size={15} />
-                    {it.photos > 0 && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{it.photos}</span>}
+                    {photosOf(it) > 0 && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{photosOf(it)}</span>}
                   </button>
                 </div>
                 {(it.evidence?.length ?? 0) > 0 && (

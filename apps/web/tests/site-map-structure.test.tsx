@@ -460,7 +460,7 @@ describe('#699 Codex round 2 — no partial count is ever shown as complete', ()
 });
 
 describe('#699 Codex round 3', () => {
-  it('after an unconfirmed create the form stays as typed; the re-read tree that shows the place refuses the retry (4174429320)', async () => {
+  it('after an unconfirmed create the form stays as typed; the re-read tree that shows the place ends it, never retried (4174429320, #482 F-C0.2)', async () => {
     const addLocationNode = vi.fn(async () => null); // failed or unconfirmed: the server may have created it
     const { useStore, PlacesScreen } = await load({ addLocationNode });
     act(() => { useStore.getState().openPlace('gf'); });
@@ -470,10 +470,11 @@ describe('#699 Codex round 3', () => {
     fireEvent.click(r.getByTestId('place-structure-save'));
     await vi.waitFor(() => expect(r.getByTestId('place-structure-save')).not.toBeDisabled());
     expect((r.getByTestId('place-structure-input') as HTMLInputElement).value).toBe('Pantry');
-    // the re-read tree shows the server DID create it: the retry is refused, never sent
+    // the re-read tree shows the server DID create it: the add is done, so the form closes (F-C0.2: it used
+    // to stay open calling its own name taken) and no retry is ever sent
     act(() => { useStore.setState({ nodes: [...useStore.getState().nodes, { id: 'p1', parentId: 'gf', name: 'Pantry', kind: 'room', order: 9 }] }); });
-    expect(r.getByTestId('place-structure-duplicate')).toBeInTheDocument();
-    expect(r.getByTestId('place-structure-save')).toBeDisabled();
+    expect(r.queryByTestId('place-structure-duplicate')).toBeNull();
+    expect(r.queryByTestId('place-structure-form')).toBeNull();
     expect(addLocationNode).toHaveBeenCalledTimes(1);
   });
 
@@ -521,5 +522,68 @@ describe('#699 Codex round 3', () => {
     fireEvent.click(r.getByTestId('place-node-kit')); // into Kitchen
     expect(r.queryByTestId('place-structure-form')).toBeNull();
     expect(renameNode).not.toHaveBeenCalled();
+  });
+});
+
+describe('#482 F-C0.2 — an add whose reply a newer refresh superseded', () => {
+  const pantry: ProjectNode = { id: 'pantry', parentId: 'gf', name: 'Pantry', kind: 'room', order: 2 };
+
+  it('closes once the tree shows the room, instead of calling its own name taken', async () => {
+    let finish!: (id: string | null) => void;
+    const addLocationNode = vi.fn(() => new Promise<string | null>((r) => { finish = r; }));
+    const { useStore, PlacesScreen } = await load({ addLocationNode });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add-room'));
+    fireEvent.change(r.getByLabelText('New room in Ground Floor'), { target: { value: 'Pantry' } });
+    fireEvent.click(r.getByTestId('place-structure-save'));
+    // the newer refresh lands first, with the room in it; then the create's own reply is dropped (null)
+    act(() => { useStore.setState({ nodes: [...NODES, pantry] }); });
+    await act(async () => { finish(null); });
+    expect(r.queryByTestId('place-structure-duplicate')).toBeNull();
+    expect(r.queryByTestId('place-structure-form')).toBeNull();
+  });
+
+  it('also closes when the refresh lands after the dropped reply', async () => {
+    const addLocationNode = vi.fn(async () => null);
+    const { useStore, PlacesScreen } = await load({ addLocationNode });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add-room'));
+    fireEvent.change(r.getByLabelText('New room in Ground Floor'), { target: { value: 'Pantry' } });
+    fireEvent.click(r.getByTestId('place-structure-save'));
+    await vi.waitFor(() => expect(r.getByTestId('place-structure-save')).not.toBeDisabled());
+    expect(r.getByTestId('place-structure-form')).toBeInTheDocument();
+    act(() => { useStore.setState({ nodes: [...NODES, pantry] }); });
+    expect(r.queryByTestId('place-structure-duplicate')).toBeNull();
+    expect(r.queryByTestId('place-structure-form')).toBeNull();
+  });
+
+  it('a send that never landed leaves the form open as typed, to retry', async () => {
+    const addLocationNode = vi.fn(async () => null);
+    const { useStore, PlacesScreen } = await load({ addLocationNode });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add-room'));
+    fireEvent.change(r.getByLabelText('New room in Ground Floor'), { target: { value: 'Pantry' } });
+    fireEvent.click(r.getByTestId('place-structure-save'));
+    await vi.waitFor(() => expect(r.getByTestId('place-structure-save')).not.toBeDisabled());
+    expect((r.getByLabelText('New room in Ground Floor') as HTMLInputElement).value).toBe('Pantry');
+  });
+
+  it('a name retyped after the dropped reply is kept: the duplicate guard speaks for it', async () => {
+    const addLocationNode = vi.fn(async () => null);
+    const { useStore, PlacesScreen } = await load({ addLocationNode });
+    act(() => { useStore.getState().openPlace('gf'); });
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add-room'));
+    const input = r.getByLabelText('New room in Ground Floor');
+    fireEvent.change(input, { target: { value: 'Pantry' } });
+    fireEvent.click(r.getByTestId('place-structure-save'));
+    await vi.waitFor(() => expect(r.getByTestId('place-structure-save')).not.toBeDisabled());
+    fireEvent.change(input, { target: { value: 'Store' } });
+    act(() => { useStore.setState({ nodes: [...NODES, pantry] }); });
+    expect(r.getByTestId('place-structure-form')).toBeInTheDocument();
+    expect((input as HTMLInputElement).value).toBe('Store');
   });
 });
