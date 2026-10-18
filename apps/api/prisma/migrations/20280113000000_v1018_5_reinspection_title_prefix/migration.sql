@@ -17,12 +17,17 @@
 -- matching child of a row already resolved and gives it the same title. Every row is resolved from the titles as they
 -- stood before this statement, in one UPDATE.
 --
--- THE READ MODEL TOO (Codex 4308535200). The `inspections.inbox` projection keeps one serialized copy of a project's
--- inspections per generation ("InspectionsProjection"."dto" = { inspections: [ { id, title, ... } ] }), refreshed only
--- by the next inspection event. A quiet project's active generation would go on serving the old title. So the same
--- statement-set rewrites that copy: in every stored row for a project with a resolved row, each entry whose "id" is
--- resolved takes the same new title, and nothing else in the document changes. Projection and canonical read the
--- same afterwards, with no rebuild and no generation change.
+-- THE READ MODEL (Codex 4308535200, 4308738421). The `inspections.inbox` projection keeps one serialized copy of a
+-- project's inspections per generation, refreshed only by the next inspection event, so a quiet project would go on
+-- serving the old title. Rewriting that copy here is not safe: the relay locks the active generation, reads canonical
+-- inspections and then upserts the copy, so a previous-release relay still running during the migrate-before-restart
+-- window can read the old titles before this block commits and write them back after it. So the copy is not touched.
+-- Instead every non-retired generation of a project with a resolved row is stamped as built by an older serializer
+-- ("catalogVersion" = 1). `readServableGeneration` refuses such a generation, and every read falls back to the
+-- canonical live slice, which this block has fixed and which is always current. The relay never writes
+-- "catalogVersion", so a stale upsert that lands before or after this commit is never served. The next ordinary
+-- `projection:rebuild` stamps a fresh generation at the current version, read from the fixed rows. This is the same
+-- refusal the projection already gives an older generation (the v2 note in inspections.projection.ts).
 --
 -- No trigger on "Inspection" governs "title" (the assignee freeze and the submit fence compare other columns), so the
 -- UPDATE passes them untouched. Re-runnable: a resolved row equals its parent's title, which never again equals
@@ -69,19 +74,12 @@ BEGIN
     FROM v1018_5_resolved r
    WHERE i."projectId" = r."projectId" AND i."id" = r."id";
 
-  UPDATE "InspectionsProjection" ip
-     SET "dto" = jsonb_set(ip."dto", '{inspections}', (
-           SELECT COALESCE(jsonb_agg(
-                    CASE WHEN r."id" IS NULL THEN e.entry ELSE e.entry || jsonb_build_object('title', r."newTitle") END
-                    ORDER BY e.pos), '[]'::jsonb)
-             FROM jsonb_array_elements(ip."dto" -> 'inspections') WITH ORDINALITY AS e(entry, pos)
-             LEFT JOIN v1018_5_resolved r ON r."projectId" = ip."projectId" AND r."id" = e.entry ->> 'id')),
-         "updatedAt" = now()
-   WHERE jsonb_typeof(ip."dto" -> 'inspections') = 'array'
-     AND EXISTS (
-       SELECT 1 FROM jsonb_array_elements(ip."dto" -> 'inspections') AS x(entry)
-         JOIN v1018_5_resolved r ON r."projectId" = ip."projectId" AND r."id" = x.entry ->> 'id'
-        WHERE x.entry ->> 'title' IS DISTINCT FROM r."newTitle");
+  UPDATE "ProjectionGeneration" g
+     SET "catalogVersion" = 1, "updatedAt" = now()
+   WHERE g."consumer" = 'inspections.inbox'
+     AND g."status" IN ('active', 'building')
+     AND g."catalogVersion" > 1
+     AND g."projectId" IN (SELECT DISTINCT r."projectId" FROM v1018_5_resolved r);
 
   SELECT count(*) FILTER (WHERE q."projectId" IS NOT NULL), count(*) FILTER (WHERE q."projectId" IS NULL)
     INTO changed_qa, changed_other
