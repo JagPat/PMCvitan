@@ -76,7 +76,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -3592,6 +3592,7 @@ export const useStore = create<Store>()(
           s.reviews.push({
             id: submitted.id,
             title: submitted.title,
+            ...(submitted.reinspectionOfId ? { reinspectionOfId: submitted.reinspectionOfId } : {}),
             zone: submitted.zone,
             // the review inherits the checklist's FILED location, not just its legacy zone
             // text: a checklist raised against a room is reviewed at that room, and dropping
@@ -3640,7 +3641,7 @@ export const useStore = create<Store>()(
       // #482 V-1018-2 — what the decision says back, in the viewer's language when it is said (names and ids are
       // data): an online decision's toast reads the language at settlement (Codex 4307111788)
       const lang = get().lang;
-      const approvedMsg = (l: Lang): string => (review.closing ? IRT.signedOffToast(review.activityName ?? review.title, l) : IRT.approvedToast(review.id, l));
+      const approvedMsg = (l: Lang): string => (review.closing ? IRT.signedOffToast(review.activityName ?? inspectionTitle(review, l), l) : IRT.approvedToast(review.id, l));
       const msg = approvedMsg(lang);
       // Task 10 (Module 3) correction — one stable idempotency key for this decision: the online send
       // and any offline replay reach the server under it, so a lost-response retry decides once.

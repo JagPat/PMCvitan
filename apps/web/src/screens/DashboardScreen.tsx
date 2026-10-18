@@ -12,7 +12,7 @@ import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
-import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, type Lang, type WaitParty } from '@vitan/shared';
+import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, type Lang, type WaitParty } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 /** Top 10 #2 (#771) — a count whose slice has not settled is shown as unknown, never as 0. */
@@ -124,7 +124,7 @@ export function DashboardScreen() {
   ];
   if (canOpen('inspect-review')) tiles.push(
     inspectionsKnown
-      ? { key: 'review', label: L.reviewTile[lang], value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? waitSub(reviewsWait, T.inQueue(reviewPending, lang)) : reviewPending === 1 ? waitSub(reviewsWait, activeReview?.title ?? L.onePending[lang]) : L.nothingPending[lang], onClick: () => (onlyReviewId ? openItem('inspect-review', onlyReviewId) : setScreen('inspect-review')) }
+      ? { key: 'review', label: L.reviewTile[lang], value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? waitSub(reviewsWait, T.inQueue(reviewPending, lang)) : reviewPending === 1 ? waitSub(reviewsWait, activeReview ? inspectionTitle(activeReview, lang) : L.onePending[lang]) : L.nothingPending[lang], onClick: () => (onlyReviewId ? openItem('inspect-review', onlyReviewId) : setScreen('inspect-review')) }
       : { key: 'review', label: L.reviewTile[lang], value: UNKNOWN, accent: 'var(--accent)', sub: unknownSub(inspectionsFailed, lang), onClick: () => setScreen('inspect-review') },
     // API mode never claims WHICH items failed beyond the recorded count — the seeded
     // "Drain slope · Terrace" copy is demo-only prototype fidelity

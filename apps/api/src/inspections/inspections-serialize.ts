@@ -335,6 +335,8 @@ export function bakeInspections(
           // #633 — the ONE "open issue" count: the items on a re-inspection not yet decided (open or in
           // review), the same rule as the Dashboard's "failed items awaiting re-inspection".
           openIssues: i.reinspectionOfId && !i.decided ? i.items.length : 0,
+          // #482 V-1018-5 — the lineage that labels a re-inspection's title on the Site Map
+          reinspectionOfId: i.reinspectionOfId ?? null,
         }),
       )
     : [];

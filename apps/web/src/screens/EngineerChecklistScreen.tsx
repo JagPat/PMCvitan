@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore, checklistFrozen } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState, ItemNotFound } from '@/components';
 import { Camera } from '@/lib/icons';
-import { checklistLabels as L, checklistText as T, servedDayIn, type ItemState } from '@vitan/shared';
+import { checklistLabels as L, checklistText as T, inspectionTitle, servedDayIn, type ItemState } from '@vitan/shared';
 import { inspectionsReadMode, resolveMediaUrl } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
 import { useUrlItem } from '@/lib/useUrlItem';
@@ -40,6 +40,8 @@ function noteRows(note: string, frozen: boolean): number {
 export function EngineerChecklistScreen() {
   const checklist = useStore((s) => s.checklist);
   const lang = useStore((s) => s.lang);
+  // #482 V-1018-5 — a checklist named in a line reads with its re-inspection label, in the viewer's language
+  const titleOf = (c: { title: string; reinspectionOfId?: string | null } | undefined): string | undefined => (c ? inspectionTitle(c, lang) : undefined);
   // EVERY checklist issued to this site, so a second one is work the engineer can actually open
   // rather than a count they can only read. `checklist` is one OF these — the picker below is how
   // they move the edit slot between them.
@@ -131,7 +133,7 @@ export function EngineerChecklistScreen() {
   // Codex 4212402110 — between the linked checklist leaving the outstanding set and the route being
   // cleared (an effect), the slot already holds another checklist: it is not shown, editable, under the
   // departing URL
-  if (adopting) return <EmptyState title={T.opening(openChecklists.find((c) => c.id === adopting)?.title ?? adopting, lang)} detail={L.openingDetail[lang]} />;
+  if (adopting) return <EmptyState title={T.opening(titleOf(openChecklists.find((c) => c.id === adopting)) ?? adopting, lang)} detail={L.openingDetail[lang]} />;
   if (released) return <EmptyState title={L.returning[lang]} detail={L.returnSubmitted[lang]} />;
   if (clearing) return <EmptyState title={L.returning[lang]} detail={L.returnList[lang]} />;
   // Codex 4207530085 — the switch to the named checklist is guarded (an online submit in flight refuses
@@ -141,7 +143,7 @@ export function EngineerChecklistScreen() {
     const named = openChecklists.find((c) => c.id === routeItem);
     return (
       <EmptyState
-        title={T.opening(named?.title ?? routeItem, lang)}
+        title={T.opening(titleOf(named) ?? routeItem, lang)}
         detail={L.openingAfterSubmit[lang]}
       />
     );
@@ -208,7 +210,7 @@ export function EngineerChecklistScreen() {
     const itemName = owner?.items.find((it) => it.id === itemId)?.name;
     const where = itemName ?? T.item(itemId, lang);
     if (inspectionId === checklist.id) return T.onThis(where, lang);
-    return T.onOther(owner?.title ?? inspectionId, where, lang);
+    return T.onOther(titleOf(owner) ?? inspectionId, where, lang);
   };
 
   const set = (i: number, v: Exclude<ItemState, null>) => () => setItem(i, v);
@@ -218,7 +220,7 @@ export function EngineerChecklistScreen() {
       <div className={styles.mobileScreen} style={{ flex: 1, paddingBottom: 20 }}>
         <div style={{ padding: '10px 0 14px' }}>
           <Eyebrow size={9}>{L.eyebrow[lang]}</Eyebrow>
-          <div data-testid="checklist-title" style={{ fontWeight: 700, fontSize: 21, marginTop: 4, lineHeight: 1.2 }}>{checklist.title}</div>
+          <div data-testid="checklist-title" style={{ fontWeight: 700, fontSize: 21, marginTop: 4, lineHeight: 1.2 }}>{inspectionTitle(checklist, lang)}</div>
           {/* WHERE this check is carried out — the filed trail, tappable back to the Site Map. */}
           <div style={{ marginTop: 4 }}>
             <LocationContext nodeId={checklist.nodeId} fallback={checklist.zone} compact testId="checklist-place" lang={lang} />
@@ -258,7 +260,7 @@ export function EngineerChecklistScreen() {
                         color: active ? '#fff' : 'var(--muted)',
                       }}
                     >
-                      {c.title}
+                      {inspectionTitle(c, lang)}
                       <span style={{ display: 'block', fontWeight: 500, fontSize: 11, opacity: 0.8 }}>{c.zone}</span>
                     </button>
                   );

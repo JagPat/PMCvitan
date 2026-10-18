@@ -223,6 +223,9 @@ export interface PlacedInspectionDto {
   failedItems: number;  /** #633 — open issues here: the items on a re-inspection not yet decided (0 otherwise).
    *  Same rule as the Dashboard count of failed items awaiting re-inspection. */
   openIssues: number;
+  /** #482 V-1018-5 — the rejected inspection this re-inspection re-checks (`null` otherwise); readers label the
+   *  title from it. Always present: an absent key tells a client the server predates it. */
+  reinspectionOfId: string | null;
 }
 
 /** A project phase with a live rollup of its activities — the unit of phase-level

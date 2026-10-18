@@ -425,7 +425,9 @@ export class InspectionsService {
               id: childId,
               projectId,
               kind: 'checklist',
-              title: `Re-inspection: ${insp.title}`,
+              // #482 V-1018-5 — the inspection's own title: readers label a re-inspection from `reinspectionOfId`
+              // in their language, so no fixed English words are written into the record
+              title: insp.title,
               zone: insp.zone,
               nodeId: insp.nodeId,
               activityId: insp.activityId,

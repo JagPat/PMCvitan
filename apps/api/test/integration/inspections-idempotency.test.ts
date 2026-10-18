@@ -247,6 +247,13 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     expect(lineage[ordinary.id]).toHaveProperty('reinspectionOfId', null);
     // every open checklist states it — none is served without the key
     for (const c of res.body.openChecklists as Array<Record<string, unknown>>) expect(c).toHaveProperty('reinspectionOfId');
+    // #482 V-1018-5 — the re-inspection stores the inspection's own title: no fixed English words are written into
+    // the record, and readers label it from the lineage, which the Site Map rows carry too
+    expect(child.title).toBe('Lineage original');
+    const placed = Object.fromEntries((res.body.placedInspections as Array<{ id: string; reinspectionOfId: string | null }>).map((i) => [i.id, i]));
+    expect(placed[child.id]).toHaveProperty('reinspectionOfId', original.id);
+    expect(placed[ordinary.id]).toHaveProperty('reinspectionOfId', null);
+    for (const i of res.body.placedInspections as Array<Record<string, unknown>>) expect(i).toHaveProperty('reinspectionOfId');
     // the module read path serves the same marker
     const slice = await reads.snapshotSlice(p, 'pmc', pmcA);
     expect(Object.fromEntries(slice.openChecklists.map((c) => [c.id, c.reinspectionOfId]))).toEqual({ [child.id]: original.id, [ordinary.id]: null });

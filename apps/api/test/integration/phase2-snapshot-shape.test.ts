@@ -137,7 +137,8 @@ const EXPECT: Record<string, Spec> = {
   GateReadingDto: { keys: ['v', 'source', 'reason'].sort(), optional: [], nullable: [] },
   ActivityReadinessDto: { keys: ['decision', 'material', 'team', 'inspection', 'drawing'].sort(), optional: [], nullable: [] },
   GateOverrideDto: { keys: ['id', 'gate', 'state', 'reason', 'actorName', 'expiresAt', 'evidenceMediaId'].sort(), optional: ['evidenceMediaId'], nullable: [] },
-  PlacedInspectionDto: { keys: ['id', 'title', 'zone', 'nodeId', 'kind', 'submitted', 'decided', 'failedItems', 'openIssues'].sort(), optional: ['nodeId'], nullable: [] },
+  // #482 V-1018-5 — the lineage that labels a re-inspection's title, always present (`null` on an ordinary row)
+  PlacedInspectionDto: { keys: ['id', 'title', 'zone', 'nodeId', 'kind', 'submitted', 'decided', 'failedItems', 'openIssues', 'reinspectionOfId'].sort(), optional: ['nodeId'], nullable: ['reinspectionOfId'] },
   PhaseDto: {
     keys: ['id', 'name', 'order', 'plannedStart', 'plannedEnd', 'plannedStartDate', 'plannedEndDate', 'activityTotal', 'done', 'inProgress', 'blocked', 'notStarted', 'donePct'].sort(),
     optional: [], nullable: ['plannedStartDate', 'plannedEndDate'].sort(),

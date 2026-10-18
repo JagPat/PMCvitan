@@ -139,3 +139,13 @@ export const clientHealthText = {
   },
   openDecision: (title: string, lang: Lang): string => pick(lang, `Open decision ${title}`, `निर्णय खोलें: ${title}`, `નિર્ણય ખોલો: ${title}`),
 };
+
+/** #482 V-1018-5 — the word a re-inspection is labelled with. The server used to write the English words into the
+ *  stored title; it now stores the inspection's own title, and the label comes from the structured link. */
+export const reinspectionLabel = { en: 'Re-inspection', hi: 'दोबारा निरीक्षण', gu: 'ફરી નિરીક્ષણ' } satisfies Record<Lang, string>;
+
+/** An inspection's title as a reader sees it: a re-inspection (`reinspectionOfId` set) is labelled in the reader's
+ *  language, every other title is shown as recorded. Never decided from the title's own words. */
+export function inspectionTitle(i: { title: string; reinspectionOfId?: string | null }, lang: Lang): string {
+  return i.reinspectionOfId ? `${reinspectionLabel[lang]}: ${i.title}` : i.title;
+}
