@@ -25,6 +25,7 @@ import {
 } from './assignment-eligibility';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { checklistPath } from '../platform/record-paths';
+import { isFailedItem } from './failed-item';
 
 /** The corrective-assignment rule lives in ONE module ({@link assignment-eligibility}) and every site
  *  that asks about a named assignee calls it. Re-exported here because `inspections.contract.test.ts`
@@ -334,7 +335,7 @@ export class InspectionsService {
       // inspection's items is a refused claim (it could be another inspection's row).
       const unknownRejected = input.rejectedItemIds.filter((id) => !insp.items.some((it) => it.id === id));
       if (unknownRejected.length > 0) throw new BadRequestException('Rejected item(s) do not belong to this inspection — reload and retry.');
-      const rejectedItems = insp.items.filter((it) => input.rejectedItemIds.includes(it.id) || it.rejected || it.result === 'FAIL');
+      const rejectedItems = insp.items.filter((it) => input.rejectedItemIds.includes(it.id) || isFailedItem(it));
       // a LEGACY zero-item closing may still be rejected (special-cased on the closing
       // flag) — every ordinary rejection must name real items
       if (rejectedItems.length === 0 && !insp.closing) throw new BadRequestException('No items rejected. Use approve instead.');
@@ -411,8 +412,10 @@ export class InspectionsService {
             data: { decided: true, decidedById: actor.actorId, decidedByName: actor.actorName },
           });
           if (count === 0) throw new ConflictException('The inspection changed while deciding — reload and retry');
-          for (const itemId of input.rejectedItemIds) {
-            await tx.inspectionItem.updateMany({ where: { id: itemId, inspectionId }, data: { rejected: true } });
+          // #482 F-C4.1 — every item sent back is marked rejected, the explicitly named ones and the engineer's
+          // fails alike, so the decided record says what returned (readiness reads `rejected`)
+          for (const it of rejectedItems) {
+            await tx.inspectionItem.updateMany({ where: { id: it.id, inspectionId }, data: { rejected: true } });
           }
           // the LINKED reinspection: only the rejected work returns, fresh and unfilled;
           // the requirement edge is INHERITED — it accepts the same work. NOT itself a

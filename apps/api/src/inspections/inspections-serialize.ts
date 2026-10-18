@@ -3,6 +3,7 @@ import type {
   Checklist, ChecklistItem, InspectionResult, ItemState, PlacedInspection, Review, ReviewItem, SwatchKey,
 } from '@vitan/shared';
 import { toIsoCivilDate } from '../common/civil-date';
+import { isFailedItem } from './failed-item';
 
 /**
  * Phase 2 Task 10 (Module 3) — the ONE canonical inspections read serializer, shared by the live snapshot
@@ -315,7 +316,7 @@ export function bakeInspections(
     );
 
   // any inspection already decided with a rejected/failed item ⇒ re-inspection exists.
-  const reinspectionCreated = all.some((i) => i.decided && i.items.some((it) => it.rejected || it.result === 'FAIL'));
+  const reinspectionCreated = all.some((i) => i.decided && i.items.some(isFailedItem));
 
   // Location spine: every inspection with its place, for the Site-Map's "inspections here". pmc/engineer.
   const placedInspections: PlacedInspection[] = canSeeInspections
@@ -328,7 +329,7 @@ export function bakeInspections(
           kind: i.kind,
           submitted: i.submitted,
           decided: i.decided,
-          failedItems: i.items.filter((it) => it.rejected || it.result === 'FAIL').length,
+          failedItems: i.items.filter(isFailedItem).length,
           // #633 — the ONE "open issue" count: the items on a re-inspection not yet decided (open or in
           // review), the same rule as the Dashboard's "failed items awaiting re-inspection".
           openIssues: i.reinspectionOfId && !i.decided ? i.items.length : 0,
