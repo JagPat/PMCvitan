@@ -259,6 +259,30 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     expect(Object.fromEntries(slice.openChecklists.map((c) => [c.id, c.reinspectionOfId]))).toEqual({ [child.id]: original.id, [ordinary.id]: null });
   });
 
+  /**
+   * #482 V-1018-5 (Codex 4308126127) — a re-inspection stored before the change carries "Re-inspection: " in its
+   * title. Rejecting it again must not hand that decoration on: the next re-check takes the lineage's first title.
+   */
+  it('decide (reject): a re-check of a re-inspection takes the first title of its lineage, never a stored prefix', async () => {
+    const { p, pmcA } = await freshProject();
+    const eng = `it-inidem-u-engT-${projSeq}`;
+    await t.prisma.user.create({ data: { id: eng, projectId: p, role: 'engineer', name: 'Eng T', email: `${eng}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: eng, role: 'engineer', status: 'active' } });
+    const asEng = { sub: eng, role: 'engineer', projectId: p } as AuthUser;
+    await svc.create(p, createInput({ title: 'Terrace slope' }), asPmc(pmcA, p), 'k-root-1');
+    const original = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Terrace slope' }, include: { items: true } });
+    await svc.submit(p, original.id, { items: original.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, asEng, 'k-root-2');
+    await svc.decide(p, original.id, { approve: false, rejectedItemIds: [original.items[0]!.id], assigneeId: eng }, asPmc(pmcA, p), 'k-root-3');
+    const child = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: original.id }, include: { items: true } });
+    expect(child.title).toBe('Terrace slope');
+    // the row as a release before this change stored it
+    await t.prisma.inspection.update({ where: { id: child.id }, data: { title: 'Re-inspection: Terrace slope' } });
+    await svc.submit(p, child.id, { items: child.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, asEng, 'k-root-4');
+    await svc.decide(p, child.id, { approve: false, rejectedItemIds: [child.items[0]!.id], assigneeId: eng }, asPmc(pmcA, p), 'k-root-5');
+    const grandchild = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: child.id } });
+    expect(grandchild.title).toBe('Terrace slope');
+  });
+
   it('legacy: an UNKEYED create still works (additive rollout — unkeyed clients keep functioning)', async () => {
     const { p, pmcA } = await freshProject();
     await svc.create(p, createInput(), asPmc(pmcA, p), undefined);

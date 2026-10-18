@@ -361,6 +361,10 @@ export class InspectionsService {
       const today = this.clock.today(project.timeZone);
       const dueIso = addCivilDays(today, input.dueInDays ?? DEFAULT_DUE_IN_DAYS);
       const dueDate = fromIsoCivilDate(dueIso)!;
+      // #482 V-1018-5 — the re-inspection carries the work's own title: the first inspection of its lineage, which a
+      // person typed (titles are never edited). A re-inspection stored before this change has "Re-inspection: " in its
+      // title, so copying `insp.title` would hand that decoration on to the next re-check; reading the lineage does not.
+      const childTitle = await this.lineageRootTitle(projectId, insp);
       const existingIds = await this.prisma.inspection.findMany({ select: { id: true } });
       const childId = nextSeqId('INSP-', existingIds.map((i) => i.id));
       // a zero-item legacy closing still yields WORKABLE corrective items — the child
@@ -427,7 +431,7 @@ export class InspectionsService {
               kind: 'checklist',
               // #482 V-1018-5 — the inspection's own title: readers label a re-inspection from `reinspectionOfId`
               // in their language, so no fixed English words are written into the record
-              title: insp.title,
+              title: childTitle,
               zone: insp.zone,
               nodeId: insp.nodeId,
               activityId: insp.activityId,
@@ -476,5 +480,18 @@ export class InspectionsService {
     }
     await this.dispatcher.dispatchCommitted(events);
     return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /** The title of the first inspection in this one's re-inspection lineage (itself when it re-checks nothing). */
+  private async lineageRootTitle(projectId: string, insp: { title: string; reinspectionOfId: string | null }): Promise<string> {
+    let current = insp;
+    const seen = new Set<string>();
+    while (current.reinspectionOfId && !seen.has(current.reinspectionOfId)) {
+      seen.add(current.reinspectionOfId);
+      const parent = await this.prisma.inspection.findFirst({ where: { projectId, id: current.reinspectionOfId }, select: { title: true, reinspectionOfId: true } });
+      if (!parent) break;
+      current = parent;
+    }
+    return current.title;
   }
 }
