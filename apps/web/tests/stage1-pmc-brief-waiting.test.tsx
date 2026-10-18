@@ -143,7 +143,7 @@ describe('#482 F-A1.1 (Board 6246214610, Option A) — with the switch on, N cou
     const change: Decision = { ...structuredClone(init.decisions[0]!), id: 'DEC_C2', draft: false, status: 'change', deciderKind: 'client' };
     const review = { ...structuredClone(init.reviews[0]!), id: 'INSP-030', decided: false, submitted: true, reinspectionOfId: undefined };
     const reinspection = {
-      id: 'INSP-026', title: 'Re-inspection: QA TEST', zone: 'QA', date: 'today', submitted: false, reinspectionOfId: 'INSP-025',
+      id: 'INSP-026', title: 'QA TEST', zone: 'QA', date: 'today', submitted: false, reinspectionOfId: 'INSP-025',
       items: [{ id: 'r1', name: 'Drain slope', state: null, photos: 0, note: '', evidence: [] }],
     };
     useStore.setState({

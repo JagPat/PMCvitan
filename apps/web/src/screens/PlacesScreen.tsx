@@ -22,7 +22,7 @@ import { placeCountWords, type PlaceCountOptions, type PlaceCountWord } from '@/
 import { childrenOf, trailOf, placeContents, demoSiteMapInspections, spaceStatus, type DrawingRelation, type PlacedDrawing, type SpaceStatus } from '@/lib/locationTree';
 import {
   can, navLabels, SNAPSHOT_SITE_PHOTO_LIMIT, siteMapLabels as L, siteMapText as T, placeSectionLabels as SEC, placeKindTag, drawingRelationLabels,
-  placeInspectionStatusLabels, spaceStatusLabels, photoTakenAtIn, systemBlockIn,
+  placeInspectionStatusLabels, spaceStatusLabels, photoTakenAtIn, systemBlockIn, inspectionTitle,
   type Lang, type Photo, type PlacedInspection, type ScreenKey, type SwatchKey,
 } from '@vitan/shared';
 import styles from './responsive.module.css';
@@ -176,7 +176,7 @@ export function PlacesScreen() {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{i.id}</span>
-                        <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.title}</span>
+                        <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{inspectionTitle(i, lang)}</span>
                       </div>
                     </div>
                     {(i.openIssues ?? 0) > 0 && (

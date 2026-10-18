@@ -98,9 +98,9 @@ describe('the re-inspections a rejection sent back reach the PMC’s For You', (
     useStore.setState({
       role: 'pmc', sessionUserId: 'u-pmc', decisions: [], activities: [], drawings: [],
       openChecklists: [
-        checklist('RE-1', { reinspectionOfId: 'INSP-1', dueDate: '2026-10-14', title: 'Re-inspection: Terrace' }),
-        checklist('RE-4', { reinspectionOfId: 'INSP-4', dueDate: '2026-10-13', title: 'Re-inspection: Stair', items: [item('RE-4-a'), item('RE-4-b')] }),
-        checklist('RE-5', { reinspectionOfId: 'INSP-5', dueDate: null, title: 'Re-inspection: Lift' }),
+        checklist('RE-1', { reinspectionOfId: 'INSP-1', dueDate: '2026-10-14', title: 'Terrace' }),
+        checklist('RE-4', { reinspectionOfId: 'INSP-4', dueDate: '2026-10-13', title: 'Stair', items: [item('RE-4-a'), item('RE-4-b')] }),
+        checklist('RE-5', { reinspectionOfId: 'INSP-5', dueDate: null, title: 'Lift' }),
         checklist('RE-SUB', { reinspectionOfId: 'INSP-6', submitted: true }),
         checklist('CK-9', { reinspectionOfId: null }),
       ],
@@ -132,7 +132,7 @@ describe('the re-inspections a rejection sent back reach the PMC’s For You', (
   it('a single open re-inspection opens at that record; no due date stored says none', async () => {
     const { useStore } = await demo();
     const sel = await import('@/store/selectors');
-    useStore.setState({ role: 'pmc', reviews: [], openChecklists: [checklist('RE-1', { reinspectionOfId: 'INSP-1', dueDate: null, title: 'Re-inspection: Terrace' })] });
+    useStore.setState({ role: 'pmc', reviews: [], openChecklists: [checklist('RE-1', { reinspectionOfId: 'INSP-1', dueDate: null, title: 'Terrace' })] });
     const re = sel.selectActionItems(useStore.getState()).find((i) => i.key === 'pmc-reinspections')!;
     expect(re).toMatchObject({ count: 1, title: '1 re-inspection with the engineer', detail: '1 open issue · Re-inspection: Terrace', item: 'RE-1' });
     expect(sel.inspectionRecordLink(useStore.getState(), 'RE-1')).toEqual({ screen: 'inspect-review', item: 'RE-1' });

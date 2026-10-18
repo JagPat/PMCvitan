@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActionItemFacts, type ActivityReadiness, type Checklist, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
+import { SNAPSHOT_SITE_PHOTO_LIMIT, deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, inspectionTitle, viewerIsConsultee, viewerIsDecider, type Activity, type ActionItemFacts, type ActivityReadiness, type Checklist, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type Role, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 import { rolesFor } from '@/lib/screens';
 import { demoReviewOpenIssues } from '@/lib/locationTree';
@@ -541,8 +541,9 @@ export function selectActionItems(s: AppState): ActionItem[] {
   const unackedItem = (xs: readonly { id: string }[]): string | undefined => (drawingsSliceSettled(s) ? only(xs) : undefined);
   const unacked = s.drawings.filter((d) => !d.draft && d.current && d.current.status === 'for_construction' && !d.ackedByMe && (d.recipientOfCurrent ?? true));
   const blocked = s.activities.filter((a) => a.status === 'blocked');
-  const names = (xs: { title?: string; name?: string; number?: string }[], n = 3) =>
-    xs.slice(0, n).map((x) => x.title ?? x.name ?? x.number ?? '').filter(Boolean).join(', ');
+  // #482 V-1018-5 — an inspection's title reads with its re-inspection label, in the viewer's language
+  const names = (xs: { title?: string; name?: string; number?: string; reinspectionOfId?: string | null }[], n = 3) =>
+    xs.slice(0, n).map((x) => (x.title !== undefined ? inspectionTitle({ title: x.title, reinspectionOfId: x.reinspectionOfId }, s.lang) : x.name ?? x.number ?? '')).filter(Boolean).join(', ');
 
   // Phase 6 task 4b (§A.3, round-3 Codex F1) — the approval to-do follows THE DECIDER (the shared
   // `viewerIsDecider` predicate) for EVERY role: a named engineer-decider gets the item, a
@@ -585,7 +586,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
   }
 
   if (s.role === 'engineer') {
-    if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, facts: { title: s.checklist.title, items: s.checklist.items.length, zone: s.checklist.zone }, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber', item: inspectionsSettledForLinks(s) ? s.checklist.id : undefined });
+    if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${inspectionTitle(s.checklist, 'en')}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, facts: { title: inspectionTitle(s.checklist, s.lang), items: s.checklist.items.length, zone: s.checklist.zone }, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber', item: inspectionsSettledForLinks(s) ? s.checklist.id : undefined });
     if (s.dailyLog && !s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', facts: { checkedIn: s.dailyLog.checkedIn }, screen: 'daily-log', cta: 'Open daily log', tone: 'ink', item: dailyLogSettledForLinks(s) ? s.dailyLog.id : undefined });
     if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), facts: { n: unacked.length }, screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber', item: unackedItem(unacked) });
   }

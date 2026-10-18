@@ -272,7 +272,7 @@ export function demoSiteMapInspections(placed: PlacedInspection[], reviews: Revi
   });
   for (const r of reviews) {
     if (placed.some((p) => p.id === r.id)) continue;
-    rows.push({ id: r.id, title: r.title, zone: r.zone, nodeId: r.nodeId, kind: 'review', ...row(r) });
+    rows.push({ id: r.id, title: r.title, zone: r.zone, nodeId: r.nodeId, reinspectionOfId: r.reinspectionOfId ?? null, kind: 'review', ...row(r) });
   }
   return rows;
 }

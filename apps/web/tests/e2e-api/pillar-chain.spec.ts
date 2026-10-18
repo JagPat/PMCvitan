@@ -134,12 +134,16 @@ async function pollStatus(request: APIRequestContext, want: string): Promise<voi
  *  lands, which under CI load can exceed the expect timeout. The snapshot's placedInspections
  *  carry every inspection's submitted/decided flags, so this poll is not defeated by the
  *  superseded-lease branch. */
+/** #482 V-1018-5 — the title as the English screens show it: the server stores the inspection's own title, and a
+ *  re-inspection is labelled from its `reinspectionOfId`. */
+const shownTitle = (i: { title: string; reinspectionOfId?: string | null }): string => (i.reinspectionOfId ? `Re-inspection: ${i.title}` : i.title);
+
 async function pollChecklistSubmitted(request: APIRequestContext, title: string): Promise<void> {
   await expect
     .poll(async () => {
       const snap = await snapshot(request, pmcToken);
-      return ((snap.placedInspections ?? []) as Array<{ title: string; submitted: boolean }>)
-        .find((i) => i.title === title)?.submitted ?? false;
+      return ((snap.placedInspections ?? []) as Array<{ title: string; submitted: boolean; reinspectionOfId?: string | null }>)
+        .find((i) => shownTitle(i) === title)?.submitted ?? false;
     }, { timeout: 15_000 })
     .toBe(true);
 }
@@ -151,7 +155,10 @@ async function pollChecklistSubmitted(request: APIRequestContext, title: string)
  *  checklist IS the served field view; only then may the browser assert on it. */
 async function pollEngChecklist(request: APIRequestContext, title: string): Promise<void> {
   await expect
-    .poll(async () => ((await snapshot(request, engToken)).checklist as { title?: string } | null)?.title ?? '', { timeout: 15_000 })
+    .poll(async () => {
+      const c = (await snapshot(request, engToken)).checklist as { title: string; reinspectionOfId?: string | null } | null;
+      return c ? shownTitle(c) : '';
+    }, { timeout: 15_000 })
     .toBe(title);
 }
 

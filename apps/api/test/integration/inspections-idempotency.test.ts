@@ -247,9 +247,40 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     expect(lineage[ordinary.id]).toHaveProperty('reinspectionOfId', null);
     // every open checklist states it — none is served without the key
     for (const c of res.body.openChecklists as Array<Record<string, unknown>>) expect(c).toHaveProperty('reinspectionOfId');
+    // #482 V-1018-5 — the re-inspection stores the inspection's own title: no fixed English words are written into
+    // the record, and readers label it from the lineage, which the Site Map rows carry too
+    expect(child.title).toBe('Lineage original');
+    const placed = Object.fromEntries((res.body.placedInspections as Array<{ id: string; reinspectionOfId: string | null }>).map((i) => [i.id, i]));
+    expect(placed[child.id]).toHaveProperty('reinspectionOfId', original.id);
+    expect(placed[ordinary.id]).toHaveProperty('reinspectionOfId', null);
+    for (const i of res.body.placedInspections as Array<Record<string, unknown>>) expect(i).toHaveProperty('reinspectionOfId');
     // the module read path serves the same marker
     const slice = await reads.snapshotSlice(p, 'pmc', pmcA);
     expect(Object.fromEntries(slice.openChecklists.map((c) => [c.id, c.reinspectionOfId]))).toEqual({ [child.id]: original.id, [ordinary.id]: null });
+  });
+
+  /**
+   * #482 V-1018-5 (Codex 4308126127) — a re-inspection stored before the change carries "Re-inspection: " in its
+   * title. Rejecting it again must not hand that decoration on: the next re-check takes the lineage's first title.
+   */
+  it('decide (reject): a re-check of a re-inspection takes the first title of its lineage, never a stored prefix', async () => {
+    const { p, pmcA } = await freshProject();
+    const eng = `it-inidem-u-engT-${projSeq}`;
+    await t.prisma.user.create({ data: { id: eng, projectId: p, role: 'engineer', name: 'Eng T', email: `${eng}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: eng, role: 'engineer', status: 'active' } });
+    const asEng = { sub: eng, role: 'engineer', projectId: p } as AuthUser;
+    await svc.create(p, createInput({ title: 'Terrace slope' }), asPmc(pmcA, p), 'k-root-1');
+    const original = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Terrace slope' }, include: { items: true } });
+    await svc.submit(p, original.id, { items: original.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, asEng, 'k-root-2');
+    await svc.decide(p, original.id, { approve: false, rejectedItemIds: [original.items[0]!.id], assigneeId: eng }, asPmc(pmcA, p), 'k-root-3');
+    const child = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: original.id }, include: { items: true } });
+    expect(child.title).toBe('Terrace slope');
+    // the row as a release before this change stored it
+    await t.prisma.inspection.update({ where: { id: child.id }, data: { title: 'Re-inspection: Terrace slope' } });
+    await svc.submit(p, child.id, { items: child.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, asEng, 'k-root-4');
+    await svc.decide(p, child.id, { approve: false, rejectedItemIds: [child.items[0]!.id], assigneeId: eng }, asPmc(pmcA, p), 'k-root-5');
+    const grandchild = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: child.id } });
+    expect(grandchild.title).toBe('Terrace slope');
   });
 
   it('legacy: an UNKEYED create still works (additive rollout — unkeyed clients keep functioning)', async () => {

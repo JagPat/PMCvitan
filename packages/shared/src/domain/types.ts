@@ -602,6 +602,8 @@ export interface PlacedInspection {
   /** #633 — open issues here: the items on a re-inspection not yet decided (0 otherwise).
    *  Absent from a server older than the field: the count is then unknown, never shown as 0. */
   openIssues?: number;
+  /** #482 V-1018-5 — set on a re-inspection: the rejected inspection it re-checks, which labels its title. */
+  reinspectionOfId?: string | null;
 }
 
 /** A reference to an uploaded photo. `url` is absolute (S3/R2) or a data URL (local demo). */

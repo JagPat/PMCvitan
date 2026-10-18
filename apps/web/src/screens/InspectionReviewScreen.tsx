@@ -6,7 +6,7 @@ import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound, 
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { X, Plus } from '@/lib/icons';
 import { EmptyHint } from '@/guide/EmptyHint';
-import { swatch as swatchGradient, can, reviewItemText as RIT, inspectionReviewLabels as L, inspectionReviewText as T, servedDayIn, type Checklist, type Lang, type Review } from '@vitan/shared';
+import { swatch as swatchGradient, can, reviewItemText as RIT, inspectionReviewLabels as L, inspectionReviewText as T, inspectionTitle, servedDayIn, type Checklist, type Lang, type Review } from '@vitan/shared';
 import { resolveMediaUrl, inspectionsReadMode } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
 import { useUrlItem } from '@/lib/useUrlItem';
@@ -230,7 +230,7 @@ export function InspectionReviewScreen() {
                   opacity: r.decided ? 0.6 : 1,
                 }}
               >
-                {r.title}
+                {inspectionTitle(r, lang)}
                 {r.decided ? ' ✓' : ''}
               </button>
             );
@@ -247,7 +247,7 @@ export function InspectionReviewScreen() {
               {T.closing(review.activityName ?? review.activityId ?? null, lang)}
             </div>
           )}
-          <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' }}>{review.title}</div>
+          <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' }}>{inspectionTitle(review, lang)}</div>
           {/* WHERE this inspection was carried out — the filed trail, tappable back to the
               Site Map. Falls back to the legacy free-text zone for a review with no node. */}
           <div style={{ marginTop: 7 }}>
@@ -394,7 +394,7 @@ function OutstandingChecklists({ items, focused, lang }: { items: Checklist[]; f
             style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', padding: '11px 13px', borderRadius: 10, border: c.id === focused ? '2px solid var(--ink)' : '1px solid rgba(35,33,28,.12)', background: '#fff' }}
           >
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--faint)' }}>{c.id}</span>
-            <span style={{ fontSize: 13.5, color: 'var(--ink)', flex: 1, minWidth: 160 }}>{c.title}</span>
+            <span style={{ fontSize: 13.5, color: 'var(--ink)', flex: 1, minWidth: 160 }}>{inspectionTitle(c, lang)}</span>
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>{T.items(c.items.length, lang)}</span>
             <LocationContext nodeId={c.nodeId} fallback={c.zone} lang={lang} />
           </div>
