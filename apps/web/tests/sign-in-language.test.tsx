@@ -96,13 +96,24 @@ describe('the sign-in screens in English are unchanged', () => {
 describe('the gate opens in the language last chosen on this device', () => {
   it('a language picked at the gate is still there after a reload', async () => {
     const first = await page();
-    const view = render(<first.TeamAccessScreen />);
+    const view = render(<first.TeamAccessScreen atGate />);
     fireEvent.click(view.getByTestId('gate-lang-hi'));
     cleanup();
     const again = await page();
     expect(again.useStore.getState().lang).toBe('hi');
     const gate = render(<again.TeamAccessScreen />);
     expect(gate.getByText('आपका मोबाइल नंबर')).toBeInTheDocument();
+  });
+
+  it('a guest pick inside a console without a token (dev auth) is never saved as the device language', async () => {
+    const first = await page();
+    expect(first.useStore.getState().sessionToken).toBeNull();
+    const view = render(<first.TeamAccessScreen />);
+    fireEvent.click(view.getByTestId('gate-lang-hi'));
+    expect(first.useStore.getState().lang).toBe('hi');
+    cleanup();
+    const again = await page();
+    expect(again.useStore.getState().lang).toBe('en');
   });
 
   async function signInWith(p: Awaited<ReturnType<typeof page>>, sub: string, role: 'client' | 'engineer' = 'client') {

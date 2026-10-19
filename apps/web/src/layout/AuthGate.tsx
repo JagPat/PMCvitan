@@ -16,7 +16,7 @@ export function AuthGate() {
     <div className={styles.gate}>
       <div className={`drawing-grid ${styles.backdrop}`} />
       <div className={styles.card}>
-        <TeamAccessScreen />
+        <TeamAccessScreen atGate />
       </div>
       {toast && <Toast message={toast} />}
     </div>

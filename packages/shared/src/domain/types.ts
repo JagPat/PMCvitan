@@ -7,7 +7,6 @@
  */
 
 import type { SwatchKey } from '../tokens/swatches';
-import type { SignInErrorKey } from '../i18n/signIn';
 
 /**
  * Every role a bearer token can carry — including the account-less `worker` device
@@ -647,6 +646,16 @@ export interface Worker {
   color: string;
   job: string;
 }
+
+/**
+ * Why an email or password sign-in step failed, before it is put into words, so the gate words it (`signInErrors`) in its
+ * current language (#886's rule for the phone sign-in, now for every sign-in screen). `{wait}` is a wait phrase.
+ */
+export type SignInErrorKey =
+  | 'enterEmailPassword' | 'demoEmails' | 'accessRemoved' | 'serverDown' | 'wrongPassword'
+  | 'invalidInvitedEmail' | 'setupNeedsServer' | 'passwordMismatch' | 'codeSendFailed' | 'setupWrongCode' | 'passwordLength'
+  | 'setupExpired' | 'passwordSaveFailed' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
+  | 'tooManySignIns' | 'tooManyCodes';
 
 /** #886: a phone sign-in failure as an `accessDict` key (plus the throttle wait), and the text it produced. */
 export type AccessErrorKey =

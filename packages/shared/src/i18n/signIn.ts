@@ -4,7 +4,7 @@
  * chose Hindi or Gujarati met English as soon as they tapped "Sign in with email". English is byte-identical to
  * the screens' original copy. Email addresses typed by the person are data and are shown as typed.
  */
-import type { Lang } from '../domain/types';
+import type { Lang, SignInErrorKey } from '../domain/types';
 
 export const signInLabels = {
   loginTitle: { en: 'Sign in', hi: 'साइन इन करें', gu: 'સાઇન ઇન કરો' },
@@ -53,16 +53,6 @@ export const signInText = {
   /** the toast after a password is saved and the person is signed in */
   passwordSaved: (lang: Lang) => pick(lang, 'Password saved. You are signed in.', 'पासवर्ड सहेज लिया। आप साइन इन हैं।', 'પાસવર્ડ સાચવ્યો. તમે સાઇન ઇન છો.'),
 };
-
-/**
- * Why an email or password sign-in step failed, before it is put into words, so the gate words it in its
- * current language (#886's rule for the phone sign-in, now for every sign-in screen). `{wait}` is a wait phrase.
- */
-export type SignInErrorKey =
-  | 'enterEmailPassword' | 'demoEmails' | 'accessRemoved' | 'serverDown' | 'wrongPassword'
-  | 'invalidInvitedEmail' | 'setupNeedsServer' | 'passwordMismatch' | 'codeSendFailed' | 'setupWrongCode' | 'passwordLength'
-  | 'setupExpired' | 'passwordSaveFailed' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
-  | 'tooManySignIns' | 'tooManyCodes';
 
 export const signInErrors: Record<Lang, Record<SignInErrorKey, string> & { waitFew: string }> = {
   en: {

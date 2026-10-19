@@ -45,7 +45,7 @@ const WORKERS = [
 
 /** The sign-in gate's top: the Vitan mark and the language row. #827 one-screen sign-in: a live build opens
  *  straight on the phone number, so the language pick sits there; the demo keeps it on "Who are you?". */
-function GateHeader({ label, lang, setLang }: { label: string; lang: Lang; setLang: (l: Lang) => void }) {
+function GateHeader({ label, lang, setLang, atGate }: { label: string; lang: Lang; setLang: (l: Lang) => void; atGate: boolean }) {
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -60,8 +60,9 @@ function GateHeader({ label, lang, setLang }: { label: string; lang: Lang; setLa
           <button key={l.key} data-testid={`gate-lang-${l.key}`} onClick={() => {
             // a pick made at the gate, before anyone has signed in, never the console host's
             noteLangChoice(l.key as Lang, 'guest');
-            // at the sign-in gate the pick is this device's (V-1018-6); inside a console it is a guest's, never saved
-            if (!useStore.getState().sessionToken) writeDeviceLang(l.key as Lang);
+            // at the sign-in gate the pick is this device's (V-1018-6); inside a console it is a guest's, never saved.
+            // Asked of the host, not read from `sessionToken`: a dev-auth console has no token either
+            if (atGate) writeDeviceLang(l.key as Lang);
             setLang(l.key as Lang);
           }} style={langStyle(lang === l.key)}>
             {l.label}
@@ -83,7 +84,8 @@ function BackBtn({ onClick, label }: { onClick: () => void; label: string }) {
   );
 }
 
-export function TeamAccessScreen() {
+/** `atGate`: rendered by the sign-in gate (`AuthGate`), not as a screen inside a signed-in console. */
+export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
   const step = useStore((s) => s.access.step);
   const trade = useStore((s) => s.access.trade);
   const phone = useStore((s) => s.access.phone);
@@ -141,7 +143,7 @@ export function TeamAccessScreen() {
     ];
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-        <GateHeader label={t.pick} lang={lang} setLang={setLang} />
+        <GateHeader label={t.pick} lang={lang} setLang={setLang} atGate={atGate} />
         <div style={{ fontSize: 24, fontWeight: 700, margin: '28px 0 16px' }}>{t.who}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {cards.map((c) => (
@@ -197,7 +199,7 @@ export function TeamAccessScreen() {
     const ready = phone.length === 10 && !sending;
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-        {API_BASE ? <GateHeader label={t.pick} lang={lang} setLang={setLang} /> : <BackBtn onClick={accReset} label={t.back} />}
+        {API_BASE ? <GateHeader label={t.pick} lang={lang} setLang={setLang} atGate={atGate} /> : <BackBtn onClick={accReset} label={t.back} />}
         <div style={{ marginTop: API_BASE ? 28 : 14 }}>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{t.phoneTitle}</div>
           <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{t.phoneSub}</div>
