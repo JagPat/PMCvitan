@@ -501,7 +501,7 @@ export interface AuthResult {
 }
 
 export interface UploadMediaInput {
-  kind: 'progress' | 'inspection' | 'decision' | 'attendance' | 'material';
+  kind: 'progress' | 'inspection' | 'decision' | 'attendance' | 'material' | 'visit';
   mime: string;
   data: string; // base64, no data: prefix
   decisionId?: string;
@@ -512,6 +512,8 @@ export interface UploadMediaInput {
   inspectionItemId?: string;
   clientKey?: string;
   dailyLogId?: string; // the day's log this photo was taken for (#482)
+  // Site Visits SV2 (#792): the visit a `visit` file is added on, with what the adder said about it
+  siteVisit?: { visitId: string; note?: string; rating?: SiteVisitRating };
   geoLat?: number;
   geoLng?: number;
   takenAt?: string;
@@ -1537,6 +1539,24 @@ export interface SiteVisit {
   lateEndTimeAdjusted: boolean | null;
   places: { id: string; nodeId: string | null; name: string; addedAt: string; addedTimeAdjusted: boolean; addedAfterEnd: boolean; retiredAt: string | null }[];
   attendees: { id: string; kind: 'member' | 'guest'; userId: string | null; role: string | null; name: string; addedAt: string; retiredAt: string | null }[];
+  /** The files added on the visit (SV2), oldest first; absent from an API older than SV2. */
+  files?: SiteVisitFile[];
+}
+export type SiteVisitRating = 'fine' | 'concern' | 'action_needed';
+/** A file on a visit (`SiteVisitFileDto`): `url` is a short-lived signed path, resolved against the API base. */
+export interface SiteVisitFile {
+  mediaId: string;
+  url: string;
+  mime: string;
+  takenAt: string | null;
+  note: string | null;
+  rating: SiteVisitRating | null;
+  /** The place the file showed when it was added, with the name it had then. */
+  place: { nodeId: string | null; name: string } | null;
+  addedById: string;
+  addedByName: string;
+  addedByRole: string;
+  addedAt: string;
 }
 export interface StartSiteVisitBody {
   id: string;

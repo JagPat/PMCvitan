@@ -4,9 +4,12 @@ import type { Lang } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { isCurrentProjectScope, projectScopeOf, type ProjectScope } from '@/store/projectScope';
 import {
-  isSiteVisitOp, newIdempotencyKey, siteVisitListeners, siteVisitOf,
+  isSiteVisitOp, isTerminalOutboxError, newIdempotencyKey, refusalMessage, siteVisitListeners, siteVisitOf,
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
+  type SiteVisitRating, type UploadMediaInput,
 } from '@/data/apiGateway';
+import { captureStamp } from './captureStamp';
+import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
 import { SV } from './siteVisitWords';
 
 /**
@@ -85,6 +88,37 @@ function refusedText(message: string | null, lang: Lang): string {
   return lang === 'en' && message ? `${SV.refused.en} ${message}` : SV.refused[lang];
 }
 
+/** A chosen file's bytes as a data URL; null when the browser could not read it. */
+function readFile(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
+/** How long before the soonest photo link shown expires the screen reads the visits again for fresh ones: half the time
+ *  left, so whatever lifetime the server gives its links (`FILE_URL_TTL_SEC`, an hour by default), a link is renewed
+ *  well inside it (Codex 4319347052). Never sooner than `LINK_REFRESH_FLOOR_MS`; null when no link is shown. */
+export const LINK_REFRESH_FLOOR_MS = 15_000;
+export function linkRefreshDelay(visits: SiteVisit[], nowMs: number): number | null {
+  let soonest = Infinity;
+  for (const v of visits) {
+    for (const f of v.files ?? []) {
+      // a signed path carries its own expiry: `?t=<expEpochSec>.<signature>` (SignedUrlService.mediaPath)
+      const exp = /[?&]t=(\d+)\./.exec(f.url)?.[1];
+      if (exp) soonest = Math.min(soonest, Number(exp) * 1000);
+    }
+  }
+  return soonest === Infinity ? null : Math.max(LINK_REFRESH_FLOOR_MS, (soonest - nowMs) / 2);
+}
+
+/** Which picked file this is, as far as the browser can tell: the same file picked again names the same photo. */
+function fileIdentity(file: File): string {
+  return `${file.name}\u0000${file.size}\u0000${file.lastModified}\u0000${file.type}`;
+}
+
 /** The visits as shown: those still open first, then newest start first. */
 function ordered(list: SiteVisit[]): SiteVisit[] {
   return [...list].sort((a, b) => {
@@ -136,7 +170,7 @@ export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | n
         startPlace: body.nodeId ? { nodeId: body.nodeId, name: visitor.placeName ?? '' } : null,
         location: body.location ? { kind: 'device', ...body.location, approximate: body.location.accuracyM > APPROXIMATE_ACCURACY_M } : { kind: 'none' },
         endedAt: null, endTimeAdjusted: null, closedAt: null, closedById: null, closeReason: null,
-        lateEndedAt: null, lateEndTimeAdjusted: null, places: [], attendees: [],
+        lateEndedAt: null, lateEndTimeAdjusted: null, places: [], attendees: [], files: [],
       });
       continue;
     }
@@ -210,6 +244,27 @@ export function useSiteVisits() {
   const known = useRef(new Set<string>());
   // visits a refused start's acts were moved onto: their answers belong here even before a read shows the visit
   const movedTo = useRef(new Set<string>());
+  // SV2: the photos whose upload ended without an answer (no signal, a server error, a sign-in or rate limit to clear),
+  // one per visit, held by visit so a photo on another visit never displaces one. The server may have stored it, so it
+  // is sent again under the SAME key, by Send again or by picking the same file again, and the server adds it once.
+  // Each goes on an answer or a refusal for its key; all go on another project or sign-in.
+  type Held = { file: string; input: UploadMediaInput; scope: ProjectScope };
+  const [held, setHeld] = useState<ReadonlyMap<string, Held>>(new Map());
+  const hold = (visitId: string, entry: Held | null, key: string) => setHeld((old) => {
+    const now = old.get(visitId);
+    // only this photo's own outcome settles it
+    if (entry === null && now?.input.clientKey !== key) return old;
+    const next = new Map(old);
+    if (entry) next.set(visitId, entry); else next.delete(visitId);
+    return next;
+  });
+  // the visits as last shown, for a check made after a photo is read and shrunk (the screen may have moved on meanwhile)
+  const shownRef = useRef<SiteVisit[]>([]);
+  // bumped each time the link refresh fires, so a refresh that fails (rows unchanged) is tried again
+  const [relinks, setRelinks] = useState(0);
+  // the key of every photo (by visit and file) whose upload had no answer yet, so picking it again after "Don't send"
+  // is still the same photo; a key goes once the server answers or refuses it
+  const uncertain = useRef(new Map<string, string>());
 
   const live = (scope: ProjectScope): boolean => {
     const s = useStore.getState();
@@ -276,6 +331,8 @@ export function useSiteVisits() {
     setError(null);
     setNotice(null);
     movedTo.current = new Set();
+    setHeld(new Map());
+    uncertain.current = new Map();
     readHead(true);
     sendQueued();
   }, [projectId, generation, readHead]);
@@ -331,14 +388,72 @@ export function useSiteVisits() {
     }
   }, []);
 
+  /** SV2: send one photo, ready to go, under its key. With no answer it is kept here to send again under that key; a
+   *  sign-in or rate limit is said as such, never as no signal (Codex 4319347063). */
+  const sendPhoto = async (visitId: string, file: string, input: UploadMediaInput): Promise<boolean> => {
+    const state = useStore.getState();
+    const gw = state.serverGateway();
+    if (!gw) { setError(SV.needsServer[state.lang]); return false; }
+    const scope = projectScopeOf(state);
+    setBusy(true);
+    setError(null);
+    try {
+      await gw.uploadMedia(input);
+      if (!live(scope)) return false;
+      uncertain.current.delete(`${visitId}\u0000${file}`);
+      hold(visitId, null, input.clientKey!);
+      // the upload answers with the file, not the visit: read the visit again to show it
+      readHead(false);
+      return true;
+    } catch (err) {
+      if (!live(scope)) return false;
+      const lang = useStore.getState().lang;
+      const status = (err as { status?: unknown } | null)?.status;
+      if (isTerminalOutboxError(err)) {
+        uncertain.current.delete(`${visitId}\u0000${file}`);
+        hold(visitId, null, input.clientKey!);
+        setError(refusedText(refusalMessage(err), lang));
+      } else {
+        uncertain.current.set(`${visitId}\u0000${file}`, input.clientKey!);
+        hold(visitId, { file, input, scope }, input.clientKey!);
+        setError((status === 401 ? SV.photoSignIn : status === 429 ? SV.photoTooMany : SV.photoNeedsSignal)[lang]);
+      }
+      return false;
+    } finally {
+      if (live(scope)) setBusy(false);
+    }
+  };
+
   const now = () => new Date().toISOString();
   const shown = useMemo(() => withQueued(rows, queued, me), [rows, queued, me]);
+  // the photos' signed links expire: read again before the soonest one shown does, so a thumbnail or full photo never
+  // opens dead; each read brings fresh links and sets the next read, and a read that fails (no signal) leaves the rows as
+  // they were, so the timer is set again from the same links, sooner each time, down to the floor (Codex 4319531884)
+  useEffect(() => {
+    const delay = linkRefreshDelay(rows, Date.now());
+    if (delay === null) return;
+    const relink = setTimeout(() => { readHead(false); setRelinks((n) => n + 1); }, delay);
+    return () => clearTimeout(relink);
+  }, [rows, relinks, readHead]);
+  // a visit whose start is still queued is not on the server yet (an end or close waiting to send is no such visit)
+  const startsQueued = useMemo(() => new Set(queued.flatMap((o) => (o.t === 'siteVisitStart' ? [o.body.id] : []))), [queued]);
   // and every visit an act is queued on: after a reload its answer may land before the first read shows the visit
   // (Codex 4278754321)
   known.current = new Set([...shown.visits.map((v) => v.id), ...queued.map(siteVisitOf)]);
+  shownRef.current = shown.visits;
+  const unsent = useMemo(() => new Set([...held].flatMap(([visitId, h]) => (live(h.scope) ? [visitId] : []))), [held]);
 
   return {
-    visits: shown.visits, waiting: shown.waiting, queued: queued.length, load, hasMore, busy, error, notice, pings,
+    visits: shown.visits, waiting: shown.waiting, startsQueued, queued: queued.length, load, hasMore, busy, error, notice, pings,
+    /** The visits holding a photo with no answer to its upload: each can be sent again there, under its key. */
+    unsent,
+    /** The held photo goes again exactly as first sent (the server may already hold it as that). */
+    sendAgain: (visitId: string) => {
+      const h = held.get(visitId);
+      return h && live(h.scope) ? sendPhoto(visitId, h.file, h.input) : Promise.resolve(false);
+    },
+    /** The person drops a held photo (its key is kept: the same file picked again is still that photo). */
+    dropUnsent: (visitId: string) => { const h = held.get(visitId); if (h) hold(visitId, null, h.input.clientKey!); setError(null); },
     retry: () => readHead(true),
     sendNow: sendQueued,
     more: () => { if (cursor.current) readOlder(cursor.current); },
@@ -365,5 +480,44 @@ export function useSiteVisits() {
     })),
     retireAttendee: (visitId: string, attendeeId: string) =>
       act((idempotencyKey) => ({ t: 'siteVisitRetireAttendee', visitId, attendeeId, idempotencyKey })),
+    /** SV2: a photo on the visit, with an optional note, rating and place (one the visit walked), sent straight to the
+     *  server. The visitor and anyone recorded as present may add one while the visit is not closed; the server asks
+     *  again. Nothing is kept on the phone: with no signal the person is told so, and the photo is still theirs to
+     *  pick again (keeping it to send later is its own step, #992's Unit B). */
+    addPhoto: async (visitId: string, file: File, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string }): Promise<boolean> => {
+      const state = useStore.getState();
+      if (!state.serverGateway()) { setError(SV.needsServer[state.lang]); return false; }
+      const scope = projectScopeOf(state);
+      const say = (text: (typeof SV)[keyof typeof SV]) => { if (live(scope)) setError(text[useStore.getState().lang]); };
+      setBusy(true);
+      setError(null);
+      setNotice(null);
+      try {
+        const read = await readFile(file);
+        // the stamp is the original's: a redrawn photo carries no EXIF
+        const stamp = read ? captureStamp(read) : {};
+        const shown = read ? await shrinkPhoto(read) : null;
+        const m = shown ? /^data:([^;]+);base64,(.*)$/.exec(shown) : null;
+        // only a type and size the upload takes: anything else is refused here, before a byte is sent
+        if (!m || !UPLOAD_IMAGE_MIMES.includes(m[1])) { say(SV.photoUnreadable); return false; }
+        if (m[2].length > MAX_PHOTO_BASE64) { say(SV.photoTooBig); return false; }
+        if (!live(scope)) return false;
+        // the place is checked as the visit is now: one removed while the photo was being read is not sent (Codex
+        // 4319531896). The server takes any published place, rightly, for a photo taken before its place was removed
+        const v = shownRef.current.find((x) => x.id === visitId);
+        if (extra.nodeId && !v?.places.some((p) => p.nodeId === extra.nodeId && !p.retiredAt)) { say(SV.photoPlaceGone); return false; }
+        const note = extra.note?.trim();
+        const identity = fileIdentity(file);
+        // the same file picked again after an upload with no answer is the same photo: the same key, so it is added once
+        const again = uncertain.current.get(`${visitId}\u0000${identity}`);
+        return await sendPhoto(visitId, identity, {
+          kind: 'visit', mime: m[1], data: m[2], clientKey: again ?? newIdempotencyKey(), ...stamp,
+          ...(extra.nodeId ? { nodeId: extra.nodeId } : {}),
+          siteVisit: { visitId, ...(note ? { note } : {}), ...(extra.rating ? { rating: extra.rating } : {}) },
+        });
+      } finally {
+        if (live(scope)) setBusy(false);
+      }
+    },
   };
 }
