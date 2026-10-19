@@ -29,6 +29,17 @@
 -- `projection:rebuild` stamps a fresh generation at the current version, read from the fixed rows. This is the same
 -- refusal the projection already gives an older generation (the v2 note in inspections.projection.ts).
 --
+-- GENERATIONS CREATED MEANWHILE (Codex 4309338166). A relay's first delivery bootstraps a generation, and a rebuild
+-- creates one, each seeded from canonical rows in its own transaction. One created after the stamp's snapshot but
+-- seeded before this block commits would hold the old titles at catalog version 2 and become servable. So the block
+-- first takes "ProjectionGeneration" in EXCLUSIVE mode, which every generation writer conflicts with (the relay's and
+-- the barrier's FOR UPDATE, the bootstrap and rebuild INSERTs, every checkpoint UPDATE) and plain reads do not. It
+-- waits for writers already in flight and holds new ones until commit: a generation that committed first is stamped
+-- with the rest, and one created afterwards is seeded from the fixed rows. A rebuild whose building generation was
+-- created first and seeds later keeps the stamp, since activation never rewrites "catalogVersion". Reads go on as
+-- before. No writer of "ProjectionGeneration" also writes "Inspection", and the lock is taken before any row lock
+-- here, so it adds no lock cycle.
+--
 -- No trigger on "Inspection" governs "title" (the assignee freeze and the submit fence compare other columns), so the
 -- UPDATE passes them untouched. Re-runnable: a resolved row equals its parent's title, which never again equals
 -- 'Re-inspection: ' || that title, so a second run changes nothing.
@@ -42,6 +53,8 @@ DECLARE
   untouched_qa integer;
   untouched_other integer;
 BEGIN
+  LOCK TABLE "ProjectionGeneration" IN EXCLUSIVE MODE;
+
   CREATE TEMP TABLE v1018_5_resolved ON COMMIT DROP AS
   WITH RECURSIVE
     matching AS (

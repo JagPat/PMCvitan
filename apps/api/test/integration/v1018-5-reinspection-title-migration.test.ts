@@ -20,6 +20,8 @@ describe('V-1018-5 re-inspection title migration (live PG)', () => {
   const P = `it-v10185-${run}`;
   /** a project with no old titles: its read model must go on being served */
   const Q = `it-v10185q-${run}`;
+  /** a project whose read model is being created while the migration runs (Codex 4309338166) */
+  const R = `it-v10185r-${run}`;
   let query: InspectionsQueryService;
   /** the read model as the projection wrote it before the migration, i.e. what a late stale upsert writes back */
   let staleDto: object;
@@ -55,7 +57,7 @@ describe('V-1018-5 re-inspection title migration (live PG)', () => {
     t = await createTestApp();
     query = t.app.get(InspectionsQueryService);
     f = await createTwoProjectFixture(t.prisma);
-    for (const id of [P, Q]) {
+    for (const id of [P, Q, R]) {
       await t.prisma.project.create({
         data: { id, orgId: f.orgA.id, name: id, short: 'V', descriptor: '', stage: 'x', siteCode: 'V', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
       });
@@ -85,10 +87,10 @@ describe('V-1018-5 re-inspection title migration (live PG)', () => {
     await project(Q);
   });
   afterAll(async () => {
-    await t?.prisma.inspectionsProjection.deleteMany({ where: { projectId: { in: [P, Q] } } });
-    await t?.prisma.projectionGeneration.deleteMany({ where: { projectId: { in: [P, Q] } } });
-    await t?.prisma.inspection.deleteMany({ where: { projectId: { in: [P, Q] } } });
-    await t?.prisma.project.deleteMany({ where: { id: { in: [P, Q] } } });
+    await t?.prisma.inspectionsProjection.deleteMany({ where: { projectId: { in: [P, Q, R] } } });
+    await t?.prisma.projectionGeneration.deleteMany({ where: { projectId: { in: [P, Q, R] } } });
+    await t?.prisma.inspection.deleteMany({ where: { projectId: { in: [P, Q, R] } } });
+    await t?.prisma.project.deleteMany({ where: { id: { in: [P, Q, R] } } });
     await f?.cleanup();
     await t?.close();
   });
@@ -141,6 +143,36 @@ describe('V-1018-5 re-inspection title migration (live PG)', () => {
     expect(q.source).toBe('projection');
     const gen = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: INSPECTIONS_PROJECTION, projectId: Q, status: 'active' } });
     expect(gen.catalogVersion).toBe(2);
+  });
+
+  it('a read model created while the migration runs is never served with the old words (Codex 4309338166)', async () => {
+    for (const [id, title, parent] of [['root', 'Column casting', null], ['child', 'Re-inspection: Column casting', 'root']] as const) {
+      await t.prisma.inspection.create({ data: { id: `${R}-${id}`, projectId: R, kind: 'checklist', title, zone: 'GF', date: '01 Jun 2026', submitted: true, decided: true, reinspectionOfId: parent && `${R}-${parent}` } });
+    }
+    // a relay's first delivery for this project: it creates the generation and seeds it from the titles it can see,
+    // and is still open when the migration starts
+    let seeded!: () => void;
+    let release!: () => void;
+    const isSeeded = new Promise<void>((r) => { seeded = r; });
+    const gate = new Promise<void>((r) => { release = r; });
+    const relay = t.prisma.$transaction(async (tx) => {
+      const gen = await tx.projectionGeneration.create({ data: { consumer: INSPECTIONS_PROJECTION, projectId: R, generation: 1, status: 'active', appliedPosition: 0n, catalogVersion: 2 } });
+      const dto = JSON.parse(JSON.stringify(await computeInspectionsBase(tx, R))) as object;
+      await tx.inspectionsProjection.create({ data: { generationId: gen.id, projectId: R, dto } });
+      seeded();
+      await gate;
+    }, { timeout: 30_000 });
+    await isSeeded;
+    let migrated = false;
+    const migration = migrate().then(() => { migrated = true; });
+    await new Promise((r) => setTimeout(r, 500));
+    expect(migrated).toBe(false); // it waits for the generation writer already in flight
+    release();
+    await relay;
+    await migration;
+    const after = await served(R);
+    expect(after.source).toBe('live');
+    expect(after.titles.child).toBe('Column casting');
   });
 
   it('a second run changes nothing', async () => {
