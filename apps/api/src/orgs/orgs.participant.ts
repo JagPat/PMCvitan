@@ -84,7 +84,7 @@ export class OrgsParticipant {
    */
   async operatorRoster(tx: OrgsParticipantClient | Prisma.TransactionClient): Promise<{
     companies: Array<{ id: string; name: string; managers: Array<{ name: string; contact: string | null; role: string }> }>;
-    projects: Array<{ id: string; name: string; company: string; members: Array<{ name: string; contact: string | null; role: string; discipline: string | null }> }>;
+    projects: Array<{ id: string; name: string; companyId: string; company: string; members: Array<{ name: string; contact: string | null; role: string; discipline: string | null }> }>;
   }> {
     const client = tx as OrgsParticipantClient;
     const managers = await client.$queryRawUnsafe<Array<{ orgId: string; orgName: string; name: string; contact: string | null; role: string }>>(
@@ -94,8 +94,8 @@ export class OrgsParticipant {
          LEFT JOIN "User" u ON u."id" = om."userId"
         ORDER BY o."name" ASC, o."id" ASC, om."role" DESC, u."name" ASC`,
     );
-    const members = await client.$queryRawUnsafe<Array<{ projectId: string; projectName: string; company: string; name: string | null; contact: string | null; role: string | null; discipline: string | null }>>(
-      `SELECT p."id" AS "projectId", p."name" AS "projectName", o."name" AS "company",
+    const members = await client.$queryRawUnsafe<Array<{ projectId: string; projectName: string; companyId: string; company: string; name: string | null; contact: string | null; role: string | null; discipline: string | null }>>(
+      `SELECT p."id" AS "projectId", p."name" AS "projectName", o."id" AS "companyId", o."name" AS "company",
               u."name", COALESCE(u."email", u."phone") AS "contact", m."role", m."discipline"
          FROM "Project" p
          JOIN "Org" o ON o."id" = p."orgId"
@@ -110,10 +110,11 @@ export class OrgsParticipant {
       if (r.role) c.managers.push({ name: r.name, contact: r.contact, role: r.role });
       companies.set(r.orgId, c);
     }
+    // `companyId` ties a project to its row in `companies` (company names are not unique; Codex P2 on #981);
     // a live project with nobody on it is still listed, with no members, so an empty project shows as empty
-    const projects = new Map<string, { id: string; name: string; company: string; members: Array<{ name: string; contact: string | null; role: string; discipline: string | null }> }>();
+    const projects = new Map<string, { id: string; name: string; companyId: string; company: string; members: Array<{ name: string; contact: string | null; role: string; discipline: string | null }> }>();
     for (const r of members) {
-      const pr = projects.get(r.projectId) ?? { id: r.projectId, name: r.projectName, company: r.company, members: [] };
+      const pr = projects.get(r.projectId) ?? { id: r.projectId, name: r.projectName, companyId: r.companyId, company: r.company, members: [] };
       if (r.role) pr.members.push({ name: r.name ?? '', contact: r.contact, role: r.role, discipline: r.discipline });
       projects.set(r.projectId, pr);
     }

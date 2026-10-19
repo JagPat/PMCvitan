@@ -67,12 +67,13 @@ describe('#482 operator door (live PG)', () => {
     const r = await http().get('/ops/people').set('Authorization', `Bearer ${TOKEN}`);
     expect(r.status, r.text).toBe(200);
     type Company = { id: string; managers: Array<{ name: string; contact: string | null; role: string }> };
-    type Proj = { id: string; company: string; members: Array<{ name: string; contact: string | null; role: string; discipline: string | null }> };
+    type Proj = { id: string; companyId: string; company: string; members: Array<{ name: string; contact: string | null; role: string; discipline: string | null }> };
     const { orgId } = await t.prisma.project.findUniqueOrThrow({ where: { id: f.projectA.id }, select: { orgId: true } });
     const owner = await t.prisma.user.findUniqueOrThrow({ where: { id: f.ownerUser.id } });
     const orgA = (r.body.companies as Company[]).find((c) => c.id === orgId);
     expect(orgA?.managers).toEqual([{ name: owner.name, contact: owner.email, role: 'owner' }]);
     const a = (r.body.projects as Proj[]).find((p) => p.id === f.projectA.id);
+    expect(a?.companyId).toBe(orgId);
     expect(a?.members.map((m) => [m.name, m.role]).sort()).toEqual([['client4b', 'client'], ['member', 'pmc']]);
     // nothing in the reply carries a password hash or a token
     expect(r.text).not.toMatch(/passwordHash|"password"/);
