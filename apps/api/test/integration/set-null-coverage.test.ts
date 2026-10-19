@@ -53,6 +53,12 @@ const COVERAGE: Record<string, Classification> = {
       'no module projection serializes Media.nodeId — the snapshot photo layer is a LIVE read ' +
       '(SnapshotService attaches placed photos per request), so a silent null can never be served stale',
   },
+  // ── media.remove: a marked-up copy's original (Stage 1 media) ──────────────────────────────
+  'Media.sourceMediaId': {
+    exempt:
+      'no module projection serializes Media — photos and their markup copies are read LIVE ' +
+      '(SnapshotService attaches them per request), so a silent null can never be served stale',
+  },
   // ── nodes.remove: the site-visit record (Site Visits #792 SV1-a) ─────────────────────────────
   'SiteVisit.startNodeId': {
     exempt:
