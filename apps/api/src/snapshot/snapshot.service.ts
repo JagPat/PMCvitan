@@ -136,7 +136,7 @@ export class SnapshotService {
           where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...(hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {}) },
           orderBy: { createdAt: 'desc' },
           take: SNAPSHOT_SITE_PHOTO_LIMIT,
-          select: { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true },
+          select: { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true, createdAt: true },
         }),
       ),
       // Task 10 — the drawings register comes from the module's query (the baked per-viewer register:
@@ -157,12 +157,23 @@ export class SnapshotService {
       .map((m) => ({ id: m.id, url: this.signed.mediaPath(m.id), takenAt: m.takenAt ?? undefined }));
     // The location spine's "reality" layer: every site photo with its place tag, so the
     // Place view can show a location's photos beside its drawings and decisions.
+    // #482 site photos — each photo says who added it, their role on this project and when. The name and role
+    // are read now, for the photo window's uploaders only; a removed member keeps the role they had.
+    const uploaderIds = [...new Set(siteMedia.map((m) => m.uploadedBy))];
+    const uploaders = uploaderIds.length === 0 ? [] : await this.prisma.user.findMany({
+      where: { id: { in: uploaderIds } },
+      select: { id: true, name: true, memberships: { where: { projectId }, select: { role: true } } },
+    });
+    const uploader = new Map(uploaders.map((u) => [u.id, { by: u.name, byRole: u.memberships[0]?.role }]));
     const photoDtos = siteMedia.map((m) => ({
       id: m.id,
       url: this.signed.mediaPath(m.id),
       takenAt: m.takenAt ?? undefined,
       nodeId: m.nodeId ?? undefined,
       kind: m.kind,
+      by: uploader.get(m.uploadedBy)?.by,
+      byRole: uploader.get(m.uploadedBy)?.byRole,
+      at: m.createdAt.toISOString(),
       // #482 site photos — the viewer's own upload key, so a device that still holds this photo in its offline queue
       // (its reply was lost) shows it once; nobody else's key is sent
       ...(userId && m.uploadedBy === userId && m.clientKey ? { clientKey: m.clientKey } : {}),

@@ -160,7 +160,7 @@ const EXPECT: Record<string, Spec> = {
     keys: ['id', 'number', 'title', 'discipline', 'zone', 'activityId', 'decisionId', 'nodeId', 'draft', 'current', 'ackedByMe', 'recipientOfCurrent', 'revisions'].sort(),
     optional: ['nodeId', 'draft', 'recipientOfCurrent'].sort(), nullable: ['zone', 'activityId', 'decisionId', 'current'].sort(),
   },
-  PhotoDto: { keys: ['id', 'url', 'takenAt', 'nodeId', 'kind', 'clientKey'].sort(), optional: ['takenAt', 'nodeId', 'clientKey'].sort(), nullable: [] },
+  PhotoDto: { keys: ['id', 'url', 'takenAt', 'nodeId', 'kind', 'by', 'byRole', 'at', 'clientKey'].sort(), optional: ['takenAt', 'nodeId', 'by', 'byRole', 'clientKey'].sort(), nullable: [] },
   DailyLogDto: { keys: ['id', 'date', 'logDate', 'checkedIn', 'checkinTime', 'submitted', 'crew', 'previous', 'materials', 'progress', 'photos', 'photoCount', 'myPhotoKeys'].sort(), optional: ['id', 'previous'].sort(), nullable: ['logDate', 'checkinTime', 'previous'].sort() },
   CompanyDto: { keys: ['id', 'name', 'kind', 'contactName', 'contactEmail', 'contactPhone', 'notes'].sort(), optional: [], nullable: [] },
   NodeDto: { keys: ['id', 'parentId', 'name', 'kind', 'order', 'draft'].sort(), optional: ['draft'], nullable: ['parentId'] },

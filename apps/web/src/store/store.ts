@@ -5677,11 +5677,16 @@ export const useStore = create<Store>()(
               // #482 site photos: the photo list (the Dashboard's and the Site Map's) shows it at once, newest first.
               // A refresh that landed before this reply may already hold it, in the list, the log, or only one of
               // them when the log's read failed; each gets it once.
+              // its pick order is recorded even when a refresh already brought it in, so an earlier pick whose reply
+              // comes after still goes in behind it (#984)
+              photoPickedAt.set(res.id, pickSeq);
               if (!s.photos.some((p) => p.id === res.id)) {
                 // after any photo this device picked later whose reply came back first
-                photoPickedAt.set(res.id, pickSeq);
                 const at = s.photos.findIndex((p) => (photoPickedAt.get(p.id) ?? 0) < pickSeq);
-                s.photos.splice(at < 0 ? s.photos.length : at, 0, { id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}) });
+                s.photos.splice(at < 0 ? s.photos.length : at, 0, { id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}),
+                  // who, role and when, as the next snapshot will say them (#482): this viewer, now
+                  ...(s.userName ? { by: s.userName } : {}), byRole: s.role, at: new Date().toISOString(),
+                });
                 // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
                 if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
               }

@@ -554,6 +554,10 @@ export interface Photo {
   /** location-tree node this photo shows (undefined = unplaced) */
   nodeId?: string;
   kind: string; // progress | inspection | material
+  /** #482 site photos — who added it, their role on the project and when (ISO); absent in the local demo */
+  by?: string;
+  byRole?: string;
+  at?: string;
   /** #482 site photos — the upload key, on the viewer's own photos only */
   clientKey?: string;
 }
