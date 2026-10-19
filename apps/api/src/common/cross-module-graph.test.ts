@@ -400,8 +400,9 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   ],
   'auth/auth.controller.ts': [
     "Post('switch')", "Post('session')", "Post('login')", "Post('password/request')", "Post('password/verify')", "Post('password/complete')", "Post('otp/request')", "Post('otp/verify')",
-    "Post('worker/token')", "Post('email/request')", "Post('email/verify')", "Post('google')", "Post('ops/qa-sign-in')",
+    "Post('worker/token')", "Post('email/request')", "Post('email/verify')", "Post('google')",
   ],
+  'auth/auth-ops.controller.ts': ["Post('qa-sign-in')"],
   'activities/activities.controller.ts': [
     'Post()', "Patch(':activityId')", "Delete(':activityId')", "Post(':activityId/start')", "Post(':activityId/complete')",
     "Post(':activityId/override')", "Delete(':activityId/override/:overrideId')", "Post('outputs')",

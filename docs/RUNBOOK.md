@@ -2621,7 +2621,10 @@ No route takes SQL or touches project data. The T3C seal check stays a terminal 
 
 It accepts only a `qa.<word>@vitan.in` account, and only while every company that account reaches, and every
 active member of those companies' projects, is a QA account too. A real account, or a QA account placed in a real
-company or project, gets 403. Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
+company or project, gets 403 (addresses are matched as stored, so `QA.Name@vitan.in` counts as a real person). The
+session it returns is marked as a QA session and the same check runs on every request it makes, a project switch
+included: once a real person joins the company or project, the session gets 401. Each sign-in writes an
+`auth.qaSignIn` audit row with the operator and reason.
 
 ## §DS. Database snapshot (read-only)
 

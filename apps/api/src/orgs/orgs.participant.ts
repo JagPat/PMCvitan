@@ -4,6 +4,9 @@ import { readinessLockKey } from '../common/readiness-lock';
 import { readPhase6_4dRollout } from '../platform/phase6-4d-rollout';
 import { RoleStandingQuery } from '../platform/role-standing.query';
 
+/** #482 — the address pattern the Board fixed for the QA accounts (`qa.<lowercase word>@vitan.in`), matched as stored. */
+export const QA_ACCOUNT_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
+
 /** The narrow client surface the standing check needs — satisfied by both a `$transaction` client
  *  and a top-level Prisma client, so non-DI callers (operator CLIs) can construct this directly. */
 export interface OrgsParticipantClient {
@@ -119,6 +122,40 @@ export class OrgsParticipant {
       projects.set(r.projectId, pr);
     }
     return { companies: [...companies.values()], projects: [...projects.values()] };
+  }
+
+  /**
+   * #482 operator door (Codex P1s on #983) — is this account a QA account whose whole reach is QA-only? True only when
+   * its own email is a QA address, it reaches at least one company (a company row, or an active membership on a
+   * project of that company), none of its active projects is outside a company, and every company member and every
+   * active project member of those companies has a QA address. Addresses are matched exactly as stored, so
+   * `QA.person@vitan.in` is not a QA address. Stated here because every table it reads is orgs-owned: the QA sign-in
+   * asks it before minting the session, and `JwtGuard` asks it again on every request the session makes, so adding a
+   * real person to the company or project ends the session at its next request.
+   */
+  async qaOnlyReach(tx: OrgsParticipantClient | Prisma.TransactionClient, userId: string): Promise<boolean> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ self: boolean; reach: number; outside: number; real: number }>>(
+      `WITH reach AS (
+         SELECT om."orgId" FROM "OrgMembership" om WHERE om."userId" = $1
+         UNION
+         SELECT p."orgId" FROM "Membership" m JOIN "Project" p ON p."id" = m."projectId"
+          WHERE m."userId" = $1 AND m."status" = 'active'
+       ), people AS (
+         SELECT om."userId" FROM "OrgMembership" om WHERE om."orgId" IN (SELECT "orgId" FROM reach)
+         UNION
+         SELECT m."userId" FROM "Membership" m JOIN "Project" p ON p."id" = m."projectId"
+          WHERE m."status" = 'active' AND p."orgId" IN (SELECT "orgId" FROM reach)
+       )
+       SELECT COALESCE((SELECT u."email" ~ $2 FROM "User" u WHERE u."id" = $1), false) AS "self",
+              (SELECT COUNT(*) FROM reach WHERE "orgId" IS NOT NULL)::int AS "reach",
+              (SELECT COUNT(*) FROM reach WHERE "orgId" IS NULL)::int AS "outside",
+              (SELECT COUNT(*) FROM people x JOIN "User" u ON u."id" = x."userId"
+                WHERE u."email" IS NULL OR u."email" !~ $2)::int AS "real"`,
+      userId,
+      QA_ACCOUNT_EMAIL.source,
+    );
+    const r = rows[0];
+    return !!r && r.self === true && Number(r.reach) > 0 && Number(r.outside) === 0 && Number(r.real) === 0;
   }
 
   /**

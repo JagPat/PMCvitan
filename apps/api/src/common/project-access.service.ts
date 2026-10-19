@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/c
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from './auth';
 import { isProduction } from '../config';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 /**
  * The canonical LIVE authorization for a user on a project (Phase 0 Task 4).
@@ -11,6 +12,8 @@ import { isProduction } from '../config';
  */
 @Injectable()
 export class ProjectAccessService {
+  private readonly orgs = new OrgsParticipant();
+
   constructor(private readonly prisma: PrismaService) {}
 
   /** A password reset increments the durable version, invalidating all older
@@ -25,6 +28,12 @@ export class ProjectAccessService {
     if (!current || current.credentialVersion !== (user.credentialVersion ?? 0)) {
       throw new UnauthorizedException('Session expired');
     }
+  }
+
+  /** #482 — an operator-door QA session is refused (401) the moment its account, company or project stops being
+   *  QA-only, e.g. a real person is added to the QA company or project; the orgs module states the rule. */
+  async assertQaOnlyReach(user: AuthUser): Promise<void> {
+    if (!(await this.orgs.qaOnlyReach(this.prisma, user.sub))) throw new UnauthorizedException('Session expired');
   }
 
   async authorize(user: AuthUser, projectId: string): Promise<AuthUser> {

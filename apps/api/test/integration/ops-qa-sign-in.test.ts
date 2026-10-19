@@ -66,6 +66,13 @@ describe('#482 operator door QA sign-in (live PG)', () => {
     expect((await http().post('/auth/ops/qa-sign-in').set('Authorization', `Bearer ${jwt}`).send(body(qaEmail))).status).toBe(401);
   });
 
+  it('stays 404 while closed however often it is called: the door is checked before the rate limit (Codex P2)', async () => {
+    delete process.env.OPS_TOKEN;
+    for (let i = 0; i < 12; i++) {
+      expect((await http().post('/auth/ops/qa-sign-in').set('Authorization', `Bearer ${TOKEN}`).send(body(qaEmail))).status).toBe(404);
+    }
+  });
+
   it('signs in a QA account of a QA-only company, with a working token and an audit row', async () => {
     process.env.OPS_TOKEN = TOKEN;
     const r = await http().post('/auth/ops/qa-sign-in').set('Authorization', `Bearer ${TOKEN}`).send(body(qaClientEmail.toUpperCase()));
@@ -73,9 +80,45 @@ describe('#482 operator door QA sign-in (live PG)', () => {
     expect(r.body).toMatchObject({ role: 'client', projectId: ids.project, name: 'QA Client' });
     const me = await http().get('/me/memberships').set('Authorization', `Bearer ${r.body.token}`);
     expect(me.status, me.text).toBe(200);
-    const audit = await t.prisma.auditLog.findMany({ where: { projectId: ids.project, action: 'auth.qaSignIn' } });
+    const audit = await t.prisma.auditLog.findMany({ where: { projectId: ids.project, action: 'auth.qaSignIn', entityId: ids.client } });
     expect(audit).toHaveLength(1);
     expect(audit[0]).toMatchObject({ actor: 'claude', entity: 'User', entityId: ids.client, payload: { reason: 'live QA run', via: 'ops-api' } });
+  });
+
+  it('ends the session, switched or not, once a real person joins the company (Codex P1: rechecked on every request)', async () => {
+    process.env.OPS_TOKEN = TOKEN;
+    const r = await http().post('/auth/ops/qa-sign-in').set('Authorization', `Bearer ${TOKEN}`).send(body(qaEmail));
+    expect(r.status, r.text).toBe(201);
+    const switched = await http().post('/auth/switch').set('Authorization', `Bearer ${r.body.token}`).send({ projectId: ids.project });
+    expect(switched.status, switched.text).toBe(201);
+    for (const token of [r.body.token, switched.body.token]) {
+      expect((await http().get('/me/memberships').set('Authorization', `Bearer ${token}`)).status).toBe(200);
+    }
+    await t.prisma.orgMembership.create({ data: { orgId: ids.org, userId: f.strangerUser.id, role: 'member' } });
+    try {
+      for (const token of [r.body.token, switched.body.token]) {
+        expect((await http().get('/me/memberships').set('Authorization', `Bearer ${token}`)).status).toBe(401);
+        expect((await http().get(`/projects/${ids.project}/snapshot`).set('Authorization', `Bearer ${token}`)).status).toBe(401);
+      }
+    } finally {
+      await t.prisma.orgMembership.deleteMany({ where: { orgId: ids.org, userId: f.strangerUser.id } });
+    }
+    // a normal sign-in of the same account is not a QA session, so it carries no fence of its own
+    expect((await http().get('/me/memberships').set('Authorization', `Bearer ${t.issueProjectToken(ids.pmc, ids.project)}`)).status).toBe(200);
+  });
+
+  it('counts a stored address that only differs in case as a real person (Codex P2)', async () => {
+    process.env.OPS_TOKEN = TOKEN;
+    const odd = `it-odd-${run}`;
+    await t.prisma.user.create({ data: { id: odd, projectId: ids.project, role: 'engineer', name: 'Odd case', email: `QA.engineer${letters}@vitan.in` } });
+    await t.prisma.membership.create({ data: { projectId: ids.project, userId: odd, role: 'engineer', status: 'active' } });
+    try {
+      const r = await http().post('/auth/ops/qa-sign-in').set('Authorization', `Bearer ${TOKEN}`).send(body(qaEmail));
+      expect(r.status, r.text).toBe(403);
+    } finally {
+      await t.prisma.membership.deleteMany({ where: { userId: odd } });
+      await t.prisma.user.deleteMany({ where: { id: odd } });
+    }
   });
 
   it('refuses a real account, and an unknown QA address', async () => {
@@ -87,6 +130,8 @@ describe('#482 operator door QA sign-in (live PG)', () => {
 
   it('refuses a QA account once a real person is in its company or on its project', async () => {
     process.env.OPS_TOKEN = TOKEN;
+    const signIns = () => t.prisma.auditLog.count({ where: { projectId: ids.project, action: 'auth.qaSignIn', entityId: ids.pmc } });
+    const signedInBefore = await signIns();
     await t.prisma.membership.create({ data: { projectId: ids.project, userId: f.strangerUser.id, role: 'engineer', status: 'active' } });
     try {
       const r = await http().post('/auth/ops/qa-sign-in').set('Authorization', `Bearer ${TOKEN}`).send(body(qaEmail));
@@ -100,6 +145,6 @@ describe('#482 operator door QA sign-in (live PG)', () => {
     } finally {
       await t.prisma.orgMembership.deleteMany({ where: { orgId: ids.org, userId: f.strangerUser.id } });
     }
-    expect(await t.prisma.auditLog.count({ where: { projectId: ids.project, action: 'auth.qaSignIn', entityId: ids.pmc } })).toBe(0);
+    expect(await signIns()).toBe(signedInBefore);
   });
 });

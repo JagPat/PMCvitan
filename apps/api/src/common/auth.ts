@@ -31,6 +31,8 @@ export interface AuthUser {
   orgId?: string;
   credentialVersion?: number;
   worker?: boolean;
+  /** #482 — an operator-door QA session; `JwtGuard` re-checks the QA-only fence on every request it makes */
+  qa?: boolean;
   /** the JWT's own expiry (seconds since epoch), populated by verification — Phase 6 task 4b
    *  (§A.3 round 15) records it on a push-subscription link so an abandoned shared browser's
    *  link lapses with the session even when the credential version never changes */
@@ -76,6 +78,8 @@ export class JwtGuard implements CanActivate {
       throw new ForbiddenException('Token is not scoped to this project');
     }
     await this.projectAccess.assertCredentialVersion(user);
+    // an operator-door QA session (#482) holds only while its whole reach is still QA-only, checked live like the rest
+    if (user.qa) await this.projectAccess.assertQaOnlyReach(user);
     // LIVE authorization on EVERY guarded route (finding 2): a route without a
     // `:projectId` param (global-scoped deletes) is authorized against the
     // token's own project — a removed member's unexpired token must not retain

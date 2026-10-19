@@ -11,6 +11,7 @@ import { PhoneSignInService } from './phone-sign-in.service';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import { recordAudit } from '../platform/audit';
 import { systemActor } from '../common/actor';
+import { OrgsParticipant, QA_ACCOUNT_EMAIL } from '../orgs/orgs.participant';
 import type { Role } from '../common/auth';
 import type {
   SessionInput,
@@ -24,7 +25,6 @@ import type {
 } from '../contracts';
 
 /** A QA account's email: `qa.<lowercase word>@vitan.in` (#482, Board's QA re-home rule). */
-const QA_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
 
 export interface TokenResult {
   token: string;
@@ -44,6 +44,7 @@ export interface TokenResult {
 @Injectable()
 export class AuthService {
   private readonly log = new Logger(AuthService.name);
+  private readonly orgs = new OrgsParticipant();
 
   constructor(
     private readonly jwt: JwtService,
@@ -58,8 +59,9 @@ export class AuthService {
     return this.jwt.sign({ sub, role, projectId, ...extra });
   }
 
-  private issueNamedUser(user: { id: string; credentialVersion?: number }, role: Role, projectId: string): string {
-    return this.issue(user.id, role, projectId, { credentialVersion: user.credentialVersion ?? 0 });
+  /** `qa` marks an operator-door QA session (#482), so `JwtGuard` re-checks the QA-only fence on every request it makes. */
+  private issueNamedUser(user: { id: string; credentialVersion?: number }, role: Role, projectId: string, opts?: { qa?: boolean }): string {
+    return this.issue(user.id, role, projectId, { credentialVersion: user.credentialVersion ?? 0, ...(opts?.qa ? { qa: true } : {}) });
   }
 
   /** Self-signup for the office channels (email / Google) is invite-only by
@@ -238,26 +240,22 @@ export class AuthService {
    *    each of that company's members and each active member of its projects is itself a QA address.
    * A real person's account, or a QA account added to a real company or project, is refused (403). The route is
    * behind `OPS_TOKEN`; each sign-in leaves an audit row on the account's landing project with the operator and reason.
+   * The fence is `OrgsParticipant.qaOnlyReach` (the orgs module owns those tables), and the token carries `qa`, so
+   * `JwtGuard` asks the same question on every request: the session ends once the company or project gains a real person.
    */
   async qaSignIn(input: { email: string; operator: string; reason: string }): Promise<TokenResult> {
     const email = input.email.trim().toLowerCase();
-    if (!QA_EMAIL.test(email)) throw new ForbiddenException('only a QA account can be signed in here');
+    if (!QA_ACCOUNT_EMAIL.test(email)) throw new ForbiddenException('only a QA account can be signed in here');
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user) throw new NotFoundException('no such QA account');
-    const [orgRows, memberRows] = await Promise.all([
-      this.prisma.orgMembership.findMany({ where: { userId: user.id }, select: { orgId: true } }),
-      this.prisma.membership.findMany({ where: { userId: user.id, status: 'active' }, select: { project: { select: { orgId: true } } } }),
-    ]);
-    const orgIds = [...new Set([...orgRows.map((o) => o.orgId), ...memberRows.map((m) => m.project.orgId)])].filter((id): id is string => !!id);
-    if (!orgIds.length || memberRows.some((m) => !m.project.orgId)) throw new ForbiddenException('this account is not in a QA-only company');
-    const [orgPeople, projectPeople] = await Promise.all([
-      this.prisma.orgMembership.findMany({ where: { orgId: { in: orgIds } }, select: { user: { select: { email: true } } } }),
-      this.prisma.membership.findMany({ where: { status: 'active', project: { orgId: { in: orgIds } } }, select: { user: { select: { email: true } } } }),
-    ]);
-    if ([...orgPeople, ...projectPeople].some((r) => !QA_EMAIL.test((r.user.email ?? '').toLowerCase()))) {
-      throw new ForbiddenException('this account is not in a QA-only company');
-    }
-    const result = await this.signInUser(user);
+    if (!(await this.orgs.qaOnlyReach(this.prisma, user.id))) throw new ForbiddenException('this account is not in a QA-only company');
+    const access = await this.signInAccess(user);
+    const result: TokenResult = {
+      token: this.issueNamedUser(user, access.role, access.projectId, { qa: true }),
+      role: access.role,
+      projectId: access.projectId,
+      name: user.name,
+    };
     await this.prisma.$transaction((tx) => recordAudit(tx, {
       projectId: result.projectId,
       actor: systemActor(input.operator, input.operator, 'operator'),
@@ -457,7 +455,7 @@ export class AuthService {
   /** Issue a fresh token scoped to another project the user belongs to (project switch).
    *  Org owners/admins can switch into ANY project in their org — they operate it as PMC
    *  even without an explicit membership (the org super-admin reach). */
-  async switchProject(userId: string, projectId: string): Promise<TokenResult> {
+  async switchProject(userId: string, projectId: string, opts?: { qa?: boolean }): Promise<TokenResult> {
     const target = await this.prisma.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
     if (target?.archivedAt) throw new ForbiddenException('This project has been archived');
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
@@ -473,7 +471,8 @@ export class AuthService {
     const role = await this.resolveProjectRole(user, projectId);
     if (!role) throw new ForbiddenException('You are not a member of this project');
     await this.rememberLastProject(user.id, projectId);
-    return { token: this.issueNamedUser(user, role, projectId), role, projectId, name: user.name };
+    // a QA door session stays one across a switch, so the QA-only fence keeps applying to it (#482)
+    return { token: this.issueNamedUser(user, role, projectId, opts), role, projectId, name: user.name };
   }
 
   /** #811 — the next sign-in opens the project this switch entered. A landing preference, never authority, so a
