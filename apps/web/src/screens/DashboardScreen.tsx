@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { decisionRecordLink, inspectionsSettledForLinks, selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
@@ -10,6 +11,8 @@ import { decisionsWaitOn, failedWaitOn, reviewsWaitOn } from './dashboardWaiting
 import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
+import { AddSitePhoto } from '@/components/AddSitePhoto';
+import { queuedSitePhotos } from '@/lib/queuedSitePhotos';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
 import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, type Lang, type WaitParty } from '@vitan/shared';
@@ -84,7 +87,13 @@ export function DashboardScreen() {
   const phases = useStore(useShallow((s) => s.phases));
   const activities = useStore(useShallow((s) => s.activities));
   const photoStats = useStore(useShallow(selectPhotoStats));
-  const sitePhotos = useStore(useShallow((s) => s.photos));
+  const recordedPhotos = useStore(useShallow((s) => s.photos));
+  // #482 site photos: a photo picked with no signal shows first at once, until its upload is sent
+  const outbox = useStore((s) => s.outbox);
+  const queuedPhotos = useMemo(() => (API_BASE ? queuedSitePhotos(outbox, recordedPhotos) : []), [outbox, recordedPhotos]);
+  const sitePhotos = useMemo(() => [...queuedPhotos, ...recordedPhotos], [queuedPhotos, recordedPhotos]);
+  // the photos tile counts the queued photos with the recorded ones, and the places among all of them
+  const photoZones = useMemo(() => new Set(sitePhotos.map((p) => p.nodeId).filter(Boolean)).size, [sitePhotos]);
   // the milestone strip is the project's own phases, read LIVE from their activities (the stored
   // `donePct` is only the snapshot's initial count): done = every activity accepted, started = any
   // accepted or under way. Empty projects show none.
@@ -142,10 +151,10 @@ export function DashboardScreen() {
     // The snapshot carries the newest SNAPSHOT_SITE_PHOTO_LIMIT only: a full window is "at least", and its
     // places are the places among those (Codex 4194155412) — never presented as the total on record.
     {
-      key: 'photos', label: L.photosTile[photoLang], value: photoStats.capped ? `${photoStats.count}+` : photoStats.count, accent: 'var(--green-solid)',
+      key: 'photos', label: L.photosTile[photoLang], value: photoStats.capped ? `${sitePhotos.length}+` : sitePhotos.length, accent: 'var(--green-solid)',
       sub: photoStats.capped
-        ? `${T.photosLatest(photoStats.count, photoLang)}${photoStats.zones > 0 ? ` · ${T.photosAcross(photoStats.zones, photoLang, true)}` : ''}`
-        : photoStats.zones > 0 ? T.photosAcross(photoStats.zones, photoLang) : photoStats.count > 0 ? L.photosNotPlaced[photoLang] : L.photosNone[photoLang],
+        ? `${T.photosLatest(sitePhotos.length, photoLang)}${photoZones > 0 ? ` · ${T.photosAcross(photoZones, photoLang, true)}` : ''}`
+        : photoZones > 0 ? T.photosAcross(photoZones, photoLang) : sitePhotos.length > 0 ? L.photosNotPlaced[photoLang] : L.photosNone[photoLang],
       onClick: canOpen('places') ? () => setScreen('places') : undefined,
     },
   );
@@ -297,6 +306,7 @@ export function DashboardScreen() {
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.2em', color: 'var(--muted)', marginBottom: 12 }}>
           {API_BASE ? L.latestPhotos[lang] : 'THIS WEEK · PHOTO HIGHLIGHTS'}
         </div>
+        {API_BASE && <AddSitePhoto />}
         {API_BASE ? (
           sitePhotos.length === 0 ? (
             <div style={{ fontSize: 13, color: 'var(--muted)', border: '1px dashed var(--hairline)', borderRadius: 10, padding: '22px 16px', textAlign: 'center' }}>
@@ -304,7 +314,8 @@ export function DashboardScreen() {
             </div>
           ) : (
             <div className={styles.photos}>
-              {sitePhotos.slice(-4).reverse().map((p, i) => (
+              {/* the snapshot sends the newest photo first (#482) */}
+              {sitePhotos.slice(0, 4).map((p, i) => (
                 <div key={p.id} style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--hairline)' }}>
                   <div style={{ height: 120, position: 'relative', background: '#000' }}>
                     <img src={p.url} alt={T.sitePhotoAlt(i + 1, lang)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />

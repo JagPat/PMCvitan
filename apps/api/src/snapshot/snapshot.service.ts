@@ -136,7 +136,7 @@ export class SnapshotService {
           where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...(hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {}) },
           orderBy: { createdAt: 'desc' },
           take: SNAPSHOT_SITE_PHOTO_LIMIT,
-          select: { id: true, kind: true, url: true, takenAt: true, nodeId: true },
+          select: { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true },
         }),
       ),
       // Task 10 — the drawings register comes from the module's query (the baked per-viewer register:
@@ -163,6 +163,9 @@ export class SnapshotService {
       takenAt: m.takenAt ?? undefined,
       nodeId: m.nodeId ?? undefined,
       kind: m.kind,
+      // #482 site photos — the viewer's own upload key, so a device that still holds this photo in its offline queue
+      // (its reply was lost) shows it once; nobody else's key is sent
+      ...(userId && m.uploadedBy === userId && m.clientKey ? { clientKey: m.clientKey } : {}),
     }));
 
     // Task 8 — the role-filtered decision DTOs come from the decisions query (the serialization moved
