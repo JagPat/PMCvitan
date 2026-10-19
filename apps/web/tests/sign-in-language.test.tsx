@@ -192,6 +192,35 @@ describe('the gate opens in the language last chosen on this device', () => {
     expect(reload.useStore.getState().lang).toBe('hi');
   });
 
+  it('a language saved before this release opens the gate when the session ends without a sign-out', async () => {
+    localStorage.setItem('vitan.lang.v1:user:u-asha', 'gu');
+    const p = await page();
+    await signInWith(p, 'u-asha');
+    render(<p.LangPreference />);
+    cleanup();
+    // the session expires or the tab is reloaded signed out: the gate is all that is left
+    const reload = await page();
+    expect(reload.useStore.getState().lang).toBe('gu');
+  });
+
+  it('a later person\'s older saved language does not replace a language chosen on this device', async () => {
+    localStorage.setItem('vitan.lang.v1:user:u-ravi', 'gu');
+    const p = await page();
+    const gate = render(<p.TeamAccessScreen atGate />);
+    fireEvent.click(gate.getByTestId('gate-lang-hi'));
+    cleanup();
+    await signInWith(p, 'u-asha');
+    let shell = render(<p.LangPreference />);
+    shell.unmount();
+    act(() => p.useStore.getState().completeSignOut());
+    await signInWith(p, 'u-ravi');
+    shell = render(<p.LangPreference />);
+    expect(p.useStore.getState().lang).toBe('gu');
+    shell.unmount();
+    act(() => p.useStore.getState().completeSignOut());
+    expect(p.useStore.getState().lang).toBe('hi');
+  });
+
   it('with nothing chosen on this device the gate opens in English', async () => {
     const p = await page();
     expect(p.useStore.getState().lang).toBe('en');

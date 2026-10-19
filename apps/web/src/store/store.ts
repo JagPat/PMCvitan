@@ -100,7 +100,7 @@ import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
 import { saveSession, clearSession, loadSession } from '@/lib/sessionPersist';
-import { langPreferenceKey, readDeviceLang, readLangPreference, writeDeviceLang } from '@/lib/langPreference';
+import { readDeviceLang } from '@/lib/langPreference';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -2901,14 +2901,6 @@ export const useStore = create<Store>()(
     /** The sign-out teardown itself — separated so the push unlink can complete first on a
      *  push-capable browser (round-1 Codex F1) while every other environment stays synchronous. */
     completeSignOut: () => {
-      // V-1018-6 / Codex 4309957592 — a browser from before the device key holds only the departing person's own
-      // saved choice; carry it to the device key so the gate keeps it across a reload too (never a guest's pick)
-      const leaving = get();
-      let deviceLang = readDeviceLang();
-      if (!deviceLang && leaving.sessionUserId) {
-        deviceLang = readLangPreference(langPreferenceKey(leaving.sessionUserId, leaving.role));
-        if (deviceLang) writeDeviceLang(deviceLang);
-      }
       clearSession();
       restoreSwitchTarget = null;
       set((s) => {
@@ -2921,7 +2913,7 @@ export const useStore = create<Store>()(
         s.role = 'client';
         s.screen = screensFor('client')[0].key;
         // V-1018-6 — the gate the person returns to reads in the language last chosen on this device
-        s.lang = deviceLang ?? s.lang;
+        s.lang = readDeviceLang() ?? s.lang;
         s.notifOpen = false;
         s.createOpen = false;
         s.modal = { type: null };

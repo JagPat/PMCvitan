@@ -5,6 +5,7 @@ import {
   defaultLangFor,
   langChoiceVersion,
   langPreferenceKey,
+  readDeviceLang,
   readLangPreference,
   subscribeLangChoice,
   takeLangChoice,
@@ -52,7 +53,11 @@ export function LangPreference() {
       const noted = takeLangChoice();
       const chosen = noted && (noted.source === 'viewer' || applied.current === null) ? noted : null;
       if (chosen) { writeLangPreference(key, chosen.lang); writeDeviceLang(chosen.lang); }
-      const next = chosen?.lang ?? readLangPreference(key) ?? defaultLangFor(role);
+      const saved = chosen ? null : readLangPreference(key);
+      // Codex 4309957592 — a browser from before the device key holds only each person's own choice: the first
+      // restore of one becomes the device's, so the gate keeps it however this session ends (sign-out, expiry, reload)
+      if (saved && !readDeviceLang()) writeDeviceLang(saved);
+      const next = chosen?.lang ?? saved ?? defaultLangFor(role);
       applied.current = { key, role, lang: next };
       guestLang.current = null;
       if (next !== lang) setLang(next);
