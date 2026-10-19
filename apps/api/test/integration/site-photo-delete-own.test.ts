@@ -46,7 +46,7 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
 
   it('deletes a site photo the member added ten minutes ago, and records the removal', async () => {
     const id = await photo(contractorId(), minutesAgo(10));
-    await del(id, contractor).expect(200);
+    expect((await del(id, contractor).expect(200)).body).toEqual({ ok: true, dailyLogId: null });
     expect(await exists(id)).toBe(false);
     expect(await t.prisma.domainEvent.count({ where: { projectId: f.projectA.id, eventType: 'media.removed', entityId: id } })).toBe(1);
   });
@@ -80,7 +80,8 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
     const res = await del(onSent, contractor).expect(403);
     expect(res.body.message).toMatch(/already sent/);
     expect(await exists(onSent)).toBe(true);
-    await del(onOpen, contractor).expect(200);
+    // the reply names the log that counted it, so the app takes it off that day's count (Codex 4317884791)
+    expect((await del(onOpen, contractor).expect(200)).body).toEqual({ ok: true, dailyLogId: open.id });
     expect(await exists(onOpen)).toBe(false);
     await t.prisma.media.deleteMany({ where: { dailyLogId: { in: [sent.id, open.id] } } });
     await t.prisma.dailyLog.deleteMany({ where: { id: { in: [sent.id, open.id] } } });
@@ -101,7 +102,17 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
     }, { timeout: 20_000 });
     await isUpdated;
     const deleting = del(id, contractor).then((r) => r);
-    await new Promise((r) => setTimeout(r, 300));
+    // released only once PostgreSQL shows the delete waiting on the log row's lock, never after a guessed delay
+    // (Codex 4317884816): without the lock the delete never waits, and this times out
+    const blockedOnLog = async (): Promise<boolean> =>
+      (await t.prisma.$queryRaw<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FROM "DailyLog"%FOR SHARE%'`)[0]!.n > 0;
+    const deadline = Date.now() + 10_000;
+    while (!(await blockedOnLog())) {
+      if (Date.now() > deadline) { release(); await submit; throw new Error('the delete never waited on the log row lock'); }
+      await new Promise((r) => setTimeout(r, 20));
+    }
     release();
     await submit;
     expect((await deleting).status).toBe(403);

@@ -13,6 +13,8 @@ export function SitePhotoDelete({ photo }: { photo: Photo }) {
   const deleteSitePhoto = useStore((s) => s.deleteSitePhoto);
   const [now, setNow] = useState(() => Date.now());
   const [asking, setAsking] = useState(false);
+  // on its way to the server: nothing to tap until it answers (Codex 4317884827)
+  const [deleting, setDeleting] = useState(false);
   const deletable = sitePhotoDeletable(photo, now);
 
   // the button leaves on its own when the hour is up
@@ -23,7 +25,7 @@ export function SitePhotoDelete({ photo }: { photo: Photo }) {
     return () => clearTimeout(timer);
   }, [deletable, photo.deletableUntil]);
 
-  if (!deletable) return null;
+  if (!deletable || deleting) return null;
   if (!asking) {
     return (
       <button type="button" data-testid="site-photo-delete" onClick={() => setAsking(true)}
@@ -37,7 +39,11 @@ export function SitePhotoDelete({ photo }: { photo: Photo }) {
       <div style={{ fontSize: 11, fontWeight: 600 }}>{L.confirmDelete[lang]}</div>
       <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
         <button type="button" data-testid="site-photo-delete-yes"
-          onClick={() => { setAsking(false); deleteSitePhoto(photo.id); }}
+          onClick={() => {
+            setAsking(false);
+            setDeleting(true);
+            void deleteSitePhoto(photo.id).finally(() => setDeleting(false));
+          }}
           style={{ ...small, background: 'var(--red-solid)', color: '#fff' }}>
           {L.delete[lang]}
         </button>

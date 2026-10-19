@@ -69,9 +69,10 @@ export class MediaController {
   @Delete('media/:id')
   @UseGuards(JwtGuard, RolesGuard)
   @RolesFor('media.delete')
-  async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean }> {
-    const ok = await this.media.remove(id, user);
-    if (!ok) throw new NotFoundException('Media not found');
-    return { ok: true };
+  async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean; dailyLogId: string | null }> {
+    const removed = await this.media.removeFiled(id, user);
+    if (!removed) throw new NotFoundException('Media not found');
+    // the day's log the photo was counted on, so a client can take it off that count at once (Codex 4317884791)
+    return { ok: true, dailyLogId: removed.dailyLogId };
   }
 }

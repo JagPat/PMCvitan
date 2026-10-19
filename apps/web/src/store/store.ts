@@ -79,7 +79,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, SITE_PHOTO_DELETE_WINDOW_MS, sitePhotoLabels as SPL } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoLabels as SPL } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -799,8 +799,9 @@ export interface AppActions {
    * Omitted, the log on screen now is used.
    */
   addProgressPhoto: (dataUrl: string, nodeId?: string | null, stamp?: CaptureStamp, pickedIn?: ProjectScope, pickedForLog?: string | null) => void;
-  /** #482 site photos — delete a site photo the viewer added, within the hour (needs a connection) */
-  deleteSitePhoto: (photoId: string) => void;
+  /** #482 site photos — delete a site photo the viewer added, within the hour (needs a connection). Settles when the
+   *  server has answered; a second ask for the same photo while one is on its way joins it. */
+  deleteSitePhoto: (photoId: string) => Promise<void>;
   submitDailyLog: () => void;
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
@@ -2354,6 +2355,8 @@ export const useStore = create<Store>()(
      *  reply lands: replies can come back in another order, and the list stays newest first by pick. */
     let photoPickSeq = 0;
     const photoPickedAt = new Map<string, number>();
+    /** #482 site photos — the deletes on their way, by photo id */
+    const sitePhotoDeletes = new Map<string, Promise<void>>();
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
     const persistOutbox = (): void => {
       try {
@@ -4022,21 +4025,32 @@ export const useStore = create<Store>()(
     deleteSitePhoto: (photoId) => {
       const lang = (): Lang => get().lang;
       if (gateway) {
+        // one delete per photo at a time: a second tap never races the first into a "not found" (Codex 4317884827)
+        const pending = sitePhotoDeletes.get(photoId);
+        if (pending) return pending;
         // a delete does not come back, so it is never queued: with no signal the member is told to connect
         if (!get().online) {
           get().flash(SPL.deleteOffline[lang()]);
-          return;
+          return Promise.resolve();
         }
         const scope = currentScope();
-        gateway
+        const done = gateway
           .deleteMedia(photoId)
-          .then(() => {
+          .then((res) => {
             if (!scopeStillCurrent(scope)) return;
             // the server's yes is the delete: the photo leaves at once, and a fresh snapshot then settles the counts.
             // A failed refresh never turns a done delete into a "try again" (Codex 4316959524).
             set((s) => {
+              // still listed: no refresh has landed without it yet, so the day's count still holds it
+              const held = s.photos.some((p) => p.id === photoId);
               s.photos = s.photos.filter((p) => p.id !== photoId);
               if (s.dailyLog) s.dailyLog.photos = s.dailyLog.photos.filter((p) => p.id !== photoId);
+              // filed on the log on screen (the server says which): the count Send stores drops with it (Codex 4317884791)
+              const log = s.dailyLog;
+              if (held && res.dailyLogId && log?.id === res.dailyLogId && log.photoCount !== undefined) {
+                log.photoCount = Math.max(0, log.photoCount - 1);
+                recountDailyLogPhotos(s);
+              }
             });
             get().flash(SPL.deleted[lang()]);
             void requestFreshSnapshot(scope);
@@ -4044,13 +4058,16 @@ export const useStore = create<Store>()(
           .catch((err: unknown) => {
             if (!scopeStillCurrent(scope)) return;
             get().flash(isTerminalOutboxError(err) ? SRV.refused(refusalMessage(err) ?? 'the server refused it', lang()) : DTX.unreachable[lang()]);
-          });
-        return;
+          })
+          .finally(() => { sitePhotoDeletes.delete(photoId); });
+        sitePhotoDeletes.set(photoId, done);
+        return done;
       }
       set((s) => {
         s.photos = s.photos.filter((p) => p.id !== photoId);
       });
       get().flash(SPL.deleted[lang()]);
+      return Promise.resolve();
     },
     filePhoto: (photoId, nodeId) => {
       if (gateway) {
@@ -5723,8 +5740,8 @@ export const useStore = create<Store>()(
                   // viewer acts in can come through the org rather than a project membership, and the next snapshot
                   // says the project role, so nothing is claimed here that the server would not say.
                   ...(s.userName ? { by: s.userName } : {}), ...(res.at ? { at: res.at } : {}),
-                  // the viewer's own new photo: theirs to delete for the hour (the next snapshot says so too)
-                  ...(res.at ? { deletableUntil: new Date(Date.parse(res.at) + SITE_PHOTO_DELETE_WINDOW_MS).toISOString() } : {}),
+                  // no Delete yet: whether it is the viewer's to delete (the log it went on may be sent by now) is the
+                  // server's to say, on the refresh asked for below (Codex 4317884803)
                 });
                 // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
                 if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
@@ -5737,6 +5754,8 @@ export const useStore = create<Store>()(
               recordDraftPhoto(s);
             });
             persistDailyLogDraft();
+            // #482 site photos: the snapshot says until when the new photo is the viewer's to delete
+            void requestFreshSnapshot(scope);
             // say what the photo actually carried, not what the feature is called
             get().flash(
               hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang],

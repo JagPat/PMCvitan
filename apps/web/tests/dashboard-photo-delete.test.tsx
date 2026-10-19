@@ -13,6 +13,13 @@ const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString(
 // what the server sends on the viewer's own site photo added `m` minutes ago
 const until = (m: number) => new Date(Date.now() - m * 60_000 + SITE_PHOTO_DELETE_WINDOW_MS).toISOString();
 
+// a whole snapshot of the project on screen, with these photos
+const snapOf = (photos: Photo[]) => ({
+  project: { id: 'villa-b', name: 'Villa B', short: 'Villa B', descriptor: '', stage: '', siteCode: 'VB', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+  decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+  drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos, materials: [],
+});
+
 async function load(lang: Lang, photos: Photo[], extra: Record<string, unknown> = {}) {
   vi.stubEnv('VITE_API_URL', 'http://api.test');
   vi.resetModules();
@@ -104,10 +111,12 @@ describe('deleting your own site photo within the hour (#482)', () => {
     expect(leftoverEnglish(r.getByTestId('site-photo-delete-confirm'), [])).toEqual([]);
   });
 
-  it('a photo just uploaded is the viewer\'s own, so it offers Delete', async () => {
+  it('a photo just uploaded offers Delete once the server says it is the viewer\'s to delete (Codex 4317884803)', async () => {
     const at = new Date().toISOString();
     const { r, useStore } = await load('en', [], { userName: 'Asha Shah' });
-    useStore.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'new', url: 'http://api.test/new.jpg', at }) } as never);
+    let answer!: (snap: unknown) => void;
+    const snapshot = vi.fn().mockReturnValue(new Promise((res) => { answer = res; }));
+    useStore.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'new', url: 'http://api.test/new.jpg', at }), snapshot } as never);
     class SyncFileReader {
       result: string | null = null;
       onload: (() => void) | null = null;
@@ -115,7 +124,54 @@ describe('deleting your own site photo within the hour (#482)', () => {
     }
     vi.stubGlobal('FileReader', SyncFileReader);
     fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
+    // listed at once, but no Delete the client made up: the log it went on may already be sent
+    await waitFor(() => expect(r.getAllByTestId('dash-photo-who')).toHaveLength(1));
+    expect(r.queryByTestId('site-photo-delete')).toBeNull();
+    await waitFor(() => expect(snapshot).toHaveBeenCalled());
+    await act(async () => { answer(snapOf([{ id: 'new', url: '/media/new', kind: 'progress', at, deletableUntil: until(0) }])); });
     await waitFor(() => expect(r.getAllByTestId('site-photo-delete')).toHaveLength(1));
+  });
+
+  it('a confirmed delete takes the photo off the day\'s count Send stores, even when the refresh fails (Codex 4317884791)', async () => {
+    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletableUntil: until(5) };
+    const dailyLog = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 3, photoCount: 3, myPhotoKeys: [], crew: [], materials: [], photos: [{ id: 'own', url: '/media/own' }] };
+    const { r, useStore } = await load('en', [own], { dailyLog });
+    const deleteMedia = vi.fn().mockResolvedValue({ ok: true, dailyLogId: 'log-1' });
+    useStore.getState()._setGateway({ deleteMedia, snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
+    fireEvent.click(r.getByTestId('site-photo-delete'));
+    fireEvent.click(r.getByTestId('site-photo-delete-yes'));
+    await waitFor(() => expect(useStore.getState().dailyLog?.photoCount).toBe(2));
+    expect(useStore.getState().dailyLog?.progress).toBe(2);
+  });
+
+  it('a photo on another log, or one a refresh already took off, leaves the day\'s count alone', async () => {
+    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletableUntil: until(5) };
+    const dailyLog = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 3, photoCount: 3, myPhotoKeys: [], crew: [], materials: [], photos: [] };
+    const { useStore } = await load('en', [own], { dailyLog });
+    useStore.getState()._setGateway({ deleteMedia: vi.fn().mockResolvedValue({ ok: true, dailyLogId: 'log-0' }), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
+    await useStore.getState().deleteSitePhoto('own');
+    expect(useStore.getState().dailyLog?.photoCount).toBe(3);
+    // already gone from the list: the refresh that took it off counted it out
+    useStore.setState({ photos: [] });
+    useStore.getState()._setGateway({ deleteMedia: vi.fn().mockResolvedValue({ ok: true, dailyLogId: 'log-1' }), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
+    await useStore.getState().deleteSitePhoto('own');
+    expect(useStore.getState().dailyLog?.photoCount).toBe(3);
+  });
+
+  it('while a delete is on its way, there is nothing to tap twice, and a second ask joins the first (Codex 4317884827)', async () => {
+    const { r, useStore } = await load('en', [{ id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletableUntil: until(5) }]);
+    let answer!: (v: unknown) => void;
+    const deleteMedia = vi.fn().mockReturnValue(new Promise((res) => { answer = res; }));
+    useStore.getState()._setGateway({ deleteMedia, snapshot: vi.fn().mockResolvedValue({ photos: [] }) } as never);
+    fireEvent.click(r.getByTestId('site-photo-delete'));
+    fireEvent.click(r.getByTestId('site-photo-delete-yes'));
+    expect(r.queryByTestId('site-photo-delete')).toBeNull();
+    expect(r.queryByTestId('site-photo-delete-confirm')).toBeNull();
+    void useStore.getState().deleteSitePhoto('own');
+    expect(deleteMedia).toHaveBeenCalledTimes(1);
+    await act(async () => { answer({ ok: true }); });
+    await waitFor(() => expect(useStore.getState().photos).toEqual([]));
+    expect(deleteMedia).toHaveBeenCalledTimes(1);
   });
 });
 

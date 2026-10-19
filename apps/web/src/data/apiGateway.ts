@@ -1362,8 +1362,8 @@ export class ApiGateway {
   }
 
   /** #482 site photos — delete a photo: the viewer's own site photo within the hour (the PMC and the engineer, any). */
-  deleteMedia(mediaId: string): Promise<{ ok: boolean }> {
-    return this.req<{ ok: boolean }>(`/media/${encodeURIComponent(mediaId)}`, { method: 'DELETE' });
+  deleteMedia(mediaId: string): Promise<{ ok: boolean; dailyLogId?: string | null }> {
+    return this.req<{ ok: boolean; dailyLogId?: string | null }>(`/media/${encodeURIComponent(mediaId)}`, { method: 'DELETE' });
   }
 
   /** Re-file a photo onto a location-tree node (null = unfile). Returns the fresh snapshot. */

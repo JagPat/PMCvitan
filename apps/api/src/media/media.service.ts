@@ -293,9 +293,15 @@ export class MediaService {
    * out of scope. Best-effort on the bucket delete (dev stub is a no-op).
    */
   async remove(id: string, user: AuthUser): Promise<boolean> {
+    return (await this.removeFiled(id, user)) !== null;
+  }
+
+  /** {@link remove}, saying which day's log counted the photo (`dailyLogId`, a progress photo filed on one), or
+   *  null when not found / out of scope. */
+  async removeFiled(id: string, user: AuthUser): Promise<{ dailyLogId: string | null } | null> {
     const projectId = user.projectId;
     const row = await this.prisma.media.findUnique({ where: { id } });
-    if (!row || row.projectId !== projectId) return false;
+    if (!row || row.projectId !== projectId) return null;
     // #482 (Board, 14 Oct 2026) — every member may delete a plain site photo THEY added, within an hour of the server
     // recording it; any other photo stays the PMC's and the engineer's. Asked before anything is touched.
     if (!SITE_RECORD_ROLES.has(user.role)) {
@@ -346,6 +352,6 @@ export class MediaService {
     // failing to clean it up is a harmless orphan — never a reason to fail a committed delete.
     if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
     await this.dispatcher.dispatchCommitted(events);
-    return true;
+    return { dailyLogId: row.kind === 'progress' ? row.dailyLogId : null };
   }
 }
