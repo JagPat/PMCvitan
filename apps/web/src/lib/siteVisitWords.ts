@@ -75,6 +75,29 @@ export const SV = {
   },
   adjusted: { en: 'time set by the server', hi: 'समय सर्वर ने रखा', gu: 'સમય સર્વરે રાખ્યો' },
   refused: { en: 'This was not saved.', hi: 'यह सहेजा नहीं गया।', gu: 'આ સચવાયું નથી.' },
+  // SV2 (#792): photos on a visit
+  photos: { en: 'Photos', hi: 'फ़ोटो', gu: 'ફોટા' },
+  addPhoto: { en: 'Add photo', hi: 'फ़ोटो जोड़ें', gu: 'ફોટો ઉમેરો' },
+  photoNote: { en: 'Note (optional)', hi: 'टिप्पणी (ज़रूरी नहीं)', gu: 'નોંધ (જરૂરી નથી)' },
+  photoPlace: { en: 'Place (optional)', hi: 'जगह (ज़रूरी नहीं)', gu: 'જગ્યા (જરૂરી નથી)' },
+  photoRating: { en: 'How is it? (optional)', hi: 'कैसा है? (ज़रूरी नहीं)', gu: 'કેવું છે? (જરૂરી નથી)' },
+  fine: { en: 'Fine', hi: 'ठीक', gu: 'બરાબર' },
+  concern: { en: 'Concern', hi: 'चिंता', gu: 'ચિંતા' },
+  actionNeeded: { en: 'Action needed', hi: 'कार्रवाई ज़रूरी', gu: 'પગલાં જરૂરી' },
+  photoBy: { en: 'Added by', hi: 'जोड़ने वाले', gu: 'ઉમેરનાર' },
+  photoTaken: { en: 'taken', hi: 'खींची गई', gu: 'લીધેલો' },
+  photoUnreadable: { en: 'This photo could not be read. Try another.', hi: 'यह फ़ोटो पढ़ी नहीं जा सकी। दूसरी आज़माएँ।', gu: 'આ ફોટો વાંચી શકાયો નહીં. બીજો અજમાવો.' },
+  photoTooBig: {
+    en: 'This photo is too large to send. Try a smaller one.',
+    hi: 'यह फ़ोटो भेजने के लिए बहुत बड़ी है। छोटी फ़ोटो आज़माएँ।',
+    gu: 'આ ફોટો મોકલવા માટે બહુ મોટો છે. નાનો ફોટો અજમાવો.',
+  },
+  photoNeedsSignal: {
+    en: 'This photo was not sent: there is no signal. Add it again when you have signal.',
+    hi: 'यह फ़ोटो नहीं भेजी गई: नेटवर्क नहीं है। नेटवर्क आने पर फिर से जोड़ें।',
+    gu: 'આ ફોટો મોકલાયો નથી: નેટવર્ક નથી. નેટવર્ક આવે ત્યારે ફરી ઉમેરો.',
+  },
+  photoOpen: { en: 'Open photo', hi: 'फ़ोटो खोलें', gu: 'ફોટો ખોલો' },
 } satisfies Record<string, Words>;
 
 /** A server time as the viewer reads it, in India's time: "14 Oct, 15:30" in the viewer's language. */

@@ -4,9 +4,12 @@ import type { Lang } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { isCurrentProjectScope, projectScopeOf, type ProjectScope } from '@/store/projectScope';
 import {
-  isSiteVisitOp, newIdempotencyKey, siteVisitListeners, siteVisitOf,
+  isSiteVisitOp, isTerminalOutboxError, newIdempotencyKey, refusalMessage, siteVisitListeners, siteVisitOf,
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
+  type SiteVisitRating,
 } from '@/data/apiGateway';
+import { captureStamp } from './captureStamp';
+import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
 import { SV } from './siteVisitWords';
 
 /**
@@ -85,6 +88,19 @@ function refusedText(message: string | null, lang: Lang): string {
   return lang === 'en' && message ? `${SV.refused.en} ${message}` : SV.refused[lang];
 }
 
+/** A chosen file's bytes as a data URL; null when the browser could not read it. */
+function readFile(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
+/** How often an open screen reads the visits again, so a photo's signed link (an hour by default) never expires. */
+export const LINK_REFRESH_MS = 20 * 60_000;
+
 /** The visits as shown: those still open first, then newest start first. */
 function ordered(list: SiteVisit[]): SiteVisit[] {
   return [...list].sort((a, b) => {
@@ -136,7 +152,7 @@ export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | n
         startPlace: body.nodeId ? { nodeId: body.nodeId, name: visitor.placeName ?? '' } : null,
         location: body.location ? { kind: 'device', ...body.location, approximate: body.location.accuracyM > APPROXIMATE_ACCURACY_M } : { kind: 'none' },
         endedAt: null, endTimeAdjusted: null, closedAt: null, closedById: null, closeReason: null,
-        lateEndedAt: null, lateEndTimeAdjusted: null, places: [], attendees: [],
+        lateEndedAt: null, lateEndTimeAdjusted: null, places: [], attendees: [], files: [],
       });
       continue;
     }
@@ -306,7 +322,10 @@ export function useSiteVisits() {
     // the browser says the network is back
     const online = () => sendQueued();
     globalThis.addEventListener?.('online', online);
+    // the photos' signed links last an hour: read again well before, so a thumbnail or full photo never opens dead
+    const relink = setInterval(() => readHead(false), LINK_REFRESH_MS);
     return () => {
+      clearInterval(relink);
       listeners.delete(ping);
       siteVisitListeners.delete(told);
       globalThis.removeEventListener?.('online', online);
@@ -365,5 +384,47 @@ export function useSiteVisits() {
     })),
     retireAttendee: (visitId: string, attendeeId: string) =>
       act((idempotencyKey) => ({ t: 'siteVisitRetireAttendee', visitId, attendeeId, idempotencyKey })),
+    /** SV2: a photo on the visit, with an optional note, rating and place (one the visit walked), sent straight to the
+     *  server. The visitor and anyone recorded as present may add one while the visit is not closed; the server asks
+     *  again. Nothing is kept on the phone: with no signal the person is told so, and the photo is still theirs to
+     *  pick again (keeping it to send later is its own step, #992's Unit B). */
+    addPhoto: async (visitId: string, file: File, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string }): Promise<boolean> => {
+      const state = useStore.getState();
+      const gw = state.serverGateway();
+      if (!gw) { setError(SV.needsServer[state.lang]); return false; }
+      const scope = projectScopeOf(state);
+      const say = (text: (typeof SV)[keyof typeof SV]) => { if (live(scope)) setError(text[useStore.getState().lang]); };
+      setBusy(true);
+      setError(null);
+      setNotice(null);
+      try {
+        const read = await readFile(file);
+        // the stamp is the original's: a redrawn photo carries no EXIF
+        const stamp = read ? captureStamp(read) : {};
+        const shown = read ? await shrinkPhoto(read) : null;
+        const m = shown ? /^data:([^;]+);base64,(.*)$/.exec(shown) : null;
+        // only a type and size the upload takes: anything else is refused here, before a byte is sent
+        if (!m || !UPLOAD_IMAGE_MIMES.includes(m[1])) { say(SV.photoUnreadable); return false; }
+        if (m[2].length > MAX_PHOTO_BASE64) { say(SV.photoTooBig); return false; }
+        if (!live(scope)) return false;
+        const note = extra.note?.trim();
+        await gw.uploadMedia({
+          kind: 'visit', mime: m[1], data: m[2], clientKey: newIdempotencyKey(), ...stamp,
+          ...(extra.nodeId ? { nodeId: extra.nodeId } : {}),
+          siteVisit: { visitId, ...(note ? { note } : {}), ...(extra.rating ? { rating: extra.rating } : {}) },
+        });
+        // the upload answers with the file, not the visit: read the visit again to show it
+        if (live(scope)) readHead(false);
+        return true;
+      } catch (err) {
+        if (live(scope)) {
+          const lang = useStore.getState().lang;
+          setError(isTerminalOutboxError(err) ? refusedText(refusalMessage(err), lang) : SV.photoNeedsSignal[lang]);
+        }
+        return false;
+      } finally {
+        if (live(scope)) setBusy(false);
+      }
+    },
   };
 }
