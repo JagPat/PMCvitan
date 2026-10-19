@@ -2,7 +2,9 @@
 -- sketches, video and other files, not only times). It ships alone, before any server or screen uses it.
 --
 -- WHAT. One new table, "SiteVisitMedia": a file the visitor added on a visit, with an optional note (at most 500
--- characters), who added it and when. One row per file ("mediaId" is the key), so a file belongs to at most one visit.
+-- characters), an optional rating of what it shows ("SiteVisitRating": fine, concern, action_needed), who added it and
+-- when. The item's place is the file's own "Media"."nodeId", so it is not stored twice. One row per file ("mediaId" is
+-- the key), so a file belongs to at most one visit.
 -- Both links are composite (projectId, x) foreign keys, the shape every project-owned link uses, so no writer can put
 -- another project's file on a visit or a file on another project's visit.
 --
@@ -26,11 +28,17 @@
 
 DO $sv2_media$
 BEGIN
+  -- `to_regtype`, schema-qualified, as 20270920000000_decision_option_kinds does: a same-named type in another schema
+  -- must not satisfy the guard.
+  IF to_regtype('public."SiteVisitRating"') IS NULL THEN
+    CREATE TYPE public."SiteVisitRating" AS ENUM ('fine', 'concern', 'action_needed');
+  END IF;
   CREATE TABLE IF NOT EXISTS "SiteVisitMedia" (
     "projectId" TEXT NOT NULL,
     "visitId"   TEXT NOT NULL,
     "mediaId"   TEXT NOT NULL,
     "note"      VARCHAR(500),
+    "rating"    public."SiteVisitRating",
     "addedById" TEXT NOT NULL,
     "addedAt"   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "SiteVisitMedia_pkey" PRIMARY KEY ("mediaId")

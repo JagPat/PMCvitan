@@ -6,7 +6,8 @@ times today and "feels empty"; it should hold photos, sketches, video and other 
 ## Units
 
 1. **Database (this unit, shipped alone).** A new table `SiteVisitMedia`: one row per file the visitor adds on a visit,
-   pointing at an existing `Media` row, with an optional note (at most 500 characters), who added it and when.
+   pointing at an existing `Media` row, with an optional note (at most 500 characters), an optional rating (Fine,
+   Concern, Action needed), who added it and when. The item's place is the file's own `Media.nodeId`.
 2. **Server.** The media upload takes an optional visit. The site-visits module writes the link as the upload's
    workflow participant, in the upload's transaction and under the visit's row lock. The visit read returns its files.
 3. **Screen.** "Add photo" on an open or ended visit, reusing the Dashboard "Add site photo" button (#978) and its
@@ -31,5 +32,6 @@ times today and "feels empty"; it should hold photos, sketches, video and other 
 4. **Deletes follow the file.** Removing the file removes its link (`ON DELETE CASCADE`), so the existing photo delete
    rules are unchanged. A visit is never deleted outside a project cascade.
 5. **One visit per file.** The file id is the key. A photo of a crack belongs to the visit it was taken on.
-6. **The rating (Fine, Concern, Action needed) waits for SV3.** It only matters once "Action needed" creates an item,
-   so it is not stored yet.
+6. **The rating (Fine, Concern, Action needed) is stored now, used later.** It is a nullable Prisma enum on the link, so
+   it ships in this migration instead of a second migration-alone PR. "Action needed" raising an item is SV3's.
+7. **The place is not stored twice.** `Media.nodeId` already files the file to a place; the visit item reads it.

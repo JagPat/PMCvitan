@@ -9,7 +9,7 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Site Visits (#792) SV2, the database half of "media on a visit": `20280114000000_site_visits_sv2_visit_media` adds
- * "SiteVisitMedia", one row per file a visitor adds on a visit (with an optional note of at most 500 characters).
+ * "SiteVisitMedia", one row per file a visitor adds on a visit (with an optional note of at most 500 characters and an optional Fine / Concern / Action needed rating).
  * No server or screen writes it yet; this proves what PostgreSQL holds on every writer, and that the file re-runs.
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280114000000_site_visits_sv2_visit_media/migration.sql');
@@ -80,6 +80,21 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     await expect(link(f.projectA.id, visitA, (await photo(f.projectA.id)).id, 'x'.repeat(501))).rejects.toThrow();
   });
 
+  it('a file carries a Fine / Concern / Action needed rating or none, and nothing else', async () => {
+    for (const rating of ['fine', 'concern', 'action_needed'] as const) {
+      const row = await t.prisma.siteVisitMedia.create({
+        data: { projectId: f.projectA.id, visitId: visitA, mediaId: (await photo(f.projectA.id)).id, rating, addedById: f.memberUser.id },
+      });
+      expect(row.rating).toBe(rating);
+    }
+    expect((await link(f.projectA.id, visitA, (await photo(f.projectA.id)).id)).rating).toBeNull();
+    const m = await photo(f.projectA.id);
+    await expect(t.prisma.$executeRaw`
+      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","rating","addedById")
+      VALUES (${f.projectA.id}, ${visitA}, ${m.id}, 'urgent'::"SiteVisitRating", ${f.memberUser.id})`)
+      .rejects.toThrow(/invalid input value for enum/i);
+  });
+
   it('removing the file removes it from the visit, and the visit stays', async () => {
     const m = await photo(f.projectA.id);
     await link(f.projectA.id, visitA, m.id);
@@ -96,5 +111,8 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     const fks = await t.prisma.$queryRaw<Array<{ n: bigint }>>`
       SELECT count(*) AS n FROM pg_constraint WHERE conrelid = '"SiteVisitMedia"'::regclass AND contype = 'f'`;
     expect(Number(fks[0].n)).toBe(3);
+    const labels = await t.prisma.$queryRaw<Array<{ l: string }>>`
+      SELECT enumlabel AS l FROM pg_enum WHERE enumtypid = 'public."SiteVisitRating"'::regtype ORDER BY enumsortorder`;
+    expect(labels.map((r) => r.l)).toEqual(['fine', 'concern', 'action_needed']);
   });
 });

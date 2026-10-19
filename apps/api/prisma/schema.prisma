@@ -5123,17 +5123,27 @@ model SiteVisitAttendee {
 // (the visit's own visitor, while the visit is not closed) is the server's rule: the site-visits module writes this
 // row as the media upload's participant, under the visit's row lock. The upload keeps its own `media.uploaded` event,
 // so the sealed effect catalog does not move.
+// Site Visits SV2 — the visitor's rating of a file added on a visit
+enum SiteVisitRating {
+  fine
+  concern
+  action_needed
+}
+
 model SiteVisitMedia {
-  visit     SiteVisit @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  visit     SiteVisit        @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
   projectId String
   visitId   String
-  media     Media     @relation(fields: [projectId, mediaId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  media     Media            @relation(fields: [projectId, mediaId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
   mediaId   String
   // what the visitor saw, typed beside the file (optional; the service trims it)
-  note      String?   @db.VarChar(500)
-  addedBy   User      @relation("siteVisitMediaAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  note      String?          @db.VarChar(500)
+  // how the visitor rates what it shows (optional); "action_needed" raises an item in SV3. The place is the
+  // file's own Media.nodeId.
+  rating    SiteVisitRating?
+  addedBy   User             @relation("siteVisitMediaAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
   addedById String
-  addedAt   DateTime  @default(now())
+  addedAt   DateTime         @default(now())
 
   @@id([mediaId])
   @@unique([projectId, mediaId])
