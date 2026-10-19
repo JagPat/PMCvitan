@@ -459,6 +459,9 @@ export function DailyLogScreen() {
       {zoom && <PhotoViewer url={zoom} onClose={() => setZoom(null)} />}
       {addingMaterial && <AddMaterialModal onClose={() => setAddingMaterial(false)} />}
 
+      {/* #482 (live 19 Oct) — the engineer sends the day to the PMC, and the server refuses a send that was never
+          checked in; the PMC has no Check in (above), so it is not offered the send either, only the sent state */}
+      {(runsTheDay || dailyLog.submitted) && (
       <div className={styles.stickyFoot} style={{ padding: '12px 16px 20px', borderTop: '1px solid rgba(35,33,28,.1)', background: 'var(--panel)' }}>
         <button
           onClick={submitDailyLog}
@@ -469,6 +472,7 @@ export function DailyLogScreen() {
           {dailyLog.submitted ? L.submitted[lang] : sending ? L.sending[lang] : L.submit[lang]}
         </button>
       </div>
+      )}
     </div>
   );
 }
