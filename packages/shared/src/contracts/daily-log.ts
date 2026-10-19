@@ -34,6 +34,8 @@ export const DAILY_LOG_QUERIES = [
   'daily-log.projectionSlice',
   'daily-log.existsInProject',
   'daily-log.resolveRef',
+  // #482 site photos — which logs were already sent, read under the log row's lock by a photo delete
+  'daily-log.sentLogs',
 ] as const;
 export type DailyLogQuery = (typeof DAILY_LOG_QUERIES)[number];
 

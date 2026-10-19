@@ -15,4 +15,11 @@ export class MediaParticipant {
     if (nodeIds.length === 0) return Promise.resolve(0);
     return tx.media.count({ where: { projectId, nodeId: { in: [...nodeIds] } } });
   }
+
+  /** #482 site photos — how many progress photos are filed on the day's log `dailyLogId`, read on the caller's
+   *  transaction: a submit asks here, under the log row's lock, so the count it stores is the server's own. */
+  countFiledOnLog(tx: Prisma.TransactionClient, params: { projectId: string; dailyLogId: string }): Promise<number> {
+    const { projectId, dailyLogId } = params;
+    return tx.media.count({ where: { projectId, dailyLogId, kind: 'progress' } });
+  }
 }

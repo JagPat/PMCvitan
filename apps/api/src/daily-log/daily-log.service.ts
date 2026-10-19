@@ -18,6 +18,7 @@ import { emitEvent } from '../platform/events';
 import { resolveActor } from '../common/actor';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { ActivityParticipant } from '../activities/activity.participant';
+import { MediaParticipant } from '../media/media.participant';
 
 @Injectable()
 export class DailyLogService {
@@ -36,6 +37,9 @@ export class DailyLogService {
     // Phase 3 Task 5 — the mismatch-RESOLUTION surface is pilot-gated (§D — 404 off-pilot);
     // the pre-existing flag flow stays exactly as it was on non-pilot projects.
     private readonly capabilities: CapabilitiesService,
+    // #482 site photos — the day's photo count a submit stores is counted by the media module, on the submit's
+    // transaction under the log row's lock (a photo deleted before the send is never counted)
+    private readonly media: MediaParticipant,
   ) {}
 
   /** Flag a material as not matching its locked decision → block the linked activity.
@@ -256,7 +260,12 @@ export class DailyLogService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'daily-log.submit', idempotencyKey, requestHash,
       run: async (tx) => {
-        await tx.dailyLog.update({ where: { id: log.id }, data: { checkedIn: input.checkedIn, checkinTime: input.checkinTime, progress: input.progress, submitted: true } });
+        // #482 site photos — the count stored is the photos filed on the log, counted by the server under the log row's
+        // lock: a member's delete holds the row FOR SHARE until it commits, so a deleted photo is never counted, and a
+        // photo the sender's app counted that never landed is not either. `input.progress` stays in the request hash.
+        await tx.$queryRaw`SELECT "id" FROM "DailyLog" WHERE "id" = ${log.id} FOR UPDATE`;
+        const progress = await this.media.countFiledOnLog(tx, { projectId, dailyLogId: log.id });
+        await tx.dailyLog.update({ where: { id: log.id }, data: { checkedIn: input.checkedIn, checkinTime: input.checkinTime, progress, submitted: true } });
         for (const c of input.crew) {
           await tx.crewRow.updateMany({ where: { dailyLogId: log.id, trade: c.trade }, data: { count: c.count } });
         }
