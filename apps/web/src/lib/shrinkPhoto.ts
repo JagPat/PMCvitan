@@ -8,11 +8,20 @@
  * goes as it was: the server takes it, and only its wait on the phone is less certain.
  */
 export const PHOTO_MAX_EDGE = 2048;
+/** The image types the upload takes (`RASTER_IMAGE_MIMES`, apps/api contracts.ts). Any other image the browser can
+ *  decode (AVIF, BMP, ...) is redrawn as a JPEG; one it cannot is refused before it is queued. */
+export const UPLOAD_IMAGE_MIMES: readonly string[] = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/heic', 'image/heif'];
 /** A photo already within the edge is redrawn only when its file is larger than this (base64 characters). */
 const SMALL_ENOUGH = 1_500_000;
 const JPEG_QUALITY = 0.85;
 
 export async function shrinkPhoto(dataUrl: string): Promise<string> {
+  const m = /^data:([^;]+);base64,/.exec(dataUrl);
+  return redraw(dataUrl, !!m && !UPLOAD_IMAGE_MIMES.includes(m[1]));
+}
+
+/** `force`: redraw whatever its size (a type the upload does not take). */
+async function redraw(dataUrl: string, force: boolean): Promise<string> {
   try {
     const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
     if (!m || typeof createImageBitmap !== 'function' || typeof document === 'undefined') return dataUrl;
@@ -20,7 +29,7 @@ export async function shrinkPhoto(dataUrl: string): Promise<string> {
     const bitmap = await createImageBitmap(new Blob([bytes], { type: m[1] }));
     try {
       const scale = Math.min(1, PHOTO_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
-      if (scale === 1 && dataUrl.length <= SMALL_ENOUGH) return dataUrl;
+      if (!force && scale === 1 && dataUrl.length <= SMALL_ENOUGH) return dataUrl;
       const canvas = document.createElement('canvas');
       canvas.width = Math.max(1, Math.round(bitmap.width * scale));
       canvas.height = Math.max(1, Math.round(bitmap.height * scale));
@@ -28,7 +37,7 @@ export async function shrinkPhoto(dataUrl: string): Promise<string> {
       if (!ctx) return dataUrl;
       ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
       const out = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
-      return out.startsWith('data:image/jpeg;base64,') && out.length < dataUrl.length ? out : dataUrl;
+      return out.startsWith('data:image/jpeg;base64,') && (force || out.length < dataUrl.length) ? out : dataUrl;
     } finally {
       bitmap.close();
     }

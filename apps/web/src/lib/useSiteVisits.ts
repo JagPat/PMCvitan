@@ -9,7 +9,8 @@ import {
   type SiteVisitRating,
 } from '@/data/apiGateway';
 import { captureStamp } from './captureStamp';
-import { shrinkPhoto } from './shrinkPhoto';
+import { shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
+import { deleteVisitPhoto, putVisitPhoto, visitPhotoScope } from '@/data/visitPhotoStore';
 import { SV } from './siteVisitWords';
 
 /**
@@ -97,6 +98,13 @@ function readFile(file: File): Promise<string | null> {
     reader.readAsDataURL(file);
   });
 }
+
+/** The photos this tab queued, as it read them, by key: shown on the card until the server holds them. The bytes
+ *  themselves wait in `visitPhotoStore`; after a reload a queued photo shows without its picture until it is sent. */
+const queuedPreviews = new Map<string, string>();
+
+/** How often an open screen reads the visits again, so a photo's signed link (an hour by default) never expires. */
+export const LINK_REFRESH_MS = 20 * 60_000;
 
 /** The visits as shown: those still open first, then newest start first. */
 function ordered(list: SiteVisit[]): SiteVisit[] {
@@ -193,12 +201,13 @@ export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | n
         byId.set(id, { ...v, attendees: v.attendees.map((a) => (a.id === op.attendeeId && !a.retiredAt ? { ...a, retiredAt: at } : a)) });
         break;
       case 'siteVisitAddFile': {
-        // shown from the phone's own copy until the server's list holds it (the server names it by its own id, so the
-        // queued copy is shown until the act is answered, and the read after it brings the stored one)
+        // shown from the phone's own copy until the server's list holds it: a read that already has it (its answer was
+        // lost, or another read came first) names it by the same key, and the stored one is shown alone
         const f = op.file;
         waiting.add(f.id);
+        if ((v.files ?? []).some((x) => x.clientKey === f.id)) break;
         byId.set(id, { ...v, files: [...(v.files ?? []), {
-          mediaId: f.id, url: `data:${f.mime};base64,${f.data}`, mime: f.mime, takenAt: f.takenAt ?? null,
+          mediaId: f.id, url: queuedPreviews.get(f.id) ?? '', mime: f.mime, clientKey: f.id, takenAt: f.takenAt ?? null,
           note: f.note ?? null, rating: f.rating ?? null,
           place: f.nodeId ? { nodeId: f.nodeId, name: op.placeName ?? '' } : null,
           addedById: me ?? '', addedByName: op.by.name, addedByRole: op.by.role, addedAt: at,
@@ -334,7 +343,10 @@ export function useSiteVisits() {
     // the browser says the network is back
     const online = () => sendQueued();
     globalThis.addEventListener?.('online', online);
+    // the photos' signed links last an hour: read again well before, so a thumbnail or full photo never opens dead
+    const relink = setInterval(() => readHead(false), LINK_REFRESH_MS);
     return () => {
+      clearInterval(relink);
       listeners.delete(ping);
       siteVisitListeners.delete(told);
       globalThis.removeEventListener?.('online', online);
@@ -400,14 +412,28 @@ export function useSiteVisits() {
         const read = await readFile(file);
         // the stamp is the original's: a redrawn photo carries no EXIF
         const stamp = read ? captureStamp(read) : {};
-        const m = read ? /^data:([^;]+);base64,(.*)$/.exec(await shrinkPhoto(read)) : null;
-        if (!m || !m[1].startsWith('image/')) { setError(SV.photoUnreadable[useStore.getState().lang]); return null; }
+        const shown = read ? await shrinkPhoto(read) : null;
+        const m = shown ? /^data:([^;]+);base64,(.*)$/.exec(shown) : null;
+        // only a type the upload takes: anything else would be refused once sent, after the phone said it was saved
+        if (!m || !UPLOAD_IMAGE_MIMES.includes(m[1])) { setError(SV.photoUnreadable[useStore.getState().lang]); return null; }
         const s = useStore.getState();
+        const scope = projectScopeOf(s);
+        const owner = visitPhotoScope(s.sessionToken);
+        const clientKey = newIdempotencyKey();
+        // the bytes are kept before the act is queued: "saved on this phone" means written
+        try {
+          await putVisitPhoto({ userScope: owner, projectId: s.activeProjectId, clientKey, mime: m[1], data: m[2] });
+        } catch {
+          setError(SV.photoNotKept[s.lang]);
+          return null;
+        }
+        if (!live(scope)) { await deleteVisitPhoto(owner, s.activeProjectId, clientKey).catch(() => {}); return null; }
+        queuedPreviews.set(clientKey, shown!);
         const note = extra.note?.trim();
         return {
-          t: 'siteVisitAddFile', visitId, idempotencyKey,
+          t: 'siteVisitAddFile', visitId, idempotencyKey, scope: owner,
           file: {
-            id: newIdempotencyKey(), mime: m[1], data: m[2], ...stamp,
+            id: clientKey, mime: m[1], ...stamp,
             ...(extra.nodeId ? { nodeId: extra.nodeId } : {}), ...(note ? { note } : {}), ...(extra.rating ? { rating: extra.rating } : {}),
           },
           by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null,

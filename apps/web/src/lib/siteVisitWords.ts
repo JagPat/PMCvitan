@@ -87,6 +87,11 @@ export const SV = {
   photoBy: { en: 'Added by', hi: 'जोड़ने वाले', gu: 'ઉમેરનાર' },
   photoTaken: { en: 'taken', hi: 'खींची गई', gu: 'લીધેલો' },
   photoUnreadable: { en: 'This photo could not be read. Try another.', hi: 'यह फ़ोटो पढ़ी नहीं जा सकी। दूसरी आज़माएँ।', gu: 'આ ફોટો વાંચી શકાયો નહીં. બીજો અજમાવો.' },
+  photoNotKept: {
+    en: 'This photo could not be saved on this phone. Try again with signal.',
+    hi: 'यह फ़ोटो इस फ़ोन पर सहेजी नहीं जा सकी। नेटवर्क होने पर फिर कोशिश करें।',
+    gu: 'આ ફોટો આ ફોન પર સાચવી શકાયો નહીં. નેટવર્ક હોય ત્યારે ફરી પ્રયત્ન કરો.',
+  },
   photoOpen: { en: 'Open photo', hi: 'फ़ोटो खोलें', gu: 'ફોટો ખોલો' },
 } satisfies Record<string, Words>;
 

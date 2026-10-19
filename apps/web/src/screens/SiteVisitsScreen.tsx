@@ -6,6 +6,7 @@ import { Button } from '@/components';
 import { trailOf } from '@/lib/locationTree';
 import { useSiteVisits } from '@/lib/useSiteVisits';
 import { SV, visitTime } from '@/lib/siteVisitWords';
+import { stampText } from '@/lib/captureStamp';
 import { resolveMediaUrl, type SiteVisit, type SiteVisitRating } from '@/data/apiGateway';
 import styles from './SiteVisitsScreen.module.css';
 
@@ -168,6 +169,9 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
   // a photo is placed at one of the places this visit walked
   const walked = v.places.filter((p) => !p.retiredAt && p.nodeId);
   const files = v.files ?? [];
+  // a place chosen for the photo and then removed from the visit is no longer offered, so it is not sent either
+  const photoAt = walked.find((p) => p.nodeId === photoPlace);
+  useEffect(() => { if (photoPlace && !photoAt) setPhotoPlace(''); }, [photoPlace, photoAt]);
   // only a member whose membership is active can be named: an invitation not yet taken is refused by the server
   const freeMembers = members.filter((m) => m.status === 'active' && m.userId !== v.visitorId && !standingPeople.has(m.userId));
   const status = v.status === 'open' ? SV.open[lang] : v.status === 'ended' ? SV.ended[lang] : SV.closed[lang];
@@ -263,16 +267,19 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
       <ul className={styles.files}>
         {files.map((f) => (
           <li key={f.mediaId} className={styles.file} data-testid={`sv-file-${f.mediaId}`}>
-            <a href={resolveMediaUrl(f.url)} target="_blank" rel="noreferrer" aria-label={SV.photoOpen[lang]}>
-              <img className={styles.thumb} src={resolveMediaUrl(f.url)} alt={f.note ?? SV.photos[lang]} loading="lazy" />
-            </a>
+            {/* a photo queued before a reload has its bytes on the phone but no picture to show until it is sent */}
+            {f.url ? (
+              <a href={resolveMediaUrl(f.url)} target="_blank" rel="noreferrer" aria-label={SV.photoOpen[lang]}>
+                <img className={styles.thumb} src={resolveMediaUrl(f.url)} alt={f.note ?? SV.photos[lang]} loading="lazy" />
+              </a>
+            ) : <div className={styles.thumb} aria-hidden="true" />}
             <div className={styles.fileText}>
               {f.rating && <span className={styles.rating} data-rating={f.rating}>{ratingName(f.rating, lang)}</span>}
               {f.note && <div>{f.note}</div>}
               {f.place && <div className={styles.meta}>{f.place.name}</div>}
               <div className={styles.meta}>
                 {SV.photoBy[lang]} {f.addedByName}{f.addedByRole ? ` · ${roleName(f.addedByRole, lang)}` : ''} · {visitTime(f.addedAt, lang)}
-                {f.takenAt && <> · {SV.photoTaken[lang]} {f.takenAt}</>}{wait(f.mediaId)}
+                {stampText(f.takenAt) && <> · {SV.photoTaken[lang]} {stampText(f.takenAt)}</>}{wait(f.mediaId)}
               </div>
             </div>
           </li>
@@ -298,8 +305,7 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
               const file = e.target.files?.[0];
               e.target.value = '';
               if (!file) return;
-              const placeName = walked.find((p) => p.nodeId === photoPlace)?.name ?? null;
-              void sv.addPhoto(v.id, file, { note: photoNote, ...(photoRating ? { rating: photoRating } : {}), ...(photoPlace ? { nodeId: photoPlace, placeName } : {}) })
+              void sv.addPhoto(v.id, file, { note: photoNote, ...(photoRating ? { rating: photoRating } : {}), ...(photoAt ? { nodeId: photoAt.nodeId!, placeName: photoAt.name } : {}) })
                 .then((ok) => { if (ok) { setPhotoNote(''); setPhotoRating(''); setPhotoPlace(''); } });
             }}
           />

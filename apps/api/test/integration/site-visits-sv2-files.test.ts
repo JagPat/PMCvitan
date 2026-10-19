@@ -161,7 +161,9 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     expect(again.status).toBe(201);
     expect(again.body.id).toBe(first.body.id);
     expect(await t.prisma.siteVisitMedia.count({ where: { mediaId: first.body.id } })).toBe(1);
-    expect(await t.prisma.domainEvent.count({ where: { eventType: 'media.uploaded', entityId: first.body.id } })).toBe(1);
+    expect(await t.prisma.domainEvent.count({ where: { eventType: 'media.uploaded', entityId: first.body.id } })).toBe(1);    // the visit names the file's key, so the phone that queued it knows its copy is stored (web #992)
+    const listed = (await readVisit(visitId)).files.find((x: { mediaId: string }) => x.mediaId === first.body.id);
+    expect(listed.clientKey).toBe(key);
   });
 
   it('visit files stay inside their visit: not on the Site Map, the Dashboard photos or the daily log', async () => {

@@ -11,6 +11,7 @@
  * end-to-end in CI (the sandbox has no Postgres). Validate it once the API is
  * deployed and `VITE_API_URL` points at it.
  */
+import { deleteVisitPhoto, getVisitPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
 import type {
   Activity,
@@ -1548,6 +1549,8 @@ export interface SiteVisitFile {
   mediaId: string;
   url: string;
   mime: string;
+  /** The uploading device's key for the file (absent from an API before #992): the phone knows its queued copy by it. */
+  clientKey?: string | null;
   takenAt: string | null;
   note: string | null;
   rating: SiteVisitRating | null;
@@ -1558,11 +1561,11 @@ export interface SiteVisitFile {
   addedByRole: string;
   addedAt: string;
 }
-/** A photo queued for a visit: the upload's own fields, under its `clientKey` (`id`), so a replay is the same file. */
+/** A photo queued for a visit: the upload's own fields, under its `clientKey` (`id`), so a replay is the same file. The
+ *  bytes are not here: they wait in `visitPhotoStore` under the same key (localStorage cannot hold photos). */
 export interface SiteVisitFileBody {
   id: string;
   mime: string;
-  data: string;
   takenAt?: string;
   geoLat?: number;
   geoLng?: number;
@@ -1915,8 +1918,9 @@ export type OutboxOp =
   | { t: 'siteVisitAddAttendee'; visitId: string; body: SiteVisitAttendeeBody; name: string; idempotencyKey: string }
   | { t: 'siteVisitRetireAttendee'; visitId: string; attendeeId: string; idempotencyKey: string }
   // SV2: a photo on a visit. The visit is named once, outside the body, so a refused start's acts move onto the open
-  // visit with it; `by` and `placeName` are for the screen only, never sent.
-  | { t: 'siteVisitAddFile'; visitId: string; file: SiteVisitFileBody; by: { name: string; role: string }; placeName: string | null; idempotencyKey: string }
+  // visit with it; `scope` is the user its bytes are kept under in `visitPhotoStore`; `by` and `placeName` are for the
+  // screen only, never sent.
+  | { t: 'siteVisitAddFile'; visitId: string; scope: string; file: SiteVisitFileBody; by: { name: string; role: string }; placeName: string | null; idempotencyKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
@@ -2025,10 +2029,23 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
     case 'siteVisitAddFile': {
       // the file's own key is the upload's `clientKey`: a replay after a lost answer is the same file, added once
       const { id, note, rating, ...file } = op.file;
-      return gw.uploadMedia({
-        ...file, kind: 'visit', clientKey: id,
-        siteVisit: { visitId: op.visitId, ...(note ? { note } : {}), ...(rating ? { rating } : {}) },
-      }).then(() => { tellSiteVisits({ kind: 'filed', project: gw.project, generation, visitId: op.visitId }); return null; });
+      const filed = (): null => { tellSiteVisits({ kind: 'filed', project: gw.project, generation, visitId: op.visitId }); return null; };
+      return getVisitPhoto(op.scope, gw.project, id).then(async (kept) => {
+        // the bytes are gone only once an earlier send was confirmed (or refused for good): nothing is left to send
+        if (!kept) return filed();
+        try {
+          await gw.uploadMedia({
+            ...file, data: kept.data, kind: 'visit', clientKey: id,
+            siteVisit: { visitId: op.visitId, ...(note ? { note } : {}), ...(rating ? { rating } : {}) },
+          });
+        } catch (err) {
+          // refused for good: the flush drops the act and shows the server's reason, so the bytes go with it
+          if (isTerminalOutboxError(err)) await deleteVisitPhoto(op.scope, gw.project, id).catch(() => {});
+          throw err;
+        }
+        await deleteVisitPhoto(op.scope, gw.project, id).catch(() => {});
+        return filed();
+      });
     }
     case 'approve':
       return gw.approveDecision(op.decisionId, op.optionIndex, op.idempotencyKey);

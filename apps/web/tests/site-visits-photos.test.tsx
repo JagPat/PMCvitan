@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act, screen, within } from '@testing-library/react';
 import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
@@ -5,6 +6,8 @@ import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { moveSiteVisitOps, type ApiGateway, type OutboxOp, type SiteVisit } from '@/data/apiGateway';
 import { shrinkPhoto, PHOTO_MAX_EDGE } from '@/lib/shrinkPhoto';
+import { refreshSiteVisits, LINK_REFRESH_MS } from '@/lib/useSiteVisits';
+import { getVisitPhoto } from '@/data/visitPhotoStore';
 import { leftoverEnglish } from './leftover-english';
 
 /**
@@ -46,7 +49,7 @@ function fakeGateway(list: SiteVisit[], over: Fake = {}): Fake {
 }
 
 async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en') {
-  useStore.setState({ ...getInitialState(), role, lang, sessionUserId: me, nodes: NODES, members: MEMBERS, loadTeam: async () => true });
+  useStore.setState({ ...getInitialState(), outbox: [], role, lang, sessionUserId: me, nodes: NODES, members: MEMBERS, loadTeam: async () => true });
   (gw as { project?: string }).project = useStore.getState().activeProjectId;
   useStore.getState()._setGateway(gw as unknown as ApiGateway);
   const view = render(<SiteVisitsScreen />);
@@ -55,6 +58,7 @@ async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en') {
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   cleanup();
   useStore.getState()._setGateway(null);
   localStorage.clear();
@@ -74,9 +78,10 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
   const photo = () => new File([new Uint8Array([1, 2, 3])], 'site.png', { type: 'image/png' });
   async function pick(visitId: string, f: File = photo()) {
     await act(async () => { fireEvent.change(screen.getByTestId(`sv-photo-file-${visitId}`), { target: { files: [f] } }); });
-    // the file is read before it is queued
-    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    // the file is read, and its bytes kept on the phone, before it is queued (and sent, with signal): callers wait for
+    // the outcome they expect
   }
+  const queuedFile = () => useStore.getState().outbox.find((o) => o.t === 'siteVisitAddFile') as Extract<OutboxOp, { t: 'siteVisitAddFile' }>;
 
   it('lists a visit’s photos with the note, rating, place, who added them and when, for every member', async () => {
     await mount('client', 'u-client', fakeGateway([visit({ status: 'ended', places: walked, files: [file()] })]));
@@ -136,15 +141,93 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     await pick('v-1');
     await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
     expect(useStore.getState().outbox.map((o) => o.t)).toEqual(['siteVisitAddFile']);
-    const kept = useStore.getState().outbox[0] as Extract<OutboxOp, { t: 'siteVisitAddFile' }>;
+    const kept = queuedFile();
+    // the bytes wait in the phone's database, not in the queue localStorage holds (Codex 4318755268)
+    expect(kept.file).not.toHaveProperty('data');
+    expect(JSON.stringify(localStorage)).not.toContain('AQID');
+    expect((await getVisitPhoto(kept.scope, useStore.getState().activeProjectId, kept.file.id))?.data).toBe('AQID');
     const row = screen.getByTestId(`sv-file-${kept.file.id}`);
     expect(row.textContent).toContain('waiting to send');
     expect(row.querySelector('img')!.getAttribute('src')).toBe('data:image/png;base64,AQID');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send now' })); });
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
     const [[first], [again]] = uploadMedia.mock.calls as unknown as [[{ clientKey: string }], [{ clientKey: string }]];
     // the same file under the same key: the server stores it once
     expect(again).toEqual(first);
+    expect(first).toMatchObject({ data: 'AQID', clientKey: kept.file.id });
     expect(useStore.getState().outbox).toHaveLength(0);
+    // sent: the phone's copy goes
+    expect(await getVisitPhoto(kept.scope, useStore.getState().activeProjectId, kept.file.id)).toBeNull();
+  });
+
+  it('shows a photo once when a read already holds it before its answer comes (Codex 4318755283)', async () => {
+    const uploadMedia = vi.fn().mockRejectedValue(new Error('network'));
+    const gw = fakeGateway([visit()], { uploadMedia });
+    await mount('consultant', CONSULTANT, gw);
+    await pick('v-1');
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    const key = queuedFile().file.id;
+    // the upload had committed and only its answer was lost: the next read holds the stored file under the same key
+    gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [file({ mediaId: 'm-7', clientKey: key, note: null, rating: null, place: null })] })]);
+    await act(async () => { refreshSiteVisits(); });
+    await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-7')).toBeTruthy());
+    expect(screen.queryAllByTestId(/^sv-file-/)).toHaveLength(1);
+    // the retry is answered (the server holds it under that key) and the queue empties
+    uploadMedia.mockResolvedValue({ id: 'm-7', url: '/media/m-7' });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send now' })); });
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
+  });
+
+  it('says so, and queues nothing, when the phone cannot keep the photo', async () => {
+    vi.stubGlobal('indexedDB', undefined);
+    const uploadMedia = vi.fn();
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    await pick('v-1');
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo could not be saved on this phone. Try again with signal.'));
+    expect(useStore.getState().outbox).toHaveLength(0);
+    expect(uploadMedia).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('refuses before queueing an image type the upload does not take and the phone cannot redraw (Codex 4318755312)', async () => {
+    const uploadMedia = vi.fn();
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    await pick('v-1', new File(['<svg/>'], 'plan.svg', { type: 'image/svg+xml' }));
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo could not be read. Try another.'));
+    expect(useStore.getState().outbox).toHaveLength(0);
+    expect(uploadMedia).not.toHaveBeenCalled();
+  });
+
+  it('does not send a place that was removed from the visit after it was chosen (Codex 4318755297)', async () => {
+    const uploadMedia = vi.fn(async () => ({ id: 'm-3', url: '/media/m-3' }));
+    const gw = fakeGateway([visit({ places: walked })], { uploadMedia });
+    await mount('consultant', CONSULTANT, gw);
+    const card = screen.getByTestId('sv-visit-v-1');
+    fireEvent.change(within(card).getByLabelText('Place (optional)'), { target: { value: 'n-kit' } });
+    gw.listSiteVisits!.mockImplementation(async () => [visit({ places: [{ ...walked[0], retiredAt: '2026-10-14T04:50:00.000Z' }] })]);
+    await act(async () => { refreshSiteVisits(); });
+    await vi.waitFor(() => expect(within(card).queryByLabelText('Place (optional)')).toBeNull());
+    await pick('v-1');
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    expect(uploadMedia.mock.calls[0]).not.toHaveProperty('0.nodeId');
+  });
+
+  it('shows a capture time of any length bounded (Codex 4318755335)', async () => {
+    await mount('client', 'u-client', fakeGateway([visit({ files: [file({ takenAt: 'x'.repeat(100_000) })] })]));
+    expect(screen.getByTestId('sv-file-m-1').textContent!.length).toBeLessThan(400);
+  });
+
+  it('reads the visits again before the photos’ signed links expire (Codex 4318755326)', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const gw = fakeGateway([visit({ files: [file()] })]);
+    await mount('client', 'u-client', gw);
+    const before = gw.listSiteVisits!.mock.calls.length;
+    gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [file({ url: '/media/m-1?sig=fresh' })] })]);
+    await act(async () => { vi.advanceTimersByTime(LINK_REFRESH_MS); });
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1').querySelector('img')!.getAttribute('src')).toContain('sig=fresh'));
+    expect(gw.listSiteVisits!.mock.calls.length).toBeGreaterThan(before);
   });
 
   it('says so when a closed visit refuses the photo, and takes it off the screen', async () => {
@@ -156,10 +239,25 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     expect(screen.queryAllByTestId(/^sv-file-/)).toHaveLength(0);
   });
 
+  it('lets go of the phone’s copy of a photo the server refused for good', async () => {
+    const refused = Object.assign(new Error('409'), { status: 409, serverMessage: 'This site visit was closed by the PMC and takes no more files' });
+    const uploadMedia = vi.fn().mockImplementation(async () => { throw refused; });
+    await mount('consultant', CONSULTANT, fakeGateway([visit({ status: 'ended' })], { uploadMedia }));
+    // queued while the phone is offline, so its key can be read before it is sent
+    useStore.setState({ online: false });
+    await pick('v-1');
+    await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
+    const kept = queuedFile();
+    useStore.setState({ online: true });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send now' })); });
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
+    expect(await getVisitPhoto(kept.scope, useStore.getState().activeProjectId, kept.file.id)).toBeNull();
+  });
+
   it('moves a photo queued on a start refused for an open visit onto that visit', () => {
     const op: OutboxOp = {
-      t: 'siteVisitAddFile', visitId: 'v-tmp', idempotencyKey: 'k-f', by: { name: 'Priya Shah', role: 'pmc' }, placeName: null,
-      file: { id: 'c-1', mime: 'image/png', data: 'AQID' },
+      t: 'siteVisitAddFile', visitId: 'v-tmp', scope: 'u-pmc', idempotencyKey: 'k-f', by: { name: 'Priya Shah', role: 'pmc' }, placeName: null,
+      file: { id: 'c-1', mime: 'image/png' },
     };
     expect(moveSiteVisitOps([op], 'v-tmp', 'v-open')).toEqual([{ ...op, visitId: 'v-open' }]);
   });
