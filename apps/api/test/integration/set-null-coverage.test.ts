@@ -59,6 +59,11 @@ const COVERAGE: Record<string, Classification> = {
       'no module projection serializes site visits — they are read LIVE; the visit keeps its frozen ' +
       '`startPlaceName`, and the database admits this null only from the node FK action itself (F58)',
   },
+  'SiteVisitMedia.nodeId': {
+    exempt:
+      'no module projection serializes site visits — they are read LIVE; the file keeps its frozen ' +
+      '`placeName`, and the database admits this null only from the node FK action itself (SV2)',
+  },
   'SiteVisitPlace.nodeId': {
     exempt:
       'no module projection serializes site visits — they are read LIVE; the place keeps its frozen ' +

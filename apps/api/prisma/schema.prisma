@@ -304,17 +304,17 @@ model OutboxDelivery {
 // the append-only DomainEvent — the scanner derives missing deliveries from this catalog. A changed
 // kind/effect/version is a startup error requiring an explicit migration (never a silent reinterpret).
 model OutboxConsumerCatalog {
-  consumer       String           @id
-  consumerKind   String // 'ordered' | 'unordered'
-  consumerEffect String // 'db' | 'external'
-  catalogVersion Int // the consumer CONTRACT version, not an app release
+  consumer             String                     @id
+  consumerKind         String // 'ordered' | 'unordered'
+  consumerEffect       String // 'db' | 'external'
+  catalogVersion       Int // the consumer CONTRACT version, not an app release
   // Phase 6 task 4d-ii-a / A6a — the MIRROR of the activation register's head: written only by the
   // register's AFTER INSERT trigger (`platform_t4d_activation_apply`), together with `activationSeq`.
   // A6b freezes both against every other writer; until then the delivered direct UPDATE still works.
-  active         Boolean          @default(true)
+  active               Boolean                    @default(true)
   // the head's sequence (0 = no fact yet, which the catalog-INSERT trigger ends in the same statement)
-  activationSeq  Int              @default(0)
-  registeredAt   DateTime         @default(now())
+  activationSeq        Int                        @default(0)
+  registeredAt         DateTime                   @default(now())
   // Phase 6 task 4d-ii-a / A6c — the PERSISTED dispatch rule (the 4d plan, §A.3 obligation 7): `all`,
   // `invalidate`, `push` or `types` (with the sorted `subscribedEventTypes`), written at the row's
   // birth from the compiled contract, verified at every startup, and frozen by
@@ -322,10 +322,10 @@ model OutboxConsumerCatalog {
   // under the rule gate. NULL on a row no migration knew (planted history, test residue): a compiled
   // consumer meeting such a row is refused at startup.
   dispatchRule         String?
-  subscribedEventTypes String[]         @default([])
-  updatedAt      DateTime         @updatedAt
-  deliveries     OutboxDelivery[]
-  activations    OutboxConsumerActivation[]
+  subscribedEventTypes String[]                   @default([])
+  updatedAt            DateTime                   @updatedAt
+  deliveries           OutboxDelivery[]
+  activations          OutboxConsumerActivation[]
 
   @@unique([consumer, consumerKind]) // the composite the OutboxDelivery FK references
 }
@@ -1179,6 +1179,8 @@ model Media {
   // media backing a stock transaction is not deletable (InventoryParticipant refuses)
   stockEvidence              StockTransaction[]
   measurements               Measurement[]
+  // Site Visits #792 SV2 — the visit this file was added on, if any (at most one)
+  siteVisit                  SiteVisitMedia?
 
   @@unique([projectId, id]) // referenced identity (Task 6 override evidence)
   @@unique([projectId, clientKey])
@@ -1309,13 +1311,14 @@ model DrawingAck {
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
   notificationReceipts      NotificationReceipt[]
-  siteVisitsVisited         SiteVisit[]         @relation("siteVisitVisitor")
-  siteVisitsClosed          SiteVisit[]         @relation("siteVisitCloser")
-  siteVisitAttendances      SiteVisitAttendee[] @relation("siteVisitAttendeeUser")
-  siteVisitAttendeesAdded   SiteVisitAttendee[] @relation("siteVisitAttendeeAddedBy")
-  siteVisitAttendeesRetired SiteVisitAttendee[] @relation("siteVisitAttendeeRetiredBy")
-  siteVisitPlacesAdded      SiteVisitPlace[]    @relation("siteVisitPlaceAddedBy")
-  siteVisitPlacesRetired    SiteVisitPlace[]    @relation("siteVisitPlaceRetiredBy")
+  siteVisitsVisited         SiteVisit[]            @relation("siteVisitVisitor")
+  siteVisitsClosed          SiteVisit[]            @relation("siteVisitCloser")
+  siteVisitAttendances      SiteVisitAttendee[]    @relation("siteVisitAttendeeUser")
+  siteVisitAttendeesAdded   SiteVisitAttendee[]    @relation("siteVisitAttendeeAddedBy")
+  siteVisitAttendeesRetired SiteVisitAttendee[]    @relation("siteVisitAttendeeRetiredBy")
+  siteVisitPlacesAdded      SiteVisitPlace[]       @relation("siteVisitPlaceAddedBy")
+  siteVisitMediaAdded       SiteVisitMedia[]       @relation("siteVisitMediaAddedBy")
+  siteVisitPlacesRetired    SiteVisitPlace[]       @relation("siteVisitPlaceRetiredBy")
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
   pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")
   billVerificationsVerified BillVerification[]     @relation("billVerificationsVerified")
@@ -1496,15 +1499,16 @@ model ProjectNode {
   authorId    String?
   createdAt   DateTime     @default(now())
 
-  children    ProjectNode[]  @relation("NodeChildren")
-  decisions   Decision[]
-  media       Media[]
-  drawings    Drawing[]
-  activities  Activity[]
-  inspections Inspection[]
-  materials   SiteMaterial[]
+  children        ProjectNode[]    @relation("NodeChildren")
+  decisions       Decision[]
+  media           Media[]
+  drawings        Drawing[]
+  activities      Activity[]
+  inspections     Inspection[]
+  materials       SiteMaterial[]
   siteVisitStarts SiteVisit[]
   siteVisitPlaces SiteVisitPlace[]
+  siteVisitMedia  SiteVisitMedia[]
 
   // composite identity for the (projectId, nodeId) FKs — see Media/Decision/…
   @@unique([projectId, id])
@@ -3148,13 +3152,13 @@ model MismatchResolution {
 }
 
 model Notification {
-  id         String   @id @default(cuid())
-  project    Project  @relation(fields: [projectId], references: [id])
-  projectId  String
-  text       String
-  color      String
-  time       String // relative label, e.g. "2h ago" / "just now"
-  at         DateTime @default(now())
+  id           String   @id @default(cuid())
+  project      Project  @relation(fields: [projectId], references: [id])
+  projectId    String
+  text         String
+  color        String
+  time         String // relative label, e.g. "2h ago" / "just now"
+  at           DateTime @default(now())
   // Phase 6 task 4a — the decision a decision-notice announces. Notices are DERIVED
   // communication artifacts (the DecisionEvent register is the history), so retiring a
   // now-false pending notice must not depend on matching display text: the writers stamp
@@ -3162,7 +3166,7 @@ model Notification {
   // legacy rows (retired by exact text shape, multiplicity-guarded) carry none. NOT a
   // relation: a notice may outlive nothing, but a deleted project cascades via projectId
   // and a decision id is a plain stamp, never a join the feed depends on.
-  decisionId String?
+  decisionId   String?
   // Live bug 1b-3a — the inspection an inspection notice announces, stamped by its writer (never read
   // back out of the display text). Nullable: other notices and legacy rows carry none. Not a relation.
   inspectionId String?
@@ -3172,15 +3176,15 @@ model Notification {
   /// makes "this notice is about that act" a database truth rather than a display-text match.
   /// Both nullable: legacy notices and every notice the previous release writes carry neither.
   /// The one-notice-per-event UNIQUE is PARTIAL and lives in SQL only.
-  kind    String?
-  eventId String?
+  kind     String?
+  eventId  String?
+  receipts NotificationReceipt[]
 
-  @@index([decisionId])
-  @@index([projectId, eventId])
   /// Top 10 #4b (#778) — the key a receipt's composite foreign key references, so a receipt and its notice share
   /// one project at every committed state (trivially unique: `id` is the primary key).
   @@unique([id, projectId])
-  receipts NotificationReceipt[]
+  @@index([decisionId])
+  @@index([projectId, eventId])
 }
 
 /// Top 10 #4b (#778) — a per-notice read receipt: this viewer has seen this notice. A notice is unread for a viewer
@@ -5048,42 +5052,43 @@ model PaymentReversal {
 // change with its `sitevisit.*` event. Ids are device-generated uuids. Columns the database derives carry defaults
 // here only so a writer may omit them; the triggers overwrite whatever a writer sends.
 model SiteVisit {
-  id                String       @id
-  project           Project      @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  projectId         String
-  visitor           User         @relation("siteVisitVisitor", fields: [visitorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  visitorId         String
-  visitorRole       String // pmc | consultant | architect
-  visitorName       String       @default("")
-  startClaimedAt    DateTime
-  startedAt         DateTime     @default(now())
-  startTimeAdjusted Boolean      @default(false)
-  startReceivedAt   DateTime     @default(now())
+  id                  String       @id
+  project             Project      @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId           String
+  visitor             User         @relation("siteVisitVisitor", fields: [visitorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  visitorId           String
+  visitorRole         String // pmc | consultant | architect
+  visitorName         String       @default("")
+  startClaimedAt      DateTime
+  startedAt           DateTime     @default(now())
+  startTimeAdjusted   Boolean      @default(false)
+  startReceivedAt     DateTime     @default(now())
   // NoAction here; the migration's composite FK is ON DELETE SET NULL ("startNodeId"), the Activity.nodeId shape.
-  startNode         ProjectNode? @relation(fields: [projectId, startNodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  startNodeId       String?
-  startPlaceName    String?
-  locationKind      String // device | none
-  locLat            Float?
-  locLng            Float?
-  locAccuracyM      Float?
-  locAt             DateTime?
-  status            String       @default("open") // open | ended | closed
-  endClaimedAt      DateTime?
-  endedAt           DateTime?
-  endTimeAdjusted   Boolean?
-  endReceivedAt     DateTime?
-  closedAt          DateTime?
-  closedBy          User?        @relation("siteVisitCloser", fields: [closedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  closedById        String?
-  closeReason       String?
-  lateEndClaimedAt  DateTime?
-  lateEndedAt       DateTime?
+  startNode           ProjectNode? @relation(fields: [projectId, startNodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  startNodeId         String?
+  startPlaceName      String?
+  locationKind        String // device | none
+  locLat              Float?
+  locLng              Float?
+  locAccuracyM        Float?
+  locAt               DateTime?
+  status              String       @default("open") // open | ended | closed
+  endClaimedAt        DateTime?
+  endedAt             DateTime?
+  endTimeAdjusted     Boolean?
+  endReceivedAt       DateTime?
+  closedAt            DateTime?
+  closedBy            User?        @relation("siteVisitCloser", fields: [closedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  closedById          String?
+  closeReason         String?
+  lateEndClaimedAt    DateTime?
+  lateEndedAt         DateTime?
   lateEndTimeAdjusted Boolean?
-  lateEndReceivedAt DateTime?
+  lateEndReceivedAt   DateTime?
 
   attendees SiteVisitAttendee[]
   places    SiteVisitPlace[]
+  media     SiteVisitMedia[]
 
   @@unique([projectId, id])
   @@index([projectId])
@@ -5110,6 +5115,50 @@ model SiteVisitAttendee {
 
   @@index([projectId, visitId])
   @@index([userId])
+}
+
+// Site Visits #792 SV2 — a file the visitor added on a visit: a photo now; a marked-up copy, a voice note or a clip
+// later, the same way, because the row points at a stored Media file rather than holding one. One file belongs to at
+// most one visit. Both links are composite (projectId, x) foreign keys, so a visit can never hold another project's
+// file. Removing the file removes this row with it; a visit is never deleted outside a project cascade. Who may add
+// (the visit's own visitor, while the visit is not closed) is the server's rule: the site-visits module writes this
+// row as the media upload's participant, under the visit's row lock. The upload keeps its own `media.uploaded` event,
+// so the sealed effect catalog does not move.
+// Site Visits SV2 — the visitor's rating of a file added on a visit
+enum SiteVisitRating {
+  fine
+  concern
+  action_needed
+}
+
+model SiteVisitMedia {
+  visit       SiteVisit        @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId   String
+  visitId     String
+  media       Media            @relation(fields: [projectId, mediaId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  mediaId     String
+  // what the visitor saw, typed beside the file (optional; the service trims it)
+  note        String?          @db.VarChar(500)
+  // how the visitor rates what it shows (optional); "action_needed" raises an item in SV3
+  rating      SiteVisitRating?
+  // the place the file showed when it was added, copied by the insert trigger from Media.nodeId, so a later refile
+  // does not move it. NoAction here; the migration's composite FK is ON DELETE SET NULL ("nodeId"), and placeName
+  // keeps the name.
+  node        ProjectNode?     @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  nodeId      String?
+  placeName   String           @default("")
+  addedBy     User             @relation("siteVisitMediaAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  addedById   String
+  // the role the adder acted in, checked held on the project at insert; the trigger copies their account name, so a
+  // later rename or role change does not rewrite who added the file (the Board's SV2 scope: the actor's name and role)
+  addedByRole String
+  addedByName String           @default("")
+  addedAt     DateTime         @default(now())
+
+  @@id([mediaId])
+  @@unique([projectId, mediaId])
+  @@index([projectId, visitId])
+  @@index([nodeId])
 }
 
 model SiteVisitPlace {
