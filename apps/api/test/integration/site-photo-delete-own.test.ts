@@ -86,6 +86,30 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
     await t.prisma.dailyLog.deleteMany({ where: { id: { in: [sent.id, open.id] } } });
   });
 
+  it('a submit racing the delete is never overtaken: the delete waits for it and refuses (Codex 4316959509)', async () => {
+    const log = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: 'racing' } });
+    const id = (await t.prisma.media.create({ data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: contractorId(), data: px, createdAt: minutesAgo(3), dailyLogId: log.id } })).id;
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let updated!: () => void;
+    const isUpdated = new Promise<void>((r) => { updated = r; });
+    // the submit has written `submitted` and not yet committed
+    const submit = t.prisma.$transaction(async (tx) => {
+      await tx.dailyLog.update({ where: { id: log.id }, data: { submitted: true } });
+      updated();
+      await held;
+    }, { timeout: 20_000 });
+    await isUpdated;
+    const deleting = del(id, contractor).then((r) => r);
+    await new Promise((r) => setTimeout(r, 300));
+    release();
+    await submit;
+    expect((await deleting).status).toBe(403);
+    expect(await exists(id)).toBe(true);
+    await t.prisma.media.deleteMany({ where: { id } });
+    await t.prisma.dailyLog.deleteMany({ where: { id: log.id } });
+  });
+
   it('the client deletes their own new photo too', async () => {
     const id = await photo(f.clientUser.id, minutesAgo(5));
     await del(id, client).expect(200);
@@ -98,13 +122,22 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
     expect(await exists(id)).toBe(false);
   });
 
-  it('the snapshot marks the viewer’s own photos, and only theirs', async () => {
-    const own = await photo(contractorId(), minutesAgo(2));
+  it('the snapshot says until when the viewer may delete a photo, only where the server would allow it (Codex 4316959519)', async () => {
+    const at = minutesAgo(2);
+    const own = await photo(contractorId(), at);
     const other = await photo(f.clientUser.id, minutesAgo(2));
+    const old = await photo(contractorId(), minutesAgo(70));
+    const evidence = await photo(contractorId(), minutesAgo(2), 'inspection');
+    const sent = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: 'sent-snap', submitted: true } });
+    const onSent = (await t.prisma.media.create({ data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: contractorId(), data: px, createdAt: minutesAgo(2), dailyLogId: sent.id } })).id;
     const res = await http().get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${contractor}`).expect(200);
-    const byId = new Map((res.body.photos as Array<{ id: string; mine?: boolean }>).map((p) => [p.id, p]));
-    expect(byId.get(own)?.mine).toBe(true);
-    expect(byId.get(other)).toBeDefined();
-    expect(byId.get(other)).not.toHaveProperty('mine');
+    const byId = new Map((res.body.photos as Array<{ id: string; deletableUntil?: string }>).map((p) => [p.id, p]));
+    expect(byId.get(own)?.deletableUntil).toBe(new Date(at.getTime() + 60 * 60_000).toISOString());
+    for (const id of [other, old, evidence, onSent]) {
+      expect(byId.get(id)).toBeDefined();
+      expect(byId.get(id)).not.toHaveProperty('deletableUntil');
+    }
+    await t.prisma.media.deleteMany({ where: { id: onSent } });
+    await t.prisma.dailyLog.deleteMany({ where: { id: sent.id } });
   });
 });

@@ -38,8 +38,8 @@ export const DAILY_LOG_QUERIES = [
   'daily-log.projectionSlice',
   'daily-log.existsInProject',
   'daily-log.resolveRef',
-  // #482 site photos — whether a log was already sent: a member's own photo filed on it is then part of that record
-  'daily-log.isSent',
+  // #482 site photos — which logs were already sent: a member's own photo filed on one is then part of that record
+  'daily-log.sentLogs',
 ] as const;
 export type DailyLogQuery = (typeof DAILY_LOG_QUERIES)[number];
 

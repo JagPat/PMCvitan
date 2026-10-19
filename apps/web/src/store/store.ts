@@ -79,7 +79,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoLabels as SPL } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, SITE_PHOTO_DELETE_WINDOW_MS, sitePhotoLabels as SPL } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -4027,9 +4027,24 @@ export const useStore = create<Store>()(
           get().flash(SPL.deleteOffline[lang()]);
           return;
         }
-        // the fresh snapshot drops the photo everywhere it showed (the Dashboard, the Site Map, the day's log)
-        const gw = gateway;
-        void runRemote(() => gw.deleteMedia(photoId).then(() => gw.snapshot()), () => SPL.deleted[lang()], (why) => SRV.refused(why, lang()), () => DTX.unreachable[lang()]);
+        const scope = currentScope();
+        gateway
+          .deleteMedia(photoId)
+          .then(() => {
+            if (!scopeStillCurrent(scope)) return;
+            // the server's yes is the delete: the photo leaves at once, and a fresh snapshot then settles the counts.
+            // A failed refresh never turns a done delete into a "try again" (Codex 4316959524).
+            set((s) => {
+              s.photos = s.photos.filter((p) => p.id !== photoId);
+              if (s.dailyLog) s.dailyLog.photos = s.dailyLog.photos.filter((p) => p.id !== photoId);
+            });
+            get().flash(SPL.deleted[lang()]);
+            void requestFreshSnapshot(scope);
+          })
+          .catch((err: unknown) => {
+            if (!scopeStillCurrent(scope)) return;
+            get().flash(isTerminalOutboxError(err) ? SRV.refused(refusalMessage(err) ?? 'the server refused it', lang()) : DTX.unreachable[lang()]);
+          });
         return;
       }
       set((s) => {
@@ -5707,7 +5722,9 @@ export const useStore = create<Store>()(
                   // who and when (#482): this viewer, at the time the server recorded it. No role yet: the role the
                   // viewer acts in can come through the org rather than a project membership, and the next snapshot
                   // says the project role, so nothing is claimed here that the server would not say.
-                  ...(s.userName ? { by: s.userName } : {}), ...(res.at ? { at: res.at } : {}), mine: true,
+                  ...(s.userName ? { by: s.userName } : {}), ...(res.at ? { at: res.at } : {}),
+                  // the viewer's own new photo: theirs to delete for the hour (the next snapshot says so too)
+                  ...(res.at ? { deletableUntil: new Date(Date.parse(res.at) + SITE_PHOTO_DELETE_WINDOW_MS).toISOString() } : {}),
                 });
                 // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
                 if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;

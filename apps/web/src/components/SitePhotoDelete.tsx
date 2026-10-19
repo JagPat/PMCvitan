@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '@/store/store';
-import { SITE_PHOTO_DELETE_WINDOW_MS, sitePhotoDeletable, sitePhotoLabels as L, type Photo } from '@vitan/shared';
+import { sitePhotoDeletable, sitePhotoLabels as L, type Photo } from '@vitan/shared';
 
 const small = { border: 'none', borderRadius: 6, padding: '6px 12px', minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 11, cursor: 'pointer' } as const;
 
@@ -17,11 +17,11 @@ export function SitePhotoDelete({ photo }: { photo: Photo }) {
 
   // the button leaves on its own when the hour is up
   useEffect(() => {
-    if (!deletable || !photo.at) return;
-    const left = Date.parse(photo.at) + SITE_PHOTO_DELETE_WINDOW_MS - Date.now();
+    if (!deletable || !photo.deletableUntil) return;
+    const left = Date.parse(photo.deletableUntil) - Date.now();
     const timer = setTimeout(() => setNow(Date.now()), Math.max(0, left) + 50);
     return () => clearTimeout(timer);
-  }, [deletable, photo.at]);
+  }, [deletable, photo.deletableUntil]);
 
   if (!deletable) return null;
   if (!asking) {

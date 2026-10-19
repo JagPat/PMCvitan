@@ -16,7 +16,7 @@ import { SitePhotoDelete } from '@/components/SitePhotoDelete';
 import { queuedSitePhotos } from '@/lib/queuedSitePhotos';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
-import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, sitePhotoWho, type Lang, type WaitParty } from '@vitan/shared';
+import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, sitePhotoDeletable, sitePhotoWho, type Lang, type WaitParty } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 /** Top 10 #2 (#771) — a count whose slice has not settled is shown as unknown, never as 0. */
@@ -322,7 +322,9 @@ export function DashboardScreen() {
           ) : (
             <div className={styles.photos}>
               {/* the snapshot sends the newest photo first (#482) */}
-              {sitePhotos.slice(0, 4).map((p, i) => (
+              {/* the newest four, and any older photo of the viewer's still theirs to delete, so the hour's Delete is
+                  never out of reach (Codex 4316959529) */}
+              {[...sitePhotos.slice(0, 4), ...sitePhotos.slice(4).filter((p) => sitePhotoDeletable(p, Date.now()))].map((p, i) => (
                 <div key={p.id} style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--hairline)' }}>
                   <div style={{ height: 120, position: 'relative', background: '#000' }}>
                     <img src={p.url} alt={T.sitePhotoAlt(i + 1, lang)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />

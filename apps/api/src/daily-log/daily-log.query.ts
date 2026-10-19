@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import type { DailyLogModuleResult } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { MaterialDto } from '../snapshot/types';
@@ -111,11 +112,17 @@ export class DailyLogQueryService {
     return { status: log.submitted ? 'sent' : 'open', id: log.id };
   }
 
-  /** #482 site photos — was daily log `dailyLogId` of project `projectId` already sent? A member's own site photo
-   *  filed on a sent log is part of that record, so it is no longer theirs to delete. */
-  async isSent(projectId: string, dailyLogId: string): Promise<boolean> {
-    const row = await this.prisma.dailyLog.findFirst({ where: { id: dailyLogId, projectId }, select: { submitted: true } });
-    return row?.submitted === true;
+  /** #482 site photos — which of these daily logs of project `projectId` were already sent. A member's own site photo
+   *  filed on a sent log is part of that record, so it is no longer theirs to delete.
+   *  With `lock`, inside the caller's transaction, each named log row is held FOR SHARE: a submit (which updates the
+   *  row) then waits for the caller to commit, or the caller waits for the submit and reads it as sent. */
+  async sentLogs(projectId: string, dailyLogIds: readonly string[], tx?: Prisma.TransactionClient, lock = false): Promise<Set<string>> {
+    if (dailyLogIds.length === 0) return new Set();
+    const rows = tx && lock
+      ? await tx.$queryRaw<Array<{ id: string; submitted: boolean }>>`
+          SELECT "id", "submitted" FROM "DailyLog" WHERE "projectId" = ${projectId} AND "id" = ANY(${[...dailyLogIds]}::text[]) FOR SHARE`
+      : await (tx ?? this.prisma).dailyLog.findMany({ where: { projectId, id: { in: [...dailyLogIds] } }, select: { id: true, submitted: true } });
+    return new Set(rows.filter((r) => r.submitted).map((r) => r.id));
   }
 
   async existsInProject(projectId: string, dailyLogId: string): Promise<boolean> {

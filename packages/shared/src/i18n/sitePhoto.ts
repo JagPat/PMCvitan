@@ -1,5 +1,4 @@
 import type { Lang, Role } from '../domain/types';
-import { SITE_PHOTO_DELETE_WINDOW_MS } from '../contracts/daily-log';
 import { forYouRole } from './actionItems';
 
 /**
@@ -17,12 +16,13 @@ export const sitePhotoLabels = {
   deleteOffline: { en: 'Connect to the internet to delete a photo.', hi: 'फ़ोटो हटाने के लिए इंटरनेट से जुड़ें।', gu: 'ફોટો કાઢવા માટે ઇન્ટરનેટ સાથે જોડાઓ.' },
 } as const;
 
-/** Whether the viewer may still delete this photo: one they added, a plain site photo, and less than an hour since
- *  the server recorded it (the server decides again on delete). `now` is the device's clock in ms. */
-export function sitePhotoDeletable(p: { mine?: boolean; kind?: string; at?: string }, now: number): boolean {
-  if (!p.mine || p.kind !== 'progress' || !p.at) return false;
-  const added = Date.parse(p.at);
-  return !Number.isNaN(added) && now - added < SITE_PHOTO_DELETE_WINDOW_MS;
+/** Whether the viewer may still delete this photo: the server marked it theirs to delete until `deletableUntil`
+ *  (their own site photo, not on a sent log), and that time has not come (the server decides again on delete).
+ *  `now` is the device's clock in ms. */
+export function sitePhotoDeletable(p: { deletableUntil?: string }, now: number): boolean {
+  if (!p.deletableUntil) return false;
+  const until = Date.parse(p.deletableUntil);
+  return !Number.isNaN(until) && now < until;
 }
 
 /** When a photo was added, in the project's time zone: "19 Oct, 3:00 PM" in English; in Hindi and Gujarati the

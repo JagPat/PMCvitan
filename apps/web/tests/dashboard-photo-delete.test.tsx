@@ -10,6 +10,8 @@ import { leftoverEnglish } from './leftover-english';
  */
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+// what the server sends on the viewer's own site photo added `m` minutes ago
+const until = (m: number) => new Date(Date.now() - m * 60_000 + SITE_PHOTO_DELETE_WINDOW_MS).toISOString();
 
 async function load(lang: Lang, photos: Photo[], extra: Record<string, unknown> = {}) {
   vi.stubEnv('VITE_API_URL', 'http://api.test');
@@ -32,18 +34,19 @@ afterEach(() => {
 });
 
 describe('deleting your own site photo within the hour (#482)', () => {
-  it('offers Delete only on the viewer\'s own recent site photo', async () => {
+  it('offers Delete only where the server marked the photo the viewer\'s to delete, and only within the hour', async () => {
     const { r } = await load('en', [
-      { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), mine: true },
-      { id: 'old', url: '/media/old', kind: 'progress', at: minutesAgo(61), mine: true },
+      { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletableUntil: until(5) },
+      { id: 'old', url: '/media/old', kind: 'progress', at: minutesAgo(61), deletableUntil: until(61) },
       { id: 'theirs', url: '/media/theirs', kind: 'progress', at: minutesAgo(5), by: 'Ravi Patel' },
-      { id: 'evidence', url: '/media/evidence', kind: 'inspection', at: minutesAgo(5), mine: true },
+      // evidence, or a photo on a log already sent: the server sends no deletableUntil
+      { id: 'evidence', url: '/media/evidence', kind: 'inspection', at: minutesAgo(5) },
     ]);
     expect(r.getAllByTestId('site-photo-delete')).toHaveLength(1);
   });
 
   it('asks first, then deletes and shows the fresh snapshot without the photo', async () => {
-    const { r, useStore } = await load('en', [{ id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), mine: true }]);
+    const { r, useStore } = await load('en', [{ id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletableUntil: until(5) }]);
     const deleteMedia = vi.fn().mockResolvedValue({ ok: true });
     const snapshot = vi.fn().mockResolvedValue({ photos: [] });
     useStore.getState()._setGateway({ deleteMedia, snapshot } as never);
@@ -55,10 +58,30 @@ describe('deleting your own site photo within the hour (#482)', () => {
     fireEvent.click(r.getByTestId('site-photo-delete-yes'));
     await waitFor(() => expect(deleteMedia).toHaveBeenCalledWith('own'));
     await waitFor(() => expect(snapshot).toHaveBeenCalled());
+    expect(useStore.getState().photos).toEqual([]);
+  });
+
+  it('a delete the server confirmed stays done when the refresh after it fails (Codex 4316959524)', async () => {
+    const { r, useStore } = await load('en', [{ id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletableUntil: until(5) }]);
+    const deleteMedia = vi.fn().mockResolvedValue({ ok: true });
+    const snapshot = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    useStore.getState()._setGateway({ deleteMedia, snapshot } as never);
+    fireEvent.click(r.getByTestId('site-photo-delete'));
+    fireEvent.click(r.getByTestId('site-photo-delete-yes'));
+    await waitFor(() => expect(useStore.getState().photos).toEqual([]));
+    expect(JSON.stringify(useStore.getState())).toContain('Photo deleted.');
+    expect(r.queryByTestId('site-photo-delete')).toBeNull();
+  });
+
+  it('keeps the viewer\'s deletable photo reachable behind four newer ones (Codex 4316959529)', async () => {
+    const newer = [1, 2, 3, 4].map((n): Photo => ({ id: `n${n}`, url: `/media/n${n}`, kind: 'progress', at: minutesAgo(n), by: 'Ravi Patel' }));
+    const { r } = await load('en', [...newer, { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(10), deletableUntil: until(10) }]);
+    expect(r.getAllByTestId('dash-photo-who')).toHaveLength(5);
+    expect(r.getAllByTestId('site-photo-delete')).toHaveLength(1);
   });
 
   it('with no signal, says to connect and deletes nothing', async () => {
-    const { r, useStore } = await load('en', [{ id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), mine: true }], { online: false });
+    const { r, useStore } = await load('en', [{ id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletableUntil: until(5) }], { online: false });
     const deleteMedia = vi.fn();
     useStore.getState()._setGateway({ deleteMedia } as never);
     fireEvent.click(r.getByTestId('site-photo-delete'));
@@ -69,14 +92,14 @@ describe('deleting your own site photo within the hour (#482)', () => {
 
   it('leaves when the hour is up', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-    const { r } = await load('en', [{ id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(59), mine: true }]);
+    const { r } = await load('en', [{ id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(59), deletableUntil: until(59) }]);
     expect(r.getByTestId('site-photo-delete')).toBeTruthy();
     await act(async () => { vi.advanceTimersByTime(61_000); });
     expect(r.queryByTestId('site-photo-delete')).toBeNull();
   });
 
   it.each(['hi', 'gu'] as const)('shows no English in %s', async (lang) => {
-    const { r } = await load(lang, [{ id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), mine: true }]);
+    const { r } = await load(lang, [{ id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletableUntil: until(5) }]);
     fireEvent.click(r.getByTestId('site-photo-delete'));
     expect(leftoverEnglish(r.getByTestId('site-photo-delete-confirm'), [])).toEqual([]);
   });
@@ -97,12 +120,11 @@ describe('deleting your own site photo within the hour (#482)', () => {
 });
 
 describe('sitePhotoDeletable', () => {
-  it('holds for an hour from when the server recorded it', () => {
-    const at = '2026-10-19T09:30:00.000Z';
-    const t0 = Date.parse(at);
-    expect(sitePhotoDeletable({ mine: true, kind: 'progress', at }, t0 + SITE_PHOTO_DELETE_WINDOW_MS - 1)).toBe(true);
-    expect(sitePhotoDeletable({ mine: true, kind: 'progress', at }, t0 + SITE_PHOTO_DELETE_WINDOW_MS)).toBe(false);
-    expect(sitePhotoDeletable({ kind: 'progress', at }, t0)).toBe(false);
-    expect(sitePhotoDeletable({ mine: true, kind: 'progress' }, t0)).toBe(false);
+  it('holds until the time the server gave', () => {
+    const deletableUntil = '2026-10-19T10:30:00.000Z';
+    const t1 = Date.parse(deletableUntil);
+    expect(sitePhotoDeletable({ deletableUntil }, t1 - 1)).toBe(true);
+    expect(sitePhotoDeletable({ deletableUntil }, t1)).toBe(false);
+    expect(sitePhotoDeletable({}, t1 - 1)).toBe(false);
   });
 });

@@ -304,13 +304,15 @@ export class MediaService {
       if (Date.now() - row.createdAt.getTime() > SITE_PHOTO_DELETE_WINDOW_MS) {
         throw new ForbiddenException('A site photo can be deleted only within an hour of adding it');
       }
-      // filed on a day's log that was since sent: the photo is part of that record now
-      if (row.dailyLogId && (await this.dailyLog.isSent(projectId, row.dailyLogId))) {
-        throw new ForbiddenException('This photo is part of a daily log that was already sent');
-      }
     }
+    const ownSitePhoto = !SITE_RECORD_ROLES.has(user.role);
     const actor = await resolveActor(this.prisma, user);
     const events = await this.prisma.$transaction(async (tx) => {
+      // #482 — filed on a day's log that was since sent: the photo is part of that record now. Read under the log
+      // row's lock, so a submit racing this delete either waits for it or is seen here (Codex 4316959509).
+      if (ownSitePhoto && row.dailyLogId && (await this.dailyLog.sentLogs(projectId, [row.dailyLogId], tx, true)).has(row.dailyLogId)) {
+        throw new ForbiddenException('This photo is part of a daily log that was already sent');
+      }
       // Phase 3 Task 4 — the §C stock ledger is immutable, so a photo cited as stock quality
       // evidence can never be unlinked: the inventory participant REFUSES the delete (409)
       // before anything is touched (the ledger's composite FK is the database backstop).

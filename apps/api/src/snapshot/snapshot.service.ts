@@ -7,7 +7,7 @@ import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import { DrawingsQueryService } from '../drawings/drawings.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import { SignedUrlService } from '../media/signed-url.service';
-import { SNAPSHOT_SITE_PHOTO_LIMIT } from '@vitan/shared';
+import { SITE_PHOTO_DELETE_WINDOW_MS, SNAPSHOT_SITE_PHOTO_LIMIT } from '@vitan/shared';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
 import type { DecisionsContract } from '../common/decisions-contract';
@@ -139,7 +139,7 @@ export class SnapshotService {
           where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...(hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {}) },
           orderBy: { createdAt: 'desc' },
           take: SNAPSHOT_SITE_PHOTO_LIMIT,
-          select: { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true, createdAt: true },
+          select: { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true, createdAt: true, dailyLogId: true, decisionId: true, inspectionId: true, inspectionItemId: true },
         }),
       ),
       // Task 10 — the drawings register comes from the module's query (the baked per-viewer register:
@@ -164,6 +164,15 @@ export class SnapshotService {
     // are read now, for the photo window's uploaders only; a removed member keeps the role they had.
     // Orgs owns who is tied to this project, so it answers: anyone else's id names no one.
     const uploader = await this.orgs.projectUploaders(this.prisma, projectId, [...new Set(siteMedia.map((m) => m.uploadedBy))]);
+    // #482 site photos — the viewer's own plain site photo is theirs to delete for an hour after it was recorded, unless
+    // the day's log it was filed on has since been sent (the server decides again on delete)
+    const nowMs = Date.now();
+    const ownRecent = (m: (typeof siteMedia)[number]): boolean =>
+      Boolean(userId) && m.uploadedBy === userId && m.kind === 'progress' && !m.decisionId && !m.inspectionId && !m.inspectionItemId
+      && m.createdAt.getTime() + SITE_PHOTO_DELETE_WINDOW_MS > nowMs;
+    const ownLogIds = [...new Set(siteMedia.flatMap((m) => (m.dailyLogId && ownRecent(m) ? [m.dailyLogId] : [])))];
+    const sentLogs = ownLogIds.length > 0 ? await this.dailyLogQuery.sentLogs(projectId, ownLogIds) : new Set<string>();
+    const deletable = (m: (typeof siteMedia)[number]): boolean => ownRecent(m) && !(m.dailyLogId && sentLogs.has(m.dailyLogId));
     const photoDtos = siteMedia.map((m) => ({
       id: m.id,
       url: this.signed.mediaPath(m.id),
@@ -176,8 +185,7 @@ export class SnapshotService {
       // #482 site photos — the viewer's own upload key, so a device that still holds this photo in its offline queue
       // (its reply was lost) shows it once; nobody else's key is sent
       ...(userId && m.uploadedBy === userId && m.clientKey ? { clientKey: m.clientKey } : {}),
-      // #482 site photos — the viewer's own photo, which they may delete within the hour (the server decides)
-      ...(userId && m.uploadedBy === userId ? { mine: true as const } : {}),
+      ...(deletable(m) ? { deletableUntil: new Date(m.createdAt.getTime() + SITE_PHOTO_DELETE_WINDOW_MS).toISOString() } : {}),
     }));
 
     // Task 8 — the role-filtered decision DTOs come from the decisions query (the serialization moved
