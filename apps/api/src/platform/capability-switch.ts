@@ -9,6 +9,8 @@ export interface CapabilitySwitchInput {
   capability: string;
   operator: string;
   reason: string;
+  /** Where the switch came from when not the CLI (`ops-api` for the operator door); kept on the audit row. */
+  via?: string;
 }
 
 /**
@@ -36,7 +38,7 @@ export async function disableCapability(prisma: PrismaClient, input: CapabilityS
       action: 'capability.disable',
       entity: 'ProjectCapability',
       entityId: `${input.projectId}:${input.capability}`,
-      payload: { reason: input.reason },
+      payload: { reason: input.reason, ...(input.via ? { via: input.via } : {}) },
     });
     return { changed: true };
   });
@@ -65,7 +67,7 @@ export async function enableCapability(prisma: PrismaClient, input: CapabilitySw
       action: 'capability.enable',
       entity: 'ProjectCapability',
       entityId: `${input.projectId}:${input.capability}`,
-      payload: { reason: input.reason },
+      payload: { reason: input.reason, ...(input.via ? { via: input.via } : {}) },
     });
     return { changed: true };
   });

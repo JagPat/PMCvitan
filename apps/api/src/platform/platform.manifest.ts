@@ -82,6 +82,10 @@ export const platformManifest: ModuleManifest = {
   // Top 10 #4b unit C (#778) — `notifications.seen` records the viewer's receipts for served notices.
   commands: ['push.subscribe', 'push.unlink', 'notifications.seen'],
   queries: ['snapshot.project'],
-  routes: ['POST /projects/:projectId/push/subscribe', 'POST /projects/:projectId/push/unlink', 'POST /projects/:projectId/notifications/seen'],
+  routes: [
+    'POST /projects/:projectId/push/subscribe', 'POST /projects/:projectId/push/unlink', 'POST /projects/:projectId/notifications/seen',
+    // #482 operator door — the presentation-only capability switch behind OPS_TOKEN
+    'POST /ops/projects/:projectId/capabilities/:capability/enable', 'POST /ops/projects/:projectId/capabilities/:capability/disable',
+  ],
   permissions: [],
 };

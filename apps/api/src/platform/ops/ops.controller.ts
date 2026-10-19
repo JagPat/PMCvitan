@@ -1,0 +1,111 @@
+import { BadRequestException, Body, Controller, Get, HttpCode, Param, Post, UseGuards } from '@nestjs/common';
+import { z } from 'zod';
+import { PrismaService } from '../../prisma.service';
+import { Public } from '../../common/roles';
+import { Throttle, ThrottleGuard } from '../../common/throttle';
+import { ZodPipe } from '../../common/zod.pipe';
+import { SWITCHABLE_CAPABILITIES } from '../capabilities.service';
+import { disableCapability, enableCapability } from '../capability-switch';
+import { OpsTokenGuard } from './ops-token.guard';
+
+const switchSchema = z.object({
+  operator: z.string().trim().min(3).max(200),
+  reason: z.string().trim().min(3).max(500),
+});
+type SwitchInput = z.infer<typeof switchSchema>;
+
+export interface OpsProjectRow {
+  id: string;
+  name: string;
+  capabilities: string[];
+  lastActivity: string | null;
+}
+
+/** Recorded on the audit row of a switch made through this door, beside the operator and reason. */
+export const OPS_VIA = 'ops-api';
+
+/**
+ * #482 operator door (Jagrut's go, 19 Oct 2026) — the operator commands the Board ran by hand from the
+ * Coolify terminal, as HTTP routes an operator (or Claude, holding `OPS_TOKEN`) can call:
+ *
+ *  - `GET  /ops/projects`: every live project with its switched-on capabilities and last activity (reads only).
+ *  - `POST /ops/projects/:projectId/capabilities/:capability/enable|disable`: the same `capability-switch`
+ *    functions the `capability:enable` / `capability:disable` CLIs call, limited to `SWITCHABLE_CAPABILITIES`
+ *    (presentation only, no data touched). Each change writes the usual audit row on the project's trail
+ *    with the operator, the reason and `via: "ops-api"`; a repeat is a no-op reporting `changed: false`.
+ *
+ * Nothing here runs SQL a caller supplies, and nothing reaches data beyond these switches. Every route is
+ * behind {@link OpsTokenGuard} (closed without a strong `OPS_TOKEN`) and a per-IP limit.
+ */
+@Controller('ops')
+@UseGuards(ThrottleGuard, OpsTokenGuard)
+@Throttle(30, 60_000)
+export class OpsController {
+  constructor(private readonly prisma: PrismaService) {}
+
+  @Public()
+  @Get('projects')
+  async projects(): Promise<{ projects: OpsProjectRow[] }> {
+    const [projects, activity] = await Promise.all([
+      this.prisma.project.findMany({
+        where: { archivedAt: null },
+        select: { id: true, name: true, capabilities: { select: { capability: true }, orderBy: { capability: 'asc' } } },
+      }),
+      this.prisma.auditLog.groupBy({ by: ['projectId'], where: { projectId: { not: null } }, _max: { at: true } }),
+    ]);
+    const last = new Map(activity.map((a) => [a.projectId, a._max.at]));
+    const rows = projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      capabilities: p.capabilities.map((c) => c.capability),
+      lastActivity: last.get(p.id)?.toISOString() ?? null,
+    }));
+    // most recently used first; never-used projects last, in id order
+    rows.sort((a, b) => (b.lastActivity ?? '').localeCompare(a.lastActivity ?? '') || a.id.localeCompare(b.id));
+    return { projects: rows };
+  }
+
+  @Public()
+  @Post('projects/:projectId/capabilities/:capability/enable')
+  @HttpCode(200)
+  async enable(
+    @Param('projectId') projectId: string,
+    @Param('capability') capability: string,
+    @Body(new ZodPipe(switchSchema)) body: SwitchInput,
+  ): Promise<{ ok: true; projectId: string; capability: string; changed: boolean }> {
+    assertSwitchable(capability);
+    const { changed } = await this.withProject(() =>
+      enableCapability(this.prisma, { projectId, capability, operator: body.operator, reason: body.reason, via: OPS_VIA }));
+    return { ok: true, projectId, capability, changed };
+  }
+
+  @Public()
+  @Post('projects/:projectId/capabilities/:capability/disable')
+  @HttpCode(200)
+  async disable(
+    @Param('projectId') projectId: string,
+    @Param('capability') capability: string,
+    @Body(new ZodPipe(switchSchema)) body: SwitchInput,
+  ): Promise<{ ok: true; projectId: string; capability: string; changed: boolean }> {
+    assertSwitchable(capability);
+    const { changed } = await this.withProject(() =>
+      disableCapability(this.prisma, { projectId, capability, operator: body.operator, reason: body.reason, via: OPS_VIA }));
+    return { ok: true, projectId, capability, changed };
+  }
+
+  /** An unknown project is the caller's mistake (400), not a server fault. */
+  private async withProject<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (e) {
+      if ((e as { code?: string }).code === 'P2025') throw new BadRequestException('no such project');
+      throw e;
+    }
+  }
+}
+
+function assertSwitchable(capability: string): void {
+  if (!SWITCHABLE_CAPABILITIES.includes(capability)) {
+    throw new BadRequestException(`only ${SWITCHABLE_CAPABILITIES.join(', ')} can be switched here`);
+  }
+}

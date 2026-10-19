@@ -2591,6 +2591,24 @@ Both are audited on the project's trail (`capability.enable` / `capability.disab
 operator and carrying their reason. Re-running either for a switch already in that state writes nothing. People see the change the next time the app opens or reloads. `capability:disable` refuses every other
 capability. Run both from the deployed image, like every operator CLI (see the server-generation fence above).
 
+## §OPS. The operator door (`/ops`, behind `OPS_TOKEN`)
+
+The project list (id, name, switched-on capabilities, last activity) and the `home-nav` switch (§HN) can
+also be run over HTTPS, so an operator, or Claude holding the token, does not need the Coolify terminal. The door is closed (every `/ops`
+route answers 404) unless the API's environment sets `OPS_TOKEN` to a random value of at least 32 characters.
+Generate one with `openssl rand -hex 32`, set it on the API in Coolify, and redeploy. To close the door,
+remove it and redeploy.
+
+    curl -H "Authorization: Bearer $OPS_TOKEN" https://pms-api.vitan.in/ops/projects
+    curl -X POST -H "Authorization: Bearer $OPS_TOKEN" -H 'Content-Type: application/json' \
+         -d '{"operator":"<you>","reason":"<text>"}' \
+         https://pms-api.vitan.in/ops/projects/<id>/capabilities/home-nav/enable   # or /disable
+
+The switch routes run the same functions as the §HN commands and accept only `home-nav`. Each change writes
+the usual `capability.enable` / `capability.disable` audit row, with the operator, the reason and
+`via: "ops-api"`. A wrong or missing token gets 401, and each route allows 30 calls a minute per address.
+No route takes SQL or touches project data. The T3C seal check stays a terminal command (`t3c:seals`).
+
 ## §DS. Database snapshot (read-only)
 
 Records every table's rows by key, so a removal can be checked row by row (#482: the archived
