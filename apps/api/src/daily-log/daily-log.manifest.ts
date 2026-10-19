@@ -33,7 +33,7 @@ export const dailyLogManifest: ModuleManifest = {
   producesEvents: ['dailylog.started', 'dailylog.submitted', 'material.added', 'material.mismatch_flagged', 'material.unfiled', 'mismatch.resolved'],
   consumesEvents: [],
   commands: [...DAILY_LOG_COMMANDS],
-  queries: ['daily-log.snapshotSlice', 'daily-log.projectionSlice', 'daily-log.existsInProject', 'daily-log.resolveRef'],
+  queries: ['daily-log.snapshotSlice', 'daily-log.projectionSlice', 'daily-log.existsInProject', 'daily-log.resolveRef', 'daily-log.sentLogs'],
   routes: [
     'POST /projects/:projectId/daily-log/start',
     'POST /projects/:projectId/daily-log/materials',

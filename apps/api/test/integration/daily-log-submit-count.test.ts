@@ -58,36 +58,42 @@ describe('a send stores the photos filed on the log (live PG)', () => {
     expect(await stored(log.id)).toBe(2);
   });
 
-  it('a delete that holds the log row first is never counted by the send that waited for it (Codex 4318519710)', async () => {
+  it('a photo delete under way is never counted by the send that waits for it (Codex 4318519710, r4319015964)', async () => {
     const log = await newLog();
     await filed(log.id);
     const gone = await filed(log.id);
+    // backends of this database waiting on a lock, this test's own holder aside
+    const waiting = async (): Promise<number> =>
+      (await t.prisma.$queryRaw<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`)[0]!.n;
+    const until = async (n: number, what: string, giveUp: () => Promise<void>): Promise<void> => {
+      const deadline = Date.now() + 10_000;
+      while ((await waiting()) < n) {
+        if (Date.now() > deadline) { await giveUp(); throw new Error(what); }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
-    let locked!: () => void;
-    const isLocked = new Promise<void>((r) => { locked = r; });
-    // the delete, as media's remove() runs it: the log row FOR SHARE, then the photo row, not yet committed
-    const deleting = t.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "id" FROM "DailyLog" WHERE "id" = ${log.id} FOR SHARE`;
-      await tx.media.delete({ where: { id: gone } });
-      locked();
+    let holding!: () => void;
+    const isHolding = new Promise<void>((r) => { holding = r; });
+    // the photo row is held by another transaction, so the real delete stops part-way, after its first statements
+    const holder = t.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Media" WHERE "id" = ${gone} FOR UPDATE`;
+      holding();
       await held;
     }, { timeout: 20_000 });
-    await isLocked;
+    await isHolding;
+    const deleting = http().delete(`/media/${gone}`).set('Authorization', `Bearer ${pmc}`).then((r) => r);
+    const giveUp = async () => { release(); await holder; await deleting; };
+    await until(1, 'the delete never reached the photo row', giveUp);
     // the app still counts the photo it saw
     const sending = send(2).then((r) => r);
-    // released only once PostgreSQL shows the send waiting on the log row, never after a guessed delay
-    const blocked = async (): Promise<boolean> =>
-      (await t.prisma.$queryRaw<Array<{ n: number }>>`
-        SELECT count(*)::int AS n FROM pg_stat_activity
-        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%"DailyLog"%'`)[0]!.n > 0;
-    const deadline = Date.now() + 10_000;
-    while (!(await blocked())) {
-      if (Date.now() > deadline) { release(); await deleting; throw new Error('the send never waited on the log row lock'); }
-      await new Promise((r) => setTimeout(r, 20));
-    }
+    // released only once PostgreSQL shows the send waiting too (on the log row the delete holds), never after a delay
+    await until(2, 'the send never waited on the delete', giveUp);
     release();
-    await deleting;
+    await holder;
+    expect((await deleting).status).toBe(200);
     expect((await sending).status).toBe(201);
     expect(await stored(log.id)).toBe(1);
   });
