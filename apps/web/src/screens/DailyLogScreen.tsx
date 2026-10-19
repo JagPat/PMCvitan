@@ -7,8 +7,7 @@ import { EmptyState, Eyebrow, Swatch, PhotoViewer, Button, RecordBoundary } from
 import { useRoutedRecord } from '@/lib/useRoutedRecord';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { LocationPicker } from '@/components/LocationPicker';
-import { captureStamp } from '@/lib/captureStamp';
-import { projectScopeOf } from '@/store/projectScope';
+import { pickProgressPhoto } from '@/lib/pickProgressPhoto';
 import { dailyLogCommandInFlight, dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { pathOf } from '@/lib/locationTree';
 import { todayCivil } from '@/lib/civilDate';
@@ -38,7 +37,6 @@ export function DailyLogScreen() {
     return d ? decisionRecordLink(s, d) : { screen: 'decision-log', item: decisionId };
   };
   const flagMismatch = useStore((s) => s.flagMismatch);
-  const addProgressPhoto = useStore((s) => s.addProgressPhoto);
   const submitDailyLog = useStore((s) => s.submitDailyLog);
   const role = useStore((s) => s.role);
   const startDailyLog = useStore((s) => s.startDailyLog);
@@ -98,27 +96,8 @@ export function DailyLogScreen() {
   const [photoNode, setPhotoNode] = useState<string | null>(null); // location spine: place the next photo
 
   const onPickPhoto = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      // The scope this photo was CHOSEN in, captured before the read begins. `readAsDataURL`
-      // is an async boundary the store cannot see across: by the time `onload` fires the user
-      // may have switched projects and `useApiSync` may have installed another gateway, and
-      // this photo would then be filed under a project it has nothing to do with.
-      const pickedIn = projectScopeOf(useStore.getState());
-      // and the day's log on screen, for the same reason: a refresh may bring another log before `onload` (#482)
-      const pickedForLog = useStore.getState().dailyLog?.id ?? null;
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result !== 'string') return;
-        // The photo's OWN capture metadata, taken from the bytes this read already produced.
-        // No `await` on this path on purpose: a second yield here — even one as innocent as
-        // `file.slice().arrayBuffer()` — would suspend between the user choosing a photo and
-        // the store queueing it, a window in which a project switch redirects the upload and
-        // a reload loses the photo. `captureStamp` decodes the head of the data URL instead.
-        addProgressPhoto(reader.result, photoNode, captureStamp(reader.result), pickedIn, pickedForLog);
-      };
-      reader.readAsDataURL(file);
-    }
+    // read and filed as every "add a photo" control does: the project and the day's log it was chosen in
+    pickProgressPhoto(e.target.files?.[0], photoNode);
     e.target.value = ''; // allow re-picking the same file
   };
 

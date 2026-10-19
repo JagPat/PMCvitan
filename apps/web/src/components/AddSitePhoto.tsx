@@ -1,0 +1,45 @@
+import { useRef } from 'react';
+import { useStore } from '@/store/store';
+import { pickProgressPhoto } from '@/lib/pickProgressPhoto';
+import { dailyLogSendPending } from '@/store/dailyLogPending';
+import { Camera } from '@/lib/icons';
+import { can, sitePhotoLabels as L } from '@vitan/shared';
+
+/**
+ * #482 site photos — one button any member the server lets upload uses to add a site photo to today's record.
+ */
+export function AddSitePhoto() {
+  const role = useStore((s) => s.role);
+  const lang = useStore((s) => s.lang);
+  // as on the Daily Log: while the day's log is being sent, a photo would miss the count that send froze
+  const sending = useStore(dailyLogSendPending);
+  const fileRef = useRef<HTMLInputElement>(null);
+  if (!can('media.upload', role)) return null;
+
+  return (
+    <div data-guide="add-site-photo" style={{ marginBottom: 12 }}>
+      {/* No `capture`: on Android it forces the camera and hides the gallery. The stamp comes from
+          the photo's own EXIF (lib/exif.ts), so a gallery pick is stamped just as honestly. */}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        data-testid="add-site-photo-file"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          pickProgressPhoto(e.target.files?.[0], null);
+          e.target.value = '';
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        disabled={sending}
+        data-testid="add-site-photo"
+        style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+      >
+        <Camera size={14} /> {L.add[lang]}
+      </button>
+    </div>
+  );
+}

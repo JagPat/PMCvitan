@@ -10,6 +10,7 @@ import { decisionsWaitOn, failedWaitOn, reviewsWaitOn } from './dashboardWaiting
 import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
+import { AddSitePhoto } from '@/components/AddSitePhoto';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
 import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, type Lang, type WaitParty } from '@vitan/shared';
@@ -297,6 +298,7 @@ export function DashboardScreen() {
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.2em', color: 'var(--muted)', marginBottom: 12 }}>
           {API_BASE ? L.latestPhotos[lang] : 'THIS WEEK · PHOTO HIGHLIGHTS'}
         </div>
+        {API_BASE && <AddSitePhoto />}
         {API_BASE ? (
           sitePhotos.length === 0 ? (
             <div style={{ fontSize: 13, color: 'var(--muted)', border: '1px dashed var(--hairline)', borderRadius: 10, padding: '22px 16px', textAlign: 'center' }}>
@@ -304,7 +306,8 @@ export function DashboardScreen() {
             </div>
           ) : (
             <div className={styles.photos}>
-              {sitePhotos.slice(-4).reverse().map((p, i) => (
+              {/* the snapshot sends the newest photo first (#482) */}
+              {sitePhotos.slice(0, 4).map((p, i) => (
                 <div key={p.id} style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--hairline)' }}>
                   <div style={{ height: 120, position: 'relative', background: '#000' }}>
                     <img src={p.url} alt={T.sitePhotoAlt(i + 1, lang)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />

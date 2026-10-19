@@ -79,7 +79,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -5669,9 +5669,17 @@ export const useStore = create<Store>()(
             if (!scopeStillCurrent(scope)) { set((s) => settle(s, true)); return; }
             set((s) => {
               settle(s, true);
+              // #482 site photos: the photo list (the Dashboard's and the Site Map's) shows it at once, newest first.
+              // A refresh that landed before this reply may already hold it, in the list, the log, or only one of
+              // them when the log's read failed; each gets it once.
+              if (!s.photos.some((p) => p.id === res.id)) {
+                s.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}) });
+                // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
+                if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
+              }
               // another log on screen now: the server holds the photo on its own log, and the next snapshot shows it
               const log = onPickedLog(s);
-              if (!log) return;
+              if (!log || log.photos.some((p) => p.id === res.id)) return;
               log.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
               if (log.photoCount === undefined) log.progress += 1;
               recordDraftPhoto(s);
