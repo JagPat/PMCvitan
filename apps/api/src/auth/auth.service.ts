@@ -12,6 +12,7 @@ import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import { recordAudit } from '../platform/audit';
 import { systemActor } from '../common/actor';
 import { OrgsParticipant, QA_ACCOUNT_EMAIL } from '../orgs/orgs.participant';
+import { countersignReloadMessage, understandsCountersign, type DecisionsContract } from '../common/decisions-contract';
 import type { Role } from '../common/auth';
 import type {
   SessionInput,
@@ -243,13 +244,18 @@ export class AuthService {
    * The fence is `OrgsParticipant.qaOnlyReach` (the orgs module owns those tables), and the token carries `qa`, so
    * `JwtGuard` asks the same question on every request: the session ends once the company or project gains a real person.
    */
-  async qaSignIn(input: { email: string; operator: string; reason: string }): Promise<TokenResult> {
+  async qaSignIn(input: { email: string; operator: string; reason: string; contract?: DecisionsContract }): Promise<TokenResult> {
     const email = input.email.trim().toLowerCase();
     if (!QA_ACCOUNT_EMAIL.test(email)) throw new ForbiddenException('only a QA account can be signed in here');
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user) throw new NotFoundException('no such QA account');
     if (!(await this.orgs.qaOnlyReach(this.prisma, user.id))) throw new ForbiddenException('this account is not in a QA-only company');
     const access = await this.signInAccess(user);
+    // the countersign boundary refuses a minted architect token to a lesser client AFTER this returns (Codex P2 on
+    // #983); refuse it here first, so no audit row records a sign-in the caller never received
+    if (access.role === 'architect' && !understandsCountersign(input.contract)) {
+      throw new ConflictException(countersignReloadMessage('The architect role'));
+    }
     const result: TokenResult = {
       token: this.issueNamedUser(user, access.role, access.projectId, { qa: true }),
       role: access.role,

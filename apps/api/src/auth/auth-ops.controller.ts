@@ -1,10 +1,11 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Headers, Post, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
 import { AuthService } from './auth.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { Public } from '../common/roles';
 import { Throttle, ThrottleGuard } from '../common/throttle';
 import { OpsTokenGuard } from '../platform/ops/ops-token.guard';
+import { declaredDecisionsContract } from '../common/decisions-contract';
 
 const qaSignInSchema = z.object({
   email: z.string().trim().min(3).max(200),
@@ -31,7 +32,7 @@ export class AuthOpsController {
   @Public()
   @Throttle(10, WINDOW)
   @Post('qa-sign-in')
-  qaSignIn(@Body(new ZodPipe(qaSignInSchema)) body: QaSignInInput) {
-    return this.auth.qaSignIn(body);
+  qaSignIn(@Body(new ZodPipe(qaSignInSchema)) body: QaSignInInput, @Headers() headers: Record<string, string | string[] | undefined>) {
+    return this.auth.qaSignIn({ ...body, contract: declaredDecisionsContract(headers) });
   }
 }

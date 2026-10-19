@@ -124,6 +124,7 @@ describe('Phase 2 Task 7 — module registry', () => {
       // Phase 5 (§E/§K) adds `commercial`: revertSignOff asks assertWorkEvidenceRevisable before
       // withdrawing a sign-off a measurement rests on. Declared with the Task-1 edge table.
       activities: ['inspections', 'drawings', 'procurement', 'labour', 'commercial'],
+      auth: ['orgs'], // #482 — the operator-door QA sign-in asks OrgsParticipant.qaOnlyReach
       'daily-log': ['activities'], // material-mismatch blocks the activity's readiness (edge 4)
       // Phase 3 Task 4 adds the inventory participant to media: the delete tx refuses while the
       // photo is immutable stock-ledger quality evidence (assertMediaDisposable)

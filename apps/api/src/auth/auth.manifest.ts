@@ -15,7 +15,8 @@ export const authManifest: ModuleManifest = {
   kind: 'domain',
   ownsModels: [],
   dependsOn: [],
-  workflowParticipants: [],
+  // #482 — the operator-door QA sign-in asks the orgs-owned QA-only fence (`OrgsParticipant.qaOnlyReach`)
+  workflowParticipants: ['orgs'],
   producesEvents: [],
   consumesEvents: [],
   commands: [

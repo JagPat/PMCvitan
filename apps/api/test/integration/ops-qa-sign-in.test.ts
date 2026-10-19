@@ -121,6 +121,17 @@ describe('#482 operator door QA sign-in (live PG)', () => {
     }
   });
 
+  it('registers no push subscription for a QA session, which would outlive the per-request check (Codex P1)', async () => {
+    process.env.OPS_TOKEN = TOKEN;
+    const r = await http().post('/auth/ops/qa-sign-in').set('Authorization', `Bearer ${TOKEN}`).send(body(qaEmail));
+    expect(r.status, r.text).toBe(201);
+    const endpoint = `https://push.example.test/${run}`;
+    const sub = await http().post(`/projects/${ids.project}/push/subscribe`).set('Authorization', `Bearer ${r.body.token}`)
+      .send({ subscription: { endpoint, keys: { p256dh: 'p', auth: 'a' } } });
+    expect(sub.status, sub.text).toBe(403);
+    expect(await t.prisma.pushSubscription.count({ where: { endpoint } })).toBe(0);
+  });
+
   it('refuses a real account, and an unknown QA address', async () => {
     process.env.OPS_TOKEN = TOKEN;
     const owner = await t.prisma.user.findUniqueOrThrow({ where: { id: f.ownerUser.id } });

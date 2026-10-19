@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
 import { DECISIONS_CONTRACT_HEADER } from '../common/recorded-compat.interceptor';
 import { PushService } from './push.service';
 import { ZodPipe } from '../common/zod.pipe';
@@ -31,6 +31,10 @@ export class PushController {
     @Body(new ZodPipe(pushSubscribeSchema)) body: PushSubscribeInput,
     @Headers(DECISIONS_CONTRACT_HEADER) contract?: string,
   ): Promise<{ ok: boolean }> {
+    // #482 (Codex P1 on #983) — an operator-door QA session holds only while its reach is QA-only, and `JwtGuard`
+    // rechecks that per request; a stored subscription would outlive the check (role-level pushes are selected by
+    // project and role alone), so such a session registers none. The web app's subscribe is best-effort.
+    if (user.qa) throw new ForbiddenException('A QA door session does not register push notifications');
     // round-4 Codex F3 — user linkage requires an UNLINK-CAPABLE bundle. The pre-4b bundle has
     // no `/push/unlink` in its sign-out (it only clears the token locally), so linking its
     // authenticated subscribe would leave the departing user's attribution live on a shared
