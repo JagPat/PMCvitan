@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
+import { SignedUrlService } from '../media/signed-url.service';
 
 /** Q6: a device fix whose accuracy is worse than this is labelled "approximate" when read. */
 export const APPROXIMATE_ACCURACY_M = 100;
@@ -35,6 +36,27 @@ export interface SiteVisitDto {
   /** The people with the visitor, by when the server took each add (to the millisecond; adds in one millisecond by
    *  id); a retired row stays, marked with when it was retired. */
   attendees: SiteVisitAttendeeDto[];
+  /** The files added on the visit (#792 SV2), by when the server took each (by file id within a millisecond). */
+  files: SiteVisitFileDto[];
+}
+
+export interface SiteVisitFileDto {
+  /** The stored file's id, and a short-lived signed path to it, resolved against the API base. */
+  mediaId: string;
+  url: string;
+  mime: string;
+  /** When the device took it, if it said. */
+  takenAt: string | null;
+  note: string | null;
+  rating: 'fine' | 'concern' | 'action_needed' | null;
+  /** The place the file showed when it was added, with the name it had then; `nodeId` is null once that place was
+   *  removed, and both are empty when it showed no place. */
+  place: { nodeId: string | null; name: string } | null;
+  /** Who added it, with the name and role they had then. */
+  addedById: string;
+  addedByName: string;
+  addedByRole: string;
+  addedAt: string;
 }
 
 export interface SiteVisitPlaceDto {
@@ -64,13 +86,14 @@ export interface SiteVisitAttendeeDto {
 const withChildren = {
   places: { orderBy: [{ addedReceivedAt: 'asc' }, { id: 'asc' }] },
   attendees: { orderBy: [{ addedAt: 'asc' }, { id: 'asc' }] },
+  media: { orderBy: [{ addedAt: 'asc' }, { mediaId: 'asc' }], include: { media: { select: { mime: true, takenAt: true } } } },
 } satisfies Prisma.SiteVisitInclude;
 
 type Row = Prisma.SiteVisitGetPayload<{ include: typeof withChildren }>;
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
-export function toSiteVisitDto(v: Row): SiteVisitDto {
+export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string): SiteVisitDto {
   const device = v.locationKind === 'device' && v.locLat !== null && v.locLng !== null && v.locAccuracyM !== null && v.locAt !== null;
   return {
     id: v.id,
@@ -99,13 +122,24 @@ export function toSiteVisitDto(v: Row): SiteVisitDto {
       id: a.id, kind: a.userId !== null ? 'member' : 'guest', userId: a.userId, role: a.role, name: a.displayName,
       addedAt: a.addedAt.toISOString(), retiredAt: iso(a.retiredAt),
     })),
+    files: v.media.map((f) => ({
+      mediaId: f.mediaId, url: fileUrl(f.mediaId), mime: f.media.mime, takenAt: f.media.takenAt,
+      note: f.note, rating: f.rating, place: f.placeName !== '' ? { nodeId: f.nodeId, name: f.placeName } : null,
+      addedById: f.addedById, addedByName: f.addedByName, addedByRole: f.addedByRole, addedAt: f.addedAt.toISOString(),
+    })),
   };
 }
 
 /** The module-owned read of a project's visits. Every member of the project reads them (D1). */
 @Injectable()
 export class SiteVisitsQueryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // #792 SV2 — a visit's files are served through the media module's signed paths, as an inspection's evidence is
+    private readonly signed: SignedUrlService,
+  ) {}
+
+  private toDto = (row: Row): SiteVisitDto => toSiteVisitDto(row, (id) => this.signed.mediaPath(id));
 
   /**
    * A page of the project's visits, newest start first. `before` names the last visit of the previous page, so
@@ -141,12 +175,12 @@ export class SiteVisitsQueryService {
       orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
       take: page.limit ?? 50,
     });
-    return rows.map(toSiteVisitDto);
+    return rows.map(this.toDto);
   }
 
   async get(projectId: string, visitId: string): Promise<SiteVisitDto> {
     const row = await this.prisma.siteVisit.findFirst({ where: { projectId, id: visitId }, include: withChildren });
     if (!row) throw new NotFoundException('Site visit not found');
-    return toSiteVisitDto(row);
+    return this.toDto(row);
   }
 }

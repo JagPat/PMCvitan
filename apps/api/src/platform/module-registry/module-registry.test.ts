@@ -135,7 +135,7 @@ describe('Phase 2 Task 7 — module registry', () => {
       // measured-output evidence (ActivityParticipant.assertMediaDisposable — the inventory rule).
       // Phase 5 Task 3 (§D) adds `commercial`: the strictest case of the same rule, since a
       // measurement is fully immutable and becomes a payable quantity.
-      media: ['activities', 'commercial', 'inspections', 'inventory', 'labour'], // evidence add/remove (edges via the media create/remove tx)
+      media: ['activities', 'commercial', 'inspections', 'inventory', 'labour', 'site-visits'], // evidence add/remove + #792 SV2 visit-file link (edges via the media create/remove tx)
       // Phase 3 Task 4 — the §G inventory→procurement edge: the receipt tx invokes the
       // procurement-owned PO-line lock + received-progress fact (§F bound 3); procurement does
       // not depend back on inventory, so the graph stays acyclic. Task 5 adds the activities

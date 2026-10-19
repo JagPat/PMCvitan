@@ -19,7 +19,9 @@ export const mediaManifest: ModuleManifest = {
   // evidence is never deletable (the same rule as inventory/labour evidence).
   // Phase 5 Task 3 (§D) adds `commercial` for the strictest case of that rule: a measurement is
   // fully immutable and becomes a payable quantity, so its evidence photo is delete-sealed too.
-  workflowParticipants: ['activities', 'commercial', 'inspections', 'inventory', 'labour'],
+  // #792 SV2 adds `site-visits`: a file added on a site visit is linked to it by SiteVisitFilesParticipant in the
+  // upload's transaction (cycle-exempt: site-visits reads the media module's place contract, `media_filed_node`).
+  workflowParticipants: ['activities', 'commercial', 'inspections', 'inventory', 'labour', 'site-visits'],
   producesEvents: ['media.uploaded', 'media.refiled', 'media.removed'],
   consumesEvents: [],
   commands: ['media.create', 'media.setNode', 'media.remove'],
