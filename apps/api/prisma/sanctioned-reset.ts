@@ -109,10 +109,11 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // fact that legitimately claims a reused id.
   { table: 'DomainEventPairingClaim', trigger: 'DomainEventPairingClaim_t4d_no_truncate' },
   // Site Visits (#792) SV1-a — the visit record refuses DELETE and TRUNCATE; a reset that truncates `Project`, `User`
-  // or `ProjectNode` with CASCADE reaches all three tables, so each statement seal is bypassed here by name.
+  // or `ProjectNode` with CASCADE reaches them all (SV2's visit files with them), so each statement seal is bypassed here by name.
   { table: 'SiteVisit', trigger: 'SiteVisit_no_truncate' },
   { table: 'SiteVisitAttendee', trigger: 'SiteVisitAttendee_no_truncate' },
   { table: 'SiteVisitPlace', trigger: 'SiteVisitPlace_no_truncate' },
+  { table: 'SiteVisitMedia', trigger: 'SiteVisitMedia_no_truncate' },
   // Phase 6 unit 4d-i (#582's review round 24, the sweep behind finding 2) — the STREAM. Every
   // 4d correspondence, claim and actor binding is a statement about a row in it, judged once at
   // write time, and the derived registers around it (`Notification`, the claim table,

@@ -208,6 +208,78 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     expect(await t.prisma.siteVisit.findUnique({ where: { id: visitA }, select: { id: true } })).toEqual({ id: visitA });
   });
 
+  it('a row goes only with its file: a direct DELETE or TRUNCATE is refused, so a file cannot move to another visit', async () => {
+    const m = await photo(f.projectA.id);
+    await link(f.projectA.id, visitA, m.id, 'Seepage');
+    const record = /part of the visit record/;
+    await expect(t.prisma.$executeRaw`DELETE FROM "SiteVisitMedia" WHERE "mediaId" = ${m.id}`).rejects.toThrow(record);
+    await expect(t.prisma.siteVisitMedia.delete({ where: { mediaId: m.id } })).rejects.toThrow(record);
+    await expect(t.prisma.$executeRawUnsafe('TRUNCATE "SiteVisitMedia"')).rejects.toThrow(/never truncated/);
+    expect(await t.prisma.siteVisitMedia.findUnique({ where: { mediaId: m.id }, select: { visitId: true } })).toEqual({ visitId: visitA });
+  });
+
+  // Two sessions on separate connections: `held` takes its locks inside an interactive transaction and waits on a gate;
+  // the link insert is dispatched on another pooled connection and observed blocked in pg_stat_activity before release.
+  const gate = () => { let open!: () => void; const promise = new Promise<void>((r) => (open = r)); return { promise, open }; };
+  const reflect = <T>(p: Promise<T>) => p.then((value) => ({ ok: true as const, value }), (reason: unknown) => ({ ok: false as const, reason }));
+  const waitUntilBlocked = async () => {
+    for (let i = 0; i < 200; i++) {
+      const [row] = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
+        `SELECT count(*)::int AS c FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE '%INSERT INTO%SiteVisitMedia%'`);
+      if (Number(row!.c) >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('the link insert never blocked');
+  };
+  const published = (name: string) => t.prisma.projectNode.create({
+    data: { projectId: f.projectA.id, name: `${name} ${run}`, kind: 'zone', order: 0, authorId: f.memberUser.id, publishedAt: new Date() },
+  });
+
+  it('a link racing the removal of its file\'s place waits for it and records no place, in the removal\'s lock order (no deadlock)', async () => {
+    const node = await published('Scaffold');
+    const m = await photo(f.projectA.id, node.id);
+    const locked = gate();
+    const release = gate();
+    // the removal's order: the node row first, then (its ON DELETE SET NULL) the file row
+    const held = t.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM "ProjectNode" WHERE "id" = ${node.id} FOR UPDATE`;
+      locked.open();
+      await release.promise;
+      await tx.$executeRaw`DELETE FROM "ProjectNode" WHERE "id" = ${node.id}`;
+    }, { timeout: 20_000 });
+    await locked.promise;
+    const adding = reflect(link(f.projectA.id, visitA, m.id));
+    await waitUntilBlocked();
+    release.open();
+    await held;
+    const added = await adding;
+    expect(added.ok ? { nodeId: added.value.nodeId, placeName: added.value.placeName } : String(added.reason))
+      .toEqual({ nodeId: null, placeName: '' });
+  });
+
+  it('a link racing a refile of its file is refused as a serialization failure, and a retry takes the new place', async () => {
+    const was = await published('Lift core');
+    const now = await published('Stair core');
+    const m = await photo(f.projectA.id, was.id);
+    const locked = gate();
+    const release = gate();
+    const held = t.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`UPDATE "Media" SET "nodeId" = ${now.id} WHERE "id" = ${m.id}`;
+      locked.open();
+      await release.promise;
+    }, { timeout: 20_000 });
+    await locked.promise;
+    const adding = reflect(link(f.projectA.id, visitA, m.id));
+    await waitUntilBlocked();
+    release.open();
+    await held;
+    const added = await adding;
+    expect(added.ok).toBe(false);
+    // SQLSTATE 40001, which Prisma reports as P2034, the code its callers already retry on
+    expect((added.ok ? {} : added.reason as { code?: string }).code).toBe('P2034');
+    expect(await link(f.projectA.id, visitA, m.id)).toMatchObject({ nodeId: now.id, placeName: now.name });
+  });
+
   it('the migration re-runs as a no-op, and repairs what a db push baseline leaves out', async () => {
     const before = await t.prisma.siteVisitMedia.count({ where: { visitId: visitA } });
     replay();
@@ -220,6 +292,8 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
       ADD CONSTRAINT "SiteVisitMedia_projectId_nodeId_fkey" FOREIGN KEY ("projectId","nodeId") REFERENCES "ProjectNode"("projectId","id") ON DELETE NO ACTION ON UPDATE NO ACTION`);
     await t.prisma.$executeRawUnsafe(`DROP TRIGGER "SiteVisitMedia_insert" ON "SiteVisitMedia"`);
     await t.prisma.$executeRawUnsafe(`DROP TRIGGER "SiteVisitMedia_update" ON "SiteVisitMedia"`);
+    await t.prisma.$executeRawUnsafe(`DROP TRIGGER "SiteVisitMedia_no_delete" ON "SiteVisitMedia"`);
+    await t.prisma.$executeRawUnsafe(`DROP TRIGGER "SiteVisitMedia_no_truncate" ON "SiteVisitMedia"`);
     await t.prisma.$executeRawUnsafe(`ALTER TABLE "SiteVisitMedia" DROP CONSTRAINT "SiteVisitMedia_shape_check"`);
     expect(await def('SiteVisitMedia_projectId_nodeId_fkey')).not.toMatch(/SET NULL/);
     replay();
@@ -227,7 +301,7 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     expect(await def('SiteVisitMedia_shape_check')).toMatch(/btrim/);
     const triggers = await t.prisma.$queryRaw<Array<{ n: string }>>`
       SELECT tgname AS n FROM pg_trigger WHERE tgrelid = '"SiteVisitMedia"'::regclass AND NOT tgisinternal ORDER BY tgname`;
-    expect(triggers.map((r) => r.n)).toEqual(['SiteVisitMedia_insert', 'SiteVisitMedia_update']);
+    expect(triggers.map((r) => r.n)).toEqual(['SiteVisitMedia_insert', 'SiteVisitMedia_no_delete', 'SiteVisitMedia_no_truncate', 'SiteVisitMedia_update']);
     const fks = await t.prisma.$queryRaw<Array<{ n: bigint }>>`
       SELECT count(*) AS n FROM pg_constraint WHERE conrelid = '"SiteVisitMedia"'::regclass AND contype = 'f'`;
     expect(Number(fks[0].n)).toBe(4);

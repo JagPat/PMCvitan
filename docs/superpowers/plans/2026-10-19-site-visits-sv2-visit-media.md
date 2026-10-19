@@ -31,10 +31,15 @@ times today and "feels empty"; it should hold photos, sketches, video and other 
    module under the visit's row lock, as an inspection checks its evidence. The triggers, the CHECK and the place key's
    column-list `SET NULL` are not modelled by `prisma db push`, so the file is on `scripts/migrate.sh`'s ALWAYS_EXECUTE.
 4. **Deletes follow the file.** Removing the file removes its link (`ON DELETE CASCADE`), so the existing photo delete
-   rules are unchanged. A visit is never deleted outside a project cascade.
+   rules are unchanged. A direct `DELETE` or `TRUNCATE` of a link is refused (round-2 review), so a file cannot be
+   taken off one visit and put on another; the sanctioned test reset bypasses the truncate seal by name.
 5. **One visit per file.** The file id is the key. A photo of a crack belongs to the visit it was taken on.
 6. **The rating (Fine, Concern, Action needed) is stored now, used later.** It is a nullable Prisma enum on the link, so
    it ships in this migration instead of a second migration-alone PR. "Action needed" raising an item is SV3's.
 7. **The place is the one at the visit.** `Media.nodeId` can be refiled or unfiled later, so the insert copies it
    (and the place's published name) onto the link. Removing the place clears only the reference, as SV1-a's places do;
    the name stays. A file with no place, or on an unpublished draft, records none.
+   The place is read through the owning modules' database contracts (`media_filed_node`, and
+   `nodes_published_name_or_null_locked` beside SV1-a's `nodes_published_name_locked`), never their tables, and the
+   place is locked before the file, the order a place's removal takes them, so the two never deadlock (round-2 review).
+   A refile that lands while the link is being added refuses the link as a serialization failure for a retry.

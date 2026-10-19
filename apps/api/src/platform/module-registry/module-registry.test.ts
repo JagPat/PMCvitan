@@ -106,7 +106,9 @@ describe('Phase 2 Task 7 — module registry', () => {
       commercial: ['procurement', 'inventory', 'labour', 'activities'],
       // Site Visits SV1-a — a visit freezes a published node's label through the nodes module's
       // database contract (`nodes_published_name_locked`); nodes never depends back on site-visits.
-      'site-visits': ['nodes'],
+      // SV2 — a visit file's place is read through the media module's contract (`media_filed_node`);
+      // media never depends back on site-visits.
+      'site-visits': ['nodes', 'media'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.dependsOn, `${m.id} dependsOn`).toEqual(expectedDependsOn[m.id] ?? []);

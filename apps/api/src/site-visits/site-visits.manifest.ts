@@ -21,8 +21,9 @@ export const siteVisitsManifest: ModuleManifest = {
   ownsModels: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia'],
   readEncapsulated: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia'],
   // A visit freezes the label of a published node through the nodes module's database contract
-  // (`nodes_published_name_locked`), never by reading its table.
-  dependsOn: ['nodes'],
+  // (`nodes_published_name_locked`, and SV2's `nodes_published_name_or_null_locked`), and a visit file's place
+  // through the media module's (`media_filed_node`), never by reading either table.
+  dependsOn: ['nodes', 'media'],
   workflowParticipants: [],
   producesEvents: [
     'sitevisit.started',

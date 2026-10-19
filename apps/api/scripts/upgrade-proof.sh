@@ -5639,7 +5639,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280106000000_phase6_t4d_ii_a8b_finalizer_claimants_fence
 20280107000000_phase6_t4d_iii_r0b_system_pair
 20280111000000_site_visits_sv1a_catalog
-20280112000000_site_visits_sv1a_record"
+20280112000000_site_visits_sv1a_record
+20280114000000_site_visits_sv2_visit_media"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
@@ -5715,7 +5716,7 @@ else
   echo "FAILED  4d-ii-a / A7d: the database does not read as carrying A7d although 20280104 ran on it — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
 fi
 if t4d_out="$(t4d_replay)"; then
-  echo "ok      4d-ii-a / A7d: a ledger-lost replay with NO lease runs 20271222–20280112 through on a database carrying A7d and SV1-a (4d-i, U3, and — for SV1-a — U1, A7a and A7d resolved as applied, as the runner does)"
+  echo "ok      4d-ii-a / A7d: a ledger-lost replay with NO lease runs 20271222–20280114 through on a database carrying A7d and SV1-a (4d-i, U3, and — for SV1-a — U1, A7a and A7d resolved as applied, as the runner does)"
 else
   echo "FAILED  4d-ii-a / A7d: the lease-less replay on a database carrying A7d failed; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi
@@ -5758,7 +5759,7 @@ else
   echo "FAILED  4d-ii-a / A7d: the served database does not read as carrying A7d — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
 fi
 if t4d_out="$(t4d_replay)"; then
-  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271222–20280112 through (4d-i, U3, U1, A7a and A7d resolved as applied, as the runner does)"
+  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271222–20280114 through (4d-i, U3, U1, A7a and A7d resolved as applied, as the runner does)"
 else
   echo "FAILED  4d-ii-a: the replay refused a database this release served; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi
@@ -5803,6 +5804,11 @@ assert "4d-ii-a / A7a: after the replay the revision claimant carries the revisi
 assert "SV1-a: after the replay the kernel actor seal carries A7d's exemption and the revision claimant A7d's provisional arm" \
   "SELECT (SELECT count(*) FROM pg_proc WHERE proname = 'platform_t4d_event_pairing_actor' AND prosrc LIKE '%system:membership-standing%')::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'phase6_t4d_revision_claims_approval' AND prosrc LIKE '%THE PROVISIONAL ARM%')::text;" \
   "1|1"
+# SV2 — the replay re-ran the visit-file migration (it is on ALWAYS_EXECUTE) over this already-migrated database:
+# its four triggers stand enabled, the CHECK stands, and the place key is still the column-list SET NULL.
+assert "SV2: after the replay the visit-file record keeps its four triggers, its CHECK and its place key's SET NULL (\"nodeId\")" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitMedia\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitMedia_insert','SiteVisitMedia_update','SiteVisitMedia_no_delete','SiteVisitMedia_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conname = 'SiteVisitMedia_shape_check')::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conname = 'SiteVisitMedia_projectId_nodeId_fkey' AND confdeltype = 'n' AND confdelsetcols IS NOT NULL)::text;" \
+  "4|1|1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \
