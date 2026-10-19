@@ -52,8 +52,8 @@ describe('Stage 1 media — markup links, lengths and still frames (live PG)', (
 
   it('a copy cannot point at another project\'s photo, at a missing one, or at itself (K1, K3)', async () => {
     const other = await file(f.projectB.id);
-    await expect(file(f.projectA.id, 'image/png', { sourceMediaId: other.id })).rejects.toThrow(/Media_projectId_sourceMediaId_fkey|Foreign key/i);
-    await expect(file(f.projectA.id, 'image/png', { sourceMediaId: 'no-such-file' })).rejects.toThrow(/Media_projectId_sourceMediaId_fkey|Foreign key/i);
+    await expect(file(f.projectA.id, 'image/png', { sourceMediaId: other.id })).rejects.toThrow(/not a stored photo in its project/);
+    await expect(file(f.projectA.id, 'image/png', { sourceMediaId: 'no-such-file' })).rejects.toThrow(/not a stored photo in its project/);
     const self = await file(f.projectA.id);
     await expect(raw(`INSERT INTO "Media" ("id","projectId","kind","mime","data","sizeBytes","uploadedBy","sourceMediaId")
       VALUES ('self-copy', $1, 'progress', 'image/png', '\\x01', 1, $2, 'self-copy')`, f.projectA.id, f.memberUser.id)).rejects.toThrow(/Media_av_shape_check/);
@@ -78,6 +78,10 @@ describe('Stage 1 media — markup links, lengths and still frames (live PG)', (
     const note = await file(f.projectA.id, 'audio/webm', { durationSec: 10 });
     await expect(file(f.projectA.id, 'image/png', { sourceMediaId: clip.id })).rejects.toThrow(/not a photo/);
     await expect(file(f.projectA.id, 'image/png', { sourceMediaId: note.id })).rejects.toThrow(/not a photo/);
+    // a copy listed before its original in one INSERT cannot slip past the type check (round-2 review)
+    await expect(raw(`INSERT INTO "Media" ("id","projectId","kind","mime","data","sizeBytes","uploadedBy","sourceMediaId","durationSec")
+      VALUES ('fwd-copy', $1, 'progress', 'image/png', '\\x01', 1, $2, 'fwd-clip', NULL),
+             ('fwd-clip', $1, 'progress', 'video/mp4', '\\x01', 1, $2, NULL, 10)`, f.projectA.id, f.memberUser.id)).rejects.toThrow(/not a stored photo in its project/);
     const original = await file(f.projectA.id);
     await file(f.projectA.id, 'image/png', { sourceMediaId: original.id });
     await expect(raw(`UPDATE "Media" SET "mime" = 'video/mp4' WHERE "id" = $1`, original.id)).rejects.toThrow(/stays a photo/);

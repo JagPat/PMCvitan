@@ -21,7 +21,8 @@
 --       frame belongs only to a video and is never blank. Every existing row is an image with none of the three, so
 --       the CHECK holds on the rows already stored.
 --   K4  The link is provenance, so it is written once (round-1 review). Trigger "Media_markup_source":
---       - a copy's original must itself be an image (the CHECK sees only the copy's own row);
+--       - a copy's original must itself be an image already stored in its project (the CHECK sees only the copy's own
+--         row, and the key does not check the type);
 --       - the link is set only when the copy is created, never added, moved or cleared later, except that it clears
 --         once its original is gone, which is K2's `SET NULL` (the original's row is checked to be absent, not trusted
 --         from the trigger depth);
@@ -69,11 +70,16 @@ DECLARE
   v_mime TEXT;
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    -- its own original is the CHECK's to refuse, and a missing or other-project original is the key's
+    -- its own original is the CHECK's to refuse. Any other original must already be stored in the copy's project: one
+    -- this row cannot see yet (a missing one, another project's, or one later in the same multi-row INSERT, round-2
+    -- review) is refused here rather than left to the key, which checks existence but not the type.
     IF NEW."sourceMediaId" IS NOT NULL AND NEW."sourceMediaId" <> NEW."id" THEN
       SELECT "mime" INTO v_mime FROM "Media"
         WHERE "projectId" = NEW."projectId" AND "id" = NEW."sourceMediaId" FOR SHARE;
-      IF FOUND AND v_mime NOT LIKE 'image/%' THEN
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'media: the file % is marked up from %, which is not a stored photo in its project', NEW."id", NEW."sourceMediaId"
+          USING ERRCODE = 'check_violation';
+      ELSIF v_mime NOT LIKE 'image/%' THEN
         RAISE EXCEPTION 'media: the file % is marked up from %, which is not a photo', NEW."id", NEW."sourceMediaId"
           USING ERRCODE = 'check_violation';
       END IF;
