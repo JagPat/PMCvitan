@@ -9,6 +9,8 @@ import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
 import { PhoneSignInService } from './phone-sign-in.service';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
+import { recordAudit } from '../platform/audit';
+import { systemActor } from '../common/actor';
 import type { Role } from '../common/auth';
 import type {
   SessionInput,
@@ -20,6 +22,9 @@ import type {
   EmailOtpVerifyInput,
   GoogleSignInInput,
 } from '../contracts';
+
+/** A QA account's email: `qa.<lowercase word>@vitan.in` (#482, Board's QA re-home rule). */
+const QA_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
 
 export interface TokenResult {
   token: string;
@@ -223,6 +228,45 @@ export class AuthService {
       role: input.role,
       projectId: input.projectId,
     };
+  }
+
+  /**
+   * #482 (Jagrut, 19 Oct 2026: "Lift it" on the QA sign-in card) — the operator door signs Claude in as one of the
+   * QA accounts, so live QA runs without a stored password. Two fences, both required:
+   *  - the account's email is a QA address (`qa.<word>@vitan.in`, the pattern the Board fixed for the QA users);
+   *  - every company it reaches (owner/admin/member rows, and the companies of its active projects) is QA-ONLY:
+   *    each of that company's members and each active member of its projects is itself a QA address.
+   * A real person's account, or a QA account added to a real company or project, is refused (403). The route is
+   * behind `OPS_TOKEN`; each sign-in leaves an audit row on the account's landing project with the operator and reason.
+   */
+  async qaSignIn(input: { email: string; operator: string; reason: string }): Promise<TokenResult> {
+    const email = input.email.trim().toLowerCase();
+    if (!QA_EMAIL.test(email)) throw new ForbiddenException('only a QA account can be signed in here');
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) throw new NotFoundException('no such QA account');
+    const [orgRows, memberRows] = await Promise.all([
+      this.prisma.orgMembership.findMany({ where: { userId: user.id }, select: { orgId: true } }),
+      this.prisma.membership.findMany({ where: { userId: user.id, status: 'active' }, select: { project: { select: { orgId: true } } } }),
+    ]);
+    const orgIds = [...new Set([...orgRows.map((o) => o.orgId), ...memberRows.map((m) => m.project.orgId)])].filter((id): id is string => !!id);
+    if (!orgIds.length || memberRows.some((m) => !m.project.orgId)) throw new ForbiddenException('this account is not in a QA-only company');
+    const [orgPeople, projectPeople] = await Promise.all([
+      this.prisma.orgMembership.findMany({ where: { orgId: { in: orgIds } }, select: { user: { select: { email: true } } } }),
+      this.prisma.membership.findMany({ where: { status: 'active', project: { orgId: { in: orgIds } } }, select: { user: { select: { email: true } } } }),
+    ]);
+    if ([...orgPeople, ...projectPeople].some((r) => !QA_EMAIL.test((r.user.email ?? '').toLowerCase()))) {
+      throw new ForbiddenException('this account is not in a QA-only company');
+    }
+    const result = await this.signInUser(user);
+    await this.prisma.$transaction((tx) => recordAudit(tx, {
+      projectId: result.projectId,
+      actor: systemActor(input.operator, input.operator, 'operator'),
+      action: 'auth.qaSignIn',
+      entity: 'User',
+      entityId: user.id,
+      payload: { reason: input.reason, via: 'ops-api' },
+    }));
+    return result;
   }
 
   /** Email + password sign-in for PMC / client / contractor accounts. */

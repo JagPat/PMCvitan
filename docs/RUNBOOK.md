@@ -2612,6 +2612,17 @@ the usual `capability.enable` / `capability.disable` audit row, with the operato
 `via: "ops-api"`. A wrong or missing token gets 401, and each route allows 30 calls a minute per address.
 No route takes SQL or touches project data. The T3C seal check stays a terminal command (`t3c:seals`).
 
+**QA sign-in.** `POST /auth/ops/qa-sign-in` (same `OPS_TOKEN`, 10 calls per 10 minutes) returns a normal sign-in
+(`token`, `role`, `projectId`) for a QA account, so live QA runs without a stored password (Jagrut, 19 Oct 2026):
+
+    curl -X POST -H "Authorization: Bearer $OPS_TOKEN" -H 'Content-Type: application/json' \
+         -d '{"email":"qa.pmc@vitan.in","operator":"<you>","reason":"<text>"}' \
+         https://pms-api.vitan.in/auth/ops/qa-sign-in
+
+It accepts only a `qa.<word>@vitan.in` account, and only while every company that account reaches, and every
+active member of those companies' projects, is a QA account too. A real account, or a QA account placed in a real
+company or project, gets 403. Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
+
 ## §DS. Database snapshot (read-only)
 
 Records every table's rows by key, so a removal can be checked row by row (#482: the archived

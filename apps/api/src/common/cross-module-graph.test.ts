@@ -400,7 +400,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   ],
   'auth/auth.controller.ts': [
     "Post('switch')", "Post('session')", "Post('login')", "Post('password/request')", "Post('password/verify')", "Post('password/complete')", "Post('otp/request')", "Post('otp/verify')",
-    "Post('worker/token')", "Post('email/request')", "Post('email/verify')", "Post('google')",
+    "Post('worker/token')", "Post('email/request')", "Post('email/verify')", "Post('google')", "Post('ops/qa-sign-in')",
   ],
   'activities/activities.controller.ts': [
     'Post()', "Patch(':activityId')", "Delete(':activityId')", "Post(':activityId/start')", "Post(':activityId/complete')",
@@ -632,12 +632,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable)', () => {
+    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +1 #482 operator door QA sign-in)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(186);
+      expect(total).toBe(187);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(186);
+      expect(live).toBe(187);
     });
   });
 

@@ -31,6 +31,7 @@ export const authManifest: ModuleManifest = {
     'auth.emailRequest',
     'auth.emailVerify',
     'auth.google',
+    'auth.opsQaSignIn',
   ],
   queries: [],
   routes: [
@@ -46,6 +47,7 @@ export const authManifest: ModuleManifest = {
     'POST /auth/email/request',
     'POST /auth/email/verify',
     'POST /auth/google',
+    'POST /auth/ops/qa-sign-in',
   ],
   permissions: [],
 };

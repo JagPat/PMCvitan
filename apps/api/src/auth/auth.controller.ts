@@ -6,6 +6,15 @@ import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, Public } from '../common/roles';
 import { Throttle, ThrottleGuard } from '../common/throttle';
 import { isProduction } from '../config';
+import { z } from 'zod';
+import { OpsTokenGuard } from '../platform/ops/ops-token.guard';
+
+const qaSignInSchema = z.object({
+  email: z.string().trim().min(3).max(200),
+  operator: z.string().trim().min(3).max(200),
+  reason: z.string().trim().min(3).max(500),
+});
+type QaSignInInput = z.infer<typeof qaSignInSchema>;
 
 /** Rate-limit window shared by the auth endpoints. */
 const WINDOW = 10 * 60 * 1000; // 10 minutes
@@ -147,5 +156,17 @@ export class AuthController {
   @Post('google')
   google(@Body(new ZodPipe(googleSignInSchema)) body: GoogleSignInInput) {
     return this.auth.googleSignIn(body);
+  }
+
+  /**
+   * #482 operator door — sign in as a QA account (QA-only companies only; see `AuthService.qaSignIn`). Behind
+   * `OPS_TOKEN` like every `/ops` route: closed (404) without a strong token, 401 for a wrong one.
+   */
+  @Public()
+  @UseGuards(OpsTokenGuard)
+  @Throttle(10, WINDOW)
+  @Post('ops/qa-sign-in')
+  qaSignIn(@Body(new ZodPipe(qaSignInSchema)) body: QaSignInInput) {
+    return this.auth.qaSignIn(body);
   }
 }
