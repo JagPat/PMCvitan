@@ -97,7 +97,7 @@ export function DailyLogScreen() {
 
   const onPickPhoto = (e: ChangeEvent<HTMLInputElement>) => {
     // read and filed as every "add a photo" control does: the project and the day's log it was chosen in
-    pickProgressPhoto(e.target.files?.[0], photoNode);
+    pickProgressPhoto(e.target.files?.[0], photoNode, useStore.getState().dailyLog?.id ?? null);
     e.target.value = ''; // allow re-picking the same file
   };
 

@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { useStore } from '@/store/store';
 import { pickProgressPhoto } from '@/lib/pickProgressPhoto';
 import { dailyLogSendPending } from '@/store/dailyLogPending';
+import { todayCivil } from '@/lib/civilDate';
 import { Camera } from '@/lib/icons';
 import { can, sitePhotoLabels as L } from '@vitan/shared';
 
@@ -27,7 +28,11 @@ export function AddSitePhoto() {
         data-testid="add-site-photo-file"
         style={{ display: 'none' }}
         onChange={(e) => {
-          pickProgressPhoto(e.target.files?.[0], null);
+          // filed on the day's log only when it is TODAY's: the latest log can be one sent on an earlier day, and a
+          // photo taken now is never added to that record (#482)
+          const { dailyLog, timeZone } = useStore.getState();
+          const forLog = dailyLog?.id && dailyLog.logDate === todayCivil(timeZone) ? dailyLog.id : null;
+          pickProgressPhoto(e.target.files?.[0], null, forLog);
           e.target.value = '';
         }}
       />

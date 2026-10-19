@@ -116,7 +116,9 @@ describe('#482 site photos: "Add site photo" on the Dashboard', () => {
 
   it('files the photo on the day\'s log on screen, once, as the Daily Log does', async () => {
     const { useStore } = await loadApiMode('engineer');
-    const log = { id: 'log-1', date: '19 Oct', checkedIn: true, checkinTime: null, submitted: false, crew: [], materials: [], progress: 0, photos: [] };
+    const { todayCivil } = await import('@/lib/civilDate');
+    const log = { id: 'log-1', date: '19 Oct', logDate: todayCivil('Asia/Kolkata'), checkedIn: true, checkinTime: null, submitted: false, crew: [], materials: [], progress: 0, photos: [] };
+    useStore.setState({ timeZone: 'Asia/Kolkata' } as never);
     useStore.setState({ dailyLog: log } as never);
     let reply: (v: { id: string; url: string }) => void = () => {};
     const uploadMedia = vi.fn().mockReturnValue(new Promise((res) => { reply = res; }));
@@ -219,5 +221,55 @@ describe('#482 site photos: "Add site photo" on the Dashboard', () => {
     act(() => useStore.setState({ activeProjectId: 'other', projectScopeGeneration: 2 } as never));
     finish();
     expect(uploadMedia).not.toHaveBeenCalled();
+  });
+
+  it('never files today\'s photo on a log sent on an earlier day (Codex 4313099805)', async () => {
+    const { useStore } = await loadApiMode('engineer');
+    const log = { id: 'log-old', date: '18 Oct', logDate: '2000-01-01', checkedIn: true, checkinTime: null, submitted: true, crew: [], materials: [], progress: 2, photos: [] };
+    useStore.setState({ dailyLog: log, timeZone: 'Asia/Kolkata' } as never);
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'new', url: 'http://api.test/new.jpg' });
+    useStore.getState()._setGateway({ uploadMedia } as never);
+    useStore.setState({ online: true } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    pick(r);
+    expect(uploadMedia.mock.calls[0][0].dailyLogId).toBeUndefined();
+    await waitFor(() => expect(useStore.getState().photos.map((p) => p.id)).toEqual(['new']));
+    expect(useStore.getState().dailyLog?.photos).toEqual([]);
+    expect(useStore.getState().dailyLog?.progress).toBe(2);
+  });
+
+  it('keeps the newest pick first when the upload replies come back in the other order (Codex 4313099818)', async () => {
+    const { useStore } = await loadApiMode('pmc', [{ id: 'old', url: 'http://api.test/old.jpg', kind: 'progress' }]);
+    const replies: Array<(v: { id: string; url: string }) => void> = [];
+    const uploadMedia = vi.fn().mockImplementation(() => new Promise((res) => { replies.push(res); }));
+    useStore.getState()._setGateway({ uploadMedia } as never);
+    useStore.setState({ online: true } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    pick(r, 'a.jpg');
+    pick(r, 'b.jpg');
+    await act(async () => replies[1]!({ id: 'b', url: 'http://api.test/b.jpg' }));
+    await act(async () => replies[0]!({ id: 'a', url: 'http://api.test/a.jpg' }));
+    expect(useStore.getState().photos.map((p) => p.id)).toEqual(['b', 'a', 'old']);
+  });
+
+  it('shows a photo picked with no signal at once, and lets it go when its upload is sent (Codex 4313099797)', async () => {
+    const { useStore } = await loadApiMode('client', [{ id: 'old', url: 'http://api.test/old.jpg', kind: 'progress' }]);
+    useStore.getState()._setGateway({ uploadMedia: vi.fn() } as never);
+    useStore.setState({ online: false } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    pick(r);
+    expect(r.getAllByAltText(/^Site photo \d+$/)).toHaveLength(2);
+    expect((r.getByAltText('Site photo 1') as HTMLImageElement).src).toBe('data:image/jpeg;base64,AAAA');
+    expect(r.getByTestId('tile-photos-value').textContent).toBe('2');
+    // sent: the outbox lets it go and the refresh brings the recorded photo
+    act(() => useStore.setState({ outbox: [], photos: [{ id: 'new', url: 'http://api.test/new.jpg', kind: 'progress' }, { id: 'old', url: 'http://api.test/old.jpg', kind: 'progress' }] } as never));
+    expect((r.getByAltText('Site photo 1') as HTMLImageElement).src).toBe('http://api.test/new.jpg');
+    expect(r.getByTestId('tile-photos-value').textContent).toBe('2');
   });
 });

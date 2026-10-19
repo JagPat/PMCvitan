@@ -2348,6 +2348,10 @@ export const useStore = create<Store>()(
     /** Site Visits (#792): site visit acts are kept under a key of their own, beside the outbox's, so a bundle from
      *  before them (a rollback, an old tab) never reads one: its replay has no case for them and would drop them as
      *  sent (Codex 4278991737). The two lists are each in the order made; a site visit act never waits on another op. */
+    /** #482 site photos — the order this device picked the photos it uploads, by the photo's server id once its
+     *  reply lands: replies can come back in another order, and the list stays newest first by pick. */
+    let photoPickSeq = 0;
+    const photoPickedAt = new Map<string, number>();
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
     const persistOutbox = (): void => {
       try {
@@ -5627,6 +5631,7 @@ export const useStore = create<Store>()(
         // One key per pick (#482): the server stores one photo per (project, key), so a queued upload replayed
         // after its first attempt committed but its reply was lost is the same photo, not a second one.
         const clientKey = newIdempotencyKey();
+        const pickSeq = ++photoPickSeq;
         const input = {
           kind: 'progress' as const, mime, data: base64, clientKey, ...stamped,
           ...(nodeId ? { nodeId } : {}), ...(dailyLogId ? { dailyLogId } : {}),
@@ -5673,7 +5678,10 @@ export const useStore = create<Store>()(
               // A refresh that landed before this reply may already hold it, in the list, the log, or only one of
               // them when the log's read failed; each gets it once.
               if (!s.photos.some((p) => p.id === res.id)) {
-                s.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}) });
+                // after any photo this device picked later whose reply came back first
+                photoPickedAt.set(res.id, pickSeq);
+                const at = s.photos.findIndex((p) => (photoPickedAt.get(p.id) ?? 0) < pickSeq);
+                s.photos.splice(at < 0 ? s.photos.length : at, 0, { id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}) });
                 // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
                 if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
               }

@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { decisionRecordLink, inspectionsSettledForLinks, selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
@@ -11,6 +12,7 @@ import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { AddSitePhoto } from '@/components/AddSitePhoto';
+import { queuedSitePhotos } from '@/lib/queuedSitePhotos';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
 import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, type Lang, type WaitParty } from '@vitan/shared';
@@ -85,7 +87,11 @@ export function DashboardScreen() {
   const phases = useStore(useShallow((s) => s.phases));
   const activities = useStore(useShallow((s) => s.activities));
   const photoStats = useStore(useShallow(selectPhotoStats));
-  const sitePhotos = useStore(useShallow((s) => s.photos));
+  const recordedPhotos = useStore(useShallow((s) => s.photos));
+  // #482 site photos: a photo picked with no signal shows first at once, until its upload is sent
+  const outbox = useStore((s) => s.outbox);
+  const queuedPhotos = useMemo(() => (API_BASE ? queuedSitePhotos(outbox) : []), [outbox]);
+  const sitePhotos = useMemo(() => [...queuedPhotos, ...recordedPhotos], [queuedPhotos, recordedPhotos]);
   // the milestone strip is the project's own phases, read LIVE from their activities (the stored
   // `donePct` is only the snapshot's initial count): done = every activity accepted, started = any
   // accepted or under way. Empty projects show none.
@@ -143,10 +149,10 @@ export function DashboardScreen() {
     // The snapshot carries the newest SNAPSHOT_SITE_PHOTO_LIMIT only: a full window is "at least", and its
     // places are the places among those (Codex 4194155412) — never presented as the total on record.
     {
-      key: 'photos', label: L.photosTile[photoLang], value: photoStats.capped ? `${photoStats.count}+` : photoStats.count, accent: 'var(--green-solid)',
+      key: 'photos', label: L.photosTile[photoLang], value: photoStats.capped ? `${photoStats.count + queuedPhotos.length}+` : photoStats.count + queuedPhotos.length, accent: 'var(--green-solid)',
       sub: photoStats.capped
         ? `${T.photosLatest(photoStats.count, photoLang)}${photoStats.zones > 0 ? ` · ${T.photosAcross(photoStats.zones, photoLang, true)}` : ''}`
-        : photoStats.zones > 0 ? T.photosAcross(photoStats.zones, photoLang) : photoStats.count > 0 ? L.photosNotPlaced[photoLang] : L.photosNone[photoLang],
+        : photoStats.zones > 0 ? T.photosAcross(photoStats.zones, photoLang) : photoStats.count + queuedPhotos.length > 0 ? L.photosNotPlaced[photoLang] : L.photosNone[photoLang],
       onClick: canOpen('places') ? () => setScreen('places') : undefined,
     },
   );
