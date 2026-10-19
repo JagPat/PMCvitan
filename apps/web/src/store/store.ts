@@ -5684,8 +5684,10 @@ export const useStore = create<Store>()(
                 // after any photo this device picked later whose reply came back first
                 const at = s.photos.findIndex((p) => (photoPickedAt.get(p.id) ?? 0) < pickSeq);
                 s.photos.splice(at < 0 ? s.photos.length : at, 0, { id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}),
-                  // who, role and when, as the next snapshot will say them (#482): this viewer, now
-                  ...(s.userName ? { by: s.userName } : {}), byRole: s.role, at: new Date().toISOString(),
+                  // who and when (#482): this viewer, at the time the server recorded it. No role yet: the role the
+                  // viewer acts in can come through the org rather than a project membership, and the next snapshot
+                  // says the project role, so nothing is claimed here that the server would not say.
+                  ...(s.userName ? { by: s.userName } : {}), ...(res.at ? { at: res.at } : {}),
                 });
                 // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
                 if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;

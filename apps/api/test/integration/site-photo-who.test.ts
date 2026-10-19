@@ -38,6 +38,10 @@ describe('site photos say who added them, in what role, and when (live PG)', () 
     await photo('contractor', contractorId());
     await photo('removed', removedId());
     await photo('gone', 'no-such-user');
+    // a real account that belongs only to the other tenant's project (a stray or imported `uploadedBy`)
+    await photo('otherTenant', f.otherUser.id);
+    // the org owner reaches project A through the org, with no project membership
+    await photo('orgOwner', f.ownerUser.id);
   });
 
   afterAll(async () => {
@@ -67,5 +71,20 @@ describe('site photos say who added them, in what role, and when (live PG)', () 
     expect(p?.by).toBeUndefined();
     expect(p?.byRole).toBeUndefined();
     expect(p?.at).toBe(at.toISOString());
+  });
+
+  it('never names someone who belongs only to another project (Codex 4315262085)', async () => {
+    const res = await snapshot(client).expect(200);
+    const p = (res.body.photos as Array<{ id: string; by?: string; byRole?: string; at: string }>).find((x) => x.id === ids.otherTenant);
+    expect(p).toBeDefined();
+    expect(p).not.toHaveProperty('by');
+    expect(p).not.toHaveProperty('byRole');
+  });
+
+  it('names an org owner who reaches the project through the org, with no project role', async () => {
+    const res = await snapshot(client).expect(200);
+    const p = (res.body.photos as Array<{ id: string; by?: string; byRole?: string }>).find((x) => x.id === ids.orgOwner);
+    expect(p?.by).toBe('owner');
+    expect(p).not.toHaveProperty('byRole');
   });
 });

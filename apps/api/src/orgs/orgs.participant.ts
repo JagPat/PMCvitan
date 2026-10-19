@@ -250,6 +250,32 @@ export class OrgsParticipant {
   }
 
   /**
+   * #482 site photos — who added each photo, as the project may show it: the uploader's name and their role
+   * on THIS project. Only people tied to this project are named: anyone with a membership row here (a removed
+   * member keeps the role they had, since the photo was added while they held it), or an owner/admin of the
+   * project's org (named, with no project role, as they reach it through the org). An id that is neither, such
+   * as a stray or imported `uploadedBy`, is left out, so no one outside the project is ever named.
+   */
+  async projectUploaders(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    userIds: readonly string[],
+  ): Promise<Map<string, { name: string; role?: string }>> {
+    if (userIds.length === 0) return new Map();
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ id: string; name: string; role: string | null }>>(
+      `SELECT u."id", u."name", m."role" FROM "User" u
+         LEFT JOIN "Membership" m ON m."projectId" = $1 AND m."userId" = u."id"
+        WHERE u."id" = ANY($2::text[])
+          AND (m."userId" IS NOT NULL OR EXISTS (
+            SELECT 1 FROM "Project" p
+              JOIN "OrgMembership" om ON om."orgId" = p."orgId" AND om."userId" = u."id" AND om."role" IN ('owner', 'admin')
+             WHERE p."id" = $1))`,
+      projectId, [...userIds],
+    );
+    return new Map(rows.map((r) => [r.id, { name: r.name, ...(r.role ? { role: r.role } : {}) }]));
+  }
+
+  /**
    * Phase 6 task 4a, round 3 (Codex P2) — does `userId` hold an ACTIVE membership on `projectId`,
    * the row read under `FOR UPDATE` in the caller's transaction?
    *

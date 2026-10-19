@@ -47,9 +47,9 @@ describe('who added each Dashboard photo (#482)', () => {
     expect(leftoverEnglish(r.getByTestId('dash-photo-block'), ['Ravi Patel'])).toEqual([]);
   });
 
-  it('a photo just added says it is the viewer\'s, in their role, now', async () => {
+  it('a photo just added says it is the viewer\'s, at the time the server recorded it, with no role claimed (Codex 4315262110, 4315262098)', async () => {
     const { r, useStore } = await load('en', [], { userName: 'Asha Shah', role: 'client', online: true });
-    useStore.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'new', url: 'http://api.test/new.jpg' }) } as never);
+    useStore.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'new', url: 'http://api.test/new.jpg', at: AT }) } as never);
     class SyncFileReader {
       result: string | null = null;
       onload: (() => void) | null = null;
@@ -58,7 +58,8 @@ describe('who added each Dashboard photo (#482)', () => {
     vi.stubGlobal('FileReader', SyncFileReader);
     fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
     await waitFor(() => expect(r.getAllByTestId('dash-photo-who')).toHaveLength(1));
-    expect(r.getByTestId('dash-photo-who').textContent).toMatch(/^Asha Shah · Client · \d{1,2} [A-Z][a-z]{2}, \d{1,2}:\d{2} [AP]M$/);
+    // the server's time, not this device's clock; the role comes with the next snapshot
+    expect(r.getByTestId('dash-photo-who').textContent).toBe('Asha Shah · 19 Oct, 3:00 PM');
   });
 });
 
@@ -76,9 +77,9 @@ describe('sitePhotoWho', () => {
     expect(sitePhotoAddedAt(AT, 'en', 'Not/AZone')).not.toBe('');
   });
 
-  it('a photo waiting for signal says it is the viewer\'s, in their role', async () => {
+  it('a photo waiting for signal says it is the viewer\'s, and claims no role (Codex 4315262098)', async () => {
     const queued = { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA', clientKey: 'k1' } };
     const { r } = await load('en', [], { userName: 'Jagrut Patel', outbox: [queued] });
-    expect(r.getAllByTestId('dash-photo-who').map((e) => e.textContent)).toEqual(['Jagrut Patel · Project manager (PMC)']);
+    expect(r.getAllByTestId('dash-photo-who').map((e) => e.textContent)).toEqual(['Jagrut Patel']);
   });
 });

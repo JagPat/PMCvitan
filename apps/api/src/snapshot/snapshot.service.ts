@@ -15,6 +15,7 @@ import type { ProjectShellCounts, SnapshotDto } from './types';
 import { readViewerFeed, servedNotifications } from './served-notifications';
 import { hiddenDraftNodeIds } from '../nodes/node-scope';
 import { hiddenMediaIds, mediaOnNodes } from './hidden-media';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 @Injectable()
 export class SnapshotService {
@@ -34,6 +35,8 @@ export class SnapshotService {
     // comes from the activities module's query, never a direct `prisma.activity`/`gateOverride`/
     // `prisma.phase` read.
     private readonly activitiesQuery: ActivitiesQueryService,
+    // #482 site photos — who added a photo, and their role here, is an orgs answer (platform → orgs participant).
+    private readonly orgs: OrgsParticipant,
   ) {}
 
   /**
@@ -159,20 +162,16 @@ export class SnapshotService {
     // Place view can show a location's photos beside its drawings and decisions.
     // #482 site photos — each photo says who added it, their role on this project and when. The name and role
     // are read now, for the photo window's uploaders only; a removed member keeps the role they had.
-    const uploaderIds = [...new Set(siteMedia.map((m) => m.uploadedBy))];
-    const uploaders = uploaderIds.length === 0 ? [] : await this.prisma.user.findMany({
-      where: { id: { in: uploaderIds } },
-      select: { id: true, name: true, memberships: { where: { projectId }, select: { role: true } } },
-    });
-    const uploader = new Map(uploaders.map((u) => [u.id, { by: u.name, byRole: u.memberships[0]?.role }]));
+    // Orgs owns who is tied to this project, so it answers: anyone else's id names no one.
+    const uploader = await this.orgs.projectUploaders(this.prisma, projectId, [...new Set(siteMedia.map((m) => m.uploadedBy))]);
     const photoDtos = siteMedia.map((m) => ({
       id: m.id,
       url: this.signed.mediaPath(m.id),
       takenAt: m.takenAt ?? undefined,
       nodeId: m.nodeId ?? undefined,
       kind: m.kind,
-      by: uploader.get(m.uploadedBy)?.by,
-      byRole: uploader.get(m.uploadedBy)?.byRole,
+      by: uploader.get(m.uploadedBy)?.name,
+      byRole: uploader.get(m.uploadedBy)?.role,
       at: m.createdAt.toISOString(),
       // #482 site photos — the viewer's own upload key, so a device that still holds this photo in its offline queue
       // (its reply was lost) shows it once; nobody else's key is sent

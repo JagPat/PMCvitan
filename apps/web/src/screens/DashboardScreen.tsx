@@ -91,10 +91,10 @@ export function DashboardScreen() {
   // #482 site photos: a photo picked with no signal shows first at once, until its upload is sent
   const outbox = useStore((s) => s.outbox);
   const userName = useStore((s) => s.userName);
-  // a queued photo is this viewer's own pick: it says their name and role, and its time once the server records it
+  // a queued photo is this viewer's own pick: it says their name; its role and time come once the server records it
   const queuedPhotos = useMemo(
-    () => (API_BASE ? queuedSitePhotos(outbox, recordedPhotos).map((p) => ({ ...p, ...(userName ? { by: userName } : {}), byRole: role })) : []),
-    [outbox, recordedPhotos, userName, role],
+    () => (API_BASE ? queuedSitePhotos(outbox, recordedPhotos).map((p) => (userName ? { ...p, by: userName } : p)) : []),
+    [outbox, recordedPhotos, userName],
   );
   const sitePhotos = useMemo(() => [...queuedPhotos, ...recordedPhotos], [queuedPhotos, recordedPhotos]);
   // the photos tile counts the queued photos with the recorded ones, and the places among all of them

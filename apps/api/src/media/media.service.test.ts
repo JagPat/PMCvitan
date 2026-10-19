@@ -41,7 +41,7 @@ function make(
     },
     media: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        const row = { id: 'med1', ...data };
+        const row = { id: 'med1', createdAt: new Date('2026-10-19T09:30:00.000Z'), ...data };
         created.push(row);
         return row;
       }),
@@ -132,7 +132,7 @@ describe('MediaService.create', () => {
     const { svc, prisma, dispatcher } = make(null);
     const res = await svc.create('ambli', uploader, input);
 
-    expect(res).toEqual({ id: 'med1', url: '/media/med1?t=tok' });
+    expect(res).toEqual({ id: 'med1', url: '/media/med1?t=tok', at: '2026-10-19T09:30:00.000Z' });
     const row = prisma.media.create.mock.calls[0][0].data;
     expect(row.data).toBeInstanceOf(Buffer);
     expect(row.data.toString()).toBe('hello');
@@ -275,7 +275,7 @@ describe('MediaService — a replayed upload key (#482)', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUniqueOrThrow: vi.fn(async () => ({ id: 'pmc-evidence', kind: 'material', uploadedBy: 'pmc-1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
+      findUniqueOrThrow: vi.fn(async () => ({ id: 'pmc-evidence', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'material', uploadedBy: 'pmc-1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
       findFirst: vi.fn(async () => null),
     });
     await expect(svc.create('ambli', contractor, { ...input, clientKey: 'k' })).rejects.toBeInstanceOf(ForbiddenException);
@@ -286,10 +286,10 @@ describe('MediaService — a replayed upload key (#482)', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUniqueOrThrow: vi.fn(async () => ({ id: 'own', kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
+      findUniqueOrThrow: vi.fn(async () => ({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
       findFirst: vi.fn(async () => null),
     });
-    expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok' });
+    expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok', at: '2026-10-19T09:30:00.000Z' });
     // the winner's row points at the winner's object; this request's own key is unreferenced
     expect(prisma.media.findFirst).toHaveBeenCalledWith({ where: { projectId: 'ambli', storageKey: 'ambli/progress/med1.jpg' }, select: { id: true } });
     expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
@@ -299,10 +299,10 @@ describe('MediaService — a replayed upload key (#482)', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUniqueOrThrow: vi.fn(async () => ({ id: 'own', kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
+      findUniqueOrThrow: vi.fn(async () => ({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
       findFirst: vi.fn(async () => ({ id: 'own' })),
     });
-    expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok' });
+    expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok', at: '2026-10-19T09:30:00.000Z' });
     expect(storage.remove).not.toHaveBeenCalled();
   });
 });
