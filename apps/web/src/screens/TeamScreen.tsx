@@ -60,6 +60,9 @@ export function TeamScreen() {
   const canViewOrgRoster = orgRole === 'owner' || orgRole === 'admin';
   const canManageOrgRoster = orgRole === 'owner';
   const canEditProject = (canManage || canDeleteProject) && !!activeOrgId;
+  // #482 (live 19 Oct, Samumil bunglow) — the server lets the project's PMC OR an owner/admin of its org manage the
+  // team (members.service canManage); an owner holding another role on the project had the list but no controls
+  const canManageTeam = canManage || canDeleteProject;
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
 
@@ -120,7 +123,7 @@ export function TeamScreen() {
         />
       )}
 
-      {canManage && (
+      {canManageTeam && (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 22, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" aria-label="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="member-name" />
           <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" aria-label="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="member-contact" />
@@ -151,7 +154,7 @@ export function TeamScreen() {
               <div style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.email ?? m.phone ?? '—'}</div>
               {m.credentialState && <CredentialBadge state={m.credentialState} />}
             </div>
-            {canManage ? (
+            {canManageTeam ? (
               <>
                 {/* #827: the role select is wide enough for "Project manager (PMC)" and gives way on a phone */}
                 {/* Wave 0 / F-1b round 8 — 38 -> 44 on every role/discipline select here. These
@@ -169,7 +172,7 @@ export function TeamScreen() {
             ) : (
               <span style={roleChip}>{MEMBER_ROLE_LABEL[m.role]}{m.role === 'consultant' && m.discipline ? ` · ${discLabel(m.discipline)}` : ''}</span>
             )}
-            {canManage && (
+            {canManageTeam && (
               <button onClick={() => setRemoving({ userId: m.userId, name: m.name })} aria-label={`Remove ${m.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, padding: 4 }}>
                 <X size={17} />
               </button>
