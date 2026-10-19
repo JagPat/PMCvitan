@@ -117,8 +117,8 @@ function make(
     labourParticipant,
     activityParticipant,
     commercialParticipant,
-    // #792 SV2 — no upload here names a site visit; the visit path has its live suite
-    {} as unknown as SiteVisitFilesParticipant,
+    // #792 SV2 — no upload here names a site visit, and no photo here is on one; both have their live suite
+    { assertMediaDisposable: vi.fn(async () => {}) } as unknown as SiteVisitFilesParticipant,
   );
   return { svc, prisma, storage, signed, dispatcher, snapshot, created, inventoryParticipant, labourParticipant, commercialParticipant };
 }

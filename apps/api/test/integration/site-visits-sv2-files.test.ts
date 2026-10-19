@@ -178,6 +178,17 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     expect(progressIds).not.toContain(onPlace.body.id);
   });
 
+  it('a file on a visit is part of its record: the PMC cannot delete it, and a plain photo still can be', async () => {
+    const onVisit = await visitFile(consultantToken, visitId, {}, { note: 'Kept' });
+    expect(onVisit.status).toBe(201);
+    const refused = await http().delete(`/media/${onVisit.body.id}`).set('Authorization', `Bearer ${pmcToken}`);
+    expect(refused.status).toBe(409);
+    expect(await t.prisma.media.count({ where: { id: onVisit.body.id } })).toBe(1);
+    expect(await t.prisma.siteVisitMedia.count({ where: { mediaId: onVisit.body.id } })).toBe(1);
+    const plain = await upload(pmcToken, { kind: 'progress' });
+    expect((await http().delete(`/media/${plain.body.id}`).set('Authorization', `Bearer ${pmcToken}`)).status).toBe(200);
+  });
+
   // ── #988: the lock order against a place's removal ───────────────────────────────────────────
 
   const waitingOn = async (lockTypes: string[], ms = 10_000): Promise<boolean> => {

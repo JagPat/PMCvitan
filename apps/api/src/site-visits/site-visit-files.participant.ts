@@ -84,6 +84,15 @@ export class SiteVisitFilesParticipant {
     }
   }
 
+  /**
+   * A file on a visit is part of the visit's record (SV2, M5): the photo delete would take its link with it, so the
+   * delete is refused, as a photo cited as evidence is. The link is frozen and goes only with its project.
+   */
+  async assertMediaDisposable(tx: Prisma.TransactionClient, projectId: string, mediaId: string): Promise<void> {
+    const link = await tx.siteVisitMedia.findFirst({ where: { projectId, mediaId }, select: { visitId: true } });
+    if (link) throw new ConflictException('This photo is part of a site visit\'s record and cannot be deleted');
+  }
+
   private async judge(
     db: Prisma.TransactionClient | PrismaService, projectId: string, visitId: string, userId: string, visit: VisitForFile | null,
   ): Promise<void> {

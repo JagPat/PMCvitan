@@ -331,6 +331,8 @@ export class MediaService {
       // Phase 5 Task 3 (§D): nor one cited as MEASUREMENT evidence — a measurement is immutable
       // and becomes a payable quantity, so this is the strictest case of the same rule.
       await this.commercialParticipant.assertMediaDisposable(tx, projectId, id);
+      // #792 SV2: nor one added on a site visit — it is part of the visit's record, which keeps it
+      await this.siteVisitFiles.assertMediaDisposable(tx, projectId, id);
       // #571 round 9, finding 1 — and the same rule for ASSIGNED inspection evidence: while an
       // assignment binds, only its assignee may destroy the photos that stand behind that work.
       // This is the sharpest case of the whole assignment rule, because a delete does not come back.
