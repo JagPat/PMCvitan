@@ -518,6 +518,10 @@ if echo "$out" | grep -q "P3005"; then
   # Site Visits #792 SV2 (20280114) is here for the same reason: its file-on-a-visit table's receipt stamp,
   # visit-time place and freeze are triggers, its never-blank note a CHECK, and its place key a column-list
   # SET NULL, none of which a db-push baseline has. It is guarded and re-runnable.
+  #
+  # Stage 1 media (20280115) is here for the same reason: its marked-up copy's link to the original is a
+  # column-list SET NULL and its shape rules a CHECK, neither of which a db-push baseline has. It is guarded
+  # and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -554,7 +558,8 @@ if echo "$out" | grep -q "P3005"; then
 20280109000000_top10_4b_notification_receipt
 20280111000000_site_visits_sv1a_catalog
 20280112000000_site_visits_sv1a_record
-20280114000000_site_visits_sv2_visit_media"
+20280114000000_site_visits_sv2_visit_media
+20280115000000_media_markup_voice_video"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

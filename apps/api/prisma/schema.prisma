@@ -1181,10 +1181,23 @@ model Media {
   measurements               Measurement[]
   // Site Visits #792 SV2 — the visit this file was added on, if any (at most one)
   siteVisit                  SiteVisitMedia?
+  // Stage 1 media (markup, voice, video). A marked-up copy is a NEW image pointing at the
+  // photo it was drawn on, which keeps its bytes, camera time and place. The database
+  // clears the link with ON DELETE SET NULL ("sourceMediaId") when the original goes (a
+  // column-list action Prisma cannot express, hence NoAction here, as nodeId above).
+  // Trigger "Media_markup_source" sets the link once, at creation, to a photo.
+  source                     Media?               @relation("mediaMarkup", fields: [projectId, sourceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  sourceMediaId              String?
+  markups                    Media[]              @relation("mediaMarkup")
+  // a voice note's (1-120 s) or video clip's (1-60 s) length; null for images
+  durationSec                Int?
+  // a video's still frame in file storage; null for anything but a video
+  posterStorageKey           String?
 
   @@unique([projectId, id]) // referenced identity (Task 6 override evidence)
   @@unique([projectId, clientKey])
   @@index([projectId, kind])
+  @@index([projectId, sourceMediaId])
   @@index([nodeId])
   @@index([inspectionId])
 }
