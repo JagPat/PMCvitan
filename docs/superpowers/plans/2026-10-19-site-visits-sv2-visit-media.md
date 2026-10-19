@@ -7,7 +7,8 @@ times today and "feels empty"; it should hold photos, sketches, video and other 
 
 1. **Database (this unit, shipped alone).** A new table `SiteVisitMedia`: one row per file the visitor adds on a visit,
    pointing at an existing `Media` row, with an optional note (at most 500 characters, never blank), an optional
-   rating (Fine, Concern, Action needed), the place the file showed when it was added, who added it and when.
+   rating (Fine, Concern, Action needed), the place the file showed when it was added, who added it (their role
+   and name as they stood) and when.
 2. **Server.** The media upload takes an optional visit. The site-visits module writes the link as the upload's
    workflow participant, in the upload's transaction and under the visit's row lock. The visit read returns its files.
 3. **Screen.** "Add photo" on an open or ended visit, reusing the Dashboard "Add site photo" button (#978) and its
@@ -46,3 +47,8 @@ times today and "feels empty"; it should hold photos, sketches, video and other 
    `nodes_published_name_or_null_locked` beside SV1-a's `nodes_published_name_locked`), never their tables, and the
    place is locked before the file, the order a place's removal takes them, so the two never deadlock (round-2 review).
    A refile that lands while the link is being added refuses the link as a serialization failure for a retry.
+8. **Who added it, as they stood.** The Board's SV2 scope says an observation carries the actor's name and role
+   (round-4 review). The writer names the role the adder acts in; the insert checks they hold it on the project and
+   copies their account name, through SV1-a's `site_visits_standing_name`, the way the visit freezes its visitor. A
+   later rename or role change does not rewrite the record. It runs after the place and the file are locked, the order
+   a place's removal reaches its own actor's identity.

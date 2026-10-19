@@ -10,7 +10,8 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Site Visits (#792) SV2, the database half of "media on a visit": `20280114000000_site_visits_sv2_visit_media` adds
  * "SiteVisitMedia", one row per file added on a visit (with an optional never-blank note of at most 500 characters, an
- * optional Fine / Concern / Action needed rating, the place it showed when added, who added it and when).
+ * optional Fine / Concern / Action needed rating, the place it showed when added, who added it (their role and name as
+ * they stood) and when).
  * No server or screen writes it yet; this proves what PostgreSQL holds on every writer, and that the file re-runs.
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280114000000_site_visits_sv2_visit_media/migration.sql');
@@ -68,8 +69,8 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
   });
   const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
   const replay = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', MIGRATION], { stdio: 'pipe' });
-  const link = (projectId: string, visitId: string, mediaId: string, note?: string) => t.prisma.siteVisitMedia.create({
-    data: { projectId, visitId, mediaId, note, addedById: f.memberUser.id },
+  const link = (projectId: string, visitId: string, mediaId: string, note?: string, by = f.memberUser.id) => t.prisma.siteVisitMedia.create({
+    data: { projectId, visitId, mediaId, note, addedById: by, addedByRole: 'pmc' },
   });
 
   it('a file in the visit\'s own project goes on the visit with a note, and the visit lists it', async () => {
@@ -87,8 +88,8 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     await link(f.projectA.id, visitA, m.id);
     await expect(link(f.projectA.id, visitB, m.id)).rejects.toThrow(/Unique constraint|SiteVisitMedia_pkey/i);
     await expect(t.prisma.$executeRaw`
-      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById")
-      VALUES (${f.projectA.id}, ${visitB}, ${m.id}, ${f.memberUser.id})`).rejects.toThrow(/SiteVisitMedia_pkey|23505|duplicate key/i);
+      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","addedByRole")
+      VALUES (${f.projectA.id}, ${visitB}, ${m.id}, ${f.memberUser.id}, 'pmc')`).rejects.toThrow(/SiteVisitMedia_pkey|23505|duplicate key/i);
     await expect(link(f.projectA.id, visitA, m.id)).rejects.toThrow(/Unique constraint|SiteVisitMedia_pkey/i);
     expect((await t.prisma.siteVisitMedia.findUnique({ where: { mediaId: m.id } }))?.visitId).toBe(visitA);
   });
@@ -96,10 +97,10 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
   it('no writer can put another project\'s file on a visit, or a file on another project\'s visit', async () => {
     const other = await photo(f.projectB.id);
     await expect(link(f.projectA.id, visitA, other.id)).rejects.toThrow(/SiteVisitMedia_projectId_mediaId_fkey|Foreign key/i);
-    await expect(link(f.projectB.id, visitA, other.id)).rejects.toThrow(/SiteVisitMedia_projectId_visitId_fkey|Foreign key/i);
+    await expect(link(f.projectB.id, visitA, other.id, undefined, f.otherUser.id)).rejects.toThrow(/SiteVisitMedia_projectId_visitId_fkey|Foreign key/i);
     await expect(t.prisma.$executeRaw`
-      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById")
-      VALUES (${f.projectA.id}, ${visitA}, ${other.id}, ${f.memberUser.id})`)
+      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","addedByRole")
+      VALUES (${f.projectA.id}, ${visitA}, ${other.id}, ${f.memberUser.id}, 'pmc')`)
       .rejects.toThrow(/SiteVisitMedia_projectId_mediaId_fkey|foreign key/i);
     await expect(link(f.projectA.id, randomUUID(), (await photo(f.projectA.id)).id)).rejects.toThrow(/SiteVisitMedia_projectId_visitId_fkey|Foreign key/i);
   });
@@ -114,8 +115,8 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
       await expect(link(f.projectA.id, visitA, (await photo(f.projectA.id)).id, blank)).rejects.toThrow(/SiteVisitMedia_shape_check/);
       const m = await photo(f.projectA.id);
       await expect(t.prisma.$executeRaw`
-        INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","note","addedById")
-        VALUES (${f.projectA.id}, ${visitA}, ${m.id}, ${blank}, ${f.memberUser.id})`).rejects.toThrow(/SiteVisitMedia_shape_check/);
+        INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","note","addedById","addedByRole")
+        VALUES (${f.projectA.id}, ${visitA}, ${m.id}, ${blank}, ${f.memberUser.id}, 'pmc')`).rejects.toThrow(/SiteVisitMedia_shape_check/);
     }
     expect((await link(f.projectA.id, visitA, (await photo(f.projectA.id)).id, '  Damp patch  ')).note).toBe('  Damp patch  ');
   });
@@ -125,8 +126,8 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     const claimed = new Date('2020-01-01T00:00:00Z');
     const before = Date.now();
     await t.prisma.$executeRaw`
-      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","addedAt")
-      VALUES (${f.projectA.id}, ${visitA}, ${m.id}, ${f.memberUser.id}, ${claimed})`;
+      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","addedByRole","addedAt")
+      VALUES (${f.projectA.id}, ${visitA}, ${m.id}, ${f.memberUser.id}, 'pmc', ${claimed})`;
     const row = await t.prisma.siteVisitMedia.findUniqueOrThrow({ where: { mediaId: m.id } });
     expect(row.addedAt.getTime()).toBeGreaterThanOrEqual(before - 5_000);
     expect(row.addedAt.getTime()).toBeLessThanOrEqual(Date.now() + 5_000);
@@ -145,11 +146,47 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     await expect(t.prisma.siteVisitMedia.update({ where: { mediaId: m.id }, data: { rating: 'concern' } })).rejects.toThrow(frozen);
   });
 
+  it('a file carries who added it as they stood: the role they hold, and their account name copied and kept', async () => {
+    const [{ name }] = await t.prisma.$queryRaw<Array<{ name: string }>>`
+      SELECT "displayName" AS name FROM "UserIdentity" WHERE "userId" = ${f.memberUser.id}`;
+    const m = await photo(f.projectA.id);
+    await t.prisma.$executeRaw`
+      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","addedByRole","addedByName")
+      VALUES (${f.projectA.id}, ${visitA}, ${m.id}, ${f.memberUser.id}, 'pmc', 'Spoofed')`;
+    expect(await t.prisma.siteVisitMedia.findUnique({ where: { mediaId: m.id }, select: { addedByRole: true, addedByName: true } }))
+      .toEqual({ addedByRole: 'pmc', addedByName: name });
+    // a role the adder does not hold, or a blank one, is refused on every writer
+    const notHeld = /does not hold role/;
+    await expect(t.prisma.siteVisitMedia.create({
+      data: { projectId: f.projectA.id, visitId: visitA, mediaId: (await photo(f.projectA.id)).id, addedById: f.clientUser.id, addedByRole: 'pmc' },
+    })).rejects.toThrow(notHeld);
+    await expect(t.prisma.$executeRaw`
+      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","addedByRole")
+      VALUES (${f.projectA.id}, ${visitA}, ${(await photo(f.projectA.id)).id}, ${f.memberUser.id}, 'client')`).rejects.toThrow(notHeld);
+    await expect(t.prisma.$executeRaw`
+      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","addedByRole")
+      VALUES (${f.projectA.id}, ${visitA}, ${(await photo(f.projectA.id)).id}, ${f.memberUser.id}, ' ')`).rejects.toThrow();
+    // frozen: neither is rewritten, and a later rename of the account leaves the record's name as it was
+    const frozen = /is a record and is not changed/;
+    await expect(t.prisma.$executeRaw`UPDATE "SiteVisitMedia" SET "addedByName" = 'Other' WHERE "mediaId" = ${m.id}`).rejects.toThrow(frozen);
+    await expect(t.prisma.$executeRaw`UPDATE "SiteVisitMedia" SET "addedByRole" = 'client' WHERE "mediaId" = ${m.id}`).rejects.toThrow(frozen);
+    const was = (await t.prisma.user.findUniqueOrThrow({ where: { id: f.memberUser.id } })).name;
+    await t.prisma.user.update({ where: { id: f.memberUser.id }, data: { name: `Renamed ${run}` } });
+    try {
+      const [{ now }] = await t.prisma.$queryRaw<Array<{ now: string }>>`
+        SELECT "displayName" AS now FROM "UserIdentity" WHERE "userId" = ${f.memberUser.id}`;
+      expect(now).toBe(`Renamed ${run}`);
+      expect((await t.prisma.siteVisitMedia.findUniqueOrThrow({ where: { mediaId: m.id } })).addedByName).toBe(name);
+    } finally {
+      await t.prisma.user.update({ where: { id: f.memberUser.id }, data: { name: was } });
+    }
+  });
+
   it('the place is the one the file showed when added: a later refile or unfile does not move it, and removing the place keeps its name', async () => {
     const m = await photo(f.projectA.id, place.id);
     await t.prisma.$executeRaw`
-      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","nodeId","placeName")
-      VALUES (${f.projectA.id}, ${visitA}, ${m.id}, ${f.memberUser.id}, NULL, 'Spoofed')`;
+      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","addedByRole","nodeId","placeName")
+      VALUES (${f.projectA.id}, ${visitA}, ${m.id}, ${f.memberUser.id}, 'pmc', NULL, 'Spoofed')`;
     expect(await t.prisma.siteVisitMedia.findUnique({ where: { mediaId: m.id }, select: { nodeId: true, placeName: true } }))
       .toEqual({ nodeId: place.id, placeName: place.name });
     const other = await t.prisma.projectNode.create({
@@ -185,7 +222,7 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
   it('a file carries a Fine / Concern / Action needed rating or none, and nothing else', async () => {
     for (const rating of ['fine', 'concern', 'action_needed'] as const) {
       const row = await t.prisma.siteVisitMedia.create({
-        data: { projectId: f.projectA.id, visitId: visitA, mediaId: (await photo(f.projectA.id)).id, rating, addedById: f.memberUser.id },
+        data: { projectId: f.projectA.id, visitId: visitA, mediaId: (await photo(f.projectA.id)).id, rating, addedById: f.memberUser.id, addedByRole: 'pmc' },
       });
       expect(row.rating).toBe(rating);
     }
@@ -193,7 +230,7 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     // an untyped literal, so the column's own type does the refusing
     const m = await photo(f.projectA.id);
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","rating","addedById") VALUES ($1, $2, $3, 'urgent', $4)`,
+      `INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","rating","addedById","addedByRole") VALUES ($1, $2, $3, 'urgent', $4, 'pmc')`,
       f.projectA.id, visitA, m.id, f.memberUser.id)).rejects.toThrow(/invalid input value for enum "?SiteVisitRating"?/i);
     const col = await t.prisma.$queryRaw<Array<{ udt: string }>>`
       SELECT udt_name AS udt FROM information_schema.columns WHERE table_name = 'SiteVisitMedia' AND column_name = 'rating'`;

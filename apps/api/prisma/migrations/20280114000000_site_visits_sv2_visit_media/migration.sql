@@ -28,6 +28,10 @@
 --   M5  Never removed on its own (round-2 review). A row goes only with its file (the photo delete's ON DELETE CASCADE)
 --       or its visit's project (the project cascade): a direct DELETE is refused, so a file cannot be taken off one
 --       visit and put on another, and TRUNCATE is refused outside the sanctioned test reset, as SV1-a's tables are.
+--   M6  Who, as they stood (round-4 review; the Board's SV2 scope: an observation "carries the actor's name and
+--       role"). The writer names the role the adder acts in ("addedByRole"); the insert checks that they hold it on
+--       the project and copies their account name into "addedByName", through SV1-a's `site_visits_standing_name`,
+--       exactly as the visit freezes its visitor. A later rename or role change does not rewrite who added the file.
 --
 -- WHAT THIS FILE DOES NOT DO. Who may add a file to a visit (Jagrut, 19 Oct: the visitor and anyone recorded as present
 -- on it, while the visit is not closed) is the server unit's rule: the site-visits module writes the row as the media
@@ -52,6 +56,8 @@ BEGIN
     "nodeId"    TEXT,
     "placeName" TEXT NOT NULL DEFAULT '',
     "addedById" TEXT NOT NULL,
+    "addedByRole" TEXT NOT NULL,
+    "addedByName" TEXT NOT NULL DEFAULT '',
     "addedAt"   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "SiteVisitMedia_pkey" PRIMARY KEY ("mediaId")
   );
@@ -81,12 +87,14 @@ BEGIN
     ALTER TABLE "SiteVisitMedia" ADD CONSTRAINT "SiteVisitMedia_addedById_fkey"
       FOREIGN KEY ("addedById") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE NO ACTION;
   END IF;
-  -- M4, with the whitespace set the SV1-a shape checks use
+  -- M4 and M6, with the whitespace set the SV1-a shape checks use
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SiteVisitMedia_shape_check') THEN
     ALTER TABLE "SiteVisitMedia" ADD CONSTRAINT "SiteVisitMedia_shape_check" CHECK (
       ("note" IS NULL OR btrim("note", E' \t\n\x0B\f\r') <> '')
       AND ("placeName" = '' OR btrim("placeName", E' \t\n\x0B\f\r') <> '')
       AND ("nodeId" IS NULL OR "placeName" <> '')
+      AND btrim("addedByRole", E' \t\n\x0B\f\r') <> ''
+      AND btrim("addedByName", E' \t\n\x0B\f\r') <> ''
     );
   END IF;
 END $sv2_media$;
@@ -126,7 +134,9 @@ END $$;
 -- file first would wait on the node while the removal waits on the file (round-2 review). With the file locked, its
 -- place is re-read: unchanged, the place stands; gone (an unfile, or the place removed while this waited), there is
 -- none; moved to another place, the file was refiled meanwhile and the insert is refused as a serialization failure
--- for its caller to retry, rather than lock a second place after the file.
+-- for its caller to retry, rather than lock a second place after the file. M6 comes last, so the adder's standing and
+-- identity are locked after the place and the file, the order a place's removal reaches its own actor's identity (its
+-- event, after the node and the file).
 CREATE OR REPLACE FUNCTION site_visits_media_insert() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_node TEXT; v_now TEXT; v_name TEXT;
 BEGIN
@@ -145,6 +155,7 @@ BEGIN
     NEW."nodeId" := v_now;
     NEW."placeName" := v_name;
   END IF;
+  NEW."addedByName" := site_visits_standing_name(NEW."projectId", NEW."addedById", NEW."addedByRole", 'adder of a file');
   NEW."addedAt" := site_visits_now();
   RETURN NEW;
 END $$;

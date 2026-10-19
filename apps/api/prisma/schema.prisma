@@ -5132,24 +5132,28 @@ enum SiteVisitRating {
 }
 
 model SiteVisitMedia {
-  visit     SiteVisit        @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
-  projectId String
-  visitId   String
-  media     Media            @relation(fields: [projectId, mediaId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
-  mediaId   String
+  visit       SiteVisit        @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId   String
+  visitId     String
+  media       Media            @relation(fields: [projectId, mediaId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  mediaId     String
   // what the visitor saw, typed beside the file (optional; the service trims it)
-  note      String?          @db.VarChar(500)
+  note        String?          @db.VarChar(500)
   // how the visitor rates what it shows (optional); "action_needed" raises an item in SV3
-  rating    SiteVisitRating?
+  rating      SiteVisitRating?
   // the place the file showed when it was added, copied by the insert trigger from Media.nodeId, so a later refile
   // does not move it. NoAction here; the migration's composite FK is ON DELETE SET NULL ("nodeId"), and placeName
   // keeps the name.
-  node      ProjectNode?     @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  nodeId    String?
-  placeName String           @default("")
-  addedBy   User             @relation("siteVisitMediaAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  addedById String
-  addedAt   DateTime         @default(now())
+  node        ProjectNode?     @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  nodeId      String?
+  placeName   String           @default("")
+  addedBy     User             @relation("siteVisitMediaAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  addedById   String
+  // the role the adder acted in, checked held on the project at insert; the trigger copies their account name, so a
+  // later rename or role change does not rewrite who added the file (the Board's SV2 scope: the actor's name and role)
+  addedByRole String
+  addedByName String           @default("")
+  addedAt     DateTime         @default(now())
 
   @@id([mediaId])
   @@unique([projectId, mediaId])
