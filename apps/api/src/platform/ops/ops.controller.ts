@@ -30,6 +30,8 @@ export const OPS_VIA = 'ops-api';
  * Coolify terminal, as HTTP routes an operator (or Claude, holding `OPS_TOKEN`) can call:
  *
  *  - `GET  /ops/projects`: every live project with its switched-on capabilities and last activity (reads only).
+ *  - `GET  /ops/people`: each company's owners and admins, and each live project's active members with their
+ *    role (reads only), so "who can manage this project" is answered without a terminal paste.
  *  - `POST /ops/projects/:projectId/capabilities/:capability/enable|disable`: the same `capability-switch`
  *    functions the `capability:enable` / `capability:disable` CLIs call, limited to `SWITCHABLE_CAPABILITIES`
  *    (presentation only, no data touched). Each change writes the usual audit row on the project's trail
@@ -66,6 +68,12 @@ export class OpsController {
     // most recently used first; never-used projects last, in id order
     rows.sort((a, b) => (b.lastActivity ?? '').localeCompare(a.lastActivity ?? '') || a.id.localeCompare(b.id));
     return { projects: rows };
+  }
+
+  @Public()
+  @Get('people')
+  async people(): Promise<Awaited<ReturnType<OrgsParticipant['operatorRoster']>>> {
+    return this.orgs.operatorRoster(this.prisma);
   }
 
   @Public()
