@@ -7,8 +7,8 @@
 --                      camera time and place.
 --   "durationSec"      a voice note's or a video clip's length in whole seconds, for the play bar.
 --   "posterStorageKey" a video's still frame in file storage, shown with a play button before the clip loads.
--- No new table, no trigger and no event: the upload keeps its own `media.uploaded` event, so the sealed effect catalog
--- does not move and no operator reseal is needed at deploy.
+-- No new table and no event: the upload keeps its own `media.uploaded` event, so the sealed effect catalog does not
+-- move and no operator reseal is needed at deploy. One row trigger guards the link (K4).
 --
 -- WHAT THE DATABASE GUARANTEES, for every writer, raw SQL included:
 --   K1  Same project. The original is linked by a composite (projectId, sourceMediaId) foreign key, the shape every
@@ -20,12 +20,18 @@
 --       audio (1 to 120 seconds, the plan's 2-minute voice note) or video (1 to 60 seconds, Jagrut's cap); a still
 --       frame belongs only to a video and is never blank. Every existing row is an image with none of the three, so
 --       the CHECK holds on the rows already stored.
+--   K4  The link is provenance, so it is written once (round-1 review). Trigger "Media_markup_source":
+--       - a copy's original must itself be an image (the CHECK sees only the copy's own row);
+--       - the link is set only when the copy is created, never added, moved or cleared later, except that it clears
+--         once its original is gone, which is K2's `SET NULL` (the original's row is checked to be absent, not trusted
+--         from the trigger depth);
+--       - an original that has copies stays an image.
 --
 -- WIDER FILE TYPES. Which types an upload accepts (today PNG, JPEG, WebP, GIF and HEIC) is the server's upload rule;
 -- "Media"."mime" has no CHECK, so audio and video need no database change here.
 --
--- Re-runnable, and on `scripts/migrate.sh`'s ALWAYS_EXECUTE: a `db push` baseline models the columns but not the CHECK
--- or the column-list foreign key action. Every statement is guarded.
+-- Re-runnable, and on `scripts/migrate.sh`'s ALWAYS_EXECUTE: a `db push` baseline models the columns but not the CHECK,
+-- the column-list foreign key action or the trigger. Every statement is guarded or replaces itself.
 
 DO $media_av$
 BEGIN
@@ -56,3 +62,42 @@ BEGIN
     );
   END IF;
 END $media_av$;
+
+-- K4
+CREATE OR REPLACE FUNCTION media_markup_source() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+  v_mime TEXT;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    -- its own original is the CHECK's to refuse, and a missing or other-project original is the key's
+    IF NEW."sourceMediaId" IS NOT NULL AND NEW."sourceMediaId" <> NEW."id" THEN
+      SELECT "mime" INTO v_mime FROM "Media"
+        WHERE "projectId" = NEW."projectId" AND "id" = NEW."sourceMediaId" FOR SHARE;
+      IF FOUND AND v_mime NOT LIKE 'image/%' THEN
+        RAISE EXCEPTION 'media: the file % is marked up from %, which is not a photo', NEW."id", NEW."sourceMediaId"
+          USING ERRCODE = 'check_violation';
+      END IF;
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF NEW."sourceMediaId" IS DISTINCT FROM OLD."sourceMediaId" THEN
+    IF NOT (OLD."sourceMediaId" IS NOT NULL AND NEW."sourceMediaId" IS NULL
+            AND NOT EXISTS (SELECT 1 FROM "Media" WHERE "id" = OLD."sourceMediaId")) THEN
+      RAISE EXCEPTION 'media: the file % keeps the original it was marked up from; the link is set only when the copy is made', OLD."id"
+        USING ERRCODE = 'check_violation';
+    END IF;
+  END IF;
+  IF NEW."mime" IS DISTINCT FROM OLD."mime" AND NEW."mime" NOT LIKE 'image/%'
+     AND EXISTS (SELECT 1 FROM "Media" WHERE "projectId" = OLD."projectId" AND "sourceMediaId" = OLD."id") THEN
+    RAISE EXCEPTION 'media: the file % has marked-up copies and stays a photo', OLD."id"
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS "Media_markup_source" ON "Media";
+CREATE TRIGGER "Media_markup_source"
+  BEFORE INSERT OR UPDATE OF "sourceMediaId", "mime" ON "Media"
+  FOR EACH ROW EXECUTE FUNCTION media_markup_source();

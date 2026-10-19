@@ -55,7 +55,33 @@ describe('Stage 1 media — markup links, lengths and still frames (live PG)', (
     await expect(file(f.projectA.id, 'image/png', { sourceMediaId: other.id })).rejects.toThrow(/Media_projectId_sourceMediaId_fkey|Foreign key/i);
     await expect(file(f.projectA.id, 'image/png', { sourceMediaId: 'no-such-file' })).rejects.toThrow(/Media_projectId_sourceMediaId_fkey|Foreign key/i);
     const self = await file(f.projectA.id);
-    await expect(raw(`UPDATE "Media" SET "sourceMediaId" = "id" WHERE "id" = $1`, self.id)).rejects.toThrow(/Media_av_shape_check/);
+    await expect(raw(`INSERT INTO "Media" ("id","projectId","kind","mime","data","sizeBytes","uploadedBy","sourceMediaId")
+      VALUES ('self-copy', $1, 'progress', 'image/png', '\\x01', 1, $2, 'self-copy')`, f.projectA.id, f.memberUser.id)).rejects.toThrow(/Media_av_shape_check/);
+    await expect(raw(`UPDATE "Media" SET "sourceMediaId" = "id" WHERE "id" = $1`, self.id)).rejects.toThrow(/keeps the original/);
+  });
+
+  it('the link is written once: never added, moved or cleared while its original exists (K4)', async () => {
+    const a = await file(f.projectA.id);
+    const b = await file(f.projectA.id);
+    const copy = await file(f.projectA.id, 'image/png', { sourceMediaId: a.id });
+    const plain = await file(f.projectA.id, 'image/png');
+    await expect(raw(`UPDATE "Media" SET "sourceMediaId" = $2 WHERE "id" = $1`, copy.id, b.id)).rejects.toThrow(/keeps the original/);
+    await expect(raw(`UPDATE "Media" SET "sourceMediaId" = NULL WHERE "id" = $1`, copy.id)).rejects.toThrow(/keeps the original/);
+    await expect(raw(`UPDATE "Media" SET "sourceMediaId" = $2 WHERE "id" = $1`, plain.id, a.id)).rejects.toThrow(/keeps the original/);
+    // an unrelated change to the copy, and re-stating the same link, both pass
+    await raw(`UPDATE "Media" SET "sizeBytes" = 4, "sourceMediaId" = "sourceMediaId" WHERE "id" = $1`, copy.id);
+    expect((await t.prisma.media.findUnique({ where: { id: copy.id } }))?.sourceMediaId).toBe(a.id);
+  });
+
+  it('a copy\'s original is a photo, and an original with copies stays one (K4)', async () => {
+    const clip = await file(f.projectA.id, 'video/mp4', { durationSec: 10 });
+    const note = await file(f.projectA.id, 'audio/webm', { durationSec: 10 });
+    await expect(file(f.projectA.id, 'image/png', { sourceMediaId: clip.id })).rejects.toThrow(/not a photo/);
+    await expect(file(f.projectA.id, 'image/png', { sourceMediaId: note.id })).rejects.toThrow(/not a photo/);
+    const original = await file(f.projectA.id);
+    await file(f.projectA.id, 'image/png', { sourceMediaId: original.id });
+    await expect(raw(`UPDATE "Media" SET "mime" = 'video/mp4' WHERE "id" = $1`, original.id)).rejects.toThrow(/stays a photo/);
+    await raw(`UPDATE "Media" SET "mime" = 'image/webp' WHERE "id" = $1`, original.id);
   });
 
   it('only an image is a marked-up copy (K3)', async () => {
@@ -95,6 +121,7 @@ describe('Stage 1 media — markup links, lengths and still frames (live PG)', (
     await raw(`ALTER TABLE "Media" DROP CONSTRAINT "Media_projectId_sourceMediaId_fkey",
       ADD CONSTRAINT "Media_projectId_sourceMediaId_fkey" FOREIGN KEY ("projectId","sourceMediaId") REFERENCES "Media"("projectId","id") ON DELETE NO ACTION ON UPDATE NO ACTION`);
     await raw(`ALTER TABLE "Media" DROP CONSTRAINT "Media_av_shape_check"`);
+    await raw(`DROP TRIGGER "Media_markup_source" ON "Media"`);
     expect(await def('Media_projectId_sourceMediaId_fkey')).not.toMatch(/SET NULL/);
     replay();
     expect(await def('Media_projectId_sourceMediaId_fkey')).toMatch(/ON DELETE SET NULL \("sourceMediaId"\)$/);
@@ -105,5 +132,8 @@ describe('Stage 1 media — markup links, lengths and still frames (live PG)', (
     await t.prisma.media.delete({ where: { id: original.id } });
     expect((await t.prisma.media.findUnique({ where: { id: copy.id } }))?.sourceMediaId).toBeNull();
     await expect(file(f.projectA.id, 'image/jpeg', { durationSec: 5 })).rejects.toThrow(/Media_av_shape_check/);
+    const kept = await file(f.projectA.id);
+    const keptCopy = await file(f.projectA.id, 'image/png', { sourceMediaId: kept.id });
+    await expect(raw(`UPDATE "Media" SET "sourceMediaId" = NULL WHERE "id" = $1`, keptCopy.id)).rejects.toThrow(/keeps the original/);
   });
 });

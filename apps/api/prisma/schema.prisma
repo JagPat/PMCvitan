@@ -1185,6 +1185,7 @@ model Media {
   // photo it was drawn on, which keeps its bytes, camera time and place. The database
   // clears the link with ON DELETE SET NULL ("sourceMediaId") when the original goes (a
   // column-list action Prisma cannot express, hence NoAction here, as nodeId above).
+  // Trigger "Media_markup_source" sets the link once, at creation, to a photo.
   source                     Media?               @relation("mediaMarkup", fields: [projectId, sourceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   sourceMediaId              String?
   markups                    Media[]              @relation("mediaMarkup")
