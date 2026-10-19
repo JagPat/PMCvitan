@@ -178,6 +178,20 @@ describe('the gate opens in the language last chosen on this device', () => {
     expect(p.useStore.getState().lang).toBe('hi');
   });
 
+  it('a language saved before this release still opens the gate after sign-out and a reload', async () => {
+    // an upgraded browser: only the person's own saved choice, no device language yet
+    localStorage.setItem('vitan.lang.v1:user:u-asha', 'hi');
+    const p = await page();
+    await signInWith(p, 'u-asha');
+    const shell = render(<p.LangPreference />);
+    expect(p.useStore.getState().lang).toBe('hi');
+    shell.unmount();
+    act(() => p.useStore.getState().completeSignOut());
+    expect(p.useStore.getState().lang).toBe('hi');
+    const reload = await page();
+    expect(reload.useStore.getState().lang).toBe('hi');
+  });
+
   it('with nothing chosen on this device the gate opens in English', async () => {
     const p = await page();
     expect(p.useStore.getState().lang).toBe('en');
