@@ -42,6 +42,7 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
       { snapshotSlice: vi.fn(async () => []) } as never,
       { snapshotSlice: vi.fn(async () => ({ placedInspections: [], reviews: [], review: null, reinspectionCreated: [], checklist: null, openChecklists: [] })) } as never,
       { snapshotSlice: vi.fn(async () => ({ activities: [], phases: [] })) } as never,
+      { projectUploaders: vi.fn(async () => new Map()) } as never,
     );
 
     const out = await svc.build('p1', 'pmc', 'u1');

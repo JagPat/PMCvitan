@@ -25,6 +25,8 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
 export interface UploadedMedia {
   id: string;
   url: string;
+  /** #482 site photos — when the server recorded it (ISO), so a device shows the time the snapshot will */
+  at: string;
 }
 
 /** The roles that keep the record-linked uploads: evidence for a decision or an inspection item, or a non-progress kind. */
@@ -37,8 +39,8 @@ function isPlainSitePhoto(input: CreateMediaInput): boolean {
 }
 
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
-const REPLAY_SELECT = { id: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true } as const;
-type ReplayRow = { id: string; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null };
+const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true } as const;
+type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null };
 
 export type MediaBytes = { mime: string; bytes: Buffer };
 export type MediaRedirect = { redirect: string };
@@ -83,7 +85,7 @@ export class MediaService {
     if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
       throw new NotFoundException('Media not found');
     }
-    return { id: row.id, url: this.signed.mediaPath(row.id) };
+    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString() };
   }
 
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
@@ -197,7 +199,7 @@ export class MediaService {
           where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
           select: REPLAY_SELECT,
         });
-        let replay: { id: string; url: string } | undefined;
+        let replay: UploadedMedia | undefined;
         try {
           replay = await this.replayed(projectId, user, winner);
         } catch (refused) {
@@ -232,7 +234,7 @@ export class MediaService {
     // a fresh upload signals its project once; a replay (P2002 return above) never reaches here
     if (events.length) await this.dispatcher.dispatchCommitted(events);
     // a short-lived, signed path resolved against the API base by the frontend
-    return { id: row.id, url: this.signed.mediaPath(row.id) };
+    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString() };
   }
 
   /** The earned cleanup (#571 round 12): remove this request's stored object only once a fresh read
