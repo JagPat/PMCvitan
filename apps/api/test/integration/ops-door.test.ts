@@ -61,6 +61,24 @@ describe('#482 operator door (live PG)', () => {
     expect(row!.capabilities).not.toContain(HOME_NAV_CAPABILITY);
   });
 
+  it('lists each company\'s owners and admins, and each live project\'s active members, read only', async () => {
+    process.env.OPS_TOKEN = TOKEN;
+    expect((await http().get('/ops/people')).status).toBe(401);
+    const r = await http().get('/ops/people').set('Authorization', `Bearer ${TOKEN}`);
+    expect(r.status, r.text).toBe(200);
+    type Company = { id: string; managers: Array<{ name: string; contact: string | null; role: string }> };
+    type Proj = { id: string; companyId: string; company: string; members: Array<{ name: string; contact: string | null; role: string; discipline: string | null }> };
+    const { orgId } = await t.prisma.project.findUniqueOrThrow({ where: { id: f.projectA.id }, select: { orgId: true } });
+    const owner = await t.prisma.user.findUniqueOrThrow({ where: { id: f.ownerUser.id } });
+    const orgA = (r.body.companies as Company[]).find((c) => c.id === orgId);
+    expect(orgA?.managers).toEqual([{ name: owner.name, contact: owner.email, role: 'owner' }]);
+    const a = (r.body.projects as Proj[]).find((p) => p.id === f.projectA.id);
+    expect(a?.companyId).toBe(orgId);
+    expect(a?.members.map((m) => [m.name, m.role]).sort()).toEqual([['client4b', 'client'], ['member', 'pmc']]);
+    // nothing in the reply carries a password hash or a token
+    expect(r.text).not.toMatch(/passwordHash|"password"/);
+  });
+
   it('switches home-nav on and off, audited with via ops-api, and a repeat changes nothing', async () => {
     process.env.OPS_TOKEN = TOKEN;
     const url = (act: string) => `/ops/projects/${f.projectA.id}/capabilities/home-nav/${act}`;
@@ -111,6 +129,8 @@ describe('#482 operator door (live PG)', () => {
       expect(await t.prisma.auditLog.count({ where: { projectId: f.projectB.id, action: { startsWith: 'capability.' } } })).toBe(0);
       const listed = await http().get('/ops/projects').set(auth);
       expect((listed.body.projects as Array<{ id: string }>).map((p) => p.id)).not.toContain(f.projectB.id);
+      const people = await http().get('/ops/people').set(auth);
+      expect((people.body.projects as Array<{ id: string }>).map((p) => p.id)).not.toContain(f.projectB.id);
     } finally {
       await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: null } });
     }
