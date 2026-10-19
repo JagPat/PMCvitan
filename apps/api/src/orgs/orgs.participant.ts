@@ -76,6 +76,51 @@ export class OrgsParticipant {
   }
 
   /**
+   * #482 operator door (Jagrut's "yes door", 19 Oct 2026) — who can manage each live project: the owners and
+   * admins of every company, and the active members of every live project with their role. The operator
+   * otherwise answers "who is on Samumil, and is Chitrang an owner?" by pasting a Prisma block into the
+   * Coolify terminal. Stated here because every table it reads is orgs-owned. A plain read: it lists, it
+   * authorises nothing, and it returns names and one contact each, never a credential.
+   */
+  async operatorRoster(tx: OrgsParticipantClient | Prisma.TransactionClient): Promise<{
+    companies: Array<{ id: string; name: string; managers: Array<{ name: string; contact: string | null; role: string }> }>;
+    projects: Array<{ id: string; name: string; company: string; members: Array<{ name: string; contact: string | null; role: string; discipline: string | null }> }>;
+  }> {
+    const client = tx as OrgsParticipantClient;
+    const managers = await client.$queryRawUnsafe<Array<{ orgId: string; orgName: string; name: string; contact: string | null; role: string }>>(
+      `SELECT o."id" AS "orgId", o."name" AS "orgName", u."name", COALESCE(u."email", u."phone") AS "contact", om."role"
+         FROM "Org" o
+         LEFT JOIN "OrgMembership" om ON om."orgId" = o."id" AND om."role" IN ('owner', 'admin')
+         LEFT JOIN "User" u ON u."id" = om."userId"
+        ORDER BY o."name" ASC, o."id" ASC, om."role" DESC, u."name" ASC`,
+    );
+    const members = await client.$queryRawUnsafe<Array<{ projectId: string; projectName: string; company: string; name: string | null; contact: string | null; role: string | null; discipline: string | null }>>(
+      `SELECT p."id" AS "projectId", p."name" AS "projectName", o."name" AS "company",
+              u."name", COALESCE(u."email", u."phone") AS "contact", m."role", m."discipline"
+         FROM "Project" p
+         JOIN "Org" o ON o."id" = p."orgId"
+         LEFT JOIN "Membership" m ON m."projectId" = p."id" AND m."status" = 'active'
+         LEFT JOIN "User" u ON u."id" = m."userId"
+        WHERE p."archivedAt" IS NULL
+        ORDER BY p."id" ASC, m."role" ASC, u."name" ASC`,
+    );
+    const companies = new Map<string, { id: string; name: string; managers: Array<{ name: string; contact: string | null; role: string }> }>();
+    for (const r of managers) {
+      const c = companies.get(r.orgId) ?? { id: r.orgId, name: r.orgName, managers: [] };
+      if (r.role) c.managers.push({ name: r.name, contact: r.contact, role: r.role });
+      companies.set(r.orgId, c);
+    }
+    // a live project with nobody on it is still listed, with no members, so an empty project shows as empty
+    const projects = new Map<string, { id: string; name: string; company: string; members: Array<{ name: string; contact: string | null; role: string; discipline: string | null }> }>();
+    for (const r of members) {
+      const pr = projects.get(r.projectId) ?? { id: r.projectId, name: r.projectName, company: r.company, members: [] };
+      if (r.role) pr.members.push({ name: r.name ?? '', contact: r.contact, role: r.role, discipline: r.discipline });
+      projects.set(r.projectId, pr);
+    }
+    return { companies: [...companies.values()], projects: [...projects.values()] };
+  }
+
+  /**
    * The two facts a DEPLOYMENT guard needs about this database's project population: how many
    * projects it holds, and whether a named anchor project is one of them.
    *
