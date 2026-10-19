@@ -1353,8 +1353,9 @@ export class ApiGateway {
   }
 
   /** Upload a site photo; returns its id + resolvable URL. */
-  uploadMedia(input: UploadMediaInput): Promise<{ id: string; url: string }> {
-    return this.req<{ id: string; url: string }>(`/projects/${this.projectId}/media`, {
+  // `at`: when the server recorded it (#482); absent from an API older than this web build
+  uploadMedia(input: UploadMediaInput): Promise<{ id: string; url: string; at?: string }> {
+    return this.req<{ id: string; url: string; at?: string }>(`/projects/${this.projectId}/media`, {
       method: 'POST',
       body: JSON.stringify(input),
     });

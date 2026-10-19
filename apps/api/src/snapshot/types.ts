@@ -365,6 +365,12 @@ export interface PhotoDto {
   /** location-tree node this photo shows (undefined = unplaced) */
   nodeId?: string;
   kind: string; // progress | inspection | material
+  /** #482 site photos — the name of the member who added it (absent when that account is gone) */
+  by?: string;
+  /** their role on this project (absent when they hold none, e.g. an org admin) */
+  byRole?: string;
+  /** when it was added (ISO) */
+  at: string;
   /** #482 site photos — the upload key, on the viewer's own photos only */
   clientKey?: string;
 }

@@ -15,7 +15,7 @@ import { AddSitePhoto } from '@/components/AddSitePhoto';
 import { queuedSitePhotos } from '@/lib/queuedSitePhotos';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
-import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, type Lang, type WaitParty } from '@vitan/shared';
+import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, sitePhotoWho, type Lang, type WaitParty } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 /** Top 10 #2 (#771) — a count whose slice has not settled is shown as unknown, never as 0. */
@@ -90,10 +90,16 @@ export function DashboardScreen() {
   const recordedPhotos = useStore(useShallow((s) => s.photos));
   // #482 site photos: a photo picked with no signal shows first at once, until its upload is sent
   const outbox = useStore((s) => s.outbox);
-  const queuedPhotos = useMemo(() => (API_BASE ? queuedSitePhotos(outbox, recordedPhotos) : []), [outbox, recordedPhotos]);
+  const userName = useStore((s) => s.userName);
+  // a queued photo is this viewer's own pick: it says their name; its role and time come once the server records it
+  const queuedPhotos = useMemo(
+    () => (API_BASE ? queuedSitePhotos(outbox, recordedPhotos).map((p) => (userName ? { ...p, by: userName } : p)) : []),
+    [outbox, recordedPhotos, userName],
+  );
   const sitePhotos = useMemo(() => [...queuedPhotos, ...recordedPhotos], [queuedPhotos, recordedPhotos]);
   // the photos tile counts the queued photos with the recorded ones, and the places among all of them
   const photoZones = useMemo(() => new Set(sitePhotos.map((p) => p.nodeId).filter(Boolean)).size, [sitePhotos]);
+  const timeZone = useStore((s) => s.timeZone);
   // the milestone strip is the project's own phases, read LIVE from their activities (the stored
   // `donePct` is only the snapshot's initial count): done = every activity accepted, started = any
   // accepted or under way. Empty projects show none.
@@ -322,6 +328,8 @@ export function DashboardScreen() {
                   </div>
                   <div style={{ padding: '9px 11px', background: 'var(--panel)' }}>
                     <div style={{ fontSize: 11.5, fontWeight: 600, textTransform: 'capitalize' }}>{T.photoKind(p.kind, lang)}</div>
+                    {/* #482 site photos: who added it, their role on the project and when */}
+                    <div data-testid="dash-photo-who" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2, overflowWrap: 'anywhere' }}>{sitePhotoWho(p, lang, timeZone)}</div>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{stampText(p.takenAt)}</div>
                   </div>
                 </div>

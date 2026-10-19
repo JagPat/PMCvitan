@@ -336,4 +336,22 @@ describe('#482 site photos: "Add site photo" on the Dashboard', () => {
     ]);
     expect(r.getByTestId('tile-photos-value').textContent).toBe('3');
   });
+
+  it('keeps the newest pick first when a refresh brings it in before either reply (Codex 4314541726, #984)', async () => {
+    const { useStore } = await loadApiMode('pmc', [{ id: 'old', url: 'http://api.test/old.jpg', kind: 'progress' }]);
+    const replies: Array<(v: { id: string; url: string }) => void> = [];
+    const uploadMedia = vi.fn().mockImplementation(() => new Promise((res) => { replies.push(res); }));
+    useStore.getState()._setGateway({ uploadMedia } as never);
+    useStore.setState({ online: true } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    pick(r, 'a.jpg');
+    pick(r, 'b.jpg');
+    // a refresh lands holding only the later pick, then its reply, then the earlier pick's reply
+    act(() => useStore.setState({ photos: [{ id: 'b', url: 'http://api.test/b.jpg', kind: 'progress' }, { id: 'old', url: 'http://api.test/old.jpg', kind: 'progress' }] } as never));
+    await act(async () => replies[1]!({ id: 'b', url: 'http://api.test/b.jpg' }));
+    await act(async () => replies[0]!({ id: 'a', url: 'http://api.test/a.jpg' }));
+    expect(useStore.getState().photos.map((p) => p.id)).toEqual(['b', 'a', 'old']);
+  });
 });

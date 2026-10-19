@@ -47,4 +47,17 @@ describe('a site photo\'s upload key goes only to its uploader (live PG)', () =>
     expect(clientView.find((p) => p.id === theirs.body.id)?.clientKey).toBe('own-key-client');
     expect(clientView.find((p) => p.id === mine.body.id)).not.toHaveProperty('clientKey');
   });
+
+  it('answers an upload with the time the server recorded it, the same time the snapshot says (Codex 4315262110)', async () => {
+    const up = await http().post(`/projects/${f.projectA.id}/media`).set('Authorization', `Bearer ${pmc}`)
+      .send({ kind: 'progress', mime: 'image/png', data: px, clientKey: 'own-key-at' }).expect(201);
+    expect(typeof up.body.at).toBe('string');
+    const listed = (await http().get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${pmc}`).expect(200))
+      .body.photos as Array<{ id: string; at?: string }>;
+    expect(listed.find((p) => p.id === up.body.id)?.at).toBe(up.body.at);
+    // a replay of the same key answers with the same recorded time
+    const again = await http().post(`/projects/${f.projectA.id}/media`).set('Authorization', `Bearer ${pmc}`)
+      .send({ kind: 'progress', mime: 'image/png', data: px, clientKey: 'own-key-at' });
+    expect(again.body).toMatchObject({ id: up.body.id, at: up.body.at });
+  });
 });
