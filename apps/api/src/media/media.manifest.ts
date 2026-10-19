@@ -26,7 +26,8 @@ export const mediaManifest: ModuleManifest = {
   consumesEvents: [],
   commands: ['media.create', 'media.setNode', 'media.remove'],
   // U3a — the PMC brief's progress-photo count (MediaQueryService), so orgs never reads `Media` directly
-  queries: ['media.progressPhotoCountSince'],
+  // #792 SV2 — a site visit's file list reads each file's type and taken time here (MediaQueryService.fileFacts)
+  queries: ['media.progressPhotoCountSince', 'media.fileFacts'],
   routes: [
     'POST /projects/:projectId/media',
     'PATCH /projects/:projectId/media/:mediaId/node',
