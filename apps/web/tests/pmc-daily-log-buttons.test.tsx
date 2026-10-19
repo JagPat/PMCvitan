@@ -66,6 +66,21 @@ describe('#482 the PMC’s Daily Site Log has no day-running buttons', () => {
     expect(shown(await screen('pmc', null))).toEqual([]);
   });
 
+  it('before the log is sent: no Submit for the PMC, whose send the server would refuse unchecked-in', async () => {
+    expect((await screen('pmc', log())).queryByTestId('submit-daily-log')).toBeNull();
+    cleanup();
+    expect((await screen('pmc', log({ checkedIn: true, checkinTime: '09:00' }))).queryByTestId('submit-daily-log')).toBeNull();
+  });
+
+  it('a sent log: the PMC still reads it as Submitted', async () => {
+    const r = await screen('pmc', log({ checkedIn: true, checkinTime: '09:00', submitted: true }));
+    expect(r.getByTestId('submit-daily-log').textContent).toContain('Submitted');
+  });
+
+  it('the engineer keeps Submit', async () => {
+    expect((await screen('engineer', log())).getByTestId('submit-daily-log')).toBeTruthy();
+  });
+
   it('the engineer keeps every button', async () => {
     expect(shown(await screen('engineer', log()))).toEqual(['check-in']);
     cleanup();
