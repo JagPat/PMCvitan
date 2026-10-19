@@ -3,8 +3,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { shownAccessError, useStore } from '@/store/store';
 import { API_BASE } from '@/data/apiGateway';
 import { useT } from '@/i18n/useT';
-import { discardLangChoice, noteLangChoice } from '@/lib/langPreference';
-import { LANGS, swatch as swatchGradient, type Lang } from '@vitan/shared';
+import { discardLangChoice, noteLangChoice, writeDeviceLang } from '@/lib/langPreference';
+import { LANGS, signInLabels, signInText, swatch as swatchGradient, type Lang } from '@vitan/shared';
 import {
   Users,
   Wrench,
@@ -45,7 +45,7 @@ const WORKERS = [
 
 /** The sign-in gate's top: the Vitan mark and the language row. #827 one-screen sign-in: a live build opens
  *  straight on the phone number, so the language pick sits there; the demo keeps it on "Who are you?". */
-function GateHeader({ label, lang, setLang }: { label: string; lang: Lang; setLang: (l: Lang) => void }) {
+function GateHeader({ label, lang, setLang, atGate }: { label: string; lang: Lang; setLang: (l: Lang) => void; atGate: boolean }) {
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -60,6 +60,9 @@ function GateHeader({ label, lang, setLang }: { label: string; lang: Lang; setLa
           <button key={l.key} data-testid={`gate-lang-${l.key}`} onClick={() => {
             // a pick made at the gate, before anyone has signed in, never the console host's
             noteLangChoice(l.key as Lang, 'guest');
+            // at the sign-in gate the pick is this device's (V-1018-6); inside a console it is a guest's, never saved.
+            // Asked of the host, not read from `sessionToken`: a dev-auth console has no token either
+            if (atGate) writeDeviceLang(l.key as Lang);
             setLang(l.key as Lang);
           }} style={langStyle(lang === l.key)}>
             {l.label}
@@ -81,7 +84,8 @@ function BackBtn({ onClick, label }: { onClick: () => void; label: string }) {
   );
 }
 
-export function TeamAccessScreen() {
+/** `atGate`: rendered by the sign-in gate (`AuthGate`), not as a screen inside a signed-in console. */
+export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
   const step = useStore((s) => s.access.step);
   const trade = useStore((s) => s.access.trade);
   const phone = useStore((s) => s.access.phone);
@@ -139,7 +143,7 @@ export function TeamAccessScreen() {
     ];
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-        <GateHeader label={t.pick} lang={lang} setLang={setLang} />
+        <GateHeader label={t.pick} lang={lang} setLang={setLang} atGate={atGate} />
         <div style={{ fontSize: 24, fontWeight: 700, margin: '28px 0 16px' }}>{t.who}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {cards.map((c) => (
@@ -195,7 +199,7 @@ export function TeamAccessScreen() {
     const ready = phone.length === 10 && !sending;
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-        {API_BASE ? <GateHeader label={t.pick} lang={lang} setLang={setLang} /> : <BackBtn onClick={accReset} label={t.back} />}
+        {API_BASE ? <GateHeader label={t.pick} lang={lang} setLang={setLang} atGate={atGate} /> : <BackBtn onClick={accReset} label={t.back} />}
         <div style={{ marginTop: API_BASE ? 28 : 14 }}>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{t.phoneTitle}</div>
           <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{t.phoneSub}</div>
@@ -246,8 +250,8 @@ export function TeamAccessScreen() {
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
         <BackBtn onClick={accReset} label={t.back} />
         <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>Sign in</div>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>Architect, client & contractor accounts</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{signInLabels.loginTitle[lang]}</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{signInLabels.loginSub[lang]}</div>
         </div>
         <input
           type="email"
@@ -263,7 +267,7 @@ export function TeamAccessScreen() {
           value={pw}
           onChange={(e) => setPw(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && submit()}
-          placeholder="Password"
+          placeholder={signInLabels.password[lang]}
           data-testid="login-password"
           style={{ ...loginField, marginTop: 12 }}
         />
@@ -274,10 +278,10 @@ export function TeamAccessScreen() {
           data-testid="login-submit"
           style={{ marginTop: 20, height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
         >
-          {sending ? t.verifying : 'Sign in'}
+          {sending ? t.verifying : signInLabels.signIn[lang]}
         </button>
         <button onClick={accGoPasswordSetup} data-testid="go-password-setup" style={linkBtn}>
-          Set up or forgot password
+          {signInLabels.setupLink[lang]}
         </button>
         <div style={{ marginTop: 'auto' }} />
       </div>
@@ -291,8 +295,8 @@ export function TeamAccessScreen() {
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
         <BackBtn onClick={accGoLogin} label={t.back} />
         <div style={{ marginTop: 14 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Set up or reset password</h1>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>Use the email your administrator added to Vitan PMC.</div>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{signInLabels.setupTitle[lang]}</h1>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{signInLabels.setupSub[lang]}</div>
         </div>
         <input
           type="email"
@@ -303,7 +307,7 @@ export function TeamAccessScreen() {
           onChange={(e) => accSetEmail(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && ready && requestPasswordSetup()}
           placeholder="you@example.com"
-          aria-label="Invited email"
+          aria-label={signInLabels.invitedEmail[lang]}
           data-testid="password-email"
           style={loginField}
         />
@@ -314,7 +318,7 @@ export function TeamAccessScreen() {
           data-testid="password-request"
           style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
         >
-          {sending ? t.sending : 'Send verification code'}
+          {sending ? t.sending : signInLabels.sendVerification[lang]}
         </button>
       </div>
     );
@@ -327,9 +331,9 @@ export function TeamAccessScreen() {
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
         <BackBtn onClick={accGoPasswordSetup} label={t.back} />
         <div style={{ textAlign: 'center', marginTop: 14 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Verify your email</h1>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{signInLabels.verifyTitle[lang]}</h1>
           <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>
-            If {otpEmail} is an invited Vitan PMC account, a 6-digit code is on its way. It can take a minute; check your spam folder too.
+            {signInText.verifyBody(otpEmail, lang)}
           </div>
         </div>
         <input
@@ -339,8 +343,8 @@ export function TeamAccessScreen() {
           value={otp}
           onChange={(e) => accSetCode(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && ready && verifyPasswordSetup()}
-          placeholder="6-digit code"
-          aria-label="Verification code"
+          placeholder={signInLabels.codePlaceholder[lang]}
+          aria-label={signInLabels.verificationCode[lang]}
           data-testid="password-code"
           style={{ ...loginField, marginTop: 24, textAlign: 'center', fontFamily: 'var(--font-mono)', letterSpacing: '.3em', fontSize: 22 }}
         />
@@ -348,14 +352,14 @@ export function TeamAccessScreen() {
           {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
           {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
         </div>
-        <button onClick={requestPasswordSetup} disabled={sending} style={linkBtn}>Send a new code</button>
+        <button onClick={requestPasswordSetup} disabled={sending} style={linkBtn}>{signInLabels.sendNewCode[lang]}</button>
         <button
           onClick={verifyPasswordSetup}
           disabled={!ready}
           data-testid="password-verify"
           style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
         >
-          Verify email
+          {signInLabels.verifyEmail[lang]}
         </button>
       </div>
     );
@@ -367,42 +371,42 @@ export function TeamAccessScreen() {
     const excessCharacters = Math.max(0, newPassword.length - 128);
     const confirmationMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
     const passwordGuidance = missingCharacters > 0 && newPassword.length > 0
-      ? `Add ${missingCharacters} more ${missingCharacters === 1 ? 'character' : 'characters'} to continue.`
+      ? signInText.addMore(missingCharacters, lang)
       : excessCharacters > 0
-        ? `Remove ${excessCharacters} ${excessCharacters === 1 ? 'character' : 'characters'} to continue.`
+        ? signInText.remove(excessCharacters, lang)
         : confirmationMismatch
-          ? 'Passwords do not match.'
+          ? signInLabels.mismatch[lang]
           : null;
     const ready = newPassword.length >= 12 && newPassword.length <= 128 && confirmPassword.length > 0 && !confirmationMismatch && !sending;
     const submit = () => ready && completePasswordSetup(newPassword, confirmPassword);
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-        <BackBtn onClick={accGoPasswordSetup} label="Start again" />
+        <BackBtn onClick={accGoPasswordSetup} label={signInLabels.startAgain[lang]} />
         <div style={{ marginTop: 14 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Create your password</h1>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>Use 12 to 128 characters. A long passphrase is acceptable.</div>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{signInLabels.createTitle[lang]}</h1>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{signInLabels.createSub[lang]}</div>
         </div>
         <label style={{ fontSize: 12, fontWeight: 600, marginTop: 22 }}>
-          New password
+          {signInLabels.newPassword[lang]}
           <input
             type="password"
             autoComplete="new-password"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
-            aria-label="New password"
+            aria-label={signInLabels.newPassword[lang]}
             aria-describedby="password-validation"
             style={{ ...loginField, marginTop: 7, width: '100%', boxSizing: 'border-box' }}
           />
         </label>
         <label style={{ fontSize: 12, fontWeight: 600, marginTop: 14 }}>
-          Confirm password
+          {signInLabels.confirmPassword[lang]}
           <input
             type="password"
             autoComplete="new-password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && submit()}
-            aria-label="Confirm password"
+            aria-label={signInLabels.confirmPassword[lang]}
             aria-describedby="password-validation"
             style={{ ...loginField, marginTop: 7, width: '100%', boxSizing: 'border-box' }}
           />
@@ -421,7 +425,7 @@ export function TeamAccessScreen() {
           data-testid="password-complete"
           style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
         >
-          {sending ? 'Saving password…' : 'Save password and sign in'}
+          {sending ? signInLabels.saving[lang] : signInLabels.saveAndSignIn[lang]}
         </button>
       </div>
     );
@@ -434,8 +438,8 @@ export function TeamAccessScreen() {
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
         <BackBtn onClick={accReset} label={t.back} />
         <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>Sign in with email</div>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>We'll email you a 6-digit code</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{signInLabels.emailTitle[lang]}</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{signInLabels.emailSub[lang]}</div>
         </div>
         <input
           type="email"
@@ -468,7 +472,7 @@ export function TeamAccessScreen() {
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
         <BackBtn onClick={accReset} label={t.back} />
         <div style={{ textAlign: 'center', marginTop: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>Enter the code</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{signInLabels.enterCode[lang]}</div>
           <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{t.sent} {otpEmail}</div>
           {devCode && (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 12, padding: '6px 12px', borderRadius: 20, background: '#FBF3E4', color: 'var(--amber-text)', fontSize: 12.5, fontWeight: 600 }} data-testid="email-dev-code">
@@ -482,7 +486,7 @@ export function TeamAccessScreen() {
           value={otp}
           onChange={(e) => accSetCode(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && ready && emailOtpVerify()}
-          placeholder="6-digit code"
+          placeholder={signInLabels.codePlaceholder[lang]}
           data-testid="email-code"
           style={{ ...loginField, marginTop: 24, textAlign: 'center', fontFamily: 'var(--font-mono)', letterSpacing: '.3em', fontSize: 22 }}
         />

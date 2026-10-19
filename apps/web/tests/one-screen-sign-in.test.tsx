@@ -290,8 +290,10 @@ describe('#827 one-screen sign-in', () => {
     act(() => useStore.getState().accGoLogin());
     act(() => useStore.getState().login('pmc@vitan.in', 'secret'));
     await flush();
-    // the email sign-in is English-only: its own offline message, not the phone message in Hindi
-    expect(shownAccessError(useStore.getState().access, 'hi')).toBe('Could not reach the server. Check your connection and try again.');
+    // the email sign-in's own offline failure, worded in the gate's language since #482 V-1018-6 (it was
+    // English-only), and keyed to that failure: never the earlier phone error's key re-worded
+    expect(useStore.getState().access.error).toBe('सर्वर से जुड़ नहीं सके। अपना इंटरनेट देखें और फिर कोशिश करें।');
+    expect(shownAccessError(useStore.getState().access, 'en')).toBe('Could not reach the server. Check your connection and try again.');
   });
 
   for (const [label, failure] of [

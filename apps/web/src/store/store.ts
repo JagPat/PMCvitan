@@ -55,6 +55,9 @@ import {
   type ItemState,
   type Lang,
   accessDict,
+  signInErrors,
+  signInText,
+  type SignInErrorKey,
   type ModalState,
   type Review,
   type ReservationPlan,
@@ -97,6 +100,7 @@ import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
 import { saveSession, clearSession, loadSession } from '@/lib/sessionPersist';
+import { readDeviceLang } from '@/lib/langPreference';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -880,7 +884,10 @@ function httpStatusOf(err: unknown): number | undefined {
 /** A phone sign-in failure before it is put into words (#886): the gate words it in its current language. */
 type AccessErrorWhy =
   | { key: 'noServer' | 'sendFailed' | 'tooManyLater' | 'wrongCode' | 'checkFailed' | 'retryRefused' }
-  | { key: 'tooManyWait'; seconds: number };
+  | { key: 'tooManyWait'; seconds: number }
+  // #482 V-1018-6: the email and password screens' failures, worded the same way
+  | { key: Exclude<SignInErrorKey, 'tooManySignIns' | 'tooManyCodes'> }
+  | { key: 'tooManySignIns' | 'tooManyCodes'; seconds: number | null };
 
 /**
  * What a failed request for a phone sign-in code tells the person (#827 one-screen sign-in). A throttle names
@@ -915,19 +922,42 @@ function otpThrottle(err: unknown): AccessErrorWhy {
   return { key: 'tooManyWait', seconds };
 }
 
-function accessErrorText(why: AccessErrorWhy, lang: Lang): string {
+/** "Wait 30 seconds" / "Wait 1 minute" / "Wait 4 minutes" in the gate's language, from the server's seconds */
+function waitPhrase(seconds: number, lang: Lang): string {
   const t = accessDict[lang];
-  if (why.key !== 'tooManyWait') return t[why.key];
-  const { seconds } = why;
   const minutes = Math.ceil(seconds / 60);
-  const wait = seconds < 60
+  return seconds < 60
     ? t.waitSeconds.replace('{n}', String(Math.ceil(seconds)))
     : minutes === 1 ? t.waitMinute : t.waitMinutes.replace('{n}', String(minutes));
-  return t.tooManyWait.replace('{wait}', wait);
+}
+
+function accessErrorText(why: AccessErrorWhy, lang: Lang): string {
+  const t = accessDict[lang];
+  switch (why.key) {
+    case 'tooManyWait':
+      return t.tooManyWait.replace('{wait}', waitPhrase(why.seconds, lang));
+    case 'tooManySignIns':
+    case 'tooManyCodes': {
+      const e = signInErrors[lang];
+      return e[why.key].replace('{wait}', why.seconds !== null && why.seconds > 0 ? waitPhrase(why.seconds, lang) : e.waitFew);
+    }
+    case 'noServer': case 'sendFailed': case 'tooManyLater': case 'wrongCode': case 'checkFailed': case 'retryRefused':
+      return t[why.key];
+    default:
+      return signInErrors[lang][why.key];
+  }
 }
 
 function accessError(why: AccessErrorWhy, lang: Lang): AccessErrorKey {
-  return { ...why, text: accessErrorText(why, lang) };
+  return { ...why, text: accessErrorText(why, lang) } as AccessErrorKey;
+}
+
+/** Records a sign-in failure on the access state, worded in the gate's current language and keyed so a later
+ *  language switch re-words it (#886, extended to every sign-in screen by #482 V-1018-6). */
+function failAccess(s: { lang: Lang; access: AccessState }, why: AccessErrorWhy): void {
+  const k = accessError(why, s.lang);
+  s.access.error = k.text;
+  s.access.errorKey = k;
 }
 
 /** The sign-in error to show, in the gate's current language (#886: a switch after a failure re-translates
@@ -939,13 +969,10 @@ export function shownAccessError(access: Pick<AccessState, 'error' | 'errorKey'>
 }
 
 /** How long a throttled (429) caller should wait, from the seconds the server says remain in its window
- *  (#808: a fixed "10 minutes" overstated a window that may be seconds from resetting). */
-function throttleWait(err: unknown): string {
+ *  (#808: a fixed "10 minutes" overstated a window that may be seconds from resetting); null when it sends none. */
+function throttleSeconds(err: unknown): number | null {
   const seconds = (err as { retryAfter?: unknown } | null)?.retryAfter;
-  if (typeof seconds !== 'number' || !(seconds > 0)) return 'Wait a few minutes';
-  if (seconds < 60) return `Wait ${Math.ceil(seconds)} seconds`;
-  const minutes = Math.ceil(seconds / 60);
-  return `Wait ${minutes} minute${minutes === 1 ? '' : 's'}`;
+  return typeof seconds === 'number' && seconds > 0 ? seconds : null;
 }
 
 /**
@@ -954,14 +981,15 @@ function throttleWait(err: unknown): string {
  * bad password. Each now says what happened. A plain 401 still reveals nothing about whether the account
  * exists, and points an account that never set a password at the setup flow.
  */
-function signInFailureMessage(err: unknown): string {
+function signInFailure(err: unknown): AccessErrorWhy {
   const status = httpStatusOf(err);
   const serverMessage = (err as { serverMessage?: unknown } | null)?.serverMessage;
-  if (status === 429) return `Too many sign-in attempts. ${throttleWait(err)}, then try again.`;
-  if (status === 401 && typeof serverMessage === 'string' && /access has been removed/i.test(serverMessage)) return serverMessage;
-  if (status === undefined) return 'Could not reach the server. Check your connection and try again.';
-  if (status >= 500) return 'The server could not sign you in right now. Try again in a minute.';
-  return 'Wrong email or password. Never set a password? Use “Set up or forgot password”.';
+  if (status === 429) return { key: 'tooManySignIns', seconds: throttleSeconds(err) };
+  // the server's own words for a removed access, in the gate's language (V-1018-6)
+  if (status === 401 && typeof serverMessage === 'string' && /access has been removed/i.test(serverMessage)) return { key: 'accessRemoved' };
+  if (status === undefined) return { key: 'noServer' };
+  if (status >= 500) return { key: 'serverDown' };
+  return { key: 'wrongPassword' };
 }
 
 /** A pristine access-flow state (used to init and to reset after sign-out). */
@@ -1296,7 +1324,9 @@ export function getInitialState(): AppState {
     // the Dashboard is every role's home (#811); For You is the live cross-cutting action queue.
     // Seeded from the URL on a cold load so a refresh / deep link restores the screen.
     screen: initialScreen(),
-    lang: 'en',
+    // #482 V-1018-6 — the gate opens in the language last chosen on this device; the person's own choice
+    // replaces it once they sign in (`LangPreference`)
+    lang: readDeviceLang() ?? 'en',
     notifOpen: false,
     createOpen: false,
     toast: null,
@@ -2882,6 +2912,8 @@ export const useStore = create<Store>()(
         s.access = freshAccess(s.access.generation + 1);
         s.role = 'client';
         s.screen = screensFor('client')[0].key;
+        // V-1018-6 — the gate the person returns to reads in the language last chosen on this device
+        s.lang = readDeviceLang() ?? s.lang;
         s.notifOpen = false;
         s.createOpen = false;
         s.modal = { type: null };
@@ -6263,7 +6295,7 @@ export const useStore = create<Store>()(
     login: (email, password) => {
       const em = email.trim().toLowerCase();
       if (!em || !password) {
-        set((s) => { s.access.errorKey = null; s.access.error = 'Enter your email and password.'; });
+        set((s) => { failAccess(s, { key: 'enterEmailPassword' }); });
         return;
       }
       if (gateway) {
@@ -6271,13 +6303,13 @@ export const useStore = create<Store>()(
         gateway
           .login(em, password)
           .then((res) => applyAuthResult(res))
-          .catch((err: unknown) => set((s) => { s.access.sending = false; s.access.errorKey = null; s.access.error = signInFailureMessage(err); }));
+          .catch((err: unknown) => set((s) => { s.access.sending = false; failAccess(s, signInFailure(err)); }));
         return;
       }
       // local demo: map the seeded demo emails to their role (any password)
       const role = em.startsWith('pmc@') ? 'pmc' : em.startsWith('client@') ? 'client' : em.startsWith('contractor@') ? 'contractor' : null;
       if (!role) {
-        set((s) => { s.access.errorKey = null; s.access.error = 'Demo: use pmc@ / client@ / contractor@vitan.in.'; });
+        set((s) => { failAccess(s, { key: 'demoEmails' }); });
         return;
       }
       set((s) => {
@@ -6303,11 +6335,11 @@ export const useStore = create<Store>()(
       const email = get().access.email.trim().toLowerCase();
       if (get().access.sending) return;
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-        set((s) => { s.access.errorKey = null; s.access.error = 'Enter a valid invited email address.'; });
+        set((s) => { failAccess(s, { key: 'invalidInvitedEmail' }); });
         return;
       }
       if (!gateway) {
-        set((s) => { s.access.errorKey = null; s.access.error = 'Password setup needs the live server.'; });
+        set((s) => { failAccess(s, { key: 'setupNeedsServer' }); });
         return;
       }
       let generation = 0;
@@ -6333,9 +6365,7 @@ export const useStore = create<Store>()(
           if (get().access.generation !== generation) return;
           set((s) => {
             s.access.sending = false;
-            s.access.errorKey = null; s.access.error = httpStatusOf(err) === 429
-              ? `Too many code requests. ${throttleWait(err)}, then try again.`
-              : 'Could not send the code. Please try again.';
+            failAccess(s, httpStatusOf(err) === 429 ? { key: 'tooManyCodes', seconds: throttleSeconds(err) } : { key: 'codeSendFailed' });
           });
         });
     },
@@ -6363,22 +6393,22 @@ export const useStore = create<Store>()(
         })
         .catch(() => {
           if (get().access.generation !== generation) return;
-          set((s) => { s.access.sending = false; s.access.otp = ''; s.access.errorKey = null; s.access.error = 'Wrong or expired code. Request a new code and try again.'; });
+          set((s) => { s.access.sending = false; s.access.otp = ''; failAccess(s, { key: 'setupWrongCode' }); });
         });
     },
     completePasswordSetup: (password, confirmation) => {
       const access = get().access;
       if (access.sending) return;
       if (password !== confirmation) {
-        set((s) => { s.access.errorKey = null; s.access.error = 'Passwords do not match.'; });
+        set((s) => { failAccess(s, { key: 'passwordMismatch' }); });
         return;
       }
       if (password.length < 12 || password.length > 128) {
-        set((s) => { s.access.errorKey = null; s.access.error = 'Use a password between 12 and 128 characters.'; });
+        set((s) => { failAccess(s, { key: 'passwordLength' }); });
         return;
       }
       if (!gateway || !access.passwordSetupToken) {
-        set((s) => { s.access.errorKey = null; s.access.error = 'This setup link expired. Request a new code.'; });
+        set((s) => { failAccess(s, { key: 'setupExpired' }); });
         return;
       }
       const setupToken = access.passwordSetupToken;
@@ -6392,11 +6422,11 @@ export const useStore = create<Store>()(
       gateway.passwordCredentialComplete(setupToken, password)
         .then((result) => {
           if (get().access.generation !== generation) return;
-          applyAuthResult(result, { msg: 'Password saved. You are signed in.' });
+          applyAuthResult(result, { msg: signInText.passwordSaved(get().lang) });
         })
         .catch(() => {
           if (get().access.generation !== generation) return;
-          set((s) => { s.access.sending = false; s.access.errorKey = null; s.access.error = 'Could not save the password. Request a new code and try again.'; });
+          set((s) => { s.access.sending = false; failAccess(s, { key: 'passwordSaveFailed' }); });
         });
     },
     accGoEmailOtp: () =>
@@ -6412,7 +6442,7 @@ export const useStore = create<Store>()(
       const email = get().access.email.trim().toLowerCase();
       if (get().access.sending) return;
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-        set((s) => { s.access.errorKey = null; s.access.error = 'Enter a valid email address.'; });
+        set((s) => { failAccess(s, { key: 'invalidEmail' }); });
         return;
       }
       if (!gateway) {
@@ -6430,7 +6460,7 @@ export const useStore = create<Store>()(
             s.access.devCode = r.devCode ?? null;
           });
         })
-        .catch(() => set((s) => { s.access.sending = false; s.access.errorKey = null; s.access.error = 'Could not send the code — please try again.'; }));
+        .catch(() => set((s) => { s.access.sending = false; failAccess(s, { key: 'emailSendFailed' }); }));
     },
     accSetCode: (v) =>
       set((s) => { s.access.otp = v.replace(/\D/g, '').slice(0, 6); s.access.errorKey = null; s.access.error = null; }),
@@ -6445,13 +6475,13 @@ export const useStore = create<Store>()(
       gateway
         .emailOtpVerify(email.trim().toLowerCase(), otp)
         .then((res) => applyAuthResult(res))
-        .catch(() => set((s) => { s.access.sending = false; s.access.otp = ''; s.access.errorKey = null; s.access.error = 'Wrong or expired code — try again.'; }));
+        .catch(() => set((s) => { s.access.sending = false; s.access.otp = ''; failAccess(s, { key: 'emailWrongCode' }); }));
     },
     requestOtp: () => {
       const { phone, sending } = get().access;
       if (sending) return;
       if (phone.length < 10) {
-        set((s) => { s.access.errorKey = null; s.access.error = 'Enter a 10-digit mobile number.'; });
+        set((s) => { failAccess(s, { key: 'enterMobile' }); });
         return;
       }
       // local demo (no API): skip straight to the code screen

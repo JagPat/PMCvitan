@@ -647,10 +647,23 @@ export interface Worker {
   job: string;
 }
 
+/**
+ * Why an email or password sign-in step failed, before it is put into words, so the gate words it (`signInErrors`) in its
+ * current language (#886's rule for the phone sign-in, now for every sign-in screen). `{wait}` is a wait phrase.
+ */
+export type SignInErrorKey =
+  | 'enterEmailPassword' | 'demoEmails' | 'accessRemoved' | 'serverDown' | 'wrongPassword'
+  | 'invalidInvitedEmail' | 'setupNeedsServer' | 'passwordMismatch' | 'codeSendFailed' | 'setupWrongCode' | 'passwordLength'
+  | 'setupExpired' | 'passwordSaveFailed' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
+  | 'tooManySignIns' | 'tooManyCodes';
+
 /** #886: a phone sign-in failure as an `accessDict` key (plus the throttle wait), and the text it produced. */
 export type AccessErrorKey =
   | { key: 'noServer' | 'sendFailed' | 'tooManyLater' | 'wrongCode' | 'checkFailed' | 'retryRefused'; text: string }
-  | { key: 'tooManyWait'; seconds: number; text: string };
+  | { key: 'tooManyWait'; seconds: number; text: string }
+  /** #482 V-1018-6: the email and password sign-in screens' failures, as `signInErrors` keys */
+  | { key: Exclude<SignInErrorKey, 'tooManySignIns' | 'tooManyCodes'>; text: string }
+  | { key: 'tooManySignIns' | 'tooManyCodes'; seconds: number | null; text: string };
 
 export interface AccessState {
   /** Retires async replies from an older login/setup attempt. */
