@@ -90,8 +90,10 @@ export function DashboardScreen() {
   const recordedPhotos = useStore(useShallow((s) => s.photos));
   // #482 site photos: a photo picked with no signal shows first at once, until its upload is sent
   const outbox = useStore((s) => s.outbox);
-  const queuedPhotos = useMemo(() => (API_BASE ? queuedSitePhotos(outbox) : []), [outbox]);
+  const queuedPhotos = useMemo(() => (API_BASE ? queuedSitePhotos(outbox, recordedPhotos) : []), [outbox, recordedPhotos]);
   const sitePhotos = useMemo(() => [...queuedPhotos, ...recordedPhotos], [queuedPhotos, recordedPhotos]);
+  // the photos tile counts the queued photos with the recorded ones, and the places among all of them
+  const photoZones = useMemo(() => new Set(sitePhotos.map((p) => p.nodeId).filter(Boolean)).size, [sitePhotos]);
   // the milestone strip is the project's own phases, read LIVE from their activities (the stored
   // `donePct` is only the snapshot's initial count): done = every activity accepted, started = any
   // accepted or under way. Empty projects show none.
@@ -149,10 +151,10 @@ export function DashboardScreen() {
     // The snapshot carries the newest SNAPSHOT_SITE_PHOTO_LIMIT only: a full window is "at least", and its
     // places are the places among those (Codex 4194155412) — never presented as the total on record.
     {
-      key: 'photos', label: L.photosTile[photoLang], value: photoStats.capped ? `${photoStats.count + queuedPhotos.length}+` : photoStats.count + queuedPhotos.length, accent: 'var(--green-solid)',
+      key: 'photos', label: L.photosTile[photoLang], value: photoStats.capped ? `${sitePhotos.length}+` : sitePhotos.length, accent: 'var(--green-solid)',
       sub: photoStats.capped
-        ? `${T.photosLatest(photoStats.count, photoLang)}${photoStats.zones > 0 ? ` · ${T.photosAcross(photoStats.zones, photoLang, true)}` : ''}`
-        : photoStats.zones > 0 ? T.photosAcross(photoStats.zones, photoLang) : photoStats.count + queuedPhotos.length > 0 ? L.photosNotPlaced[photoLang] : L.photosNone[photoLang],
+        ? `${T.photosLatest(sitePhotos.length, photoLang)}${photoZones > 0 ? ` · ${T.photosAcross(photoZones, photoLang, true)}` : ''}`
+        : photoZones > 0 ? T.photosAcross(photoZones, photoLang) : sitePhotos.length > 0 ? L.photosNotPlaced[photoLang] : L.photosNone[photoLang],
       onClick: canOpen('places') ? () => setScreen('places') : undefined,
     },
   );

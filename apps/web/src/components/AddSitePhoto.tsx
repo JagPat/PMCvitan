@@ -3,6 +3,7 @@ import { useStore } from '@/store/store';
 import { pickProgressPhoto } from '@/lib/pickProgressPhoto';
 import { dailyLogSendPending } from '@/store/dailyLogPending';
 import { todayCivil } from '@/lib/civilDate';
+import { dailyLogReadMode } from '@/data/apiGateway';
 import { Camera } from '@/lib/icons';
 import { can, sitePhotoLabels as L } from '@vitan/shared';
 
@@ -29,9 +30,12 @@ export function AddSitePhoto() {
         style={{ display: 'none' }}
         onChange={(e) => {
           // filed on the day's log only when it is TODAY's: the latest log can be one sent on an earlier day, and a
-          // photo taken now is never added to that record (#482)
-          const { dailyLog, timeZone } = useStore.getState();
-          const forLog = dailyLog?.id && dailyLog.logDate === todayCivil(timeZone) ? dailyLog.id : null;
+          // photo taken now is never added to that record (#482). Under the module read the log in the store is only
+          // trusted once that read has settled: before it (or after it failed) the store can still hold a log the
+          // server has since replaced, so the photo goes up unfiled rather than onto the wrong record.
+          const { dailyLog, dailyLogLoad, timeZone } = useStore.getState();
+          const settled = dailyLogReadMode() !== 'moduleQuery' || dailyLogLoad === 'ready';
+          const forLog = settled && dailyLog?.id && dailyLog.logDate === todayCivil(timeZone) ? dailyLog.id : null;
           pickProgressPhoto(e.target.files?.[0], null, forLog);
           e.target.value = '';
         }}

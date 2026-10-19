@@ -272,4 +272,68 @@ describe('#482 site photos: "Add site photo" on the Dashboard', () => {
     expect((r.getByAltText('Site photo 1') as HTMLImageElement).src).toBe('http://api.test/new.jpg');
     expect(r.getByTestId('tile-photos-value').textContent).toBe('2');
   });
+
+  it.each([['still loading', 'loading'], ['failed', 'error'], ['not started', 'idle']] as const)(
+    'leaves the photo unfiled while the module daily-log read is %s (Codex 4313928997)',
+    async (_label, load) => {
+      vi.stubEnv('VITE_DAILYLOG_READ', 'moduleQuery');
+      const { useStore } = await loadApiMode('engineer');
+      vi.stubEnv('VITE_DAILYLOG_READ', 'moduleQuery');
+      const { todayCivil } = await import('@/lib/civilDate');
+      // the store still holds a log for today from before the module read; the server may have replaced it since
+      const log = { id: 'log-stale', date: 'Today', logDate: todayCivil('Asia/Kolkata'), checkedIn: true, checkinTime: null, submitted: false, crew: [], materials: [], progress: 0, photos: [] };
+      useStore.setState({ dailyLog: log, dailyLogLoad: load, timeZone: 'Asia/Kolkata', online: true } as never);
+      const uploadMedia = vi.fn().mockResolvedValue({ id: 'new', url: 'http://api.test/new.jpg' });
+      useStore.getState()._setGateway({ uploadMedia } as never);
+      stubFileReader('data:image/jpeg;base64,AAAA');
+      const { DashboardScreen } = await import('@/screens/DashboardScreen');
+      const r = render(<DashboardScreen />);
+      pick(r);
+      expect(uploadMedia.mock.calls[0][0].dailyLogId).toBeUndefined();
+      await waitFor(() => expect(useStore.getState().photos.map((p) => p.id)).toEqual(['new']));
+      expect(useStore.getState().dailyLog?.photos).toEqual([]);
+    },
+  );
+
+  it('files the photo on today\'s log once the module daily-log read has settled (Codex 4313928997)', async () => {
+    const { useStore } = await loadApiMode('engineer');
+    vi.stubEnv('VITE_DAILYLOG_READ', 'moduleQuery');
+    const { todayCivil } = await import('@/lib/civilDate');
+    const log = { id: 'log-today', date: 'Today', logDate: todayCivil('Asia/Kolkata'), checkedIn: true, checkinTime: null, submitted: false, crew: [], materials: [], progress: 0, photos: [] };
+    useStore.setState({ dailyLog: log, dailyLogLoad: 'ready', timeZone: 'Asia/Kolkata', online: true } as never);
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'new', url: 'http://api.test/new.jpg' });
+    useStore.getState()._setGateway({ uploadMedia } as never);
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    pick(r);
+    expect(uploadMedia.mock.calls[0][0].dailyLogId).toBe('log-today');
+  });
+
+  it('counts the place of a photo still waiting for signal in the tile (Codex 4313929007)', async () => {
+    const { useStore } = await loadApiMode('engineer', [{ id: 'old', url: 'http://api.test/old.jpg', kind: 'progress' }]);
+    const queued = { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA', clientKey: 'k1', nodeId: 'slab-1' } };
+    useStore.setState({ outbox: [queued] } as never);
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    expect(r.getByTestId('tile-photos-value').textContent).toBe('2');
+    expect(r.getByTestId('tile-photos-sub').textContent).toBe('Across 1 place');
+  });
+
+  it('shows a queued photo once when the snapshot already holds it (Codex 4313929002)', async () => {
+    // the upload reached the server but its reply was lost: the outbox still holds it and the refresh brought it in
+    const { useStore } = await loadApiMode('client', [
+      { id: 'new', url: 'http://api.test/new.jpg', kind: 'progress', clientKey: 'k1' } as never,
+      { id: 'old', url: 'http://api.test/old.jpg', kind: 'progress' },
+    ]);
+    const queued = { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA', clientKey: 'k1' } };
+    const other = { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'BBBB', clientKey: 'k2' } };
+    useStore.setState({ outbox: [queued, other] } as never);
+    const { DashboardScreen } = await import('@/screens/DashboardScreen');
+    const r = render(<DashboardScreen />);
+    expect(r.getAllByAltText(/^Site photo \d+$/).map((i) => (i as HTMLImageElement).src)).toEqual([
+      'data:image/jpeg;base64,BBBB', 'http://api.test/new.jpg', 'http://api.test/old.jpg',
+    ]);
+    expect(r.getByTestId('tile-photos-value').textContent).toBe('3');
+  });
 });

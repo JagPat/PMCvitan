@@ -365,6 +365,8 @@ export interface PhotoDto {
   /** location-tree node this photo shows (undefined = unplaced) */
   nodeId?: string;
   kind: string; // progress | inspection | material
+  /** #482 site photos — the upload key, on the viewer's own photos only */
+  clientKey?: string;
 }
 
 export interface DailyLogDto {
