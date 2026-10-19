@@ -12,10 +12,11 @@ import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { AddSitePhoto } from '@/components/AddSitePhoto';
+import { SitePhotoDelete } from '@/components/SitePhotoDelete';
 import { queuedSitePhotos } from '@/lib/queuedSitePhotos';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
-import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, sitePhotoWho, type Lang, type WaitParty } from '@vitan/shared';
+import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, sitePhotoDeletable, sitePhotoWho, type Lang, type WaitParty } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 /** Top 10 #2 (#771) — a count whose slice has not settled is shown as unknown, never as 0. */
@@ -321,7 +322,9 @@ export function DashboardScreen() {
           ) : (
             <div className={styles.photos}>
               {/* the snapshot sends the newest photo first (#482) */}
-              {sitePhotos.slice(0, 4).map((p, i) => (
+              {/* the newest four, and any older photo still within the viewer's own hour, so that hour's Delete is never
+                  out of reach (Codex 4316959529); the PMC's and engineer's Delete has no hour, so it stays on the four */}
+              {[...sitePhotos.slice(0, 4), ...sitePhotos.slice(4).filter((p) => p.deletableUntil && sitePhotoDeletable(p, Date.now()))].map((p, i) => (
                 <div key={p.id} style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--hairline)' }}>
                   <div style={{ height: 120, position: 'relative', background: '#000' }}>
                     <img src={p.url} alt={T.sitePhotoAlt(i + 1, lang)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -331,6 +334,8 @@ export function DashboardScreen() {
                     {/* #482 site photos: who added it, their role on the project and when */}
                     <div data-testid="dash-photo-who" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2, overflowWrap: 'anywhere' }}>{sitePhotoWho(p, lang, timeZone)}</div>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{stampText(p.takenAt)}</div>
+                    {/* #482 site photos: the viewer deletes a photo they added, within the hour */}
+                    <SitePhotoDelete photo={p} />
                   </div>
                 </div>
               ))}
