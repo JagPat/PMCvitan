@@ -14,4 +14,11 @@ export class MediaQueryService {
   progressPhotoCountSince(projectId: string, since: Date): Promise<number> {
     return this.prisma.media.count({ where: { projectId, kind: 'progress', createdAt: { gte: since } } });
   }
+
+  /** #792 SV2 — what a visit's files show beside their link: each file's type and when the device took it, by id. */
+  async fileFacts(projectId: string, ids: string[]): Promise<Map<string, { mime: string; takenAt: string | null }>> {
+    if (ids.length === 0) return new Map();
+    const rows = await this.prisma.media.findMany({ where: { projectId, id: { in: ids } }, select: { id: true, mime: true, takenAt: true } });
+    return new Map(rows.map((r) => [r.id, { mime: r.mime, takenAt: r.takenAt }]));
+  }
 }

@@ -13,6 +13,7 @@ import { InventoryParticipant } from '../inventory/inventory.participant';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialParticipant } from '../commercial/commercial.participant';
+import { SiteVisitFilesParticipant } from '../site-visits/site-visit-files.participant';
 import { isPlaceHiddenFrom, previewPublishedProjectNode, resolvePublishedProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
@@ -37,6 +38,13 @@ const SITE_RECORD_ROLES: ReadonlySet<string> = new Set(['pmc', 'engineer']);
  *  taken for (#482, Board 14 Oct 2026: every member adds photos to that day's record), linked to no other record. */
 function isPlainSitePhoto(input: CreateMediaInput): boolean {
   return input.kind === 'progress' && !input.decisionId && !input.inspectionId && !input.inspectionItemId;
+}
+
+/** A file added on a site visit (#792 SV2, Jagrut 19 Oct 2026: office staff and site engineers add them from their
+ *  phones): kind 'visit', naming its visit, and filed on nothing else. Who may add one is the site-visits module's. */
+function isSiteVisitFile(input: CreateMediaInput): boolean {
+  return input.kind === 'visit' && input.siteVisit !== undefined
+    && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
 }
 
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
@@ -72,6 +80,8 @@ export class MediaService {
     private readonly activityParticipant: ActivityParticipant,
     // Phase 5 Task 3 (§D) — measurement evidence is delete-sealed while cited.
     private readonly commercialParticipant: CommercialParticipant,
+    // #792 SV2 — a file added on a site visit is linked to it by the site-visits participant, in the upload's transaction
+    private readonly siteVisitFiles: SiteVisitFilesParticipant,
   ) {}
 
   /** A clientKey replay returns the stored row only when the caller could have created it: for the roles
@@ -80,7 +90,7 @@ export class MediaService {
    *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884). */
   private async replayed(projectId: string, user: AuthUser, row: ReplayRow): Promise<UploadedMedia> {
     if (!SITE_RECORD_ROLES.has(user.role)) {
-      const plain = row.kind === 'progress' && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
+      const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
       if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
     }
     if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
@@ -99,7 +109,10 @@ export class MediaService {
     // non-progress kind.
     // Asked before the idempotency read and before any byte is stored, so a refused caller learns nothing
     // about another photo's key and leaves nothing in the bucket.
-    if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input)) {
+    if (input.siteVisit && !isSiteVisitFile(input)) {
+      throw new BadRequestException('A file on a site visit is filed on the visit only, not on a log, a decision or an inspection');
+    }
+    if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input)) {
       throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
     }
     // idempotency fast-path: this exact photo already landed
@@ -114,6 +127,9 @@ export class MediaService {
     // Checked here BEFORE the bytes are stored, as an early no; the tree's state is decided again under its
     // lock inside the transaction below, which is the authority.
     const nodeId = await previewPublishedProjectNode(this.prisma, projectId, input.nodeId);
+    // A visit file: the visit is this project's, not closed, and the caller is on it (an early no, as above)
+    const visit = input.siteVisit;
+    if (visit) await this.siteVisitFiles.assertMayAdd(projectId, visit.visitId, user.sub);
     // Project-owned references: a photo may only point at THIS project's decision/log.
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     // Task 10 — a daily-log reference is validated through the daily-log module's query, not `project-ref`.
@@ -149,7 +165,10 @@ export class MediaService {
       // the row and its `media.uploaded` event commit together (a replay of the same
       // clientKey lands on the unique below and records NO second event)
       row = await this.prisma.$transaction(async (tx) => {
-        // first statement: the place's publication under the tree lock's shared side (a refusal here
+        // a visit file's first statements are a visit act's: the readiness lock, the tree lock and the visit row, and
+        // the adder is judged again under them (#792 SV2; the order that keeps a place's removal from interleaving)
+        if (visit) await this.siteVisitFiles.lockForFile(tx, projectId, visit.visitId, user.sub);
+        // first statement otherwise: the place's publication under the tree lock's shared side (a refusal here
         // rolls back and goes through the earned object cleanup below)
         await resolvePublishedProjectNode(tx, projectId, nodeId);
         const created = await tx.media.create({
@@ -173,6 +192,8 @@ export class MediaService {
             clientKey: input.clientKey ?? null,
           },
         });
+        // the visit link, before the upload's event: the adder's standing, then the row (site-visits writes it)
+        if (visit) await this.siteVisitFiles.attach(tx, { ...visit, projectId, mediaId: created.id, userId: user.sub, actor });
         const uploadedEv = await emitEvent(tx, { projectId, actor, eventType: 'media.uploaded', entityType: 'Media', entityId: created.id, payload: { kind: input.kind }, effectKey: 'media.uploaded', dispatch: {} });
         const evs: EmittedEventMeta[] = [uploadedEv];
         // Task 10 (Module 3) correction — ITEM-LEVEL evidence (both ids present) links through the
@@ -332,6 +353,8 @@ export class MediaService {
       // Phase 5 Task 3 (§D): nor one cited as MEASUREMENT evidence — a measurement is immutable
       // and becomes a payable quantity, so this is the strictest case of the same rule.
       await this.commercialParticipant.assertMediaDisposable(tx, projectId, id);
+      // #792 SV2: nor one added on a site visit — it is part of the visit's record, which keeps it
+      await this.siteVisitFiles.assertMediaDisposable(tx, projectId, id);
       // #571 round 9, finding 1 — and the same rule for ASSIGNED inspection evidence: while an
       // assignment binds, only its assignee may destroy the photos that stand behind that work.
       // This is the sharpest case of the whole assignment rule, because a delete does not come back.
