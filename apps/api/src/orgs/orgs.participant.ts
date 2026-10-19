@@ -62,6 +62,20 @@ export class OrgsParticipant {
   }
 
   /**
+   * Every project that may be operated on (exists, not archived), with its display name, by id.
+   *
+   * #482 operator door (Codex on `5ed4eab`). The `/ops` project list read `Project` from the platform
+   * module; the population an operator may switch is the same population `isProjectOperable` admits,
+   * so it is stated here, beside that predicate, and a later change to archival reaches both.
+   * A plain read: it lists, it authorises nothing (the switch re-asks `isProjectOperable` under lock).
+   */
+  async operableProjects(tx: OrgsParticipantClient | Prisma.TransactionClient): Promise<Array<{ id: string; name: string }>> {
+    return (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ id: string; name: string }>>(
+      `SELECT "id", "name" FROM "Project" WHERE "archivedAt" IS NULL ORDER BY "id" ASC`,
+    );
+  }
+
+  /**
    * The two facts a DEPLOYMENT guard needs about this database's project population: how many
    * projects it holds, and whether a named anchor project is one of them.
    *

@@ -97,4 +97,22 @@ describe('#482 operator door (live PG)', () => {
     expect((await http().post(`/ops/projects/${f.projectA.id}/capabilities/home-nav/enable`).set(auth).send({ operator: 'ops@test.local' })).status).toBe(400);
     expect(await t.prisma.projectCapability.count({ where: { projectId: f.projectA.id, capability: { not: 'consultation' } } })).toBe(0);
   });
+
+  it('refuses to switch an archived project, and leaves it off the list', async () => {
+    process.env.OPS_TOKEN = TOKEN;
+    const auth = { Authorization: `Bearer ${TOKEN}` };
+    await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: new Date() } });
+    try {
+      for (const act of ['enable', 'disable']) {
+        const r = await http().post(`/ops/projects/${f.projectB.id}/capabilities/home-nav/${act}`).set(auth).send(body);
+        expect(r.status, r.text).toBe(400);
+      }
+      expect(await t.prisma.projectCapability.count({ where: { projectId: f.projectB.id } })).toBe(0);
+      expect(await t.prisma.auditLog.count({ where: { projectId: f.projectB.id, action: { startsWith: 'capability.' } } })).toBe(0);
+      const listed = await http().get('/ops/projects').set(auth);
+      expect((listed.body.projects as Array<{ id: string }>).map((p) => p.id)).not.toContain(f.projectB.id);
+    } finally {
+      await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: null } });
+    }
+  });
 });

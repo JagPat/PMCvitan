@@ -2604,7 +2604,8 @@ remove it and redeploy.
          -d '{"operator":"<you>","reason":"<text>"}' \
          https://pms-api.vitan.in/ops/projects/<id>/capabilities/home-nav/enable   # or /disable
 
-The switch routes run the same functions as the §HN commands and accept only `home-nav`. Each change writes
+The switch routes run the same functions as the §HN commands and accept only `home-nav`. Both refuse an
+unknown or archived project (400 from the door, an error from the CLIs), and the list shows only live projects. Each change writes
 the usual `capability.enable` / `capability.disable` audit row, with the operator, the reason and
 `via: "ops-api"`. A wrong or missing token gets 401, and each route allows 30 calls a minute per address.
 No route takes SQL or touches project data. The T3C seal check stays a terminal command (`t3c:seals`).

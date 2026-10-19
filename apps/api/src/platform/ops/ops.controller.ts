@@ -5,7 +5,8 @@ import { Public } from '../../common/roles';
 import { Throttle, ThrottleGuard } from '../../common/throttle';
 import { ZodPipe } from '../../common/zod.pipe';
 import { SWITCHABLE_CAPABILITIES } from '../capabilities.service';
-import { disableCapability, enableCapability } from '../capability-switch';
+import { disableCapability, enableCapability, ProjectNotOperableError } from '../capability-switch';
+import { OrgsParticipant } from '../../orgs/orgs.participant';
 import { OpsTokenGuard } from './ops-token.guard';
 
 const switchSchema = z.object({
@@ -41,23 +42,25 @@ export const OPS_VIA = 'ops-api';
 @UseGuards(ThrottleGuard, OpsTokenGuard)
 @Throttle(30, 60_000)
 export class OpsController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly orgs: OrgsParticipant) {}
 
   @Public()
   @Get('projects')
   async projects(): Promise<{ projects: OpsProjectRow[] }> {
-    const [projects, activity] = await Promise.all([
-      this.prisma.project.findMany({
-        where: { archivedAt: null },
-        select: { id: true, name: true, capabilities: { select: { capability: true }, orderBy: { capability: 'asc' } } },
-      }),
-      this.prisma.auditLog.groupBy({ by: ['projectId'], where: { projectId: { not: null } }, _max: { at: true } }),
+    // the operable population is the orgs owner's answer; capabilities and activity are platform-owned
+    const projects = await this.orgs.operableProjects(this.prisma);
+    const ids = projects.map((p) => p.id);
+    const [capabilities, activity] = await Promise.all([
+      this.prisma.projectCapability.findMany({ where: { projectId: { in: ids } }, select: { projectId: true, capability: true }, orderBy: { capability: 'asc' } }),
+      this.prisma.auditLog.groupBy({ by: ['projectId'], where: { projectId: { in: ids } }, _max: { at: true } }),
     ]);
+    const switched = new Map<string, string[]>();
+    for (const c of capabilities) switched.set(c.projectId, [...(switched.get(c.projectId) ?? []), c.capability]);
     const last = new Map(activity.map((a) => [a.projectId, a._max.at]));
     const rows = projects.map((p) => ({
       id: p.id,
       name: p.name,
-      capabilities: p.capabilities.map((c) => c.capability),
+      capabilities: switched.get(p.id) ?? [],
       lastActivity: last.get(p.id)?.toISOString() ?? null,
     }));
     // most recently used first; never-used projects last, in id order
@@ -93,12 +96,12 @@ export class OpsController {
     return { ok: true, projectId, capability, changed };
   }
 
-  /** An unknown project is the caller's mistake (400), not a server fault. */
+  /** An unknown or archived project is the caller's mistake (400), not a server fault. */
   private async withProject<T>(run: () => Promise<T>): Promise<T> {
     try {
       return await run();
     } catch (e) {
-      if ((e as { code?: string }).code === 'P2025') throw new BadRequestException('no such project');
+      if (e instanceof ProjectNotOperableError) throw new BadRequestException('no such project, or it is archived');
       throw e;
     }
   }
