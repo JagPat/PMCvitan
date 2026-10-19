@@ -553,6 +553,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')", "Post('projects/:projectId/push/unlink')"],
   // Top 10 #4b unit C (#778) — the bell's seen mark (the viewer's own receipts).
   'snapshot/notifications-seen.controller.ts': ["Post('seen')"],
+  // #482 operator door — the presentation-only capability switch behind OPS_TOKEN
+  'platform/ops/ops.controller.ts': ["Post('projects/:projectId/capabilities/:capability/enable')", "Post('projects/:projectId/capabilities/:capability/disable')"],
 };
 
 // Controllers with NO mutating route (read-only surfaces).
@@ -630,12 +632,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire)', () => {
+    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(184);
+      expect(total).toBe(186);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(184);
+      expect(live).toBe(186);
     });
   });
 

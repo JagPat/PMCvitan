@@ -33,6 +33,7 @@ import { ProjectController } from '../snapshot/project.controller';
 import { NotificationsSeenController } from '../snapshot/notifications-seen.controller';
 import { AppModule } from '../app.module';
 import { NodesController } from '../nodes/nodes.controller';
+import { OpsController } from '../platform/ops/ops.controller';
 
 /**
  * Route-walk policy test — makes role-gating fail closed *by construction*.
@@ -75,6 +76,8 @@ const CONTROLLERS = [
   // Top 10 #4b unit C (#778) — the bell's seen mark
   NotificationsSeenController,
   NodesController,
+  // #482 operator door (OPS_TOKEN; @Public — no user JWT reaches it)
+  OpsController,
 ];
 
 const MUTATING = new Set([RequestMethod.POST, RequestMethod.PUT, RequestMethod.PATCH, RequestMethod.DELETE]);

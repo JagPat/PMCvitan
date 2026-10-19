@@ -10,6 +10,7 @@ import { ThrottleGuard } from './common/throttle';
 import { AuthService } from './auth/auth.service';
 import { AuthController } from './auth/auth.controller';
 import { HealthController } from './health.controller';
+import { OpsController } from './platform/ops/ops.controller';
 import { SmsService } from './auth/sms.service';
 import { EmailService } from './platform/email.service';
 import { InvitationsService } from './orgs/invitations.service';
@@ -134,6 +135,7 @@ import { MediaParticipant } from './media/media.participant';
   ],
   controllers: [
     HealthController,
+    OpsController,
     AuthController,
     ProjectController,
     NotificationsSeenController,
