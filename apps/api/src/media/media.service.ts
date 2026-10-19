@@ -343,6 +343,9 @@ export class MediaService {
     if (!row || row.projectId !== projectId) return false;
     const actor = await resolveActor(this.prisma, user);
     const events = await this.prisma.$transaction(async (tx) => {
+      // #482 site photos — a photo filed on a day's log: that log row is held FOR SHARE until this delete commits, so a
+      // send (which takes the row FOR UPDATE and then counts the photos filed on it) waits and never counts this one
+      if (row.dailyLogId) await this.dailyLog.sentLogs(projectId, [row.dailyLogId], tx, true);
       // Phase 3 Task 4 — the §C stock ledger is immutable, so a photo cited as stock quality
       // evidence can never be unlinked: the inventory participant REFUSES the delete (409)
       // before anything is touched (the ledger's composite FK is the database backstop).

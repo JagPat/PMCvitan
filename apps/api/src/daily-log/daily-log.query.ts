@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import type { DailyLogModuleResult } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { MaterialDto } from '../snapshot/types';
@@ -109,6 +110,19 @@ export class DailyLogQueryService {
     });
     if (!log) return { status: 'missing', id: null };
     return { status: log.submitted ? 'sent' : 'open', id: log.id };
+  }
+
+  /** #482 site photos — which of these daily logs of project `projectId` were already sent.
+   *  With `lock`, inside the caller's transaction, each named log row is held FOR SHARE: a submit (which takes the
+   *  row FOR UPDATE, then counts the photos filed on it) then waits for the caller to commit, or the caller waits for
+   *  the submit and reads it as sent. */
+  async sentLogs(projectId: string, dailyLogIds: readonly string[], tx?: Prisma.TransactionClient, lock = false): Promise<Set<string>> {
+    if (dailyLogIds.length === 0) return new Set();
+    const rows = tx && lock
+      ? await tx.$queryRaw<Array<{ id: string; submitted: boolean }>>`
+          SELECT "id", "submitted" FROM "DailyLog" WHERE "projectId" = ${projectId} AND "id" = ANY(${[...dailyLogIds]}::text[]) FOR SHARE`
+      : await (tx ?? this.prisma).dailyLog.findMany({ where: { projectId, id: { in: [...dailyLogIds] } }, select: { id: true, submitted: true } });
+    return new Set(rows.filter((r) => r.submitted).map((r) => r.id));
   }
 
   async existsInProject(projectId: string, dailyLogId: string): Promise<boolean> {
