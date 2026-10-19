@@ -64,7 +64,8 @@ export class MediaController {
     res.send(out.bytes);
   }
 
-  /** Delete a photo (bucket object + row). Scoped to the caller's project; PMC or site engineer only. */
+  /** Delete a photo (bucket object + row). Scoped to the caller's project. The PMC and the site engineer delete
+   *  any photo; every other member only a site photo they added, within the hour (#482, Board 14 Oct 2026). */
   @Delete('media/:id')
   @UseGuards(JwtGuard, RolesGuard)
   @RolesFor('media.delete')

@@ -111,6 +111,13 @@ export class DailyLogQueryService {
     return { status: log.submitted ? 'sent' : 'open', id: log.id };
   }
 
+  /** #482 site photos — was daily log `dailyLogId` of project `projectId` already sent? A member's own site photo
+   *  filed on a sent log is part of that record, so it is no longer theirs to delete. */
+  async isSent(projectId: string, dailyLogId: string): Promise<boolean> {
+    const row = await this.prisma.dailyLog.findFirst({ where: { id: dailyLogId, projectId }, select: { submitted: true } });
+    return row?.submitted === true;
+  }
+
   async existsInProject(projectId: string, dailyLogId: string): Promise<boolean> {
     const row = await this.prisma.dailyLog.findFirst({ where: { id: dailyLogId, projectId }, select: { id: true } });
     return row !== null;

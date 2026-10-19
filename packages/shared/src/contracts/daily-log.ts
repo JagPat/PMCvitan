@@ -14,6 +14,10 @@
  *  "at least this many" once it holds this many (Codex 4194155412). */
 export const SNAPSHOT_SITE_PHOTO_LIMIT = 300;
 
+/** #482 site photos (Board, 14 Oct 2026) — a member may delete a site photo they added for this long after the
+ *  server recorded it; after that it stays. */
+export const SITE_PHOTO_DELETE_WINDOW_MS = 60 * 60 * 1000;
+
 /** The daily-log module's state-changing commands (must equal the manifest `commands`). */
 export const DAILY_LOG_COMMANDS = [
   'daily-log.start',
@@ -34,6 +38,8 @@ export const DAILY_LOG_QUERIES = [
   'daily-log.projectionSlice',
   'daily-log.existsInProject',
   'daily-log.resolveRef',
+  // #482 site photos — whether a log was already sent: a member's own photo filed on it is then part of that record
+  'daily-log.isSent',
 ] as const;
 export type DailyLogQuery = (typeof DAILY_LOG_QUERIES)[number];
 

@@ -18,6 +18,7 @@ import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import type { CreateMediaInput } from '../contracts';
+import { SITE_PHOTO_DELETE_WINDOW_MS } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -295,6 +296,19 @@ export class MediaService {
     const projectId = user.projectId;
     const row = await this.prisma.media.findUnique({ where: { id } });
     if (!row || row.projectId !== projectId) return false;
+    // #482 (Board, 14 Oct 2026) — every member may delete a plain site photo THEY added, within an hour of the server
+    // recording it; any other photo stays the PMC's and the engineer's. Asked before anything is touched.
+    if (!SITE_RECORD_ROLES.has(user.role)) {
+      const plain = row.kind === 'progress' && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
+      if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('Only the person who added this site photo may delete it');
+      if (Date.now() - row.createdAt.getTime() > SITE_PHOTO_DELETE_WINDOW_MS) {
+        throw new ForbiddenException('A site photo can be deleted only within an hour of adding it');
+      }
+      // filed on a day's log that was since sent: the photo is part of that record now
+      if (row.dailyLogId && (await this.dailyLog.isSent(projectId, row.dailyLogId))) {
+        throw new ForbiddenException('This photo is part of a daily log that was already sent');
+      }
+    }
     const actor = await resolveActor(this.prisma, user);
     const events = await this.prisma.$transaction(async (tx) => {
       // Phase 3 Task 4 — the §C stock ledger is immutable, so a photo cited as stock quality

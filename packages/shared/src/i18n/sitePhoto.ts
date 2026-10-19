@@ -1,4 +1,5 @@
 import type { Lang, Role } from '../domain/types';
+import { SITE_PHOTO_DELETE_WINDOW_MS } from '../contracts/daily-log';
 import { forYouRole } from './actionItems';
 
 /**
@@ -8,7 +9,21 @@ import { forYouRole } from './actionItems';
 
 export const sitePhotoLabels = {
   add: { en: 'Add site photo', hi: 'साइट फ़ोटो जोड़ें', gu: 'સાઇટ ફોટો ઉમેરો' },
+  // deleting your own photo within the hour (Board, 14 Oct 2026)
+  delete: { en: 'Delete', hi: 'हटाएँ', gu: 'કાઢી નાખો' },
+  confirmDelete: { en: 'Delete this photo?', hi: 'यह फ़ोटो हटाएँ?', gu: 'આ ફોટો કાઢી નાખવો?' },
+  keep: { en: 'Keep', hi: 'रखें', gu: 'રાખો' },
+  deleted: { en: 'Photo deleted.', hi: 'फ़ोटो हटा दी गई।', gu: 'ફોટો કાઢી નાખ્યો.' },
+  deleteOffline: { en: 'Connect to the internet to delete a photo.', hi: 'फ़ोटो हटाने के लिए इंटरनेट से जुड़ें।', gu: 'ફોટો કાઢવા માટે ઇન્ટરનેટ સાથે જોડાઓ.' },
 } as const;
+
+/** Whether the viewer may still delete this photo: one they added, a plain site photo, and less than an hour since
+ *  the server recorded it (the server decides again on delete). `now` is the device's clock in ms. */
+export function sitePhotoDeletable(p: { mine?: boolean; kind?: string; at?: string }, now: number): boolean {
+  if (!p.mine || p.kind !== 'progress' || !p.at) return false;
+  const added = Date.parse(p.at);
+  return !Number.isNaN(added) && now - added < SITE_PHOTO_DELETE_WINDOW_MS;
+}
 
 /** When a photo was added, in the project's time zone: "19 Oct, 3:00 PM" in English; in Hindi and Gujarati the
  *  day and month in that language and a 24-hour clock, as the photo stamps there read. Empty when unknown. */

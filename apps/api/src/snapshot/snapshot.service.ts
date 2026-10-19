@@ -176,6 +176,8 @@ export class SnapshotService {
       // #482 site photos — the viewer's own upload key, so a device that still holds this photo in its offline queue
       // (its reply was lost) shows it once; nobody else's key is sent
       ...(userId && m.uploadedBy === userId && m.clientKey ? { clientKey: m.clientKey } : {}),
+      // #482 site photos — the viewer's own photo, which they may delete within the hour (the server decides)
+      ...(userId && m.uploadedBy === userId ? { mine: true as const } : {}),
     }));
 
     // Task 8 — the role-filtered decision DTOs come from the decisions query (the serialization moved

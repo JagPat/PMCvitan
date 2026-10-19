@@ -30,6 +30,7 @@ export const mediaManifest: ModuleManifest = {
     'PATCH /projects/:projectId/media/:mediaId/node',
     'DELETE /media/:id',
   ],
-  // #482 (Board, 14 Oct 2026) — every member uploads a plain site photo; filing and deleting stay PMC/engineer
+  // #482 (Board, 14 Oct 2026) — every member uploads a plain site photo and deletes their own within the hour;
+  // filing, and deleting any photo, stay PMC/engineer
   permissions: ['pmc', 'engineer', 'contractor', 'consultant', 'client'],
 };

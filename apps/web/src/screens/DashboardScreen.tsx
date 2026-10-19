@@ -12,6 +12,7 @@ import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { AddSitePhoto } from '@/components/AddSitePhoto';
+import { SitePhotoDelete } from '@/components/SitePhotoDelete';
 import { queuedSitePhotos } from '@/lib/queuedSitePhotos';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
@@ -331,6 +332,8 @@ export function DashboardScreen() {
                     {/* #482 site photos: who added it, their role on the project and when */}
                     <div data-testid="dash-photo-who" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2, overflowWrap: 'anywhere' }}>{sitePhotoWho(p, lang, timeZone)}</div>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{stampText(p.takenAt)}</div>
+                    {/* #482 site photos: the viewer deletes a photo they added, within the hour */}
+                    <SitePhotoDelete photo={p} />
                   </div>
                 </div>
               ))}

@@ -560,6 +560,8 @@ export interface Photo {
   at?: string;
   /** #482 site photos — the upload key, on the viewer's own photos only */
   clientKey?: string;
+  /** #482 site photos — set on the photos the viewer added (they may delete one within the hour) */
+  mine?: boolean;
 }
 
 export interface CrewRow {

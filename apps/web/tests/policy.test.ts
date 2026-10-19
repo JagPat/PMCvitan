@@ -116,7 +116,8 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'dailyLog.submit': ['engineer', 'pmc'],
   // #482 (Board, 14 Oct 2026): every project member adds a site photo; worker tokens do not
   'media.upload': ['pmc', 'engineer', 'contractor', 'consultant', 'client'],
-  'media.delete': ['pmc', 'engineer'],
+  // #482 (Board, 14 Oct 2026): every member deletes their own site photo within the hour (the API narrows it)
+  'media.delete': ['pmc', 'engineer', 'contractor', 'consultant', 'client'],
   'media.file': ['pmc', 'engineer'],
   'drawing.issue': ['pmc'],
   'drawing.publish': ['pmc'],

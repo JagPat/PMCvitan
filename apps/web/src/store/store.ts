@@ -79,7 +79,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoLabels as SPL } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -799,6 +799,8 @@ export interface AppActions {
    * Omitted, the log on screen now is used.
    */
   addProgressPhoto: (dataUrl: string, nodeId?: string | null, stamp?: CaptureStamp, pickedIn?: ProjectScope, pickedForLog?: string | null) => void;
+  /** #482 site photos — delete a site photo the viewer added, within the hour (needs a connection) */
+  deleteSitePhoto: (photoId: string) => void;
   submitDailyLog: () => void;
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
@@ -4017,6 +4019,24 @@ export const useStore = create<Store>()(
       });
       get().flash((nodeId ? DWT.filedDemo : DWT.unfiledDemo)[get().lang]);
     },
+    deleteSitePhoto: (photoId) => {
+      const lang = (): Lang => get().lang;
+      if (gateway) {
+        // a delete does not come back, so it is never queued: with no signal the member is told to connect
+        if (!get().online) {
+          get().flash(SPL.deleteOffline[lang()]);
+          return;
+        }
+        // the fresh snapshot drops the photo everywhere it showed (the Dashboard, the Site Map, the day's log)
+        const gw = gateway;
+        void runRemote(() => gw.deleteMedia(photoId).then(() => gw.snapshot()), () => SPL.deleted[lang()], (why) => SRV.refused(why, lang()), () => DTX.unreachable[lang()]);
+        return;
+      }
+      set((s) => {
+        s.photos = s.photos.filter((p) => p.id !== photoId);
+      });
+      get().flash(SPL.deleted[lang()]);
+    },
     filePhoto: (photoId, nodeId) => {
       if (gateway) {
         runRemote(() => gateway!.setMediaNode(photoId, nodeId), nodeId ? 'Photo filed to location.' : 'Photo unfiled.');
@@ -5687,7 +5707,7 @@ export const useStore = create<Store>()(
                   // who and when (#482): this viewer, at the time the server recorded it. No role yet: the role the
                   // viewer acts in can come through the org rather than a project membership, and the next snapshot
                   // says the project role, so nothing is claimed here that the server would not say.
-                  ...(s.userName ? { by: s.userName } : {}), ...(res.at ? { at: res.at } : {}),
+                  ...(s.userName ? { by: s.userName } : {}), ...(res.at ? { at: res.at } : {}), mine: true,
                 });
                 // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
                 if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
