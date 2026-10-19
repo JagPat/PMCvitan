@@ -560,6 +560,9 @@ export interface Photo {
   at?: string;
   /** #482 site photos — the upload key, on the viewer's own photos only */
   clientKey?: string;
+  /** #482 site photos — until when (ISO) the viewer may delete this photo: their own site photo, within the hour, not
+   *  on a daily log already sent. Absent otherwise. */
+  deletableUntil?: string;
 }
 
 export interface CrewRow {

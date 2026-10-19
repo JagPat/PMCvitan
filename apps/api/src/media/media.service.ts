@@ -19,6 +19,7 @@ import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import type { CreateMediaInput } from '../contracts';
+import { SITE_PHOTO_DELETE_WINDOW_MS } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -313,14 +314,34 @@ export class MediaService {
    * out of scope. Best-effort on the bucket delete (dev stub is a no-op).
    */
   async remove(id: string, user: AuthUser): Promise<boolean> {
+    return (await this.removeFiled(id, user)) !== null;
+  }
+
+  /** {@link remove}, saying which day's log counted the photo (`dailyLogId`, a progress photo filed on one), or
+   *  null when not found / out of scope. */
+  async removeFiled(id: string, user: AuthUser): Promise<{ dailyLogId: string | null } | null> {
     const projectId = user.projectId;
     const row = await this.prisma.media.findUnique({ where: { id } });
-    if (!row || row.projectId !== projectId) return false;
+    if (!row || row.projectId !== projectId) return null;
+    // #482 (Board, 14 Oct 2026) — every member may delete a plain site photo THEY added, within an hour of the server
+    // recording it; any other photo stays the PMC's and the engineer's. Asked before anything is touched.
+    if (!SITE_RECORD_ROLES.has(user.role)) {
+      const plain = row.kind === 'progress' && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
+      if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('Only the person who added this site photo may delete it');
+      if (Date.now() - row.createdAt.getTime() > SITE_PHOTO_DELETE_WINDOW_MS) {
+        throw new ForbiddenException('A site photo can be deleted only within an hour of adding it');
+      }
+    }
+    const ownSitePhoto = !SITE_RECORD_ROLES.has(user.role);
     const actor = await resolveActor(this.prisma, user);
     const events = await this.prisma.$transaction(async (tx) => {
       // #482 site photos — a photo filed on a day's log: that log row is held FOR SHARE until this delete commits, so a
-      // send (which takes the row FOR UPDATE and then counts the photos filed on it) waits and never counts this one
-      if (row.dailyLogId) await this.dailyLog.sentLogs(projectId, [row.dailyLogId], tx, true);
+      // send (which takes the row FOR UPDATE and then counts the photos filed on it) waits and never counts this one.
+      // A member's own photo on a log already sent is part of that record now, so theirs no longer (Codex 4316959509).
+      const sent = row.dailyLogId ? await this.dailyLog.sentLogs(projectId, [row.dailyLogId], tx, true) : new Set<string>();
+      if (ownSitePhoto && row.dailyLogId && sent.has(row.dailyLogId)) {
+        throw new ForbiddenException('This photo is part of a daily log that was already sent');
+      }
       // Phase 3 Task 4 — the §C stock ledger is immutable, so a photo cited as stock quality
       // evidence can never be unlinked: the inventory participant REFUSES the delete (409)
       // before anything is touched (the ledger's composite FK is the database backstop).
@@ -356,6 +377,6 @@ export class MediaService {
     // failing to clean it up is a harmless orphan — never a reason to fail a committed delete.
     if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
     await this.dispatcher.dispatchCommitted(events);
-    return true;
+    return { dailyLogId: row.kind === 'progress' ? row.dailyLogId : null };
   }
 }
