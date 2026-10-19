@@ -33,6 +33,9 @@ times today and "feels empty"; it should hold photos, sketches, video and other 
 4. **Deletes follow the file.** Removing the file removes its link (`ON DELETE CASCADE`), so the existing photo delete
    rules are unchanged. A direct `DELETE` or `TRUNCATE` of a link is refused (round-2 review), so a file cannot be
    taken off one visit and put on another; the sanctioned test reset bypasses the truncate seal by name.
+   The guard admits a delete below trigger depth 1 (the file's cascade), the same test SV1-a's visit tables use.
+   Binding that exemption to the parent deletion itself (round-3 review, a P2 past the review-round cap) is carried
+   to the head's follow-up issue, to be done across SV1-a's three tables and this one together if it is taken up.
 5. **One visit per file.** The file id is the key. A photo of a crack belongs to the visit it was taken on.
 6. **The rating (Fine, Concern, Action needed) is stored now, used later.** It is a nullable Prisma enum on the link, so
    it ships in this migration instead of a second migration-alone PR. "Action needed" raising an item is SV3's.
