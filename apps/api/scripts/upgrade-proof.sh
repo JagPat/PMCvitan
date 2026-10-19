@@ -5161,7 +5161,8 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # A6a's activation register (20271228) is a 4d-ii unit: excluded with the rest built after 4d-i.
   # Site Visits SV1-a's two files (20280111, 20280112) extend A7d's catalog generation and 4d-i's
   # pairing claim, and refuse to apply without them, so they are excluded with their prerequisites.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*) continue ;; esac
+  # Site Visits SV2's visit-media table (20280114) references SV1-a's visit table, so it is excluded with it.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*|20280114000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done

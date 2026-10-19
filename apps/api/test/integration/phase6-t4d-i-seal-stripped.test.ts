@@ -219,6 +219,8 @@ function buildBase(): void {
     // its `pairingRequired` types: built on A7d, excluded with the rest.
     '20280111000000_site_visits_sv1a_catalog',
     '20280112000000_site_visits_sv1a_record',
+    // Site Visits SV2's visit files reference SV1-a's visit table: built on SV1-a, excluded with it.
+    '20280114000000_site_visits_sv2_visit_media',
     // 4d-ii-a / A4a's consultation-cycle seals are 4d-i's bodies re-issued, guarded on 4d-i's
     // retirement marker, so they too apply only on top of 4d-i.
     '20271227000000_phase6_t4d_ii_consultation_finalized_cycle']);

@@ -9,13 +9,17 @@ import { type ModuleManifest } from '@vitan/shared';
  * visitor's adding and retiring of places and attendees, and the members' read. The tables are
  * append-only and set-once (edits add or retire rows), so every change is attributed and timed in the
  * record itself.
+ *
+ * SV2 adds `siteVisitMedia`: a file the visitor added on a visit, pointing at a stored Media row. Like an inspection's
+ * evidence, the link is written by this module (as the media module's participant, in the upload's own transaction),
+ * so the media module never writes a site-visit table.
  */
 export const siteVisitsManifest: ModuleManifest = {
   id: 'site-visits',
   title: 'Site Visits',
   kind: 'domain',
-  ownsModels: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace'],
-  readEncapsulated: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace'],
+  ownsModels: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia'],
+  readEncapsulated: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia'],
   // A visit freezes the label of a published node through the nodes module's database contract
   // (`nodes_published_name_locked`), never by reading its table.
   dependsOn: ['nodes'],
