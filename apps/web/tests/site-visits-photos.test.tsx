@@ -5,7 +5,7 @@ import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import type { ApiGateway, OutboxOp, SiteVisit } from '@/data/apiGateway';
 import { shrinkPhoto, MAX_PHOTO_BASE64, PHOTO_MAX_EDGE } from '@/lib/shrinkPhoto';
-import { refreshSiteVisits, LINK_REFRESH_MS } from '@/lib/useSiteVisits';
+import { refreshSiteVisits, linkRefreshDelay, LINK_REFRESH_FLOOR_MS } from '@/lib/useSiteVisits';
 import { leftoverEnglish } from './leftover-english';
 
 /**
@@ -143,17 +143,85 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     expect((within(card).getByLabelText('Note (optional)') as HTMLInputElement).value).toBe('');
   });
 
-  it('says there is no signal when the photo cannot be sent, and keeps nothing', async () => {
+  it('sends a photo with no answer again under the same key, by Send again or by picking it again (Codex 4319347033)', async () => {
     const uploadMedia = vi.fn().mockRejectedValue(new Error('network'));
-    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    const gw = fakeGateway([visit()], { uploadMedia });
+    await mount('consultant', CONSULTANT, gw);
     const card = screen.getByTestId('sv-visit-v-1');
     fireEvent.change(within(card).getByLabelText('Note (optional)'), { target: { value: 'Crack' } });
-    await pick('v-1');
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo was not sent: there is no signal. Add it again when you have signal.'));
+    const picked = photo();
+    await pick('v-1', picked);
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo may not have been sent: there is no signal. Tap Send again when you have signal.'));
     expect(useStore.getState().outbox).toHaveLength(0);
-    expect(screen.queryAllByTestId(/^sv-file-/)).toHaveLength(0);
-    // what was typed stays for the next try
-    expect((within(card).getByLabelText('Note (optional)') as HTMLInputElement).value).toBe('Crack');
+    // the photo is held as it was sent: its note stays, locked, with Send again and Don't send in place of Add photo
+    const note = within(card).getByLabelText('Note (optional)') as HTMLInputElement;
+    expect([note.value, note.disabled]).toEqual(['Crack', true]);
+    expect(within(card).queryByRole('button', { name: 'Add photo' })).toBeNull();
+    // dropped: the server may still have stored it, so picking the same file again sends it under the same key
+    fireEvent.click(within(card).getByRole('button', { name: 'Don’t send' }));
+    expect(note.disabled).toBe(false);
+    await pick('v-1', picked);
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(2));
+    const keys = () => (uploadMedia.mock.calls as unknown as [{ clientKey: string }][]).map(([i]) => i.clientKey);
+    expect(keys()[1]).toBe(keys()[0]);
+    // and so does Send again, which then clears the form
+    uploadMedia.mockResolvedValue({ id: 'm-8', url: '/media/m-8' });
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Send again' })); });
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(3));
+    expect(keys()[2]).toBe(keys()[0]);
+    expect(uploadMedia.mock.calls[2]).toMatchObject([{ siteVisit: { visitId: 'v-1', note: 'Crack' } }]);
+    await vi.waitFor(() => expect(within(card).queryByRole('button', { name: 'Send again' })).toBeNull());
+    expect((within(card).getByLabelText('Note (optional)') as HTMLInputElement).value).toBe('');
+    // a different photo is a new one, under a new key
+    const first = keys()[0];
+    uploadMedia.mockClear();
+    await pick('v-1', new File([new Uint8Array([4, 5, 6])], 'other.png', { type: 'image/png' }));
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    expect(keys()[0]).not.toBe(first);
+  });
+
+  it('says an ended sign-in or a busy server as such, not as no signal (Codex 4319347063)', async () => {
+    const said = async (status: number) => {
+      const uploadMedia = vi.fn().mockRejectedValue(Object.assign(new Error(String(status)), { status }));
+      await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+      await pick('v-1');
+      await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalled());
+      await vi.waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+      const text = screen.getByRole('alert').textContent;
+      // either can clear, so the photo can still be sent again under its key
+      expect(within(screen.getByTestId('sv-visit-v-1')).getByRole('button', { name: 'Send again' })).toBeTruthy();
+      cleanup();
+      return text;
+    };
+    expect(await said(401)).toBe('This photo was not sent: your sign-in has ended. Sign in again, then tap Send again.');
+    expect(await said(429)).toBe('This photo was not sent: the server is busy. Wait a moment, then tap Send again.');
+  });
+
+  it('locks the photo’s note, rating and place while it is sent, so nothing typed meanwhile is cleared (Codex 4319347044)', async () => {
+    let answer!: (v: { id: string; url: string }) => void;
+    const uploadMedia = vi.fn(() => new Promise<{ id: string; url: string }>((r) => { answer = r; }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit({ places: walked })], { uploadMedia }));
+    const card = screen.getByTestId('sv-visit-v-1');
+    await pick('v-1');
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    for (const label of ['Note (optional)', 'How is it? (optional)', 'Place (optional)']) {
+      expect((within(card).getByLabelText(label) as HTMLInputElement).disabled).toBe(true);
+    }
+    await act(async () => { answer({ id: 'm-1', url: '/media/m-1' }); });
+    await vi.waitFor(() => expect((within(card).getByLabelText('Note (optional)') as HTMLInputElement).disabled).toBe(false));
+  });
+
+  it('offers Add photo on a visit whose end is waiting to send, but not on one whose start is (Codex 4319347058)', async () => {
+    const end: OutboxOp = { t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: 'k-e' };
+    const start: OutboxOp = {
+      t: 'siteVisitStart', idempotencyKey: 'k-s', body: { id: 'v-tmp', claimedAt: '2026-10-14T06:30:00.000Z' },
+      visitor: { name: 'Kiran Rao', role: 'consultant', placeName: null },
+    };
+    const offline = vi.fn().mockRejectedValue(new Error('network'));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { endSiteVisit: offline, startSiteVisit: offline }), 'en', [end, start]);
+    await vi.waitFor(() => expect(screen.getByTestId('sv-visit-v-tmp')).toBeTruthy());
+    expect(within(screen.getByTestId('sv-visit-v-1')).getByRole('button', { name: 'Add photo' })).toBeTruthy();
+    expect(within(screen.getByTestId('sv-visit-v-tmp')).queryByRole('button', { name: 'Add photo' })).toBeNull();
   });
 
   it('refuses before sending a photo larger than the upload takes, when the phone cannot shrink it (Codex 4319124623)', async () => {
@@ -195,16 +263,27 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     expect(screen.getByTestId('sv-file-m-1').textContent!.length).toBeLessThan(400);
   });
 
-  it('reads the visits again before the photos’ signed links expire (Codex 4318755326)', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    const gw = fakeGateway([visit({ files: [file()] })]);
+  it('reads the visits again before the photos’ signed links expire, whatever their lifetime (Codex 4318755326, 4319347052)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // a server whose links last a minute (FILE_URL_TTL_SEC=60)
+    const exp = () => Math.floor(Date.now() / 1000) + 60;
+    const gw = fakeGateway([visit({ files: [file({ url: `/media/m-1?t=${exp()}.sig` })] })]);
     await mount('client', 'u-client', gw);
     const before = gw.listSiteVisits!.mock.calls.length;
-    gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [file({ url: '/media/m-1?sig=fresh' })] })]);
-    await act(async () => { vi.advanceTimersByTime(LINK_REFRESH_MS); });
+    gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [file({ url: `/media/m-1?t=${exp()}.fresh` })] })]);
+    await act(async () => { vi.advanceTimersByTime(31_000); });
     vi.useRealTimers();
-    await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1').querySelector('img')!.getAttribute('src')).toContain('sig=fresh'));
+    await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1').querySelector('img')!.getAttribute('src')).toContain('.fresh'));
     expect(gw.listSiteVisits!.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it('times the link refresh from the soonest expiry shown, never sooner than the floor', () => {
+    const at = (url: string) => visit({ files: [file({ url })] });
+    const now = 1_000_000_000_000;
+    const sec = now / 1000;
+    expect(linkRefreshDelay([at(`/media/a?t=${sec + 3600}.s`), at(`/media/b?t=${sec + 600}.s`)], now)).toBe(300_000);
+    expect(linkRefreshDelay([at(`/media/a?t=${sec + 2}.s`)], now)).toBe(LINK_REFRESH_FLOOR_MS);
+    expect(linkRefreshDelay([visit()], now)).toBeNull();
   });
 
   it('says so when a closed visit refuses the photo, and takes it off the screen', async () => {

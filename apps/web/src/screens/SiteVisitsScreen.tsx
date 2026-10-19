@@ -166,13 +166,17 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
   // a person stands on the visit once, whatever their role (the server refuses the same person again, re-roled or not)
   const standingPeople = new Set(v.attendees.filter((a) => !a.retiredAt && a.userId).map((a) => a.userId));
   const freePlaces = placeOptions.filter((p) => !standingPlaces.has(p.id));
-  const canAddPhoto = mayAddPhoto(v, role, me, sv.waiting.has(v.id));
+  const canAddPhoto = mayAddPhoto(v, role, me, sv.startsQueued.has(v.id));
+  // a photo here had no answer to its upload: its fields stay as sent until it is sent again or dropped
+  const photoHeld = sv.busy || sv.unsent === v.id;
   // a photo is placed at one of the places this visit walked
   const walked = v.places.filter((p) => !p.retiredAt && p.nodeId);
   const files = v.files ?? [];
   // a place chosen for the photo and then removed from the visit is no longer offered, so it is not sent either
   const photoAt = walked.find((p) => p.nodeId === photoPlace);
   useEffect(() => { if (photoPlace && !photoAt) setPhotoPlace(''); }, [photoPlace, photoAt]);
+  // the fields are locked while a photo goes, so what they hold is that photo's: clear them once it is added
+  const sent = (ok: boolean) => { if (ok) { setPhotoNote(''); setPhotoRating(''); setPhotoPlace(''); } };
   // only a member whose membership is active can be named: an invitation not yet taken is refused by the server
   const freeMembers = members.filter((m) => m.status === 'active' && m.userId !== v.visitorId && !standingPeople.has(m.userId));
   const status = v.status === 'open' ? SV.open[lang] : v.status === 'ended' ? SV.ended[lang] : SV.closed[lang];
@@ -285,13 +289,13 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
       </ul>
       {canAddPhoto && (
         <div className={styles.add}>
-          <input aria-label={SV.photoNote[lang]} placeholder={SV.photoNote[lang]} className={styles.field} value={photoNote} maxLength={500} onChange={(e) => setPhotoNote(e.target.value)} />
-          <select aria-label={SV.photoRating[lang]} className={styles.field} value={photoRating} onChange={(e) => setPhotoRating(e.target.value as SiteVisitRating | '')}>
+          <input aria-label={SV.photoNote[lang]} placeholder={SV.photoNote[lang]} className={styles.field} value={photoNote} maxLength={500} disabled={photoHeld} onChange={(e) => setPhotoNote(e.target.value)} />
+          <select aria-label={SV.photoRating[lang]} className={styles.field} value={photoRating} disabled={photoHeld} onChange={(e) => setPhotoRating(e.target.value as SiteVisitRating | '')}>
             <option value="">{SV.photoRating[lang]}</option>
             {RATINGS.map((r) => <option key={r.value} value={r.value}>{SV[r.word][lang]}</option>)}
           </select>
           {walked.length > 0 && (
-            <select aria-label={SV.photoPlace[lang]} className={styles.field} value={photoPlace} onChange={(e) => setPhotoPlace(e.target.value)}>
+            <select aria-label={SV.photoPlace[lang]} className={styles.field} value={photoPlace} disabled={photoHeld} onChange={(e) => setPhotoPlace(e.target.value)}>
               <option value="">{SV.photoPlace[lang]}</option>
               {walked.map((p) => <option key={p.id} value={p.nodeId!}>{p.name}</option>)}
             </select>
@@ -304,10 +308,16 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
               e.target.value = '';
               if (!file) return;
               void sv.addPhoto(v.id, file, { note: photoNote, ...(photoRating ? { rating: photoRating } : {}), ...(photoAt ? { nodeId: photoAt.nodeId! } : {}) })
-                .then((ok) => { if (ok) { setPhotoNote(''); setPhotoRating(''); setPhotoPlace(''); } });
+                .then(sent);
             }}
           />
-          <Button variant="light" disabled={sv.busy} onClick={() => fileRef.current?.click()}>{SV.addPhoto[lang]}</Button>
+          {/* the photo whose upload had no answer goes again as it was, under its key: the server adds it once */}
+          {sv.unsent === v.id ? (
+            <>
+              <Button variant="light" disabled={sv.busy} onClick={() => void sv.sendAgain().then(sent)}>{SV.sendAgain[lang]}</Button>
+              <Button variant="light" disabled={sv.busy} onClick={sv.dropUnsent}>{SV.dontSend[lang]}</Button>
+            </>
+          ) : <Button variant="light" disabled={sv.busy} onClick={() => fileRef.current?.click()}>{SV.addPhoto[lang]}</Button>}
         </div>
       )}
 

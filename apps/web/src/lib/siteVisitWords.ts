@@ -93,10 +93,22 @@ export const SV = {
     gu: 'આ ફોટો મોકલવા માટે બહુ મોટો છે. નાનો ફોટો અજમાવો.',
   },
   photoNeedsSignal: {
-    en: 'This photo was not sent: there is no signal. Add it again when you have signal.',
-    hi: 'यह फ़ोटो नहीं भेजी गई: नेटवर्क नहीं है। नेटवर्क आने पर फिर से जोड़ें।',
-    gu: 'આ ફોટો મોકલાયો નથી: નેટવર્ક નથી. નેટવર્ક આવે ત્યારે ફરી ઉમેરો.',
+    en: 'This photo may not have been sent: there is no signal. Tap Send again when you have signal.',
+    hi: 'यह फ़ोटो शायद नहीं भेजी गई: नेटवर्क नहीं है। नेटवर्क आने पर फिर से भेजें दबाएँ।',
+    gu: 'આ ફોટો કદાચ મોકલાયો નથી: નેટવર્ક નથી. નેટવર્ક આવે ત્યારે ફરી મોકલો દબાવો.',
   },
+  photoSignIn: {
+    en: 'This photo was not sent: your sign-in has ended. Sign in again, then tap Send again.',
+    hi: 'यह फ़ोटो नहीं भेजी गई: आपका साइन-इन ख़त्म हो गया है। फिर से साइन इन करें, फिर फिर से भेजें दबाएँ।',
+    gu: 'આ ફોટો મોકલાયો નથી: તમારું સાઇન-ઇન પૂરું થયું છે. ફરી સાઇન ઇન કરો, પછી ફરી મોકલો દબાવો.',
+  },
+  photoTooMany: {
+    en: 'This photo was not sent: the server is busy. Wait a moment, then tap Send again.',
+    hi: 'यह फ़ोटो नहीं भेजी गई: सर्वर व्यस्त है। थोड़ा रुकें, फिर फिर से भेजें दबाएँ।',
+    gu: 'આ ફોટો મોકલાયો નથી: સર્વર વ્યસ્ત છે. થોડી રાહ જુઓ, પછી ફરી મોકલો દબાવો.',
+  },
+  sendAgain: { en: 'Send again', hi: 'फिर से भेजें', gu: 'ફરી મોકલો' },
+  dontSend: { en: 'Don’t send', hi: 'न भेजें', gu: 'ન મોકલો' },
   photoOpen: { en: 'Open photo', hi: 'फ़ोटो खोलें', gu: 'ફોટો ખોલો' },
 } satisfies Record<string, Words>;
 
