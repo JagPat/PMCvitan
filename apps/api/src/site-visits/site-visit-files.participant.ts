@@ -84,6 +84,13 @@ export class SiteVisitFilesParticipant {
     }
   }
 
+  /** Whether a file is on this visit (Stage 1 markup: a marked-up copy goes on the visit its original is on). A link is
+   *  frozen and never removed on its own (SV2, M3 and M5), so the answer cannot change while the visit is locked. */
+  async isFileOnVisit(db: Prisma.TransactionClient | PrismaService, projectId: string, visitId: string, mediaId: string): Promise<boolean> {
+    const link = await db.siteVisitMedia.findFirst({ where: { projectId, visitId, mediaId }, select: { mediaId: true } });
+    return link !== null;
+  }
+
   /**
    * A file on a visit is part of the visit's record (SV2, M5): the photo delete would take its link with it, so the
    * delete is refused, as a photo cited as evidence is. The link is frozen and goes only with its project.

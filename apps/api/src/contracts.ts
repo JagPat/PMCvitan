@@ -238,6 +238,8 @@ export const createMediaSchema = z.object({
   geoLng: z.number().optional(),
   takenAt: z.string().optional(),
   siteVisit: mediaSiteVisitSchema.optional(),
+  // Stage 1 markup: a marked-up copy names the photo it was drawn on, which is kept as it was (a copy is a NEW file)
+  sourceMediaId: z.string().trim().min(1).optional(),
 }).refine((m) => (m.kind === 'visit') === (m.siteVisit !== undefined), {
   message: "a file on a site visit has kind 'visit' and names its visit; no other upload names one",
   path: ['siteVisit'],
