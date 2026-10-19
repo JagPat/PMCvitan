@@ -91,6 +91,7 @@ import {
 } from './projectCreateHold';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, isSiteVisitOp, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
+import { failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, visitPhotoScope } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
@@ -2425,6 +2426,34 @@ export const useStore = create<Store>()(
         if (reconstructed) persistOutbox();
       } catch {
         /* evidence store unavailable — the mirrors stay empty */
+      }
+    };
+    /** Site Visits SV2 (#792): `visitPhotoStore` is the canonical queue of visit photos, as IndexedDB is for evidence.
+     *  A queued row whose act is missing from the outbox (its localStorage write failed, or storage was wiped) gets
+     *  that act back, exactly as it was queued (same key: the server adds the file once). The read is checked against
+     *  everything it was taken under before it writes, and a flush or a newer reconciliation supersedes it. */
+    let visitPhotoEpoch = 0;
+    const reconcileVisitPhotos = async (): Promise<void> => {
+      const epoch = ++visitPhotoEpoch;
+      const scope = visitPhotoScope(get().sessionToken, get().sessionUserId);
+      const projectId = get().activeProjectId;
+      const projScope = currentScope();
+      const storageKey = outboxKey();
+      try {
+        const rows = await listVisitPhotos(scope, projectId);
+        if (epoch !== visitPhotoEpoch || !scopeStillCurrent(projScope) || outboxKey() !== storageKey) return;
+        let rebuilt = false;
+        set((s) => {
+          const queued = new Set(s.outbox.filter(isSiteVisitOp).map((o) => o.idempotencyKey));
+          for (const row of rows) {
+            if (row.state !== 'queued' || queued.has(row.op.idempotencyKey)) continue;
+            s.outbox.push(row.op);
+            rebuilt = true;
+          }
+        });
+        if (rebuilt) persistOutbox();
+      } catch {
+        /* visit photo store unavailable: nothing was ever kept there */
       }
     };
     /** Gate round-3: an evidence COMMAND (offline capture / Retry / Delete)
@@ -5844,6 +5873,7 @@ export const useStore = create<Store>()(
       // (confirmed uploads delete rows, terminal failures dead-letter them) — any
       // reconciliation already in flight read the PRE-flush world and must not apply
       invalidateEvidenceReconciles();
+      visitPhotoEpoch += 1; // and a visit photo reconciliation read before it (SV2)
       // Pin EVERYTHING this flush uses to the moment it started (Codex gate
       // finding 1): the gateway instance, the (project, generation) scope, the
       // session, and the storage key the queue belongs to. The module-level
@@ -5958,10 +5988,15 @@ export const useStore = create<Store>()(
               if (op.t === 'siteVisitStart') {
                 const rest = ops.slice(i + 1);
                 const onIt = rest.filter((o) => isSiteVisitOp(o) && o.t !== 'siteVisitStart' && o.visitId === op.body.id);
+                // SV2: the start's photos are kept with their acts in `visitPhotoStore`; they follow the acts there too
+                const photos = visitPhotoScope(flushToken, flushedBy);
                 if (open) {
+                  await moveVisitPhotos(photos, flushGateway.project, op.body.id, open.id).catch(() => {});
                   ops.splice(i + 1, rest.length, ...moveSiteVisitOps(rest, op.body.id, open.id));
                   tellSiteVisits({ kind: 'moved', project: flushGateway.project, generation: flushScope.generation, to: open.id, count: onIt.length });
                 } else {
+                  // not sent, and kept with the server's words, so the screen says which photos and why
+                  await failVisitPhotosOn(photos, flushGateway.project, op.body.id, refusalMessage(err)).catch(() => {});
                   ops.splice(i + 1, rest.length, ...rest.filter((o) => !onIt.includes(o)));
                   for (const o of onIt) { const k = keyOf(o); if (k) droppedKeys.push(k); }
                 }
@@ -6025,6 +6060,7 @@ export const useStore = create<Store>()(
       // Preserve anything queued while we were awaiting (shouldn't happen once online, but
       // never drop a write): the original ops were the outbox prefix, so slice past them.
       const appended = remapVisits(get().outbox.slice(taken));
+      visitPhotoEpoch += 1; // a visit photo reconciliation read before this flush settled would re-queue a sent photo
       set((s) => {
         s.outbox = [...remaining, ...appended];
         // a photo upload dropped for good (terminal rejection) stops counting on screen in the same update
@@ -6279,6 +6315,8 @@ export const useStore = create<Store>()(
       // (reconstructing ops a failed/absent setItem lost) and refresh the UI
       // mirrors — this runs even when localStorage is unavailable entirely.
       void reconcileEvidence();
+      // and the same for queued visit photos (SV2)
+      void reconcileVisitPhotos();
     },
 
     // ---- team access / login ----

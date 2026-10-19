@@ -158,7 +158,8 @@ describe('Site Visits screen', () => {
     fireEvent.change(within(card).getByLabelText('Choose a place'), { target: { value: 'n-kit' } });
     await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Add place' })); });
     expect(gw.addSiteVisitPlace).toHaveBeenCalledWith('v-1', expect.objectContaining({ nodeId: 'n-kit' }), expect.any(String));
-    expect(within(card).getByText('Kitchen')).toBeTruthy();
+    // in the places walked (the photo's place choice offers it too, SV2)
+    expect(within(card).getByText('Kitchen', { selector: 'li span' })).toBeTruthy();
     // a standing place is not offered again, and the visitor is not offered as their own attendee
     expect(within(within(card).getByLabelText('Choose a place')).queryByText('Ground floor › Kitchen')).toBeNull();
     expect(within(within(card).getByLabelText('Choose a team member')).queryByText(/Kiran Rao/)).toBeNull();

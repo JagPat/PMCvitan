@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { can, forYouRole, type Lang, type ProjectMember, type Role } from '@vitan/shared';
 import { useStore } from '@/store/store';
@@ -6,7 +6,8 @@ import { Button } from '@/components';
 import { trailOf } from '@/lib/locationTree';
 import { useSiteVisits } from '@/lib/useSiteVisits';
 import { SV, visitTime } from '@/lib/siteVisitWords';
-import type { SiteVisit } from '@/data/apiGateway';
+import { stampText } from '@/lib/captureStamp';
+import { resolveMediaUrl, type SiteVisit, type SiteVisitRating } from '@/data/apiGateway';
 import styles from './SiteVisitsScreen.module.css';
 
 /**
@@ -84,6 +85,25 @@ export function SiteVisitsScreen() {
           {SV.waitingCount[lang]} {sv.queued} <Button variant="light" onClick={sv.sendNow}>{SV.sendNow[lang]}</Button>
         </div>
       )}
+      {/* SV2: a photo the server refused, or whose visit could not be started, stays on the phone until read here */}
+      {sv.notSent.length > 0 && (
+        <section className={styles.card} aria-label={SV.notSent[lang]} data-testid="sv-not-sent">
+          <h2 className={styles.sub}>{SV.notSent[lang]}</h2>
+          <ul className={styles.files}>
+            {sv.notSent.map((p) => (
+              <li key={p.key} className={styles.file} data-testid={`sv-not-sent-${p.key}`}>
+                <img className={styles.thumb} src={p.url} alt={p.note ?? SV.photos[lang]} />
+                <div className={styles.fileText}>
+                  {p.note && <div>{p.note}</div>}
+                  {p.placeName && <div className={styles.meta}>{p.placeName}</div>}
+                  <div className={styles.meta}>{lang === 'en' && p.reason ? `${SV.refused.en} ${p.reason}` : SV.refused[lang]}</div>
+                  <Button variant="light" onClick={() => sv.dismiss(p.key)}>{SV.dismiss[lang]}</Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {sv.load === 'loading' && sv.visits.length === 0 && <p className={styles.note}>{SV.loading[lang]}</p>}
       {sv.load === 'error' && (
         <div className={styles.note}>
@@ -117,6 +137,21 @@ function editable(v: SiteVisit, role: Role, me: string | null): boolean {
   return v.visitorId === me && v.visitorRole === role && can('siteVisit.edit', role) && v.status !== 'closed';
 }
 
+/** Whether the viewer may add a photo to this visit: the visitor, or anyone recorded as present on it (Jagrut, 19 Oct
+ *  2026), while it is not closed. A photo on a visit started without signal waits behind its start. The server asks
+ *  again before it stores a byte. */
+function mayAddPhoto(v: SiteVisit, role: Role, me: string | null): boolean {
+  if (!me || v.status === 'closed' || !can('media.upload', role)) return false;
+  return v.visitorId === me || v.attendees.some((a) => a.userId === me && !a.retiredAt);
+}
+
+const RATINGS: { value: SiteVisitRating; word: keyof typeof SV }[] = [
+  { value: 'fine', word: 'fine' }, { value: 'concern', word: 'concern' }, { value: 'action_needed', word: 'actionNeeded' },
+];
+function ratingName(rating: SiteVisitRating, lang: Lang): string {
+  return SV[RATINGS.find((r) => r.value === rating)!.word][lang];
+}
+
 function roleName(role: string | null, lang: Lang): string {
   return role && role in forYouRole ? forYouRole[role as Role][lang] : '';
 }
@@ -137,6 +172,10 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
   const [guest, setGuest] = useState('');
   const [closing, setClosing] = useState(false);
   const [reason, setReason] = useState('');
+  const [photoNote, setPhotoNote] = useState('');
+  const [photoRating, setPhotoRating] = useState<SiteVisitRating | ''>('');
+  const [photoPlace, setPhotoPlace] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const mine = v.visitorId === me && v.visitorRole === role;
   const canEdit = editable(v, role, me);
@@ -146,6 +185,17 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
   // a person stands on the visit once, whatever their role (the server refuses the same person again, re-roled or not)
   const standingPeople = new Set(v.attendees.filter((a) => !a.retiredAt && a.userId).map((a) => a.userId));
   const freePlaces = placeOptions.filter((p) => !standingPlaces.has(p.id));
+  const canAddPhoto = mayAddPhoto(v, role, me);
+  // the fields stay as picked while the photo is read and saved on the phone, so what is kept is what was chosen
+  const photoBusy = sv.busy;
+  // a photo is placed at one of the places this visit walked
+  const walked = v.places.filter((p) => !p.retiredAt && p.nodeId);
+  const files = v.files ?? [];
+  // a place chosen for the photo and then removed from the visit is no longer offered, so it is not sent either
+  const photoAt = walked.find((p) => p.nodeId === photoPlace);
+  useEffect(() => { if (photoPlace && !photoAt) setPhotoPlace(''); }, [photoPlace, photoAt]);
+  // the fields are locked while a photo goes, so what they hold is that photo's: clear them once it is added
+  const sent = (ok: boolean) => { if (ok) { setPhotoNote(''); setPhotoRating(''); setPhotoPlace(''); } };
   // only a member whose membership is active can be named: an invitation not yet taken is refused by the server
   const freeMembers = members.filter((m) => m.status === 'active' && m.userId !== v.visitorId && !standingPeople.has(m.userId));
   const status = v.status === 'open' ? SV.open[lang] : v.status === 'ended' ? SV.ended[lang] : SV.closed[lang];
@@ -234,6 +284,57 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             <Button variant="light" disabled={sv.busy || !guest.trim()} onClick={() => { void sv.addGuest(v.id, guest.trim()).then((ok) => ok && setGuest('')); }}>{SV.addGuest[lang]}</Button>
           </div>
         </>
+      )}
+
+      <h2 className={styles.sub}>{SV.photos[lang]}</h2>
+      {files.length === 0 && <div className={styles.meta}>{SV.none[lang]}</div>}
+      <ul className={styles.files}>
+        {files.map((f) => (
+          <li key={f.mediaId} className={styles.file} data-testid={`sv-file-${f.mediaId}`}>
+            {/* a queued photo the phone no longer has a picture of (its row is gone) shows without one until read again */}
+            {f.url ? (
+              <a href={resolveMediaUrl(f.url)} target="_blank" rel="noreferrer" aria-label={SV.photoOpen[lang]}>
+                <img className={styles.thumb} src={resolveMediaUrl(f.url)} alt={f.note ?? SV.photos[lang]} loading="lazy" />
+              </a>
+            ) : <div className={styles.thumb} aria-hidden="true" />}
+            <div className={styles.fileText}>
+              {f.rating && <span className={styles.rating} data-rating={f.rating}>{ratingName(f.rating, lang)}</span>}
+              {f.note && <div>{f.note}</div>}
+              {f.place && <div className={styles.meta}>{f.place.name}</div>}
+              <div className={styles.meta}>
+                {SV.photoBy[lang]} {f.addedByName}{f.addedByRole ? ` · ${roleName(f.addedByRole, lang)}` : ''} · {visitTime(f.addedAt, lang)}
+                {stampText(f.takenAt) && <> · {SV.photoTaken[lang]} {stampText(f.takenAt)}</>}{wait(f.mediaId)}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {canAddPhoto && (
+        <div className={styles.add}>
+          <input aria-label={SV.photoNote[lang]} placeholder={SV.photoNote[lang]} className={styles.field} value={photoNote} maxLength={500} disabled={photoBusy} onChange={(e) => setPhotoNote(e.target.value)} />
+          <select aria-label={SV.photoRating[lang]} className={styles.field} value={photoRating} disabled={photoBusy} onChange={(e) => setPhotoRating(e.target.value as SiteVisitRating | '')}>
+            <option value="">{SV.photoRating[lang]}</option>
+            {RATINGS.map((r) => <option key={r.value} value={r.value}>{SV[r.word][lang]}</option>)}
+          </select>
+          {walked.length > 0 && (
+            <select aria-label={SV.photoPlace[lang]} className={styles.field} value={photoPlace} disabled={photoBusy} onChange={(e) => setPhotoPlace(e.target.value)}>
+              <option value="">{SV.photoPlace[lang]}</option>
+              {walked.map((p) => <option key={p.id} value={p.nodeId!}>{p.name}</option>)}
+            </select>
+          )}
+          {/* No `capture`: on Android it forces the camera and hides the gallery (as AddSitePhoto). */}
+          <input
+            ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} data-testid={`sv-photo-file-${v.id}`}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              if (!file) return;
+              void sv.addPhoto(v.id, file, { note: photoNote, ...(photoRating ? { rating: photoRating } : {}), ...(photoAt ? { nodeId: photoAt.nodeId!, placeName: photoAt.name } : {}) })
+                .then(sent);
+            }}
+          />
+          <Button variant="light" disabled={sv.busy} onClick={() => fileRef.current?.click()}>{SV.addPhoto[lang]}</Button>
+        </div>
       )}
 
       {(canEnd || canClose) && (

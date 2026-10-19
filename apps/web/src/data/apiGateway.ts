@@ -11,6 +11,7 @@
  * end-to-end in CI (the sandbox has no Postgres). Validate it once the API is
  * deployed and `VITE_API_URL` points at it.
  */
+import { deleteVisitPhoto, failVisitPhoto, getVisitPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
 import type {
   Activity,
@@ -501,7 +502,7 @@ export interface AuthResult {
 }
 
 export interface UploadMediaInput {
-  kind: 'progress' | 'inspection' | 'decision' | 'attendance' | 'material';
+  kind: 'progress' | 'inspection' | 'decision' | 'attendance' | 'material' | 'visit';
   mime: string;
   data: string; // base64, no data: prefix
   decisionId?: string;
@@ -512,6 +513,8 @@ export interface UploadMediaInput {
   inspectionItemId?: string;
   clientKey?: string;
   dailyLogId?: string; // the day's log this photo was taken for (#482)
+  // Site Visits SV2 (#792): the visit a `visit` file is added on, with what the adder said about it
+  siteVisit?: { visitId: string; note?: string; rating?: SiteVisitRating };
   geoLat?: number;
   geoLng?: number;
   takenAt?: string;
@@ -1537,6 +1540,39 @@ export interface SiteVisit {
   lateEndTimeAdjusted: boolean | null;
   places: { id: string; nodeId: string | null; name: string; addedAt: string; addedTimeAdjusted: boolean; addedAfterEnd: boolean; retiredAt: string | null }[];
   attendees: { id: string; kind: 'member' | 'guest'; userId: string | null; role: string | null; name: string; addedAt: string; retiredAt: string | null }[];
+  /** The files added on the visit (SV2), oldest first; absent from an API older than SV2. */
+  files?: SiteVisitFile[];
+}
+export type SiteVisitRating = 'fine' | 'concern' | 'action_needed';
+/** A file on a visit (`SiteVisitFileDto`): `url` is a short-lived signed path, resolved against the API base. */
+export interface SiteVisitFile {
+  mediaId: string;
+  url: string;
+  mime: string;
+  /** The uploading device's key for the file (absent from an API before it was added): the phone knows its queued
+   *  copy by it. */
+  clientKey?: string | null;
+  takenAt: string | null;
+  note: string | null;
+  rating: SiteVisitRating | null;
+  /** The place the file showed when it was added, with the name it had then. */
+  place: { nodeId: string | null; name: string } | null;
+  addedById: string;
+  addedByName: string;
+  addedByRole: string;
+  addedAt: string;
+}
+/** A photo queued for a visit: the upload's own fields, under its `clientKey` (`id`), so a replay is the same file. The
+ *  bytes are not here: they wait in `visitPhotoStore` beside this act (localStorage cannot hold photos). */
+export interface SiteVisitFileBody {
+  id: string;
+  mime: string;
+  takenAt?: string;
+  geoLat?: number;
+  geoLng?: number;
+  nodeId?: string;
+  note?: string;
+  rating?: SiteVisitRating;
 }
 export interface StartSiteVisitBody {
   id: string;
@@ -1882,6 +1918,10 @@ export type OutboxOp =
   | { t: 'siteVisitRetirePlace'; visitId: string; placeId: string; idempotencyKey: string }
   | { t: 'siteVisitAddAttendee'; visitId: string; body: SiteVisitAttendeeBody; name: string; idempotencyKey: string }
   | { t: 'siteVisitRetireAttendee'; visitId: string; attendeeId: string; idempotencyKey: string }
+  // SV2: a photo on a visit. The visit is named once, outside the body, so a refused start's acts move onto the open
+  // visit with it; `scope` is the user its row is kept under in `visitPhotoStore`; `by` and `placeName` are for the
+  // screen only, never sent.
+  | { t: 'siteVisitAddFile'; visitId: string; scope: string; file: SiteVisitFileBody; by: { name: string; role: string }; placeName: string | null; idempotencyKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
@@ -1939,7 +1979,9 @@ export function siteVisitOf(op: SiteVisitOp): string {
 export type SiteVisitEvent =
   | { kind: 'answer'; project: string; generation: number; visit: SiteVisit }
   | { kind: 'refused'; project: string; generation: number; message: string | null }
-  | { kind: 'moved'; project: string; generation: number; to: string; count: number };
+  | { kind: 'moved'; project: string; generation: number; to: string; count: number }
+  // a file was added on the visit (SV2): the upload answers with the file, not the visit, so the screen reads again
+  | { kind: 'filed'; project: string; generation: number; visitId: string };
 export const siteVisitListeners = new Set<(e: SiteVisitEvent) => void>();
 export function tellSiteVisits(e: SiteVisitEvent): void {
   for (const l of siteVisitListeners) l(e);
@@ -1985,6 +2027,28 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
       return visit(gw.addSiteVisitAttendee(op.visitId, op.body, op.idempotencyKey));
     case 'siteVisitRetireAttendee':
       return visit(gw.retireSiteVisitAttendee(op.visitId, op.attendeeId, op.idempotencyKey));
+    case 'siteVisitAddFile': {
+      // the file's own key is the upload's `clientKey`: a replay after a lost answer is the same file, added once
+      const { id, note, rating, ...file } = op.file;
+      const filed = (): null => { tellSiteVisits({ kind: 'filed', project: gw.project, generation, visitId: op.visitId }); return null; };
+      return getVisitPhoto(op.scope, gw.project, id).then(async (row) => {
+        // no row: an earlier send was confirmed (or the person dismissed it); a failed row was refused already
+        if (!row || row.state !== 'queued') return filed();
+        try {
+          await gw.uploadMedia({
+            ...file, data: row.data, kind: 'visit', clientKey: id,
+            siteVisit: { visitId: op.visitId, ...(note ? { note } : {}), ...(rating ? { rating } : {}) },
+          });
+        } catch (err) {
+          // refused for good: the flush drops the act, and the row stays with the server's words, so the screen can
+          // say which photo was not sent and why whenever it is next opened
+          if (isTerminalOutboxError(err)) await failVisitPhoto(op.scope, gw.project, id, refusalMessage(err)).catch(() => {});
+          throw err;
+        }
+        await deleteVisitPhoto(op.scope, gw.project, id).catch(() => {});
+        return filed();
+      });
+    }
     case 'approve':
       return gw.approveDecision(op.decisionId, op.optionIndex, op.idempotencyKey);
     // Phase 6 task 4d-ii-b / B5a — the countersign-chain commands replay their full act under the SAME key
