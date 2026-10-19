@@ -514,6 +514,10 @@ if echo "$out" | grep -q "P3005"; then
   # A7d-shaped audits and ON CONFLICT DO NOTHING; 20280112 installs the visit tables' raw seals and the
   # site-visits claimant triggers that pair the eight `pairingRequired` types. Both are guarded and
   # re-runnable.
+  #
+  # Site Visits #792 SV2 (20280114) is here for the same reason: its file-on-a-visit table's receipt stamp,
+  # visit-time place and freeze are triggers, its never-blank note a CHECK, and its place key a column-list
+  # SET NULL, none of which a db-push baseline has. It is guarded and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -549,7 +553,8 @@ if echo "$out" | grep -q "P3005"; then
 20280107000000_phase6_t4d_iii_r0b_system_pair
 20280109000000_top10_4b_notification_receipt
 20280111000000_site_visits_sv1a_catalog
-20280112000000_site_visits_sv1a_record"
+20280112000000_site_visits_sv1a_record
+20280114000000_site_visits_sv2_visit_media"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
