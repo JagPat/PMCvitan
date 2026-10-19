@@ -24,7 +24,9 @@ export const dailyLogManifest: ModuleManifest = {
   // cross-module read goes through the queries below (DailyLogQueryService).
   readEncapsulated: ['dailyLog', 'crewRow', 'siteMaterial', 'mismatchResolution', 'dailyLogProjection'],
   dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
-  workflowParticipants: ['activities'],
+  // #482 site photos adds `media`: submit counts the photos filed on the log through MediaParticipant, on its own
+  // transaction under the log row's lock, so the count it stores is the server's (cycle-exempt: media reads daily-log)
+  workflowParticipants: ['activities', 'media'],
   // `material.unfiled` is the Module-4-correction owner-aligned SET NULL signal, appended by
   // DailyLogParticipant on the FOREIGN nodes.remove transaction so the daily-log.inbox cursor
   // observes the SiteMaterial.nodeId change previously performed only by the FK action.
