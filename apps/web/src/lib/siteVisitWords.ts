@@ -69,12 +69,25 @@ export const SV = {
   },
   sendNow: { en: 'Send now', hi: 'अभी भेजें', gu: 'હમણાં મોકલો' },
   moved: {
-    en: 'You already had a visit open, so the places, people and end from the visit started without signal were put on it.',
-    hi: 'आपकी एक विज़िट पहले से खुली थी, इसलिए बिना नेटवर्क शुरू की गई विज़िट की जगहें, लोग और ख़त्म करना उसी में जोड़े गए।',
-    gu: 'તમારી એક મુલાકાત પહેલેથી ખુલ્લી હતી, તેથી નેટવર્ક વગર શરૂ કરેલી મુલાકાતની જગ્યાઓ, લોકો અને પૂરી કરવાનું તેમાં ઉમેર્યું.',
+    en: 'You already had a visit open, so the places, people, photos and end from the visit started without signal were put on it.',
+    hi: 'आपकी एक विज़िट पहले से खुली थी, इसलिए बिना नेटवर्क शुरू की गई विज़िट की जगहें, लोग, फ़ोटो और ख़त्म करना उसी में जोड़े गए।',
+    gu: 'તમારી એક મુલાકાત પહેલેથી ખુલ્લી હતી, તેથી નેટવર્ક વગર શરૂ કરેલી મુલાકાતની જગ્યાઓ, લોકો, ફોટા અને પૂરી કરવાનું તેમાં ઉમેર્યું.',
   },
   adjusted: { en: 'time set by the server', hi: 'समय सर्वर ने रखा', gu: 'સમય સર્વરે રાખ્યો' },
   refused: { en: 'This was not saved.', hi: 'यह सहेजा नहीं गया।', gu: 'આ સચવાયું નથી.' },
+  // SV2 (#792): photos on a visit
+  photos: { en: 'Photos', hi: 'फ़ोटो', gu: 'ફોટા' },
+  addPhoto: { en: 'Add photo', hi: 'फ़ोटो जोड़ें', gu: 'ફોટો ઉમેરો' },
+  photoNote: { en: 'Note (optional)', hi: 'टिप्पणी (ज़रूरी नहीं)', gu: 'નોંધ (જરૂરી નથી)' },
+  photoPlace: { en: 'Place (optional)', hi: 'जगह (ज़रूरी नहीं)', gu: 'જગ્યા (જરૂરી નથી)' },
+  photoRating: { en: 'How is it? (optional)', hi: 'कैसा है? (ज़रूरी नहीं)', gu: 'કેવું છે? (જરૂરી નથી)' },
+  fine: { en: 'Fine', hi: 'ठीक', gu: 'બરાબર' },
+  concern: { en: 'Concern', hi: 'चिंता', gu: 'ચિંતા' },
+  actionNeeded: { en: 'Action needed', hi: 'कार्रवाई ज़रूरी', gu: 'પગલાં જરૂરી' },
+  photoBy: { en: 'Added by', hi: 'जोड़ने वाले', gu: 'ઉમેરનાર' },
+  photoTaken: { en: 'taken', hi: 'खींची गई', gu: 'લીધેલો' },
+  photoUnreadable: { en: 'This photo could not be read. Try another.', hi: 'यह फ़ोटो पढ़ी नहीं जा सकी। दूसरी आज़माएँ।', gu: 'આ ફોટો વાંચી શકાયો નહીં. બીજો અજમાવો.' },
+  photoOpen: { en: 'Open photo', hi: 'फ़ोटो खोलें', gu: 'ફોટો ખોલો' },
 } satisfies Record<string, Words>;
 
 /** A server time as the viewer reads it, in India's time: "14 Oct, 15:30" in the viewer's language. */

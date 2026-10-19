@@ -6,7 +6,10 @@ import { isCurrentProjectScope, projectScopeOf, type ProjectScope } from '@/stor
 import {
   isSiteVisitOp, newIdempotencyKey, siteVisitListeners, siteVisitOf,
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
+  type SiteVisitRating,
 } from '@/data/apiGateway';
+import { captureStamp } from './captureStamp';
+import { shrinkPhoto } from './shrinkPhoto';
 import { SV } from './siteVisitWords';
 
 /**
@@ -85,6 +88,16 @@ function refusedText(message: string | null, lang: Lang): string {
   return lang === 'en' && message ? `${SV.refused.en} ${message}` : SV.refused[lang];
 }
 
+/** A chosen file's bytes as a data URL; null when the browser could not read it. */
+function readFile(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
 /** The visits as shown: those still open first, then newest start first. */
 function ordered(list: SiteVisit[]): SiteVisit[] {
   return [...list].sort((a, b) => {
@@ -136,7 +149,7 @@ export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | n
         startPlace: body.nodeId ? { nodeId: body.nodeId, name: visitor.placeName ?? '' } : null,
         location: body.location ? { kind: 'device', ...body.location, approximate: body.location.accuracyM > APPROXIMATE_ACCURACY_M } : { kind: 'none' },
         endedAt: null, endTimeAdjusted: null, closedAt: null, closedById: null, closeReason: null,
-        lateEndedAt: null, lateEndTimeAdjusted: null, places: [], attendees: [],
+        lateEndedAt: null, lateEndTimeAdjusted: null, places: [], attendees: [], files: [],
       });
       continue;
     }
@@ -179,6 +192,19 @@ export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | n
         waiting.add(op.attendeeId);
         byId.set(id, { ...v, attendees: v.attendees.map((a) => (a.id === op.attendeeId && !a.retiredAt ? { ...a, retiredAt: at } : a)) });
         break;
+      case 'siteVisitAddFile': {
+        // shown from the phone's own copy until the server's list holds it (the server names it by its own id, so the
+        // queued copy is shown until the act is answered, and the read after it brings the stored one)
+        const f = op.file;
+        waiting.add(f.id);
+        byId.set(id, { ...v, files: [...(v.files ?? []), {
+          mediaId: f.id, url: `data:${f.mime};base64,${f.data}`, mime: f.mime, takenAt: f.takenAt ?? null,
+          note: f.note ?? null, rating: f.rating ?? null,
+          place: f.nodeId ? { nodeId: f.nodeId, name: op.placeName ?? '' } : null,
+          addedById: me ?? '', addedByName: op.by.name, addedByRole: op.by.role, addedAt: at,
+        }] });
+        break;
+      }
     }
   }
   return { visits: ordered([...byId.values()]), waiting };
@@ -293,6 +319,8 @@ export function useSiteVisits() {
         if (!known.current.has(e.visit.id) && !movedTo.current.has(e.visit.id)) return;
         turn.current += 1;
         setRows((old) => merged(old, [e.visit]));
+      } else if (e.kind === 'filed') {
+        if (known.current.has(e.visitId) || movedTo.current.has(e.visitId)) readHead(false);
       } else if (e.kind === 'refused') {
         setError(refusedText(e.message, lang));
         readHead(false);
@@ -315,7 +343,7 @@ export function useSiteVisits() {
 
   /** Queue one act. `make` builds it once, under a fresh key; it is queued only if the viewer is still on the
    *  project and sign-in it was pressed in (a start waits for the phone's location first). */
-  const act = useCallback(async (make: (key: string) => OutboxOp | Promise<OutboxOp>): Promise<boolean> => {
+  const act = useCallback(async (make: (key: string) => OutboxOp | null | Promise<OutboxOp | null>): Promise<boolean> => {
     const state = useStore.getState();
     if (!state.serverGateway()) { setError(SV.needsServer[state.lang]); return false; }
     const scope = projectScopeOf(state);
@@ -324,7 +352,7 @@ export function useSiteVisits() {
     setNotice(null);
     try {
       const op = await make(newIdempotencyKey());
-      if (!live(scope)) return false;
+      if (!op || !live(scope)) return false;
       return useStore.getState().queueSiteVisitAct(op, SV.queued[useStore.getState().lang]);
     } finally {
       if (live(scope)) setBusy(false);
@@ -365,5 +393,25 @@ export function useSiteVisits() {
     })),
     retireAttendee: (visitId: string, attendeeId: string) =>
       act((idempotencyKey) => ({ t: 'siteVisitRetireAttendee', visitId, attendeeId, idempotencyKey })),
+    /** SV2: a photo on the visit, with an optional note, rating and place (one the visit walked). The visitor and
+     *  anyone recorded as present may add one while the visit is not closed; the server asks again. */
+    addPhoto: (visitId: string, file: File, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string; placeName?: string | null }) =>
+      act(async (idempotencyKey): Promise<OutboxOp | null> => {
+        const read = await readFile(file);
+        // the stamp is the original's: a redrawn photo carries no EXIF
+        const stamp = read ? captureStamp(read) : {};
+        const m = read ? /^data:([^;]+);base64,(.*)$/.exec(await shrinkPhoto(read)) : null;
+        if (!m || !m[1].startsWith('image/')) { setError(SV.photoUnreadable[useStore.getState().lang]); return null; }
+        const s = useStore.getState();
+        const note = extra.note?.trim();
+        return {
+          t: 'siteVisitAddFile', visitId, idempotencyKey,
+          file: {
+            id: newIdempotencyKey(), mime: m[1], data: m[2], ...stamp,
+            ...(extra.nodeId ? { nodeId: extra.nodeId } : {}), ...(note ? { note } : {}), ...(extra.rating ? { rating: extra.rating } : {}),
+          },
+          by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null,
+        };
+      }),
   };
 }
