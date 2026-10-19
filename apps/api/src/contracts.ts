@@ -210,8 +210,17 @@ export type ResolveMismatchInput = z.infer<typeof resolveMismatchSchema>;
 // a single request can't push an unbounded blob through the API body.
 export const RASTER_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/heic', 'image/heif'] as const;
 export const MAX_MEDIA_BASE64 = 14_000_000; // ~10.5 MB decoded
+// Site Visits #792 SV2 — a file added on a site visit: the visit, and what the adder saw (a note, a rating), both
+// optional. Such a file is its own kind, 'visit', so it stays inside its visit: every photo list (the Site Map, the
+// Dashboard, the daily log) reads the kinds it shows, and none of them reads 'visit'.
+export const SITE_VISIT_RATINGS = ['fine', 'concern', 'action_needed'] as const;
+const mediaSiteVisitSchema = z.object({
+  visitId: z.string().uuid().transform((value) => value.toLowerCase()),
+  note: z.string().trim().min(1).max(500).optional(),
+  rating: z.enum(SITE_VISIT_RATINGS).optional(),
+}).strict();
 export const createMediaSchema = z.object({
-  kind: z.enum(['progress', 'inspection', 'decision', 'attendance', 'material']),
+  kind: z.enum(['progress', 'inspection', 'decision', 'attendance', 'material', 'visit']),
   mime: z.enum(RASTER_IMAGE_MIMES),
   data: z.string().min(1).max(MAX_MEDIA_BASE64, 'image too large'),
   decisionId: z.string().optional(),
@@ -228,6 +237,10 @@ export const createMediaSchema = z.object({
   geoLat: z.number().optional(),
   geoLng: z.number().optional(),
   takenAt: z.string().optional(),
+  siteVisit: mediaSiteVisitSchema.optional(),
+}).refine((m) => (m.kind === 'visit') === (m.siteVisit !== undefined), {
+  message: "a file on a site visit has kind 'visit' and names its visit; no other upload names one",
+  path: ['siteVisit'],
 });
 export type CreateMediaInput = z.infer<typeof createMediaSchema>;
 

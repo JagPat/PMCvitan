@@ -11,6 +11,13 @@ times today and "feels empty"; it should hold photos, sketches, video and other 
    and name as they stood) and when.
 2. **Server.** The media upload takes an optional visit. The site-visits module writes the link as the upload's
    workflow participant, in the upload's transaction and under the visit's row lock. The visit read returns its files.
+   - **Who.** The visitor and anyone recorded as present (an attendee not retired) may add, on an open or ended visit,
+     never a closed one (Jagrut, 19 Oct). An ended visit still takes files, so a photo queued offline lands later.
+   - **Its own kind.** A visit file is `Media.kind = 'visit'`. Every photo list (the Site Map, the Dashboard, the daily
+     log, the PMC brief's count) reads the kinds it shows, so none shows a visit file, and no read outside the module
+     consults the visit table. Only the visit read lists them, with note, rating, place, and who added them and when.
+   - **Lock order (#988).** A visit upload's first statements are a visit act's: the readiness lock, the project tree,
+     the visit row. A place's removal holds the tree from its first statement, so the two never interleave.
 3. **Screen.** "Add photo" on an open or ended visit, reusing the Dashboard "Add site photo" button (#978) and its
    offline path (the photo's `clientKey`, #925). The visit lists its photos with their notes.
 4. **Later, the same way.** Marked-up copies (sketches), voice notes and video from the Stage 1 media plan are `Media`
