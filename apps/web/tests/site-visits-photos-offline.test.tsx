@@ -73,9 +73,15 @@ const heldKeys = () => Object.keys(localStorage).filter((k) => k.startsWith('vit
 const waiting = async () => (await rows()).filter((r) => r.state !== 'filed');
 const network = () => new Error('network');
 const refusal = (status: number, serverMessage: string) => Object.assign(new Error(String(status)), { status, serverMessage });
+/** A send a test holds open on purpose, on a barrier only `sendsSettled` lets go. */
+let heldSend: (() => void) | null = null;
 /** No send is running. A test's store outlives the screens it unmounts, so a "reload" waits for this first: a real
- *  reload ends the old page's send, and here it would otherwise run on into the new page. */
-const sendsSettled = () => vi.waitFor(() => expect(useStore.getState()._outboxFlushing()).toBe(false), { timeout: 10_000 });
+ *  reload ends the old page's send, and here it would otherwise run on into the new page. A held send is let go first. */
+const sendsSettled = () => {
+  heldSend?.();
+  heldSend = null;
+  return vi.waitFor(() => expect(useStore.getState()._outboxFlushing()).toBe(false), { timeout: 10_000 });
+};
 /** The test's own send: a send still running from an earlier act (the pick's, the save's) settles first, or the store
  *  would coalesce this one into it and return before anything was sent. */
 const flushOwn = async () => {
@@ -1718,14 +1724,16 @@ describe('Site Visits SV2: each test starts with no send left running from the o
   // A test that ends with a send still running hands it to the next test: the store and its flush lock outlive a test,
   // so the next test's sends are coalesced into it (its own `flushOutbox()` returns at once, sending nothing) and that
   // send's put-back can read the next test's rows. Under load this failed Codex 4319124653 and 4319124642 now and then;
-  // here the send is held deliberately, so it fails every time without the wait in `afterEach`.
+  // here the send is held on a barrier that only the wait in `afterEach` lets go, and the test sees it in flight before
+  // it ends, so the pair fails every time without that wait, however loaded the machine is.
   const end = (key: string): OutboxOp => ({ t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: key });
 
   it('ends with a send still running (the test before)', async () => {
-    const endSiteVisit = vi.fn(() => new Promise((done) => { setTimeout(() => done(visit({ status: 'ended' })), 1500); }));
+    const endSiteVisit = vi.fn(() => new Promise((done) => { heldSend = () => done(visit({ status: 'ended' })); }));
     setUp('consultant', fakeGateway([visit()], { endSiteVisit }), [end('k-first')]);
     void useStore.getState().flushOutbox();
     await vi.waitFor(() => expect(endSiteVisit).toHaveBeenCalledTimes(1));
+    expect(useStore.getState()._outboxFlushing()).toBe(true);
   });
 
   it('sends its own queue when it asks, never folded into a send left from the test before', async () => {
