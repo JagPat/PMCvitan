@@ -5,7 +5,8 @@ export const mediaManifest: ModuleManifest = {
   id: 'media',
   title: 'Site Media',
   kind: 'domain',
-  ownsModels: ['media'],
+  // #482 site photos (20280117) — the keys of deleted photos, written and read only by the media upload and delete
+  ownsModels: ['media', 'mediaTombstone'],
   // Task 8 reads decisions; Task 10 reads daily-log + validates an evidence target via the inspections
   // query (InspectionsQueryService.assertEvidenceTarget) — all through their query contracts.
   dependsOn: ['decisions', 'daily-log', 'inspections'],

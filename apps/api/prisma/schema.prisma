@@ -114,6 +114,8 @@ model Project {
   users                      User[]
   workerDevices              WorkerDevice[]
   media                      Media[]
+  // #482 site photos (20280117): the keys of this project's deleted photos, so a late copy of a send is not stored again
+  mediaTombstones            MediaTombstone[]
   pushSubs                   PushSubscription[]
   drawings                   Drawing[]
   phases                     Phase[]
@@ -1201,8 +1203,22 @@ model Media {
   @@unique([projectId, clientKey])
   @@index([projectId, kind])
   @@index([projectId, sourceMediaId])
+  @@index([projectId, uploadedBy, createdAt]) // #482: a member's own photos still inside their delete hour
   @@index([nodeId])
   @@index([inspectionId])
+}
+
+// #482 site photos (20280117): one row per (project, clientKey) whose photo was deleted, written in the delete's
+// transaction. A later send under that key is answered "deleted" and stores nothing, so a copy of the send still
+// queued on another device cannot bring the photo back. Never changed, never deleted on its own (database triggers);
+// it goes only with its project.
+model MediaTombstone {
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  clientKey String
+  deletedAt DateTime @default(now())
+
+  @@id([projectId, clientKey])
 }
 
 // A controlled drawing in the project's register (the source of truth the team
