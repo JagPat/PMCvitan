@@ -337,6 +337,62 @@ describe('the viewer\'s photo in their hour beyond the newest 300 (#482, Codex 4
   });
 });
 
+describe('a photo whose upload from this tab is still on its way (#482, Codex 4322715807)', () => {
+  it('offers no Delete until the upload is answered, and a deleted photo is never put back by a late answer', async () => {
+    const at = new Date().toISOString();
+    const { r, useStore } = await load('en', [], { userName: 'Asha Shah' });
+    let answerUpload!: (v: unknown) => void;
+    const uploadMedia = vi.fn().mockReturnValue(new Promise((res) => { answerUpload = res; }));
+    const snapshot = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    const deleteMedia = vi.fn().mockResolvedValue({ ok: true, dailyLogId: null });
+    useStore.getState()._setGateway({ uploadMedia, snapshot, deleteMedia } as never);
+    class SyncFileReader {
+      result: string | null = null;
+      onload: (() => void) | null = null;
+      readAsDataURL() { this.result = 'data:image/jpeg;base64,AAAA'; this.onload?.(); }
+    }
+    vi.stubGlobal('FileReader', SyncFileReader);
+    fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
+    await waitFor(() => expect(uploadMedia).toHaveBeenCalled());
+    const clientKey = (uploadMedia.mock.calls[0]![0] as { clientKey: string }).clientKey;
+    // the upload committed and a pull already lists it, with the viewer's key, while the POST's answer is on its way
+    const landed: Photo = { id: 'new', url: '/media/new', kind: 'progress', at, deletable: true, deletableUntil: until(0), clientKey };
+    act(() => { useStore.setState({ photos: [landed] }); });
+    expect(r.queryByTestId('site-photo-delete')).toBeNull();
+    await useStore.getState().deleteSitePhoto('new');
+    expect(deleteMedia).not.toHaveBeenCalled();
+    // the answer comes: Delete is offered, and the delete goes
+    await act(async () => { answerUpload({ id: 'new', url: 'http://api.test/media/new', at }); });
+    await waitFor(() => expect(r.getAllByTestId('site-photo-delete')).toHaveLength(1));
+    await useStore.getState().deleteSitePhoto('new');
+    expect(deleteMedia).toHaveBeenCalledWith('new');
+    expect(useStore.getState().photos).toEqual([]);
+  });
+
+  it('a late upload answer never puts back a photo this tab has deleted', async () => {
+    const at = new Date().toISOString();
+    const { r, useStore } = await load('en', [], { userName: 'Asha Shah' });
+    let answerUpload!: (v: unknown) => void;
+    const uploadMedia = vi.fn().mockReturnValue(new Promise((res) => { answerUpload = res; }));
+    useStore.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')), deleteMedia: vi.fn().mockResolvedValue({ ok: true, dailyLogId: null }) } as never);
+    class SyncFileReader {
+      result: string | null = null;
+      onload: (() => void) | null = null;
+      readAsDataURL() { this.result = 'data:image/jpeg;base64,AAAA'; this.onload?.(); }
+    }
+    vi.stubGlobal('FileReader', SyncFileReader);
+    fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
+    await waitFor(() => expect(uploadMedia).toHaveBeenCalled());
+    // listed without the viewer's key (as to a PMC), so nothing here ties it to the upload, and deleted before the POST answers
+    act(() => { useStore.setState({ role: 'pmc', photos: [{ id: 'new', url: '/media/new', kind: 'progress', at, deletable: true }] } as never); });
+    await useStore.getState().deleteSitePhoto('new');
+    expect(useStore.getState().photos).toEqual([]);
+    await act(async () => { answerUpload({ id: 'new', url: 'http://api.test/media/new', at }); });
+    await act(async () => { await new Promise((res) => setTimeout(res, 0)); });
+    expect(useStore.getState().photos).toEqual([]);
+  });
+});
+
 describe('sitePhotoDeletable', () => {
   it('holds until the time the server gave', () => {
     const deletableUntil = '2026-10-19T10:30:00.000Z';

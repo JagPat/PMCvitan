@@ -18,7 +18,7 @@ export function SitePhotoDelete({ photo }: { photo: Photo }) {
   // on its way to the server: nothing to tap until it answers (Codex 4317884827)
   const [deleting, setDeleting] = useState(false);
   // its upload still queued here: no Delete until it has landed and left the queue (Codex 4322142028)
-  const uploading = useStore((s) => deleteWaitsForUpload(photo, s.outbox, s.pendingEvidenceKeys));
+  const uploading = useStore((s) => deleteWaitsForUpload(photo, s.outbox, s.pendingEvidenceKeys, s.photoUploadsSending));
   const deletable = sitePhotoDeletable(photo, now) && !uploading;
 
   // the button leaves on its own when the hour is up

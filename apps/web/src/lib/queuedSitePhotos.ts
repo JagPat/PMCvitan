@@ -33,16 +33,17 @@ export function uploadQueued(outbox: readonly OutboxOp[], clientKey: string): bo
 }
 
 /** Whether a Delete of this photo must wait for its upload: the viewer's own photo (it carries their upload key) whose
- *  upload is still in the outbox, or, for an evidence photo, whose bytes are still pending on this device. Evidence
- *  rows live in IndexedDB and come back into the outbox only once they have been read (`pendingEvidence` is null until
- *  then), so until that read an own evidence photo waits too. */
+ *  upload is still in the outbox or still being sent from this tab (`sending`), or, for an evidence photo, whose bytes
+ *  are still pending on this device. Evidence rows live in IndexedDB and come back into the outbox only once they have
+ *  been read (`pendingEvidence` is null until then), so until that read an own evidence photo waits too. */
 export function deleteWaitsForUpload(
   photo: { kind: string; clientKey?: string },
   outbox: readonly OutboxOp[],
   pendingEvidence: readonly string[] | null,
+  sending: readonly string[] = [],
 ): boolean {
   const key = photo.clientKey;
   if (!key) return false;
-  if (uploadQueued(outbox, key)) return true;
+  if (sending.includes(key) || uploadQueued(outbox, key)) return true;
   return photo.kind === 'inspection' && (pendingEvidence === null || pendingEvidence.includes(key));
 }

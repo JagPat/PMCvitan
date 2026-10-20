@@ -416,6 +416,9 @@ export interface AppState {
   /** #482 site photos unit 3 — this device's online photo uploads for a log, from the pick until the server's own
    *  count is seen to hold them (`dailyLog.myPhotoKeys`); memory only (a reload re-reads the server's count). */
   photoUploadsInFlight: { clientKey: string; dailyLogId: string; settled: boolean }[];
+  /** #482 site photos — the upload keys of this tab's site photo uploads sent online and not yet answered (an answer of
+   *  any kind, or a network error, ends one); memory only, as the request itself is */
+  photoUploadsSending: string[];
   /** FAILED evidence (terminal non-dedupe rejection) awaiting the user's Retry/Delete (Task 4),
    *  each row still carrying WHICH work it belongs to. `inspectionId` /
    *  `inspectionItemId` are kept because Delete on this list is the one non-server path that drops
@@ -1419,6 +1422,7 @@ export function getInitialState(): AppState {
     syncQueue: [],
     outbox: [],
     photoUploadsInFlight: [],
+    photoUploadsSending: [],
     failedEvidence: [],
     pendingEvidenceCount: 0,
     pendingEvidenceKeys: null,
@@ -2391,6 +2395,8 @@ export const useStore = create<Store>()(
     const photoPickedAt = new Map<string, number>();
     /** #482 site photos — the deletes on their way, by photo id */
     const sitePhotoDeletes = new Map<string, Promise<void>>();
+    // #482 site photos — the photos this tab has seen deleted: a late upload answer never lists one again (Codex 4322715807)
+    const deletedPhotoIds = new Set<string>();
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
     const persistOutbox = (): void => {
       try {
@@ -4079,7 +4085,7 @@ export const useStore = create<Store>()(
         // once the upload has landed and left the queue (Codex 4322142028, 4318519735)
         // An evidence photo's bytes may also still be pending in IndexedDB, back in the outbox only once they are read
         const photo = get().photos.find((p) => p.id === photoId);
-        if (photo && deleteWaitsForUpload(photo, get().outbox, get().pendingEvidenceKeys)) {
+        if (photo && deleteWaitsForUpload(photo, get().outbox, get().pendingEvidenceKeys, get().photoUploadsSending)) {
           get().flash(SPL.stillUploading[lang()]);
           return Promise.resolve();
         }
@@ -4094,6 +4100,7 @@ export const useStore = create<Store>()(
             // a pull begun while the DELETE was on its way may have read the photo before it went: every pull begun
             // before this answer is superseded here, whether it is still waiting or already back (Codex 4322459274)
             beginSnapshotLease(scope);
+            deletedPhotoIds.add(photoId);
             // the server's yes is the delete: the photo leaves at once, and a fresh snapshot then settles the counts.
             // A failed refresh never turns a done delete into a "try again" (Codex 4316959524).
             set((s) => {
@@ -5777,12 +5784,16 @@ export const useStore = create<Store>()(
           else s.photoUploadsInFlight.splice(at, 1);
           recountDailyLogPhotos(s);
         };
+        // sent from this tab and not yet answered: its photo offers no Delete until the answer (Codex 4322715807)
+        set((s) => { s.photoUploadsSending.push(clientKey); });
         gateway
           .uploadMedia(input)
           .then((res) => {
             if (!scopeStillCurrent(scope)) { set((s) => settle(s, true)); return; }
             set((s) => {
               settle(s, true);
+              // deleted here before this answer came (a pull had already listed it): it is not listed again
+              if (deletedPhotoIds.has(res.id)) return;
               // #482 site photos: the photo list (the Dashboard's and the Site Map's) shows it at once, newest first.
               // A refresh that landed before this reply may already hold it, in the list, the log, or only one of
               // them when the log's read failed; each gets it once.
@@ -5825,7 +5836,8 @@ export const useStore = create<Store>()(
           .catch(() => {
             set((s) => settle(s, false));
             get().flash(DLT.photoUploadFailed[get().lang]);
-          });
+          })
+          .finally(() => { set((s) => { s.photoUploadsSending = s.photoUploadsSending.filter((k) => k !== clientKey); }); });
         return;
       }
       // local demo: keep the data URL as the image source; also place it on the tree
