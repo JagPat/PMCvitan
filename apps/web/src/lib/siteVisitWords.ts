@@ -69,12 +69,58 @@ export const SV = {
   },
   sendNow: { en: 'Send now', hi: 'अभी भेजें', gu: 'હમણાં મોકલો' },
   moved: {
-    en: 'You already had a visit open, so the places, people and end from the visit started without signal were put on it.',
-    hi: 'आपकी एक विज़िट पहले से खुली थी, इसलिए बिना नेटवर्क शुरू की गई विज़िट की जगहें, लोग और ख़त्म करना उसी में जोड़े गए।',
-    gu: 'તમારી એક મુલાકાત પહેલેથી ખુલ્લી હતી, તેથી નેટવર્ક વગર શરૂ કરેલી મુલાકાતની જગ્યાઓ, લોકો અને પૂરી કરવાનું તેમાં ઉમેર્યું.',
+    en: 'You already had a visit open, so the places, people, photos and end from the visit started without signal were put on it.',
+    hi: 'आपकी एक विज़िट पहले से खुली थी, इसलिए बिना नेटवर्क शुरू की गई विज़िट की जगहें, लोग, फ़ोटो और ख़त्म करना उसी में जोड़े गए।',
+    gu: 'તમારી એક મુલાકાત પહેલેથી ખુલ્લી હતી, તેથી નેટવર્ક વગર શરૂ કરેલી મુલાકાતની જગ્યાઓ, લોકો, ફોટા અને પૂરી કરવાનું તેમાં ઉમેર્યું.',
   },
   adjusted: { en: 'time set by the server', hi: 'समय सर्वर ने रखा', gu: 'સમય સર્વરે રાખ્યો' },
   refused: { en: 'This was not saved.', hi: 'यह सहेजा नहीं गया।', gu: 'આ સચવાયું નથી.' },
+  // SV2 (#792): photos on a visit
+  photos: { en: 'Photos', hi: 'फ़ोटो', gu: 'ફોટા' },
+  addPhoto: { en: 'Add photo', hi: 'फ़ोटो जोड़ें', gu: 'ફોટો ઉમેરો' },
+  photoNote: { en: 'Note (optional)', hi: 'टिप्पणी (ज़रूरी नहीं)', gu: 'નોંધ (જરૂરી નથી)' },
+  photoPlace: { en: 'Place (optional)', hi: 'जगह (ज़रूरी नहीं)', gu: 'જગ્યા (જરૂરી નથી)' },
+  photoRating: { en: 'How is it? (optional)', hi: 'कैसा है? (ज़रूरी नहीं)', gu: 'કેવું છે? (જરૂરી નથી)' },
+  fine: { en: 'Fine', hi: 'ठीक', gu: 'બરાબર' },
+  concern: { en: 'Concern', hi: 'चिंता', gu: 'ચિંતા' },
+  actionNeeded: { en: 'Action needed', hi: 'कार्रवाई ज़रूरी', gu: 'પગલાં જરૂરી' },
+  photoBy: { en: 'Added by', hi: 'जोड़ने वाले', gu: 'ઉમેરનાર' },
+  photoTaken: { en: 'taken', hi: 'खींची गई', gu: 'લીધેલો' },
+  photoUnreadable: { en: 'This photo could not be read. Try another.', hi: 'यह फ़ोटो पढ़ी नहीं जा सकी। दूसरी आज़माएँ।', gu: 'આ ફોટો વાંચી શકાયો નહીં. બીજો અજમાવો.' },
+  photoTooBig: {
+    en: 'This photo is too large to send. Try a smaller one.',
+    hi: 'यह फ़ोटो भेजने के लिए बहुत बड़ी है। छोटी फ़ोटो आज़माएँ।',
+    gu: 'આ ફોટો મોકલવા માટે બહુ મોટો છે. નાનો ફોટો અજમાવો.',
+  },
+  photoNoStorage: {
+    en: 'This photo was not added: this browser cannot save photos on the phone (private browsing cannot). Open the app in a normal browser window and add it again.',
+    hi: 'यह फ़ोटो नहीं जोड़ी गई: यह ब्राउज़र फ़ोन पर फ़ोटो सहेज नहीं सकता (प्राइवेट ब्राउज़िंग नहीं कर सकती)। ऐप को सामान्य ब्राउज़र विंडो में खोलें और फिर से जोड़ें।',
+    gu: 'આ ફોટો ઉમેરાયો નથી: આ બ્રાઉઝર ફોન પર ફોટા સાચવી શકતું નથી (પ્રાઇવેટ બ્રાઉઝિંગ નથી સાચવી શકતું). ઍપ સામાન્ય બ્રાઉઝર વિન્ડોમાં ખોલો અને ફરી ઉમેરો.',
+  },
+  photoNotKept: {
+    en: 'This photo was not added: it could not be saved on this phone. Free some space on the phone, then add it again.',
+    hi: 'यह फ़ोटो नहीं जोड़ी गई: इसे इस फ़ोन पर सहेजा नहीं जा सका। फ़ोन में कुछ जगह खाली करें, फिर से जोड़ें।',
+    gu: 'આ ફોટો ઉમેરાયો નથી: તેને આ ફોન પર સાચવી શકાયો નહીં. ફોનમાં થોડી જગ્યા ખાલી કરો, પછી ફરી ઉમેરો.',
+  },
+  photoMaybeNotKept: {
+    en: 'This photo may not have been saved: the phone did not say in time. If it does not appear on the visit soon, add it again.',
+    hi: 'हो सकता है यह फ़ोटो सहेजी न गई हो: फ़ोन ने समय पर नहीं बताया। अगर यह जल्द ही विज़िट पर न दिखे, तो इसे फिर से जोड़ें।',
+    gu: 'આ ફોટો કદાચ સચવાયો ન હોય: ફોને સમયસર જણાવ્યું નહીં. જો તે થોડી વારમાં મુલાકાત પર ન દેખાય, તો તેને ફરી ઉમેરો.',
+  },
+  photoPlaceGone: {
+    en: 'The place you chose was removed from this visit. Choose the place again, then add the photo.',
+    hi: 'आपकी चुनी जगह इस विज़िट से हटा दी गई। जगह फिर से चुनें, फिर फ़ोटो जोड़ें।',
+    gu: 'તમે પસંદ કરેલી જગ્યા આ મુલાકાતમાંથી દૂર કરાઈ. જગ્યા ફરી પસંદ કરો, પછી ફોટો ઉમેરો.',
+  },
+  heldStorage: {
+    en: 'Updates to this visit are waiting: this phone’s storage cannot be read right now, and a photo may still be waiting on it.',
+    hi: 'इस विज़िट के बदलाव रुके हुए हैं: इस फ़ोन की स्टोरेज अभी पढ़ी नहीं जा सकती, और उसमें कोई फ़ोटो अभी भेजनी बाकी हो सकती है।',
+    gu: 'આ મુલાકાતના ફેરફારો રોકાયેલા છે: આ ફોનનો સ્ટોરેજ હમણાં વાંચી શકાતો નથી, અને તેમાં કોઈ ફોટો હજી મોકલવાનો બાકી હોઈ શકે છે.',
+  },
+  sendAnyway: { en: 'Send anyway', hi: 'फिर भी भेजें', gu: 'તો પણ મોકલો' },
+  notSent: { en: 'Photos not sent', hi: 'फ़ोटो जो नहीं भेजी गईं', gu: 'ન મોકલાયેલા ફોટા' },
+  dismiss: { en: 'Dismiss', hi: 'हटाएँ', gu: 'દૂર કરો' },
+  photoOpen: { en: 'Open photo', hi: 'फ़ोटो खोलें', gu: 'ફોટો ખોલો' },
 } satisfies Record<string, Words>;
 
 /** A server time as the viewer reads it, in India's time: "14 Oct, 15:30" in the viewer's language. */

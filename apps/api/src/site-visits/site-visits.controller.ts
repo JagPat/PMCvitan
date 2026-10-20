@@ -23,8 +23,8 @@ export class SiteVisitsController {
   /** The project's visits, newest first, a page at a time (`before` = the previous page's last id); every member reads them (D1). */
   @Get()
   @RolesFor('project.read')
-  list(@Param('projectId') projectId: string, @Query(new ZodPipe(listSiteVisitsSchema)) query: ListSiteVisitsInput) {
-    return this.visitsQuery.list(projectId, query);
+  list(@Param('projectId') projectId: string, @Query(new ZodPipe(listSiteVisitsSchema)) query: ListSiteVisitsInput, @CurrentUser() user: AuthUser) {
+    return this.visitsQuery.list(projectId, query, user.sub);
   }
 
   @Post()
