@@ -103,6 +103,21 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     expect(ev.actorRole).toBe('pmc');
   });
 
+  it('a photo taken at a place the visit has since let go keeps that place, as a phone catching up sends it (Codex 4319699338)', async () => {
+    // the visit walked the place, then the visitor removed it from the visit (another device, or before this phone heard)
+    const walkedId = randomUUID();
+    const added = await http().post(`${visits()}/${visitId}/places`).set('Authorization', `Bearer ${pmcToken}`)
+      .send({ id: walkedId, nodeId: place.id, claimedAt: ago(20) });
+    expect(added.status).toBe(201);
+    expect((await http().post(`${visits()}/${visitId}/places/${walkedId}/retire`).set('Authorization', `Bearer ${pmcToken}`)).status).toBe(201);
+    // the photo queued while it was walked arrives afterwards: it is the visit's, at the place where it was taken
+    const res = await visitFile(pmcToken, visitId, { nodeId: place.id }, { note: 'Taken while the place was walked' });
+    expect(res.status).toBe(201);
+    const visit = await readVisit(visitId);
+    expect(visit.places.find((p: { id: string }) => p.id === walkedId).retiredAt).not.toBeNull();
+    expect(visit.files.find((x: { mediaId: string }) => x.mediaId === res.body.id).place).toEqual({ nodeId: place.id, name: place.name });
+  });
+
   it('someone recorded as present adds a file; a member who is not on the visit, or no longer on it, cannot', async () => {
     const byAttendee = await visitFile(consultantToken, visitId, {}, { rating: 'fine' });
     expect(byAttendee.status).toBe(201);
@@ -161,7 +176,9 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     expect(again.status).toBe(201);
     expect(again.body.id).toBe(first.body.id);
     expect(await t.prisma.siteVisitMedia.count({ where: { mediaId: first.body.id } })).toBe(1);
-    expect(await t.prisma.domainEvent.count({ where: { eventType: 'media.uploaded', entityId: first.body.id } })).toBe(1);
+    expect(await t.prisma.domainEvent.count({ where: { eventType: 'media.uploaded', entityId: first.body.id } })).toBe(1);    // the visit names the file's key, so the phone that queued it knows its copy is stored (web #992)
+    const listed = (await readVisit(visitId)).files.find((x: { mediaId: string }) => x.mediaId === first.body.id);
+    expect(listed.clientKey).toBe(key);
   });
 
   it('visit files stay inside their visit: not on the Site Map, the Dashboard photos or the daily log', async () => {
