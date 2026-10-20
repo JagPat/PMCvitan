@@ -854,6 +854,10 @@ export interface AppActions {
   /** Refetch the active project's snapshot after a load error (the boundary's Retry). */
   retryProjectLoad: () => void;
   _setGateway: (g: ApiGateway | null) => void;
+  /** Tests only: whether an outbox flush is in flight (the flush lock). The store outlives a test, and so does a flush
+   *  still running when it ends: a test waits for it to settle before the next begins, or the next test's flushes are
+   *  coalesced into it. */
+  _outboxFlushing: () => boolean;
   /** adopt the session this tab saved before a reload, if one is still valid; true when one was adopted */
   restoreSession: () => boolean;
   /** Site Visits SV1-c (#792) — the gateway a screen that keeps its own state (the Site Visits screen) sends
@@ -2959,6 +2963,7 @@ export const useStore = create<Store>()(
     _setGateway: (g) => {
       gateway = g;
     },
+    _outboxFlushing: () => outboxFlushing,
     restoreSession: () => {
       // #482 6227430525 — a reload adopts the session this tab saved, through the one adoption path, so a
       // reload lands back where the person was instead of on the sign-in screen. Never under dev auth.
