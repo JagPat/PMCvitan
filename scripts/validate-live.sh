@@ -1,17 +1,29 @@
 #!/usr/bin/env bash
 # Vitan PMC — live provider-state validator.
 # Reports whether each external provider is on its dev-stub or live, against the
-# deployed API. Read-only by default. Pass --media to also run the media
-# round-trip (writes ONE durable test row to the ambli project — see
-# docs/PROVIDER_CUTOVER.md, no DELETE endpoint exists).
+# deployed API. Reads only by default. Two checks have side effects and run only
+# when asked:
+#   --otp    asks the API to send an OTP to $TEST_PHONE (required: a 10-digit number you
+#            control), which is a real, billed SMS once MSG91 is live;
+#   --media  uploads ONE test photo to the ambli project (remove it afterwards
+#            with DELETE /media/<id>; see docs/PROVIDER_CUTOVER.md).
+# Exits 1 when a check that was asked for fails or cannot run.
 #
-# Usage: bash scripts/validate-live.sh [--media]
+# Usage: [TEST_PHONE=<10 digits>] bash scripts/validate-live.sh [--otp] [--media]
 set -uo pipefail
 
 API="${API:-https://pms-api.vitan.in}"
 PROJECT="${PROJECT:-ambli}"
 RUN_MEDIA=0
-[ "${1:-}" = "--media" ] && RUN_MEDIA=1
+RUN_OTP=0
+FAILED=0
+for arg in "$@"; do
+  case "$arg" in
+    --media) RUN_MEDIA=1;;
+    --otp) RUN_OTP=1;;
+    *) echo "unknown option: $arg (use --otp and/or --media)" >&2; exit 2;;
+  esac
+done
 
 jqget() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$1',''))" 2>/dev/null; }
 
@@ -22,13 +34,29 @@ key=$(curl -sS -m 15 "$API/push/public-key" | jqget key)
 if [ -n "$key" ]; then echo "PUSH   : LIVE  (public-key served: ${key:0:16}…)"
 else echo "PUSH   : STUB  (public-key empty — VAPID not set)"; fi
 
-# 2) SMS OTP (MSG91) — read the live/devCode discriminator (no SMS side effect in stub)
-otp=$(curl -sS -m 15 -X POST "$API/auth/otp/request" -H 'Content-Type: application/json' \
-      -d "{\"phone\":\"9999900000\",\"projectId\":\"$PROJECT\"}")
+# 2) SMS OTP (MSG91) — read the live/devCode discriminator. Only with --otp: once MSG91 is live
+#    the request sends a real SMS.
+if [ "$RUN_OTP" = "1" ] && ! [[ "${TEST_PHONE:-}" =~ ^[0-9]{10}$ ]]; then
+  # No fallback number: once MSG91 is live, a default would send a real, billed SMS to a stranger.
+  echo "OTP    : FAIL  (--otp needs TEST_PHONE set to a 10-digit number you control; nothing was sent)"; FAILED=1
+elif [ "$RUN_OTP" = "1" ]; then
+resp=$(curl -sS -m 15 -w '\n%{http_code}' -X POST "$API/auth/otp/request" -H 'Content-Type: application/json' \
+      -d "{\"phone\":\"$TEST_PHONE\",\"projectId\":\"$PROJECT\"}")
+rc=$?
+code=${resp##*$'\n'}; otp=${resp%$'\n'*}
 live=$(printf '%s' "$otp" | jqget live)
 dev=$(printf '%s' "$otp" | jqget devCode)
-if [ "$live" = "True" ] || [ "$live" = "true" ]; then echo "OTP    : LIVE  (live:true, no devCode — real SMS sent!)"
-else echo "OTP    : STUB  (live:false, devCode:$dev)"; fi
+ch=$(printf '%s' "$otp" | jqget channel)
+# Only an explicit live:true or live:false answer counts. A refused send (MSG91 rejecting it
+# answers 503), any other status or no answer is a FAIL, never read as the stub.
+if [ "$rc" != "0" ]; then echo "OTP    : FAIL  (no answer from the API: curl exit $rc)"; FAILED=1
+elif [ "${code:0:1}" != "2" ]; then echo "OTP    : FAIL  (the OTP request answered HTTP $code, not a sent code)"; FAILED=1
+elif [ "$live" = "True" ]; then echo "OTP    : LIVE  (live:true via ${ch:-?}, no devCode — a real code was sent for TEST_PHONE)"
+elif [ "$live" = "False" ] && [ -n "$dev" ]; then echo "OTP    : STUB  (live:false, devCode:$dev)"
+else echo "OTP    : FAIL  (HTTP $code, but the answer has no live:true or live:false with a devCode)"; FAILED=1; fi
+else
+  echo "OTP    : skipped (pass --otp to test; it sends a real SMS once MSG91 is live)"
+fi
 
 # 3) Snapshot (auth read path) — needs dev auth (ALLOW_DEV_AUTH) for the token
 tok=$(curl -sS -m 15 -X POST "$API/auth/session" -H 'Content-Type: application/json' \
@@ -49,16 +77,41 @@ if [ "$RUN_MEDIA" = "1" ] && [ -n "${tok:-}" ]; then
       -H 'Content-Type: application/json' -d "{\"kind\":\"progress\",\"mime\":\"image/png\",\"data\":\"$PNG\"}")
   url=$(printf '%s' "$m" | jqget url)
   id=$(printf '%s' "$m" | jqget id)
-  case "$url" in
-    https://*) echo "MEDIA  : LIVE  (R2 — absolute url: $url)";;
-    /media/*)  echo "MEDIA  : STUB  (DB — relative url: $url)";;
-    *)         echo "MEDIA  : ?     (unexpected: $m)";;
-  esac
-  echo "         (created test media id: $id — irreversible via API)"
+  # Both modes return the same relative `/media/…` path, so the mode is read from what that path
+  # answers: the DB stub serves the bytes (200); R2 redirects (302) to a signed GET on the
+  # S3_ENDPOINT host. Plain GETs throughout: the signed link is bound to GET, and R2 refuses HEAD on it.
+  # Nothing secret is printed: the `?t=` file token is cut from the path, and the signed link (its
+  # host names the account, its query the access key id) is never echoed, only its status.
+  if [ -z "$id" ]; then
+    echo "MEDIA  : FAIL  (the upload answered no media id, so no test photo was created)"; FAILED=1
+  else
+    path=${url%%\?*}
+    case "$url" in
+      /media/*)
+        first=$(curl -sS -m 20 -o /dev/null -w '%{http_code} %{redirect_url}' "$API$url")
+        code=${first%% *}; signed=${first#* }
+        if [ "$code" = "200" ]; then
+          echo "MEDIA  : STUB  (DB — $path served directly, HTTP 200)"
+        elif [ "$code" = "302" ] && case "$signed" in *X-Amz-Signature=*) true;; *) false;; esac; then
+          got=$(curl -sS -m 20 -o /dev/null -w '%{http_code} %{content_type}' "$signed")
+          # LIVE only when the signed read itself works: a key that can write but not read
+          # (no Object Read) still uploads and redirects, but every image then fails to load.
+          case "$got" in
+            "200 image/png"*) echo "MEDIA  : LIVE  (R2 — $path → 302 to a signed link; signed GET answered: $got)";;
+            *) echo "MEDIA  : FAIL  (R2 — $path → 302 to a signed link, but the signed GET answered '$got', not 200 image/png)"; FAILED=1;;
+          esac
+        else
+          echo "MEDIA  : FAIL  (unexpected answer from $path: HTTP $code, not 200 or a 302 to a signed link)"; FAILED=1
+        fi;;
+      *) echo "MEDIA  : FAIL  (the upload answered no /media/ path)"; FAILED=1;;
+    esac
+    echo "         (created test media id: $id — remove it with DELETE /media/$id as a PMC; in R2 mode also check the bucket, see PROVIDER_CUTOVER.md)"
+  fi
 elif [ "$RUN_MEDIA" = "1" ]; then
-  echo "MEDIA  : skipped (no token)"
+  echo "MEDIA  : FAIL  (--media asked, but no dev-auth token, so the storage check did not run)"; FAILED=1
 else
   echo "MEDIA  : skipped (pass --media to test; writes a durable test row)"
 fi
 
 echo "=== done ==="
+exit "$FAILED"
