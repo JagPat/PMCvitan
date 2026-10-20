@@ -23,7 +23,7 @@ export function TopBar() {
   // B2 — the personas on offer follow the shell's rollout (a reserved role is not offered)
   const roles = useStore(selectRoles);
   const setRole = useStore((s) => s.setRole);
-  const signOut = useStore((s) => s.signOut);
+  const signOut = useStore((s) => s.requestSignOut);
   const toggleNotif = useStore((s) => s.toggleNotif);
   // Top 10 #4b unit D (#778) — the badge counts UNREAD notices (server `unread`, less this device's in-flight
   // and confirmed marks), not every notice

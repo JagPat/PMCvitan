@@ -103,6 +103,8 @@ import { buildWorkerFingerprints } from '@/lib/labourSelection';
 import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
 import { saveSession, clearSession, loadSession } from '@/lib/sessionPersist';
 import { readDeviceLang } from '@/lib/langPreference';
+import { QW } from '@/lib/queueWords';
+import { queueActIdent, unkeptActs } from '@/store/queueUnkept';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -417,6 +419,17 @@ export interface AppState {
   /** SV2: the held visits the person chose to send anyway (`sendSiteVisitAnyway`), by user, project and visit; memory
    *  only, so a reload holds them again until the phone can read its photos. */
   siteVisitsSentAnyway: string[];
+  /** WEB-02 (#792): this scope's queue keys this phone holds but could not read at load (bad JSON, not a list, or
+   *  storage refusing the read). They are never written; the shell says so, with "Set aside and continue".
+   *  `failed` once a set-aside could not copy them. Memory only: the next load reads the keys again. */
+  queueUnreadable: { keys: string[]; failed: boolean } | null;
+  /** WEB-02 (#792): the queue key (`vitan.outbox.<sub>.<project>`) whose acts memory holds, set by `hydrateOutbox`;
+   *  null from a scope change until that scope's load: no queue key is written meanwhile. '*' before the first load. */
+  queueScope: string | null;
+  /** WEB-02: the acts in memory that no write stored ("not kept"), by `queueActIdent` (see `queueUnkept.ts`) */
+  queueUnkept: string[];
+  /** WEB-02: a project switch or sign-out the person asked for, held while "not kept" acts would be lost by it */
+  leaveConfirm: { action: 'switch'; projectId: string; targetScreen?: ScreenKey; targetItem?: string } | { action: 'signOut' } | null;
   /** #482 site photos unit 3 — this device's online photo uploads for a log, from the pick until the server's own
    *  count is seen to hold them (`dailyLog.myPhotoKeys`); memory only (a reload re-reads the server's count). */
   photoUploadsInFlight: { clientKey: string; dailyLogId: string; settled: boolean }[];
@@ -495,6 +508,8 @@ export interface AppActions {
   // shell
   setRole: (role: Role) => void;
   signOut: () => void;
+  /** WEB-02: the person's own sign-out: asks first while acts no write stored would be lost by it */
+  requestSignOut: () => void;
   /** the sign-out teardown (round-1 Codex F1: runs after the bounded push unlink on a
    *  push-capable browser; directly everywhere else) */
   completeSignOut: () => void;
@@ -824,6 +839,12 @@ export interface AppActions {
   /** SV2: the person sends a held visit's acts without waiting for a photo the phone cannot read just now: for this page
    *  load only (Codex 4323247780). */
   sendSiteVisitAnyway: (visitId: string) => void;
+  /** WEB-02 (#792): copy each unreadable queue key aside (`vitan.unreadable.<key>.<time>`), and clear it only once the
+   *  copy reads back byte for byte; a key that cannot be copied stays as it is, and the shell says so. */
+  setAsideUnreadableQueue: () => void;
+  /** WEB-02: go on with the held switch or sign-out (its "not kept" acts are lost), or stay */
+  confirmLeave: () => void;
+  cancelLeave: () => void;
   hydrateOutbox: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
@@ -1426,6 +1447,10 @@ export function getInitialState(): AppState {
     outbox: [],
     siteVisitsHeld: null,
     siteVisitsSentAnyway: [],
+    queueUnreadable: null,
+    queueScope: '*',
+    queueUnkept: [],
+    leaveConfirm: null,
     photoUploadsInFlight: [],
     failedEvidence: [],
     pendingEvidenceCount: 0,
@@ -1703,12 +1728,17 @@ export const useStore = create<Store>()(
       try {
         const storage = globalThis.localStorage;
         if (!storage) return;
+        // WEB-02: a draft key this phone could not read is never written or removed, nor any while memory holds
+        // another scope's queue
+        const blocked = get().queueUnreadable?.keys ?? [];
+        const q = get().queueScope;
+        if (q !== '*' && q !== outboxKey()) return;
         const draft = get().dailyLogDraft;
-        if (!draft) storage.removeItem(dailyLogDraftKey());
+        if (blocked.includes(dailyLogDraftKey())) { /* left as it is */ } else if (!draft) storage.removeItem(dailyLogDraftKey());
         else if (draft.projectId === get().activeProjectId) storage.setItem(dailyLogDraftKey(), JSON.stringify(draft));
         // a draft for another project is never written under this project's key
         const legacy = get().legacyDailyLogDraft;
-        if (!legacy) storage.removeItem(legacyDailyLogDraftKey());
+        if (blocked.includes(legacyDailyLogDraftKey())) { /* left as it is */ } else if (!legacy) storage.removeItem(legacyDailyLogDraftKey());
         else if (legacy.projectId === get().activeProjectId) storage.setItem(legacyDailyLogDraftKey(), JSON.stringify(legacy));
       } catch {
         /* storage unavailable — the in-session draft still works */
@@ -2377,13 +2407,143 @@ export const useStore = create<Store>()(
      *  release before it, which replays every `siteVisit…` act it finds and has no case for a photo, never meets one,
      *  and this lane is stored exactly as before (Codex 4320122193, 4320404449, 4320404441). */
     const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
-    const persistOutbox = (): void => {
+    /** WEB-02: whether memory holds this scope's queue (`queueScope`); until its load, no queue key is written */
+    const queueLoaded = (): boolean => { const q = get().queueScope; return q === '*' || q === outboxKey(); };
+    /** Write this scope's queue keys. A key listed in `queueUnreadable` is never written (WEB-02: its bytes are this
+     *  phone's only copy of what it held), and nothing is written while memory holds another scope's queue. Returns
+     *  whether the keys holding `forOps` (both keys when none) were written, so an offline act is said to be saved only
+     *  when it was; an act no write stored is recorded as "not kept" until one does. */
+    const persistOutbox = (forOps?: OutboxOp | OutboxOp[]): boolean => {
+      // a visit photo's act is kept by its photo row (`visitPhotoStore`), never by a stored key: it is not "kept" or
+      // "not kept" here (WEB-02)
+      const given = forOps === undefined ? [] : Array.isArray(forOps) ? forOps : [forOps];
+      const ops = given.filter((o) => o.t !== 'siteVisitAddFile');
+      const key = outboxKey();
+      const lane = siteVisitKeyOf(key);
+      const blocked = get().queueUnreadable?.keys ?? [];
+      const loaded = queueLoaded();
+      let kept = true;
+      const stored = new Set<string>();
+      for (const [k, list] of [[key, get().outbox.filter((o) => !isSiteVisitOp(o))], [lane, get().outbox.filter(isStoredVisitOp)]] as const) {
+        const mine = forOps === undefined || ops.some((o) => (isSiteVisitOp(o) ? k === lane : k === key));
+        if (!loaded || blocked.includes(k)) {
+          if (mine) kept = false;
+          continue;
+        }
+        try {
+          const storage = globalThis.localStorage;
+          if (!storage) throw new Error('no storage');
+          storage.setItem(k, JSON.stringify(list));
+          for (const o of list) stored.add(queueActIdent(o));
+        } catch {
+          // storage unavailable or full: the in-session outbox still works, and the act is not said to be saved
+          if (mine) kept = false;
+        }
+      }
+      const unkept = new Set([...get().queueUnkept.filter((i) => !stored.has(i)), ...ops.filter((o) => !stored.has(queueActIdent(o))).map(queueActIdent)]);
+      const held = new Set(get().outbox.map(queueActIdent));
+      const next = [...unkept].filter((i) => held.has(i));
+      if (next.length !== get().queueUnkept.length || next.some((i, n) => i !== get().queueUnkept[n])) set((st) => { st.queueUnkept = next; });
+      return kept;
+    };
+    /** Everything the queue's acts stand for in memory, rebuilt from the queue as it is: the submit freeze, and the
+     *  materials, labour and commercial pending keys, reservations and retained inputs (a load, or acts loaded beside
+     *  those memory held). */
+    const deriveQueueState = (s: AppState): void => {
+      // gate round 8: rebuild an offline submit's freeze from the durable
+      // outbox, so a reload keeps the checklist frozen until the queued
+      // submit replays (also covered from the snapshot side by applySnapshot).
+      reconcileSubmission(s);
+      // Phase 3 Task 7 (correction 3 finding 1 / correction 4) — reconstruct the pending materials
+      // COALESCE keys from the (normalized) persisted ops, so a reload keeps an equivalent still-queued
+      // action coalesced (and its button disabled) until it replays. Never admit a `undefined` pending
+      // entry: only a materials op that actually carries a string coalesce key contributes.
+      s.materialsPending = s.outbox.flatMap((o) => {
+        const ck = coalesceKeyOf(o);
+        return isMaterialsOp(o) && typeof ck === 'string' ? [ck] : [];
+      });
+      // Phase 4 Task 6 (§J) — same reconstruction for the labour pending coalesce keys, so a
+      // reload keeps an equivalent still-queued labour action coalesced (button disabled).
+      s.labourPending = s.outbox.flatMap((o) => {
+        const ck = coalesceKeyOf(o);
+        return isLabourOp(o) && typeof ck === 'string' ? [ck] : [];
+      });
+      // Codex round 13 — rebuild the retained-input register from the STILL-QUEUED allocate
+      // ops (their durable rows carry the full input, incl. `capacityCommitmentId`). A key
+      // retained for an op that resolved before this reload has no row to rebuild from —
+      // the screen's key-parser fallback covers it, exactly as before this round.
+      // Task 7B-iii-a — and the same reconstruction for commercial, so a reload keeps an
+      // equivalent still-queued write coalesced and its button disabled.
+      s.commercialPending = s.outbox.flatMap((o) => {
+        const ck = coalesceKeyOf(o);
+        return isCommercialOp(o) && typeof ck === 'string' ? [ck] : [];
+      });
+      // …and their cap RESERVATIONS, by the same rule that wrote them. Round 4 keyed the
+      // reservation to its coalesce key so the two share a lifecycle; hydration rebuilt the
+      // keys and not the reservations, which is that lifecycle broken at the one moment it
+      // is reconstructed from scratch. A correction queued offline then survived a reload
+      // with its button disabled and its authority silently freed.
+      s.commercialPendingQty = Object.fromEntries(
+        s.outbox.flatMap((o) => {
+          const ck = coalesceKeyOf(o);
+          const reservation = capReservationOf(o);
+          return typeof ck === 'string' && reservation ? [[ck, reservation] as const] : [];
+        }),
+      );
+      s.labourPendingInputs = Object.fromEntries(
+        s.outbox.flatMap((o) => (o.t === 'allocateLabour' && typeof o.coalesceKey === 'string' ? [[o.coalesceKey, o.input] as const] : [])),
+      );
+    };
+    /** WEB-02: the in-memory queue state of a scope with nothing loaded: no acts, drafts or pending sets built from them */
+    const emptyQueueState = (s: AppState): void => {
+      s.outbox = [];
+      s.syncQueue = [];
+      s.queueUnkept = [];
+      s.dailyLogDraft = null;
+      s.legacyDailyLogDraft = null;
+      reconcileSubmission(s);
+      s.materialsPending = [];
+      s.labourPending = [];
+      s.commercialPending = [];
+      s.commercialPendingQty = {};
+      s.labourPendingInputs = {};
+    };
+    /** WEB-02: a scope change (sign-in, persona, project) leaves memory holding the previous scope's queue until the new
+     *  scope's load. It is let go now, and nothing is written until that load; acts it held that no write stored are
+     *  lost with it, and the person is told how many (a switch they asked for was confirmed first). */
+    /** set by `confirmLeave` around the switch it lets through */
+    let leaveConfirmed = false;
+    const leaveQueueScope = (): void => {
+      if (get().queueScope === outboxKey()) return;
+      const lost = unkeptActs(get()).length;
+      set((s) => {
+        emptyQueueState(s);
+        s.queueUnreadable = null;
+        s.queueScope = null;
+      });
+      if (lost > 0) get().flash(QW.unkeptLost[get().lang].replace('{n}', String(lost)));
+    };
+    /** WEB-02: a day-log draft key as stored: `{ draft: null }` when absent, null when it cannot be read (the read throws,
+     *  bad JSON, or not a draft) */
+    const readDraftKey = (storage: Storage, key: string): { draft: DailyLogDraft | null } | null => {
       try {
-        const storage = globalThis.localStorage;
-        storage?.setItem(outboxKey(), JSON.stringify(get().outbox.filter((o) => !isSiteVisitOp(o))));
-        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(get().outbox.filter(isStoredVisitOp)));
+        const raw = storage.getItem(key);
+        if (raw === null) return { draft: null };
+        const draft = parseDailyLogDraft(JSON.parse(raw) as unknown);
+        return draft ? { draft } : null;
       } catch {
-        /* storage unavailable — the in-session outbox still works */
+        return null;
+      }
+    };
+    /** WEB-02: a queue key as stored: `[]` when absent, null when it cannot be read (the read throws, bad JSON, not a list) */
+    const readQueueKey = (storage: Storage, key: string): unknown[] | null => {
+      try {
+        const raw = storage.getItem(key);
+        if (raw === null) return [];
+        const value: unknown = JSON.parse(raw);
+        return Array.isArray(value) ? value : null;
+      } catch {
+        return null;
       }
     };
 
@@ -2641,8 +2801,8 @@ export const useStore = create<Store>()(
         s.outbox.push(op);
         s.syncQueue.push(label);
       });
-      persistOutbox();
-      get().flash(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.');
+      const kept = persistOutbox(op);
+      get().flash(kept ? offlineMsg ?? label + ' — saved offline, will sync when you reconnect.' : QW.notKept[get().lang]);
       return true;
     };
 
@@ -2678,11 +2838,11 @@ export const useStore = create<Store>()(
     const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string): boolean => {
       if (!gateway) return false;
       set((s) => { s.outbox.push(op); if (!s.online) s.syncQueue.push(label); });
-      persistOutbox();
+      const kept = persistOutbox(op);
       if (get().online) {
         get().flushOutbox({ okMsg });
       } else {
-        get().flash(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.');
+        get().flash(kept ? offlineMsg ?? label + ' — saved offline, will sync when you reconnect.' : QW.notKept[get().lang]);
       }
       return true;
     };
@@ -2925,6 +3085,9 @@ export const useStore = create<Store>()(
       // #482 6227430525 — keep the adopted session for this tab, so a reload does not sign the person out
       saveSession({ token: res.token, role: res.role, name: res.name, projectId: res.projectId ?? get().activeProjectId });
       if (!opts?.quiet) get().flash(opts?.msg ?? 'Signed in as ' + (res.name ?? res.role) + '.');
+      // WEB-02: another user or project now: memory's queue is the previous scope's until this scope's load. Let go
+      // after the message above, so a count of acts lost with it is the one the person reads
+      leaveQueueScope();
     };
 
     /** Local-demo passwordless sign-in: map an email to a role (else engineer). */
@@ -3022,7 +3185,7 @@ export const useStore = create<Store>()(
           s.projectLoadState = 'loading';
           s.projectLoadError = null;
         }
-      }); get().syncProjectCreateHold(); };
+      }); get().syncProjectCreateHold(); leaveQueueScope(); };
       // round-11 Codex F3 — on a push-capable browser a persona switch is a DEPARTURE exactly
       // like sign-out: the departing identity's subscription link is severed BEFORE the switch
       // completes (the same bounded handoff signOut runs, the same session-identity condition —
@@ -3049,6 +3212,10 @@ export const useStore = create<Store>()(
      * resets the access flow to 'who', and drops back to a neutral role/screen.
      * With dev auth off, the AppShell auth-gate then shows the sign-in screen.
      */
+    requestSignOut: () => {
+      if (unkeptActs(get()).length > 0) { set((s) => { s.leaveConfirm = { action: 'signOut' }; }); return; }
+      get().signOut();
+    },
     signOut: () => {
       // #948 Codex 4300725697 — forget the tab's saved session at once: a reload during the bounded push unlink
       // below must not restore the session being signed out (the in-memory token stays for the unlink request)
@@ -3084,6 +3251,8 @@ export const useStore = create<Store>()(
     completeSignOut: () => {
       clearSession();
       restoreSwitchTarget = null;
+      // WEB-02: acts no write stored leave with the session; a sign-out the person asked for was confirmed first
+      const lost = unkeptActs(get()).length;
       set((s) => {
         s.sessionToken = null;
         s.userName = null;
@@ -3102,6 +3271,10 @@ export const useStore = create<Store>()(
         // scope key and resumes on their next sign-in; the next user never replays it.
         s.outbox = [];
         s.syncQueue = [];
+        s.queueUnreadable = null;
+        s.queueUnkept = [];
+        s.queueScope = null;
+        s.leaveConfirm = null;
         // Ending the session ends the scope (Codex gate finding 6): the signed-out
         // user's records leave memory, and the generation bump refuses any of their
         // replies still in flight — nothing survives for the next identity to see.
@@ -3121,6 +3294,7 @@ export const useStore = create<Store>()(
         s.pendingProjectId = null;
       });
       get().syncProjectCreateHold(); // the departed user's attempt stays theirs, in their own record
+      if (lost > 0) get().flash(QW.unkeptLost[get().lang].replace('{n}', String(lost)));
     },
     setScreen: (k) =>
       set((s) => {
@@ -3785,9 +3959,9 @@ export const useStore = create<Store>()(
           s.syncQueue.push('Submit inspection');
           s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued', attempt: 0 };
         });
-        persistOutbox();
+        const kept = persistOutbox({ t: 'submitInspection', inspectionId: c.id, items: c.items });
         emitGuideOutcome('inspection-submitted', c.id);
-        get().flash(CHT.savedOfflineSubmit[get().lang]);
+        get().flash(kept ? CHT.savedOfflineSubmit[get().lang] : QW.notKept[get().lang]);
         return;
       }
       // demo (no gateway): the submit succeeds locally and synchronously — the
@@ -4063,6 +4237,8 @@ export const useStore = create<Store>()(
         // is confirmed only when every targeted key is reported succeeded by the flush.
         const drawingKeys = dwgIds.map(() => newIdempotencyKey());
         let flushDone: Promise<OutboxFlushResult | undefined> = Promise.resolve(undefined);
+        // WEB-02: whether the publishes were stored on this phone, so offline they are said to be saved only if so
+        let drawingsKept = true;
         if (dwgIds.length > 0) {
           set((s) => {
             dwgIds.forEach((id, i) => {
@@ -4071,7 +4247,7 @@ export const useStore = create<Store>()(
               if (!s.online) s.syncQueue.push('Publish ' + number);
             });
           });
-          persistOutbox();
+          drawingsKept = persistOutbox(dwgIds.map((id, i): OutboxOp => ({ t: 'publishDrawing', drawingId: id, idempotencyKey: drawingKeys[i] })));
           if (get().online) flushDone = get().flushOutbox();
         }
         void (async () => {
@@ -4115,7 +4291,7 @@ export const useStore = create<Store>()(
             // NEVER claim complete success while a targeted drawing op is still queued (offline, transient).
             get().flash(get().online
               ? 'Publishing… drawing drafts are still syncing and will finish shortly.'
-              : 'Saved — drawing drafts will publish when you reconnect.');
+              : drawingsKept ? 'Saved — drawing drafts will publish when you reconnect.' : QW.notKept[get().lang]);
           } else {
             // decisions OK AND every targeted drawing op confirmed succeeded (or there were no drawings).
             done();
@@ -4978,6 +5154,11 @@ export const useStore = create<Store>()(
         );
     },
     switchProject: (projectId, targetScreen, targetItem) => {
+      // WEB-02: acts no write stored are lost by a switch: the person is asked first (`confirmLeave` goes on)
+      if (!leaveConfirmed && gateway && projectId !== get().activeProjectId && unkeptActs(get()).length > 0) {
+        set((s) => { s.leaveConfirm = { action: 'switch', projectId, targetScreen, targetItem }; });
+        return Promise.resolve(false);
+      }
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);
       const membership = get().memberships.find((m) => m.projectId === projectId);
       const short = membership?.short ?? 'project';
@@ -5836,9 +6017,9 @@ export const useStore = create<Store>()(
               recordDraftPhoto(s);
             }
           });
-          persistOutbox();
+          const kept = persistOutbox({ t: 'uploadMedia', input });
           persistDailyLogDraft();
-          get().flash(DLT.photoOffline[get().lang]);
+          get().flash(kept ? DLT.photoOffline[get().lang] : QW.notKept[get().lang]);
           return;
         }
         // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
@@ -6011,6 +6192,69 @@ export const useStore = create<Store>()(
     // the screen's own reads: a sent photo not listed yet, or its kept photos not read. A retry holds nothing: the flush
     // it runs holds only the visits a kept photo may be on
     retrySiteVisits: () => { if (get().online) retryVisitPhotos(); },
+    confirmLeave: () => {
+      const held = get().leaveConfirm;
+      if (!held) return;
+      set((s) => { s.leaveConfirm = null; });
+      if (held.action === 'signOut') { get().signOut(); return; }
+      leaveConfirmed = true;
+      try {
+        void get().switchProject(held.projectId, held.targetScreen, held.targetItem);
+      } finally {
+        leaveConfirmed = false;
+      }
+    },
+    cancelLeave: () => set((s) => { s.leaveConfirm = null; }),
+    setAsideUnreadableQueue: () => {
+      const listed = get().queueUnreadable;
+      if (!listed) return;
+      const storage = globalThis.localStorage;
+      const drafts = [dailyLogDraftKey(), legacyDailyLogDraftKey()];
+      const readable = (key: string): boolean => (drafts.includes(key) ? readDraftKey(storage, key) !== null : readQueueKey(storage, key) !== null);
+      const at = new Date().toISOString();
+      let failed = false;
+      const left = listed.keys.filter((key) => {
+        try {
+          // another tab may have set it aside, or written it again, since this one loaded: a key that now reads (or is
+          // gone) is not this tap's to move; it comes off the list and loads below
+          if (readable(key)) return false;
+          const raw = storage.getItem(key);
+          if (raw === null) return false;
+          const aside = `vitan.unreadable.${key}.${at}`;
+          storage.setItem(aside, raw);
+          if (storage.getItem(aside) !== raw) { failed = true; return true; } // not the same bytes: keep the key
+          storage.removeItem(key);
+          return false;
+        } catch {
+          failed = true; // quota, or storage refusing the copy: nothing changes for this key
+          return true;
+        }
+      });
+      if (left.length === listed.keys.length) {
+        set((s) => { s.queueUnreadable = { keys: left, failed }; });
+        return;
+      }
+      // the keys off the list load now; what memory held meanwhile (acts and drafts no write stored) is kept after
+      // what they hold, and written
+      const held = get().outbox;
+      const heldDraft = get().dailyLogDraft;
+      const heldLegacy = get().legacyDailyLogDraft;
+      // what memory held comes back below, in its own order: the load does not carry its not-kept acts ahead of it, so
+      // a visit photo is never put after its visit's close (scope-switch r3 check gap 1)
+      set((s) => { s.queueUnkept = []; });
+      get().hydrateOutbox();
+      const loaded = new Set(get().outbox.map(queueActIdent));
+      const extra = held.filter((o) => !loaded.has(queueActIdent(o)));
+      set((s) => {
+        s.outbox.push(...extra);
+        if (!s.dailyLogDraft && heldDraft) s.dailyLogDraft = heldDraft;
+        if (!s.legacyDailyLogDraft && heldLegacy) s.legacyDailyLogDraft = heldLegacy;
+        deriveQueueState(s);
+        if (s.queueUnreadable && failed) s.queueUnreadable.failed = true;
+      });
+      persistOutbox(extra);
+      persistDailyLogDraft();
+    },
     sendSiteVisitAnyway: (visitId) => {
       const key = releaseKey(visitPhotoScope(get().sessionToken, get().sessionUserId), get().activeProjectId, visitId);
       if (!get().siteVisitsSentAnyway.includes(key)) set({ siteVisitsSentAnyway: [...get().siteVisitsSentAnyway, key] });
@@ -6069,9 +6313,10 @@ export const useStore = create<Store>()(
       if (holdVisits) retryVisitPhotos();
       const heldVisits: OutboxOp[] = [];
       const ops = get().outbox.slice();
-      // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
-      // take its own acts out of `ops` as it goes)
-      const taken = ops.length;
+      // which acts this flush took from the outbox (a refused site visit start may take its own acts out of `ops` as it
+      // goes): what memory holds beyond them is kept by identity, not position, since a Set aside or a load during the
+      // flush reorders memory (WEB-02)
+      const takenIdents = new Set(ops.map(queueActIdent));
       const takenVisits = ops.filter(isStoredVisitOp).length;
       // and of the generic stored lane: a visit photo's act is in neither stored lane, so it is counted in neither
       // (Codex 4321998480)
@@ -6108,6 +6353,9 @@ export const useStore = create<Store>()(
       const flushScope = currentScope();
       const flushToken = get().sessionToken;
       const flushKey = outboxKey();
+      // WEB-02: the keys of this scope that could not be read, as they are now: a write the flush makes under this
+      // scope's keys after a switch must not read the new scope's list
+      const flushBlocked = get().queueUnreadable?.keys ?? [];
       // gate round 11: take the ordering lease NOW, before replaying the first op.
       // The reconcile snapshot below is applied through the coordinator against this
       // lease, so if a newer socket/mutation lease begins while a replay is in flight
@@ -6315,6 +6563,9 @@ export const useStore = create<Store>()(
           if (storage) {
             // each stored list holds its kind of the flushed ops as its prefix — drop the replayed part
             const keep = (key: string, rest: OutboxOp[], took: number, after: (l: OutboxOp[]) => OutboxOp[]) => {
+              // WEB-02: a key listed when the flush began, or one that cannot be read now, is never written: its stored
+              // list is not this flush's prefix plus what came after, and its bytes are this phone's only copy
+              if (flushBlocked.includes(key) || readQueueKey(storage, key) === null) return;
               const stored: unknown = JSON.parse(storage.getItem(key) ?? '[]');
               const leftover = Array.isArray(stored) && stored.length >= took ? [...rest, ...after(stored.slice(took) as OutboxOp[])] : rest;
               storage.setItem(key, JSON.stringify(leftover));
@@ -6330,8 +6581,9 @@ export const useStore = create<Store>()(
       }
 
       // Preserve anything queued while we were awaiting (shouldn't happen once online, but
-      // never drop a write): the original ops were the outbox prefix, so slice past them.
-      const appended = remapVisits(get().outbox.slice(taken));
+      // never drop a write): every act memory holds that this flush did not take, wherever it now sits (a Set aside or a
+      // load during the flush puts the stored acts first, WEB-02)
+      const appended = remapVisits(get().outbox.filter((o) => !takenIdents.has(queueActIdent(o))));
       visitPhotoEpoch += 1; visitPhotoFlushes += 1; // a visit photo reconciliation read before this flush settled would re-queue a sent photo
       set((s) => {
         s.outbox = [...remaining, ...appended];
@@ -6467,6 +6719,17 @@ export const useStore = create<Store>()(
       }
     },
     hydrateOutbox: () => {
+      // WEB-02: this scope's keys that cannot be read; each is listed, never written, and the shell says so
+      const unreadable: string[] = [];
+      // WEB-02: acts made between this scope's change and this load. Memory was let go at the change
+      // (`leaveQueueScope`), so all it holds is this scope's; they are kept after what is stored, and written below
+      // A load of the scope memory already holds (a sign-in again on the same project) carries the acts this phone did
+      // not keep: the person was told they go if they stay, and they stayed (WEB-02)
+      const sameScope = get().queueScope !== null && get().queueScope === outboxKey();
+      const unkeptHeld = sameScope ? get().outbox.filter((o) => get().queueUnkept.includes(queueActIdent(o))) : [];
+      const carried = get().queueScope === null
+        ? { acts: get().outbox, labels: get().syncQueue }
+        : unkeptHeld.length > 0 ? { acts: unkeptHeld, labels: [] as string[] } : null;
       try {
         const storage = globalThis.localStorage;
         if (storage) {
@@ -6479,8 +6742,8 @@ export const useStore = create<Store>()(
           // REPLACE the in-memory queue with this scope's persisted one (WEB-02) —
           // called again on every sign-in / project switch, so ops queued under a
           // different user or project never leak into the current context.
-          const raw = storage.getItem(outboxKey());
-          const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+          const parsed = readQueueKey(storage, outboxKey());
+          if (parsed === null) unreadable.push(outboxKey());
           // Phase 3 Task 7 (correction 4) — a materials op persisted by PR #207 carries only
           // `idempotencyKey` (no `coalesceKey`); PR #208 keys coalescing on `coalesceKey`, so without this
           // a legacy queued op would not coalesce and could execute a SECOND time (double reserve). Derive
@@ -6509,85 +6772,57 @@ export const useStore = create<Store>()(
             }
           }
           // the site visit acts, from their own key (malformed → none); a visit photo's act comes from its row (SV2)
-          let visitOps: OutboxOp[] = [];
-          try {
-            const rawVisits: unknown = JSON.parse(storage.getItem(siteVisitKeyOf(outboxKey())) ?? '[]');
-            visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => o && isStoredVisitOp(o)) : [];
-          } catch {
-            visitOps = [];
-          }
+          const rawVisits = readQueueKey(storage, siteVisitKeyOf(outboxKey()));
+          if (rawVisits === null) unreadable.push(siteVisitKeyOf(outboxKey()));
+          const visitOps = ((rawVisits ?? []) as OutboxOp[]).filter((o) => o && isStoredVisitOp(o));
           const ops = [...photosNorm.ops.filter((o) => !isSiteVisitOp(o)), ...visitOps];
           // #669 — the engineer's unsent daily-log work for THIS scope comes back with its queue, so a
           // reload (or a return to this project) keeps the day where they left it; the next apply lays
           // it over the server's log (or drops it if that log has moved on). Malformed → none.
-          let draft: DailyLogDraft | null = null;
-          try {
-            const rawDraft = storage.getItem(dailyLogDraftKey());
-            draft = rawDraft ? parseDailyLogDraft(JSON.parse(rawDraft) as unknown) : null;
-          } catch {
-            draft = null;
-          }
+          // WEB-02: a draft key that cannot be read is listed and left as it is, never removed as if empty
+          const readDraft = readDraftKey(storage, dailyLogDraftKey());
+          if (readDraft === null) unreadable.push(dailyLogDraftKey());
+          let draft = readDraft?.draft ?? null;
           if (draft && draft.projectId !== get().activeProjectId) draft = null; // never another project's
           // the kept-aside legacy draft (owner ruling, #692) comes back with it, until confirmed or discarded
-          let keptAside: DailyLogDraft | null = null;
-          try {
-            const rawKept = storage.getItem(legacyDailyLogDraftKey());
-            keptAside = rawKept ? parseDailyLogDraft(JSON.parse(rawKept) as unknown) : null;
-          } catch {
-            keptAside = null;
-          }
+          const readKept = readDraftKey(storage, legacyDailyLogDraftKey());
+          if (readKept === null) unreadable.push(legacyDailyLogDraftKey());
+          let keptAside = readKept?.draft ?? null;
           if (keptAside && keptAside.projectId !== get().activeProjectId) keptAside = null;
           set((s) => {
             s.outbox = ops;
+            // the labels and "not kept" marks of the queue memory held before this load are not this queue's
+            s.syncQueue = [];
+            s.queueUnkept = [];
             s.dailyLogDraft = draft;
             s.legacyDailyLogDraft = keptAside;
-            // gate round 8: rebuild an offline submit's freeze from the durable
-            // outbox, so a reload keeps the checklist frozen until the queued
-            // submit replays (also covered from the snapshot side by applySnapshot).
-            reconcileSubmission(s);
-            // Phase 3 Task 7 (correction 3 finding 1 / correction 4) — reconstruct the pending materials
-            // COALESCE keys from the (normalized) persisted ops, so a reload keeps an equivalent still-queued
-            // action coalesced (and its button disabled) until it replays. Never admit a `undefined` pending
-            // entry: only a materials op that actually carries a string coalesce key contributes.
-            s.materialsPending = s.outbox.flatMap((o) => {
-              const ck = coalesceKeyOf(o);
-              return isMaterialsOp(o) && typeof ck === 'string' ? [ck] : [];
-            });
-            // Phase 4 Task 6 (§J) — same reconstruction for the labour pending coalesce keys, so a
-            // reload keeps an equivalent still-queued labour action coalesced (button disabled).
-            s.labourPending = s.outbox.flatMap((o) => {
-              const ck = coalesceKeyOf(o);
-              return isLabourOp(o) && typeof ck === 'string' ? [ck] : [];
-            });
-            // Codex round 13 — rebuild the retained-input register from the STILL-QUEUED allocate
-            // ops (their durable rows carry the full input, incl. `capacityCommitmentId`). A key
-            // retained for an op that resolved before this reload has no row to rebuild from —
-            // the screen's key-parser fallback covers it, exactly as before this round.
-            // Task 7B-iii-a — and the same reconstruction for commercial, so a reload keeps an
-            // equivalent still-queued write coalesced and its button disabled.
-            s.commercialPending = s.outbox.flatMap((o) => {
-              const ck = coalesceKeyOf(o);
-              return isCommercialOp(o) && typeof ck === 'string' ? [ck] : [];
-            });
-            // …and their cap RESERVATIONS, by the same rule that wrote them. Round 4 keyed the
-            // reservation to its coalesce key so the two share a lifecycle; hydration rebuilt the
-            // keys and not the reservations, which is that lifecycle broken at the one moment it
-            // is reconstructed from scratch. A correction queued offline then survived a reload
-            // with its button disabled and its authority silently freed.
-            s.commercialPendingQty = Object.fromEntries(
-              s.outbox.flatMap((o) => {
-                const ck = coalesceKeyOf(o);
-                const reservation = capReservationOf(o);
-                return typeof ck === 'string' && reservation ? [[ck, reservation] as const] : [];
-              }),
-            );
-            s.labourPendingInputs = Object.fromEntries(
-              s.outbox.flatMap((o) => (o.t === 'allocateLabour' && typeof o.coalesceKey === 'string' ? [[o.coalesceKey, o.input] as const] : [])),
-            );
+            deriveQueueState(s);
           });
+        } else {
+          // WEB-02: no storage at all (turned off in the browser): this scope loads as no queue, as below
+          set(emptyQueueState);
         }
       } catch {
-        /* ignore malformed storage */
+        // WEB-02: a scope whose stored queue cannot be read (storage refusing the read) loads as no queue. Skipping the
+        // swap kept the previous project's acts in memory, to be stored under this scope's key and sent through its
+        // gateway. Those acts stay stored under their own scope; this scope's keys are listed and left as they are.
+        unreadable.push(outboxKey(), siteVisitKeyOf(outboxKey()), dailyLogDraftKey(), legacyDailyLogDraftKey());
+        set(emptyQueueState);
+      }
+      set((s) => {
+        s.queueUnreadable = unreadable.length > 0 ? { keys: [...new Set(unreadable)], failed: false } : null;
+        // memory now holds this scope's queue, and its keys may be written
+        s.queueScope = outboxKey();
+      });
+      if (carried && carried.acts.length > 0) {
+        const loaded = new Set(get().outbox.map(queueActIdent));
+        const extra = carried.acts.filter((o) => !loaded.has(queueActIdent(o)));
+        set((s) => {
+          s.outbox.push(...extra);
+          s.syncQueue.push(...carried.labels);
+          deriveQueueState(s);
+        });
+        persistOutbox(extra);
       }
       // gate finding 2: localStorage is only a CACHE of the queue — the durable
       // evidence rows are canonical. Merge every pending row back into replay

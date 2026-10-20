@@ -6,6 +6,8 @@ import { todayPath, TODAY_STEPS } from '@/lib/engineerToday';
 import { todayCivil } from '@/lib/civilDate';
 import { dailyLogSendPending, dailyLogStartPending } from '@/store/dailyLogPending';
 import { dailyLogIdentity, draftAppliesTo } from '@/store/dailyLogDraft';
+import { QW } from '@/lib/queueWords';
+import { dailyLogActUnkept } from '@/store/queueUnkept';
 import { CrewStepper } from './CrewStepper';
 import { LegacyDraftCard } from './LegacyDraftCard';
 import { ArrowRight, Circle, CircleCheck, Crosshair, Plus, RefreshCw } from '@/lib/icons';
@@ -35,6 +37,8 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
   // such — the same rule the store's commands enforce (see `dailyLogPending`)
   const pendingStart = useStore(dailyLogStartPending);
   const pendingSend = useStore(dailyLogSendPending);
+  // WEB-02: a start or send no write stored is never said to be saved on this phone
+  const unkept = useStore(dailyLogActUnkept);
   const queued = useStore((s) => s.outbox.some((o) => o.t === 'startDailyLog' || o.t === 'submitDailyLog'));
   const flushOutbox = useStore((s) => s.flushOutbox);
   const setScreen = useStore((s) => s.setScreen);
@@ -112,7 +116,7 @@ export function EngineerToday({ also }: { also?: ReactNode }) {
     card = (
       <div className={styles.now} data-surface="ink" data-testid="today-now" data-action={pendingStart ? 'pending-start' : 'pending-send'}>
         <div className={styles.nowTitle} style={{ marginTop: 0 }}>{pendingStart ? L.pendingStart[lang] : L.pendingSend[lang]}</div>
-        {!online && <div className={styles.nowDetail}>{L.savedOffline[lang]}</div>}
+        {!online && <div className={styles.nowDetail}>{unkept ? QW.notKept[lang] : L.savedOffline[lang]}</div>}
         {/* a command still QUEUED (a transient failure keeps it; reload and reconnect only hydrate)
             is replayed on demand — the same op under the same idempotency key, never a new one */}
         {online && queued && (
