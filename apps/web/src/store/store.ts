@@ -812,6 +812,8 @@ export interface AppActions {
   /** Site Visits SV1-c unit 2 (#792, F53): put one site-visit act in the durable outbox and send it (write-ahead,
    *  as the Daily Log does); `offlineMsg` is what the viewer is told when the app is offline. False without the server. */
   queueSiteVisitAct: (op: OutboxOp, offlineMsg: string) => boolean;
+  /** SV2: a visit photo the server took has not shown in its list yet: read again on the visit photo retry. */
+  retrySiteVisits: () => void;
   hydrateOutbox: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
@@ -2490,31 +2492,45 @@ export const useStore = create<Store>()(
         }
         if (putBackVisitPhotos(rows) && get().online) void get().flushOutbox();
       } catch {
-        /* not read: the next flush reads again before it sends */
+        // not read: a photo may be waiting with no act queued, so the flush that reads again is not left to chance
+        retryVisitPhotos();
       }
     };
     /** How long a flush waits for its own read of the kept photos before it sends the rest of the queue without the
-     *  site visit acts, and how soon it tries again when that read failed or was too slow (doubling, to a minute). */
+     *  site visit acts. A visit photo still waiting arms one retry: when the phone's record of them could not be read
+     *  (on load or in a flush), when its send met no answer, a busy or failing server (after the server's own wait,
+     *  when it gives one), or when one sent has not yet shown in the server's list (`retrySiteVisits`). The delay
+     *  doubles from 5 seconds to a minute and stays there: there is no limit on tries, since every one of these waits
+     *  on something that will change. It starts again at 5 seconds once a visit act goes through. Offline it does
+     *  nothing (the browser's `online` sends everything), and it belongs to the queue it was armed for: after a
+     *  project switch, sign-in or sign-out it sends nothing, and the queue then on show arms its own. */
     const VISIT_PHOTO_WAIT_MS = 5000;
     const VISIT_PHOTO_RETRY_MAX_MS = 60_000;
+    // the longest a server's own wait is honoured: a bad answer never parks a photo for longer
+    const VISIT_PHOTO_RETRY_AFTER_MAX_MS = 10 * 60_000;
     let visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
     let visitPhotoRetry: { timer: ReturnType<typeof setTimeout>; mine: () => boolean } | null = null;
-    // it belongs to the queue it was armed for: after a project switch, sign-in or sign-out it sends nothing, and the
-    // queue then on show arms its own
-    const retryVisitPhotos = (): void => {
+    // the queue the wait was last grown for: another queue starts from 5 seconds
+    let visitPhotoRetryFor: (() => boolean) | null = null;
+    const retryVisitPhotos = (atLeastMs = 0): void => {
       if (visitPhotoRetry?.mine()) return;
-      if (visitPhotoRetry) { clearTimeout(visitPhotoRetry.timer); visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS; }
+      if (visitPhotoRetry) clearTimeout(visitPhotoRetry.timer);
+      if (!visitPhotoRetryFor?.()) visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
       const g = gateway;
       const scope = currentScope();
       const key = outboxKey();
       const token = get().sessionToken;
       const mine = () => gateway === g && scopeStillCurrent(scope) && outboxKey() === key && get().sessionToken === token;
-      const wait = visitPhotoRetryMs;
-      visitPhotoRetryMs = Math.min(wait * 2, VISIT_PHOTO_RETRY_MAX_MS);
+      visitPhotoRetryFor = mine;
+      const wait = Math.max(visitPhotoRetryMs, atLeastMs);
+      visitPhotoRetryMs = Math.min(visitPhotoRetryMs * 2, VISIT_PHOTO_RETRY_MAX_MS);
       const timer = setTimeout(() => {
         visitPhotoRetry = null;
-        if (!mine()) { visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS; return; }
-        if (get().online) void get().flushOutbox();
+        if (!mine()) return;
+        if (!get().online) return;
+        // the Site Visits screen reads again (a sent photo it still waits to see), and the queue is sent
+        if (g) tellSiteVisits({ kind: 'retry', project: g.project, generation: scope.generation });
+        void get().flushOutbox();
       }, wait);
       visitPhotoRetry = { timer, mine };
     };
@@ -5914,6 +5930,7 @@ export const useStore = create<Store>()(
       }
     },
     queueSiteVisitAct: (op, offlineMsg) => runWriteAhead(op, 'Site visit', '', offlineMsg),
+    retrySiteVisits: () => { if (get().online) retryVisitPhotos(); },
     flushOutbox: async (opts) => {
       // A flush that did not actually process this call's ops (no gateway, coalesced, or empty) reports
       // `ran:false`/empty so a caller confirming its own ops never mistakes "not run" for "succeeded".
@@ -5956,9 +5973,8 @@ export const useStore = create<Store>()(
         // a snapshot lease for its scope
         if (!scopeStillCurrent(readScope) || outboxKey() !== readKey || gateway !== readGateway || get().sessionToken !== readToken) return notRun();
       }
-      // a held act is tried again soon; with none held, the next send reads again anyway
-      if (holdVisits) { if (get().outbox.some(isSiteVisitOp)) retryVisitPhotos(); }
-      else visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
+      // not read: a photo may be waiting whether or not any act is queued, so this is tried again (Codex 4321558423)
+      if (holdVisits) retryVisitPhotos();
       const heldVisits: OutboxOp[] = [];
       const ops = get().outbox.slice();
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
@@ -6052,8 +6068,10 @@ export const useStore = create<Store>()(
         try {
           const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation);
           if (snap) lastSnap = snap;
-          // a site visit's answer shows on its own screen, so it is not counted in the "synced" line
+          // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
+          // through starts the visit photo retry's wait over
           if (!isSiteVisitOp(ops[i])) synced += 1;
+          else visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
           if (ops[i].t === 'decideReview') refreshBriefAfterReview(flushedBy);
           if (ops[i].t === 'startDailyLog') dailyLogCommitted = 'start';
           else if (ops[i].t === 'submitDailyLog') dailyLogCommitted = 'send';
@@ -6118,6 +6136,13 @@ export const useStore = create<Store>()(
             continue;
           }
           stoppedAt = i; // transient — retry this op and the rest on the next reconnect
+          // SV2: a visit act (a photo above all) is not left for a reconnect that may never come while the socket
+          // stays up: no answer, a busy or failing server is tried again, after the server's own wait when it gives
+          // one (Codex 4321558432)
+          if (isSiteVisitOp(ops[i]) && get().online) {
+            const after = (err as { retryAfter?: unknown } | null)?.retryAfter;
+            retryVisitPhotos(typeof after === 'number' && Number.isFinite(after) && after > 0 ? Math.min(after * 1000, VISIT_PHOTO_RETRY_AFTER_MAX_MS) : 0);
+          }
           if (mat) materialsAttempted = true; // correction 3 finding 3: still refresh truth, keep the op + its coalesceKey
           if (lab) labourAttempted = true; // same for labour: refresh truth, keep the op + its coalesceKey
           if (com) commercialAttempted = true; // and commercial: an uncertain response still refreshes the money

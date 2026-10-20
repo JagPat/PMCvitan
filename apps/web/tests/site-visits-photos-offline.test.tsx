@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, onTestFinished, vi } from 'vitest';
 import { render, cleanup, fireEvent, act, screen, within } from '@testing-library/react';
 import type { ProjectMember, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
@@ -74,10 +74,16 @@ afterEach(async () => {
 describe('Site Visits SV2: a photo kept on the phone until it is sent (#792)', () => {
   it('keeps a photo taken without signal, shows it waiting with its picture, and sends the same file once', async () => {
     const uploadMedia = vi.fn().mockRejectedValueOnce(network()).mockResolvedValue({ id: 'm-2', url: '/media/m-2' });
-    await mount(fakeGateway([visit()], { uploadMedia }));
+    const gw = fakeGateway([visit()], { uploadMedia });
+    await mount(gw);
     await pick('v-1');
     await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
     const kept = queuedFile()!;
+    // once the server has it, its list shows it
+    gw.listSiteVisits!.mockImplementation(async () => (uploadMedia.mock.calls.length < 2 ? [visit()] : [visit({ files: [{
+      mediaId: 'm-2', url: '/media/m-2', mime: 'image/png', clientKey: kept.file.id, takenAt: null, note: null, rating: null, place: null,
+      addedById: CONSULTANT, addedByName: 'Kiran Rao', addedByRole: 'consultant', addedAt: '2026-10-14T04:50:00.000Z',
+    }] })]));
     // the act holds no bytes; they wait with the act in the phone's database, never in localStorage
     expect(kept.file).not.toHaveProperty('data');
     expect(JSON.stringify(localStorage)).not.toContain('AQID');
@@ -89,9 +95,10 @@ describe('Site Visits SV2: a photo kept on the phone until it is sent (#792)', (
     const [[first], [again]] = uploadMedia.mock.calls as unknown as [[{ clientKey: string }], [{ clientKey: string }]];
     expect(again).toEqual(first);
     expect(first).toMatchObject({ data: 'AQID', clientKey: kept.file.id, kind: 'visit', siteVisit: { visitId: 'v-1' } });
-    // sent: nothing of it is left on the phone, nor its picture on the screen (Codex 4319124631)
+    // sent: nothing of it is left on the phone, nor its picture on the screen once the server's own shows (Codex 4319124631)
     expect(await rows()).toEqual([]);
     await vi.waitFor(() => expect(screen.queryByTestId(`sv-file-${kept.file.id}`)).toBeNull());
+    expect(screen.getByTestId('sv-file-m-2')).toBeTruthy();
   });
 
   it('sends a photo whose act localStorage failed to keep, after a reload (Codex 4319124614)', async () => {
@@ -741,6 +748,8 @@ describe('Site Visits SV2: every send puts kept photos back first, and holds vis
       useStore.getState().hydrateOutbox();
       await useStore.getState().flushOutbox(); // the read failed: the close is held and a retry armed
       const flush = vi.fn(async () => ({ ran: false, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] }));
+      const realFlush = useStore.getState().flushOutbox;
+      onTestFinished(() => useStore.setState({ flushOutbox: realFlush }));
       useStore.setState({ flushOutbox: flush });
       // signed in as someone else before it fires
       useStore.setState({ sessionUserId: 'u-other' });
@@ -749,5 +758,118 @@ describe('Site Visits SV2: every send puts kept photos back first, and holds vis
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('Site Visits SV2: a photo still waiting is always tried again (#792, #1008 round 1)', () => {
+  const fileOp = (): Extract<OutboxOp, { t: 'siteVisitAddFile' }> => ({
+    t: 'siteVisitAddFile', visitId: 'v-1', scope: visitPhotoScope(null, CONSULTANT), idempotencyKey: 'k-f',
+    by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, file: { id: 'c-1', mime: 'image/png' },
+  });
+  const serverFile = (clientKey: string) => ({
+    mediaId: 'm-1', url: '/media/m-1', mime: 'image/png', clientKey, takenAt: null, note: null, rating: null, place: null,
+    addedById: CONSULTANT, addedByName: 'Kiran Rao', addedByRole: 'consultant', addedAt: '2026-10-14T04:50:00.000Z',
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('tries a kept photo again when the phone could not read it on load or when sending, with nothing else queued (Codex 4321558423)', async () => {
+    const uploadMedia = vi.fn(async () => ({ id: 'm-1', url: '/media/m-1' }));
+    setUp('consultant', fakeGateway([visit()], { uploadMedia }));
+    // after a reload the photo is only in the phone's database, and the database fails for a while
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId, fileOp(), 'AQID');
+    let broken = true;
+    const realOpen = indexedDB.open.bind(indexedDB);
+    vi.spyOn(indexedDB, 'open').mockImplementation((name: string, version?: number) => {
+      if (broken) throw new Error('UnknownError');
+      return realOpen(name, version);
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    useStore.getState().hydrateOutbox();
+    await useStore.getState().flushOutbox();
+    expect(useStore.getState().outbox).toHaveLength(0);
+    expect(uploadMedia).not.toHaveBeenCalled();
+    // the database recovers; no ping, reconnect or screen comes, yet the photo goes
+    broken = false;
+    await vi.advanceTimersByTimeAsync(5000);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    await vi.waitFor(async () => expect(await rows()).toEqual([]));
+  });
+
+  it('keeps a sent photo on screen until the server lists it, reading again until it does (Codex 4321558427)', async () => {
+    const uploadMedia = vi.fn(async () => ({ id: 'm-1', url: '/media/m-1' }));
+    const gw = fakeGateway([visit()], { uploadMedia });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await mount(gw);
+    // the read made after the upload fails; the server lists the photo from the next read on
+    let key = '';
+    let reads = 0;
+    gw.listSiteVisits!.mockImplementation(async () => {
+      if (!uploadMedia.mock.calls.length) return [visit()];
+      reads += 1;
+      if (reads <= 2) throw network(); // the first read after the upload (both of its lists) fails
+      return [visit({ files: [serverFile(key)] })];
+    });
+    await pick('v-1');
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    key = (uploadMedia.mock.calls[0] as unknown as [{ clientKey: string }])[0].clientKey;
+    await vi.waitFor(() => expect(reads).toBeGreaterThanOrEqual(2));
+    await act(async () => {});
+    // the server has it, but its list has not said so yet: the photo is still shown, and not as waiting to send
+    expect(screen.getByTestId(`sv-file-${key}`).querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AQID');
+    expect(screen.getByTestId(`sv-file-${key}`).textContent).not.toContain('waiting to send');
+    // the retry reads again, with no ping or reconnect, and the server's own copy takes its place
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1')).toBeTruthy());
+    expect(screen.queryByTestId(`sv-file-${key}`)).toBeNull();
+  });
+
+  it('tries a photo again after a busy or failing server, after the server’s own wait, with the socket up (Codex 4321558432)', async () => {
+    const busy = Object.assign(refusal(503, 'Busy'), { retryAfter: 8 });
+    const uploadMedia = vi.fn().mockRejectedValueOnce(busy).mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
+    setUp('consultant', fakeGateway([visit()], { uploadMedia }));
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId, fileOp(), 'AQID');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await useStore.getState().flushOutbox();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    // not before the server's own wait
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
+    expect(await rows()).toEqual([]);
+  });
+
+  it.each([
+    ['no wait', refusal(429, 'Slow down')],
+    ['a wait that is not a number', Object.assign(refusal(429, 'Slow down'), { retryAfter: '8' })],
+    ['a wait that is not finite', Object.assign(refusal(503, 'Busy'), { retryAfter: Infinity })],
+  ])('tries a photo again on the usual wait when the server gives %s, never at once', async (_label, err) => {
+    const uploadMedia = vi.fn().mockRejectedValueOnce(err).mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
+    setUp('consultant', fakeGateway([visit()], { uploadMedia }));
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId, fileOp(), 'AQID');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await useStore.getState().flushOutbox();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(2));
+  });
+
+  it('honours a server’s wait only up to ten minutes', async () => {
+    const uploadMedia = vi.fn().mockRejectedValueOnce(Object.assign(refusal(429, 'Slow down'), { retryAfter: 86_400 })).mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
+    setUp('consultant', fakeGateway([visit()], { uploadMedia }));
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId, fileOp(), 'AQID');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await useStore.getState().flushOutbox();
+    await vi.advanceTimersByTimeAsync(10 * 60_000 - 1000);
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(2));
   });
 });

@@ -1981,7 +1981,9 @@ export type SiteVisitEvent =
   | { kind: 'refused'; project: string; generation: number; message: string | null }
   | { kind: 'moved'; project: string; generation: number; to: string; count: number }
   // a file was added on the visit (SV2): the upload answers with the file, not the visit, so the screen reads again
-  | { kind: 'filed'; project: string; generation: number; visitId: string };
+  | { kind: 'filed'; project: string; generation: number; visitId: string; clientKey: string }
+  // the visit photo retry fired: a screen still waiting to see a sent photo reads again
+  | { kind: 'retry'; project: string; generation: number };
 export const siteVisitListeners = new Set<(e: SiteVisitEvent) => void>();
 export function tellSiteVisits(e: SiteVisitEvent): void {
   for (const l of siteVisitListeners) l(e);
@@ -2030,7 +2032,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
     case 'siteVisitAddFile': {
       // the file's own key is the upload's `clientKey`: a replay after a lost answer is the same file, added once
       const { id, note, rating, ...file } = op.file;
-      const filed = (): null => { tellSiteVisits({ kind: 'filed', project: gw.project, generation, visitId: op.visitId }); return null; };
+      const filed = (): null => { tellSiteVisits({ kind: 'filed', project: gw.project, generation, visitId: op.visitId, clientKey: op.file.id }); return null; };
       // the phone's record could not be brought in line with the server's answer: no status, so the outbox keeps the act
       const unsettled = (): never => { throw new Error('the visit photo kept on this phone could not be updated'); };
       return getVisitPhoto(op.scope, gw.project, id).then(async (row) => {

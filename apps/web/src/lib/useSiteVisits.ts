@@ -61,7 +61,7 @@ export function refreshSiteVisits(): void {
   for (const l of listeners) l();
   sendQueued();
 }
-globalThis.addEventListener?.('online', sendQueued);
+globalThis.addEventListener?.('online', refreshSiteVisits);
 
 /** How long a start waits for the phone's position before it goes without one. */
 export const LOCATION_WAIT_MS = 5000;
@@ -167,6 +167,7 @@ function merged(old: SiteVisit[], fresh: SiteVisit[]): SiteVisit[] {
  *  (a visit for a start, end or close; a place or person for an add or remove). */
 export function withQueued(
   rows: SiteVisit[], ops: SiteVisitOp[], me: string | null, previews: ReadonlyMap<string, string> = new Map(),
+  sent: ReadonlySet<string> = new Set(),
 ): { visits: SiteVisit[]; waiting: Set<string> } {
   const byId = new Map(rows.map((v) => [v.id, v]));
   const waiting = new Set<string>();
@@ -231,7 +232,8 @@ export function withQueued(
         // lost, or another read came first) names it by the same key, and the stored one is shown alone. Its place is
         // the one picked, by name, even if the visit has since let that place go (the server keeps it the same way)
         const f = op.file;
-        waiting.add(f.id);
+        // one the server took, not yet in its list, is shown from the phone's copy but not as waiting to send
+        if (!sent.has(f.id)) waiting.add(f.id);
         if ((v.files ?? []).some((x) => x.clientKey === f.id)) break;
         byId.set(id, { ...v, files: [...(v.files ?? []), {
           mediaId: f.id, url: previews.get(f.id) ?? '', mime: f.mime, clientKey: f.id, takenAt: f.takenAt ?? null,
@@ -276,6 +278,18 @@ export function useSiteVisits() {
   // SV2: this user's visit photos kept on the phone (`visitPhotoStore`), read again whenever one may have settled. The
   // screen's own copy of each: when a row goes, its picture goes with it
   const [kept, setKept] = useState<VisitPhotoRow[]>([]);
+  const keptRef = useRef<VisitPhotoRow[]>([]);
+  keptRef.current = kept;
+  // photos the server took that its list does not show yet (the read after the upload failed or came first): still
+  // shown from the phone's copy, and read for again on the visit photo retry until a read sent after the upload
+  // answers (Codex 4321558427). That read is the server's word: it shows the photo, or the photo is no longer there
+  const [sent, setSent] = useState<ReadonlyMap<string, { row: VisitPhotoRow; turn: number }>>(new Map());
+  // the turn of the newest read that answered
+  const [readTurn, setReadTurn] = useState(0);
+  const sentRef = useRef(sent);
+  sentRef.current = sent;
+  // bumped when a read made for them settles, so a read that failed is followed by another
+  const [sentReads, setSentReads] = useState(0);
   // the visits as last shown, for a check made after a photo is read and shrunk (the screen may have moved on meanwhile)
   const shownRef = useRef<SiteVisit[]>([]);
   // bumped each time the link refresh fires, so a refresh that fails (rows unchanged) is tried again
@@ -329,6 +343,7 @@ export function useSiteVisits() {
           setHasMore(!shown.ended);
         }
         answered.current = true;
+        setReadTurn((t) => Math.max(t, mine));
         setLoad('ready');
       })
       // the latest read failed before any read answered (an overtaken first read included): offer Try again
@@ -358,6 +373,7 @@ export function useSiteVisits() {
     setNotice(null);
     movedTo.current = new Set();
     setKept([]);
+    setSent(new Map());
     readHead(true);
     readKept();
     sendQueued();
@@ -377,8 +393,12 @@ export function useSiteVisits() {
         turn.current += 1;
         setRows((old) => merged(old, [e.visit]));
       } else if (e.kind === 'filed') {
+        const row = keptRef.current.find((r) => r.clientKey === e.clientKey && r.state === 'queued');
+        if (row) setSent((m) => new Map(m).set(row.clientKey, { row, turn: turn.current }));
         readKept();
-        if (known.current.has(e.visitId) || movedTo.current.has(e.visitId)) readHead(false);
+        if (known.current.has(e.visitId) || movedTo.current.has(e.visitId)) void readHead(false).finally(() => setSentReads((n) => n + 1));
+      } else if (e.kind === 'retry') {
+        if (sentRef.current.size > 0) void readHead(false).finally(() => setSentReads((n) => n + 1));
       } else if (e.kind === 'refused') {
         setError(refusedText(e.message, lang));
         readKept();
@@ -417,11 +437,24 @@ export function useSiteVisits() {
 
   const now = () => new Date().toISOString();
   // a queued photo shows its own picture; a refused one is listed apart, with why, until dismissed
-  const previews = useMemo(() => new Map(kept.filter((r) => r.state === 'queued').map((r) => [r.clientKey, `data:${r.op.file.mime};base64,${r.data}`])), [kept]);
+  const previews = useMemo(() => new Map([...kept.filter((r) => r.state === 'queued'), ...[...sent.values()].map((x) => x.row)].map((r) => [r.clientKey, `data:${r.op.file.mime};base64,${r.data}`])), [kept, sent]);
   const notSent = useMemo(() => kept.filter((r) => r.state === 'failed').map((r) => ({
     key: r.clientKey, url: `data:${r.op.file.mime};base64,${r.data}`, note: r.op.file.note ?? null, placeName: r.op.placeName, reason: r.reason,
   })), [kept]);
-  const shown = useMemo(() => withQueued(rows, queued, me, previews), [rows, queued, me, previews]);
+  const shown = useMemo(() => {
+    const queuedKeys = new Set(queued.map((o) => o.idempotencyKey));
+    const taken = [...sent.values()].filter(({ row }) => !queuedKeys.has(row.op.idempotencyKey)).map(({ row }) => row.op);
+    return withQueued(rows, [...queued, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
+  }, [rows, queued, me, previews, sent]);
+  // a sent photo stays until a read shows it; while one is missing, the read is tried again on the visit photo retry
+  useEffect(() => {
+    if (sent.size === 0) return;
+    if ([...sent.values()].some((x) => readTurn > x.turn)) {
+      setSent((m) => new Map([...m].filter(([, x]) => readTurn <= x.turn)));
+      return;
+    }
+    useStore.getState().retrySiteVisits();
+  }, [sent, readTurn, sentReads]);
   // the photos' signed links expire: read again before the soonest one shown does, so a thumbnail or full photo never
   // opens dead; each read brings fresh links and sets the next read. The next is set only once a read settles, so reads
   // never overlap, and a read that fails (no signal) leaves the rows as they were, so the timer is set again from the
