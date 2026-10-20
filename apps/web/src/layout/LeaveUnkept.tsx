@@ -1,5 +1,5 @@
 import { useStore } from '@/store/store';
-import { unkeptActs } from '@/store/queueUnkept';
+import { unkeptCount } from '@/store/queueUnkept';
 import { ConfirmDialog } from '@/components';
 import { QW } from '@/lib/queueWords';
 
@@ -7,7 +7,7 @@ import { QW } from '@/lib/queueWords';
  *  lost by it. Cancel stays; Continue goes on and the acts are lost. */
 export function LeaveUnkept() {
   const held = useStore((s) => s.leaveConfirm);
-  const n = useStore((s) => unkeptActs(s).length);
+  const n = useStore((s) => unkeptCount(s));
   const confirmLeave = useStore((s) => s.confirmLeave);
   const cancelLeave = useStore((s) => s.cancelLeave);
   const lang = useStore((s) => s.lang);

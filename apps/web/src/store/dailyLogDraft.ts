@@ -75,6 +75,53 @@ export function isLegacyDraftFor(draft: DailyLogDraft | null, serverLog: DailyLo
   return !!draft && draft.projectId === projectId && !draft.logId && !!serverLog?.id;
 }
 
+/** A draft held in this tab's memory meets the one storage holds now (another tab wrote it while this tab could not
+ *  read the key). Neither replaces the other (#1028 r1): drafts of one log merge, the held draft's fields winning where
+ *  it set them (its edits are this tab's latest) and the stored draft's kept where it set none. Crew rows merge by
+ *  identity, a row being its position and its trade: the same row takes the held count; two rows at one position (their
+ *  trades differ) keep the one whose trade the log on screen still holds there (the held one when the screen cannot
+ *  say), and the other comes back in `rows`, for the caller to keep aside (G2 re-check G-c). The photos taken are added
+ *  when `disjoint` (this tab could not read the key, so its count started at nothing and the stored count never held
+ *  its photos), else the larger count (each tab counted from the same start) (G-e). Drafts of different logs cannot
+ *  both apply: the one that applies to the log on screen is kept (else the held one), and the other comes back as
+ *  `loser`, for the caller to keep aside (r1 check G2). */
+export function mergeHeldDraft(
+  stored: DailyLogDraft | null,
+  held: DailyLogDraft | null,
+  serverLog: DailyLog | null,
+  projectId: string,
+  disjoint = false,
+): { draft: DailyLogDraft | null; loser: DailyLogDraft | null; rows: DailyLogDraft | null } {
+  if (!held) return { draft: stored, loser: null, rows: null };
+  if (!stored) return { draft: held, loser: null, rows: null };
+  const sameLog = stored.projectId === held.projectId && stored.logKey === held.logKey && (stored.logId ?? null) === (held.logId ?? null);
+  if (!sameLog) {
+    const keepStored = !draftAppliesTo(held, serverLog, projectId) && draftAppliesTo(stored, serverLog, projectId);
+    return keepStored ? { draft: stored, loser: held, rows: null } : { draft: held, loser: stored, rows: null };
+  }
+  const set = Object.fromEntries(Object.entries(held).filter(([, v]) => v !== undefined)) as Partial<DailyLogDraft>;
+  const out: DailyLogDraft = { ...stored, ...set };
+  if (stored.crew || held.crew) out.crew = { ...stored.crew, ...held.crew };
+  const lost: Record<string, { trade: string; count: number }> = {};
+  if (stored.crewRows || held.crewRows) {
+    const rows: Record<string, { trade: string; count: number }> = { ...stored.crewRows };
+    for (const [at, mine] of Object.entries(held.crewRows ?? {})) {
+      const theirs = rows[at];
+      if (!theirs || theirs.trade === mine.trade) { rows[at] = mine; continue; }
+      const trade = serverLog?.crew[Number(at)]?.trade;
+      const keepTheirs = trade !== undefined && theirs.trade === trade && mine.trade !== trade;
+      rows[at] = keepTheirs ? theirs : mine;
+      lost[at] = keepTheirs ? mine : theirs;
+    }
+    out.crewRows = rows;
+  }
+  const photos = disjoint ? (stored.photosAdded ?? 0) + (held.photosAdded ?? 0) : Math.max(stored.photosAdded ?? 0, held.photosAdded ?? 0);
+  if (photos) out.photosAdded = photos;
+  const rows = Object.keys(lost).length === 0 ? null
+    : { projectId: out.projectId, logKey: out.logKey, ...(out.logId ? { logId: out.logId } : {}), crewRows: lost };
+  return { draft: out, loser: null, rows };
+}
+
 /** Does a draft hold any of the engineer's work? (An empty one is not worth keeping aside.) */
 export function draftHoldsWork(draft: DailyLogDraft): boolean {
   return !!draft.checkIn

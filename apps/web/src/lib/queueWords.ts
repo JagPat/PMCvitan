@@ -12,6 +12,19 @@ export const QW = {
     hi: 'इस प्रोजेक्ट के लिए इस फ़ोन पर सहेजे गए बदलाव पढ़े नहीं जा सकते।',
     gu: 'આ પ્રોજેક્ટ માટે આ ફોન પર સાચવેલા ફેરફારો વાંચી શકાતા નથી.',
   },
+  // a draft another tab saved that could not be merged with this tab's (another log's, or a crew row another took the
+  // place of) is copied aside on this phone, never dropped (#1028 r1, G2 re-check G-d)
+  draftKeptAside: {
+    en: 'Another tab’s draft for {date} was kept aside on this phone.',
+    hi: '{date} के लिए दूसरे टैब का ड्राफ़्ट इस फ़ोन पर अलग रखा गया।',
+    gu: '{date} માટે બીજા ટેબનો ડ્રાફ્ટ આ ફોન પર અલગ રાખ્યો.',
+  },
+  // a key listed again because a draft in it could not be copied aside: it reads, so it is not called unreadable
+  notSetAside: {
+    en: 'Updates saved on this phone for this project could not be set aside.',
+    hi: 'इस प्रोजेक्ट के लिए इस फ़ोन पर सहेजे गए बदलाव अलग नहीं रखे जा सके।',
+    gu: 'આ પ્રોજેક્ટ માટે આ ફોન પર સાચવેલા ફેરફારો અલગ રાખી શકાયા નહીં.',
+  },
   setAside: { en: 'Set aside and continue', hi: 'अलग रखें और जारी रखें', gu: 'અલગ રાખો અને ચાલુ રાખો' },
   setAsideFailed: {
     en: 'They could not be set aside on this phone, so nothing was changed.',

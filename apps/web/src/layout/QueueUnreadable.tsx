@@ -13,7 +13,8 @@ export function QueueUnreadable() {
   if (!listed) return null;
   return (
     <div role="alert" style={strip} data-testid="queue-unreadable">
-      <span>{QW.unreadable[lang]}</span>
+      {/* a key listed again only because a draft in it could not be copied aside reads fine: it is not called unreadable */}
+      <span>{(listed.keys.every((k) => listed.readable?.includes(k)) ? QW.notSetAside : QW.unreadable)[lang]}</span>
       {listed.failed && <span data-testid="queue-unreadable-failed">{QW.setAsideFailed[lang]}</span>}
       <button type="button" style={button} onClick={setAside}>{QW.setAside[lang]}</button>
     </div>
