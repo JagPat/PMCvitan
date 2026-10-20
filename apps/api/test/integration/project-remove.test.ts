@@ -145,6 +145,37 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     await settleAll();
   });
 
+  it('refuses at once, changing nothing, while another transaction holds an uncommitted photo write', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let held!: () => void;
+    const holding = new Promise<void>((r) => { held = r; });
+    // an upload in the other project, mid-transaction: it holds "Media" and would write its event next
+    const writer = t.prisma.$transaction(async (tx) => {
+      await tx.media.create({ data: { projectId: f.projectB.id, kind: 'progress', mime: 'image/png', data: Buffer.from('x'), sizeBytes: 1, uploadedBy: 'pmc' } });
+      held();
+      await gate;
+      throw new Error('the writer rolls back');
+    }, { timeout: 30_000 }).catch(() => undefined);
+    await holding;
+    const offTriggers = async () => t.prisma.$queryRawUnsafe<Array<{ name: string }>>(`SELECT tgname::text AS name FROM pg_trigger WHERE NOT tgisinternal AND tgenabled = 'D' ORDER BY 1`);
+    const offBefore = await offTriggers();
+    try {
+      const r = await removeProject(t.prisma, await opts());
+      // refused, not failed: it never waited for the writer until its lock_timeout
+      expect(r).toMatchObject({ ok: false, outcome: 'refused' });
+      expect(r.reason).toMatch(/another transaction is writing one of .*"?Media"?/);
+      expect(await projectExists(f.projectA.id)).toBe(true);
+      expect(await t.prisma.domainEvent.count({ where: { eventId } })).toBe(1);
+      expect(r.triggers.disabled).toEqual([]);
+    } finally {
+      release();
+      await writer;
+    }
+    // every trigger is as it was
+    expect(await offTriggers()).toEqual(offBefore);
+  });
+
   it('dry run: does everything, every check holds, and nothing is changed', async () => {
     const o = await opts();
     const r = await removeProject(t.prisma, o);
