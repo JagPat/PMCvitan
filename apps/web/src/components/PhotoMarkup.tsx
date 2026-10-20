@@ -3,7 +3,7 @@ import type { Lang } from '@vitan/shared';
 import { Button } from './Button';
 import { Modal } from './Modal';
 import {
-  MK, MARKUP_COLOURS, drawShape, fitWithin, isMeaningful, penWidth,
+  MK, MARKUP_COLOURS, drawShape, fitWithin, isMeaningful, labelAt, penWidth,
   type MarkupColour, type MarkupShape, type MarkupTool, type Point,
 } from '@/lib/photoMarkup';
 
@@ -64,7 +64,8 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
   /** For a stored photo: a fresh signed URL, asked for once if `source` no longer opens (it expires). */
   refreshSource?: () => Promise<string>;
   lang: Lang;
-  /** True while the caller is sending a saved copy: Save is held. */
+  /** True while the caller is sending a saved copy: Save is held and the photo takes no new marks, so nothing drawn
+   *  after the copy was taken can be lost when the caller closes the editor. */
   busy?: boolean;
   onSave: (copy: MarkedCopy) => void;
   onCancel: () => void;
@@ -98,6 +99,8 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
     setPhoto(null);
     setSize(null);
     setShapes([]);
+    setLabel('');
+    setHint('');
     setCursor(null);
     setGesture(null);
     loadPhoto(source, refreshRef.current).then((img) => {
@@ -108,15 +111,17 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
     return () => { live = false; };
   }, [source]);
 
-  const redraw = useCallback(() => {
+  /** Paints the photo and these shapes onto the canvas. */
+  const paint = useCallback((xs: MarkupShape[]) => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx || !photo || !size) return;
+    if (!canvas || !ctx || !photo || !size) return false;
     ctx.drawImage(photo, 0, 0, size.width, size.height);
     const w = penWidth(size.width, size.height);
-    for (const s of draft ? [...shapes, draft] : shapes) drawShape(ctx, s, w);
-  }, [photo, size, shapes, draft]);
-  useEffect(redraw, [redraw]);
+    for (const s of xs) drawShape(ctx, s, w);
+    return true;
+  }, [photo, size]);
+  useEffect(() => { paint(draft ? [...shapes, draft] : shapes); }, [paint, shapes, draft]);
 
   /** Where a pointer is, in the photo's own pixels (the canvas is shown scaled to the screen). */
   const at = (e: ReactPointerEvent<HTMLCanvasElement>): Point => {
@@ -132,7 +137,10 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
     setHint('');
     if (tool === 'text') {
       if (label.trim() === '') { setHint(MK.labelHint[lang]); return false; }
-      setShapes((xs) => [...xs, { tool: 'text', colour, at: p, text: label.trim() }]);
+      const text = label.trim();
+      // a label starts where it is placed, pulled back from the right edge so all of it stays on the photo
+      const spot = size ? labelAt(p, text, penWidth(size.width, size.height), size.width) : p;
+      setShapes((xs) => [...xs, { tool: 'text', colour, at: spot, text }]);
       setLabel('');
       return false;
     }
@@ -152,7 +160,7 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
 
   const mine = (e: ReactPointerEvent<HTMLCanvasElement>) => gesture.current?.pointerId === e.pointerId;
   const down = (e: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (gesture.current) return;
+    if (busy || gesture.current) return;
     if (begin(at(e), e.pointerId)) e.currentTarget.setPointerCapture?.(e.pointerId);
   };
   const move = (e: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -165,14 +173,15 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
 
   /** Keyboard: arrows move the marker (Shift for bigger steps), Enter or Space starts a mark and ends it. */
   const key = (e: ReactKeyboardEvent<HTMLCanvasElement>) => {
-    if (!size) return;
+    if (busy || !size) return;
     const c = cursor ?? { x: Math.round(size.width / 2), y: Math.round(size.height / 2) };
     const step = Math.max(4, Math.round(Math.max(size.width, size.height) / 50)) * (e.shiftKey ? 4 : 1);
     const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
     const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
     if (dx || dy) {
       e.preventDefault();
-      const p = { x: Math.min(size.width, Math.max(0, c.x + dx)), y: Math.min(size.height, Math.max(0, c.y + dy)) };
+      // the last pixel row and column are the edge: the marker never leaves the photo
+      const p = { x: Math.min(size.width - 1, Math.max(0, c.x + dx)), y: Math.min(size.height - 1, Math.max(0, c.y + dy)) };
       setCursor(p);
       const g = gesture.current;
       if (g && g.pointerId === null) setGesture({ pointerId: null, shape: extend(g.shape, p) });
@@ -191,6 +200,9 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
     const canvas = canvasRef.current;
     if (!canvas) return;
     if (shapes.length === 0) { setHint(MK.nothing[lang]); return; }
+    // a mark still being drawn is not part of the copy: drop it and paint only the finished marks before taking it
+    if (gesture.current) setGesture(null);
+    if (!paint(shapes)) return;
     for (const quality of [0.85, 0.7, 0.5]) {
       const data = canvas.toDataURL('image/jpeg', quality).replace(/^data:[^,]*,/, '');
       if (data.length <= MAX_BASE64) { onSave({ mime: 'image/jpeg', data }); return; }
@@ -205,19 +217,19 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
         <h2 id="photo-markup-title" style={{ margin: 0, fontSize: 18 }}>{MK.title[lang]}</h2>
         <div role="toolbar" aria-label={MK.title[lang]} style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {TOOLS.map((t) => (
-            <Button key={t} variant={tool === t ? 'ink' : 'light'} aria-pressed={tool === t} onClick={() => { setTool(t); setHint(''); }}>{MK[t][lang]}</Button>
+            <Button key={t} variant={tool === t ? 'ink' : 'light'} aria-pressed={tool === t} disabled={busy} onClick={() => { setTool(t); setHint(''); }}>{MK[t][lang]}</Button>
           ))}
           {COLOURS.map((c) => (
-            <Button key={c} variant={colour === c ? 'ink' : 'light'} aria-pressed={colour === c} onClick={() => setColour(c)}>
+            <Button key={c} variant={colour === c ? 'ink' : 'light'} aria-pressed={colour === c} disabled={busy} onClick={() => setColour(c)}>
               <span aria-hidden style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 6, background: MARKUP_COLOURS[c], marginRight: 6 }} />
               {MK[c][lang]}
             </Button>
           ))}
-          <Button variant="light" disabled={shapes.length === 0} onClick={() => setShapes((xs) => xs.slice(0, -1))}>{MK.undo[lang]}</Button>
+          <Button variant="light" disabled={busy || shapes.length === 0} onClick={() => setShapes((xs) => xs.slice(0, -1))}>{MK.undo[lang]}</Button>
         </div>
         {tool === 'text' && (
           <input
-            aria-label={MK.label[lang]} placeholder={MK.labelHint[lang]} value={label} maxLength={60}
+            aria-label={MK.label[lang]} placeholder={MK.labelHint[lang]} value={label} maxLength={60} disabled={busy}
             onChange={(e) => setLabel(e.target.value)} style={{ minHeight: 44, padding: '0 10px', borderRadius: 10, border: '1px solid rgba(35,33,28,.25)' }}
           />
         )}

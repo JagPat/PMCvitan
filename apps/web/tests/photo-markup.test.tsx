@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { PhotoMarkup } from '@/components/PhotoMarkup';
-import { MK, drawShape, fitWithin, isMeaningful, penWidth, type MarkupPen, type MarkupShape } from '@/lib/photoMarkup';
+import { MK, drawShape, fitWithin, isMeaningful, labelWidth, penWidth, type MarkupPen, type MarkupShape } from '@/lib/photoMarkup';
 
 /** A pen that records what it was asked to draw. */
 function recordingPen() {
@@ -195,6 +195,85 @@ describe('photo markup: the editor', () => {
     expect(screen.getByRole('button', { name: MK.save.en })).toBeDisabled();
     await screen.findByTestId('photo-markup-canvas');
     expect(screen.getByRole('button', { name: MK.undo.en })).toBeDisabled();
+  });
+
+  // round 2 on #1002 (c688a2d): each of these failed there
+
+  it('a new photo also drops words typed but not yet placed', async () => {
+    const { rerender } = render(<PhotoMarkup source={PHOTO} lang="en" onSave={() => {}} onCancel={() => {}} />);
+    await screen.findByTestId('photo-markup-canvas');
+    fireEvent.click(screen.getByRole('button', { name: MK.text.en }));
+    fireEvent.change(screen.getByLabelText(MK.label.en), { target: { value: 'Crack' } });
+    rerender(<PhotoMarkup source={new Blob(['b'])} lang="en" onSave={() => {}} onCancel={() => {}} />);
+    await screen.findByTestId('photo-markup-canvas');
+    expect(screen.getByLabelText(MK.label.en)).toHaveValue('');
+  });
+
+  it('a tap with the Draw tool is not a mark', async () => {
+    expect(isMeaningful({ tool: 'line', colour: 'red', points: [{ x: 5, y: 5 }, { x: 5, y: 5 }] })).toBe(false);
+    render(<PhotoMarkup source={PHOTO} lang="en" onSave={() => {}} onCancel={() => {}} />);
+    const canvas = await screen.findByTestId('photo-markup-canvas');
+    fireEvent.click(screen.getByRole('button', { name: MK.line.en }));
+    fireEvent.pointerDown(canvas, { clientX: 50, clientY: 50, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 50, clientY: 50, pointerId: 1 });
+    expect(screen.getByRole('button', { name: MK.undo.en })).toBeDisabled();
+  });
+
+  it('a keyboard mark left unfinished is not in the saved copy', async () => {
+    // one shared pen: what is on the canvas since the photo was last drawn, at the moment the copy is taken
+    let painted: string[] = [];
+    let atExport: string[] = [];
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function () {
+      const { pen, calls } = recordingPen();
+      calls.push = (...xs: string[]) => { painted.push(...xs); return painted.length; };
+      return Object.assign(pen, { drawImage: () => { painted = []; } }) as unknown as CanvasRenderingContext2D;
+    } as never);
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockImplementation(() => { atExport = [...painted]; return 'data:image/jpeg;base64,QUJD'; });
+    const onSave = vi.fn();
+    render(<PhotoMarkup source={PHOTO} lang="en" onSave={onSave} onCancel={() => {}} />);
+    const canvas = await screen.findByTestId('photo-markup-canvas');
+    drag(canvas, [10, 10], [300, 200]);
+    fireEvent.focus(canvas);
+    fireEvent.keyDown(canvas, { key: 'Enter' });
+    fireEvent.keyDown(canvas, { key: 'ArrowRight', shiftKey: true });
+    fireEvent.click(screen.getByRole('button', { name: MK.save.en }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    // one arrow: a shaft and a head
+    expect(atExport.filter((c) => c === 'begin')).toHaveLength(2);
+  });
+
+  it('a label placed at the right edge from the keyboard stays on the photo', async () => {
+    const texts: Array<{ text: string; x: number }> = [];
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function () {
+      const { pen } = recordingPen();
+      return Object.assign(pen, {
+        drawImage: () => {},
+        fillText: (text: string, x: number) => { texts.push({ text, x }); },
+      }) as unknown as CanvasRenderingContext2D;
+    } as never);
+    render(<PhotoMarkup source={PHOTO} lang="en" onSave={() => {}} onCancel={() => {}} />);
+    const canvas = await screen.findByTestId('photo-markup-canvas');
+    fireEvent.click(screen.getByRole('button', { name: MK.text.en }));
+    fireEvent.change(screen.getByLabelText(MK.label.en), { target: { value: 'Crack here' } });
+    fireEvent.focus(canvas);
+    for (let i = 0; i < 20; i += 1) fireEvent.keyDown(canvas, { key: 'ArrowRight', shiftKey: true });
+    fireEvent.keyDown(canvas, { key: 'Enter' });
+    const placed = texts.filter((t) => t.text === 'Crack here').at(-1);
+    expect(placed).toBeDefined();
+    // the label's estimated width (bold, 6 pens tall) still fits inside the 1600 px photo
+    expect(placed!.x + labelWidth('Crack here', penWidth(1600, 1200))).toBeLessThanOrEqual(1600);
+  });
+
+  it('while a saved copy is being sent, the photo and tools take no new marks', async () => {
+    render(<PhotoMarkup source={PHOTO} lang="en" busy onSave={() => {}} onCancel={() => {}} />);
+    const canvas = await screen.findByTestId('photo-markup-canvas');
+    drag(canvas, [10, 10], [300, 200]);
+    fireEvent.focus(canvas);
+    fireEvent.keyDown(canvas, { key: 'Enter' });
+    fireEvent.keyDown(canvas, { key: 'ArrowRight', shiftKey: true });
+    fireEvent.keyDown(canvas, { key: 'Enter' });
+    expect(screen.getByRole('button', { name: MK.undo.en })).toBeDisabled();
+    expect(screen.getByRole('button', { name: MK.circle.en })).toBeDisabled();
   });
 
   it('Cancel closes without saving', async () => {

@@ -38,8 +38,19 @@ export function penWidth(width: number, height: number): number {
 /** A shape too small to mean anything (a tap with the arrow or circle tool): not kept. */
 export function isMeaningful(shape: MarkupShape): boolean {
   if (shape.tool === 'text') return shape.text.trim() !== '';
-  if (shape.tool === 'line') return shape.points.length > 1;
+  // a tap gives a line of one spot repeated: it has to travel somewhere to be a mark
+  if (shape.tool === 'line') return shape.points.some((p) => Math.hypot(p.x - shape.points[0]!.x, p.y - shape.points[0]!.y) >= 4);
   return Math.hypot(shape.to.x - shape.from.x, shape.to.y - shape.from.y) >= 4;
+}
+
+/** A label's width when drawn with a pen of width `w` (bold, `w * 6` px), estimated wide so it is never under. */
+export function labelWidth(text: string, w: number): number {
+  return Math.ceil([...text].length * w * 6 * 0.7);
+}
+
+/** Where a label starting at `p` goes so all of it stays on a photo `width` wide. */
+export function labelAt(p: Point, text: string, w: number, width: number): Point {
+  return { x: Math.max(0, Math.min(p.x, width - labelWidth(text, w))), y: p.y };
 }
 
 /** The drawing calls a shape needs, so the shapes can be drawn on a canvas and checked without one. */
