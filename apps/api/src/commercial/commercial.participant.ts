@@ -746,4 +746,12 @@ export class CommercialParticipant {
       );
     }
   }
+
+  /** #482 site photos — the batched form of {@link assertMediaDisposable}: which of these photos a measurement cites, in one read
+   *  of this module's own rows, so the snapshot asks once for its whole photo window (Codex 4320515415). */
+  async pinnedMedia(db: Prisma.TransactionClient, projectId: string, mediaIds: string[]): Promise<Set<string>> {
+    if (mediaIds.length === 0) return new Set();
+    const rows = await db.measurement.findMany({ where: { projectId, evidenceMediaId: { in: mediaIds } }, select: { evidenceMediaId: true }, distinct: ['evidenceMediaId'] });
+    return new Set(rows.flatMap((r) => (r.evidenceMediaId ? [r.evidenceMediaId] : [])));
+  }
 }

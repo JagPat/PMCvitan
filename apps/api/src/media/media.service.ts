@@ -14,11 +14,13 @@ import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialParticipant } from '../commercial/commercial.participant';
 import { SiteVisitFilesParticipant } from '../site-visits/site-visit-files.participant';
+import { MediaDisposability } from './media-disposability';
 import { isPlaceHiddenFrom, previewPublishedProjectNode, resolvePublishedProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import type { CreateMediaInput } from '../contracts';
+import { SITE_PHOTO_DELETE_WINDOW_MS } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -81,7 +83,12 @@ export class MediaService {
     private readonly commercialParticipant: CommercialParticipant,
     // #792 SV2 — a file added on a site visit is linked to it by the site-visits participant, in the upload's transaction
     private readonly siteVisitFiles: SiteVisitFilesParticipant,
-  ) {}
+  ) {
+    this.disposability = new MediaDisposability(prisma, inspectionParticipant, inventoryParticipant, labourParticipant, activityParticipant, commercialParticipant, siteVisitFiles);
+  }
+
+  /** What may be deleted as far as the records citing a photo go — the guards the snapshot asks as well (Codex 4320129763). */
+  private readonly disposability: MediaDisposability;
 
   /** A clientKey replay returns the stored row only when the caller could have created it: for the roles
    *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence.
@@ -338,33 +345,37 @@ export class MediaService {
    * out of scope. Best-effort on the bucket delete (dev stub is a no-op).
    */
   async remove(id: string, user: AuthUser): Promise<boolean> {
+    return (await this.removeFiled(id, user)) !== null;
+  }
+
+  /** {@link remove}, saying which day's log counted the photo (`dailyLogId`, a progress photo filed on one), or
+   *  null when not found / out of scope. */
+  async removeFiled(id: string, user: AuthUser): Promise<{ dailyLogId: string | null } | null> {
     const projectId = user.projectId;
     const row = await this.prisma.media.findUnique({ where: { id } });
-    if (!row || row.projectId !== projectId) return false;
+    if (!row || row.projectId !== projectId) return null;
+    // #482 (Board, 14 Oct 2026) — every member may delete a plain site photo THEY added, within an hour of the server
+    // recording it; any other photo stays the PMC's and the engineer's. Asked before anything is touched.
+    if (!SITE_RECORD_ROLES.has(user.role)) {
+      const plain = row.kind === 'progress' && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
+      if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('Only the person who added this site photo may delete it');
+      if (Date.now() - row.createdAt.getTime() > SITE_PHOTO_DELETE_WINDOW_MS) {
+        throw new ForbiddenException('A site photo can be deleted only within an hour of adding it');
+      }
+    }
+    const ownSitePhoto = !SITE_RECORD_ROLES.has(user.role);
     const actor = await resolveActor(this.prisma, user);
     const events = await this.prisma.$transaction(async (tx) => {
       // #482 site photos — a photo filed on a day's log: that log row is held FOR SHARE until this delete commits, so a
-      // send (which takes the row FOR UPDATE and then counts the photos filed on it) waits and never counts this one
-      if (row.dailyLogId) await this.dailyLog.sentLogs(projectId, [row.dailyLogId], tx, true);
-      // Phase 3 Task 4 — the §C stock ledger is immutable, so a photo cited as stock quality
-      // evidence can never be unlinked: the inventory participant REFUSES the delete (409)
-      // before anything is touched (the ledger's composite FK is the database backstop).
-      await this.inventoryParticipant.assertMediaDisposable(tx, projectId, id);
-      // Phase 4 Task 3 correction (F2) — the same rule for LABOUR presence evidence: a muster is an
-      // append-only observation the Team gate reads, so its selfie/QR capture cannot be deleted
-      // while cited (the attendance composite FK is the database backstop).
-      await this.labourParticipant.assertMediaDisposable(tx, projectId, id);
-      // Phase 4 Task 5 (§I): a photo cited as measured-output evidence is not deletable
-      await this.activityParticipant.assertMediaDisposable(tx, projectId, id);
-      // Phase 5 Task 3 (§D): nor one cited as MEASUREMENT evidence — a measurement is immutable
-      // and becomes a payable quantity, so this is the strictest case of the same rule.
-      await this.commercialParticipant.assertMediaDisposable(tx, projectId, id);
-      // #792 SV2: nor one added on a site visit — it is part of the visit's record, which keeps it
-      await this.siteVisitFiles.assertMediaDisposable(tx, projectId, id);
-      // #571 round 9, finding 1 — and the same rule for ASSIGNED inspection evidence: while an
-      // assignment binds, only its assignee may destroy the photos that stand behind that work.
-      // This is the sharpest case of the whole assignment rule, because a delete does not come back.
-      const observedEvidence = await this.inspectionParticipant.assertEvidenceDisposable(tx, { projectId, mediaId: id, actorUserId: user.sub });
+      // send (which takes the row FOR UPDATE and then counts the photos filed on it) waits and never counts this one.
+      // A member's own photo on a log already sent is part of that record now, so theirs no longer (Codex 4316959509).
+      const sent = row.dailyLogId ? await this.dailyLog.sentLogs(projectId, [row.dailyLogId], tx, true) : new Set<string>();
+      if (ownSitePhoto && row.dailyLogId && sent.has(row.dailyLogId)) {
+        throw new ForbiddenException('This photo is part of a daily log that was already sent');
+      }
+      // every record that keeps this photo as evidence (stock ledger, labour muster, measured output, measurement, site
+      // visit, assigned inspection) refuses the delete before anything is touched — the same questions the snapshot asks
+      const observedEvidence = await this.disposability.assertDisposable(tx, { projectId, mediaId: id, actorUserId: user.sub });
       // Task 10 (Module 3) correction — unlink any inspection-owned evidence FIRST (participant appends
       // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
       // observes the removal. `null` when this media was not item-level evidence.
@@ -381,6 +392,6 @@ export class MediaService {
     // failing to clean it up is a harmless orphan — never a reason to fail a committed delete.
     if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
     await this.dispatcher.dispatchCommitted(events);
-    return true;
+    return { dailyLogId: row.kind === 'progress' ? row.dailyLogId : null };
   }
 }

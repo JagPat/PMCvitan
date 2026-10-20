@@ -373,6 +373,9 @@ export interface PhotoDto {
   at: string;
   /** #482 site photos — the upload key, on the viewer's own photos only */
   clientKey?: string;
+  /** #482 site photos — until when (ISO) the viewer may delete this photo: only on their own plain site photo, within
+   *  the hour, and not on a daily log already sent */
+  deletableUntil?: string;
 }
 
 export interface DailyLogDto {
