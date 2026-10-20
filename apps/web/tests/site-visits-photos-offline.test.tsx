@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, afterEach, onTestFinished, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, onTestFinished, vi } from 'vitest';
 import { render, cleanup, fireEvent, act, screen, within } from '@testing-library/react';
 import type { ProjectMember, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
@@ -73,8 +73,31 @@ const heldKeys = () => Object.keys(localStorage).filter((k) => k.startsWith('vit
 const waiting = async () => (await rows()).filter((r) => r.state !== 'filed');
 const network = () => new Error('network');
 const refusal = (status: number, serverMessage: string) => Object.assign(new Error(String(status)), { status, serverMessage });
+/** A send a test holds open on purpose, on a barrier only `sendsSettled` lets go. */
+let heldSend: (() => void) | null = null;
+/** No send is running. A test's store outlives the screens it unmounts, so a "reload" waits for this first: a real
+ *  reload ends the old page's send, and here it would otherwise run on into the new page. A held send is let go first. */
+const sendsSettled = () => {
+  heldSend?.();
+  heldSend = null;
+  return vi.waitFor(() => expect(useStore.getState()._outboxFlushing()).toBe(false), { timeout: 10_000 });
+};
+/** The test's own send: a send still running from an earlier act (the pick's, the save's) settles first, or the store
+ *  would coalesce this one into it and return before anything was sent. */
+const flushOwn = async () => {
+  await sendsSettled();
+  await useStore.getState().flushOutbox();
+};
+
+// every test begins with no flush running: one left from the test before would take this test's sends into its rerun
+beforeEach(() => {
+  expect(useStore.getState()._outboxFlushing()).toBe(false);
+});
 
 afterEach(async () => {
+  // the store outlives a test, and so does a flush still running when it ends: it is let settle against this test's own
+  // gateway, or the next test's flushes are coalesced into it and its put-back reads the next test's rows
+  await sendsSettled();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   cleanup();
@@ -161,7 +184,7 @@ describe('Site Visits SV2: a photo kept on the phone until it is sent (#792)', (
     // the person leaves the screen; the photo is sent and refused
     cleanup();
     uploadMedia.mockRejectedValue(refusal(409, 'This site visit was closed by the PMC and takes no more files'));
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(flushOwn);
     expect(useStore.getState().outbox).toHaveLength(0);
     expect((await rows()).map((r) => [r.clientKey, r.state, r.reason])).toEqual([[key, 'failed', 'This site visit was closed by the PMC and takes no more files']]);
     // later, the screen opens: the photo is listed as not sent, with the server's reason, until dismissed
@@ -188,7 +211,7 @@ describe('Site Visits SV2: a photo kept on the phone until it is sent (#792)', (
     await vi.waitFor(() => expect(queuedFile()?.visitId).toBe('v-tmp'));
     const key = queuedFile()!.file.id;
     startSiteVisit.mockRejectedValue(refusal(422, 'Project is archived'));
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(flushOwn);
     expect(useStore.getState().outbox).toHaveLength(0);
     expect(uploadMedia).not.toHaveBeenCalled();
     expect((await rows()).map((r) => [r.clientKey, r.state, r.reason])).toEqual([[key, 'failed', 'Project is archived']]);
@@ -271,7 +294,7 @@ describe('Site Visits SV2: every photo is kept until the server answers it (#792
     // two photos, two keys; each goes again exactly as it was first sent
     uploadMedia.mockClear();
     uploadMedia.mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(flushOwn);
     const [a, b] = sent(uploadMedia);
     expect(a.clientKey).not.toBe(b.clientKey);
     expect([a.siteVisit.note, b.siteVisit.note]).toEqual(['Before', 'After']);
@@ -349,7 +372,7 @@ describe('Site Visits SV2: every photo is kept until the server answers it (#792
     await act(async () => { refreshSiteVisits(); });
     await vi.waitFor(() => expect(screen.getByTestId(`sv-file-${key}`).textContent).toContain('Kitchen'));
     uploadMedia.mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(flushOwn);
     expect(uploadMedia).toHaveBeenLastCalledWith(expect.objectContaining({ clientKey: key, nodeId: 'n-kit' }));
   });
 });
@@ -373,6 +396,9 @@ describe('Site Visits SV2: a kept photo is never stranded (#792, #999 round 1)',
     await pick('v-1');
     await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
     const key = queuedFile()!.file.id;
+    // the pick's own send has ended (it writes this tab's lane as it goes), so what the earlier release's tab writes
+    // below is what the reload reads
+    await sendsSettled();
     // nothing a release reads holds the act, and the visit lane stays where every release reads it, never removed
     const project = useStore.getState().activeProjectId;
     const v1 = `vitan.siteVisitQueue.dev:${CONSULTANT}.${project}`;
@@ -441,12 +467,12 @@ describe('Site Visits SV2: a kept photo is never stranded (#792, #999 round 1)',
     // refused for good, but the phone cannot mark the row: the act stays
     uploadMedia.mockRejectedValue(refusal(409, 'This site visit was closed by the PMC and takes no more files'));
     const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(flushOwn);
     expect(queuedFile()?.file.id).toBe(key);
     expect((await rows()).map((r) => r.state)).toEqual(['queued']);
     // it can now: sent again, refused again, marked, and only then let go
     put.mockRestore();
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(flushOwn);
     expect(queuedFile()).toBeUndefined();
     expect((await rows()).map((r) => r.state)).toEqual(['failed']);
     // sent, but the phone cannot mark the row sent: the act stays, and goes once the row says so
@@ -459,10 +485,10 @@ describe('Site Visits SV2: a kept photo is never stranded (#792, #999 round 1)',
     const second = queuedFile()!.file.id;
     sent.mockResolvedValue({ id: 'm-2', url: '/media/m-2' });
     const mark = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(() => { throw new DOMException('broken', 'UnknownError'); });
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(flushOwn);
     expect(queuedFile()?.file.id).toBe(second);
     mark.mockRestore();
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(flushOwn);
     expect(queuedFile()).toBeUndefined();
     // marked sent, then settled by the screen's read after it
     await vi.waitFor(async () => expect((await rows()).filter((r) => r.clientKey === second)).toEqual([]));
@@ -1691,5 +1717,31 @@ describe('Site Visits SV2: a refused start never holds the queue on the phone’
     expect(await failVisitPhotosOn(owner, project, 'v-b', 'No')).toEqual(['p-2']);
     expect(await failVisitPhotosOn(owner, project, 'v-b', 'No')).toEqual([]);
     expect((await rows()).map((r) => [r.clientKey, r.op.visitId, r.state]).sort()).toEqual([['p-1', 'v-open', 'queued'], ['p-2', 'v-b', 'failed']]);
+  });
+});
+
+describe('Site Visits SV2: each test starts with no send left running from the one before', () => {
+  // A test that ends with a send still running hands it to the next test: the store and its flush lock outlive a test,
+  // so the next test's sends are coalesced into it (its own `flushOutbox()` returns at once, sending nothing) and that
+  // send's put-back can read the next test's rows. Under load this failed Codex 4319124653 and 4319124642 now and then;
+  // here the send is held on a barrier that only the wait in `afterEach` lets go, and the test sees it in flight before
+  // it ends, so the pair fails every time without that wait, however loaded the machine is.
+  const end = (key: string): OutboxOp => ({ t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: key });
+
+  it('ends with a send still running (the test before)', async () => {
+    const endSiteVisit = vi.fn(() => new Promise((done) => { heldSend = () => done(visit({ status: 'ended' })); }));
+    setUp('consultant', fakeGateway([visit()], { endSiteVisit }), [end('k-first')]);
+    void useStore.getState().flushOutbox();
+    await vi.waitFor(() => expect(endSiteVisit).toHaveBeenCalledTimes(1));
+    expect(useStore.getState()._outboxFlushing()).toBe(true);
+  });
+
+  it('sends its own queue when it asks, never folded into a send left from the test before', async () => {
+    const endSiteVisit = vi.fn(async () => visit({ status: 'ended' }));
+    setUp('consultant', fakeGateway([visit()], { endSiteVisit }), [end('k-second')]);
+    const result = await useStore.getState().flushOutbox();
+    expect(result.ran).toBe(true);
+    expect(endSiteVisit).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().outbox).toHaveLength(0);
   });
 });
