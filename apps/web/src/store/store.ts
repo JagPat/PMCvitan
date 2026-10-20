@@ -2441,10 +2441,20 @@ export const useStore = create<Store>()(
      *  flush overtook is read again when that flush settles, so no row waits for the next load. What it rebuilds is
      *  sent at once when online: no screen may be open to send it (Codex 4320122176). */
     let visitPhotoEpoch = 0;
+    const VISIT_PHOTO_WAIT_MS = 5000;
     // bumped by every flush, at its start and end: a read a flush overtook (not a newer read) must be made again
     let visitPhotoFlushes = 0;
     let visitPhotoRecheck = false;
-    const reconcileVisitPhotos = async (): Promise<void> => {
+    // the reconciliation in flight, if any: a flush waits for it, so a rebuilt photo is back in its place in the lane
+    // before any later act of its visit (a close) can be sent ahead of it (Codex 4320690147). It always settles
+    let visitPhotosSettling: Promise<void> | null = null;
+    const reconcileVisitPhotos = (): Promise<void> => {
+      const run = reconcileVisitPhotosNow().catch(() => {});
+      visitPhotosSettling = run;
+      void run.then(() => { if (visitPhotosSettling === run) visitPhotosSettling = null; });
+      return run;
+    };
+    const reconcileVisitPhotosNow = async (): Promise<void> => {
       const epoch = ++visitPhotoEpoch;
       const flushes = visitPhotoFlushes;
       const scope = visitPhotoScope(get().sessionToken, get().sessionUserId);
@@ -5896,6 +5906,15 @@ export const useStore = create<Store>()(
       if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
       outboxFlushing = true;
       try {
+      // SV2: a visit photo being put back from its row goes first. Past a few seconds the rest of the queue goes, but no
+      // site visit act does (a close must not overtake the photo): they wait, and are sent once the photo is back
+      let holdVisits = false;
+      const settling = visitPhotosSettling;
+      if (settling) {
+        holdVisits = !(await Promise.race([settling.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), VISIT_PHOTO_WAIT_MS))]));
+        if (holdVisits) void settling.then(() => { if (get().online) void get().flushOutbox(); });
+      }
+      const heldVisits: OutboxOp[] = [];
       const ops = get().outbox.slice();
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
@@ -5981,6 +6000,7 @@ export const useStore = create<Store>()(
           scopeMoved = true;
           break;
         }
+        if (holdVisits && isSiteVisitOp(ops[i])) { heldVisits.push(ops[i]); continue; }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
@@ -6068,7 +6088,8 @@ export const useStore = create<Store>()(
         scopeMoved = true;
       }
 
-      const remaining = stoppedAt >= 0 ? ops.slice(stoppedAt) : [];
+      // the held site visit acts came before the stop, so they stay ahead of everything after it, in order
+      const remaining = [...heldVisits, ...(stoppedAt >= 0 ? ops.slice(stoppedAt) : [])];
       const pendingKeys = remaining.map(keyOf).filter((k): k is string => !!k);
       if (scopeMoved) {
         // The in-memory outbox now belongs to the NEW scope (hydrateOutbox swapped

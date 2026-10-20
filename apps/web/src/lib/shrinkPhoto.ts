@@ -12,8 +12,14 @@ export const PHOTO_MAX_EDGE = 2048;
 export const UPLOAD_IMAGE_MIMES: readonly string[] = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/heic', 'image/heif'];
 /** A photo already within the edge is redrawn only when its file is larger than this (base64 characters). */
 const SMALL_ENOUGH = 1_500_000;
-/** The largest photo the upload takes, in base64 characters (`MAX_MEDIA_BASE64`, apps/api contracts.ts). */
-export const MAX_PHOTO_BASE64 = 14_000_000;
+/** The largest request body the API reads (`useBodyParser('json', { limit: '12mb' })`, apps/api app-setup.ts): a
+ *  larger one is refused whole (413) before the upload's own check (`MAX_MEDIA_BASE64`, 14,000,000) is reached. */
+export const API_BODY_LIMIT_BYTES = 12 * 1024 * 1024;
+/** Room in that body for everything around the photo: its JSON keys, the type, capture time and place, and a
+ *  500-character note and the visit's fields, many times over. */
+export const UPLOAD_ENVELOPE_BYTES = 64 * 1024;
+/** The largest photo the upload takes, in base64 characters (one byte each in the body) (Codex 4320690152). */
+export const MAX_PHOTO_BASE64 = API_BODY_LIMIT_BYTES - UPLOAD_ENVELOPE_BYTES;
 const JPEG_QUALITY = 0.85;
 
 export async function shrinkPhoto(dataUrl: string): Promise<string> {

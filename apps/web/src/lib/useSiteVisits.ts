@@ -53,12 +53,15 @@ function sendQueued(): void {
 }
 
 /** The screens on show, told when the server says the project changed (the realtime ping `useApiSync` hears, which
- *  also comes on every reconnect): each reads again, and any acts still queued are sent. */
+ *  also comes on every reconnect): each reads again. Any acts still queued are sent then, and whenever the browser says
+ *  the network is back, whether or not a Site Visits screen is open: a photo taken without signal goes as soon as it
+ *  can (Codex review 5579878680). */
 const listeners = new Set<() => void>();
 export function refreshSiteVisits(): void {
   for (const l of listeners) l();
-  if (listeners.size > 0) sendQueued();
+  sendQueued();
 }
+globalThis.addEventListener?.('online', sendQueued);
 
 /** How long a start waits for the phone's position before it goes without one. */
 export const LOCATION_WAIT_MS = 5000;
@@ -388,13 +391,9 @@ export function useSiteVisits() {
       }
     };
     siteVisitListeners.add(told);
-    // the browser says the network is back
-    const online = () => sendQueued();
-    globalThis.addEventListener?.('online', online);
     return () => {
       listeners.delete(ping);
       siteVisitListeners.delete(told);
-      globalThis.removeEventListener?.('online', online);
     };
   }, [readHead, readKept]);
 

@@ -549,3 +549,96 @@ describe('Site Visits SV2: a kept photo lives in its row alone (#792, #999 round
     vi.useRealTimers();
   });
 });
+
+/**
+ * #1004's round 1 (head cb30b35): each test fails there.
+ */
+describe('Site Visits SV2: a kept photo goes in its place, with or without the screen (#792, #1004 round 1)', () => {
+  const fileOp = (): Extract<OutboxOp, { t: 'siteVisitAddFile' }> => ({
+    t: 'siteVisitAddFile', visitId: 'v-1', scope: visitPhotoScope(null, CONSULTANT), idempotencyKey: 'k-f',
+    by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, file: { id: 'c-1', mime: 'image/png' },
+  });
+
+  it('sends a photo put back on load before a close queued after it, however the queue is first sent (Codex 4320690147)', async () => {
+    const order: string[] = [];
+    const uploadMedia = vi.fn(async () => { order.push('photo'); return { id: 'm-1', url: '/media/m-1' }; });
+    const closeSiteVisit = vi.fn(async () => { order.push('close'); return visit({ status: 'closed', closeReason: 'Done' }); });
+    setUp('consultant', fakeGateway([visit()], { uploadMedia, closeSiteVisit }));
+    const project = useStore.getState().activeProjectId;
+    // the photo is kept on the phone; the close made after it is in the stored visit lane
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), project, fileOp(), 'AQID');
+    const close: OutboxOp = { t: 'siteVisitClose', visitId: 'v-1', reason: 'Done', idempotencyKey: 'k-c' };
+    localStorage.setItem(`vitan.siteVisitQueue.dev:${CONSULTANT}.${project}`, JSON.stringify([close]));
+    // a reload: the queue is loaded and sent at once (the network coming back, the server's reconnect ping, a new act)
+    useStore.getState().hydrateOutbox();
+    void useStore.getState().flushOutbox();
+    await vi.waitFor(() => expect(order).toEqual(['photo', 'close']));
+  });
+
+  it('holds a close queued after a kept photo while the photo is slow to be put back, past the wait (#1004 round 1 follow-up)', async () => {
+    const order: string[] = [];
+    const uploadMedia = vi.fn(async () => { order.push('photo'); return { id: 'm-1', url: '/media/m-1' }; });
+    const closeSiteVisit = vi.fn(async () => { order.push('close'); return visit({ status: 'closed', closeReason: 'Done' }); });
+    setUp('consultant', fakeGateway([visit()], { uploadMedia, closeSiteVisit }));
+    const project = useStore.getState().activeProjectId;
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), project, fileOp(), 'AQID');
+    const close: OutboxOp = { t: 'siteVisitClose', visitId: 'v-1', reason: 'Done', idempotencyKey: 'k-c' };
+    localStorage.setItem(`vitan.siteVisitQueue.dev:${CONSULTANT}.${project}`, JSON.stringify([close]));
+    // the phone is slow to read its kept photos back: the first read waits until released
+    let release!: () => void;
+    const slow = new Promise<void>((r) => { release = r; });
+    const realOpen = indexedDB.open.bind(indexedDB);
+    let held = false;
+    const open = vi.spyOn(indexedDB, 'open').mockImplementation((name: string, version?: number) => {
+      const req = realOpen(name, version);
+      if (held) return req;
+      held = true;
+      let onsuccess: ((this: IDBRequest, ev: Event) => unknown) | null = null;
+      req.addEventListener('success', (ev) => { void slow.then(() => onsuccess?.call(req, ev)); });
+      return new Proxy(req, {
+        get: (t, k) => (k === 'onsuccess' ? onsuccess : Reflect.get(t, k, t)),
+        set: (t, k, v) => { if (k === 'onsuccess') onsuccess = v; else Reflect.set(t, k, v, t); return true; },
+      });
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      useStore.getState().hydrateOutbox();
+      const flushing = useStore.getState().flushOutbox();
+      await vi.advanceTimersByTimeAsync(5000);
+      await flushing;
+      // past the wait the rest of the queue may go, but the close waits for its photo
+      expect(closeSiteVisit).not.toHaveBeenCalled();
+      expect(useStore.getState().outbox.map((o) => o.t)).toContain('siteVisitClose');
+    } finally {
+      vi.useRealTimers();
+      release();
+    }
+    await vi.waitFor(() => expect(order).toEqual(['photo', 'close']));
+    expect(useStore.getState().outbox).toHaveLength(0);
+    open.mockRestore();
+  });
+
+  it('sends a kept photo when the network comes back or the server reconnects, with no visit screen open (Codex review 5579878680)', async () => {
+    const uploadMedia = vi.fn().mockRejectedValue(network());
+    await mount(fakeGateway([visit()], { uploadMedia }));
+    await pick('v-1');
+    await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
+    // the person leaves Site Visits; the network comes back
+    cleanup();
+    uploadMedia.mockClear();
+    uploadMedia.mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
+    await act(async () => { globalThis.dispatchEvent(new Event('online')); });
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
+    // and a photo still waiting goes on the server's reconnect ping too
+    uploadMedia.mockClear();
+    uploadMedia.mockRejectedValueOnce(network()).mockResolvedValue({ id: 'm-2', url: '/media/m-2' });
+    render(<SiteVisitsScreen />);
+    await vi.waitFor(() => expect(screen.getByTestId('sv-photo-file-v-1')).toBeTruthy());
+    await pick('v-1');
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    cleanup();
+    await act(async () => { refreshSiteVisits(); });
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(2));
+  });
+});

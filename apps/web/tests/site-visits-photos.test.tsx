@@ -5,7 +5,9 @@ import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import type { ApiGateway, OutboxOp, SiteVisit } from '@/data/apiGateway';
-import { shrinkPhoto, MAX_PHOTO_BASE64, PHOTO_MAX_EDGE } from '@/lib/shrinkPhoto';
+import { shrinkPhoto, MAX_PHOTO_BASE64, PHOTO_MAX_EDGE, UPLOAD_ENVELOPE_BYTES } from '@/lib/shrinkPhoto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { refreshSiteVisits, linkRefreshDelay, LINK_REFRESH_RETRY_MS } from '@/lib/useSiteVisits';
 import { leftoverEnglish } from './leftover-english';
 
@@ -145,6 +147,21 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     await pick('v-1', new File([new Uint8Array(bytes)], 'huge.jpg', { type: 'image/jpeg' }));
     await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo is too large to send. Try a smaller one.'));
     expect(uploadMedia).not.toHaveBeenCalled();
+  });
+
+  it('refuses a photo the API’s body limit would refuse, though the upload’s own check would take it (Codex 4320690152)', async () => {
+    // the API reads at most this much JSON (apps/api/src/app-setup.ts); a photo and its envelope must fit inside it
+    const setup = readFileSync(resolve(__dirname, '../../api/src/app-setup.ts'), 'utf8');
+    const mb = Number(/useBodyParser\('json', \{ limit: '(\d+)mb' \}\)/.exec(setup)![1]);
+    expect(MAX_PHOTO_BASE64 + UPLOAD_ENVELOPE_BYTES).toBeLessThanOrEqual(mb * 1024 * 1024);
+    // a 13-million-character photo the phone cannot redraw (a HEIC, say): under the upload's 14,000,000, over the body
+    vi.stubGlobal('createImageBitmap', undefined);
+    const uploadMedia = vi.fn();
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    await pick('v-1', new File([new Uint8Array((13_000_000 / 4) * 3)], 'big.heic', { type: 'image/heic' }));
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo is too large to send. Try a smaller one.'));
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(useStore.getState().outbox).toHaveLength(0);
   });
 
   it('refuses before sending an image type the upload does not take and the phone cannot redraw (Codex 4318755312)', async () => {
