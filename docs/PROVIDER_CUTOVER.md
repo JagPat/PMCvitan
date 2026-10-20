@@ -18,7 +18,7 @@ Every provider is **env-gated** — no code change or image rebuild is needed to
 | Provider | Gate (both/all required) | State |
 |---|---|---|
 | **Web push (VAPID)** | `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` | ✅ **LIVE** — `/push/public-key` returns the key |
-| **Media (Cloudflare R2)** | `S3_ENDPOINT` + `S3_BUCKET` + `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` | ✅ **LIVE** — bucket `vitanpmc`; upload returns an absolute `pub-….r2.dev` URL that fetches back 200 |
+| **Media (Cloudflare R2)** | `S3_ENDPOINT` + `S3_BUCKET` + `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` | ✅ **LIVE** — private bucket `vitanpmc`; files are served only through short-lived signed links (`/media/:id`, `/drawings/rev/:id`), and the bucket's public `r2.dev` URL should be **off** (it was still on at 20 Oct 2026; switching it off is tracked on #482) |
 | **SMS OTP (MSG91)** | `MSG91_AUTH_KEY` + `MSG91_TEMPLATE_ID` | 🟡 **dev-stub** — `AUTH_KEY` set, `TEMPLATE_ID` missing (blocked on DLT). See [`MSG91_CUTOVER_TASK.md`](./MSG91_CUTOVER_TASK.md) for the hands-off cutover task |
 
 `GET /projects/ambli/snapshot` is live (200) and includes `dailyLog.photos` — the 7c-media snapshot field is deployed.
@@ -95,7 +95,7 @@ Cut over on 2026-07-04 via the Coolify API. Keypair was generated with `npx web-
 
 ## Provider 2 — Media storage (Cloudflare R2 / S3)
 
-Flips `StorageService` from keeping bytes in Postgres (served from `/media/:id`) to writing them into an S3-compatible bucket (`Media.url` becomes an absolute bucket URL).
+Flips `StorageService` from keeping bytes in Postgres (served from `/media/:id`) to writing them into a **private** S3-compatible bucket. The row keeps only the object key (`storageKey`; `url` stays null), and `/media/:id` and `/drawings/rev/:id` redirect to a short-lived signed GET on the `S3_ENDPOINT` host (`storage.service.ts` `presignGet`).
 
 **Live gate (code):** all four of `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` non-empty.
 
@@ -103,7 +103,7 @@ Flips `StorageService` from keeping bytes in Postgres (served from `/media/:id`)
 1. Create a Cloudflare account (if none) and open **R2**. Create a bucket, e.g. `vitan-media`.
 2. **R2 → Manage R2 API Tokens → Create API Token**, permission **Object Read & Write** (scope to the bucket). Copy the **Access Key ID** and **Secret Access Key** (shown once).
 3. Note the **S3 API endpoint**: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` (R2 → bucket → Settings, or the token page).
-4. For the app to *display* photos, reads must be public: enable the bucket's **public r2.dev URL** or attach a **custom domain** (e.g. `media.vitan.in`). That public base → `S3_PUBLIC_BASE`. Without it, uploads succeed but `<img>` URLs won't load.
+4. Keep the bucket **private**: leave the **Public Development URL** (`r2.dev`) **disabled** and attach no public custom domain. The app never links to a public address; it signs every read (see DEPLOY.md, "Private file delivery"). A public URL would let anyone holding a file's address open it without the app's check.
 
 ### Env vars
 | Name | Example | Notes |
@@ -113,7 +113,7 @@ Flips `StorageService` from keeping bytes in Postgres (served from `/media/:id`)
 | `S3_ACCESS_KEY_ID` | `…` | **secret.** ⚠️ exact name — *not* `S3_ACCESS_KEY`. |
 | `S3_SECRET_ACCESS_KEY` | `…` | **secret.** ⚠️ exact name — *not* `S3_SECRET_KEY`. |
 | `S3_REGION` | `auto` | R2 uses `auto`. |
-| `S3_PUBLIC_BASE` | `https://pub-….r2.dev` or `https://media.vitan.in` | Read URL base; defaults to `<S3_ENDPOINT>/<S3_BUCKET>` (usually **not** publicly readable) if unset — set it explicitly. |
+| `S3_PUBLIC_BASE` | (optional; unused) | Not used for serving: no file is read through it, and upload results built from it are discarded (`url: null` is stored). |
 
 ### Agent cutover (access level c)
 Set the six vars via `POST …/envs` (each `is_literal:true`), then `deploy?force=false`, then run the validation below.
@@ -129,9 +129,9 @@ curl -sS -X POST $API/projects/ambli/media -H "Authorization: Bearer $TOK" \
   -H 'Content-Type: application/json' -d "{\"kind\":\"progress\",\"mime\":\"image/png\",\"data\":\"$PNG\"}"
 ```
 - **STUB:** `{"id":"…","url":"/media/…"}` — **relative** URL (DB).
-- **LIVE (R2):** `{"id":"…","url":"https://…"}` — **absolute** bucket URL. Then `curl -sSI <that url>` → HTTP 200, `content-type: image/png`. (For the stub, `curl -sSI $API/media/<id>` → 200, `content-length: 70`.)
+- **LIVE (R2):** the same relative signed path. `curl -sSI "$API<that url>"` → HTTP 302 to a signed link on the `S3_ENDPOINT` host, and following it (`curl -sSIL`) → 200, `content-type: image/png`. (For the stub, the same `curl -sSI` → 200, `content-length: 70`.)
 
-**Failure modes:** wrong endpoint/region → send fails; token lacks write → 403; `S3_PUBLIC_BASE` unset/private → uploads OK but images 403 in the UI; wrong var names (`S3_ACCESS_KEY` vs `S3_ACCESS_KEY_ID`) → gate silently stays false, no error.
+**Failure modes:** wrong endpoint/region → send fails; token lacks write → 403; a key without Object Read → signed links 403 and images fail in the UI; wrong var names (`S3_ACCESS_KEY` vs `S3_ACCESS_KEY_ID`) → gate silently stays false, no error.
 
 **Rollback:** blank `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` (or all four) + redeploy → back to DB stub.
 
