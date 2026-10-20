@@ -193,6 +193,9 @@ export interface ChecklistSubmission {
  *  with a monotonic sequence captured when its request STARTS; only the newest
  *  eligible lease may apply. Applying returns one of these outcomes; a caller must
  *  consume the result and never announce success unless it is `applied`. */
+/** a sign-in's answer from the server, and how it is adopted (`applyAuthResult`) */
+export type AuthAnswer = { role: Role; token: string; name?: string; projectId?: string };
+export type AuthAnswerOpts = { msg?: string; targetScreen?: ScreenKey; targetItem?: string; quiet?: boolean };
 export type SnapshotApplyResult = 'applied' | 'superseded' | 'scope-moved' | 'invalid-project';
 export interface SnapshotLease {
   scope: ProjectScope;
@@ -431,7 +434,13 @@ export interface AppState {
   queueUnkept: string[];
   /** WEB-02: a project switch, persona switch or sign-out the person asked for, held while "not kept" acts would be
    *  lost by it. `created`: the switch opens a project just created (Cancel says where to find it) */
-  leaveConfirm: { action: 'switch'; projectId: string; targetScreen?: ScreenKey; targetItem?: string; created?: true } | { action: 'persona'; role: Role } | { action: 'signOut' } | null;
+  leaveConfirm:
+    | { action: 'switch'; projectId: string; targetScreen?: ScreenKey; targetItem?: string; created?: true }
+    | { action: 'persona'; role: Role }
+    | { action: 'signOut' }
+    | { action: 'signIn'; res: AuthAnswer; opts?: AuthAnswerOpts }
+    | { action: 'archive'; orgId: string; projectId: string }
+    | null;
   /** WEB-02: how many times the person picked Cancel at that question: an answer, never the question being asked, is
    *  what puts a routed switch's URL back (#1028 r2, 4330762359) */
   leaveCancels: number;
@@ -1726,7 +1735,10 @@ export const useStore = create<Store>()(
       // held by the "not kept" question: not a failure. Continue opens it; Cancel says where to find it (#1028 r2,
       // 4330762375)
       if (opened === 'asked') {
-        set((s) => { if (s.leaveConfirm?.action === 'switch' && s.leaveConfirm.projectId === created.id) s.leaveConfirm.created = true; });
+        const own = get().leaveConfirm?.action === 'switch' && (get().leaveConfirm as { projectId: string }).projectId === created.id;
+        if (own) set((s) => { if (s.leaveConfirm?.action === 'switch') s.leaveConfirm.created = true; });
+        // another question was open: it stays, and the person is told where to find the new project (#1028 r2 check G4)
+        else get().flash(QW.createdOpenLater[get().lang]);
         return { kind: 'created', projectId: created.id, opened: false };
       }
       if (!opened && sameUser()) get().flash('Project created: ' + created.short + ', but it could not be opened — pick it from the project switcher.');
@@ -2400,12 +2412,12 @@ export const useStore = create<Store>()(
     // into another. `hydrateOutbox` swaps the in-memory queue whenever that scope
     // changes (useApiSync re-runs it on every token / project change).
     const LEGACY_OUTBOX_KEY = 'vitan.outbox';
-    const outboxKey = (): string => {
+    const outboxKey = (): string => outboxKeyFor(get().sessionToken, get().sessionUserId, get().activeProjectId);
+    /** the queue key of a session: `outboxKey` for the one held, and for a sign-in answer before it is adopted */
+    const outboxKeyFor = (token: string | null, user: string | null, projectId: string): string => {
       // passwordless dev auth keeps no token: its session user scopes the queue, so two identities never share
       // queued acts (Codex 4278754328; the create hold's rule, createHoldScope)
-      const user = get().sessionUserId;
       let sub = user ? `dev:${user}` : 'anon';
-      const token = get().sessionToken;
       if (token) {
         try {
           sub = (JSON.parse(atob(token.split('.')[1])) as { sub?: string }).sub ?? 'anon';
@@ -2413,7 +2425,7 @@ export const useStore = create<Store>()(
           /* malformed token — treat as the anonymous scope */
         }
       }
-      return `vitan.outbox.${sub}.${get().activeProjectId}`;
+      return `vitan.outbox.${sub}.${projectId}`;
     };
     /** Site Visits (#792): site visit acts are kept under a key of their own, beside the outbox's, so a bundle from
      *  before them (a rollback, an old tab) never reads one: its replay has no case for them and would drop them as
@@ -2534,6 +2546,12 @@ export const useStore = create<Store>()(
      *  lost with it, and the person is told how many (a switch they asked for was confirmed first). */
     /** set by `confirmLeave` around the switch it lets through */
     let leaveConfirmed = false;
+    /** a persona switch or sign-out waiting on its push unlink before it lets go of this scope */
+    let teardownPending = false;
+    /** WEB-02: a leave is already under way (a project switch out, or a persona switch or sign-out in its push unlink):
+     *  acts not kept now go with it, so nothing asks again; a second question would outlive the leave (#1028 r2 check
+     *  G3) */
+    const leaveUnderway = (): boolean => teardownPending || get().pendingProjectId !== null;
     const leaveQueueScope = (): void => {
       if (get().queueScope === outboxKey()) return;
       const lost = unkeptCount(get());
@@ -2541,6 +2559,8 @@ export const useStore = create<Store>()(
         emptyQueueState(s);
         s.queueUnreadable = null;
         s.queueScope = null;
+        // a question about acts now let go has nothing left to ask about (#1028 r2 check G3)
+        s.leaveConfirm = null;
       });
       if (lost > 0) get().flash(QW.unkeptLost[get().lang].replace('{n}', String(lost)));
     };
@@ -3038,10 +3058,7 @@ export const useStore = create<Store>()(
      *  (never the caller's requested/URL project): leaving `activeProjectId`
      *  elsewhere would send this token to another project's routes and 403 every
      *  call, stranding stale data on screen under the wrong identity. */
-    const applyAuthResult = (
-      res: { role: Role; token: string; name?: string; projectId?: string },
-      opts?: { msg?: string; targetScreen?: ScreenKey; targetItem?: string; quiet?: boolean },
-    ): void => {
+    const applyAuthResult = (res: AuthAnswer, opts?: AuthAnswerOpts): void => {
       set((s) => {
         const changedProject = !!res.projectId && res.projectId !== s.activeProjectId;
         const wasPending = s.pendingProjectId !== null;
@@ -3110,6 +3127,22 @@ export const useStore = create<Store>()(
       // after the message above, so a count of acts lost with it is the one the person reads
       leaveQueueScope();
     };
+    /** WEB-02: a sign-in the person made (the access screen, which engineers and contractors also open from inside a
+     *  project). One that would move the queue to another user or project while acts this phone did not keep are held
+     *  asks first: Continue adopts it, Cancel throws it away and keeps this session (#1028 r2 check G2). With another
+     *  question open, the answer is not adopted, and the access screen is left to send again. */
+    const adoptSignIn = (res: AuthAnswer, opts?: AuthAnswerOpts): void => {
+      const st = get();
+      const moves = outboxKeyFor(res.token, jwtSub(res.token), res.projectId ?? st.activeProjectId) !== outboxKey();
+      if (moves && (st.leaveConfirm !== null || (unkeptCount(st) > 0 && !leaveUnderway()))) {
+        set((s) => {
+          s.access.sending = false;
+          if (s.leaveConfirm === null) s.leaveConfirm = { action: 'signIn', res, opts };
+        });
+        return;
+      }
+      applyAuthResult(res, opts);
+    };
 
     /** Local-demo passwordless sign-in: map an email to a role (else engineer). */
     const localEmailSignIn = (em: string): void => {
@@ -3176,12 +3209,15 @@ export const useStore = create<Store>()(
     setRole: (role) => {
       // WEB-02: a persona switch leaves this scope, so acts no write stored are lost by it: the person is asked first,
       // as for a project switch or sign-out (`confirmLeave` goes on) (#1028 r2, 4330762383)
-      if (!leaveConfirmed && role !== get().role && unkeptCount(get()) > 0) {
-        set((s) => { s.leaveConfirm = { action: 'persona', role }; });
+      // the persona already active: nothing changes, and nothing is let go (#1028 r2 check G1)
+      if (role === get().role) return;
+      if (!leaveConfirmed && (get().leaveConfirm !== null || (unkeptCount(get()) > 0 && !leaveUnderway()))) {
+        // an open question is never replaced by another (#1028 r2 check G4)
+        if (get().leaveConfirm === null) set((s) => { s.leaveConfirm = { action: 'persona', role }; });
         return;
       }
       const first = screensFor(role)[0]?.key ?? 'inbox';
-      const applySwitch = () => { clearSession(); set((s) => {
+      const applySwitch = () => { teardownPending = false; clearSession(); set((s) => {
         s.role = role;
         s.screen = first;
         s.notifOpen = false;
@@ -3226,6 +3262,7 @@ export const useStore = create<Store>()(
         && typeof window !== 'undefined' && 'PushManager' in window;
       if (gateway && (get().sessionToken !== null || get().sessionUserId !== null) && pushCapable) {
         const gw = gateway;
+        teardownPending = true;
         void Promise.race([
           unlinkPushOnSignOut(gw),
           new Promise<void>((resolve) => setTimeout(resolve, 1500)),
@@ -3240,7 +3277,9 @@ export const useStore = create<Store>()(
      * With dev auth off, the AppShell auth-gate then shows the sign-in screen.
      */
     requestSignOut: () => {
-      if (unkeptCount(get()) > 0) { set((s) => { s.leaveConfirm = { action: 'signOut' }; }); return; }
+      // an open question is never replaced by another (#1028 r2 check G4); a leave under way asks nothing again (G3)
+      if (get().leaveConfirm !== null) return;
+      if (unkeptCount(get()) > 0 && !leaveUnderway()) { set((s) => { s.leaveConfirm = { action: 'signOut' }; }); return; }
       get().signOut();
     },
     signOut: () => {
@@ -3265,6 +3304,7 @@ export const useStore = create<Store>()(
       // demo device until the JWT expired. The gateway authenticates the request itself.
       if (gateway && (get().sessionToken !== null || get().sessionUserId !== null) && pushCapable) {
         const gw = gateway;
+        teardownPending = true;
         void Promise.race([
           unlinkPushOnSignOut(gw),
           new Promise<void>((resolve) => setTimeout(resolve, 1500)),
@@ -3276,6 +3316,7 @@ export const useStore = create<Store>()(
     /** The sign-out teardown itself — separated so the push unlink can complete first on a
      *  push-capable browser (round-1 Codex F1) while every other environment stays synchronous. */
     completeSignOut: () => {
+      teardownPending = false;
       clearSession();
       restoreSwitchTarget = null;
       // WEB-02: acts no write stored leave with the session; a sign-out the person asked for was confirmed first
@@ -5182,8 +5223,10 @@ export const useStore = create<Store>()(
     },
     switchProject: (projectId, targetScreen, targetItem) => {
       // WEB-02: acts no write stored are lost by a switch: the person is asked first (`confirmLeave` goes on)
-      if (!leaveConfirmed && gateway && projectId !== get().activeProjectId && unkeptCount(get()) > 0) {
-        set((s) => { s.leaveConfirm = { action: 'switch', projectId, targetScreen, targetItem }; });
+      if (!leaveConfirmed && gateway && projectId !== get().activeProjectId
+        && (get().leaveConfirm !== null || (unkeptCount(get()) > 0 && !leaveUnderway()))) {
+        // an open question is never replaced by another (#1028 r2 check G4): this switch waits on it as asked
+        if (get().leaveConfirm === null) set((s) => { s.leaveConfirm = { action: 'switch', projectId, targetScreen, targetItem }; });
         return Promise.resolve('asked');
       }
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);
@@ -5295,14 +5338,24 @@ export const useStore = create<Store>()(
         get().flash('Deleting projects needs the server.');
         return;
       }
+      // WEB-02: archiving the open project leaves it (the server refuses it from then on), so acts this phone did not
+      // keep are asked about before the archive is sent: Continue archives, Cancel sends nothing (#1028 r2 check G5)
+      if (!leaveConfirmed && projectId === get().activeProjectId && (get().leaveConfirm !== null || unkeptCount(get()) > 0)) {
+        if (get().leaveConfirm === null) set((s) => { s.leaveConfirm = { action: 'archive', orgId, projectId }; });
+        return;
+      }
       gateway
         .deleteProject(orgId, projectId)
         .then(() => {
           get().flash('Project archived — it’s hidden from everyone. Ask to restore it if needed.');
-          // if we archived the project we're in, switch to another we can access
+          // if we archived the project we're in, switch to another we can access. Acts for it can no longer be sent
+          // (the server refuses the project), and the person was asked before the archive: the switch goes on
           if (projectId === get().activeProjectId) {
             const next = get().memberships.find((m) => m.projectId !== projectId);
-            if (next) get().switchProject(next.projectId);
+            if (next) {
+              leaveConfirmed = true;
+              try { void get().switchProject(next.projectId); } finally { leaveConfirmed = false; }
+            }
           }
           get().loadOrgData();
           get().loadPortfolio();
@@ -6224,9 +6277,11 @@ export const useStore = create<Store>()(
       if (!held) return;
       set((s) => { s.leaveConfirm = null; });
       if (held.action === 'signOut') { get().signOut(); return; }
+      if (held.action === 'signIn') { applyAuthResult(held.res, held.opts); return; }
       leaveConfirmed = true;
       try {
         if (held.action === 'persona') get().setRole(held.role);
+        else if (held.action === 'archive') get().deleteProject(held.orgId, held.projectId);
         else void get().switchProject(held.projectId, held.targetScreen, held.targetItem);
       } finally {
         leaveConfirmed = false;
@@ -6983,7 +7038,7 @@ export const useStore = create<Store>()(
         set((s) => { s.access.sending = true; s.access.errorKey = null; s.access.error = null; });
         gateway
           .login(em, password)
-          .then((res) => applyAuthResult(res))
+          .then((res) => adoptSignIn(res))
           .catch((err: unknown) => set((s) => { s.access.sending = false; failAccess(s, signInFailure(err)); }));
         return;
       }
@@ -7103,7 +7158,7 @@ export const useStore = create<Store>()(
       gateway.passwordCredentialComplete(setupToken, password)
         .then((result) => {
           if (get().access.generation !== generation) return;
-          applyAuthResult(result, { msg: signInText.passwordSaved(get().lang) });
+          adoptSignIn(result, { msg: signInText.passwordSaved(get().lang) });
         })
         .catch(() => {
           if (get().access.generation !== generation) return;
@@ -7155,7 +7210,7 @@ export const useStore = create<Store>()(
       set((s) => { s.access.sending = true; s.access.errorKey = null; s.access.error = null; });
       gateway
         .emailOtpVerify(email.trim().toLowerCase(), otp)
-        .then((res) => applyAuthResult(res))
+        .then((res) => adoptSignIn(res))
         .catch(() => set((s) => { s.access.sending = false; s.access.otp = ''; failAccess(s, { key: 'emailWrongCode' }); }));
     },
     requestOtp: () => {
@@ -7245,7 +7300,7 @@ export const useStore = create<Store>()(
         if (a.who === 'team') {
           if (token) {
             // real session: adopt token + role + the token's project identity
-            applyAuthResult({ role, token, name: name ?? undefined, projectId }, { msg: 'Verified ✓ — signed in as ' + (name ?? role) + '.' });
+            adoptSignIn({ role, token, name: name ?? undefined, projectId }, { msg: 'Verified ✓ — signed in as ' + (name ?? role) + '.' });
             return;
           }
           // local demo: persona sign-in, no token/project change

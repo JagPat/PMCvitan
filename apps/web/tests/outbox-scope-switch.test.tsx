@@ -4,7 +4,7 @@ import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { QW } from '@/lib/queueWords';
 import { QueueUnreadable } from '@/layout/QueueUnreadable';
-import { LeaveUnkept } from '@/layout/LeaveUnkept';
+import { LeaveUnkept, UnkeptStay } from '@/layout/LeaveUnkept';
 
 /**
  * WEB-02 (#792): the queue in memory belongs to one person on one project. A project switch loads the new project's
@@ -54,6 +54,7 @@ function switchTo(project: string): Gw {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   useStore.getState()._setGateway(null);
   localStorage.clear();
 });
@@ -333,6 +334,174 @@ describe('the scope change itself, before the new scope loads (WEB-02)', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
     useStore.getState().startActivity('A-2');
     expect(leave()).toBe(true);
+  });
+
+  /** one act this phone did not keep (every write refused while it was made) */
+  function oneUnkept() {
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    useStore.getState().startActivity('A-2');
+    write.mockRestore();
+    expect(useStore.getState().toast).toBe(QW.notKept.en);
+  }
+  const keptA2 = () => expect(useStore.getState().outbox).toEqual([expect.objectContaining({ activityId: 'A-2' })]);
+
+  it('a tap on the persona already active changes nothing and lets nothing go (#1028 r2 check G1)', () => {
+    signedInOnP1([]);
+    oneUnkept();
+    act(() => useStore.getState().setRole('engineer'));
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    expect(useStore.getState().sessionToken).toBe(token);
+    expect(useStore.getState().sessionUserId).toBe(USER);
+    keptA2();
+    expect(useStore.getState().queueUnkept).toHaveLength(1);
+  });
+
+  it('a sign-in from inside the project as someone else asks first; Cancel keeps this session, Continue adopts it (#1028 r2 check G2)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { login: ReturnType<typeof vi.fn> };
+    const other = `h.${btoa(JSON.stringify({ sub: 'u-other' }))}.s`;
+    gw.login = vi.fn(async () => ({ role: 'engineer', token: other, projectId: P1 }));
+    oneUnkept();
+    render(<LeaveUnkept />);
+    await act(async () => { useStore.getState().login('other@example.com', 'pw'); });
+    await vi.waitFor(() => expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'signIn' })));
+    expect(useStore.getState().sessionToken).toBe(token);
+    expect(useStore.getState().access.sending).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    expect(useStore.getState().sessionToken).toBe(token);
+    keptA2();
+    await act(async () => { useStore.getState().login('other@example.com', 'pw'); });
+    await vi.waitFor(() => expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'signIn' })));
+    fireEvent.click(screen.getByRole('button', { name: QW.leaveContinue.en }));
+    expect(useStore.getState().sessionToken).toBe(other);
+    expect(useStore.getState().outbox).toEqual([]);
+    expect(useStore.getState().toast).toBe(QW.unkeptLost.en.replace('{n}', '1'));
+  });
+
+  it('a sign-in to the same person and project is adopted without a question, and keeps the acts', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { login: ReturnType<typeof vi.fn> };
+    gw.login = vi.fn(async () => ({ role: 'engineer', token, projectId: P1 }));
+    oneUnkept();
+    await act(async () => { useStore.getState().login('me@example.com', 'pw'); });
+    await vi.waitFor(() => expect(gw.login).toHaveBeenCalled());
+    await act(async () => {});
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    keptA2();
+  });
+
+  it('a switch the person continued asks nothing again while it is out, and leaves no question behind (#1028 r2 check G3)', async () => {
+    const gw = signedInOnP1([]);
+    let land!: () => void;
+    gw.switchProject = vi.fn((projectId: string) => new Promise((done) => { land = () => done({ role: 'engineer', token, projectId }); }));
+    oneUnkept();
+    expect(await useStore.getState().switchProject(P2)).toBe('asked');
+    act(() => useStore.getState().confirmLeave());
+    expect(gw.switchProject).toHaveBeenCalledWith(P2);
+    // a second tap while the first switch is out: it goes with the leave already agreed, and no question opens
+    act(() => { void useStore.getState().switchProject('p-3'); });
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    act(() => useStore.getState().setRole('pmc'));
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    act(() => useStore.getState().requestSignOut());
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    await act(async () => { land(); });
+    expect(useStore.getState().leaveConfirm).toBeNull();
+  });
+
+  it('a question is closed when the scope it asked about is let go: the archive’s own switch lands under it (#1028 r2 check G3)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { deleteProject: ReturnType<typeof vi.fn> };
+    let archived!: () => void;
+    gw.deleteProject = vi.fn(() => new Promise<void>((done) => { archived = done; }));
+    useStore.setState({ memberships: [{ projectId: P1, short: 'P1' }, { projectId: P2, short: 'P2' }] as never });
+    // the archive is sent with nothing unkept; an act is then not kept, and a switch asks
+    act(() => useStore.getState().deleteProject('o', P1));
+    expect(gw.deleteProject).toHaveBeenCalled();
+    oneUnkept();
+    expect(await useStore.getState().switchProject('p-3')).toBe('asked');
+    // the archive answers: its switch goes on (the project is gone), and lets the acts go with the question
+    await act(async () => { archived(); });
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe(P2));
+    expect(useStore.getState().leaveConfirm).toBeNull();
+  });
+
+  it('a later leave never replaces an open question: a sign-out stays the question asked (#1028 r2 check G4)', async () => {
+    signedInOnP1([]);
+    oneUnkept();
+    act(() => useStore.getState().requestSignOut());
+    expect(useStore.getState().leaveConfirm).toEqual({ action: 'signOut' });
+    expect(await useStore.getState().switchProject(P2)).toBe('asked');
+    act(() => useStore.getState().setRole('pmc'));
+    expect(useStore.getState().leaveConfirm).toEqual({ action: 'signOut' });
+    act(() => useStore.getState().confirmLeave());
+    expect(useStore.getState().sessionToken).toBeNull();
+    expect(useStore.getState().activeProjectId).toBe(P1);
+  });
+
+  it('a later leave never replaces an open question: a switch stays the question asked, through a sign-out tap (#1028 r2 check G4)', async () => {
+    const gw = signedInOnP1([]);
+    oneUnkept();
+    expect(await useStore.getState().switchProject(P2)).toBe('asked');
+    act(() => useStore.getState().requestSignOut());
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: P2 }));
+    expect(useStore.getState().sessionToken).toBe(token);
+    act(() => useStore.getState().confirmLeave());
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe(P2));
+    expect(gw.switchProject).toHaveBeenCalledWith(P2);
+    expect(useStore.getState().sessionToken).toBe(token);
+  });
+
+  it('archiving the open project with acts this phone did not keep asks before the archive is sent (#1028 r2 check G5)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { deleteProject: ReturnType<typeof vi.fn> };
+    gw.deleteProject = vi.fn(async () => {});
+    useStore.setState({ memberships: [{ projectId: P1, short: 'P1' }, { projectId: P2, short: 'P2' }] as never });
+    oneUnkept();
+    act(() => useStore.getState().deleteProject('o', P1));
+    expect(useStore.getState().leaveConfirm).toEqual({ action: 'archive', orgId: 'o', projectId: P1 });
+    expect(gw.deleteProject).not.toHaveBeenCalled();
+    act(() => useStore.getState().cancelLeave());
+    expect(gw.deleteProject).not.toHaveBeenCalled();
+    keptA2();
+    act(() => useStore.getState().deleteProject('o', P1));
+    act(() => useStore.getState().confirmLeave());
+    expect(gw.deleteProject).toHaveBeenCalledWith('o', P1);
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe(P2));
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    expect(useStore.getState().outbox).toEqual([]);
+  });
+
+  it('while any act is not kept the screen says so, singular and plural, until it is stored (#1028 r2 check G6)', () => {
+    signedInOnP1([]);
+    render(<UnkeptStay />);
+    expect(screen.queryByTestId('unkept-stay')).toBeNull();
+    act(() => oneUnkept());
+    expect(screen.getByTestId('unkept-stay').textContent).toBe(QW.unkeptStayOne.en);
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    act(() => useStore.getState().startActivity('A-3'));
+    write.mockRestore();
+    expect(screen.getByTestId('unkept-stay').textContent).toBe(QW.unkeptStay.en.replace('{n}', '2'));
+    // a write that lands stores them all: the line goes
+    act(() => useStore.getState().startActivity('A-4'));
+    expect(screen.queryByTestId('unkept-stay')).toBeNull();
+  });
+
+  it('on a push-capable browser a persona switch the person continued asks nothing again during its unlink, and counts what it lets go when it runs', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { pushUnlink?: ReturnType<typeof vi.fn> };
+    gw.pushUnlink = vi.fn(async () => ({}));
+    let ready!: (v: unknown) => void;
+    vi.stubGlobal('navigator', { ...globalThis.navigator, serviceWorker: { ready: new Promise((r) => { ready = r; }) } });
+    vi.stubGlobal('PushManager', function PushManager() {} as unknown);
+    oneUnkept();
+    act(() => useStore.getState().setRole('pmc'));
+    act(() => useStore.getState().confirmLeave());
+    // the unlink is out: the role has not changed yet, and a second tap asks nothing
+    expect(useStore.getState().role).toBe('engineer');
+    act(() => useStore.getState().setRole('pmc'));
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    await act(async () => { ready({ pushManager: { getSubscription: async () => null } }); });
+    await vi.waitFor(() => expect(useStore.getState().role).toBe('pmc'));
+    expect(useStore.getState().outbox).toEqual([]);
+    expect(useStore.getState().toast).toBe(QW.unkeptLost.en.replace('{n}', '1'));
+    expect(useStore.getState().leaveConfirm).toBeNull();
   });
 
   it('sign-out with acts this phone did not keep asks first; with none it signs out at once', () => {

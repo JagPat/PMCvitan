@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, act } from '@testing-library/react';
+import { render, act, fireEvent, screen } from '@testing-library/react';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { useStore, getInitialState } from '@/store/store';
 import { RouteBridge } from '@/layout/RouteBridge';
+import { LeaveUnkept } from '@/layout/LeaveUnkept';
+import { QW } from '@/lib/queueWords';
 import type { ApiGateway } from '@/data/apiGateway';
 
 let currentPath = '';
@@ -432,6 +434,7 @@ describe('RouteBridge — a routed switch the person cancels at the "not kept" q
         <RouteBridge />
         <PathProbe />
         <NavProbe />
+        <LeaveUnkept />
       </MemoryRouter>,
     );
     await flush();
@@ -439,7 +442,10 @@ describe('RouteBridge — a routed switch the person cancels at the "not kept" q
     await act(async () => { expect(await useStore.getState().switchProject('project-b')).toBe('asked'); });
     await flush();
     expect(currentPath).toBe('/projects/ambli/dashboard');
-    await act(async () => { useStore.getState().confirmLeave(); });
+    // Continue on the real dialog, which also calls its Cancel handler after: that is never counted as a Cancel
+    // (#1028 r2 check G7)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: QW.leaveContinue.en })); });
+    expect(useStore.getState().leaveCancels).toBe(0);
     await flush();
     useStore.setState((st) => { st.projectLoadState = 'ready'; });
     await flush();
@@ -449,6 +455,42 @@ describe('RouteBridge — a routed switch the person cancels at the "not kept" q
     act(() => go(-1));
     await flush();
     expect(currentPath).toBe('/projects/ambli/dashboard');
+  });
+
+  it('a Cancel answered while a load runs is put back in place once the load is done (#1028 r2 check G3)', async () => {
+    const gw = { switchProject: vi.fn() };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/schedule', '/projects/ambli/dashboard']} initialIndex={1}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    act(() => go('/projects/project-b/decisions'));
+    await flush();
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: 'project-b' }));
+    // the open project reloads (a reconnect) while the question is answered
+    act(() => { useStore.setState((st) => { st.projectLoadState = 'loading'; }); useStore.getState().cancelLeave(); });
+    await flush();
+    act(() => { useStore.setState((st) => { st.projectLoadState = 'ready'; }); });
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    // in place: Back goes where it went before the link, never to the rejected project
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    expect(gw.switchProject).not.toHaveBeenCalled();
   });
 
   it('a switch from the project switcher the person cancels leaves the URL and history as they were', async () => {

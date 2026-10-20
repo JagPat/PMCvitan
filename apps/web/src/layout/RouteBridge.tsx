@@ -216,9 +216,10 @@ export function RouteBridge() {
     // the question is still open: the URL waits for its answer. Once it closes, a switch that went on is navigated as
     // any switch is; one that was cancelled has its URL put back in place
     if (live.leaveConfirm !== null) return;
+    if (live.pendingProjectId !== null || live.projectLoadState === 'switching' || live.projectLoadState === 'loading') return;
+    // a Cancel answered while a load runs is still put back once the load is done (#1028 r2 check G3)
     const wasCancelled = live.leaveCancels !== seenCancels.current;
     seenCancels.current = live.leaveCancels;
-    if (live.pendingProjectId !== null || live.projectLoadState === 'switching' || live.projectLoadState === 'loading') return;
     // a routed item for a project that was not opened (the switch was cancelled) is never adopted later
     if (pendingItem.current && pendingItem.current.projectId !== live.activeProjectId) pendingItem.current = null;
     const target = pathForScreen(live.screen, live.activeProjectId, routeItemOf(live));

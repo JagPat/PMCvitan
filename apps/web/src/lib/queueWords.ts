@@ -48,6 +48,18 @@ export const QW = {
     hi: 'नया प्रोजेक्ट बन गया है। जब आप तैयार हों, इसे प्रोजेक्ट सूची से खोलें।',
     gu: 'નવો પ્રોજેક્ટ બની ગયો છે. તમે તૈયાર હો ત્યારે તેને પ્રોજેક્ટ યાદીમાંથી ખોલો.',
   },
+  // shown while any act is not kept: a browser may close or reload the page without asking (iPhone never asks, Chrome
+  // only after a tap, and no browser when the phone closes a tab in the background) (#1028 r2 check G6)
+  unkeptStayOne: {
+    en: '1 update isn’t saved on this phone. Keep this page open until it’s sent.',
+    hi: '1 बदलाव इस फ़ोन पर सहेजा नहीं गया है। इसके भेजे जाने तक यह पेज खुला रखें।',
+    gu: '1 ફેરફાર આ ફોન પર સચવાયો નથી. તે મોકલાય ત્યાં સુધી આ પેજ ખુલ્લું રાખો.',
+  },
+  unkeptStay: {
+    en: '{n} updates aren’t saved on this phone. Keep this page open until they’re sent.',
+    hi: '{n} बदलाव इस फ़ोन पर सहेजे नहीं गए हैं। इनके भेजे जाने तक यह पेज खुला रखें।',
+    gu: '{n} ફેરફારો આ ફોન પર સચવાયા નથી. તે મોકલાય ત્યાં સુધી આ પેજ ખુલ્લું રાખો.',
+  },
   unkeptLost: {
     en: '{n} updates that were not kept on this phone were lost.',
     hi: '{n} बदलाव जो इस फ़ोन पर नहीं रखे गए थे, खो गए।',

@@ -12,7 +12,7 @@ import { RouteBridge } from './RouteBridge';
 import { ProjectLoadBoundary } from './ProjectLoadBoundary';
 import { AuthGate } from './AuthGate';
 import { QueueUnreadable } from './QueueUnreadable';
-import { LeaveUnkept } from './LeaveUnkept';
+import { LeaveUnkept, UnkeptStay } from './LeaveUnkept';
 import { LangPreference } from './LangPreference';
 import { GuideHost } from '@/guide/GuideHost';
 import { GuideMe } from '@/guide/GuideMe';
@@ -41,6 +41,7 @@ export function AppShell() {
           <div className={`drawing-grid ${styles.backdrop}`} />
           <div className={styles.stageInner}>
             <QueueUnreadable />
+            <UnkeptStay />
             {/* On a project transition the previous project's records are ALREADY cleared;
                 the boundary covers the gap until the new project's snapshot lands, and a
                 failed transition shows a recoverable error — never stale records. */}

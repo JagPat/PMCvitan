@@ -1,11 +1,12 @@
-import { useEffect } from 'react';
+import { useEffect, type CSSProperties } from 'react';
 import { useStore } from '@/store/store';
 import { unkeptCount } from '@/store/queueUnkept';
 import { ConfirmDialog } from '@/components';
 import { QW } from '@/lib/queueWords';
 
-/** WEB-02 (#792): a project switch, persona switch or sign-out the person asked for, held while acts this phone did not keep would be
- *  lost by it. Cancel stays; Continue goes on and the acts are lost. A reload or closing the tab is asked by the browser. */
+/** WEB-02 (#792): a project switch, persona switch, sign-in, sign-out or archive of the open project the person asked
+ *  for, held while acts this phone did not keep would be lost by it. Cancel stays; Continue goes on and the acts are
+ *  lost. A reload or closing the tab is asked by the browser where it asks (`UnkeptStay` says it on screen too). */
 export function LeaveUnkept() {
   const held = useStore((s) => s.leaveConfirm);
   const n = useStore((s) => unkeptCount(s));
@@ -35,3 +36,26 @@ export function LeaveUnkept() {
     />
   );
 }
+
+/** WEB-02 (#792): while any act is not kept, the screen says so and asks the person to keep the page open, since a
+ *  browser may close or reload it without asking (#1028 r2 check G6). It goes once each act is sent or stored. */
+export function UnkeptStay() {
+  const n = useStore((s) => unkeptCount(s));
+  const lang = useStore((s) => s.lang);
+  if (n === 0) return null;
+  return (
+    <div role="status" style={strip} data-testid="unkept-stay">
+      {n === 1 ? QW.unkeptStayOne[lang] : QW.unkeptStay[lang].replace('{n}', String(n))}
+    </div>
+  );
+}
+
+const strip: CSSProperties = {
+  marginBottom: 8,
+  padding: '8px 10px',
+  border: '1px solid var(--hairline-strong)',
+  borderRadius: 8,
+  background: 'var(--paper)',
+  color: 'var(--ink)',
+  fontSize: 13,
+};

@@ -187,6 +187,28 @@ describe('create project from a source the server refuses to copy', () => {
       expect(s().outbox).toHaveLength(1);
     });
 
+    it('a create answered while the person is asked about a sign-out keeps that question, and says where to open the project (#1028 r2 check G4)', async () => {
+      const { gw, create, calls } = fakeGateway();
+      s()._setGateway(gw);
+      unkept();
+      const r = mount();
+      fireEvent.click(createButton(r));
+      await settle();
+      // the create is out when the person signs out, and is asked
+      act(() => s().requestSignOut());
+      expect(s().leaveConfirm).toEqual({ action: 'signOut' });
+      create.resolve({ id: 'p-new', name: 'Residence at Thaltej', short: 'Thaltej' });
+      await settle();
+      expect(s().leaveConfirm).toEqual({ action: 'signOut' });
+      expect(s().toast).toBe(QW.createdOpenLater.en);
+      expect(calls.switchProject).not.toHaveBeenCalled();
+      // Continue does what was asked: a sign-out, not a switch into the new project
+      act(() => s().confirmLeave());
+      await settle();
+      expect(s().sessionToken).toBeNull();
+      expect(calls.switchProject).not.toHaveBeenCalled();
+    });
+
     it('Continue opens the new project', async () => {
       const { gw, create, calls } = fakeGateway();
       s()._setGateway(gw);
