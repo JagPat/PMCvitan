@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act, screen, within } from '@testing-library/react';
 import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
@@ -59,7 +59,15 @@ async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en', outbox
   return view;
 }
 
+// every test begins with no flush running: one left from the test before would take this test's sends into its rerun
+beforeEach(() => {
+  expect(useStore.getState()._outboxFlushing()).toBe(false);
+});
+
 afterEach(async () => {
+  // the store outlives a test, and so does a flush still running when it ends: it is let settle against this test's own
+  // gateway, or the next test's flushes are coalesced into it and its put-back reads the next test's rows
+  await vi.waitFor(() => expect(useStore.getState()._outboxFlushing()).toBe(false), { timeout: 10_000 });
   vi.unstubAllGlobals();
   cleanup();
   useStore.getState()._setGateway(null);
@@ -444,9 +452,13 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
 
   it('says so when a closed visit refuses the photo, and takes it off the screen', async () => {
     const refused = Object.assign(new Error('409'), { status: 409, serverMessage: 'This site visit was closed by the PMC and takes no more files' });
-    await mount('consultant', CONSULTANT, fakeGateway([visit({ status: 'ended' })], { uploadMedia: vi.fn().mockRejectedValue(refused) }));
+    const uploadMedia = vi.fn().mockRejectedValue(refused);
+    await mount('consultant', CONSULTANT, fakeGateway([visit({ status: 'ended' })], { uploadMedia }));
     await pick('v-1');
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This was not saved. This site visit was closed by the PMC and takes no more files'));
+    // the refusal is waited for itself, not inside a 1 s window: the pick's keep, its send and its answer all come first
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    await vi.waitFor(() => expect(useStore.getState()._outboxFlushing()).toBe(false), { timeout: 10_000 });
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This was not saved. This site visit was closed by the PMC and takes no more files'), { timeout: 10_000 });
     expect(useStore.getState().outbox).toHaveLength(0);
     expect(screen.queryAllByTestId(/^sv-file-/)).toHaveLength(0);
   });
