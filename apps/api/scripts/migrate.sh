@@ -522,6 +522,9 @@ if echo "$out" | grep -q "P3005"; then
   # Stage 1 media (20280115) is here for the same reason: its marked-up copy's link to the original is a
   # column-list SET NULL and its shape rules a CHECK, neither of which a db-push baseline has. It is guarded
   # and re-runnable.
+  #
+  # The #482 QA company lock (20280116) is here for the same reason: its two rules are triggers, which a
+  # db-push baseline does not have. It is guarded and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -559,7 +562,8 @@ if echo "$out" | grep -q "P3005"; then
 20280111000000_site_visits_sv1a_catalog
 20280112000000_site_visits_sv1a_record
 20280114000000_site_visits_sv2_visit_media
-20280115000000_media_markup_voice_video"
+20280115000000_media_markup_voice_video
+20280116000000_qa_company_lock"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
