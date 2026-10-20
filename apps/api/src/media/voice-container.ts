@@ -15,9 +15,10 @@
  *    ones, each once and read by its type (integers of at most 8 bytes, floats of 0, 4 or 8, texts of at most 64 bytes,
  *    a codec or document type of at most 16, SegmentUUID 16 and DateUTC 8, as in every other element), enabled and default (FlagEnabled and FlagDefault 1 when written, FlagForced and FlagLacing 0 or 1), whose
  *    CodecPrivate is a valid OpusHead. A Cluster holds only Timestamp, Position, PrevSize, SimpleBlock, BlockGroup
- *    (Block, BlockDuration, ReferenceBlock, DiscardPadding) and Void; every block is on that track, and some block's
- *    frames, after any lace table, each hold at least one byte. Only the Segment and a Cluster may be of unknown size,
- *    as Chrome writes them; an unknown-size Cluster ends where a Segment-level element begins.
+ *    (Block, BlockDuration, ReferenceBlock, DiscardPadding) and Void; every block is on that track, and every block's
+ *    frames, after any lace table, each hold at least one byte, each laced frame counted against the walk's cap. Only
+ *    the Segment and a Cluster may be of unknown size, as Chrome writes them; an unknown-size Cluster ends where a
+ *    Segment-level element begins.
  *  - Ogg: whole pages to the last byte, each with the capture pattern, version 0, only the defined flags and a
  *    matching CRC; one logical stream, whose first page alone is its beginning-of-stream page and holds exactly its
  *    OpusHead (exactly 19 bytes, version 0.x, mapping family 0 with one or two channels); pages in sequence, continued
@@ -42,13 +43,15 @@
  *    payload exactly, so no mdat holds a byte that is not a sample.
  *  - Length: the longest of what the file says and what its frames hold, so it is never shorter than the sound: WebM
  *    Info Duration and the last block's timestamp; Ogg the last granule position (less the pre-skip); MP4 mvhd, mdhd,
- *    the edit list (its empty edit's delay before the media) and the stts or trun sample durations; and for every
+ *    the edit list (its empty edit's delay before the media) and the media timeline's end (moov's stts durations, then
+ *    each fragment's trun durations from its tfdt start, or from where the one before ended); and for every
  *    container the frames themselves (each Opus packet's length from its TOC byte, 1,024 samples per AAC frame at the
  *    esds rate). A file whose length cannot be read (an MP4 with no media timescale, an edit list with no movie
  *    timescale, an Ogg ending on a page with no granule) is refused, and so is one under half a second: the rules apply
  *    to the length as stored, rounded to the nearest second.
- * Every read is bounds-checked, walks are capped in steps (the structure's depth is fixed by the allow-lists), samples,
- * mdat boxes and fragments are capped well past what two minutes can hold, and anything missing, malformed or
+ * Every read is bounds-checked, walks are capped in steps (the structure's depth is fixed by the allow-lists; a laced
+ * frame is a step, charged before it is listed), samples (a trun's count against what is left, before its samples are
+ * read), mdat boxes and fragments are capped well past what two minutes can hold, and anything missing, malformed or
  * unexpected answers null: a parse problem is a refusal, never a pass. The input is already bounded by the base64
  * upload cap, and the caller runs this only after it has checked the uploader may add a file to the visit.
  */
@@ -68,6 +71,12 @@ interface Walk { n: number; padding: number }
 function padding(walk: Walk, bytes: number): void {
   walk.padding += bytes;
   if (walk.padding > MAX_PADDING) fail();
+}
+
+/** Count `n` steps against the walk's cap before the work they stand for is done. */
+function charge(walk: Walk, n: number): void {
+  walk.n += n;
+  if (walk.n > MAX_STEPS) fail();
 }
 
 class Malformed extends Error {}
@@ -347,12 +356,16 @@ function audioTrack(b: Buffer, tracks: Element, steps: Walk): number {
 }
 
 /**
- * A block's track, and whether every one of its frames holds at least one byte; a malformed block fails. The body is
+ * A block's track, its timecode and its frames; a malformed block fails. The body is
  * the track number, a 16-bit timecode, the flags, then the frames. A laced block (flags bits 1-2: Xiph, fixed-size or
  * EBML lacing) first gives its frame count and, for Xiph and EBML, every frame's size but the last, which is what
  * remains (Codex P2 on #1013): the lace table is read whole, and the sizes it declares must fit in the block.
+ * Every laced frame is a step of the walk, charged as soon as the lace count is read and before any frame is listed
+ * (Codex P1 on #1025: a fixed-size lace declares up to 256 frames in one byte; an unlaced block's one frame is paid
+ * for by the block element's own step), and every frame holds at least one byte (Codex P2 on #1025): an empty one
+ * refuses the file.
  */
-function blockTrack(b: Buffer, start: number, end: number): { track: number; timecode: number; sounding: boolean; frames: Array<{ at: number; size: number }> } {
+function blockTrack(b: Buffer, start: number, end: number, steps: Walk): { track: number; timecode: number; frames: Array<{ at: number; size: number }> } {
   const track = vint(b, start, end, false);
   if (track.unknown) fail();
   const flagsAt = start + track.length + 2;
@@ -362,10 +375,11 @@ function blockTrack(b: Buffer, start: number, end: number): { track: number; tim
   let at = flagsAt + 1;
   const sizes: number[] = [];
   if (lacing === 0) {
-    sizes.push(end - at);
+    sizes.push(end - at); // one frame, paid for by the block's own step
   } else {
     if (at >= end) fail();
     const frames = b[at]! + 1; // at most 256
+    charge(steps, frames);
     at++;
     if (lacing === 2) {
       const total = end - at;
@@ -400,13 +414,14 @@ function blockTrack(b: Buffer, start: number, end: number): { track: number; tim
       sizes.push(last);
     }
   }
-  // the frames follow the lace table back to back, to the block's end
+  // the frames follow the lace table back to back, to the block's end; each holds at least one byte
   const frames: Array<{ at: number; size: number }> = [];
   for (const size of sizes) {
+    if (size < 1) fail();
     frames.push({ at, size });
     at += size;
   }
-  return { track: track.value, timecode, sounding: sizes.every((s) => s > 0), frames };
+  return { track: track.value, timecode, frames };
 }
 
 /**
@@ -442,9 +457,9 @@ function walkCluster(b: Buffer, cluster: Element, track: number, steps: Walk): {
     }
     for (const block of blocks) {
       if (base === undefined) fail(); // a block's time is relative to its Cluster's Timestamp, which comes first
-      const r = blockTrack(b, block.dataStart, block.dataEnd);
+      const r = blockTrack(b, block.dataStart, block.dataEnd, steps);
       if (r.track !== track) fail(); // a block on a track the file does not list
-      if (r.sounding) sound = true;
+      sound = true; // every frame of it holds at least one byte
       lastTick = Math.max(lastTick, base! + r.timecode);
       for (const f of r.frames) samples += opusPacketSamples(b, f.at, f.size);
     }
@@ -648,6 +663,9 @@ function oggSeconds(b: Buffer): number | null {
         samples += opusPacketSamples(head, 0, length);
       }
       packets++;
+      // every packet is a step: two minutes of Opus's shortest 2.5 ms frames is 48,000 packets, and an empty one costs
+      // as much to complete as any other
+      if (packets > MAX_STEPS) return null;
       head = Buffer.alloc(0);
       length = 0;
     }
@@ -1146,6 +1164,7 @@ function mp4Seconds(b: Buffer): number | null {
   const { opus, rate: aacRate } = audioSampleEntry(b, only(st, 'stsd'), steps);
   let opusSamples = 0;
   const sample = (at: number, size: number) => {
+    if (size < 1) fail(); // every sample holds at least one byte, in moov's table and in every fragment (RFC 6716 §3.4 R1)
     if (opus) opusSamples += opusPacketSamples(b, at, size);
   };
   const id = trackId(b, tkhd);
@@ -1153,12 +1172,26 @@ function mp4Seconds(b: Buffer): number | null {
   const table = sampleTable(b, stbl, media, ranges, steps, sample); // every chunk checked to lie inside an mdat
   let bytes = table.bytes;
   let frames = table.count;
+  // where the track's media timeline ends, in media ticks: after moov's samples, then each fragment's runs from its
+  // own start, which is tfdt's baseMediaDecodeTime when the fragment gives one (Codex P2 on #1025: a short run placed
+  // minutes in is minutes long), else where the one before ended
+  let timeline = table.ticks;
   let ticks = table.ticks;
+  // and the plain sum of every sample duration, as a player that ignores tfdt plays them: a tfdt that goes back makes
+  // runs overlap on the timeline, and the length is never less than this sum either
+  let summed = table.ticks;
   // the track's fragment defaults: needed before any fragment counts (Codex P2 on #1013 round 3)
   let trex: { duration: number; size: number } | undefined;
+  // mehd's fragment_duration: the whole fragmented movie's length, in the movie timescale (ISO 14496-12 §8.8.2),
+  // counted in the length like mvhd's duration (32 bits at version 0, 64 at version 1)
+  let fragmented = 0;
   for (const mvex of moov.get('mvex') ?? []) {
     const mv = children(b, mvex.dataStart, mvex.end, 'mvex', steps, ['mehd']);
-    for (const mehd of mv.get('mehd') ?? []) exactBox(b, mehd, MEHD);
+    for (const mehd of mv.get('mehd') ?? []) {
+      const head = exactBox(b, mehd, MEHD);
+      fragmented = Math.max(fragmented, head.version === 1 ? u64(b, mehd.dataStart + 4) : b.readUInt32BE(mehd.dataStart + 4));
+      if (movie.scale === 0) return null; // a movie length with no movie timescale cannot be read
+    }
     for (const x of mv.get('trex') ?? []) {
       exactBox(b, x, TREX);
       if (b.readUInt32BE(x.dataStart + 4) !== id || trex !== undefined) return null; // defaults for the one track, once
@@ -1174,7 +1207,12 @@ function mp4Seconds(b: Buffer): number | null {
     let previousEnd: number | undefined; // where the previous traf's data ended, the next one's base by default
     for (const traf of mo.get('traf') ?? []) {
       const tr = children(b, traf.dataStart, traf.end, 'traf', steps, ['tfhd', 'tfdt']);
-      for (const tfdt of tr.get('tfdt') ?? []) exactBox(b, tfdt, TFDT);
+      let decodeTime: number | undefined; // tfdt's baseMediaDecodeTime: 32 bits at version 0, 64 at version 1
+      for (const tfdt of tr.get('tfdt') ?? []) {
+        const time = exactBox(b, tfdt, TFDT);
+        decodeTime = time.version === 1 ? u64(b, tfdt.dataStart + 4) : b.readUInt32BE(tfdt.dataStart + 4);
+      }
+      if (decodeTime !== undefined) timeline = decodeTime;
       const tfhd = only(tr, 'tfhd');
       const { version, flags } = fullBoxHead(b, tfhd);
       if (version !== 0 || flags & ~TFHD_FLAGS) return null;
@@ -1197,9 +1235,9 @@ function mp4Seconds(b: Buffer): number | null {
       if (at !== tfhd.end) fail(); // tfhd ends at its last field
       let cursor = base;
       for (const trun of tr.get('trun') ?? []) {
-        const run = trunRun(b, trun, defaults);
+        // the samples left under the cap bound this run's count before any of its samples is read (#1025 audit)
+        const run = trunRun(b, trun, defaults, MAX_SAMPLES - frames);
         frames += run.count;
-        if (frames > MAX_SAMPLES) fail();
         // a run starts at its data_offset from the base, else right after the previous run
         if (run.dataOffset !== undefined) cursor = base + run.dataOffset;
         if (cursor < 0 || !Number.isSafeInteger(cursor + run.bytes)) fail();
@@ -1209,38 +1247,43 @@ function mp4Seconds(b: Buffer): number | null {
         }
         for (let i = 0, p = cursor; i < run.count; p += run.sizeOf(i), i++) sample(p, run.sizeOf(i));
         bytes += run.bytes;
-        ticks += run.ticks;
+        timeline += run.ticks;
+        summed += run.ticks;
+        if (!Number.isSafeInteger(timeline) || !Number.isSafeInteger(summed)) fail();
+        ticks = Math.max(ticks, timeline);
         cursor += run.bytes;
       }
       previousEnd = cursor;
     }
   }
   if (bytes === 0 || !tilesMedia(media, ranges)) return null;
-  // the length: the longest of the movie header and, after any empty edit's delay, the media edit, the media header,
-  // the sample durations and what the frames hold
+  // the length: the longest of the movie header, mehd's movie length and, after any empty edit's delay, the media edit,
+  // the media header, the sample durations (the timeline's furthest end, and their plain sum) and what the frames hold
   const played = Math.max(
     edits ? edits.edit / movie.scale : 0,
     mdhd.duration !== null ? mdhd.duration / mdhd.scale : 0,
-    ticks / mdhd.scale,
+    Math.max(ticks, summed) / mdhd.scale,
     opus ? opusSamples / OPUS_RATE : (frames * 1024) / aacRate,
   );
   return Math.max(
     movie.scale > 0 && movie.duration !== null ? movie.duration / movie.scale : 0,
+    movie.scale > 0 ? fragmented / movie.scale : 0,
     (edits ? edits.delay / movie.scale : 0) + played,
   );
 }
 
 /**
  * One trun: its sample count, its data_offset if it gives one (signed), its bytes and ticks with the defaults applied,
- * and each sample's size.
+ * and each sample's size. A count above `left` (the samples the file may still list) is refused before any sample is
+ * read: with default sizes and durations a run's samples take no bytes of their own.
  */
-function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; sizeOf: (i: number) => number } {
+function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; sizeOf: (i: number) => number } {
   const { version, flags } = fullBoxHead(b, trun);
   if (version > 1 || flags & ~TRUN_FLAGS) fail(); // version 1 differs only in signed composition offsets
   let at = trun.dataStart + 4;
   if (at + 4 > trun.end) fail();
   const count = b.readUInt32BE(at);
-  if (count > MAX_SAMPLES) fail();
+  if (count > left) fail();
   at += 4;
   let dataOffset: number | undefined;
   if (flags & 0x1) {

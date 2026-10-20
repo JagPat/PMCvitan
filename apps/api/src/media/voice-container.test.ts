@@ -1187,3 +1187,221 @@ describe('the #1013 replacement, second review: every part read by its type, and
     }
   });
 });
+
+/**
+ * Codex round 1 on #1025 (daf6bea): declared frames are charged to the walk before they are listed, every WebM frame
+ * holds a byte, and a fragment's runs start where tfdt places them.
+ */
+describe('Codex round 1 on #1025', () => {
+  const webm = (b: Buffer) => isAudioOnlyRecording('audio/webm', b);
+  const mp4 = (b: Buffer) => isAudioOnlyRecording('audio/mp4', b);
+  const ogg = (b: Buffer) => isAudioOnlyRecording('audio/ogg', b);
+  /** big-endian 32-bit words */
+  const be = (...values: number[]) => {
+    const out = Buffer.alloc(4 * values.length);
+    values.forEach((v, i) => out.writeUInt32BE(v, 4 * i));
+    return out;
+  };
+
+  /** the list entries a parse makes (each declared frame is listed twice: its size, then its place), counted as work
+   *  done, not timed: a fixed-size lace's frames take no lace table bytes, so only a count shows what they cost */
+  const listed = (parse: () => boolean) => {
+    const push = Array.prototype.push;
+    let n = 0;
+    Array.prototype.push = function counted(this: unknown[], ...items: unknown[]) {
+      n += items.length;
+      return push.apply(this, items);
+    };
+    try {
+      return { result: parse(), n };
+    } finally {
+      Array.prototype.push = push;
+    }
+  };
+
+  it('P1: every declared lace frame is a step of the walk, charged before it is listed, so the work stays within the cap', () => {
+    // 1,500 fixed-size laced blocks of 256 one-byte Opus packets: about 390 KB declaring 384,000 frames. On daf6bea it
+    // passed after listing every frame (over 768,000 entries); charged at one step a frame, it is refused once the
+    // walk's 100,000 steps are spent, having listed 199,559. Charged after its frames are listed instead, the last
+    // block's 256 frames are listed first (200,071), so the bound sits between the two and pins the order
+    const block = lacedBlock(1, 2, 256, Buffer.alloc(0), Buffer.alloc(256, 0xfc));
+    const many = webmFile(undefined, 'webm', [webmCluster(Array.from({ length: 1500 }, () => block))]);
+    const r = listed(() => webm(many));
+    expect(r.result).toBe(false);
+    expect(r.n).toBeLessThan(200_000);
+    // 300 such blocks still pass the shape check: the charge refuses volume, not lacing (they read 1,536 s, which the
+    // upload refuses over its 120 s cap)
+    expect(webm(webmFile(undefined, 'webm', [webmCluster(Array.from({ length: 300 }, () => block))]))).toBe(true);
+    // and an unlaced recording of 6,000 blocks (two minutes of 20 ms frames) is well inside the cap
+    expect(webm(webmFile(undefined, 'webm', [webmCluster(Array.from({ length: 6000 }, () => simpleBlock()))]))).toBe(true);
+  });
+
+  it('P2: a WebM frame of no bytes refuses the file, wherever it is, laced or not', () => {
+    const six = Buffer.from([1, 2, 3, 4, 5, 6]);
+    const withSound = (empty: Buffer) => webmFile(undefined, 'webm', [webmCluster([simpleBlock(), empty, simpleBlock()])]);
+    expect(webm(withSound(simpleBlock()))).toBe(true);
+    // on daf6bea each of these passed: the empty frame only marked its own block as not sounding
+    expect(webm(withSound(simpleBlock(1, Buffer.alloc(0))))).toBe(false); // an unlaced block with no frame bytes
+    expect(webm(withSound(lacedBlock(1, 1, 2, Buffer.from([0]), six)))).toBe(false); // Xiph: 0, then 6
+    expect(webm(withSound(lacedBlock(1, 3, 2, Buffer.from([0x80]), six)))).toBe(false); // EBML: 0, then 6
+    expect(webm(withSound(lacedBlock(1, 2, 2, Buffer.alloc(0), Buffer.alloc(0))))).toBe(false); // fixed-size: two of 0
+  });
+
+  it('P2: a fragment starts where its tfdt places it, so a short run minutes in is minutes long', () => {
+    const at = (version: 0 | 1, ticks: number) => {
+      const time = Buffer.alloc(version === 1 ? 8 : 4);
+      if (version === 1) time.writeBigUInt64BE(BigInt(ticks));
+      else time.writeUInt32BE(ticks);
+      return fragmentedMp4({ traf: (off) => [tfhd(1), fullBox('tfdt', version, 0, time), trun([4, 4], off)] });
+    };
+    // two AAC frames (about 43 ms) placed 10 minutes into the 48 kHz media timeline: on daf6bea, 0.043 s
+    expect(recordingSeconds('audio/mp4', at(0, 48_000 * 600))).toBeGreaterThanOrEqual(600);
+    expect(recordingSeconds('audio/mp4', at(1, 48_000 * 600))).toBeGreaterThanOrEqual(600);
+    expect(readVoiceRecording('audio/mp4', at(0, 48_000 * 600))!.durationSec).toBeGreaterThan(120); // past the caller's cap
+    // a fragment at 0 is as long as its frames, as before
+    expect(recordingSeconds('audio/mp4', at(0, 0))).toBeCloseTo((2 * 1024) / 48_000, 6);
+  });
+
+  it('P2: a tfdt that goes back is accepted, and the length is the furthest end and never less than the summed durations', () => {
+    // a tfdt may go back, so runs can overlap on the media timeline; the parser does not refuse that, and the length
+    // is the larger of where the timeline reached and the plain sum of every sample duration
+    const timed = (rows: Array<[number, number]>, off: number) => fullBox('trun', 0, 0x000301, [be(rows.length, off), be(...rows.flat())]);
+    const fragments = (runs: Array<{ at: number; seconds: number }>) => Buffer.concat([
+      ftyp('iso5'),
+      box('moov', [mvhd(), trak('soun', 1, []), box('mvex', trex(1))]),
+      ...runs.flatMap(({ at, seconds }, i) => [fragment(i + 1, (o) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * at)), timed([[48_000 * seconds, 4]], o)]), mdat(4)]),
+    ]);
+    // a 1 s sample placed at 200 s, then a tfdt back to 0 and another 1 s sample: the timeline reached 201 s, so the
+    // file is 201 s and the upload refuses it; read from the last end it would be 1 s (and the sum is 2 s)
+    const back = fragments([{ at: 200, seconds: 1 }, { at: 0, seconds: 1 }]);
+    expect(mp4(back)).toBe(true);
+    expect(recordingSeconds('audio/mp4', back)).toBeGreaterThanOrEqual(201);
+    expect(readVoiceRecording('audio/mp4', back)!.durationSec).toBeGreaterThan(120); // past the caller's cap
+    // three fragments each at tfdt 0 with one 100 s sample overlap on the timeline (furthest end 100 s), but their
+    // durations sum to 300 s, as daf6bea read them: the file is 300 s and the upload refuses it
+    const overlapping = fragments([{ at: 0, seconds: 100 }, { at: 0, seconds: 100 }, { at: 0, seconds: 100 }]);
+    expect(mp4(overlapping)).toBe(true);
+    expect(recordingSeconds('audio/mp4', overlapping)).toBeGreaterThanOrEqual(300);
+    expect(readVoiceRecording('audio/mp4', overlapping)!.durationSec).toBeGreaterThan(120);
+  });
+
+  it('pre-existing, same class as tfdt: mehd\'s movie length counts, at version 0 and 1', () => {
+    // mehd's fragment_duration is the whole fragmented movie's length in the movie timescale (mvhd's 1,000 here): 600 s
+    // over two AAC frames read 0.0427 s on e2cd3a7
+    const long = (version: 0 | 1) => {
+      const value = Buffer.alloc(version === 1 ? 8 : 4);
+      if (version === 1) value.writeBigUInt64BE(600_000n);
+      else value.writeUInt32BE(600_000);
+      return fragmentedMp4({ mvex: [fullBox('mehd', version, 0, value)] });
+    };
+    for (const version of [0, 1] as const) {
+      expect(recordingSeconds('audio/mp4', long(version))).toBeGreaterThanOrEqual(600);
+      expect(readVoiceRecording('audio/mp4', long(version))!.durationSec).toBeGreaterThan(120);
+    }
+    // a mehd of 0 is the frames' length, as before
+    expect(recordingSeconds('audio/mp4', fragmentedMp4({ mvex: [fullBox('mehd', 0, 0, Buffer.alloc(4))] }))).toBeCloseTo((2 * 1024) / 48_000, 6);
+    // with no movie timescale, mehd's length cannot be read, so the file is refused
+    const unscaled = fragmentedMp4({ mvex: [fullBox('mehd', 0, 0, be(600_000))] });
+    const scaleAt = unscaled.indexOf('mvhd') + 4 + 12; // version and flags, creation and modification times
+    unscaled.writeUInt32BE(0, scaleAt);
+    expect(mp4(unscaled)).toBe(false);
+  });
+
+  it('pre-existing, same class as the empty frame: an MP4 sample of no bytes refuses the file, in moov or a fragment', () => {
+    expect(mp4(plainMp4({ table: (off) => [stsd('mp4a'), stts(3), stsc(3), stsz([4, 4, 4]), stco(3, off)], mdatBytes: 12 }))).toBe(true);
+    expect(mp4(plainMp4({ table: (off) => [stsd('mp4a'), stts(3), stsc(3), stsz([4, 0, 4]), stco(3, off)] }))).toBe(false);
+    expect(mp4(fragmentedMp4({ traf: (off) => [tfhd(1), trun([4, 4, 4], off)], mdatBytes: 12 }))).toBe(true);
+    expect(mp4(fragmentedMp4({ traf: (off) => [tfhd(1), trun([4, 0, 4], off)] }))).toBe(false);
+    // a run on trex's or tfhd's default size of 0 beside a sized run: the file has bytes, so only the sample guard
+    // refuses it (with the guard removed, both pass)
+    expect(mp4(fragmentedMp4({ trex: trex(1, 0), traf: (off) => [tfhd(1), trun([4, 4], off), trun({ count: 1 }, off + 8)] }))).toBe(false);
+    expect(mp4(fragmentedMp4({ trex: trex(1, 4), traf: (off) => [tfhd(1, 0), trun([4, 4], off), trun({ count: 1 }, off + 8)] }))).toBe(false);
+  });
+
+  it('pre-existing, same class as the empty frame: an empty Ogg packet adds nothing to the length', () => {
+    // the length is the last granule position (less the pre-skip) or the samples the packets' TOC bytes give, the
+    // larger; an empty packet has no TOC byte and counts no samples, and a page's granule position is the same claim
+    // whatever its packets hold. So an empty packet cannot lengthen or shorten the file, and it is not refused here:
+    // the voice web unit's real Firefox recordings decide whether Firefox writes one (RFC 6716 §3.4 R1 says a packet
+    // is at least one byte)
+    const sound = oggFile([AUDIO_PACKET, AUDIO_PACKET]);
+    const gap = oggFile([AUDIO_PACKET, Buffer.alloc(0), AUDIO_PACKET]);
+    expect(ogg(gap)).toBe(true);
+    expect(recordingSeconds('audio/ogg', gap)).toBe(recordingSeconds('audio/ogg', sound));
+    const granule = (file: Buffer) => {
+      const page = file.lastIndexOf('OggS');
+      return Buffer.concat([file.subarray(0, page), withGranule(file.subarray(page), 48_000n + BigInt(OPUS_PRE_SKIP))]);
+    };
+    expect(recordingSeconds('audio/ogg', granule(gap))).toBe(recordingSeconds('audio/ogg', granule(sound)));
+  });
+
+  it('audit: a trun whose samples take no bytes of their own is refused past the sample cap before any sample is read', () => {
+    // with trex's default size and duration, a trun lists its samples in its count alone, so the cap applies to the
+    // count before its samples are summed (the same class as P1). This pins the cap across runs; the next test pins
+    // that the count is checked before the sum
+    const runs = (counts: number[]) => fragmentedMp4({ trex: trex(1, 1), mdatBytes: counts.reduce((a, c) => a + c, 0),
+      traf: (off) => [tfhd(1), ...counts.map((count, i) => trun({ count }, i === 0 ? off : off + counts.slice(0, i).reduce((a, c) => a + c, 0)))] });
+    expect(mp4(runs([25_000, 25_000]))).toBe(true);
+    expect(mp4(runs([50_000, 50_000]))).toBe(false);
+    expect(mp4(runs([25_000, 25_001]))).toBe(false);
+  });
+
+  it('pre-existing, same class as P1: Ogg packets count against the step cap as each completes, empty ones too', () => {
+    // pages of 255 empty audio packets after one sounding one: every packet completes with its own work, so 100,000
+    // in a file are the cap. The Buffer allocations the parse makes are counted, not timed: on daf6bea a file of
+    // 300,000 empty packets was accepted after an allocation or more per packet
+    const empties = (n: number) => {
+      const pages = [oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0x00, 1, 1, OPUS_TAGS), oggPage(0x00, 1, 2, AUDIO_PACKET)];
+      for (let left = n, seq = 3; left > 0; left -= 255, seq++) {
+        pages.push(oggPage(left <= 255 ? 0x04 : 0x00, 1, seq, Array.from({ length: Math.min(255, left) }, () => Buffer.alloc(0))));
+      }
+      return Buffer.concat(pages);
+    };
+    const allocations = (parse: () => boolean) => {
+      const alloc = Buffer.alloc;
+      let n = 0;
+      Buffer.alloc = function counted(...args: Parameters<typeof Buffer.alloc>) {
+        n++;
+        return alloc.apply(Buffer, args);
+      };
+      try {
+        return { result: parse(), n };
+      } finally {
+        Buffer.alloc = alloc;
+      }
+    };
+    expect(ogg(empties(99_990))).toBe(true); // headers, one sounding packet and the empties: under the cap
+    expect(ogg(empties(100_000))).toBe(false);
+    const file = empties(300_000);
+    const many = allocations(() => ogg(file));
+    expect(many.result).toBe(false);
+    expect(many.n).toBeLessThan(110_000);
+  });
+
+  it('audit: a trun past the samples left is refused before any of its sample fields is read', () => {
+    // a run of 25,000 default-sized samples, then one listing 25,001 sizes: daf6bea capped each run at 50,000, summed
+    // the second run's 25,001 sizes and then refused; here its count is refused first. The 32-bit reads the parse makes
+    // are counted, not timed
+    const reads = (parse: () => boolean) => {
+      const read = Buffer.prototype.readUInt32BE;
+      let n = 0;
+      Buffer.prototype.readUInt32BE = function counted(this: Buffer, offset?: number) {
+        n++;
+        return read.call(this, offset);
+      };
+      try {
+        return { result: parse(), n };
+      } finally {
+        Buffer.prototype.readUInt32BE = read;
+      }
+    };
+    const twoRuns = (second: number) => fragmentedMp4({ trex: trex(1, 1), mdatBytes: 25_000 + second,
+      traf: (off) => [tfhd(1), trun({ count: 25_000 }, off), trun(Array.from({ length: second }, () => 1), off + 25_000)] });
+    const fits = reads(() => mp4(twoRuns(25_000)));
+    expect(fits.result).toBe(true);
+    expect(fits.n).toBeGreaterThan(25_000); // the counter sees a run's sizes being read
+    const over = reads(() => mp4(twoRuns(25_001)));
+    expect(over.result).toBe(false);
+    expect(over.n).toBeLessThan(1_000);
+  });
+});
