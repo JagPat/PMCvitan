@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { base64, mp4File, mp4VideoOnly, oggFile, oggVideoOnly, webmFile, webmVideoOnly } from '../unit-support/voice-files';
 
 /**
  * Stage 1 voice notes, site visits first (Jagrut, 19 Oct 2026: "yes to all" on the media plan): a spoken note of up to
@@ -19,10 +20,10 @@ describe('Stage 1 voice — a voice note on a site visit (live PG)', () => {
   let pmcToken: string;
   let engineerToken: string;
   let visitId: string;
-  // the first bytes of each container, then a little payload
-  const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(32, 1)]).toString('base64');
-  const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypM4A '), Buffer.alloc(32, 1)]).toString('base64');
-  const ogg = Buffer.concat([Buffer.from('OggS'), Buffer.alloc(32, 1)]).toString('base64');
+  // structurally valid recordings, one per container (test/unit-support/voice-files.ts)
+  const webm = base64(webmFile());
+  const mp4 = base64(mp4File());
+  const ogg = base64(oggFile());
 
   const http = () => request(t.app.getHttpServer());
   const visits = () => `/projects/${f.projectA.id}/site-visits`;
@@ -81,9 +82,15 @@ describe('Stage 1 voice — a voice note on a site visit (live PG)', () => {
     expect((await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: webm, durationSec: 5, siteVisit: { visitId } })).status).toBe(400);
   });
 
-  it('bytes that are not the container their type names are refused before anything is stored', async () => {
+  it('a file that is not an audio-only recording in the container its type names is refused before anything is stored', async () => {
     const key = `voice-bad-${run}`;
-    for (const [mime, data] of [['audio/webm', ogg], ['audio/ogg', webm], ['audio/mp4', webm], ['audio/webm', Buffer.from('<html>').toString('base64')]] as const) {
+    const signatureOnly = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(32, 1)]).toString('base64');
+    for (const [mime, data] of [
+      ['audio/webm', ogg], ['audio/ogg', webm], ['audio/mp4', webm], ['audio/webm', Buffer.from('<html>').toString('base64')],
+      // a video in each container (Codex P2 on #1010), and the container's first bytes alone
+      ['audio/webm', base64(webmVideoOnly())], ['audio/ogg', base64(oggVideoOnly())], ['audio/mp4', base64(mp4VideoOnly())],
+      ['audio/webm', signatureOnly],
+    ] as const) {
       expect((await voice(pmcToken, { mime, data, clientKey: `${key}-${mime}-${data.length}` })).status).toBe(400);
     }
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: { startsWith: key } } })).toBe(0);

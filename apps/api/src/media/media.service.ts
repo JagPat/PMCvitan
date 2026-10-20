@@ -24,6 +24,7 @@ import { SITE_PHOTO_DELETE_WINDOW_MS } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
+import { isAudioOnlyRecording } from './voice-container';
 
 export interface UploadedMedia {
   id: string;
@@ -45,16 +46,6 @@ function isPlainSitePhoto(input: CreateMediaInput): boolean {
 function isSiteVisitFile(input: CreateMediaInput): boolean {
   return input.kind === 'visit' && input.siteVisit !== undefined
     && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
-}
-
-/** Whether a voice note's first bytes are the container its type names: WebM (EBML), Ogg, or MP4 (`ftyp`). The type is
- *  the client's word; the bytes are checked so a file is served only as what it is. */
-function voiceBytesMatch(mime: string, base64: string): boolean {
-  const head = Buffer.from(base64.slice(0, 24), 'base64');
-  if (mime === 'audio/webm') return head.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
-  if (mime === 'audio/ogg') return head.subarray(0, 4).toString('latin1') === 'OggS';
-  if (mime === 'audio/mp4') return head.subarray(4, 8).toString('latin1') === 'ftyp';
-  return false;
 }
 
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
@@ -153,7 +144,8 @@ export class MediaService {
       if (!isSiteVisitFile(input) || input.sourceMediaId !== undefined) {
         throw new BadRequestException('A voice note is added on a site visit');
       }
-      if (!voiceBytesMatch(input.mime, input.data)) throw new BadRequestException('This file is not the voice recording its type says');
+      // the type is the client's word: the file is served only as what it is, an audio-only recording (Codex P2 on #1010)
+      if (!isAudioOnlyRecording(input.mime, Buffer.from(input.data, 'base64'))) throw new BadRequestException('This file is not the voice recording its type says');
     }
     if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input)) {
       throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
