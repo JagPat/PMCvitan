@@ -15,7 +15,9 @@ export const authManifest: ModuleManifest = {
   kind: 'domain',
   ownsModels: [],
   dependsOn: [],
-  workflowParticipants: [],
+  // #482 — the sign-in access rule (`OrgsParticipant.signInLanding`/`projectRole`) and the operator-door QA sign-in's
+  // account side (`OrgsParticipant.qaSignInAccount`) are the orgs module's, asked through its participant
+  workflowParticipants: ['orgs'],
   producesEvents: [],
   consumesEvents: [],
   commands: [
@@ -31,6 +33,7 @@ export const authManifest: ModuleManifest = {
     'auth.emailRequest',
     'auth.emailVerify',
     'auth.google',
+    'auth.opsQaSignIn',
   ],
   queries: [],
   routes: [
@@ -46,6 +49,7 @@ export const authManifest: ModuleManifest = {
     'POST /auth/email/request',
     'POST /auth/email/verify',
     'POST /auth/google',
+    'POST /auth/ops/qa-sign-in',
   ],
   permissions: [],
 };

@@ -9,11 +9,11 @@ import { disableCapability, enableCapability, ProjectNotOperableError } from '..
 import { OrgsParticipant } from '../../orgs/orgs.participant';
 import { OpsTokenGuard } from './ops-token.guard';
 
-const switchSchema = z.object({
+export const switchSchema = z.object({
   operator: z.string().trim().min(3).max(200),
   reason: z.string().trim().min(3).max(500),
 });
-type SwitchInput = z.infer<typeof switchSchema>;
+export type SwitchInput = z.infer<typeof switchSchema>;
 
 export interface OpsProjectRow {
   id: string;
@@ -32,6 +32,8 @@ export const OPS_VIA = 'ops-api';
  *  - `GET  /ops/projects`: every live project with its switched-on capabilities and last activity (reads only).
  *  - `GET  /ops/people`: each company's owners and admins, and each live project's active members with their
  *    role (reads only), so "who can manage this project" is answered without a terminal paste.
+ *  - `POST /ops/orgs/:orgId/qa-only`: mark a company QA-only, in {@link OpsQaController} (its door guard runs before
+ *    its rate limit).
  *  - `POST /ops/projects/:projectId/capabilities/:capability/enable|disable`: the same `capability-switch`
  *    functions the `capability:enable` / `capability:disable` CLIs call, limited to `SWITCHABLE_CAPABILITIES`
  *    (presentation only, no data touched). Each change writes the usual audit row on the project's trail
