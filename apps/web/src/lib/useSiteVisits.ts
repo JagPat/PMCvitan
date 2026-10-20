@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { Lang } from '@vitan/shared';
+import { can, type Lang, type Role } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { isCurrentProjectScope, projectScopeOf, type ProjectScope } from '@/store/projectScope';
 import {
-  isSiteVisitOp, newIdempotencyKey, siteVisitListeners, siteVisitOf,
+  isSiteVisitOp, newIdempotencyKey, resolveMediaUrl, siteVisitListeners, siteVisitOf,
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
   type SiteVisitRating,
 } from '@/data/apiGateway';
 import { deleteVisitPhoto, listVisitPhotos, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import type { MarkedCopy } from '@/components/PhotoMarkup';
 import { setClampedTimeout } from './clampedTimer';
 import { captureStamp } from './captureStamp';
+import { photoDecodes } from './photoDecodes';
 import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
 import { SV } from './siteVisitWords';
 
@@ -190,6 +192,50 @@ async function readPages(
   }
 }
 
+/** Whether the viewer may add a photo to this visit: the visitor, or anyone recorded as present on it (Jagrut, 19 Oct
+ *  2026), while it is not closed. A marked-up copy is a photo added (M3), under the same rule. A visit the screen does
+ *  not show is one nothing may be added to here. The server asks again before it stores a byte. */
+export function mayAddPhoto(v: SiteVisit | undefined, role: Role, me: string | null): boolean {
+  if (!v || !me || v.status === 'closed' || !can('media.upload', role)) return false;
+  return v.visitorId === me || v.attendees.some((a) => a.userId === me && !a.retiredAt);
+}
+
+/** M3: the longest that opening a photo for marking may take, all of it: the download (and one more with a fresh link
+ *  when the first is refused), the read that fetches that link and any older pages read on for it, and the check that
+ *  this phone can decode it. Past it
+ *  the open is stopped and said to have failed; nothing was written. */
+export const MARKUP_OPEN_WAIT_MS = 30_000;
+/** M3: a visit kept on screen from beyond the pages read (an act answered with it) is looked for in the older pages
+ *  when its link must be renewed, this many pages at most (the API has no read of one visit). */
+export const MARKUP_RELINK_PAGES = 10;
+
+/** How an open for marking ended: the photo, ready to draw on; why it did not open; or `moved`, when the person went on
+ *  (Cancel, another photo, a sign-out or another project), which says nothing. */
+export type MarkupOpen = { blob: Blob } | { fail: 'decode' | 'open' } | { moved: true };
+
+/** The photo being marked up on a visit: still opening, or open in the editor with its bytes. The bytes live only here,
+ *  and go when the editor closes. */
+export type MarkupSession = { visitId: string; mediaId: string } & ({ phase: 'loading' } | { phase: 'open'; blob: Blob });
+
+/** A stored file's bytes, under `signal`; null when the server refused the link (it may have expired). It sends no
+ *  credentials: the signed link is the permission, and a bucket's answer to `*` refuses a request that carries them. */
+async function fetchFile(url: string, signal: AbortSignal): Promise<Blob | null> {
+  const r = await fetch(resolveMediaUrl(url), { signal, credentials: 'omit' });
+  if (!r.ok) return null;
+  return r.blob();
+}
+
+/** `work`, or a rejection as soon as `signal` aborts (the work itself goes on, unheard). */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    // already stopped: the work is let run unheard, its outcome (a rejection too) handled
+    if (signal.aborted) { work.catch(() => {}); reject(new Error('aborted')); return; }
+    const stop = () => reject(new Error('aborted'));
+    signal.addEventListener('abort', stop, { once: true });
+    work.then((x) => { signal.removeEventListener('abort', stop); resolve(x); }, (e: unknown) => { signal.removeEventListener('abort', stop); reject(e); });
+  });
+}
+
 /** The server's Q6 line (site-visits.query.ts): a device fix less accurate than this reads as approximate. */
 const APPROXIMATE_ACCURACY_M = 100;
 
@@ -274,7 +320,7 @@ export function withQueued(
         if ((v.files ?? []).some((x) => x.clientKey === f.id)) break;
         byId.set(id, { ...v, files: [...(v.files ?? []), {
           mediaId: f.id, url: previews.get(f.id) ?? '', mime: f.mime, clientKey: f.id, takenAt: f.takenAt ?? null,
-          note: f.note ?? null, rating: f.rating ?? null,
+          sourceMediaId: f.sourceMediaId ?? null, note: f.note ?? null, rating: f.rating ?? null,
           place: f.nodeId ? { nodeId: f.nodeId, name: op.placeName ?? '' } : null,
           // when the photo was added, not when this list was last drawn (Codex 4320404453)
           addedById: me ?? '', addedByName: op.by.name, addedByRole: op.by.role, addedAt: op.queuedAt ?? at,
@@ -333,6 +379,29 @@ export function useSiteVisits() {
   const relinkedFor = useRef<LinkRefreshTried | null>(null);
   // how many link refreshes failed in a row since a read last answered
   const relinkFailed = useRef(0);
+  // the visits the last read that answered brought, for an open that needs a fresh link at once (M3)
+  const headRead = useRef<SiteVisit[]>([]);
+  // how many reads have answered (each sets `headRead`), and the last read sent: an open whose own read was overtaken
+  // takes the newer read's answer instead
+  const headReads = useRef(0);
+  const latestRead = useRef<Promise<boolean> | null>(null);
+  // M3: the photo being marked up, the one open in flight (the newest wins) and how to stop it
+  const [markup, setMarkup] = useState<MarkupSession | null>(null);
+  const markupRef = useRef<MarkupSession | null>(null);
+  markupRef.current = markup;
+  const markupSeq = useRef(0);
+  const markupRun = useRef<{ seq: number; stop: () => void } | null>(null);
+  // what the editor says about its last save (why the copy was not kept): the editor's own, never another act's refusal
+  const [markupNotice, setMarkupNotice] = useState<string | null>(null);
+
+  /** Ends any markup: an open in flight is aborted with its timer, and the editor closes with its photo. */
+  const stopMarkup = useCallback(() => {
+    markupSeq.current += 1;
+    markupRun.current?.stop();
+    markupRun.current = null;
+    setMarkup(null);
+    setMarkupNotice(null);
+  }, []);
 
   const live = (scope: ProjectScope): boolean => {
     const s = useStore.getState();
@@ -370,7 +439,7 @@ export function useSiteVisits() {
     if (fresh) { answered.current = false; setLoad('loading'); }
     // the first page alone when starting over; otherwise down to the page holding the last visit shown
     const upTo = fresh ? undefined : cursor.current;
-    return Promise.all([
+    const sent = Promise.all([
       readPages(gw, { limit: VISIT_PAGE }, (page) => upTo === undefined || page.some((v) => v.id === upTo)),
       readPages(gw, { status: 'open', limit: OPEN_LIMIT }, () => false),
     ])
@@ -382,6 +451,8 @@ export function useSiteVisits() {
           return false;
         }
         const read = [...open.rows, ...shown.rows.filter((v) => !open.rows.some((o) => o.id === v.id))];
+        headRead.current = read;
+        headReads.current += 1;
         const last = shown.rows[shown.rows.length - 1];
         setRows((old) => merged(fresh || !last ? [] : old.filter((v) => v.status !== 'open' && v.startedAt < last.startedAt), read));
         if (fresh || cursor.current === undefined) {
@@ -401,6 +472,8 @@ export function useSiteVisits() {
         if (live(scope) && mine === lastRead.current && !answered.current) setLoad('error');
         return false;
       });
+    latestRead.current = sent;
+    return sent;
   }, [readKept]);
 
   const readOlder = useCallback((before: string) => {
@@ -434,10 +507,15 @@ export function useSiteVisits() {
     movedTo.current = new Set();
     filedHeard.current = new Set();
     setKept([]);
+    // a photo opened for marking in the last project or sign-in is not this one's, nor the visits last read for it
+    stopMarkup();
+    headRead.current = [];
     readHead(true);
     readKept();
     sendQueued();
-  }, [projectId, generation, readHead, readKept]);
+  }, [projectId, generation, readHead, readKept, stopMarkup]);
+  // leaving the screen stops an open in flight
+  useEffect(() => () => { markupRun.current?.stop(); }, []);
 
   // another device started, changed, ended or closed a visit; and what the outbox says about the acts it sent
   useEffect(() => {
@@ -509,6 +587,7 @@ export function useSiteVisits() {
   const previews = useMemo(() => new Map(kept.filter((r) => r.state !== 'failed').map((r) => [r.clientKey, `data:${r.op.file.mime};base64,${r.data}`])), [kept]);
   const notSent = useMemo(() => kept.filter((r) => r.state === 'failed').map((r) => ({
     key: r.clientKey, url: `data:${r.op.file.mime};base64,${r.data}`, note: r.op.file.note ?? null, placeName: r.op.placeName, reason: r.reason,
+    copy: !!r.op.file.sourceMediaId,
   })), [kept]);
   // a photo the server took is shown from its filed row (not as waiting to send) until the server's list shows it
   const filed = useMemo(() => kept.filter((r) => r.state === 'filed'), [kept]);
@@ -549,8 +628,43 @@ export function useSiteVisits() {
   known.current = new Set([...shown.visits.map((v) => v.id), ...queued.map(siteVisitOf)]);
   shownRef.current = shown.visits;
 
+  /** A visit file (a photo, or a marked-up copy: M3) kept on the phone with the one act that sends it, then queued like
+   *  every visit act. "Waiting to send" means written; a phone that cannot keep it is told so and nothing is sent. */
+  const keepAndQueue = async (
+    scope: ProjectScope, op: SiteVisitAddFileOp, data: string, say: (text: (typeof SV)[keyof typeof SV]) => void,
+  ): Promise<boolean> => {
+    if (!storageAvailable()) { say(SV.photoNoStorage); return false; }
+    const s = useStore.getState();
+    // a visit whose start is still waiting to send: that start is kept with the photo too, so the photo never
+    // outlives the act it needs (Codex 4320122186)
+    const start = s.outbox.find((o): o is SiteVisitStartOp => o.t === 'siteVisitStart' && o.body.id === op.visitId) ?? null;
+    // kept before it is queued: "waiting to send" means written
+    // bounded: a database that never answers refuses the photo, and the controls come back (Codex 4324453905)
+    // one the phone neither saved nor refused in time is said to be uncertain, never "not kept": if its save lands
+    // later, it is kept and queued like any other, and shown from its row
+    const lateCommit = () => {
+      if (!live(scope)) return; // its own scope's next load queues it (Codex 4320122181)
+      readKept();
+      void useStore.getState().flushOutbox();
+    };
+    try {
+      await putVisitPhoto(op.scope, s.activeProjectId, op, data, start, lateCommit);
+    } catch (err) {
+      say(err instanceof VisitPhotoUnconfirmed ? SV.photoMaybeNotKept : SV.photoNotKept);
+      return false;
+    }
+    // the person signed out or moved to another project while it was written: the row stays, kept for the user and
+    // project it was taken in, and that scope's next load queues it (Codex 4320122181)
+    if (!live(scope)) return false;
+    const queuedHere = useStore.getState().queueSiteVisitAct(op, SV.queued[useStore.getState().lang]);
+    // not queued (the server went away meanwhile): the row is let go too, or the next load would send it
+    if (!queuedHere) await withinWait(() => deleteVisitPhoto(op.scope, s.activeProjectId, op.file.id)).catch(() => {});
+    readKept();
+    return queuedHere;
+  };
+
   return {
-    visits: shown.visits, waiting: shown.waiting, queued: queued.length, load, hasMore, busy, error, notice, pings, notSent, held,
+    visits: shown.visits, waiting: shown.waiting, markup, markupNotice, queued: queued.length, load, hasMore, busy, error, notice, pings, notSent, held,
     /** Send a held visit's acts without waiting for a photo the phone cannot read just now (this page load only). */
     sendAnyway: (visitId: string) => useStore.getState().sendSiteVisitAnyway(visitId),
     /** The person has read why a photo was not sent: the phone lets go of it. */
@@ -615,7 +729,6 @@ export function useSiteVisits() {
         // photo was taken, and the photo keeps it (Codex 4319699338)
         const v = shownRef.current.find((x) => x.id === visitId);
         if (extra.nodeId && !v?.places.some((p) => p.nodeId === extra.nodeId && !p.retiredAt)) { say(SV.photoPlaceGone); return false; }
-        if (!storageAvailable()) { say(SV.photoNoStorage); return false; }
         const s = useStore.getState();
         const owner = visitPhotoScope(s.sessionToken, s.sessionUserId);
         const note = extra.note?.trim();
@@ -629,31 +742,120 @@ export function useSiteVisits() {
           },
           by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
         };
-        // a visit whose start is still waiting to send: that start is kept with the photo too, so the photo never
-        // outlives the act it needs (Codex 4320122186)
-        const start = s.outbox.find((o): o is SiteVisitStartOp => o.t === 'siteVisitStart' && o.body.id === visitId) ?? null;
-        // kept before it is queued: "waiting to send" means written
-        // bounded: a database that never answers refuses the photo, and the controls come back (Codex 4324453905)
-        // one the phone neither saved nor refused in time is said to be uncertain, never "not kept": if its save lands
-        // later, it is kept and queued like any other, and shown from its row
-        const lateCommit = () => {
-          if (!live(scope)) return; // its own scope's next load queues it (Codex 4320122181)
-          readKept();
-          void useStore.getState().flushOutbox();
-        };
+        return await keepAndQueue(scope, op, m[2], say);
+      } finally {
+        if (live(scope)) setBusy(false);
+      }
+    },
+    /** M3: open a photo on the visit for marking. One open at a time: a second tap supersedes the first. All of it runs
+     *  under one bound (`MARKUP_OPEN_WAIT_MS`), and Cancel, leaving the screen, a sign-out or another project aborts it
+     *  with its timer. The download is the visit's own signed link; one the server refuses is asked for again once, from
+     *  a fresh read of the visits (read on into the older pages, up to `MARKUP_RELINK_PAGES`, when the visit is shown
+     *  from beyond the pages read), and an open whose photo none of that lists stops there. A photo this phone
+     *  cannot decode is not opened (the thumbnail's decode decides whether Mark up is offered; this is the backstop). */
+    openMarkup: async (visitId: string, mediaId: string): Promise<MarkupOpen> => {
+      const s = useStore.getState();
+      if (!s.serverGateway()) { setError(SV.needsServer[s.lang]); return { fail: 'open' }; }
+      const scope = projectScopeOf(s);
+      markupRun.current?.stop();
+      const seq = (markupSeq.current += 1);
+      const ctrl = new AbortController();
+      let stopped = false;
+      const timer = setClampedTimeout(() => ctrl.abort(), MARKUP_OPEN_WAIT_MS);
+      markupRun.current = { seq, stop: () => { stopped = true; ctrl.abort(); timer.clear(); } };
+      setError(null);
+      setNotice(null);
+      setMarkup({ visitId, mediaId, phase: 'loading' });
+      const urlIn = (list: SiteVisit[]) => list.find((v) => v.id === visitId)?.files?.find((f) => f.mediaId === mediaId)?.url || undefined;
+      // the bound holds over the whole open, even a step that does not stop when told to
+      const outcome = await untilAborted((async (): Promise<MarkupOpen> => {
         try {
-          await putVisitPhoto(owner, s.activeProjectId, op, m[2], start, lateCommit);
-        } catch (err) {
-          say(err instanceof VisitPhotoUnconfirmed ? SV.photoMaybeNotKept : SV.photoNotKept);
-          return false;
+          const first = urlIn(shownRef.current);
+          if (!first) return { fail: 'open' };
+          let blob = await fetchFile(first, ctrl.signal);
+          if (!blob) {
+            // the link was refused (it may have expired): a fresh read (the older pages read on when the visit is shown
+            // from beyond it), and one more try with the link it brings; none once the open is stopped
+            if (ctrl.signal.aborted) return { fail: 'open' };
+            const before = headReads.current;
+            let answered = await untilAborted(readHead(false), ctrl.signal);
+            // overtaken by a newer read (one sent after it): that read's answer serves, so "could not be opened" comes
+            // only after a read that failed
+            for (let n = 0; !answered && headReads.current === before && latestRead.current && n < 3; n += 1) {
+              answered = await untilAborted(latestRead.current, ctrl.signal);
+            }
+            answered ||= headReads.current !== before;
+            let again = answered ? urlIn(headRead.current) : undefined;
+            // not in the pages that read brought: the visit is shown from beyond them (an act answered with it), so the
+            // older pages are read on from there until it is found, up to a bound (Codex 4327055870)
+            const gw = useStore.getState().serverGateway();
+            for (let at = cursor.current, n = 0; answered && !again && gw && at && n < MARKUP_RELINK_PAGES; n += 1) {
+              if (ctrl.signal.aborted) return { fail: 'open' };
+              const page = await untilAborted(gw.listSiteVisits({ before: at, limit: VISIT_PAGE }, ctrl.signal), ctrl.signal);
+              again = urlIn(page);
+              if (page.length < VISIT_PAGE) break;
+              at = page[page.length - 1].id;
+            }
+            if (!again) return { fail: 'open' };
+            blob = await fetchFile(again, ctrl.signal);
+            if (!blob) return { fail: 'open' };
+          }
+          const decodes = await photoDecodes(blob, ctrl.signal);
+          if (ctrl.signal.aborted) return { fail: 'open' };
+          return decodes ? { blob } : { fail: 'decode' };
+        } catch {
+          return { fail: 'open' };
         }
-        // the person signed out or moved to another project while it was written: the row stays, kept for the user and
-        // project it was taken in, and that scope's next load queues it (Codex 4320122181)
-        if (!live(scope)) return false;
-        const queuedHere = useStore.getState().queueSiteVisitAct(op, SV.queued[useStore.getState().lang]);
-        // not queued (the server went away meanwhile): the row is let go too, or the next load would send it
-        if (!queuedHere) await withinWait(() => deleteVisitPhoto(owner, s.activeProjectId, op.file.id)).catch(() => {});
-        readKept();
+      })(), ctrl.signal).catch((): MarkupOpen => ({ fail: 'open' }));
+      timer.clear();
+      if (stopped || seq !== markupSeq.current || !live(scope)) return { moved: true };
+      markupRun.current = null;
+      if ('blob' in outcome) {
+        setMarkup({ visitId, mediaId, phase: 'open', blob: outcome.blob });
+      } else {
+        setMarkup(null);
+        if ('fail' in outcome) setError((outcome.fail === 'decode' ? SV.markupCannotOpen : SV.markupOpenFailed)[useStore.getState().lang]);
+      }
+      return outcome;
+    },
+    /** Closes the editor, or stops an open in flight. A save already started is kept and queued, as any photo is. */
+    stopMarkup,
+    /** M3: the marked-up copy of the open photo, added to its visit as a NEW file naming the original
+     *  (`sourceMediaId`); the original is kept as it was. The same people and the same "nothing after close" rule as
+     *  a photo, and kept on the phone first in the one bounded write a photo takes (`putVisitPhoto`), so every rule a
+     *  photo follows on its way to the server, this copy follows too. It sends no camera time or location: the server
+     *  gives it the original's. It carries the original's place when the visit still has that place. A copy that is
+     *  not kept leaves the editor open, with the drawing, to save again. */
+    saveMarkup: async (copy: MarkedCopy): Promise<boolean> => {
+      const m = markupRef.current;
+      if (!m || m.phase !== 'open') return false;
+      const state = useStore.getState();
+      if (!state.serverGateway()) { setMarkupNotice(SV.needsServer[state.lang]); return false; }
+      const scope = projectScopeOf(state);
+      const seq = markupSeq.current;
+      // said in the editor, which covers the page: only while that same editor is open
+      const say = (text: (typeof SV)[keyof typeof SV]) => {
+        if (live(scope) && seq === markupSeq.current) setMarkupNotice(text[useStore.getState().lang]);
+      };
+      setBusy(true);
+      setMarkupNotice(null);
+      try {
+        const v = shownRef.current.find((x) => x.id === m.visitId);
+        const source = v?.files?.find((f) => f.mediaId === m.mediaId);
+        // no longer theirs to add to (closed meanwhile, or no longer present): the editor closes, as the screen closes it
+        if (!v || !source || !mayAddPhoto(v, state.role, state.sessionUserId)) { stopMarkup(); return false; }
+        // refused here, before it is kept or sent: the drawing stays to try again
+        if (copy.data.length > MAX_PHOTO_BASE64) { say(SV.markupTooBig); return false; }
+        const at = source.place?.nodeId ? v.places.find((p) => p.nodeId === source.place!.nodeId && !p.retiredAt) : undefined;
+        const op: SiteVisitAddFileOp = {
+          t: 'siteVisitAddFile', visitId: m.visitId, idempotencyKey: newIdempotencyKey(),
+          scope: visitPhotoScope(state.sessionToken, state.sessionUserId),
+          file: { id: newIdempotencyKey(), mime: copy.mime, sourceMediaId: m.mediaId, ...(at ? { nodeId: at.nodeId! } : {}) },
+          by: { name: state.userName ?? '', role: state.role }, placeName: at ? at.name : null, queuedAt: now(),
+        };
+        const queuedHere = await keepAndQueue(scope, op, copy.data, say);
+        // kept and queued: the editor closes, unless the person has since opened another photo
+        if (queuedHere && seq === markupSeq.current && live(scope)) stopMarkup();
         return queuedHere;
       } finally {
         if (live(scope)) setBusy(false);

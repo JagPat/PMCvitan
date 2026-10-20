@@ -518,6 +518,9 @@ export interface UploadMediaInput {
   geoLat?: number;
   geoLng?: number;
   takenAt?: string;
+  // Stage 1 markup on a visit (M3): a marked-up copy names the visit file it was drawn on, and sends no camera time or
+  // location (it keeps the original's)
+  sourceMediaId?: string;
 }
 
 /** Resolve a snapshot media URL: dev-stub rows are relative (/media/:id) → prefix the API base. */
@@ -1480,13 +1483,14 @@ export class ApiGateway {
   //    and carries its own key, so a retry after a lost response runs once. ──
   /** A page of the project's visits, newest start first; `before` is the previous page's last visit; `status: 'open'`
    *  reads every visit still open, however old. */
-  listSiteVisits(page: { before?: string; limit?: number; status?: 'open' } = {}): Promise<SiteVisit[]> {
+  listSiteVisits(page: { before?: string; limit?: number; status?: 'open' } = {}, signal?: AbortSignal): Promise<SiteVisit[]> {
     const q = new URLSearchParams();
     if (page.before) q.set('before', page.before);
     if (page.status) q.set('status', page.status);
     if (page.limit) q.set('limit', String(page.limit));
     const qs = q.toString();
-    return this.req<SiteVisit[]>(`/projects/${this.projectId}/site-visits${qs ? `?${qs}` : ''}`);
+    // M3: a read the person no longer waits for (a markup open stopped or past its bound) is cancelled with it
+    return this.req<SiteVisit[]>(`/projects/${this.projectId}/site-visits${qs ? `?${qs}` : ''}`, signal ? { signal } : undefined);
   }
   startSiteVisit(input: StartSiteVisitBody, idempotencyKey: string): Promise<SiteVisit> {
     return this.visitAct('', input, idempotencyKey);
@@ -1553,6 +1557,8 @@ export interface SiteVisitFile {
    *  copy by it. */
   clientKey?: string | null;
   takenAt: string | null;
+  /** A marked-up copy's original, a file on the same visit (M3); null or absent (an API before M3) for a photo as taken. */
+  sourceMediaId?: string | null;
   note: string | null;
   rating: SiteVisitRating | null;
   /** The place the file showed when it was added, with the name it had then. */
@@ -1573,6 +1579,9 @@ export interface SiteVisitFileBody {
   nodeId?: string;
   note?: string;
   rating?: SiteVisitRating;
+  /** A marked-up copy (M3): the visit file it was drawn on. It carries no takenAt or location: the server gives it
+   *  the original's. */
+  sourceMediaId?: string;
 }
 export interface StartSiteVisitBody {
   id: string;
