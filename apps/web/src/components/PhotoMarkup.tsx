@@ -246,7 +246,8 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
               tabIndex={0} role="application" aria-label={MK.keys[lang]}
               onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={cancel}
               onKeyDown={key} onFocus={() => setCursor((c) => c ?? { x: Math.round(size.width / 2), y: Math.round(size.height / 2) })}
-              onBlur={() => setCursor(null)}
+              // leaving the photo mid-mark (Tab, or a tool clicked) drops a keyboard mark, so a pointer can draw at once
+              onBlur={() => { setCursor(null); if (gesture.current?.pointerId === null) setGesture(null); }}
               style={{ display: 'block', width: '100%', height: 'auto', touchAction: 'none', borderRadius: 10, background: '#000' }}
             />
             {cursor && (

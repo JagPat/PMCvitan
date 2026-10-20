@@ -320,6 +320,20 @@ describe('photo markup: the editor', () => {
     expect(calls).toContain(`text ${'A'.repeat(60)} ${long.at.x},${long.at.y}`);
   });
 
+  // round 2 on #1003 (cc4e50d): failed there
+
+  it('a keyboard mark left unfinished when the photo loses focus is dropped, and touch drawing still works', async () => {
+    render(<PhotoMarkup source={PHOTO} lang="en" onSave={() => {}} onCancel={() => {}} />);
+    const canvas = await screen.findByTestId('photo-markup-canvas');
+    fireEvent.focus(canvas);
+    fireEvent.keyDown(canvas, { key: 'Enter' });
+    fireEvent.keyDown(canvas, { key: 'ArrowRight', shiftKey: true });
+    fireEvent.blur(canvas);
+    expect(screen.getByRole('button', { name: MK.undo.en })).toBeDisabled();
+    drag(canvas, [10, 10], [300, 200]);
+    expect(screen.getByRole('button', { name: MK.undo.en })).toBeEnabled();
+  });
+
   it('Cancel closes without saving', async () => {
     const onCancel = vi.fn();
     const onSave = vi.fn();
