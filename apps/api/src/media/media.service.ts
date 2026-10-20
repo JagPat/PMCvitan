@@ -24,6 +24,7 @@ import { SITE_PHOTO_DELETE_WINDOW_MS } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
+import { isAudioOnlyRecording } from './voice-container';
 
 export interface UploadedMedia {
   id: string;
@@ -138,6 +139,14 @@ export class MediaService {
         throw new BadRequestException('A marked-up copy keeps the camera time and location of the photo it was drawn on');
       }
     }
+    // Stage 1 voice notes, site visits first (Jagrut, 19 Oct 2026): a voice note is a file on a visit, never a copy
+    if (input.mime.startsWith('audio/')) {
+      if (!isSiteVisitFile(input) || input.sourceMediaId !== undefined) {
+        throw new BadRequestException('A voice note is added on a site visit');
+      }
+      // the type is the client's word: the file is served only as what it is, an audio-only recording (Codex P2 on #1010)
+      if (!isAudioOnlyRecording(input.mime, Buffer.from(input.data, 'base64'))) throw new BadRequestException('This file is not the voice recording its type says');
+    }
     if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input)) {
       throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
     }
@@ -214,6 +223,7 @@ export class MediaService {
             geoLng: source ? source.geoLng : input.geoLng,
             takenAt: source ? source.takenAt : input.takenAt,
             sourceMediaId: source?.id ?? null,
+            durationSec: input.durationSec ?? null,
             decisionId,
             dailyLogId,
             nodeId,
