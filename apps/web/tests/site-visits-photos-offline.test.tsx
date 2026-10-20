@@ -5,7 +5,7 @@ import type { ProjectMember, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { moveSiteVisitOps, type ApiGateway, type OutboxOp, type SiteVisit } from '@/data/apiGateway';
-import { failVisitPhoto, fileVisitPhoto, listVisitPhotos, moveVisitPhotos, putVisitPhoto, settleFiledVisitPhotos, visitPhotoScope, visitsHeldByPhotos } from '@/data/visitPhotoStore';
+import { failVisitPhoto, failVisitPhotosOn, fileVisitPhoto, listVisitPhotos, moveVisitPhotos, putVisitPhoto, settleFiledVisitPhotos, visitPhotoScope, visitsHeldByPhotos } from '@/data/visitPhotoStore';
 import { refreshSiteVisits } from '@/lib/useSiteVisits';
 
 /**
@@ -1623,4 +1623,73 @@ describe('Site Visits SV2: every write of a kept photo is bounded (#792, #1017 r
     expect(startSiteVisit.mock.calls.map((c) => c[1])).toEqual(['k-s', 'k-s']);
     expect((await rows()).map((r) => [r.state, r.start])).toEqual([['filed', null]]);
   }, 30_000);
+});
+
+/**
+ * #1017's round 2 (head 233db0c): a refused start's photos were moved or marked with no bound, so a database that never
+ * answered held the flush's lock for the rest of the page load. Every call on the phone's record is now bounded (the
+ * body lists each). The test fails at 233db0c.
+ */
+describe('Site Visits SV2: a refused start never holds the queue on the phone’s record (#792, #1017 round 2)', () => {
+  it('stops at a refused start whose photos cannot be marked in time, then marks them once when it is refused again (Codex 4324836535)', async () => {
+    const CANNOT = 'You cannot start a site visit on this project';
+    const startSiteVisit = vi.fn().mockRejectedValue(refusal(403, CANNOT));
+    const uploadMedia = vi.fn(async () => ({ id: 'm-1', url: '/media/m-1' }));
+    setUp('consultant', fakeGateway([], { startSiteVisit, uploadMedia }));
+    const owner = visitPhotoScope(null, CONSULTANT);
+    const project = useStore.getState().activeProjectId;
+    const start = { t: 'siteVisitStart', idempotencyKey: 'k-s', body: { id: 'v-tmp', claimedAt: '2026-10-14T04:30:00.000Z' }, visitor: { name: 'Kiran Rao', role: 'consultant', placeName: null } } as Extract<OutboxOp, { t: 'siteVisitStart' }>;
+    const photoOp = { t: 'siteVisitAddFile', visitId: 'v-tmp', scope: owner, idempotencyKey: 'k-f', by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, file: { id: 'c-1', mime: 'image/png' } } as Extract<OutboxOp, { t: 'siteVisitAddFile' }>;
+    await putVisitPhoto(owner, project, photoOp, 'AQID', start);
+    useStore.setState({ outbox: [start, photoOp] });
+    // the flush's read of the rows answers; the marking of the refused start's photos waits (a stuck database)
+    const real = indexedDB.open.bind(indexedDB);
+    const stalled: (() => void)[] = [];
+    let opens = 0;
+    vi.spyOn(indexedDB, 'open').mockImplementation((name: string, version?: number) => {
+      opens += 1;
+      if (opens === 1) return real(name, version);
+      let inner: IDBOpenDBRequest | null = null;
+      const outer = {
+        onsuccess: null as ((e: Event) => void) | null, onerror: null as ((e: Event) => void) | null, onupgradeneeded: null as ((e: Event) => void) | null,
+        get result() { return inner!.result; }, get error() { return inner!.error; },
+      };
+      stalled.push(() => {
+        inner = real(name, version);
+        inner.onupgradeneeded = (e) => outer.onupgradeneeded?.(e);
+        inner.onsuccess = (e) => outer.onsuccess?.(e);
+        inner.onerror = (e) => outer.onerror?.(e);
+      });
+      return outer as unknown as IDBOpenDBRequest;
+    });
+    const first = await useStore.getState().flushOutbox();
+    // the flush ends, and lets go of its lock, with the start and its photo still queued
+    expect(first.ran).toBe(true);
+    expect(startSiteVisit).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().outbox.map((o) => ('idempotencyKey' in o ? o.idempotencyKey : o.t))).toEqual(['k-s', 'k-f']);
+    // the mark lands late, after all
+    vi.restoreAllMocks();
+    await act(async () => { for (const go of stalled.splice(0)) go(); await new Promise((r) => setTimeout(r, 100)); });
+    expect((await rows()).map((r) => [r.state, r.reason])).toEqual([['failed', CANNOT]]);
+    // the next send is refused the same way: nothing is left to mark twice, the photo is not sent, and the queue empties
+    void useStore.getState().flushOutbox();
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0), { timeout: 8000 });
+    expect(startSiteVisit.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect((await rows()).map((r) => [r.state, r.reason])).toEqual([['failed', CANNOT]]);
+  }, 30_000);
+
+  it('moves or marks a refused start’s photos once, however often the refusal is settled again', async () => {
+    const owner = visitPhotoScope(null, CONSULTANT);
+    setUp('consultant', fakeGateway([]));
+    const project = useStore.getState().activeProjectId;
+    const photoOp = (id: string, visitId: string) => ({ t: 'siteVisitAddFile', visitId, scope: owner, idempotencyKey: `k-${id}`, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, file: { id, mime: 'image/png' } }) as Extract<OutboxOp, { t: 'siteVisitAddFile' }>;
+    await putVisitPhoto(owner, project, photoOp('p-1', 'v-a'), 'AQID');
+    await putVisitPhoto(owner, project, photoOp('p-2', 'v-b'), 'AQID');
+    await moveVisitPhotos(owner, project, 'v-a', 'v-open');
+    await moveVisitPhotos(owner, project, 'v-a', 'v-open');
+    expect(await failVisitPhotosOn(owner, project, 'v-b', 'No')).toEqual(['p-2']);
+    expect(await failVisitPhotosOn(owner, project, 'v-b', 'No')).toEqual([]);
+    expect((await rows()).map((r) => [r.clientKey, r.op.visitId, r.state]).sort()).toEqual([['p-1', 'v-open', 'queued'], ['p-2', 'v-b', 'failed']]);
+  });
 });

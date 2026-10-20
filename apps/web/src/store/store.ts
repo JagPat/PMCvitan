@@ -2520,7 +2520,8 @@ export const useStore = create<Store>()(
       const projScope = currentScope();
       const storageKey = outboxKey();
       try {
-        const rows = await listVisitPhotos(scope, projectId);
+        // bounded: a read that never answers is one that failed (below)
+        const rows = await withinWait(() => listVisitPhotos(scope, projectId));
         if (!scopeStillCurrent(projScope) || outboxKey() !== storageKey) return;
         if (epoch !== visitPhotoEpoch) {
           if (visitPhotoFlushes !== flushes) {
@@ -6233,10 +6234,14 @@ export const useStore = create<Store>()(
                 // the rows are the photos' only record: a move or mark the phone could not make leaves the start and its
                 // acts queued, to be refused and settled again next time, never rows with no act (Codex 4320404431)
                 const reason = refusalMessage(err);
-                const settled = await (open
-                  ? moveVisitPhotos(photos, flushGateway.project, op.body.id, open.id).then(() => [])
-                  : failVisitPhotosOn(photos, flushGateway.project, op.body.id, reason)).then((failed) => failed, () => null);
-                if (!settled) { stoppedAt = i; break; }
+                // bounded, as every write of the rows in a flush is (Codex 4324836535): one that fails or never answers
+                // stops here with the start and its acts queued, and the retry sends the start again. It is refused the
+                // same way, and the move or mark is made again; both touch only rows still queued on the refused start,
+                // so one that committed late leaves nothing to move or mark twice
+                const settled = await withinWait(() => (open
+                  ? moveVisitPhotos(photos, flushGateway.project, op.body.id, open.id).then((): string[] => [])
+                  : failVisitPhotosOn(photos, flushGateway.project, op.body.id, reason))).then((failed) => failed, () => null);
+                if (!settled) { stoppedAt = i; retryVisitPhotos(); break; }
                 // each photo marked failed is told as committed (State rules)
                 for (const clientKey of settled) {
                   tellSiteVisits({ kind: 'photo', project: flushGateway.project, generation: flushScope.generation, visitId: op.body.id, clientKey, state: 'failed', reason });

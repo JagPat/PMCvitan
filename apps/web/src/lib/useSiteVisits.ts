@@ -344,7 +344,8 @@ export function useSiteVisits() {
     const s = useStore.getState();
     const scope = projectScopeOf(s);
     const mine = (keptTurn.current += 1);
-    listVisitPhotos(visitPhotoScope(s.sessionToken, s.sessionUserId), s.activeProjectId)
+    // bounded: a read that never answers is one that failed
+    withinWait(() => listVisitPhotos(visitPhotoScope(s.sessionToken, s.sessionUserId), s.activeProjectId))
       // only the latest: a read sent before a photo was marked filed here never puts it back as queued
       .then((list) => { if (live(scope) && mine === keptTurn.current) setKept(list); })
       // not read: what is shown stays, and it is read again on the visit photo retry
@@ -392,7 +393,7 @@ export function useSiteVisits() {
         relinkFailed.current = 0;
         // not settled (the phone's database failed): they stay shown, and the next read that answers settles them
         const { listed, spoken } = filedFacts(read);
-        void settleFiledVisitPhotos(owner, scope.projectId, sentAt, heard, listed, spoken).then(() => { if (live(scope)) readKept(); }, () => {});
+        void withinWait(() => settleFiledVisitPhotos(owner, scope.projectId, sentAt, heard, listed, spoken)).then(() => { if (live(scope)) readKept(); }, () => {});
         return true;
       })
       // the latest read failed before any read answered (an overtaken first read included): offer Try again
@@ -415,7 +416,7 @@ export function useSiteVisits() {
         if (!live(scope)) return;
         // an older visit's own photos are settled by the page that reads it, as by a refresh
         const { listed, spoken } = filedFacts(page);
-        void settleFiledVisitPhotos(owner, scope.projectId, sentAt, heard, listed, spoken).then(() => { if (live(scope)) readKept(); }, () => {});
+        void withinWait(() => settleFiledVisitPhotos(owner, scope.projectId, sentAt, heard, listed, spoken)).then(() => { if (live(scope)) readKept(); }, () => {});
         setRows((old) => merged(page, old));
         if (page.length) cursor.current = page[page.length - 1].id;
         setHasMore(page.length === VISIT_PAGE);
@@ -555,7 +556,8 @@ export function useSiteVisits() {
     /** The person has read why a photo was not sent: the phone lets go of it. */
     dismiss: (key: string) => {
       const s = useStore.getState();
-      void deleteVisitPhoto(visitPhotoScope(s.sessionToken, s.sessionUserId), s.activeProjectId, key).catch(() => {}).then(readKept);
+      // bounded: one that never answers leaves the photo listed, and the next read shows whether it went
+      void withinWait(() => deleteVisitPhoto(visitPhotoScope(s.sessionToken, s.sessionUserId), s.activeProjectId, key)).catch(() => {}).then(readKept);
     },
     retry: () => readHead(true),
     sendNow: sendQueued,
