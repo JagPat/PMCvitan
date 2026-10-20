@@ -222,6 +222,7 @@ describe('the countersign-v1 completeness tripwire (4d-ii-a / A5e)', () => {
       'src/auth/auth.controller.ts verifyOtp': 'refuse: a minted architect token (sign-in)',
       'src/auth/auth.controller.ts verifyEmailOtp': 'refuse: a minted architect token (sign-in)',
       'src/auth/auth.controller.ts googleSignIn': 'refuse: a minted architect token (sign-in)',
+      'src/auth/auth-ops.controller.ts qaSignIn': 'refuse: a minted architect token (the operator door QA sign-in)',
       'src/auth/auth.controller.ts workerToken': 'refuse: a minted architect token (the device flow mints `worker`; covered all the same)',
     };
     const found: string[] = [];

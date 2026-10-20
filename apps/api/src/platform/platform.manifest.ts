@@ -86,6 +86,8 @@ export const platformManifest: ModuleManifest = {
     'POST /projects/:projectId/push/subscribe', 'POST /projects/:projectId/push/unlink', 'POST /projects/:projectId/notifications/seen',
     // #482 operator door — the presentation-only capability switch behind OPS_TOKEN
     'POST /ops/projects/:projectId/capabilities/:capability/enable', 'POST /ops/projects/:projectId/capabilities/:capability/disable',
+    // #482 QA door rebuild — mark a company QA-only (the orgs participant writes the mark; the database guards it)
+    'POST /ops/orgs/:orgId/qa-only',
   ],
   permissions: [],
 };

@@ -11,7 +11,7 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { lockStandingForWrite, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
-import { OrgsParticipant } from './orgs.participant';
+import { OrgsParticipant, refuseQaLock } from './orgs.participant';
 import { InvitationsService } from './invitations.service';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import { RoleStandingQuery } from '../platform/role-standing.query';
@@ -451,11 +451,13 @@ export class MembersService {
         // their OWN membership (an owner adding themselves) no longer holds the token role after it.
         const ev = await emitEvent(tx, { projectId, actor, actorEnvelope: pair, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
         const flip = await this.emitStandingFlip(tx, projectId, actor, pair, addFact, transitionId);
-        const holderRefusal = (e: unknown) =>
-          rethrowHolderSealViolation(
+        const holderRefusal = (e: unknown) => {
+          refuseQaLock(e); // #482: a real person into a QA-only company, or a QA account anywhere else
+          return rethrowHolderSealViolation(
             e,
             'An open decision is held by a role this activation would displace and the change would leave it without a holder — withdraw and reissue the decision first',
           );
+        };
         const m = prior
           ? await tx.membership.update({ where: { id: prior.id }, data: { role: input.role, discipline, status: 'active' } }).catch(holderRefusal)
           : await tx.membership.create({ data: { id: membershipId, projectId, userId: user.id, role: input.role, discipline, status: 'active' } }).catch(holderRefusal);
