@@ -46,6 +46,16 @@ function isSiteVisitFile(input: CreateMediaInput): boolean {
     && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
 }
 
+/** Whether a voice note's first bytes are the container its type names: WebM (EBML), Ogg, or MP4 (`ftyp`). The type is
+ *  the client's word; the bytes are checked so a file is served only as what it is. */
+function voiceBytesMatch(mime: string, base64: string): boolean {
+  const head = Buffer.from(base64.slice(0, 24), 'base64');
+  if (mime === 'audio/webm') return head.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+  if (mime === 'audio/ogg') return head.subarray(0, 4).toString('latin1') === 'OggS';
+  if (mime === 'audio/mp4') return head.subarray(4, 8).toString('latin1') === 'ftyp';
+  return false;
+}
+
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
 const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true } as const;
 type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null };
@@ -132,6 +142,13 @@ export class MediaService {
         throw new BadRequestException('A marked-up copy keeps the camera time and location of the photo it was drawn on');
       }
     }
+    // Stage 1 voice notes, site visits first (Jagrut, 19 Oct 2026): a voice note is a file on a visit, never a copy
+    if (input.mime.startsWith('audio/')) {
+      if (!isSiteVisitFile(input) || input.sourceMediaId !== undefined) {
+        throw new BadRequestException('A voice note is added on a site visit');
+      }
+      if (!voiceBytesMatch(input.mime, input.data)) throw new BadRequestException('This file is not the voice recording its type says');
+    }
     if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input)) {
       throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
     }
@@ -208,6 +225,7 @@ export class MediaService {
             geoLng: source ? source.geoLng : input.geoLng,
             takenAt: source ? source.takenAt : input.takenAt,
             sourceMediaId: source?.id ?? null,
+            durationSec: input.durationSec ?? null,
             decisionId,
             dailyLogId,
             nodeId,
